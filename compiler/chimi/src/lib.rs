@@ -12,4 +12,7 @@ pub mod source;
 mod syntax;
 mod typing;
 
-pub use compiler::{CheckReport, Compiler};
+pub use compiler::{
+    CheckReport, Compiler, NameReport, ProjectPathError, ProjectSource, ReferenceInfo,
+    SymbolHandle, SymbolInfo,
+};
