@@ -1,0 +1,8 @@
+[package]
+name = "chimi-compiler-host-rust-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[profile.release]
+strip = true
