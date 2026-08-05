@@ -407,17 +407,80 @@ pub(crate) struct ModuleDeclaration {
     pub(crate) public: bool,
     pub(crate) name: Name,
     pub(crate) generic_parameters: Vec<Name>,
-    pub(crate) variants: Vec<Name>,
-    pub(crate) type_uses: Vec<TypeUse>,
-    pub(crate) row_uses: Vec<Name>,
+    pub(crate) fields: Vec<TypedField>,
+    pub(crate) variants: Vec<VariantDeclaration>,
+    pub(crate) function: Option<FunctionSignature>,
     pub(crate) body: Option<ModuleExpression>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct TypeUse {
+pub(crate) enum TypeUse {
+    Named {
+        semantic_id: SemanticId,
+        path: Vec<Name>,
+        arguments: Vec<TypeUse>,
+    },
+    Function {
+        semantic_id: SemanticId,
+        inputs: Vec<TypeUse>,
+        success: Box<TypeUse>,
+        failures: Option<Box<TypeUse>>,
+        requirements: RequirementRowUse,
+    },
+}
+
+impl TypeUse {
+    pub(crate) const fn semantic_id(&self) -> SemanticId {
+        match self {
+            Self::Named { semantic_id, .. } | Self::Function { semantic_id, .. } => *semantic_id,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TypedField {
     pub(crate) semantic_id: SemanticId,
-    pub(crate) path: Vec<Name>,
-    pub(crate) children: Vec<TypeUse>,
+    pub(crate) name: Name,
+    pub(crate) type_use: TypeUse,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct VariantDeclaration {
+    pub(crate) semantic_id: SemanticId,
+    pub(crate) name: Name,
+    pub(crate) fields: Vec<TypedField>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ValueParameter {
+    pub(crate) semantic_id: SemanticId,
+    pub(crate) name: Name,
+    pub(crate) type_use: Option<TypeUse>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FunctionSignature {
+    pub(crate) parameters: Vec<ValueParameter>,
+    pub(crate) success: Option<TypeUse>,
+    pub(crate) requirements: RequirementRowUse,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RequirementRowUse {
+    pub(crate) terms: Vec<RequirementTermUse>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum RequirementTermUse {
+    Variable {
+        semantic_id: SemanticId,
+        name: Name,
+    },
+    Field {
+        semantic_id: SemanticId,
+        name: Name,
+        interface: TypeUse,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -450,10 +513,7 @@ pub(crate) enum ModuleExpression {
     },
     Function {
         semantic_id: SemanticId,
-        parameters: Vec<Name>,
-        requirements: Vec<Name>,
-        type_uses: Vec<TypeUse>,
-        row_uses: Vec<Name>,
+        signature: FunctionSignature,
         body: Box<Self>,
     },
     Case {
@@ -617,43 +677,22 @@ impl ProjectLowerer {
                     .collect()
             })
             .unwrap_or_default();
+        let fields = node
+            .child_nodes()
+            .into_iter()
+            .filter(|child| child.kind() == NodeKind::Field)
+            .filter_map(|field| self.lower_typed_field(&field))
+            .collect();
         let variants = node
             .child_nodes()
             .into_iter()
             .filter(|child| child.kind() == NodeKind::Variant)
-            .filter_map(|variant| direct_identifier(&variant))
+            .filter_map(|variant| self.lower_variant(&variant))
             .collect();
-        let type_uses = collect_outer_type_nodes(node)
-            .into_iter()
-            .map(|type_node| self.lower_type(&type_node))
-            .collect();
-        let row_uses = collect_nodes(node, NodeKind::RequirementClause)
-            .into_iter()
-            .flat_map(|clause| {
-                clause
-                    .child_tokens()
-                    .into_iter()
-                    .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
-                    .map(|token| name_from(&token))
-            })
-            .collect();
+        let function =
+            (kind == ModuleDeclarationKind::Function).then(|| self.lower_function_signature(node));
         let body = if kind == ModuleDeclarationKind::Function {
-            direct_child(node, NodeKind::BlockExpression).map(|body| {
-                let parameters = direct_child(node, NodeKind::ValueParameters)
-                    .map(|parameters| parameter_names(&parameters))
-                    .unwrap_or_default();
-                let requirements = direct_child(node, NodeKind::ImplementationContract)
-                    .map(|contract| requirement_names(&contract))
-                    .unwrap_or_default();
-                ModuleExpression::Function {
-                    semantic_id: self.allocate_semantic_id(),
-                    parameters,
-                    requirements,
-                    type_uses: Vec::new(),
-                    row_uses: Vec::new(),
-                    body: Box::new(self.lower_expression(&body)),
-                }
-            })
+            direct_child(node, NodeKind::BlockExpression).map(|body| self.lower_expression(&body))
         } else {
             None
         };
@@ -666,9 +705,9 @@ impl ProjectLowerer {
                 .any(|token| token.kind() == TokenKind::Pub),
             name,
             generic_parameters,
+            fields,
             variants,
-            type_uses,
-            row_uses,
+            function,
             body,
         })
     }
@@ -682,14 +721,60 @@ impl ProjectLowerer {
             public: false,
             name,
             generic_parameters: Vec::new(),
+            fields: Vec::new(),
             variants: Vec::new(),
-            type_uses: Vec::new(),
-            row_uses: Vec::new(),
+            function: None,
             body,
         })
     }
 
     fn lower_type(&mut self, node: &SyntaxNode<'_>) -> TypeUse {
+        let semantic_id = self.allocate_semantic_id();
+        if let Some(function) = direct_child(node, NodeKind::FunctionType) {
+            let arrow_offset = function
+                .child_tokens()
+                .into_iter()
+                .find(|token| token.kind() == TokenKind::Arrow)
+                .map(|token| token.range().start())
+                .unwrap_or(u32::MAX);
+            let errors_offset = function
+                .child_tokens()
+                .into_iter()
+                .find(|token| token.kind() == TokenKind::Errors)
+                .map(|token| token.range().start())
+                .unwrap_or(u32::MAX);
+            let mut inputs = Vec::new();
+            let mut success = None;
+            let mut failures = None;
+            for child in function.child_nodes() {
+                if child.kind() != NodeKind::Type {
+                    continue;
+                }
+                let lowered = self.lower_type(&child);
+                if child.range().start() < arrow_offset {
+                    inputs.push(lowered);
+                } else if child.range().start() < errors_offset && success.is_none() {
+                    success = Some(lowered);
+                } else {
+                    failures = Some(Box::new(lowered));
+                }
+            }
+            let success = success.unwrap_or_else(|| TypeUse::Named {
+                semantic_id: self.allocate_semantic_id(),
+                path: Vec::new(),
+                arguments: Vec::new(),
+            });
+            let requirements = direct_child(&function, NodeKind::RequirementClause)
+                .map(|requirements| self.lower_requirement_row(&requirements))
+                .unwrap_or_default();
+            return TypeUse::Function {
+                semantic_id,
+                inputs,
+                success: Box::new(success),
+                failures,
+                requirements,
+            };
+        }
         let path = node
             .child_tokens()
             .into_iter()
@@ -699,15 +784,117 @@ impl ProjectLowerer {
             })
             .map(|token| name_from(&token))
             .collect();
-        let children = collect_outer_type_nodes(node)
-            .into_iter()
-            .map(|child| self.lower_type(&child))
-            .collect();
-        TypeUse {
-            semantic_id: self.allocate_semantic_id(),
+        let arguments = direct_child(node, NodeKind::TypeArguments)
+            .map(|arguments| {
+                arguments
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|child| child.kind() == NodeKind::Type)
+                    .map(|child| self.lower_type(&child))
+                    .collect()
+            })
+            .unwrap_or_default();
+        TypeUse::Named {
+            semantic_id,
             path,
-            children,
+            arguments,
         }
+    }
+
+    fn lower_typed_field(&mut self, node: &SyntaxNode<'_>) -> Option<TypedField> {
+        let name = direct_identifier(node)?;
+        let type_node = direct_child(node, NodeKind::Type)?;
+        Some(TypedField {
+            semantic_id: self.allocate_semantic_id(),
+            name,
+            type_use: self.lower_type(&type_node),
+        })
+    }
+
+    fn lower_variant(&mut self, node: &SyntaxNode<'_>) -> Option<VariantDeclaration> {
+        let name = direct_identifier(node)?;
+        let fields = node
+            .child_nodes()
+            .into_iter()
+            .filter(|child| child.kind() == NodeKind::NamedTypeField)
+            .filter_map(|field| self.lower_typed_field(&field))
+            .collect();
+        Some(VariantDeclaration {
+            semantic_id: self.allocate_semantic_id(),
+            name,
+            fields,
+        })
+    }
+
+    fn lower_function_signature(&mut self, node: &SyntaxNode<'_>) -> FunctionSignature {
+        let parameters = direct_child(node, NodeKind::ValueParameters)
+            .map(|parameters| {
+                parameters
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|child| child.kind() == NodeKind::ValueParameter)
+                    .filter_map(|parameter| self.lower_value_parameter(&parameter))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let contract = direct_child(node, NodeKind::ImplementationContract);
+        let success = contract
+            .as_ref()
+            .and_then(|contract| direct_child(contract, NodeKind::Type))
+            .map(|type_node| self.lower_type(&type_node));
+        let requirements = contract
+            .as_ref()
+            .and_then(|contract| direct_child(contract, NodeKind::RequirementClause))
+            .map(|requirements| self.lower_requirement_row(&requirements))
+            .unwrap_or_default();
+        FunctionSignature {
+            parameters,
+            success,
+            requirements,
+        }
+    }
+
+    fn lower_value_parameter(&mut self, node: &SyntaxNode<'_>) -> Option<ValueParameter> {
+        Some(ValueParameter {
+            semantic_id: self.allocate_semantic_id(),
+            name: direct_identifier(node)?,
+            type_use: direct_child(node, NodeKind::Type)
+                .map(|type_node| self.lower_type(&type_node)),
+        })
+    }
+
+    fn lower_requirement_row(&mut self, node: &SyntaxNode<'_>) -> RequirementRowUse {
+        let mut terms = node
+            .child_tokens()
+            .into_iter()
+            .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+            .map(|token| RequirementTermUse::Variable {
+                semantic_id: self.allocate_semantic_id(),
+                name: name_from(&token),
+            })
+            .collect::<Vec<_>>();
+        for record in node
+            .child_nodes()
+            .into_iter()
+            .filter(|child| child.kind() == NodeKind::RequirementRecord)
+        {
+            terms.extend(
+                record
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|field| field.kind() == NodeKind::NamedTypeField)
+                    .filter_map(|field| {
+                        let name = direct_identifier(&field)?;
+                        let interface = direct_child(&field, NodeKind::Type)?;
+                        Some(RequirementTermUse::Field {
+                            semantic_id: self.allocate_semantic_id(),
+                            name,
+                            interface: self.lower_type(&interface),
+                        })
+                    }),
+            );
+        }
+        RequirementRowUse { terms }
     }
 
     fn lower_expression(&mut self, node: &SyntaxNode<'_>) -> ModuleExpression {
@@ -728,37 +915,13 @@ impl ProjectLowerer {
                     .collect(),
             },
             NodeKind::FunctionExpression => {
-                let parameters = direct_child(node, NodeKind::ValueParameters)
-                    .map(|parameters| parameter_names(&parameters))
-                    .unwrap_or_default();
-                let requirements = direct_child(node, NodeKind::ImplementationContract)
-                    .map(|contract| requirement_names(&contract))
-                    .unwrap_or_default();
-                let type_uses = collect_outer_type_nodes(node)
-                    .into_iter()
-                    .map(|type_node| self.lower_type(&type_node))
-                    .collect();
-                let row_uses = collect_nodes(node, NodeKind::RequirementClause)
-                    .into_iter()
-                    .flat_map(|clause| {
-                        clause
-                            .child_tokens()
-                            .into_iter()
-                            .filter(|token| {
-                                token.kind() == TokenKind::Identifier && !token.is_missing()
-                            })
-                            .map(|token| name_from(&token))
-                    })
-                    .collect();
+                let signature = self.lower_function_signature(node);
                 let body = direct_child(node, NodeKind::BlockExpression)
                     .map(|body| self.lower_expression(&body))
                     .unwrap_or(ModuleExpression::Empty { semantic_id });
                 ModuleExpression::Function {
                     semantic_id,
-                    parameters,
-                    requirements,
-                    type_uses,
-                    row_uses,
+                    signature,
                     body: Box::new(body),
                 }
             }
@@ -938,58 +1101,6 @@ fn significant_range(node: &SyntaxNode<'_>) -> TextRange {
         }
         _ => node.range(),
     }
-}
-
-fn collect_outer_type_nodes<'tree>(node: &SyntaxNode<'tree>) -> Vec<SyntaxNode<'tree>> {
-    let mut result = Vec::new();
-    for child in node.child_nodes() {
-        if child.kind() == NodeKind::Type {
-            result.push(child);
-        } else if !matches!(
-            child.kind(),
-            NodeKind::BlockExpression | NodeKind::FunctionExpression
-        ) {
-            result.extend(collect_outer_type_nodes(&child));
-        }
-    }
-    result
-}
-
-fn collect_nodes<'tree>(node: &SyntaxNode<'tree>, kind: NodeKind) -> Vec<SyntaxNode<'tree>> {
-    let mut result = Vec::new();
-    for child in node.child_nodes() {
-        if child.kind() == kind {
-            result.push(child.clone());
-        }
-        result.extend(collect_nodes(&child, kind));
-    }
-    result
-}
-
-fn parameter_names(node: &SyntaxNode<'_>) -> Vec<Name> {
-    node.child_nodes()
-        .into_iter()
-        .filter(|child| child.kind() == NodeKind::ValueParameter)
-        .filter_map(|parameter| direct_identifier(&parameter))
-        .collect()
-}
-
-fn requirement_names(node: &SyntaxNode<'_>) -> Vec<Name> {
-    let mut names = Vec::new();
-    for child in node.child_nodes() {
-        if child.kind() == NodeKind::RequirementRecord {
-            names.extend(
-                child
-                    .child_nodes()
-                    .into_iter()
-                    .filter(|field| field.kind() == NodeKind::NamedTypeField)
-                    .filter_map(|field| direct_identifier(&field)),
-            );
-        } else {
-            names.extend(requirement_names(&child));
-        }
-    }
-    names
 }
 
 fn is_expression_kind(kind: NodeKind) -> bool {

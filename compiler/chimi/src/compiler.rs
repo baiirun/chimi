@@ -7,7 +7,7 @@ use crate::resolution::{
 };
 use crate::semantic;
 use crate::source::SourceSnapshot;
-use crate::typing::check;
+use crate::typing::{GenericKind, TypedProject, check, check_project};
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -154,6 +154,80 @@ pub struct NameReport {
     resolved: ResolvedProject,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenericParameterKind {
+    Unconstrained,
+    Value,
+    FailureRow,
+    NeedsRow,
+    Conflicting,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TypeArenaStats {
+    pub types: usize,
+    pub failure_rows: usize,
+    pub needs_rows: usize,
+    pub callable_contracts: usize,
+    pub type_facts: usize,
+    pub declaration_types: usize,
+    pub field_shapes: usize,
+}
+
+#[derive(Debug)]
+pub struct TypeReport {
+    typed: TypedProject,
+}
+
+impl TypeReport {
+    pub fn is_success(&self) -> bool {
+        self.typed.diagnostics.is_empty()
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.typed.diagnostics
+    }
+
+    pub fn contract(&self, module_path: &str, function_name: &str) -> Option<String> {
+        self.typed
+            .contract(module_path, function_name)
+            .map(|contract| self.typed.format_function_contract(contract))
+    }
+
+    pub fn generic_kind(
+        &self,
+        module_path: &str,
+        declaration_name: &str,
+        generic_name: &str,
+    ) -> Option<GenericParameterKind> {
+        self.typed
+            .generic_kind(module_path, declaration_name, generic_name)
+            .map(|kind| match kind {
+                GenericKind::Unconstrained => GenericParameterKind::Unconstrained,
+                GenericKind::Value => GenericParameterKind::Value,
+                GenericKind::FailureRow => GenericParameterKind::FailureRow,
+                GenericKind::NeedsRow => GenericParameterKind::NeedsRow,
+                GenericKind::Conflicting => GenericParameterKind::Conflicting,
+            })
+    }
+
+    pub fn arena_stats(&self) -> TypeArenaStats {
+        TypeArenaStats {
+            types: self.typed.types.len(),
+            failure_rows: self.typed.failure_rows.len(),
+            needs_rows: self.typed.needs_rows.len(),
+            callable_contracts: self.typed.contracts.len(),
+            type_facts: self.typed.type_facts.len(),
+            declaration_types: self.typed.declaration_types.len(),
+            field_shapes: self.typed.fields.values().map(Vec::len).sum(),
+        }
+    }
+
+    pub fn render_diagnostics(&self) -> String {
+        render_project_diagnostics(&self.typed.resolved, &self.typed.diagnostics)
+    }
+}
+
 impl NameReport {
     pub fn is_success(&self) -> bool {
         self.resolved.diagnostics.is_empty()
@@ -231,22 +305,23 @@ impl NameReport {
     }
 
     pub fn render_diagnostics(&self) -> String {
-        let mut output = self
-            .resolved
-            .diagnostics
-            .iter()
-            .map(|diagnostic| {
-                let source =
-                    &self.resolved.semantic.modules[diagnostic.file_id().raw() as usize].source;
-                diagnostic.render(source)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !output.is_empty() {
-            output.push('\n');
-        }
-        output
+        render_project_diagnostics(&self.resolved, &self.resolved.diagnostics)
     }
+}
+
+fn render_project_diagnostics(resolved: &ResolvedProject, diagnostics: &[Diagnostic]) -> String {
+    let mut output = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let source = &resolved.semantic.modules[diagnostic.file_id().raw() as usize].source;
+            diagnostic.render(source)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output
 }
 
 const fn namespace_name(namespace: Namespace) -> &'static str {
@@ -326,17 +401,14 @@ pub struct Compiler;
 
 impl Compiler {
     pub fn resolve_project(sources: Vec<ProjectSource>) -> NameReport {
-        let semantic = semantic::lower_project(
-            sources
-                .into_iter()
-                .map(|source| semantic::ModuleSource {
-                    path: source.module_path,
-                    source: source.source,
-                })
-                .collect(),
-        );
         NameReport {
-            resolved: resolve_project(semantic),
+            resolved: resolve_project_sources(sources),
+        }
+    }
+
+    pub fn type_project(sources: Vec<ProjectSource>) -> TypeReport {
+        TypeReport {
+            typed: check_project(resolve_project_sources(sources)),
         }
     }
 
@@ -360,6 +432,19 @@ impl Compiler {
     }
 }
 
+fn resolve_project_sources(sources: Vec<ProjectSource>) -> ResolvedProject {
+    let semantic = semantic::lower_project(
+        sources
+            .into_iter()
+            .map(|source| semantic::ModuleSource {
+                path: source.module_path,
+                source: source.source,
+            })
+            .collect(),
+    );
+    resolve_project(semantic)
+}
+
 fn seal(source: Arc<SourceSnapshot>) -> Result<crate::executable::VerifiedRoot, Vec<Diagnostic>> {
     let semantic = semantic::lower(source);
     let resolved = resolve(semantic);
@@ -369,7 +454,7 @@ fn seal(source: Arc<SourceSnapshot>) -> Result<crate::executable::VerifiedRoot, 
 
 #[cfg(test)]
 mod tests {
-    use super::{Compiler, ProjectSource};
+    use super::{Compiler, GenericParameterKind, ProjectSource};
     use crate::diagnostic::{Diagnostic, DiagnosticStage};
     use crate::execution::{ExecutionConfig, ExecutionOutcome};
     use crate::source::SourceSnapshot;
@@ -817,5 +902,116 @@ mod tests {
                 reference.text() == "Money" && reference.status() == "ambiguous"
             })
         );
+    }
+
+    #[test]
+    fn callable_annotations_intern_all_three_channels_and_infer_generic_kinds() {
+        let report = Compiler::type_project(vec![module(
+            "contracts/preserve",
+            "preserve.chimi",
+            include_str!("../../../prototypes/name-resolution/cases/explicit_generics.chimi"),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report.contract("contracts/preserve", "preserve").as_deref(),
+            Some("fn(fn(A) -> A errors E needs R) -> fn(A) -> A errors E needs R")
+        );
+        assert_eq!(
+            report.generic_kind("contracts/preserve", "preserve", "A"),
+            Some(GenericParameterKind::Value)
+        );
+        assert_eq!(
+            report.generic_kind("contracts/preserve", "preserve", "E"),
+            Some(GenericParameterKind::FailureRow)
+        );
+        assert_eq!(
+            report.generic_kind("contracts/preserve", "preserve", "R"),
+            Some(GenericParameterKind::NeedsRow)
+        );
+        let stats = report.arena_stats();
+        assert!(stats.types > 1);
+        assert!(stats.failure_rows > 1);
+        assert!(stats.needs_rows > 1);
+        assert!(stats.type_facts >= 6);
+    }
+
+    #[test]
+    fn function_contract_display_keeps_failure_variants_and_named_needs() {
+        let report = Compiler::type_project(vec![module(
+            "checkout",
+            "checkout.chimi",
+            concat!(
+                "struct Money { cents: Int }\n",
+                "struct Receipt { id: Text }\n",
+                "enum PaymentError { Declined(reason: Text), GatewayUnavailable }\n",
+                "interface Payment { charge: fn(Money) -> Receipt errors PaymentError }\n",
+                "fn checkout(\n",
+                "  operation: fn(Money) -> Receipt errors PaymentError,\n",
+                "  total: Money,\n",
+                ") -> Receipt needs { payment: Payment } {\n",
+                "  payment.charge(total)\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report.contract("checkout", "checkout").as_deref(),
+            Some(
+                "fn(fn(Money) -> Receipt errors PaymentError, Money) -> Receipt needs { payment: Payment }"
+            )
+        );
+    }
+
+    #[test]
+    fn one_generic_cannot_be_both_a_value_and_failure_row() {
+        let text = concat!(
+            "fn invalid<A>(\n",
+            "  operation: fn(Int) -> Int errors A,\n",
+            "  value: A,\n",
+            ") -> Int { value }\n",
+        );
+        let report = Compiler::type_project(vec![module(
+            "contracts/invalid_kind",
+            "invalid_kind.chimi",
+            text,
+        )]);
+
+        assert_eq!(report.diagnostics().len(), 1);
+        assert_eq!(report.diagnostics()[0].stage(), DiagnosticStage::Type);
+        assert_eq!(report.diagnostics()[0].code(), "T4101");
+        assert_eq!(
+            report.generic_kind("contracts/invalid_kind", "invalid", "A"),
+            Some(GenericParameterKind::Conflicting)
+        );
+        let expected = text.find("value: A").unwrap() + "value: ".len();
+        assert_eq!(report.diagnostics()[0].range().start(), expected as u32);
+    }
+
+    #[test]
+    fn repeated_annotations_share_canonical_types() {
+        let report = Compiler::type_project(vec![module(
+            "contracts/interning",
+            "interning.chimi",
+            "fn add(left: Int, right: Int) -> Int { left }\n",
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(report.arena_stats().types, 3);
+        assert_eq!(report.arena_stats().type_facts, 3);
+    }
+
+    #[test]
+    fn unresolved_annotations_still_receive_poison_facts() {
+        let report = Compiler::type_project(vec![module(
+            "contracts/poison",
+            "poison.chimi",
+            "fn preserve(value: Missing) -> Missing { value }\n",
+        )]);
+
+        assert!(!report.is_success());
+        assert_eq!(report.arena_stats().types, 2);
+        assert_eq!(report.arena_stats().type_facts, 2);
     }
 }

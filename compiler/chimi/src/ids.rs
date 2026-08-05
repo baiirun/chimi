@@ -20,6 +20,8 @@ identifier!(ModuleId);
 identifier!(SyntaxId);
 identifier!(SemanticId);
 identifier!(SymbolId);
+identifier!(FailureRowId);
+identifier!(NeedsRowId);
 identifier!(OriginId);
 identifier!(CoreNodeId);
 
@@ -29,6 +31,10 @@ pub(crate) struct TypeId(u32);
 impl TypeId {
     pub(crate) const fn new(value: u32) -> Self {
         Self(value)
+    }
+
+    pub(crate) const fn raw(self) -> u32 {
+        self.0
     }
 }
 

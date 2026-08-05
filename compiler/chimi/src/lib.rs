@@ -13,6 +13,6 @@ mod syntax;
 mod typing;
 
 pub use compiler::{
-    CheckReport, Compiler, NameReport, ProjectPathError, ProjectSource, ReferenceInfo,
-    SymbolHandle, SymbolInfo,
+    CheckReport, Compiler, GenericParameterKind, NameReport, ProjectPathError, ProjectSource,
+    ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport,
 };

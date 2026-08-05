@@ -2,7 +2,8 @@ use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::ids::{FileId, ModuleId, SemanticId, SymbolId};
 use crate::semantic::{
     ImportBinding, ModuleBlockItem, ModuleCaseArm, ModuleDeclarationKind, ModuleExpression, Name,
-    Pattern, SemanticModule, SemanticProgram, SemanticProject, StructDeclaration, TypeUse,
+    Pattern, RequirementRowUse, RequirementTermUse, SemanticModule, SemanticProgram,
+    SemanticProject, StructDeclaration, TypeUse,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -431,13 +432,13 @@ impl ProjectResolver {
             for variant in &declaration.variants {
                 let constructor = self.add_symbol(
                     Some(module_id),
-                    Some(declaration.semantic_id),
+                    Some(variant.semantic_id),
                     Namespace::Value,
                     ProjectSymbolKind::EnumConstructor,
-                    &variant.text,
+                    &variant.name.text,
                     declaration.public,
                 );
-                self.add_to_namespace(module_index, Namespace::Value, variant, constructor);
+                self.add_to_namespace(module_index, Namespace::Value, &variant.name, constructor);
             }
         }
     }
@@ -673,34 +674,40 @@ impl ProjectResolver {
             );
             generics.insert(name.text.clone(), id);
         }
-        for type_use in &declaration.type_uses {
-            self.resolve_type(module_index, type_use, &generics);
+        for field in &declaration.fields {
+            self.resolve_type(module_index, &field.type_use, &generics);
         }
-        for row in &declaration.row_uses {
-            let resolution = generics
-                .get(&row.text)
-                .copied()
-                .map(ReferenceResolution::Resolved)
-                .unwrap_or(ReferenceResolution::Unresolved);
-            self.reference(
-                module_index,
-                declaration.semantic_id,
-                Namespace::Type,
-                row,
-                resolution,
-            );
-            if resolution == ReferenceResolution::Unresolved {
-                let module = &self.semantic.modules[module_index];
-                self.diagnostics.push(name_error(
-                    module,
-                    "E_UNRESOLVED_TYPE",
-                    row.range,
-                    format!("cannot resolve generic row {}", row.text),
-                ));
+        for variant in &declaration.variants {
+            for field in &variant.fields {
+                self.resolve_type(module_index, &field.type_use, &generics);
             }
         }
+        let mut scope = Scope::default();
+        if let Some(signature) = &declaration.function {
+            for parameter in &signature.parameters {
+                if let Some(type_use) = &parameter.type_use {
+                    self.resolve_type(module_index, type_use, &generics);
+                }
+                self.define_local(
+                    module_index,
+                    parameter.semantic_id,
+                    &parameter.name,
+                    ProjectSymbolKind::Parameter,
+                    &mut scope,
+                );
+            }
+            if let Some(success) = &signature.success {
+                self.resolve_type(module_index, success, &generics);
+            }
+            self.resolve_requirement_row(
+                module_index,
+                &signature.requirements,
+                &generics,
+                Some(&mut scope),
+            );
+        }
         if let Some(body) = &declaration.body {
-            self.resolve_expression(module_index, body, &generics, &mut Scope::default());
+            self.resolve_expression(module_index, body, &generics, &mut scope);
         }
     }
 
@@ -710,8 +717,34 @@ impl ProjectResolver {
         type_use: &TypeUse,
         generics: &HashMap<String, SymbolId>,
     ) {
-        if let Some(first) = type_use.path.first() {
-            let resolution = if type_use.path.len() == 1 {
+        let TypeUse::Named {
+            semantic_id,
+            path,
+            arguments,
+        } = type_use
+        else {
+            let TypeUse::Function {
+                inputs,
+                success,
+                failures,
+                requirements,
+                ..
+            } = type_use
+            else {
+                unreachable!()
+            };
+            for input in inputs {
+                self.resolve_type(module_index, input, generics);
+            }
+            self.resolve_type(module_index, success, generics);
+            if let Some(failures) = failures {
+                self.resolve_type(module_index, failures, generics);
+            }
+            self.resolve_requirement_row(module_index, requirements, generics, None);
+            return;
+        };
+        if let Some(first) = path.first() {
+            let resolution = if path.len() == 1 {
                 if let Some(id) = generics.get(&first.text).copied() {
                     ReferenceResolution::Resolved(id)
                 } else if self.modules[module_index]
@@ -727,18 +760,17 @@ impl ProjectResolver {
                     )
                 }
             } else {
-                self.resolve_qualified_type(module_index, type_use)
+                self.resolve_qualified_type(module_index, path)
             };
-            let display = type_use
-                .path
+            let display = path
                 .iter()
                 .map(|part| part.text.as_str())
                 .collect::<Vec<_>>()
                 .join(".");
-            let name = type_use.path.last().expect("nonempty path");
+            let name = path.last().expect("nonempty path");
             self.references.push(ProjectReference {
                 file_id: self.semantic.modules[module_index].source.file_id(),
-                semantic_id: type_use.semantic_id,
+                semantic_id: *semantic_id,
                 namespace: Namespace::Type,
                 text: display.clone(),
                 range: name.range,
@@ -770,22 +802,14 @@ impl ProjectResolver {
                 ));
             }
         }
-        for child in &type_use.children {
-            self.resolve_type(module_index, child, generics);
+        for argument in arguments {
+            self.resolve_type(module_index, argument, generics);
         }
     }
 
-    fn resolve_qualified_type(
-        &self,
-        module_index: usize,
-        type_use: &TypeUse,
-    ) -> ReferenceResolution {
-        let alias = &type_use.path[0].text;
-        let name = &type_use
-            .path
-            .last()
-            .expect("qualified type has a member")
-            .text;
+    fn resolve_qualified_type(&self, module_index: usize, path: &[Name]) -> ReferenceResolution {
+        let alias = &path[0].text;
+        let name = &path.last().expect("qualified type has a member").text;
         match self.modules[module_index].aliases.get(alias) {
             Some(AliasBinding::Ambiguous) => ReferenceResolution::Ambiguous,
             Some(AliasBinding::Module(target)) => {
@@ -793,6 +817,67 @@ impl ProjectResolver {
                 resolve_external(ids, &self.symbols)
             }
             None => ReferenceResolution::Unresolved,
+        }
+    }
+
+    fn resolve_requirement_row(
+        &mut self,
+        module_index: usize,
+        row: &RequirementRowUse,
+        generics: &HashMap<String, SymbolId>,
+        mut scope: Option<&mut Scope>,
+    ) {
+        for term in &row.terms {
+            match term {
+                RequirementTermUse::Variable { semantic_id, name } => {
+                    let resolution = generics
+                        .get(&name.text)
+                        .copied()
+                        .map(ReferenceResolution::Resolved)
+                        .unwrap_or(ReferenceResolution::Unresolved);
+                    self.reference(
+                        module_index,
+                        *semantic_id,
+                        Namespace::Type,
+                        name,
+                        resolution,
+                    );
+                    if resolution == ReferenceResolution::Unresolved {
+                        let module = &self.semantic.modules[module_index];
+                        self.diagnostics.push(name_error(
+                            module,
+                            "E_UNRESOLVED_TYPE",
+                            name.range,
+                            format!("cannot resolve generic row {}", name.text),
+                        ));
+                    }
+                }
+                RequirementTermUse::Field {
+                    semantic_id,
+                    name,
+                    interface,
+                } => {
+                    self.resolve_type(module_index, interface, generics);
+                    if let Some(scope) = scope.as_deref_mut() {
+                        self.define_local(
+                            module_index,
+                            *semantic_id,
+                            name,
+                            ProjectSymbolKind::Requirement,
+                            scope,
+                        );
+                    } else {
+                        self.add_symbol(
+                            Some(self.semantic.modules[module_index].id),
+                            Some(*semantic_id),
+                            Namespace::Value,
+                            ProjectSymbolKind::Requirement,
+                            &name.text,
+                            false,
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -863,52 +948,30 @@ impl ProjectResolver {
                 }
             }
             ModuleExpression::Function {
-                semantic_id,
-                parameters,
-                requirements,
-                type_uses,
-                row_uses,
-                body,
+                signature, body, ..
             } => {
                 let mut function = Scope::child(scope);
-                for type_use in type_uses {
-                    self.resolve_type(module_index, type_use, generics);
-                }
-                for row in row_uses {
-                    let resolution = generics
-                        .get(&row.text)
-                        .copied()
-                        .map(ReferenceResolution::Resolved)
-                        .unwrap_or(ReferenceResolution::Unresolved);
-                    self.reference(module_index, *semantic_id, Namespace::Type, row, resolution);
-                    if resolution == ReferenceResolution::Unresolved {
-                        let module = &self.semantic.modules[module_index];
-                        self.diagnostics.push(name_error(
-                            module,
-                            "E_UNRESOLVED_TYPE",
-                            row.range,
-                            format!("cannot resolve generic row {}", row.text),
-                        ));
+                for parameter in &signature.parameters {
+                    if let Some(type_use) = &parameter.type_use {
+                        self.resolve_type(module_index, type_use, generics);
                     }
-                }
-                for parameter in parameters {
                     self.define_local(
                         module_index,
-                        *semantic_id,
-                        parameter,
+                        parameter.semantic_id,
+                        &parameter.name,
                         ProjectSymbolKind::Parameter,
                         &mut function,
                     );
                 }
-                for requirement in requirements {
-                    self.define_local(
-                        module_index,
-                        *semantic_id,
-                        requirement,
-                        ProjectSymbolKind::Requirement,
-                        &mut function,
-                    );
+                if let Some(success) = &signature.success {
+                    self.resolve_type(module_index, success, generics);
                 }
+                self.resolve_requirement_row(
+                    module_index,
+                    &signature.requirements,
+                    generics,
+                    Some(&mut function),
+                );
                 self.resolve_expression(module_index, body, generics, &mut function);
             }
             ModuleExpression::Case { subjects, arms, .. } => {
