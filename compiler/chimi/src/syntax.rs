@@ -1,7 +1,13 @@
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
-use crate::ids::TextRange;
+use crate::ids::{SyntaxId, TextRange};
 use crate::source::SourceSnapshot;
 use std::sync::Arc;
+
+mod typed;
+pub(crate) use typed::{
+    DeclarationSyntax, FileSyntax, FunctionDeclarationSyntax, StructDeclarationSyntax,
+    TypedSyntaxNode,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TokenKind {
@@ -185,6 +191,7 @@ pub(crate) struct GreenNode {
     kind: NodeKind,
     children: Box<[GreenElement]>,
     text_len: u32,
+    element_count: u32,
 }
 
 impl GreenNode {
@@ -217,11 +224,19 @@ impl ParseResult {
         SyntaxNode {
             green: &self.root,
             offset: 0,
+            id: SyntaxId::new(0),
+            ancestors: Vec::new(),
         }
     }
 
     pub(crate) fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// Resolves an identity created by this parse snapshot.
+    #[allow(dead_code)]
+    pub(crate) fn element(&self, id: SyntaxId) -> Option<SyntaxElement<'_>> {
+        find_element(self.root(), id)
     }
 
     #[cfg(test)]
@@ -230,46 +245,122 @@ impl ParseResult {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct SyntaxNode<'tree> {
     green: &'tree GreenNode,
     offset: usize,
+    id: SyntaxId,
+    ancestors: Vec<SyntaxAncestor<'tree>>,
+}
+
+// These cursor frames are consumed by formatter/editor tooling in later milestones.
+// The compiler currently exercises the same cursor through typed lowering.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+struct SyntaxAncestor<'tree> {
+    green: &'tree GreenNode,
+    offset: usize,
+    id: SyntaxId,
 }
 
 impl<'tree> SyntaxNode<'tree> {
-    pub(crate) const fn kind(self) -> NodeKind {
+    pub(crate) const fn kind(&self) -> NodeKind {
         self.green.kind
     }
 
-    pub(crate) fn child_nodes(self) -> Vec<Self> {
+    #[allow(dead_code)]
+    pub(crate) const fn id(&self) -> SyntaxId {
+        self.id
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn range(&self) -> TextRange {
+        TextRange::new(self.offset, self.offset + self.green.text_len as usize)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn parent(&self) -> Option<Self> {
+        let (&parent, remaining) = self.ancestors.split_last()?;
+        Some(Self {
+            green: parent.green,
+            offset: parent.offset,
+            id: parent.id,
+            ancestors: remaining.to_vec(),
+        })
+    }
+
+    pub(crate) fn child_nodes(&self) -> Vec<Self> {
         let mut offset = self.offset;
+        let mut next_id = self.id.raw() + 1;
         let mut nodes = Vec::new();
         for child in &self.green.children {
             match child {
                 GreenElement::Node(node) => {
+                    let mut ancestors = self.ancestors.clone();
+                    ancestors.push(SyntaxAncestor {
+                        green: self.green,
+                        offset: self.offset,
+                        id: self.id,
+                    });
                     nodes.push(Self {
                         green: node,
                         offset,
+                        id: SyntaxId::new(next_id),
+                        ancestors,
                     });
                     offset += node.text_len as usize;
+                    next_id += node.element_count;
                 }
-                GreenElement::Token(token) => offset += token.text.len(),
+                GreenElement::Token(token) => {
+                    offset += token.text.len();
+                    next_id += 1;
+                }
             }
         }
         nodes
     }
 
-    pub(crate) fn descendant_tokens(self) -> Vec<SyntaxToken<'tree>> {
+    pub(crate) fn child_tokens(&self) -> Vec<SyntaxToken<'tree>> {
+        let mut offset = self.offset;
+        let mut next_id = self.id.raw() + 1;
         let mut tokens = Vec::new();
-        collect_tokens(self.green, self.offset, &mut tokens);
+        for child in &self.green.children {
+            match child {
+                GreenElement::Node(node) => {
+                    offset += node.text_len as usize;
+                    next_id += node.element_count;
+                }
+                GreenElement::Token(token) => {
+                    let end = offset + token.text.len();
+                    tokens.push(SyntaxToken {
+                        green: token,
+                        range: TextRange::new(offset, end),
+                        id: SyntaxId::new(next_id),
+                        parent: self.clone(),
+                    });
+                    offset = end;
+                    next_id += 1;
+                }
+            }
+        }
+        tokens
+    }
+
+    pub(crate) fn descendant_tokens(&self) -> Vec<SyntaxToken<'tree>> {
+        let mut tokens = Vec::new();
+        collect_tokens(self.clone(), &mut tokens);
         tokens
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct SyntaxToken<'tree> {
     green: &'tree GreenToken,
     range: TextRange,
+    #[allow(dead_code)]
+    id: SyntaxId,
+    #[allow(dead_code)]
+    parent: SyntaxNode<'tree>,
 }
 
 impl SyntaxToken<'_> {
@@ -285,29 +376,121 @@ impl SyntaxToken<'_> {
         self.range
     }
 
+    #[allow(dead_code)]
+    pub(crate) const fn id(&self) -> SyntaxId {
+        self.id
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn parent(&self) -> SyntaxNode<'_> {
+        self.parent.clone()
+    }
+
     pub(crate) const fn is_missing(&self) -> bool {
         self.green.missing
     }
 }
 
-fn collect_tokens<'tree>(
-    node: &'tree GreenNode,
-    mut offset: usize,
-    output: &mut Vec<SyntaxToken<'tree>>,
-) {
-    for child in &node.children {
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub(crate) enum SyntaxElement<'tree> {
+    Node(SyntaxNode<'tree>),
+    Token(SyntaxToken<'tree>),
+}
+
+impl SyntaxElement<'_> {
+    #[allow(dead_code)]
+    pub(crate) const fn id(&self) -> SyntaxId {
+        match self {
+            Self::Node(node) => node.id(),
+            Self::Token(token) => token.id(),
+        }
+    }
+}
+
+fn find_element<'tree>(node: SyntaxNode<'tree>, wanted: SyntaxId) -> Option<SyntaxElement<'tree>> {
+    if node.id == wanted {
+        return Some(SyntaxElement::Node(node));
+    }
+
+    let mut offset = node.offset;
+    let mut next_id = node.id.raw() + 1;
+    for child in &node.green.children {
         match child {
-            GreenElement::Node(node) => {
-                collect_tokens(node, offset, output);
-                offset += node.text_len as usize;
+            GreenElement::Node(child) => {
+                let child_id_end = next_id + child.element_count;
+                if wanted.raw() >= next_id && wanted.raw() < child_id_end {
+                    let mut ancestors = node.ancestors.clone();
+                    ancestors.push(SyntaxAncestor {
+                        green: node.green,
+                        offset: node.offset,
+                        id: node.id,
+                    });
+                    return find_element(
+                        SyntaxNode {
+                            green: child,
+                            offset,
+                            id: SyntaxId::new(next_id),
+                            ancestors,
+                        },
+                        wanted,
+                    );
+                }
+                offset += child.text_len as usize;
+                next_id = child_id_end;
+            }
+            GreenElement::Token(token) => {
+                if wanted.raw() == next_id {
+                    let end = offset + token.text.len();
+                    return Some(SyntaxElement::Token(SyntaxToken {
+                        green: token,
+                        range: TextRange::new(offset, end),
+                        id: SyntaxId::new(next_id),
+                        parent: node.clone(),
+                    }));
+                }
+                offset += token.text.len();
+                next_id += 1;
+            }
+        }
+    }
+    None
+}
+
+fn collect_tokens<'tree>(node: SyntaxNode<'tree>, output: &mut Vec<SyntaxToken<'tree>>) {
+    let mut offset = node.offset;
+    let mut next_id = node.id.raw() + 1;
+    for child in &node.green.children {
+        match child {
+            GreenElement::Node(child) => {
+                let mut ancestors = node.ancestors.clone();
+                ancestors.push(SyntaxAncestor {
+                    green: node.green,
+                    offset: node.offset,
+                    id: node.id,
+                });
+                collect_tokens(
+                    SyntaxNode {
+                        green: child,
+                        offset,
+                        id: SyntaxId::new(next_id),
+                        ancestors,
+                    },
+                    output,
+                );
+                offset += child.text_len as usize;
+                next_id += child.element_count;
             }
             GreenElement::Token(token) => {
                 let end = offset + token.text.len();
                 output.push(SyntaxToken {
                     green: token,
                     range: TextRange::new(offset, end),
+                    id: SyntaxId::new(next_id),
+                    parent: node.clone(),
                 });
                 offset = end;
+                next_id += 1;
             }
         }
     }
@@ -1551,6 +1734,7 @@ fn sink(events: &[Event], tokens: &[LexedToken]) -> Arc<GreenNode> {
         kind: NodeKind,
         children: Vec<GreenElement>,
         text_len: u32,
+        element_count: u32,
     }
 
     let mut stack: Vec<OpenNode> = Vec::new();
@@ -1562,6 +1746,7 @@ fn sink(events: &[Event], tokens: &[LexedToken]) -> Arc<GreenNode> {
                 kind,
                 children: Vec::new(),
                 text_len: 0,
+                element_count: 1,
             }),
             Event::Token(index) => {
                 let token = &tokens[index];
@@ -1578,17 +1763,24 @@ fn sink(events: &[Event], tokens: &[LexedToken]) -> Arc<GreenNode> {
                     text: token.text.clone(),
                     missing: false,
                 }));
+                open.element_count = open
+                    .element_count
+                    .checked_add(1)
+                    .expect("syntax element counts fit in u32");
             }
             Event::Missing(kind) => {
-                stack
+                let open = stack
                     .last_mut()
-                    .expect("missing tokens belong to an open node")
-                    .children
-                    .push(GreenElement::Token(GreenToken {
-                        kind,
-                        text: Arc::from(""),
-                        missing: true,
-                    }));
+                    .expect("missing tokens belong to an open node");
+                open.children.push(GreenElement::Token(GreenToken {
+                    kind,
+                    text: Arc::from(""),
+                    missing: true,
+                }));
+                open.element_count = open
+                    .element_count
+                    .checked_add(1)
+                    .expect("syntax element counts fit in u32");
             }
             Event::Finish => {
                 let open = stack.pop().expect("finish closes an open node");
@@ -1596,12 +1788,17 @@ fn sink(events: &[Event], tokens: &[LexedToken]) -> Arc<GreenNode> {
                     kind: open.kind,
                     children: open.children.into_boxed_slice(),
                     text_len: open.text_len,
+                    element_count: open.element_count,
                 });
                 if let Some(parent) = stack.last_mut() {
                     parent.text_len = parent
                         .text_len
                         .checked_add(node.text_len)
                         .expect("syntax node lengths fit in the source offset type");
+                    parent.element_count = parent
+                        .element_count
+                        .checked_add(node.element_count)
+                        .expect("syntax element counts fit in u32");
                     parent.children.push(GreenElement::Node(node));
                 } else {
                     assert!(root.replace(node).is_none(), "event stream has one root");
@@ -1615,15 +1812,40 @@ fn sink(events: &[Event], tokens: &[LexedToken]) -> Arc<GreenNode> {
 
 #[cfg(test)]
 mod tests {
-    use super::{NodeKind, SyntaxNode, parse};
+    use super::typed::{BlockExpressionSyntax, PostfixExpressionSyntax};
+    use super::{
+        DeclarationSyntax, FileSyntax, NodeKind, SyntaxElement, SyntaxNode, TypedSyntaxNode, parse,
+    };
     use crate::source::SourceSnapshot;
+    use std::collections::BTreeSet;
 
-    fn contains_node(node: SyntaxNode<'_>, kind: NodeKind) -> bool {
+    fn contains_node(node: &SyntaxNode<'_>, kind: NodeKind) -> bool {
         node.kind() == kind
             || node
                 .child_nodes()
                 .into_iter()
-                .any(|child| contains_node(child, kind))
+                .any(|child| contains_node(&child, kind))
+    }
+
+    fn find_node<'tree>(node: &SyntaxNode<'tree>, kind: NodeKind) -> Option<SyntaxNode<'tree>> {
+        if node.kind() == kind {
+            return Some(node.clone());
+        }
+        node.child_nodes()
+            .into_iter()
+            .find_map(|child| find_node(&child, kind))
+    }
+
+    fn collect_ids(node: &SyntaxNode<'_>, ids: &mut Vec<u32>) {
+        ids.push(node.id().raw());
+        ids.extend(
+            node.child_tokens()
+                .into_iter()
+                .map(|token| token.id().raw()),
+        );
+        for child in node.child_nodes() {
+            collect_ids(&child, ids);
+        }
     }
 
     #[test]
@@ -1654,6 +1876,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].range().start() as usize, source.len());
+        assert_eq!(missing[0].parent().kind(), NodeKind::BlockExpression);
     }
 
     #[test]
@@ -1881,7 +2104,130 @@ mod tests {
             NodeKind::AdditiveExpression,
             NodeKind::MultiplicativeExpression,
         ] {
-            assert!(contains_node(root, kind), "missing {kind:?}");
+            assert!(contains_node(&root, kind), "missing {kind:?}");
         }
+    }
+
+    #[test]
+    fn cursor_computes_absolute_ranges_parents_and_snapshot_ids() {
+        let source = "// λ\r\nstruct Answer {\n  value: Int\n}\n";
+        let snapshot = SourceSnapshot::from_text("cursor.chimi", source);
+        let result = parse(&snapshot);
+        let root = result.root();
+        let structure = find_node(&root, NodeKind::StructDeclaration).expect("struct node");
+        let field = find_node(&structure, NodeKind::Field).expect("field node");
+        let field_start = source.find("  value: Int").expect("field text");
+
+        assert_eq!(root.id().raw(), 0);
+        assert_eq!(root.range(), crate::ids::TextRange::new(0, source.len()));
+        assert_eq!(field.range().start() as usize, field_start);
+        assert_eq!(field.parent().expect("field parent").id(), structure.id());
+        let field_name = field
+            .child_tokens()
+            .into_iter()
+            .find(|token| token.text() == "value")
+            .expect("field name");
+        assert_eq!(
+            field_name.range().start() as usize,
+            source.find("value: Int").unwrap()
+        );
+
+        let name = structure
+            .child_tokens()
+            .into_iter()
+            .find(|token| token.text() == "Answer")
+            .expect("struct name");
+        assert_eq!(name.parent().id(), structure.id());
+        assert_eq!(
+            name.range().start() as usize,
+            source.find("Answer").unwrap()
+        );
+        assert!(matches!(
+            result.element(structure.id()),
+            Some(SyntaxElement::Node(node)) if node.id() == structure.id()
+        ));
+        assert!(matches!(
+            result.element(name.id()),
+            Some(SyntaxElement::Token(token)) if token.text() == "Answer"
+        ));
+        assert!(
+            result
+                .element(crate::ids::SyntaxId::new(u32::MAX))
+                .is_none()
+        );
+
+        let mut ids = Vec::new();
+        collect_ids(&root, &mut ids);
+        assert_eq!(
+            ids.iter().copied().collect::<BTreeSet<_>>().len(),
+            ids.len()
+        );
+    }
+
+    #[test]
+    fn snapshot_ids_are_deterministic_for_identical_parse_trees() {
+        let source = "struct Answer { value: Int }\npub fn main() { Answer(value: 42) }\n";
+        let first = parse(&SourceSnapshot::from_text("first.chimi", source));
+        let second = parse(&SourceSnapshot::from_text("second.chimi", source));
+        let mut first_ids = Vec::new();
+        let mut second_ids = Vec::new();
+        collect_ids(&first.root(), &mut first_ids);
+        collect_ids(&second.root(), &mut second_ids);
+
+        assert_eq!(first_ids, second_ids);
+    }
+
+    #[test]
+    fn typed_facade_exposes_declarations_and_expression_shapes() {
+        let source = "struct Answer { value: Int }\npub fn main() { Answer(value: 42) }\n";
+        let result = parse(&SourceSnapshot::from_text("typed.chimi", source));
+        let file = FileSyntax::cast(result.root()).expect("file root");
+        let declarations = file.declarations();
+
+        let DeclarationSyntax::Struct(structure) = &declarations[0] else {
+            panic!("first declaration should be a struct");
+        };
+        assert_eq!(
+            structure.name_token().expect("struct name").text(),
+            "Answer"
+        );
+        assert_eq!(
+            structure.fields()[0]
+                .name_token()
+                .expect("field name")
+                .text(),
+            "value"
+        );
+
+        let DeclarationSyntax::Function(function) = &declarations[1] else {
+            panic!("second declaration should be a function");
+        };
+        assert!(function.is_public());
+        assert_eq!(function.name_token().expect("function name").text(), "main");
+        let body = function.body().expect("function body");
+        assert!(BlockExpressionSyntax::cast(body.syntax().clone()).is_some());
+        let postfix = find_node(body.syntax(), NodeKind::PostfixExpression)
+            .and_then(PostfixExpressionSyntax::cast)
+            .expect("constructor call");
+        assert_eq!(postfix.call_suffixes().len(), 1);
+    }
+
+    #[test]
+    fn typed_accessors_tolerate_missing_declaration_children() {
+        let source = "struct { value: Int }\npub fn () {}\n";
+        let result = parse(&SourceSnapshot::from_text("incomplete.chimi", source));
+        let file = FileSyntax::cast(result.root()).expect("file root");
+        let declarations = file.declarations();
+
+        let DeclarationSyntax::Struct(structure) = &declarations[0] else {
+            panic!("first declaration should remain structurally available");
+        };
+        assert!(structure.name_token().is_none());
+
+        let DeclarationSyntax::Function(function) = &declarations[1] else {
+            panic!("second declaration should remain structurally available");
+        };
+        assert!(function.name_token().is_none());
+        assert!(function.body().is_some());
     }
 }

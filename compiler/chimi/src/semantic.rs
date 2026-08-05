@@ -1,7 +1,10 @@
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::ids::{SemanticId, TextRange};
 use crate::source::SourceSnapshot;
-use crate::syntax::{self, NodeKind, SyntaxNode, SyntaxToken, TokenKind};
+use crate::syntax::{
+    self, DeclarationSyntax, FileSyntax, FunctionDeclarationSyntax, StructDeclarationSyntax,
+    SyntaxNode, SyntaxToken, TokenKind, TypedSyntaxNode,
+};
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -75,38 +78,36 @@ pub(crate) struct SemanticProgram {
 pub(crate) fn lower(source: Arc<SourceSnapshot>) -> SemanticProgram {
     let parsed = syntax::parse(&source);
     let mut lowerer = Lowerer::new(&source, parsed.diagnostics().to_vec());
+    let file = FileSyntax::cast(parsed.root()).expect("the parser root is always a file");
 
-    for node in parsed.root().child_nodes() {
-        match node.kind() {
-            NodeKind::StructDeclaration if lowerer.structure.is_none() => {
-                lowerer.structure = lowerer.lower_struct(node);
+    for declaration in file.declarations() {
+        match declaration {
+            DeclarationSyntax::Struct(declaration) if lowerer.structure.is_none() => {
+                lowerer.structure = lowerer.lower_struct(&declaration);
             }
-            NodeKind::StructDeclaration => {
+            DeclarationSyntax::Struct(declaration) => {
                 lowerer.lowering_error(
-                    node,
+                    declaration.syntax(),
                     "additional struct declarations are not lowered by the executable subset",
                 );
             }
-            NodeKind::FunctionDeclaration if lowerer.functions.is_empty() => {
-                if let Some(function) = lowerer.lower_function(node) {
+            DeclarationSyntax::Function(declaration) if lowerer.functions.is_empty() => {
+                if let Some(function) = lowerer.lower_function(&declaration) {
                     lowerer.functions.push(function);
                 }
             }
-            NodeKind::FunctionDeclaration => {
+            DeclarationSyntax::Function(declaration) => {
                 lowerer.lowering_error(
-                    node,
+                    declaration.syntax(),
                     "additional function declarations are not lowered by the executable subset",
                 );
             }
-            NodeKind::ImportDeclaration
-            | NodeKind::EnumDeclaration
-            | NodeKind::InterfaceDeclaration => {
+            DeclarationSyntax::Unsupported(declaration) => {
                 lowerer.lowering_error(
-                    node,
+                    &declaration,
                     "declaration is parsed but not lowered by the executable subset",
                 );
             }
-            _ => {}
         }
     }
 
@@ -143,9 +144,25 @@ impl<'source> Lowerer<'source> {
         }
     }
 
-    fn lower_struct(&mut self, node: SyntaxNode<'_>) -> Option<StructDeclaration> {
+    fn lower_struct(
+        &mut self,
+        declaration: &StructDeclarationSyntax<'_>,
+    ) -> Option<StructDeclaration> {
+        let node = declaration.syntax();
+        let Some(name) = declaration.name_token() else {
+            self.lowering_error(node, "incomplete struct declaration cannot be lowered");
+            return None;
+        };
+        let Some(field) = declaration.fields().into_iter().next() else {
+            self.lowering_error(node, "incomplete struct declaration cannot be lowered");
+            return None;
+        };
+        let Some(field_name) = field.name_token() else {
+            self.lowering_error(node, "incomplete struct declaration cannot be lowered");
+            return None;
+        };
         let tokens = significant_tokens(node);
-        let [_, name, _, field_name, _, field_type, _] = tokens.as_slice() else {
+        let [_, _, _, _, _, field_type, _] = tokens.as_slice() else {
             self.lowering_error(node, "incomplete struct declaration cannot be lowered");
             return None;
         };
@@ -166,14 +183,26 @@ impl<'source> Lowerer<'source> {
         }
         Some(StructDeclaration {
             semantic_id: self.allocate_semantic_id(),
-            name: name_from(name),
+            name: name_from(&name),
             field_semantic_id: self.allocate_semantic_id(),
-            field_name: name_from(field_name),
+            field_name: name_from(&field_name),
             field_type: name_from(field_type),
         })
     }
 
-    fn lower_function(&mut self, node: SyntaxNode<'_>) -> Option<FunctionDeclaration> {
+    fn lower_function(
+        &mut self,
+        declaration: &FunctionDeclarationSyntax<'_>,
+    ) -> Option<FunctionDeclaration> {
+        let node = declaration.syntax();
+        let Some(function_name) = declaration.name_token() else {
+            self.lowering_error(node, "incomplete function declaration cannot be lowered");
+            return None;
+        };
+        let Some(body_syntax) = declaration.body() else {
+            self.lowering_error(node, "incomplete function declaration cannot be lowered");
+            return None;
+        };
         let tokens = significant_tokens(node);
         if tokens.len() != 13
             || !matches_kinds(
@@ -203,14 +232,13 @@ impl<'source> Lowerer<'source> {
             );
             return None;
         }
-        let function_name = name_from(&tokens[2]);
         let function_semantic_id = self.allocate_semantic_id();
-        let body = self.lower_construction(&tokens[6..12], node)?;
+        let body = self.lower_construction(&tokens[6..12], body_syntax.syntax())?;
 
         Some(FunctionDeclaration {
             semantic_id: function_semantic_id,
-            public: true,
-            name: function_name,
+            public: declaration.is_public(),
+            name: name_from(&function_name),
             body,
         })
     }
@@ -218,7 +246,7 @@ impl<'source> Lowerer<'source> {
     fn lower_construction(
         &mut self,
         tokens: &[SyntaxToken<'_>],
-        owner: SyntaxNode<'_>,
+        owner: &SyntaxNode<'_>,
     ) -> Option<Construction> {
         let [constructor, _, field_name, _, value, right_paren] = tokens else {
             self.lowering_error(
@@ -283,7 +311,7 @@ impl<'source> Lowerer<'source> {
         })
     }
 
-    fn lowering_error(&mut self, node: SyntaxNode<'_>, message: &'static str) {
+    fn lowering_error(&mut self, node: &SyntaxNode<'_>, message: &'static str) {
         if self
             .diagnostics
             .iter()
@@ -312,7 +340,7 @@ impl<'source> Lowerer<'source> {
     }
 }
 
-fn significant_tokens(node: SyntaxNode<'_>) -> Vec<SyntaxToken<'_>> {
+fn significant_tokens<'tree>(node: &SyntaxNode<'tree>) -> Vec<SyntaxToken<'tree>> {
     node.descendant_tokens()
         .into_iter()
         .filter(|token| {

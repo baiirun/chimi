@@ -63,6 +63,13 @@ compiler snapshot:
 IDs are opaque outside the module that owns their arena or table. Tools use
 query methods rather than depending on integer layout.
 
+The initial frontend assigns `SyntaxId` values in deterministic preorder within
+one immutable parse snapshot. A parse result resolves an ID back to exactly one
+green node or token, while red syntax cursors compute absolute byte ranges and
+parent navigation without putting either on immutable green elements. Raw ID
+values are not identities across files, snapshots, or edits; cross-edit reuse
+remains a measured M7 concern rather than an M2 promise.
+
 Every `SemanticId` resolves to a valid source span or an explicit synthetic
 origin tied to the nearest source construct. Missing and malformed semantic
 nodes retain identity but can never enter a verified root.
