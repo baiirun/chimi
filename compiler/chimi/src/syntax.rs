@@ -15,9 +15,15 @@ pub(crate) enum TokenKind {
     Interface,
     Pub,
     Fn,
+    Let,
+    Case,
+    If,
     Errors,
     Needs,
+    Using,
     Void,
+    True,
+    False,
     Identifier,
     Integer,
     Text,
@@ -32,9 +38,15 @@ pub(crate) enum TokenKind {
     Dot,
     Slash,
     Less,
+    LessEqual,
     Greater,
+    GreaterEqual,
     Plus,
+    Minus,
+    Star,
+    Equal,
     Arrow,
+    Pipe,
     Invalid,
     InvalidText,
     End,
@@ -54,9 +66,15 @@ impl TokenKind {
             Self::Interface => "`interface`",
             Self::Pub => "`pub`",
             Self::Fn => "`fn`",
+            Self::Let => "`let`",
+            Self::Case => "`case`",
+            Self::If => "`if`",
             Self::Errors => "`errors`",
             Self::Needs => "`needs`",
+            Self::Using => "`using`",
             Self::Void => "`Void`",
+            Self::True => "`True`",
+            Self::False => "`False`",
             Self::Identifier => "identifier",
             Self::Integer => "integer literal",
             Self::Text => "text literal",
@@ -71,9 +89,15 @@ impl TokenKind {
             Self::Dot => "`.`",
             Self::Slash => "`/`",
             Self::Less => "`<`",
+            Self::LessEqual => "`<=`",
             Self::Greater => "`>`",
+            Self::GreaterEqual => "`>=`",
             Self::Plus => "`+`",
+            Self::Minus => "`-`",
+            Self::Star => "`*`",
+            Self::Equal => "`=`",
             Self::Arrow => "`->`",
+            Self::Pipe => "`|>`",
             Self::Whitespace
             | Self::Newline
             | Self::Comment
@@ -108,7 +132,31 @@ pub(crate) enum NodeKind {
     TypeArguments,
     RequirementClause,
     RequirementRecord,
-    ConstructionExpression,
+    LetBinding,
+    UsingExpression,
+    PipelineExpression,
+    ComparisonExpression,
+    AdditiveExpression,
+    MultiplicativeExpression,
+    UnaryExpression,
+    PostfixExpression,
+    Literal,
+    NameReference,
+    GroupedExpression,
+    ListExpression,
+    RecordExpression,
+    RecordField,
+    BlockExpression,
+    BlockItem,
+    CaseExpression,
+    CaseArm,
+    Pattern,
+    FunctionExpression,
+    CallSuffix,
+    Argument,
+    MemberAccess,
+    EmptyBraceExpression,
+    ErrorIfExpression,
     Error,
 }
 
@@ -267,6 +315,7 @@ fn collect_tokens<'tree>(
 
 #[derive(Clone, Debug)]
 enum Event {
+    Tombstone,
     Start(NodeKind),
     Token(usize),
     Missing(TokenKind),
@@ -325,8 +374,20 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                 offset += 2;
                 emit(TokenKind::Arrow, start, offset, &mut tokens);
             }
+            b'|' if offset + 1 < bytes.len() && bytes[offset + 1] == b'>' => {
+                offset += 2;
+                emit(TokenKind::Pipe, start, offset, &mut tokens);
+            }
+            b'<' if offset + 1 < bytes.len() && bytes[offset + 1] == b'=' => {
+                offset += 2;
+                emit(TokenKind::LessEqual, start, offset, &mut tokens);
+            }
+            b'>' if offset + 1 < bytes.len() && bytes[offset + 1] == b'=' => {
+                offset += 2;
+                emit(TokenKind::GreaterEqual, start, offset, &mut tokens);
+            }
             b'{' | b'}' | b'(' | b')' | b'[' | b']' | b':' | b',' | b'.' | b'/' | b'<' | b'>'
-            | b'+' => {
+            | b'+' | b'-' | b'*' | b'=' => {
                 let kind = match bytes[offset] {
                     b'{' => TokenKind::LeftBrace,
                     b'}' => TokenKind::RightBrace,
@@ -341,6 +402,9 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                     b'<' => TokenKind::Less,
                     b'>' => TokenKind::Greater,
                     b'+' => TokenKind::Plus,
+                    b'-' => TokenKind::Minus,
+                    b'*' => TokenKind::Star,
+                    b'=' => TokenKind::Equal,
                     _ => unreachable!(),
                 };
                 offset += 1;
@@ -402,9 +466,15 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                     "interface" => TokenKind::Interface,
                     "pub" => TokenKind::Pub,
                     "fn" => TokenKind::Fn,
+                    "let" => TokenKind::Let,
+                    "case" => TokenKind::Case,
+                    "if" => TokenKind::If,
                     "errors" => TokenKind::Errors,
                     "needs" => TokenKind::Needs,
+                    "using" => TokenKind::Using,
                     "Void" => TokenKind::Void,
+                    "True" => TokenKind::True,
+                    "False" => TokenKind::False,
                     _ => TokenKind::Identifier,
                 };
                 emit(kind, start, offset, &mut tokens);
@@ -482,12 +552,12 @@ impl<'source> Parser<'source> {
             let before = self.position;
             match self.kind() {
                 TokenKind::Import => self.parse_import(),
-                TokenKind::Pub
-                | TokenKind::Struct
-                | TokenKind::Enum
-                | TokenKind::Interface
-                | TokenKind::Fn => self.parse_declaration(),
-                _ => self.error_and_bump("expected an import or declaration"),
+                TokenKind::Pub | TokenKind::Struct | TokenKind::Enum | TokenKind::Interface => {
+                    self.parse_declaration()
+                }
+                TokenKind::Fn if self.fn_starts_declaration() => self.parse_declaration(),
+                TokenKind::Let => self.parse_let_binding(),
+                _ => self.parse_expression(),
             }
             if self.position == before {
                 self.error_and_bump("parser made no progress at file scope");
@@ -703,7 +773,7 @@ impl<'source> Parser<'source> {
         self.parse_value_parameters();
         self.parse_implementation_contract();
         self.skip_newlines();
-        self.parse_m1_function_body();
+        self.parse_block();
         self.finish();
     }
 
@@ -859,23 +929,486 @@ impl<'source> Parser<'source> {
         self.finish();
     }
 
-    fn parse_m1_function_body(&mut self) {
-        self.expect(TokenKind::LeftBrace);
-        self.skip_newlines();
-        self.start(NodeKind::ConstructionExpression);
+    fn parse_let_binding(&mut self) {
+        self.start(NodeKind::LetBinding);
+        self.expect(TokenKind::Let);
         self.expect(TokenKind::Identifier);
-        self.expect(TokenKind::LeftParen);
-        self.expect(TokenKind::Identifier);
-        self.expect(TokenKind::Colon);
-        if matches!(self.kind(), TokenKind::Integer | TokenKind::Text) {
-            self.bump();
-        } else {
-            self.missing(TokenKind::Integer, "integer or text literal");
+        self.expect(TokenKind::Equal);
+        self.parse_expression();
+        self.finish();
+    }
+
+    fn parse_expression(&mut self) {
+        self.parse_using();
+    }
+
+    fn parse_using(&mut self) {
+        let marker = self.placeholder();
+        self.parse_pipeline();
+        let mut wrapped = false;
+        while self.accept_after_newlines(TokenKind::Using) {
+            if !wrapped {
+                self.complete(marker, NodeKind::UsingExpression);
+                wrapped = true;
+            }
+            self.skip_newlines();
+            self.parse_record();
         }
+        if wrapped {
+            self.finish();
+        }
+    }
+
+    fn parse_pipeline(&mut self) {
+        let marker = self.placeholder();
+        self.parse_comparison();
+        let mut wrapped = false;
+        while self.accept_after_newlines(TokenKind::Pipe) {
+            if !wrapped {
+                self.complete(marker, NodeKind::PipelineExpression);
+                wrapped = true;
+            }
+            if self.pipeline_right_hand_side_is_missing() {
+                self.missing(TokenKind::Identifier, "pipeline transformation");
+                break;
+            }
+            self.skip_newlines();
+            self.parse_comparison();
+        }
+        if wrapped {
+            self.finish();
+        }
+    }
+
+    fn pipeline_right_hand_side_is_missing(&self) -> bool {
+        let mut position = self.position;
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        matches!(
+            self.kind_at(position),
+            TokenKind::End
+                | TokenKind::RightBrace
+                | TokenKind::RightBracket
+                | TokenKind::RightParen
+                | TokenKind::Comma
+                | TokenKind::Pub
+                | TokenKind::Import
+                | TokenKind::Struct
+                | TokenKind::Enum
+                | TokenKind::Interface
+                | TokenKind::Fn
+                | TokenKind::Let
+        )
+    }
+
+    fn parse_comparison(&mut self) {
+        let marker = self.placeholder();
+        self.parse_additive();
+        let mut wrapped = false;
+        while self.after_any_newlines(&[
+            TokenKind::Less,
+            TokenKind::LessEqual,
+            TokenKind::Greater,
+            TokenKind::GreaterEqual,
+        ]) {
+            if !wrapped {
+                self.complete(marker, NodeKind::ComparisonExpression);
+                wrapped = true;
+            }
+            self.skip_newlines();
+            self.bump();
+            self.skip_newlines();
+            self.parse_additive();
+        }
+        if wrapped {
+            self.finish();
+        }
+    }
+
+    fn parse_additive(&mut self) {
+        let marker = self.placeholder();
+        self.parse_multiplicative();
+        let mut wrapped = false;
+        while self.after_any_newlines(&[TokenKind::Plus, TokenKind::Minus]) {
+            if !wrapped {
+                self.complete(marker, NodeKind::AdditiveExpression);
+                wrapped = true;
+            }
+            self.skip_newlines();
+            self.bump();
+            self.skip_newlines();
+            self.parse_multiplicative();
+        }
+        if wrapped {
+            self.finish();
+        }
+    }
+
+    fn parse_multiplicative(&mut self) {
+        let marker = self.placeholder();
+        self.parse_unary();
+        let mut wrapped = false;
+        while self.after_any_newlines(&[TokenKind::Star, TokenKind::Slash]) {
+            if !wrapped {
+                self.complete(marker, NodeKind::MultiplicativeExpression);
+                wrapped = true;
+            }
+            self.skip_newlines();
+            self.bump();
+            self.skip_newlines();
+            self.parse_unary();
+        }
+        if wrapped {
+            self.finish();
+        }
+    }
+
+    fn after_any_newlines(&self, kinds: &[TokenKind]) -> bool {
+        let mut position = self.position;
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        kinds.contains(&self.kind_at(position))
+    }
+
+    fn parse_unary(&mut self) {
+        let marker = self.placeholder();
+        let wrapped = if self.accept(TokenKind::Minus) {
+            self.complete(marker, NodeKind::UnaryExpression);
+            self.skip_newlines();
+            true
+        } else {
+            false
+        };
+        self.parse_postfix();
+        if wrapped {
+            self.finish();
+        }
+    }
+
+    fn parse_postfix(&mut self) {
+        let marker = self.placeholder();
+        self.parse_primary();
+        let mut wrapped = false;
+        loop {
+            if self.accept(TokenKind::Dot) {
+                if !wrapped {
+                    self.complete(marker, NodeKind::PostfixExpression);
+                    wrapped = true;
+                }
+                self.start(NodeKind::MemberAccess);
+                self.expect(TokenKind::Identifier);
+                self.finish();
+            } else if self.at(TokenKind::LeftParen) {
+                if !wrapped {
+                    self.complete(marker, NodeKind::PostfixExpression);
+                    wrapped = true;
+                }
+                self.parse_call_suffix();
+            } else {
+                break;
+            }
+        }
+        if wrapped {
+            self.finish();
+        }
+    }
+
+    fn parse_primary(&mut self) {
+        match self.kind() {
+            TokenKind::Integer | TokenKind::Text | TokenKind::True | TokenKind::False => {
+                self.start(NodeKind::Literal);
+                self.bump();
+                self.finish();
+            }
+            TokenKind::Identifier => {
+                self.start(NodeKind::NameReference);
+                self.bump();
+                self.finish();
+            }
+            TokenKind::LeftParen => {
+                self.start(NodeKind::GroupedExpression);
+                self.bump();
+                self.skip_newlines();
+                self.parse_expression();
+                self.skip_newlines();
+                self.expect(TokenKind::RightParen);
+                self.finish();
+            }
+            TokenKind::LeftBracket => self.parse_list(),
+            TokenKind::LeftBrace => self.parse_brace_expression(),
+            TokenKind::Case => self.parse_case(),
+            TokenKind::Fn => self.parse_function_expression(),
+            TokenKind::Void => self.error_and_bump("Void is a type, not a value"),
+            TokenKind::If => self.parse_unsupported_if(),
+            _ => self.missing(TokenKind::Identifier, "expression"),
+        }
+    }
+
+    fn parse_call_suffix(&mut self) {
+        self.start(NodeKind::CallSuffix);
+        self.expect(TokenKind::LeftParen);
+        self.skip_newlines();
+        if !self.at(TokenKind::RightParen) {
+            self.parse_argument();
+            while self.accept(TokenKind::Comma) {
+                self.skip_newlines();
+                if self.at(TokenKind::RightParen) {
+                    break;
+                }
+                self.parse_argument();
+            }
+        }
+        self.skip_newlines();
         self.expect(TokenKind::RightParen);
         self.finish();
+    }
+
+    fn parse_argument(&mut self) {
+        self.start(NodeKind::Argument);
+        if self.at(TokenKind::Identifier) && self.kind_at(self.position + 1) == TokenKind::Colon {
+            self.bump();
+            self.bump();
+        }
+        self.parse_expression();
+        self.finish();
+    }
+
+    fn parse_list(&mut self) {
+        self.start(NodeKind::ListExpression);
+        self.bump();
+        self.skip_newlines();
+        if !self.at(TokenKind::RightBracket) {
+            self.parse_expression();
+            while self.accept(TokenKind::Comma) {
+                self.skip_newlines();
+                if self.at(TokenKind::RightBracket) {
+                    break;
+                }
+                self.parse_expression();
+            }
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::RightBracket);
+        self.finish();
+    }
+
+    fn parse_brace_expression(&mut self) {
+        let mut position = self.position + 1;
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        if self.kind_at(position) == TokenKind::RightBrace {
+            self.start(NodeKind::EmptyBraceExpression);
+            self.bump();
+            self.skip_newlines();
+            self.error_at_current("empty braces are invalid");
+            self.bump();
+            self.finish();
+        } else if self.looks_like_record(position) {
+            self.parse_record();
+        } else {
+            self.parse_block();
+        }
+    }
+
+    fn looks_like_record(&self, position: usize) -> bool {
+        if self.kind_at(position) != TokenKind::Identifier {
+            return false;
+        }
+        if self.kind_at(position + 1) == TokenKind::Colon {
+            return true;
+        }
+        let mut scan = position + 1;
+        loop {
+            match self.kind_at(scan) {
+                TokenKind::Comma => return true,
+                TokenKind::Newline | TokenKind::RightBrace | TokenKind::End => return false,
+                _ => scan += 1,
+            }
+        }
+    }
+
+    fn parse_record(&mut self) {
+        self.start(NodeKind::RecordExpression);
+        self.expect(TokenKind::LeftBrace);
+        self.skip_newlines();
+        self.parse_record_field();
+        while self.accept(TokenKind::Comma) {
+            self.skip_newlines();
+            if self.at(TokenKind::RightBrace) {
+                break;
+            }
+            self.parse_record_field();
+        }
         self.skip_newlines();
         self.expect(TokenKind::RightBrace);
+        self.finish();
+    }
+
+    fn parse_record_field(&mut self) {
+        self.start(NodeKind::RecordField);
+        self.expect(TokenKind::Identifier);
+        self.expect(TokenKind::Colon);
+        self.parse_expression();
+        self.finish();
+    }
+
+    fn parse_block(&mut self) {
+        self.start(NodeKind::BlockExpression);
+        self.expect(TokenKind::LeftBrace);
+        self.skip_newlines();
+        if self.at(TokenKind::RightBrace) {
+            self.error_at_current("empty braces are invalid");
+            self.bump();
+            self.finish();
+            return;
+        }
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::End) {
+            let before = self.position;
+            self.start(NodeKind::BlockItem);
+            if self.at(TokenKind::Let) {
+                self.parse_let_binding();
+            } else {
+                self.parse_expression();
+            }
+            self.finish();
+            if self.position == before {
+                self.error_and_bump("parser made no progress in block");
+            }
+            if !self.at(TokenKind::RightBrace) && !self.skip_newlines() {
+                self.error_and_bump("expected a line break between block items");
+            }
+        }
+        self.expect(TokenKind::RightBrace);
+        self.finish();
+    }
+
+    fn parse_case(&mut self) {
+        self.start(NodeKind::CaseExpression);
+        self.bump();
+        self.parse_expression();
+        while self.accept(TokenKind::Comma) {
+            self.skip_newlines();
+            self.parse_expression();
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::LeftBrace);
+        self.skip_newlines();
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::End) {
+            let before = self.position;
+            self.start(NodeKind::CaseArm);
+            self.parse_pattern();
+            while self.accept(TokenKind::Comma) {
+                self.skip_newlines();
+                self.parse_pattern();
+            }
+            if self.accept(TokenKind::If) {
+                self.parse_expression();
+            }
+            self.skip_newlines();
+            self.expect(TokenKind::Arrow);
+            self.skip_newlines();
+            self.parse_expression();
+            self.finish();
+            if self.position == before {
+                self.error_and_bump("parser made no progress in case expression");
+            }
+            if !self.at(TokenKind::RightBrace) && !self.skip_newlines() {
+                self.error_and_bump("expected a line break between case arms");
+            }
+        }
+        self.expect(TokenKind::RightBrace);
+        self.finish();
+    }
+
+    fn parse_pattern(&mut self) {
+        self.start(NodeKind::Pattern);
+        match self.kind() {
+            TokenKind::Integer | TokenKind::Text | TokenKind::True | TokenKind::False => {
+                self.bump();
+            }
+            TokenKind::Identifier => {
+                self.bump();
+                if self.accept(TokenKind::LeftParen) {
+                    self.skip_newlines();
+                    if !self.at(TokenKind::RightParen) {
+                        self.parse_pattern();
+                        while self.accept(TokenKind::Comma) {
+                            self.skip_newlines();
+                            self.parse_pattern();
+                        }
+                    }
+                    self.skip_newlines();
+                    self.expect(TokenKind::RightParen);
+                }
+            }
+            _ => self.missing(TokenKind::Identifier, "pattern"),
+        }
+        self.finish();
+    }
+
+    fn parse_function_expression(&mut self) {
+        self.start(NodeKind::FunctionExpression);
+        self.bump();
+        self.skip_newlines();
+        self.parse_value_parameters();
+        self.parse_implementation_contract();
+        self.skip_newlines();
+        self.parse_block();
+        self.finish();
+    }
+
+    fn parse_unsupported_if(&mut self) {
+        self.start(NodeKind::ErrorIfExpression);
+        self.error_at_current("standalone if is not an expression; use case");
+        self.bump();
+        let mut depth = 0_u32;
+        let mut saw_brace = false;
+        while !self.at(TokenKind::End) {
+            if self.at(TokenKind::LeftBrace) {
+                saw_brace = true;
+                depth += 1;
+                self.bump();
+            } else if self.at(TokenKind::RightBrace) {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+                self.bump();
+                if saw_brace && depth == 0 {
+                    if self.at(TokenKind::Identifier) && self.current().text.as_ref() == "else" {
+                        self.bump();
+                        saw_brace = false;
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                self.bump();
+            }
+        }
+        self.finish();
+    }
+
+    fn placeholder(&mut self) -> usize {
+        let marker = self.events.len();
+        self.events.push(Event::Tombstone);
+        marker
+    }
+
+    fn complete(&mut self, marker: usize, kind: NodeKind) {
+        debug_assert!(matches!(self.events[marker], Event::Tombstone));
+        self.events[marker] = Event::Start(kind);
+    }
+
+    fn fn_starts_declaration(&self) -> bool {
+        let mut position = self.position + 1;
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        self.kind_at(position) == TokenKind::Identifier
     }
 
     fn is_top_level_start(&self) -> bool {
@@ -887,6 +1420,7 @@ impl<'source> Parser<'source> {
                 | TokenKind::Enum
                 | TokenKind::Interface
                 | TokenKind::Fn
+                | TokenKind::Let
         )
     }
 
@@ -1023,6 +1557,7 @@ fn sink(events: &[Event], tokens: &[LexedToken]) -> Arc<GreenNode> {
     let mut root = None;
     for event in events {
         match *event {
+            Event::Tombstone => {}
             Event::Start(kind) => stack.push(OpenNode {
                 kind,
                 children: Vec::new(),
@@ -1080,8 +1615,16 @@ fn sink(events: &[Event], tokens: &[LexedToken]) -> Arc<GreenNode> {
 
 #[cfg(test)]
 mod tests {
-    use super::{NodeKind, parse};
+    use super::{NodeKind, SyntaxNode, parse};
     use crate::source::SourceSnapshot;
+
+    fn contains_node(node: SyntaxNode<'_>, kind: NodeKind) -> bool {
+        node.kind() == kind
+            || node
+                .child_nodes()
+                .into_iter()
+                .any(|child| contains_node(child, kind))
+    }
 
     #[test]
     fn valid_source_round_trips_with_every_trivia_byte() {
@@ -1190,6 +1733,155 @@ mod tests {
             assert_eq!(result.round_trip(), source);
             assert_eq!(result.diagnostics().len(), 1);
             assert_eq!(result.diagnostics()[0].message(), expected_message);
+        }
+    }
+
+    #[test]
+    fn accepted_expression_corpus_round_trips_without_syntax_diagnostics() {
+        let cases = [
+            (
+                "composition.chimi",
+                include_str!("../../../prototypes/golden/valid/composition.chimi"),
+            ),
+            (
+                "dependencies-and-execution.chimi",
+                include_str!("../../../prototypes/golden/valid/dependencies_and_execution.chimi"),
+            ),
+            (
+                "expressions-and-matching.chimi",
+                include_str!("../../../prototypes/golden/valid/expressions_and_matching.chimi"),
+            ),
+            (
+                "functions-as-values.chimi",
+                include_str!("../../../prototypes/golden/valid/functions_as_values.chimi"),
+            ),
+            (
+                "values-and-variants.chimi",
+                include_str!("../../../prototypes/golden/valid/values_and_variants.chimi"),
+            ),
+            (
+                "worker-forcing-example.chimi",
+                include_str!("../../../prototypes/golden/valid/worker_forcing_example.chimi"),
+            ),
+            (
+                "money.chimi",
+                include_str!("../../../prototypes/golden/valid/modules/money.chimi"),
+            ),
+            (
+                "use-money.chimi",
+                include_str!("../../../prototypes/golden/valid/modules/use_money.chimi"),
+            ),
+        ];
+
+        for (path, source) in cases {
+            let snapshot = SourceSnapshot::from_text(path, source);
+            let result = parse(&snapshot);
+
+            assert_eq!(result.round_trip(), source, "fixture {path}");
+            assert_eq!(
+                result.diagnostics(),
+                [],
+                "fixture {path}: {:?}",
+                result.diagnostics()
+            );
+        }
+    }
+
+    #[test]
+    fn focused_expression_recovery_corpus_round_trips_and_diagnoses() {
+        let cases = [
+            (
+                "incomplete-pipeline.chimi",
+                include_str!("../../../prototypes/lossless-parser/cases/incomplete_pipeline.chimi"),
+            ),
+            (
+                "missing-closing-brace.chimi",
+                include_str!(
+                    "../../../prototypes/lossless-parser/cases/missing_closing_brace.chimi"
+                ),
+            ),
+            (
+                "missing-record-colon.chimi",
+                include_str!(
+                    "../../../prototypes/lossless-parser/cases/missing_record_colon.chimi"
+                ),
+            ),
+            (
+                "missing-record-value.chimi",
+                include_str!(
+                    "../../../prototypes/lossless-parser/cases/missing_record_value.chimi"
+                ),
+            ),
+        ];
+
+        for (path, source) in cases {
+            let snapshot = SourceSnapshot::from_text(path, source);
+            let result = parse(&snapshot);
+
+            assert_eq!(result.round_trip(), source, "fixture {path}");
+            assert!(!result.diagnostics().is_empty(), "fixture {path}");
+        }
+    }
+
+    #[test]
+    fn semantic_negative_corpus_remains_syntax_valid() {
+        let cases = [
+            include_str!("../../../prototypes/golden/invalid/ignored_value.chimi"),
+            include_str!("../../../prototypes/golden/invalid/interface_shape_mismatch.chimi"),
+            include_str!("../../../prototypes/golden/invalid/missing_dependency.chimi"),
+            include_str!("../../../prototypes/golden/invalid/non_exhaustive_case.chimi"),
+            include_str!("../../../prototypes/golden/invalid/non_exhaustive_outcome_case.chimi"),
+            include_str!("../../../prototypes/golden/invalid/observable_case_guard.chimi"),
+            include_str!("../../../prototypes/golden/invalid/private_struct_construction.chimi"),
+            include_str!("../../../prototypes/golden/invalid/private_struct_field_access.chimi"),
+        ];
+
+        for source in cases {
+            let snapshot = SourceSnapshot::from_text("semantic-negative.chimi", source);
+            let result = parse(&snapshot);
+
+            assert_eq!(result.round_trip(), source);
+            assert_eq!(result.diagnostics(), []);
+        }
+    }
+
+    #[test]
+    fn syntax_negative_corpus_round_trips_with_diagnostics() {
+        let cases = [
+            include_str!("../../../prototypes/golden/invalid/empty_braces.chimi"),
+            include_str!("../../../prototypes/golden/invalid/implicit_module_alias.chimi"),
+            include_str!("../../../prototypes/golden/invalid/standalone_if.chimi"),
+            include_str!("../../../prototypes/golden/invalid/void_value.chimi"),
+        ];
+
+        for source in cases {
+            let snapshot = SourceSnapshot::from_text("syntax-negative.chimi", source);
+            let result = parse(&snapshot);
+
+            assert_eq!(result.round_trip(), source);
+            assert!(!result.diagnostics().is_empty());
+        }
+    }
+
+    #[test]
+    fn expression_tree_preserves_precedence_and_composition_boundaries() {
+        let source = concat!(
+            "let configured = operation |> retry using { clock: system_clock }\n",
+            "let calculated = 1 + 2 * 3\n",
+        );
+        let snapshot = SourceSnapshot::from_text("precedence.chimi", source);
+        let result = parse(&snapshot);
+        let root = result.root();
+
+        assert_eq!(result.diagnostics(), []);
+        for kind in [
+            NodeKind::UsingExpression,
+            NodeKind::PipelineExpression,
+            NodeKind::RecordExpression,
+            NodeKind::AdditiveExpression,
+            NodeKind::MultiplicativeExpression,
+        ] {
+            assert!(contains_node(root, kind), "missing {kind:?}");
         }
     }
 }

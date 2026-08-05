@@ -63,6 +63,18 @@ lowering diagnostic for every parsed declaration it cannot represent, rather
 than silently dropping valid CST structure. Expression and pattern parsing is
 the next grammar slice.
 
+The third M2 slice completes the accepted expression and pattern surface with
+layered precedence parsing for unary, multiplicative, additive, comparison,
+pipeline, and `using` expressions; postfix calls and member access; lists,
+records, blocks, function values, cases, guards, and patterns. The production
+Rust frontend now matches all 20 golden syntax classifications and all four
+focused recovery fixtures from the disposable parser while preserving exact
+source bytes. CST calls remain semantically neutral: the narrow M1 lowerer
+recognizes its executable constructor shape from syntax tokens, and broader
+valid programs stop explicitly at lowering. M2 remains active for the typed
+syntax facade and cursor, stable source identity, fuzz invariants, and measured
+syntax-performance workloads.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the

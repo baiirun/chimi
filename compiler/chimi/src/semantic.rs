@@ -175,9 +175,9 @@ impl<'source> Lowerer<'source> {
 
     fn lower_function(&mut self, node: SyntaxNode<'_>) -> Option<FunctionDeclaration> {
         let tokens = significant_tokens(node);
-        if tokens.len() < 8
+        if tokens.len() != 13
             || !matches_kinds(
-                &tokens[..6],
+                &tokens[..10],
                 &[
                     TokenKind::Pub,
                     TokenKind::Fn,
@@ -185,24 +185,27 @@ impl<'source> Lowerer<'source> {
                     TokenKind::LeftParen,
                     TokenKind::RightParen,
                     TokenKind::LeftBrace,
+                    TokenKind::Identifier,
+                    TokenKind::LeftParen,
+                    TokenKind::Identifier,
+                    TokenKind::Colon,
                 ],
             )
-            || tokens.last().map(SyntaxToken::kind) != Some(TokenKind::RightBrace)
+            || !matches!(tokens[10].kind(), TokenKind::Integer | TokenKind::Text)
+            || !matches_kinds(
+                &tokens[11..],
+                &[TokenKind::RightParen, TokenKind::RightBrace],
+            )
         {
-            self.lowering_error(node, "incomplete function declaration cannot be lowered");
+            self.lowering_error(
+                node,
+                "function is parsed but not part of the executable subset",
+            );
             return None;
         }
         let function_name = name_from(&tokens[2]);
         let function_semantic_id = self.allocate_semantic_id();
-        let Some(construction_node) = node
-            .child_nodes()
-            .into_iter()
-            .find(|child| child.kind() == NodeKind::ConstructionExpression)
-        else {
-            self.lowering_error(node, "function body has no construction expression");
-            return None;
-        };
-        let body = self.lower_construction(construction_node)?;
+        let body = self.lower_construction(&tokens[6..12], node)?;
 
         Some(FunctionDeclaration {
             semantic_id: function_semantic_id,
@@ -212,10 +215,16 @@ impl<'source> Lowerer<'source> {
         })
     }
 
-    fn lower_construction(&mut self, node: SyntaxNode<'_>) -> Option<Construction> {
-        let tokens = significant_tokens(node);
-        let [constructor, _, field_name, _, value, right_paren] = tokens.as_slice() else {
-            self.lowering_error(node, "incomplete construction expression cannot be lowered");
+    fn lower_construction(
+        &mut self,
+        tokens: &[SyntaxToken<'_>],
+        owner: SyntaxNode<'_>,
+    ) -> Option<Construction> {
+        let [constructor, _, field_name, _, value, right_paren] = tokens else {
+            self.lowering_error(
+                owner,
+                "incomplete construction expression cannot be lowered",
+            );
             return None;
         };
         if !matches_kinds(
@@ -228,7 +237,7 @@ impl<'source> Lowerer<'source> {
             ],
         ) || right_paren.kind() != TokenKind::RightParen
         {
-            self.lowering_error(node, "malformed construction expression cannot be lowered");
+            self.lowering_error(owner, "malformed construction expression cannot be lowered");
             return None;
         }
         let construction_semantic_id = self.allocate_semantic_id();
@@ -257,7 +266,7 @@ impl<'source> Lowerer<'source> {
                 range: value.range(),
             },
             _ => {
-                self.lowering_error(node, "construction value is not a supported literal");
+                self.lowering_error(owner, "construction value is not a supported literal");
                 return None;
             }
         };
