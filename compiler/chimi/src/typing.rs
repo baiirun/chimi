@@ -1,12 +1,12 @@
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
-use crate::ids::{FailureRowId, ModuleId, NeedsRowId, SemanticId, SymbolId, TypeId};
+use crate::ids::{FailureRowId, ModuleId, NeedsRowId, SemanticId, SymbolId, TextRange, TypeId};
 use crate::resolution::{
     Namespace, ProjectSymbolKind, ReferenceResolution, Resolution, ResolvedProgram, ResolvedProject,
 };
 use crate::semantic::Literal;
 use crate::semantic::{
-    FunctionSignature, ModuleDeclaration, ModuleDeclarationKind, RequirementRowUse,
-    RequirementTermUse, TypeUse,
+    FunctionSignature, ModuleBlockItem, ModuleDeclaration, ModuleDeclarationKind, ModuleExpression,
+    RequirementRowUse, RequirementTermUse, TypeUse,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -151,6 +151,13 @@ pub(crate) struct FieldShape {
     pub(crate) type_id: TypeId,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ExpressionFact {
+    pub(crate) success: TypeId,
+    pub(crate) failures: FailureRowId,
+    pub(crate) needs: NeedsRowId,
+}
+
 #[derive(Debug)]
 pub(crate) struct TypedProject {
     pub(crate) resolved: Arc<ResolvedProject>,
@@ -160,9 +167,11 @@ pub(crate) struct TypedProject {
     pub(crate) contracts: HashMap<SymbolId, CallableContract>,
     pub(crate) declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
+    pub(crate) expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
     pub(crate) fields: HashMap<SymbolId, Vec<FieldShape>>,
     pub(crate) generic_kinds: HashMap<SymbolId, GenericKind>,
     pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) inference_bindings: HashMap<u32, TypeId>,
 }
 
 pub(crate) fn check_project(resolved: ResolvedProject) -> TypedProject {
@@ -225,6 +234,7 @@ impl TypedProject {
     }
 
     fn format_type(&self, id: TypeId) -> String {
+        let id = self.resolve_type_id(id);
         match &self.types[id.raw() as usize] {
             CanonicalType::Named { symbol, arguments } => {
                 let mut result = self.resolved.symbol(*symbol).name.clone();
@@ -246,6 +256,19 @@ impl TypedProject {
             CanonicalType::InferenceVariable(_) => "_".to_owned(),
             CanonicalType::Poison => "<invalid>".to_owned(),
         }
+    }
+
+    fn resolve_type_id(&self, mut id: TypeId) -> TypeId {
+        while let CanonicalType::InferenceVariable(variable) = self.types[id.raw() as usize] {
+            let Some(bound) = self.inference_bindings.get(&variable).copied() else {
+                break;
+            };
+            if bound == id {
+                break;
+            }
+            id = bound;
+        }
+        id
     }
 
     fn format_contract_result(&self, contract: &CallableContract) -> String {
@@ -393,10 +416,18 @@ struct ProjectTypeChecker {
     contracts: HashMap<SymbolId, CallableContract>,
     declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
+    expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
     fields: HashMap<SymbolId, Vec<FieldShape>>,
     generic_kinds: HashMap<SymbolId, GenericKind>,
     diagnostics: Vec<Diagnostic>,
     next_inference_variable: u32,
+    inference_bindings: HashMap<u32, TypeId>,
+}
+
+#[derive(Clone, Debug)]
+struct ValueBinding {
+    type_id: TypeId,
+    need: Option<Need>,
 }
 
 impl ProjectTypeChecker {
@@ -414,10 +445,12 @@ impl ProjectTypeChecker {
             contracts: HashMap::new(),
             declaration_types: HashMap::new(),
             type_facts: HashMap::new(),
+            expression_facts: HashMap::new(),
             fields: HashMap::new(),
             generic_kinds: HashMap::new(),
             diagnostics,
             next_inference_variable: 0,
+            inference_bindings: HashMap::new(),
         };
         checker.intern_type(CanonicalType::Poison);
         checker.intern_failure_row(FailureRow {
@@ -433,13 +466,38 @@ impl ProjectTypeChecker {
 
     fn check(mut self) -> TypedProject {
         let order = self.resolved.dependency_order.clone();
-        for module_id in order {
+        for module_id in &order {
             let declarations = self.resolved.semantic.modules[module_id.raw() as usize]
                 .declarations
                 .clone();
             for declaration in declarations {
-                self.check_declaration(module_id, &declaration);
+                self.check_declaration(*module_id, &declaration);
             }
+        }
+        let declaration_count = self
+            .resolved
+            .semantic
+            .modules
+            .iter()
+            .map(|module| module.declarations.len())
+            .sum::<usize>();
+        for pass in 0..=declaration_count {
+            let mut changed = false;
+            for module_id in &order {
+                let declarations = self.resolved.semantic.modules[module_id.raw() as usize]
+                    .declarations
+                    .clone();
+                for declaration in declarations {
+                    changed |= self.check_declaration_body(*module_id, &declaration);
+                }
+            }
+            if !changed {
+                break;
+            }
+            assert!(
+                pass < declaration_count,
+                "monotonic body-contract inference must converge within the declaration count"
+            );
         }
         TypedProject {
             resolved: self.resolved,
@@ -449,26 +507,16 @@ impl ProjectTypeChecker {
             contracts: self.contracts,
             declaration_types: self.declaration_types,
             type_facts: self.type_facts,
+            expression_facts: self.expression_facts,
             fields: self.fields,
             generic_kinds: self.generic_kinds,
             diagnostics: self.diagnostics,
+            inference_bindings: self.inference_bindings,
         }
     }
 
     fn check_declaration(&mut self, module_id: ModuleId, declaration: &ModuleDeclaration) {
-        let generic_symbols = declaration
-            .generic_parameters
-            .iter()
-            .filter_map(|name| {
-                self.find_symbol(
-                    module_id,
-                    Some(declaration.semantic_id),
-                    ProjectSymbolKind::GenericParameter,
-                    &name.text,
-                )
-                .map(|symbol| (name.text.clone(), symbol))
-            })
-            .collect::<HashMap<_, _>>();
+        let generic_symbols = self.generic_symbols(module_id, declaration);
         for symbol in generic_symbols.values() {
             self.generic_kinds
                 .insert(*symbol, GenericKind::Unconstrained);
@@ -576,6 +624,114 @@ impl ProjectTypeChecker {
         }
     }
 
+    fn check_declaration_body(
+        &mut self,
+        module_id: ModuleId,
+        declaration: &ModuleDeclaration,
+    ) -> bool {
+        let Some(body) = &declaration.body else {
+            return false;
+        };
+        let generic_symbols = self.generic_symbols(module_id, declaration);
+        match declaration.kind {
+            ModuleDeclarationKind::Function => {
+                let Some(function_symbol) = self.declaration_symbol(module_id, declaration) else {
+                    return false;
+                };
+                let signature = declaration
+                    .function
+                    .as_ref()
+                    .expect("function declaration owns a signature");
+                let Some(contract) = self.contracts.get(&function_symbol).cloned() else {
+                    return false;
+                };
+                let previous = contract.clone();
+                let mut bindings = self.signature_bindings(module_id, signature, &contract);
+                let body_fact =
+                    self.infer_expression(module_id, body, &generic_symbols, &mut bindings);
+                self.unify_expression_result(module_id, body, body_fact.success, contract.success);
+                let mut inferred = contract;
+                inferred.success = self.resolve_inference_type(inferred.success);
+                inferred.failures =
+                    self.union_failure_rows([inferred.failures, body_fact.failures]);
+                inferred.needs = self.union_needs_rows([inferred.needs, body_fact.needs]);
+                self.contracts.insert(function_symbol, inferred);
+                self.contracts[&function_symbol] != previous
+            }
+            ModuleDeclarationKind::Binding => {
+                let mut bindings = HashMap::new();
+                let fact = self.infer_expression(module_id, body, &generic_symbols, &mut bindings);
+                if let Some(symbol) = self.declaration_symbol(module_id, declaration) {
+                    let previous = self
+                        .declaration_types
+                        .insert((module_id, declaration.semantic_id), fact.success);
+                    self.contracts.remove(&symbol);
+                    previous != Some(fact.success)
+                } else {
+                    false
+                }
+            }
+            ModuleDeclarationKind::Struct
+            | ModuleDeclarationKind::Enum
+            | ModuleDeclarationKind::Interface => false,
+        }
+    }
+
+    fn generic_symbols(
+        &self,
+        module_id: ModuleId,
+        declaration: &ModuleDeclaration,
+    ) -> HashMap<String, SymbolId> {
+        declaration
+            .generic_parameters
+            .iter()
+            .filter_map(|name| {
+                self.find_symbol(
+                    module_id,
+                    Some(declaration.semantic_id),
+                    ProjectSymbolKind::GenericParameter,
+                    &name.text,
+                )
+                .map(|symbol| (name.text.clone(), symbol))
+            })
+            .collect()
+    }
+
+    fn signature_bindings(
+        &self,
+        module_id: ModuleId,
+        signature: &FunctionSignature,
+        contract: &CallableContract,
+    ) -> HashMap<SymbolId, ValueBinding> {
+        let mut bindings = HashMap::new();
+        for (parameter, type_id) in signature.parameters.iter().zip(&contract.inputs) {
+            if let Some(symbol) = self.find_symbol(
+                module_id,
+                Some(parameter.semantic_id),
+                ProjectSymbolKind::Parameter,
+                &parameter.name.text,
+            ) {
+                bindings.insert(
+                    symbol,
+                    ValueBinding {
+                        type_id: *type_id,
+                        need: None,
+                    },
+                );
+            }
+        }
+        for need in &self.needs_rows[contract.needs.raw() as usize].entries {
+            bindings.insert(
+                need.requirement,
+                ValueBinding {
+                    type_id: need.interface,
+                    need: Some(need.clone()),
+                },
+            );
+        }
+        bindings
+    }
+
     fn lower_signature(
         &mut self,
         module_id: ModuleId,
@@ -600,6 +756,286 @@ impl ProjectTypeChecker {
             success,
             failures: FailureRowId::new(0),
             needs,
+        }
+    }
+
+    fn infer_expression(
+        &mut self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        generics: &HashMap<String, SymbolId>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> ExpressionFact {
+        let fact = match expression {
+            ModuleExpression::Literal(literal) => ExpressionFact {
+                success: self.builtin_type(match literal {
+                    Literal::Integer { value, .. } => {
+                        let _ = value;
+                        "Int"
+                    }
+                    Literal::Text { value, .. } => {
+                        let _ = value;
+                        "Text"
+                    }
+                }),
+                failures: FailureRowId::new(0),
+                needs: NeedsRowId::new(0),
+            },
+            ModuleExpression::Name { semantic_id, .. } => {
+                let Some(symbol) = self.resolved_value_symbol(module_id, *semantic_id) else {
+                    return self.record_expression_fact(
+                        module_id,
+                        expression,
+                        self.poison_expression_fact(),
+                    );
+                };
+                if let Some(binding) = bindings.get(&symbol) {
+                    let needs = binding.need.as_ref().map_or(NeedsRowId::new(0), |need| {
+                        self.intern_needs_row(NeedsRow {
+                            entries: vec![need.clone()],
+                            parameters: Vec::new(),
+                        })
+                    });
+                    ExpressionFact {
+                        success: binding.type_id,
+                        failures: FailureRowId::new(0),
+                        needs,
+                    }
+                } else if let Some(contract) = self.contracts.get(&symbol).cloned() {
+                    ExpressionFact {
+                        success: self.intern_type(CanonicalType::Function(contract)),
+                        failures: FailureRowId::new(0),
+                        needs: NeedsRowId::new(0),
+                    }
+                } else if let Some(type_id) = self.symbol_value_type(symbol) {
+                    ExpressionFact {
+                        success: type_id,
+                        failures: FailureRowId::new(0),
+                        needs: NeedsRowId::new(0),
+                    }
+                } else {
+                    self.poison_expression_fact()
+                }
+            }
+            ModuleExpression::Select {
+                semantic_id,
+                receiver,
+                member,
+                ..
+            } => {
+                if let Some(symbol) = self.resolved_value_symbol(module_id, *semantic_id)
+                    && let Some(type_id) = self.symbol_value_type_or_contract(symbol)
+                {
+                    ExpressionFact {
+                        success: type_id,
+                        failures: FailureRowId::new(0),
+                        needs: NeedsRowId::new(0),
+                    }
+                } else {
+                    let receiver = self.infer_expression(module_id, receiver, generics, bindings);
+                    let success = self
+                        .field_type(receiver.success, &member.text)
+                        .unwrap_or_else(|| {
+                            if self.resolve_inference_type(receiver.success) != TypeId::new(0) {
+                                self.type_error_range(
+                                    module_id,
+                                    "T4205",
+                                    member.range,
+                                    format!("type has no field `{}`", member.text),
+                                );
+                            }
+                            TypeId::new(0)
+                        });
+                    ExpressionFact {
+                        success,
+                        failures: receiver.failures,
+                        needs: receiver.needs,
+                    }
+                }
+            }
+            ModuleExpression::Call {
+                callee,
+                arguments,
+                range,
+                ..
+            } => {
+                let callee = self.infer_expression(module_id, callee, generics, bindings);
+                let argument_facts = arguments
+                    .iter()
+                    .map(|argument| self.infer_expression(module_id, argument, generics, bindings))
+                    .collect::<Vec<_>>();
+                let callee_type = self.resolve_inference_type(callee.success);
+                let Some(CanonicalType::Function(contract)) =
+                    self.types.get(callee_type.raw() as usize).cloned()
+                else {
+                    if callee_type != TypeId::new(0) {
+                        self.type_error_range(
+                            module_id,
+                            "T4201",
+                            *range,
+                            "expression is not callable",
+                        );
+                    }
+                    return self.record_expression_fact(
+                        module_id,
+                        expression,
+                        self.poison_expression_fact(),
+                    );
+                };
+                if contract.inputs.len() != argument_facts.len() {
+                    self.type_error_range(
+                        module_id,
+                        "T4202",
+                        *range,
+                        format!(
+                            "call expects {} arguments, found {}",
+                            contract.inputs.len(),
+                            argument_facts.len()
+                        ),
+                    );
+                }
+                for (argument, expected) in argument_facts.iter().zip(&contract.inputs) {
+                    self.unify_at(
+                        module_id,
+                        *range,
+                        argument.success,
+                        *expected,
+                        "call argument",
+                    );
+                }
+                let failures = self.union_failure_rows(
+                    std::iter::once(callee.failures)
+                        .chain(argument_facts.iter().map(|fact| fact.failures))
+                        .chain(std::iter::once(contract.failures)),
+                );
+                let needs = self.union_needs_rows(
+                    std::iter::once(callee.needs)
+                        .chain(argument_facts.iter().map(|fact| fact.needs))
+                        .chain(std::iter::once(contract.needs)),
+                );
+                ExpressionFact {
+                    success: self.resolve_inference_type(contract.success),
+                    failures,
+                    needs,
+                }
+            }
+            ModuleExpression::Sequence { expressions, .. } => {
+                let facts = expressions
+                    .iter()
+                    .map(|child| self.infer_expression(module_id, child, generics, bindings))
+                    .collect::<Vec<_>>();
+                ExpressionFact {
+                    success: facts.last().map_or(TypeId::new(0), |fact| fact.success),
+                    failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
+                    needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+                }
+            }
+            ModuleExpression::Block { items, .. } => {
+                let mut block_bindings = bindings.clone();
+                let mut facts = Vec::new();
+                for item in items {
+                    match item {
+                        ModuleBlockItem::Binding { name, value } => {
+                            let value_fact = self.infer_expression(
+                                module_id,
+                                value,
+                                generics,
+                                &mut block_bindings,
+                            );
+                            if let Some(symbol) = self.find_symbol(
+                                module_id,
+                                Some(value.semantic_id()),
+                                ProjectSymbolKind::LocalBinding,
+                                &name.text,
+                            ) {
+                                block_bindings.insert(
+                                    symbol,
+                                    ValueBinding {
+                                        type_id: value_fact.success,
+                                        need: None,
+                                    },
+                                );
+                            }
+                            facts.push(value_fact);
+                        }
+                        ModuleBlockItem::Expression(value) => facts.push(self.infer_expression(
+                            module_id,
+                            value,
+                            generics,
+                            &mut block_bindings,
+                        )),
+                    }
+                }
+                ExpressionFact {
+                    success: facts.last().map_or(TypeId::new(0), |fact| fact.success),
+                    failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
+                    needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+                }
+            }
+            ModuleExpression::Function {
+                signature, body, ..
+            } => {
+                let mut contract = self.lower_signature(module_id, signature, generics);
+                let mut function_bindings = bindings.clone();
+                function_bindings.extend(self.signature_bindings(module_id, signature, &contract));
+                let body_fact =
+                    self.infer_expression(module_id, body, generics, &mut function_bindings);
+                self.unify_expression_result(module_id, body, body_fact.success, contract.success);
+                contract.success = self.resolve_inference_type(contract.success);
+                contract.failures =
+                    self.union_failure_rows([contract.failures, body_fact.failures]);
+                contract.needs = self.union_needs_rows([contract.needs, body_fact.needs]);
+                ExpressionFact {
+                    success: self.intern_type(CanonicalType::Function(contract)),
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                }
+            }
+            ModuleExpression::Case { subjects, arms, .. } => {
+                let mut facts = subjects
+                    .iter()
+                    .map(|subject| self.infer_expression(module_id, subject, generics, bindings))
+                    .collect::<Vec<_>>();
+                let mut success = None;
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        facts.push(self.infer_expression(module_id, guard, generics, bindings));
+                    }
+                    let body = self.infer_expression(module_id, &arm.body, generics, bindings);
+                    if let Some(expected) = success {
+                        self.unify_expression_result(module_id, &arm.body, body.success, expected);
+                    } else {
+                        success = Some(body.success);
+                    }
+                    facts.push(body);
+                }
+                ExpressionFact {
+                    success: success.unwrap_or(TypeId::new(0)),
+                    failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
+                    needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+                }
+            }
+            ModuleExpression::Empty { .. } => self.poison_expression_fact(),
+        };
+        self.record_expression_fact(module_id, expression, fact)
+    }
+
+    fn record_expression_fact(
+        &mut self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        fact: ExpressionFact,
+    ) -> ExpressionFact {
+        self.expression_facts
+            .insert((module_id, expression.semantic_id()), fact);
+        fact
+    }
+
+    const fn poison_expression_fact(&self) -> ExpressionFact {
+        ExpressionFact {
+            success: TypeId::new(0),
+            failures: FailureRowId::new(0),
+            needs: NeedsRowId::new(0),
         }
     }
 
@@ -803,6 +1239,234 @@ impl ProjectTypeChecker {
         })
     }
 
+    fn builtin_type(&mut self, name: &str) -> TypeId {
+        let symbol = self
+            .resolved
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.module_id.is_none()
+                    && symbol.kind == ProjectSymbolKind::BuiltinType
+                    && symbol.name == name
+            })
+            .map(|symbol| symbol.id)
+            .expect("compiler builtin type is indexed");
+        self.intern_type(CanonicalType::Named {
+            symbol,
+            arguments: Vec::new(),
+        })
+    }
+
+    fn resolved_value_symbol(
+        &self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+    ) -> Option<SymbolId> {
+        self.resolved
+            .references
+            .iter()
+            .find(|reference| {
+                reference.file_id.raw() == module_id.raw()
+                    && reference.semantic_id == semantic_id
+                    && reference.namespace == Namespace::Value
+            })
+            .and_then(|reference| match reference.resolution {
+                ReferenceResolution::Resolved(symbol) => Some(symbol),
+                ReferenceResolution::Unresolved
+                | ReferenceResolution::Ambiguous
+                | ReferenceResolution::Inaccessible(_)
+                | ReferenceResolution::DeferredToType => None,
+            })
+    }
+
+    fn symbol_value_type(&self, symbol: SymbolId) -> Option<TypeId> {
+        let symbol = self.resolved.symbol(symbol);
+        let module_id = symbol.module_id?;
+        let semantic_id = symbol.semantic_id?;
+        self.declaration_types
+            .get(&(module_id, semantic_id))
+            .copied()
+    }
+
+    fn symbol_value_type_or_contract(&mut self, symbol: SymbolId) -> Option<TypeId> {
+        if let Some(contract) = self.contracts.get(&symbol).cloned() {
+            Some(self.intern_type(CanonicalType::Function(contract)))
+        } else {
+            self.symbol_value_type(symbol)
+        }
+    }
+
+    fn field_type(&self, receiver: TypeId, member: &str) -> Option<TypeId> {
+        let receiver = self.resolve_inference_type(receiver);
+        let CanonicalType::Named { symbol, .. } = &self.types[receiver.raw() as usize] else {
+            return None;
+        };
+        self.fields
+            .get(symbol)?
+            .iter()
+            .find(|field| field.name == member)
+            .map(|field| field.type_id)
+    }
+
+    fn resolve_inference_type(&self, mut id: TypeId) -> TypeId {
+        while let CanonicalType::InferenceVariable(variable) = &self.types[id.raw() as usize] {
+            let Some(bound) = self.inference_bindings.get(variable).copied() else {
+                break;
+            };
+            if bound == id {
+                break;
+            }
+            id = bound;
+        }
+        id
+    }
+
+    fn unify_expression_result(
+        &mut self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        actual: TypeId,
+        expected: TypeId,
+    ) {
+        self.unify_at(
+            module_id,
+            expression_range(expression),
+            actual,
+            expected,
+            "function result",
+        );
+    }
+
+    fn unify_at(
+        &mut self,
+        module_id: ModuleId,
+        range: TextRange,
+        actual: TypeId,
+        expected: TypeId,
+        context: &str,
+    ) -> bool {
+        if self.unify(actual, expected) {
+            return true;
+        }
+        self.type_error_range(
+            module_id,
+            "T4203",
+            range,
+            format!("{context} has an incompatible type"),
+        );
+        false
+    }
+
+    fn unify(&mut self, left: TypeId, right: TypeId) -> bool {
+        let left = self.resolve_inference_type(left);
+        let right = self.resolve_inference_type(right);
+        if left == right || left == TypeId::new(0) || right == TypeId::new(0) {
+            return true;
+        }
+        match (
+            self.types[left.raw() as usize].clone(),
+            self.types[right.raw() as usize].clone(),
+        ) {
+            (CanonicalType::InferenceVariable(variable), _) => {
+                self.inference_bindings.insert(variable, right);
+                true
+            }
+            (_, CanonicalType::InferenceVariable(variable)) => {
+                self.inference_bindings.insert(variable, left);
+                true
+            }
+            (
+                CanonicalType::Named {
+                    symbol: left_symbol,
+                    arguments: left_arguments,
+                },
+                CanonicalType::Named {
+                    symbol: right_symbol,
+                    arguments: right_arguments,
+                },
+            ) => {
+                left_symbol == right_symbol
+                    && left_arguments.len() == right_arguments.len()
+                    && left_arguments
+                        .into_iter()
+                        .zip(right_arguments)
+                        .all(|(left, right)| self.unify(left, right))
+            }
+            (CanonicalType::Generic(left), CanonicalType::Generic(right)) => left == right,
+            (CanonicalType::Function(left), CanonicalType::Function(right)) => {
+                left.inputs.len() == right.inputs.len()
+                    && left
+                        .inputs
+                        .into_iter()
+                        .zip(right.inputs)
+                        .all(|(left, right)| self.unify(left, right))
+                    && self.unify(left.success, right.success)
+                    && self.failure_rows_equivalent(left.failures, right.failures)
+                    && self.needs_rows_equivalent(left.needs, right.needs)
+            }
+            _ => false,
+        }
+    }
+
+    fn failure_rows_equivalent(&self, left: FailureRowId, right: FailureRowId) -> bool {
+        self.failure_rows[left.raw() as usize] == self.failure_rows[right.raw() as usize]
+    }
+
+    fn needs_rows_equivalent(&self, left: NeedsRowId, right: NeedsRowId) -> bool {
+        let left = &self.needs_rows[left.raw() as usize];
+        let right = &self.needs_rows[right.raw() as usize];
+        left.parameters == right.parameters
+            && left.entries.len() == right.entries.len()
+            && left.entries.iter().all(|left_need| {
+                right.entries.iter().any(|right_need| {
+                    left_need.lexical_name == right_need.lexical_name
+                        && left_need.interface == right_need.interface
+                })
+            })
+    }
+
+    fn union_failure_rows(&mut self, rows: impl IntoIterator<Item = FailureRowId>) -> FailureRowId {
+        let mut variants = Vec::new();
+        let mut parameters = Vec::new();
+        for row in rows {
+            let row = &self.failure_rows[row.raw() as usize];
+            variants.extend(&row.variants);
+            parameters.extend(&row.parameters);
+        }
+        variants.sort_unstable();
+        variants.dedup();
+        parameters.sort_unstable();
+        parameters.dedup();
+        self.intern_failure_row(FailureRow {
+            variants,
+            parameters,
+        })
+    }
+
+    fn union_needs_rows(&mut self, rows: impl IntoIterator<Item = NeedsRowId>) -> NeedsRowId {
+        let mut entries = Vec::<Need>::new();
+        let mut parameters = Vec::new();
+        for row in rows {
+            let row = &self.needs_rows[row.raw() as usize];
+            for need in &row.entries {
+                if !entries.iter().any(|existing| {
+                    existing.lexical_name == need.lexical_name
+                        && existing.interface == need.interface
+                }) {
+                    entries.push(need.clone());
+                }
+            }
+            parameters.extend(&row.parameters);
+        }
+        entries.sort_by(|left, right| left.lexical_name.cmp(&right.lexical_name));
+        parameters.sort_unstable();
+        parameters.dedup();
+        self.intern_needs_row(NeedsRow {
+            entries,
+            parameters,
+        })
+    }
+
     fn constrain_generic(
         &mut self,
         module_id: ModuleId,
@@ -945,5 +1609,58 @@ impl ProjectTypeChecker {
             name.range,
             message,
         ));
+    }
+
+    fn type_error_range(
+        &mut self,
+        module_id: ModuleId,
+        code: &'static str,
+        range: TextRange,
+        message: impl Into<String>,
+    ) {
+        let file_id = self.resolved.semantic.modules[module_id.raw() as usize]
+            .source
+            .file_id();
+        if self.diagnostics.iter().any(|diagnostic| {
+            diagnostic.stage() == DiagnosticStage::Type
+                && diagnostic.code() == code
+                && diagnostic.file_id() == file_id
+                && diagnostic.range() == range
+        }) {
+            return;
+        }
+        self.diagnostics.push(Diagnostic::error(
+            DiagnosticStage::Type,
+            code,
+            file_id,
+            range,
+            message,
+        ));
+    }
+}
+
+fn expression_range(expression: &ModuleExpression) -> TextRange {
+    match expression {
+        ModuleExpression::Literal(literal) => literal.range(),
+        ModuleExpression::Name { name, .. } => name.range,
+        ModuleExpression::Select { range, .. } | ModuleExpression::Call { range, .. } => *range,
+        ModuleExpression::Sequence { expressions, .. } => expressions
+            .first()
+            .map_or(TextRange::empty(0), expression_range),
+        ModuleExpression::Block { items, .. } => items
+            .first()
+            .map(|item| match item {
+                ModuleBlockItem::Binding { value, .. } | ModuleBlockItem::Expression(value) => {
+                    expression_range(value)
+                }
+            })
+            .unwrap_or(TextRange::empty(0)),
+        ModuleExpression::Function { body, .. } => expression_range(body),
+        ModuleExpression::Case { subjects, arms, .. } => subjects
+            .first()
+            .map(expression_range)
+            .or_else(|| arms.first().map(|arm| expression_range(&arm.body)))
+            .unwrap_or(TextRange::empty(0)),
+        ModuleExpression::Empty { .. } => TextRange::empty(0),
     }
 }

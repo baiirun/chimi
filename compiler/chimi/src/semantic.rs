@@ -493,6 +493,7 @@ pub(crate) struct Pattern {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ModuleExpression {
+    Literal(Literal),
     Name {
         semantic_id: SemanticId,
         name: Name,
@@ -501,6 +502,12 @@ pub(crate) enum ModuleExpression {
         semantic_id: SemanticId,
         receiver: Box<Self>,
         member: Name,
+        range: TextRange,
+    },
+    Call {
+        semantic_id: SemanticId,
+        callee: Box<Self>,
+        arguments: Vec<Self>,
         range: TextRange,
     },
     Sequence {
@@ -529,8 +536,10 @@ pub(crate) enum ModuleExpression {
 impl ModuleExpression {
     pub(crate) const fn semantic_id(&self) -> SemanticId {
         match self {
+            Self::Literal(literal) => literal.semantic_id(),
             Self::Name { semantic_id, .. }
             | Self::Select { semantic_id, .. }
+            | Self::Call { semantic_id, .. }
             | Self::Sequence { semantic_id, .. }
             | Self::Block { semantic_id, .. }
             | Self::Function { semantic_id, .. }
@@ -900,6 +909,7 @@ impl ProjectLowerer {
     fn lower_expression(&mut self, node: &SyntaxNode<'_>) -> ModuleExpression {
         let semantic_id = self.allocate_semantic_id();
         match node.kind() {
+            NodeKind::Literal => self.lower_module_literal(node, semantic_id),
             NodeKind::NameReference => direct_identifier(node)
                 .map_or(ModuleExpression::Empty { semantic_id }, |name| {
                     ModuleExpression::Name { semantic_id, name }
@@ -946,13 +956,19 @@ impl ProjectLowerer {
             return ModuleExpression::Empty { semantic_id };
         };
         let mut expression = self.lower_expression(&base);
-        let mut arguments = Vec::new();
-        for suffix in children {
+        let suffixes = children.collect::<Vec<_>>();
+        let last_suffix = suffixes.len().saturating_sub(1);
+        for (index, suffix) in suffixes.into_iter().enumerate() {
+            let suffix_semantic_id = if index == last_suffix {
+                semantic_id
+            } else {
+                self.allocate_semantic_id()
+            };
             match suffix.kind() {
                 NodeKind::MemberAccess => {
                     if let Some(member) = direct_identifier(&suffix) {
                         expression = ModuleExpression::Select {
-                            semantic_id: self.allocate_semantic_id(),
+                            semantic_id: suffix_semantic_id,
                             receiver: Box::new(expression),
                             member,
                             range: significant_range(node),
@@ -960,29 +976,52 @@ impl ProjectLowerer {
                     }
                 }
                 NodeKind::CallSuffix => {
-                    arguments.extend(
-                        suffix
-                            .child_nodes()
-                            .into_iter()
-                            .filter(|argument| argument.kind() == NodeKind::Argument)
-                            .filter_map(|argument| direct_expression_child(&argument))
-                            .map(|argument| self.lower_expression(&argument)),
-                    );
+                    let arguments = suffix
+                        .child_nodes()
+                        .into_iter()
+                        .filter(|argument| argument.kind() == NodeKind::Argument)
+                        .filter_map(|argument| direct_expression_child(&argument))
+                        .map(|argument| self.lower_expression(&argument))
+                        .collect();
+                    expression = ModuleExpression::Call {
+                        semantic_id: suffix_semantic_id,
+                        callee: Box::new(expression),
+                        arguments,
+                        range: significant_range(node),
+                    };
                 }
                 _ => {}
             }
         }
-        if arguments.is_empty() {
-            expression
-        } else {
-            let mut expressions = Vec::with_capacity(arguments.len() + 1);
-            expressions.push(expression);
-            expressions.extend(arguments);
-            ModuleExpression::Sequence {
+        expression
+    }
+
+    fn lower_module_literal(
+        &mut self,
+        node: &SyntaxNode<'_>,
+        semantic_id: SemanticId,
+    ) -> ModuleExpression {
+        let Some(token) = node
+            .child_tokens()
+            .into_iter()
+            .find(|token| matches!(token.kind(), TokenKind::Integer | TokenKind::Text))
+        else {
+            return ModuleExpression::Empty { semantic_id };
+        };
+        let literal = match token.kind() {
+            TokenKind::Integer => Literal::Integer {
                 semantic_id,
-                expressions,
-            }
-        }
+                value: token.text().replace('_', "").parse().unwrap_or_default(),
+                range: token.range(),
+            },
+            TokenKind::Text => Literal::Text {
+                semantic_id,
+                value: token.text().to_owned(),
+                range: token.range(),
+            },
+            _ => unreachable!("literal token was filtered above"),
+        };
+        ModuleExpression::Literal(literal)
     }
 
     fn lower_block_item(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleBlockItem> {

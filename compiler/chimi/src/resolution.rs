@@ -889,6 +889,7 @@ impl ProjectResolver {
         scope: &mut Scope,
     ) {
         match expression {
+            ModuleExpression::Literal(_) => {}
             ModuleExpression::Name { semantic_id, name } => {
                 self.resolve_value_name(module_index, *semantic_id, name, scope);
             }
@@ -921,6 +922,14 @@ impl ProjectResolver {
                     member,
                     ReferenceResolution::DeferredToType,
                 );
+            }
+            ModuleExpression::Call {
+                callee, arguments, ..
+            } => {
+                self.resolve_expression(module_index, callee, generics, scope);
+                for argument in arguments {
+                    self.resolve_expression(module_index, argument, generics, scope);
+                }
             }
             ModuleExpression::Sequence { expressions, .. } => {
                 for child in expressions {

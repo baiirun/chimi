@@ -170,6 +170,7 @@ pub struct TypeArenaStats {
     pub needs_rows: usize,
     pub callable_contracts: usize,
     pub type_facts: usize,
+    pub expression_facts: usize,
     pub declaration_types: usize,
     pub field_shapes: usize,
 }
@@ -218,6 +219,7 @@ impl TypeReport {
             needs_rows: self.typed.needs_rows.len(),
             callable_contracts: self.typed.contracts.len(),
             type_facts: self.typed.type_facts.len(),
+            expression_facts: self.typed.expression_facts.len(),
             declaration_types: self.typed.declaration_types.len(),
             field_shapes: self.typed.fields.values().map(Vec::len).sum(),
         }
@@ -959,7 +961,7 @@ mod tests {
         assert_eq!(
             report.contract("checkout", "checkout").as_deref(),
             Some(
-                "fn(fn(Money) -> Receipt errors PaymentError, Money) -> Receipt needs { payment: Payment }"
+                "fn(fn(Money) -> Receipt errors PaymentError, Money) -> Receipt errors PaymentError needs { payment: Payment }"
             )
         );
     }
@@ -970,7 +972,7 @@ mod tests {
             "fn invalid<A>(\n",
             "  operation: fn(Int) -> Int errors A,\n",
             "  value: A,\n",
-            ") -> Int { value }\n",
+            ") -> Int { 0 }\n",
         );
         let report = Compiler::type_project(vec![module(
             "contracts/invalid_kind",
@@ -1013,5 +1015,103 @@ mod tests {
         assert!(!report.is_success());
         assert_eq!(report.arena_stats().types, 2);
         assert_eq!(report.arena_stats().type_facts, 2);
+    }
+
+    #[test]
+    fn calls_infer_failure_and_needs_channels_from_function_bodies() {
+        let report = Compiler::type_project(vec![module(
+            "lookup",
+            "lookup.chimi",
+            concat!(
+                "enum LookupError { Missing }\n",
+                "interface Store { lookup: fn(Int) -> Text errors LookupError }\n",
+                "fn load(key: Int) -> Text needs { store: Store } {\n",
+                "  store.lookup(key)\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report.contract("lookup", "load").as_deref(),
+            Some("fn(Int) -> Text errors LookupError needs { store: Store }")
+        );
+        assert!(report.arena_stats().expression_facts >= 4);
+    }
+
+    #[test]
+    fn body_results_and_call_arguments_must_match_declared_types() {
+        let text = concat!(
+            "fn takes(value: Int) -> Int { value }\n",
+            "fn wrong_result(value: Text) -> Int { value }\n",
+            "fn wrong_argument() -> Int { takes(\"not an int\") }\n",
+        );
+        let report = Compiler::type_project(vec![module(
+            "contracts/body_mismatch",
+            "body_mismatch.chimi",
+            text,
+        )]);
+
+        assert_eq!(
+            report
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            ["T4203", "T4203"]
+        );
+        assert!(
+            report
+                .diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.stage() == DiagnosticStage::Type)
+        );
+        assert_eq!(
+            report.diagnostics()[1].range().start(),
+            text.find("takes(\"not an int\")").unwrap() as u32
+        );
+    }
+
+    #[test]
+    fn callable_channels_reach_a_fixed_point_across_forward_references() {
+        let report = Compiler::type_project(vec![module(
+            "lookup/forward",
+            "forward.chimi",
+            concat!(
+                "enum LookupError { Missing }\n",
+                "interface Store { lookup: fn(Int) -> Text errors LookupError }\n",
+                "fn caller(key: Int) -> Text { load(key) }\n",
+                "fn load(key: Int) -> Text needs { store: Store } {\n",
+                "  store.lookup(key)\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report.contract("lookup/forward", "caller").as_deref(),
+            Some("fn(Int) -> Text errors LookupError needs { store: Store }")
+        );
+    }
+
+    #[test]
+    fn nested_functions_infer_inputs_from_calls_and_preserve_generic_channels() {
+        let report = Compiler::type_project(vec![module(
+            "contracts/closure",
+            "closure.chimi",
+            concat!(
+                "fn preserve<E, R>(\n",
+                "  operation: fn(Int) -> Text errors E needs R,\n",
+                ") -> fn(Int) -> Text errors E needs R {\n",
+                "  fn(value) { operation(value) }\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report.contract("contracts/closure", "preserve").as_deref(),
+            Some("fn(fn(Int) -> Text errors E needs R) -> fn(Int) -> Text errors E needs R")
+        );
     }
 }
