@@ -1,7 +1,14 @@
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/{name}.chimi", env!("CARGO_MANIFEST_DIR"))
+}
+
+fn repository_path(relative: impl AsRef<Path>) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(relative)
 }
 
 #[test]
@@ -93,4 +100,86 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "usage: chimi --version | chimi check <path> | chimi run <path>\n"
         )
     );
+}
+
+#[test]
+fn golden_and_recovery_corpus_reaches_the_real_check_path() {
+    let cases = [
+        ("prototypes/golden/valid/composition.chimi", false),
+        (
+            "prototypes/golden/valid/dependencies_and_execution.chimi",
+            false,
+        ),
+        (
+            "prototypes/golden/valid/expressions_and_matching.chimi",
+            false,
+        ),
+        ("prototypes/golden/valid/functions_as_values.chimi", false),
+        ("prototypes/golden/valid/modules/money.chimi", false),
+        ("prototypes/golden/valid/modules/use_money.chimi", false),
+        ("prototypes/golden/valid/values_and_variants.chimi", false),
+        (
+            "prototypes/golden/valid/worker_forcing_example.chimi",
+            false,
+        ),
+        ("prototypes/golden/invalid/ignored_value.chimi", false),
+        (
+            "prototypes/golden/invalid/interface_shape_mismatch.chimi",
+            false,
+        ),
+        ("prototypes/golden/invalid/missing_dependency.chimi", false),
+        ("prototypes/golden/invalid/non_exhaustive_case.chimi", false),
+        (
+            "prototypes/golden/invalid/non_exhaustive_outcome_case.chimi",
+            false,
+        ),
+        (
+            "prototypes/golden/invalid/observable_case_guard.chimi",
+            false,
+        ),
+        (
+            "prototypes/golden/invalid/private_struct_construction.chimi",
+            false,
+        ),
+        (
+            "prototypes/golden/invalid/private_struct_field_access.chimi",
+            false,
+        ),
+        ("prototypes/golden/invalid/empty_braces.chimi", true),
+        (
+            "prototypes/golden/invalid/implicit_module_alias.chimi",
+            true,
+        ),
+        ("prototypes/golden/invalid/standalone_if.chimi", true),
+        ("prototypes/golden/invalid/void_value.chimi", true),
+        (
+            "prototypes/lossless-parser/cases/incomplete_pipeline.chimi",
+            true,
+        ),
+        (
+            "prototypes/lossless-parser/cases/missing_closing_brace.chimi",
+            true,
+        ),
+        (
+            "prototypes/lossless-parser/cases/missing_record_colon.chimi",
+            true,
+        ),
+        (
+            "prototypes/lossless-parser/cases/missing_record_value.chimi",
+            true,
+        ),
+    ];
+
+    for (relative_path, expects_syntax_error) in cases {
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .args(["check", repository_path(relative_path).to_str().unwrap()])
+            .output()
+            .expect("run corpus source through chimi check");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr.contains("error[S"),
+            expects_syntax_error,
+            "fixture {relative_path}: {stderr}"
+        );
+    }
 }

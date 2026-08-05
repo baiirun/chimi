@@ -5,6 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+frontend-benchmarks = []
+
 [[bin]]
 name = "chimi"
 path = "src/main.rs"
+
+[[bench]]
+name = "frontend"
+harness = false
+required-features = ["frontend-benchmarks"]

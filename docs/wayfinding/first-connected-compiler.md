@@ -41,7 +41,7 @@ start/completion events and a successful nominal value. Missing or renamed
 `main`, unresolved constructors, and invalid field values stop sealing with
 source-mapped execution-setup, name, and type diagnostics respectively.
 
-M2 is the active frontier. It replaces M1's deliberately narrow direct parser
+M2 is complete. It replaces M1's deliberately narrow direct parser
 with the accepted lossless lexer, parser event stream, immutable green CST,
 recovery model, and deterministic semantic lowering without changing the
 downstream representation interfaces.
@@ -84,9 +84,25 @@ return optional children under recovery, and production semantic lowering now
 selects declarations and their names and bodies through that facade. The first
 wrappers are handwritten and isolated behind `syntax/typed.rs`; schema-driven
 generation should replace repetition when the facade expands. IDs deliberately
-do not claim stability across edits. M2 remains active for fuzz invariants and
-measured syntax-performance workloads, which will also determine whether the
-cursor's small ancestor-path clones need a more compact representation.
+do not claim stability across edits. This left fuzz invariants and measured
+syntax-performance workloads as the final M2 gate.
+
+The fifth M2 slice closes the frontend gate. A fixed-seed suite checks 2,048
+malformed inputs for termination, exact round-trip, valid diagnostic and syntax
+ranges, bounded diagnostic growth, parent navigation, subtree counts, and
+resolvable unique syntax identities. The real `chimi check` executable also
+classifies all 20 golden and four recovery fixtures at the syntax stage. A
+feature-gated native benchmark connects the accepted typical, large,
+malformed, editor-reparse, and retained-project workloads to the production
+parser while reporting p50/p95 latency and allocated, peak-live, and retained
+bytes separately. The [M2 baseline](../performance/frontend-m2-baseline.md)
+passes the provisional 16 ms syntax target and malformed-cost gate on the
+recorded Apple M1; it identifies allocation and retained CST size as future
+optimization targets without justifying a representation change now.
+
+M3 is the next frontier: replace the narrow executable-subset lowerer with the
+complete module, name, and declared-generic semantic representation while
+preserving the now-measured syntax seam.
 
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides

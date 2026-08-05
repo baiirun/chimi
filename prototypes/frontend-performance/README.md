@@ -11,10 +11,11 @@ interactive tooling before the real lossless parser and semantic pipeline are
 built?
 
 The prototype generates complete Chimi project snapshots and representative
-single edits in memory. It does not time the current Python grammar recognizer:
-those numbers would measure the throwaway host rather than Chimi's intended
-frontend architecture. The next parser prototype should implement an adapter
-that runs these same cases and emits the result shape shown here.
+single edits in memory. It does not time the Python grammar recognizer because
+those numbers would measure the throwaway host. The production Rust frontend
+now implements the syntax and recovery workloads through the feature-gated
+`frontend` benchmark; its accepted M2 baseline is recorded in
+`docs/performance/frontend-m2-baseline.md`.
 
 ## Run
 
@@ -88,3 +89,15 @@ mode, operating system, architecture, CPU, core count, and memory.
 `model.py` contains the pure workload definitions, deterministic source
 generator, edit application, and result template. `main.py` is only the
 throwaway terminal browser.
+
+## Run the native frontend benchmark
+
+```sh
+cargo bench --bench frontend --features frontend-benchmarks -- \
+  --warmups 5 --samples 40
+```
+
+The native runner emits JSON Lines. It validates lossless, range, parent, and
+syntax-identity invariants outside the timed samples. Its counting allocator
+reports requested allocation bytes, peak live bytes, and retained parse bytes
+separately; peak RSS remains explicitly unavailable rather than estimated.
