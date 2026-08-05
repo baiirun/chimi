@@ -16,6 +16,7 @@ macro_rules! identifier {
 }
 
 identifier!(FileId);
+identifier!(ModuleId);
 identifier!(SyntaxId);
 identifier!(SemanticId);
 identifier!(SymbolId);

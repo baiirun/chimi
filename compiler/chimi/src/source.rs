@@ -37,4 +37,8 @@ impl SourceSnapshot {
     pub(crate) const fn file_id(&self) -> FileId {
         self.file_id
     }
+
+    pub(crate) fn assign_file_id(&mut self, file_id: FileId) {
+        self.file_id = file_id;
+    }
 }

@@ -75,6 +75,10 @@ impl Diagnostic {
         self.range
     }
 
+    pub(crate) const fn file_id(&self) -> FileId {
+        self.file_id
+    }
+
     pub fn message(&self) -> &str {
         &self.message
     }

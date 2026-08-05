@@ -100,9 +100,23 @@ passes the provisional 16 ms syntax target and malformed-cost gate on the
 recorded Apple M1; it identifies allocation and retained CST size as future
 optimization targets without justifying a representation change now.
 
-M3 is the next frontier: replace the narrow executable-subset lowerer with the
-complete module, name, and declared-generic semantic representation while
-preserving the now-measured syntax seam.
+M3 is complete. `Compiler::resolve_project` accepts validated workspace-relative
+module paths, assigns deterministic file/module/symbol identities, lowers the
+complete declaration and expression shapes needed by name resolution, and
+orders modules dependency-first. Resolution keeps module, type, and value
+namespaces separate; enforces explicit aliases and type/constructor member
+imports; preserves private struct representation; binds lexical values,
+requirements, patterns, and declared generics; and retains unresolved,
+ambiguous, inaccessible, and type-deferred reference facts for tooling. The ten
+prototype resolution scenarios now run through the Rust parser, lowerer, and
+resolver in one process, with additional regression coverage for deterministic
+qualified origins, diagnostic spans, nested function scopes, guards, record
+values, and conflicting member imports. The narrow M1 executable adapter remains
+intact until M4 supplies the full typed-program handoff.
+
+M4 is the next frontier: attach canonical types and callable success, failure,
+and dependency-needs channels to the resolved project without rewriting its
+semantic or symbol identity.
 
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides

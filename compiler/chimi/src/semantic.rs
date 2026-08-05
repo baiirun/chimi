@@ -1,9 +1,9 @@
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
-use crate::ids::{SemanticId, TextRange};
+use crate::ids::{FileId, ModuleId, SemanticId, TextRange};
 use crate::source::SourceSnapshot;
 use crate::syntax::{
-    self, DeclarationSyntax, FileSyntax, FunctionDeclarationSyntax, StructDeclarationSyntax,
-    SyntaxNode, SyntaxToken, TokenKind, TypedSyntaxNode,
+    self, DeclarationSyntax, FileSyntax, FunctionDeclarationSyntax, NodeKind,
+    StructDeclarationSyntax, SyntaxNode, SyntaxToken, TokenKind, TypedSyntaxNode,
 };
 use std::sync::Arc;
 
@@ -369,4 +369,674 @@ fn name_from(token: &SyntaxToken<'_>) -> Name {
         text: token.text().to_owned(),
         range: token.range(),
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct ModuleSource {
+    pub(crate) path: String,
+    pub(crate) source: SourceSnapshot,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ModuleImport {
+    pub(crate) path: String,
+    pub(crate) binding: ImportBinding,
+    pub(crate) range: TextRange,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ImportBinding {
+    Alias(Name),
+    Members(Vec<Name>),
+    Missing,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ModuleDeclarationKind {
+    Struct,
+    Enum,
+    Interface,
+    Function,
+    Binding,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ModuleDeclaration {
+    pub(crate) semantic_id: SemanticId,
+    pub(crate) kind: ModuleDeclarationKind,
+    pub(crate) public: bool,
+    pub(crate) name: Name,
+    pub(crate) generic_parameters: Vec<Name>,
+    pub(crate) variants: Vec<Name>,
+    pub(crate) type_uses: Vec<TypeUse>,
+    pub(crate) row_uses: Vec<Name>,
+    pub(crate) body: Option<ModuleExpression>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TypeUse {
+    pub(crate) semantic_id: SemanticId,
+    pub(crate) path: Vec<Name>,
+    pub(crate) children: Vec<TypeUse>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Pattern {
+    pub(crate) semantic_id: SemanticId,
+    pub(crate) name: Option<Name>,
+    pub(crate) applied: bool,
+    pub(crate) arguments: Vec<Pattern>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ModuleExpression {
+    Name {
+        semantic_id: SemanticId,
+        name: Name,
+    },
+    Select {
+        semantic_id: SemanticId,
+        receiver: Box<Self>,
+        member: Name,
+        range: TextRange,
+    },
+    Sequence {
+        semantic_id: SemanticId,
+        expressions: Vec<Self>,
+    },
+    Block {
+        semantic_id: SemanticId,
+        items: Vec<ModuleBlockItem>,
+    },
+    Function {
+        semantic_id: SemanticId,
+        parameters: Vec<Name>,
+        requirements: Vec<Name>,
+        type_uses: Vec<TypeUse>,
+        row_uses: Vec<Name>,
+        body: Box<Self>,
+    },
+    Case {
+        semantic_id: SemanticId,
+        subjects: Vec<Self>,
+        arms: Vec<ModuleCaseArm>,
+    },
+    Empty {
+        semantic_id: SemanticId,
+    },
+}
+
+impl ModuleExpression {
+    pub(crate) const fn semantic_id(&self) -> SemanticId {
+        match self {
+            Self::Name { semantic_id, .. }
+            | Self::Select { semantic_id, .. }
+            | Self::Sequence { semantic_id, .. }
+            | Self::Block { semantic_id, .. }
+            | Self::Function { semantic_id, .. }
+            | Self::Case { semantic_id, .. }
+            | Self::Empty { semantic_id } => *semantic_id,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ModuleBlockItem {
+    Binding { name: Name, value: ModuleExpression },
+    Expression(ModuleExpression),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ModuleCaseArm {
+    pub(crate) patterns: Vec<Pattern>,
+    pub(crate) guard: Option<ModuleExpression>,
+    pub(crate) body: ModuleExpression,
+}
+
+#[derive(Debug)]
+pub(crate) struct SemanticModule {
+    pub(crate) id: ModuleId,
+    pub(crate) path: String,
+    pub(crate) source: Arc<SourceSnapshot>,
+    pub(crate) imports: Vec<ModuleImport>,
+    pub(crate) declarations: Vec<ModuleDeclaration>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug)]
+pub(crate) struct SemanticProject {
+    pub(crate) modules: Vec<SemanticModule>,
+}
+
+pub(crate) fn lower_project(mut inputs: Vec<ModuleSource>) -> SemanticProject {
+    inputs.sort_by(|left, right| left.path.cmp(&right.path));
+    let modules = inputs
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut input)| {
+            input.source.assign_file_id(FileId::new(index as u32));
+            ProjectLowerer::lower(ModuleId::new(index as u32), input.path, input.source)
+        })
+        .collect();
+    SemanticProject { modules }
+}
+
+struct ProjectLowerer {
+    next_semantic_id: u32,
+}
+
+impl ProjectLowerer {
+    fn lower(id: ModuleId, path: String, source: SourceSnapshot) -> SemanticModule {
+        let source = Arc::new(source);
+        let parsed = syntax::parse(&source);
+        let root = parsed.root();
+        let mut lowerer = Self {
+            next_semantic_id: 0,
+        };
+        let mut imports = Vec::new();
+        let mut declarations = Vec::new();
+        for node in root.child_nodes() {
+            match node.kind() {
+                NodeKind::ImportDeclaration => imports.push(lowerer.lower_import(&node)),
+                NodeKind::StructDeclaration
+                | NodeKind::EnumDeclaration
+                | NodeKind::InterfaceDeclaration
+                | NodeKind::FunctionDeclaration => {
+                    if let Some(declaration) = lowerer.lower_module_declaration(&node) {
+                        declarations.push(declaration);
+                    }
+                }
+                NodeKind::LetBinding => {
+                    if let Some(declaration) = lowerer.lower_module_binding(&node) {
+                        declarations.push(declaration);
+                    }
+                }
+                _ => {}
+            }
+        }
+        SemanticModule {
+            id,
+            path,
+            source,
+            imports,
+            declarations,
+            diagnostics: parsed.diagnostics().to_vec(),
+        }
+    }
+
+    fn lower_import(&mut self, node: &SyntaxNode<'_>) -> ModuleImport {
+        let path = node
+            .child_tokens()
+            .into_iter()
+            .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+            .map(|token| token.text().to_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let binding = node
+            .child_nodes()
+            .into_iter()
+            .find_map(|child| match child.kind() {
+                NodeKind::ImportAlias => direct_identifier(&child).map(ImportBinding::Alias),
+                NodeKind::ImportMembers => Some(ImportBinding::Members(
+                    child
+                        .child_nodes()
+                        .into_iter()
+                        .filter(|member| member.kind() == NodeKind::ImportMember)
+                        .filter_map(|member| direct_identifier(&member))
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .unwrap_or(ImportBinding::Missing);
+        ModuleImport {
+            path,
+            binding,
+            range: significant_range(node),
+        }
+    }
+
+    fn lower_module_declaration(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleDeclaration> {
+        let (kind, keyword) = match node.kind() {
+            NodeKind::StructDeclaration => (ModuleDeclarationKind::Struct, TokenKind::Struct),
+            NodeKind::EnumDeclaration => (ModuleDeclarationKind::Enum, TokenKind::Enum),
+            NodeKind::InterfaceDeclaration => {
+                (ModuleDeclarationKind::Interface, TokenKind::Interface)
+            }
+            NodeKind::FunctionDeclaration => (ModuleDeclarationKind::Function, TokenKind::Fn),
+            _ => return None,
+        };
+        let name = direct_token_after(node, keyword, TokenKind::Identifier)
+            .map(|token| name_from(&token))?;
+        let generic_parameters = direct_child(node, NodeKind::GenericParameters)
+            .map(|generics| {
+                generics
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|parameter| parameter.kind() == NodeKind::GenericParameter)
+                    .filter_map(|parameter| direct_identifier(&parameter))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let variants = node
+            .child_nodes()
+            .into_iter()
+            .filter(|child| child.kind() == NodeKind::Variant)
+            .filter_map(|variant| direct_identifier(&variant))
+            .collect();
+        let type_uses = collect_outer_type_nodes(node)
+            .into_iter()
+            .map(|type_node| self.lower_type(&type_node))
+            .collect();
+        let row_uses = collect_nodes(node, NodeKind::RequirementClause)
+            .into_iter()
+            .flat_map(|clause| {
+                clause
+                    .child_tokens()
+                    .into_iter()
+                    .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+                    .map(|token| name_from(&token))
+            })
+            .collect();
+        let body = if kind == ModuleDeclarationKind::Function {
+            direct_child(node, NodeKind::BlockExpression).map(|body| {
+                let parameters = direct_child(node, NodeKind::ValueParameters)
+                    .map(|parameters| parameter_names(&parameters))
+                    .unwrap_or_default();
+                let requirements = direct_child(node, NodeKind::ImplementationContract)
+                    .map(|contract| requirement_names(&contract))
+                    .unwrap_or_default();
+                ModuleExpression::Function {
+                    semantic_id: self.allocate_semantic_id(),
+                    parameters,
+                    requirements,
+                    type_uses: Vec::new(),
+                    row_uses: Vec::new(),
+                    body: Box::new(self.lower_expression(&body)),
+                }
+            })
+        } else {
+            None
+        };
+        Some(ModuleDeclaration {
+            semantic_id: self.allocate_semantic_id(),
+            kind,
+            public: node
+                .child_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::Pub),
+            name,
+            generic_parameters,
+            variants,
+            type_uses,
+            row_uses,
+            body,
+        })
+    }
+
+    fn lower_module_binding(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleDeclaration> {
+        let name = direct_identifier(node)?;
+        let body = direct_expression_child(node).map(|value| self.lower_expression(&value));
+        Some(ModuleDeclaration {
+            semantic_id: self.allocate_semantic_id(),
+            kind: ModuleDeclarationKind::Binding,
+            public: false,
+            name,
+            generic_parameters: Vec::new(),
+            variants: Vec::new(),
+            type_uses: Vec::new(),
+            row_uses: Vec::new(),
+            body,
+        })
+    }
+
+    fn lower_type(&mut self, node: &SyntaxNode<'_>) -> TypeUse {
+        let path = node
+            .child_tokens()
+            .into_iter()
+            .filter(|token| {
+                matches!(token.kind(), TokenKind::Identifier | TokenKind::Void)
+                    && !token.is_missing()
+            })
+            .map(|token| name_from(&token))
+            .collect();
+        let children = collect_outer_type_nodes(node)
+            .into_iter()
+            .map(|child| self.lower_type(&child))
+            .collect();
+        TypeUse {
+            semantic_id: self.allocate_semantic_id(),
+            path,
+            children,
+        }
+    }
+
+    fn lower_expression(&mut self, node: &SyntaxNode<'_>) -> ModuleExpression {
+        let semantic_id = self.allocate_semantic_id();
+        match node.kind() {
+            NodeKind::NameReference => direct_identifier(node)
+                .map_or(ModuleExpression::Empty { semantic_id }, |name| {
+                    ModuleExpression::Name { semantic_id, name }
+                }),
+            NodeKind::PostfixExpression => self.lower_postfix(node, semantic_id),
+            NodeKind::BlockExpression => ModuleExpression::Block {
+                semantic_id,
+                items: node
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|child| child.kind() == NodeKind::BlockItem)
+                    .filter_map(|item| self.lower_block_item(&item))
+                    .collect(),
+            },
+            NodeKind::FunctionExpression => {
+                let parameters = direct_child(node, NodeKind::ValueParameters)
+                    .map(|parameters| parameter_names(&parameters))
+                    .unwrap_or_default();
+                let requirements = direct_child(node, NodeKind::ImplementationContract)
+                    .map(|contract| requirement_names(&contract))
+                    .unwrap_or_default();
+                let type_uses = collect_outer_type_nodes(node)
+                    .into_iter()
+                    .map(|type_node| self.lower_type(&type_node))
+                    .collect();
+                let row_uses = collect_nodes(node, NodeKind::RequirementClause)
+                    .into_iter()
+                    .flat_map(|clause| {
+                        clause
+                            .child_tokens()
+                            .into_iter()
+                            .filter(|token| {
+                                token.kind() == TokenKind::Identifier && !token.is_missing()
+                            })
+                            .map(|token| name_from(&token))
+                    })
+                    .collect();
+                let body = direct_child(node, NodeKind::BlockExpression)
+                    .map(|body| self.lower_expression(&body))
+                    .unwrap_or(ModuleExpression::Empty { semantic_id });
+                ModuleExpression::Function {
+                    semantic_id,
+                    parameters,
+                    requirements,
+                    type_uses,
+                    row_uses,
+                    body: Box::new(body),
+                }
+            }
+            NodeKind::CaseExpression => self.lower_case(node, semantic_id),
+            _ => ModuleExpression::Sequence {
+                semantic_id,
+                expressions: contained_expression_children(node)
+                    .into_iter()
+                    .map(|child| self.lower_expression(&child))
+                    .collect(),
+            },
+        }
+    }
+
+    fn lower_postfix(
+        &mut self,
+        node: &SyntaxNode<'_>,
+        semantic_id: SemanticId,
+    ) -> ModuleExpression {
+        let mut children = node.child_nodes().into_iter();
+        let Some(base) = children.next() else {
+            return ModuleExpression::Empty { semantic_id };
+        };
+        let mut expression = self.lower_expression(&base);
+        let mut arguments = Vec::new();
+        for suffix in children {
+            match suffix.kind() {
+                NodeKind::MemberAccess => {
+                    if let Some(member) = direct_identifier(&suffix) {
+                        expression = ModuleExpression::Select {
+                            semantic_id: self.allocate_semantic_id(),
+                            receiver: Box::new(expression),
+                            member,
+                            range: significant_range(node),
+                        };
+                    }
+                }
+                NodeKind::CallSuffix => {
+                    arguments.extend(
+                        suffix
+                            .child_nodes()
+                            .into_iter()
+                            .filter(|argument| argument.kind() == NodeKind::Argument)
+                            .filter_map(|argument| direct_expression_child(&argument))
+                            .map(|argument| self.lower_expression(&argument)),
+                    );
+                }
+                _ => {}
+            }
+        }
+        if arguments.is_empty() {
+            expression
+        } else {
+            let mut expressions = Vec::with_capacity(arguments.len() + 1);
+            expressions.push(expression);
+            expressions.extend(arguments);
+            ModuleExpression::Sequence {
+                semantic_id,
+                expressions,
+            }
+        }
+    }
+
+    fn lower_block_item(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleBlockItem> {
+        let child = node.child_nodes().into_iter().next()?;
+        if child.kind() == NodeKind::LetBinding {
+            let name = direct_identifier(&child)?;
+            let value = direct_expression_child(&child)
+                .map(|value| self.lower_expression(&value))
+                .unwrap_or(ModuleExpression::Empty {
+                    semantic_id: self.allocate_semantic_id(),
+                });
+            Some(ModuleBlockItem::Binding { name, value })
+        } else {
+            Some(ModuleBlockItem::Expression(self.lower_expression(&child)))
+        }
+    }
+
+    fn lower_case(&mut self, node: &SyntaxNode<'_>, semantic_id: SemanticId) -> ModuleExpression {
+        let subjects = direct_expression_children(node)
+            .into_iter()
+            .map(|subject| self.lower_expression(&subject))
+            .collect();
+        let arms = node
+            .child_nodes()
+            .into_iter()
+            .filter(|child| child.kind() == NodeKind::CaseArm)
+            .map(|arm| {
+                let patterns = arm
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|child| child.kind() == NodeKind::Pattern)
+                    .map(|pattern| self.lower_pattern(&pattern))
+                    .collect();
+                let mut arm_expressions = direct_expression_children(&arm);
+                let body = arm_expressions
+                    .pop()
+                    .map(|body| self.lower_expression(&body))
+                    .unwrap_or(ModuleExpression::Empty {
+                        semantic_id: self.allocate_semantic_id(),
+                    });
+                let guard = arm_expressions
+                    .pop()
+                    .map(|guard| self.lower_expression(&guard));
+                ModuleCaseArm {
+                    patterns,
+                    guard,
+                    body,
+                }
+            })
+            .collect();
+        ModuleExpression::Case {
+            semantic_id,
+            subjects,
+            arms,
+        }
+    }
+
+    fn lower_pattern(&mut self, node: &SyntaxNode<'_>) -> Pattern {
+        let arguments = node
+            .child_nodes()
+            .into_iter()
+            .filter(|child| child.kind() == NodeKind::Pattern)
+            .map(|child| self.lower_pattern(&child))
+            .collect();
+        Pattern {
+            semantic_id: self.allocate_semantic_id(),
+            name: direct_identifier(node),
+            applied: node
+                .child_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::LeftParen),
+            arguments,
+        }
+    }
+
+    fn allocate_semantic_id(&mut self) -> SemanticId {
+        let id = SemanticId::new(self.next_semantic_id);
+        self.next_semantic_id += 1;
+        id
+    }
+}
+
+fn direct_child<'tree>(node: &SyntaxNode<'tree>, kind: NodeKind) -> Option<SyntaxNode<'tree>> {
+    node.child_nodes()
+        .into_iter()
+        .find(|child| child.kind() == kind)
+}
+
+fn direct_identifier(node: &SyntaxNode<'_>) -> Option<Name> {
+    node.child_tokens()
+        .into_iter()
+        .find(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+        .map(|token| name_from(&token))
+}
+
+fn direct_token_after<'tree>(
+    node: &SyntaxNode<'tree>,
+    preceding: TokenKind,
+    wanted: TokenKind,
+) -> Option<SyntaxToken<'tree>> {
+    let mut saw_preceding = false;
+    node.child_tokens().into_iter().find(|token| {
+        if token.kind() == preceding {
+            saw_preceding = true;
+            return false;
+        }
+        saw_preceding && token.kind() == wanted && !token.is_missing()
+    })
+}
+
+fn significant_range(node: &SyntaxNode<'_>) -> TextRange {
+    let tokens = significant_tokens(node);
+    match (tokens.first(), tokens.last()) {
+        (Some(first), Some(last)) => {
+            TextRange::new(first.range().start() as usize, last.range().end() as usize)
+        }
+        _ => node.range(),
+    }
+}
+
+fn collect_outer_type_nodes<'tree>(node: &SyntaxNode<'tree>) -> Vec<SyntaxNode<'tree>> {
+    let mut result = Vec::new();
+    for child in node.child_nodes() {
+        if child.kind() == NodeKind::Type {
+            result.push(child);
+        } else if !matches!(
+            child.kind(),
+            NodeKind::BlockExpression | NodeKind::FunctionExpression
+        ) {
+            result.extend(collect_outer_type_nodes(&child));
+        }
+    }
+    result
+}
+
+fn collect_nodes<'tree>(node: &SyntaxNode<'tree>, kind: NodeKind) -> Vec<SyntaxNode<'tree>> {
+    let mut result = Vec::new();
+    for child in node.child_nodes() {
+        if child.kind() == kind {
+            result.push(child.clone());
+        }
+        result.extend(collect_nodes(&child, kind));
+    }
+    result
+}
+
+fn parameter_names(node: &SyntaxNode<'_>) -> Vec<Name> {
+    node.child_nodes()
+        .into_iter()
+        .filter(|child| child.kind() == NodeKind::ValueParameter)
+        .filter_map(|parameter| direct_identifier(&parameter))
+        .collect()
+}
+
+fn requirement_names(node: &SyntaxNode<'_>) -> Vec<Name> {
+    let mut names = Vec::new();
+    for child in node.child_nodes() {
+        if child.kind() == NodeKind::RequirementRecord {
+            names.extend(
+                child
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|field| field.kind() == NodeKind::NamedTypeField)
+                    .filter_map(|field| direct_identifier(&field)),
+            );
+        } else {
+            names.extend(requirement_names(&child));
+        }
+    }
+    names
+}
+
+fn is_expression_kind(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::UsingExpression
+            | NodeKind::PipelineExpression
+            | NodeKind::ComparisonExpression
+            | NodeKind::AdditiveExpression
+            | NodeKind::MultiplicativeExpression
+            | NodeKind::UnaryExpression
+            | NodeKind::PostfixExpression
+            | NodeKind::Literal
+            | NodeKind::NameReference
+            | NodeKind::GroupedExpression
+            | NodeKind::ListExpression
+            | NodeKind::RecordExpression
+            | NodeKind::BlockExpression
+            | NodeKind::CaseExpression
+            | NodeKind::FunctionExpression
+            | NodeKind::EmptyBraceExpression
+            | NodeKind::ErrorIfExpression
+            | NodeKind::Error
+    )
+}
+
+fn direct_expression_child<'tree>(node: &SyntaxNode<'tree>) -> Option<SyntaxNode<'tree>> {
+    node.child_nodes()
+        .into_iter()
+        .find(|child| is_expression_kind(child.kind()))
+}
+
+fn direct_expression_children<'tree>(node: &SyntaxNode<'tree>) -> Vec<SyntaxNode<'tree>> {
+    node.child_nodes()
+        .into_iter()
+        .filter(|child| is_expression_kind(child.kind()))
+        .collect()
+}
+
+fn contained_expression_children<'tree>(node: &SyntaxNode<'tree>) -> Vec<SyntaxNode<'tree>> {
+    let mut expressions = Vec::new();
+    for child in node.child_nodes() {
+        if is_expression_kind(child.kind()) {
+            expressions.push(child);
+        } else {
+            expressions.extend(contained_expression_children(&child));
+        }
+    }
+    expressions
 }
