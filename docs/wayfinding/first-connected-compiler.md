@@ -34,9 +34,17 @@ Go-versus-Rust host spike is retained as primary evidence on the
 real release-built `chimi` executable now owns the repository's Rust workspace
 and reports the explicit frontend boundary required by the M0 gate.
 
-M1 is the active frontier. It connects the smallest actual `.chimi` source
-through `SourceSnapshot`, `SemanticProgram`, `ResolvedProgram`, `TypedProgram`,
-`VerifiedRoot`, and `CoreProgram`, then executes the closed successful root.
+M1 is complete. The real Rust compiler reads the minimum accepted `.chimi`
+program through `SourceSnapshot`, `SemanticProgram`, `ResolvedProgram`,
+`TypedProgram`, opaque `VerifiedRoot`, and `CoreProgram`, then emits structured
+start/completion events and a successful nominal value. Missing or renamed
+`main`, unresolved constructors, and invalid field values stop sealing with
+source-mapped execution-setup, name, and type diagnostics respectively.
+
+M2 is the active frontier. It replaces M1's deliberately narrow direct parser
+with the accepted lossless lexer, parser event stream, immutable green CST,
+recovery model, and deterministic semantic lowering without changing the
+downstream representation interfaces.
 
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides

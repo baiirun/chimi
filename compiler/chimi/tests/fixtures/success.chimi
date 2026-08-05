@@ -1,0 +1,7 @@
+struct Answer {
+  value: Int
+}
+
+pub fn main() {
+  Answer(value: 42)
+}

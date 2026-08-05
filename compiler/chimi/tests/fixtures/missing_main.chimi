@@ -1,0 +1,3 @@
+struct Answer {
+  value: Int
+}

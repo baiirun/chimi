@@ -1,15 +1,19 @@
+use chimi::Compiler;
+use chimi::execution::ExecutionConfig;
+use chimi::source::SourceSnapshot;
 use std::env;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const VERSION: &str = concat!("chimi ", env!("CARGO_PKG_VERSION"), "-bootstrap");
-const USAGE: &str = "usage: chimi --version | chimi check <path>";
+const USAGE: &str = "usage: chimi --version | chimi check <path> | chimi run <path>";
 
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
     Version,
     Check { path: PathBuf },
+    Run { path: PathBuf },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -35,19 +39,22 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
         };
     }
 
-    if command == "check" {
+    if command == "check" || command == "run" {
         let Some(path) = arguments.next() else {
             return Err(UsageError {
-                message: "check requires a source path",
+                message: "check and run require a source path",
             });
         };
+        let path = PathBuf::from(path);
         return if arguments.next().is_none() {
-            Ok(Command::Check {
-                path: PathBuf::from(path),
-            })
+            if command == "check" {
+                Ok(Command::Check { path })
+            } else {
+                Ok(Command::Run { path })
+            }
         } else {
             Err(UsageError {
-                message: "check accepts exactly one source path",
+                message: "check and run accept exactly one source path",
             })
         };
     }
@@ -63,9 +70,46 @@ fn execute(command: Command) -> ExitCode {
             println!("{VERSION}");
             ExitCode::SUCCESS
         }
-        Command::Check { path } => {
-            eprintln!("chimi: frontend unavailable for {}", path.display());
+        Command::Check { path } => check(path),
+        Command::Run { path } => run(path),
+    }
+}
+
+fn check(path: PathBuf) -> ExitCode {
+    let Some(source) = read_source(&path) else {
+        return ExitCode::FAILURE;
+    };
+    let report = Compiler::check(source);
+    if report.is_success() {
+        ExitCode::SUCCESS
+    } else {
+        eprint!("{}", report.render_diagnostics());
+        ExitCode::FAILURE
+    }
+}
+
+fn run(path: PathBuf) -> ExitCode {
+    let Some(source) = read_source(&path) else {
+        return ExitCode::FAILURE;
+    };
+    match Compiler::run(source, ExecutionConfig::for_process()) {
+        Ok(report) => {
+            print!("{}", report.render_json_lines());
+            ExitCode::SUCCESS
+        }
+        Err(report) => {
+            eprint!("{}", report.render_diagnostics());
             ExitCode::FAILURE
+        }
+    }
+}
+
+fn read_source(path: &Path) -> Option<SourceSnapshot> {
+    match SourceSnapshot::read(path) {
+        Ok(source) => Some(source),
+        Err(error) => {
+            eprintln!("chimi: cannot read {}: {error}", path.display());
+            None
         }
     }
 }
@@ -115,13 +159,19 @@ mod tests {
         assert_eq!(
             parse_command(arguments(&["check"])),
             Err(UsageError {
-                message: "check requires a source path"
+                message: "check and run require a source path"
             })
         );
         assert_eq!(
             parse_command(arguments(&["check", "one.chimi", "two.chimi"])),
             Err(UsageError {
-                message: "check accepts exactly one source path"
+                message: "check and run accept exactly one source path"
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["run", "program.chimi"])),
+            Ok(Command::Run {
+                path: PathBuf::from("program.chimi")
             })
         );
     }
@@ -135,7 +185,7 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_command(arguments(&["run"])),
+            parse_command(arguments(&["unknown"])),
             Err(UsageError {
                 message: "unknown command"
             })
