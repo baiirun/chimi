@@ -195,4 +195,18 @@ mod tests {
             assert_eq!(report.diagnostics()[0].stage(), DiagnosticStage::Syntax);
         }
     }
+
+    #[test]
+    fn syntax_beyond_the_executable_subset_cannot_silently_seal() {
+        let text = concat!(
+            "struct Answer { value: Int }\n",
+            "struct Other { value: Int }\n",
+            "pub fn main() { Answer(value: 42) }\n",
+        );
+        let report = Compiler::check(source(text));
+
+        assert!(!report.is_success());
+        assert_eq!(report.diagnostics()[0].stage(), DiagnosticStage::Lowering);
+        assert_eq!(report.diagnostics()[0].code(), "L2001");
+    }
 }

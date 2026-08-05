@@ -8,9 +8,16 @@ pub(crate) enum TokenKind {
     Whitespace,
     Newline,
     Comment,
+    Import,
+    As,
     Struct,
+    Enum,
+    Interface,
     Pub,
     Fn,
+    Errors,
+    Needs,
+    Void,
     Identifier,
     Integer,
     Text,
@@ -18,8 +25,16 @@ pub(crate) enum TokenKind {
     RightBrace,
     LeftParen,
     RightParen,
+    LeftBracket,
+    RightBracket,
     Colon,
     Comma,
+    Dot,
+    Slash,
+    Less,
+    Greater,
+    Plus,
+    Arrow,
     Invalid,
     InvalidText,
     End,
@@ -27,14 +42,21 @@ pub(crate) enum TokenKind {
 
 impl TokenKind {
     const fn is_trivia(self) -> bool {
-        matches!(self, Self::Whitespace | Self::Newline | Self::Comment)
+        matches!(self, Self::Whitespace | Self::Comment)
     }
 
     const fn expected_name(self) -> &'static str {
         match self {
+            Self::Import => "`import`",
+            Self::As => "`as`",
             Self::Struct => "`struct`",
+            Self::Enum => "`enum`",
+            Self::Interface => "`interface`",
             Self::Pub => "`pub`",
             Self::Fn => "`fn`",
+            Self::Errors => "`errors`",
+            Self::Needs => "`needs`",
+            Self::Void => "`Void`",
             Self::Identifier => "identifier",
             Self::Integer => "integer literal",
             Self::Text => "text literal",
@@ -42,8 +64,16 @@ impl TokenKind {
             Self::RightBrace => "`}`",
             Self::LeftParen => "`(`",
             Self::RightParen => "`)`",
+            Self::LeftBracket => "`[`",
+            Self::RightBracket => "`]`",
             Self::Colon => "`:`",
             Self::Comma => "`,`",
+            Self::Dot => "`.`",
+            Self::Slash => "`/`",
+            Self::Less => "`<`",
+            Self::Greater => "`>`",
+            Self::Plus => "`+`",
+            Self::Arrow => "`->`",
             Self::Whitespace
             | Self::Newline
             | Self::Comment
@@ -57,9 +87,27 @@ impl TokenKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NodeKind {
     File,
+    ImportDeclaration,
+    ImportAlias,
+    ImportMembers,
+    ImportMember,
     StructDeclaration,
+    EnumDeclaration,
+    InterfaceDeclaration,
     Field,
+    Variant,
+    NamedTypeField,
+    GenericParameters,
+    GenericParameter,
     FunctionDeclaration,
+    ValueParameters,
+    ValueParameter,
+    ImplementationContract,
+    Type,
+    FunctionType,
+    TypeArguments,
+    RequirementClause,
+    RequirementRecord,
     ConstructionExpression,
     Error,
 }
@@ -273,14 +321,26 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                 }
                 emit(TokenKind::Comment, start, offset, &mut tokens);
             }
-            b'{' | b'}' | b'(' | b')' | b':' | b',' => {
+            b'-' if offset + 1 < bytes.len() && bytes[offset + 1] == b'>' => {
+                offset += 2;
+                emit(TokenKind::Arrow, start, offset, &mut tokens);
+            }
+            b'{' | b'}' | b'(' | b')' | b'[' | b']' | b':' | b',' | b'.' | b'/' | b'<' | b'>'
+            | b'+' => {
                 let kind = match bytes[offset] {
                     b'{' => TokenKind::LeftBrace,
                     b'}' => TokenKind::RightBrace,
                     b'(' => TokenKind::LeftParen,
                     b')' => TokenKind::RightParen,
+                    b'[' => TokenKind::LeftBracket,
+                    b']' => TokenKind::RightBracket,
                     b':' => TokenKind::Colon,
                     b',' => TokenKind::Comma,
+                    b'.' => TokenKind::Dot,
+                    b'/' => TokenKind::Slash,
+                    b'<' => TokenKind::Less,
+                    b'>' => TokenKind::Greater,
+                    b'+' => TokenKind::Plus,
                     _ => unreachable!(),
                 };
                 offset += 1;
@@ -335,9 +395,16 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                     offset += 1;
                 }
                 let kind = match &text[start..offset] {
+                    "import" => TokenKind::Import,
+                    "as" => TokenKind::As,
                     "struct" => TokenKind::Struct,
+                    "enum" => TokenKind::Enum,
+                    "interface" => TokenKind::Interface,
                     "pub" => TokenKind::Pub,
                     "fn" => TokenKind::Fn,
+                    "errors" => TokenKind::Errors,
+                    "needs" => TokenKind::Needs,
+                    "Void" => TokenKind::Void,
                     _ => TokenKind::Identifier,
                 };
                 emit(kind, start, offset, &mut tokens);
@@ -384,8 +451,6 @@ struct Parser<'source> {
     next_raw: usize,
     events: Vec<Event>,
     diagnostics: Vec<Diagnostic>,
-    structures: usize,
-    functions: usize,
 }
 
 impl<'source> Parser<'source> {
@@ -407,22 +472,29 @@ impl<'source> Parser<'source> {
             next_raw: 0,
             events: Vec::new(),
             diagnostics,
-            structures: 0,
-            functions: 0,
         }
     }
 
     fn parse(mut self) -> ParseResult {
         self.start(NodeKind::File);
+        self.skip_newlines();
         while !self.at(TokenKind::End) {
             let before = self.position;
             match self.kind() {
-                TokenKind::Struct => self.parse_struct(),
-                TokenKind::Pub => self.parse_function(),
-                _ => self.error_and_bump("expected `struct` or `pub fn`"),
+                TokenKind::Import => self.parse_import(),
+                TokenKind::Pub
+                | TokenKind::Struct
+                | TokenKind::Enum
+                | TokenKind::Interface
+                | TokenKind::Fn => self.parse_declaration(),
+                _ => self.error_and_bump("expected an import or declaration"),
             }
             if self.position == before {
                 self.error_and_bump("parser made no progress at file scope");
+            }
+            if !self.at(TokenKind::End) && !self.skip_newlines() && !self.is_top_level_start() {
+                self.error_and_bump("expected a line break between top-level items");
+                self.skip_newlines();
             }
         }
         self.emit_remaining();
@@ -434,33 +506,362 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn parse_struct(&mut self) {
-        self.start(NodeKind::StructDeclaration);
+    fn parse_import(&mut self) {
+        self.start(NodeKind::ImportDeclaration);
         self.bump();
         self.expect(TokenKind::Identifier);
-        self.expect(TokenKind::LeftBrace);
-        self.start(NodeKind::Field);
-        self.expect(TokenKind::Identifier);
-        self.expect(TokenKind::Colon);
+        while self.accept(TokenKind::Slash) {
+            self.expect(TokenKind::Identifier);
+        }
+        if self.at(TokenKind::As) {
+            self.start(NodeKind::ImportAlias);
+            self.bump();
+            self.expect(TokenKind::Identifier);
+            self.finish();
+        } else if self.at(TokenKind::Dot) {
+            self.start(NodeKind::ImportMembers);
+            self.bump();
+            self.expect(TokenKind::LeftBrace);
+            self.skip_newlines();
+            if self.at(TokenKind::RightBrace) {
+                self.error_at_current("member imports must name at least one type or constructor");
+            } else {
+                self.parse_import_member();
+                while self.accept(TokenKind::Comma) {
+                    self.skip_newlines();
+                    if self.at(TokenKind::RightBrace) {
+                        break;
+                    }
+                    self.parse_import_member();
+                }
+            }
+            self.skip_newlines();
+            self.expect(TokenKind::RightBrace);
+            self.finish();
+        } else {
+            self.error_at_current(
+                "module imports require an explicit alias with `as` or an explicit member list",
+            );
+        }
+        self.finish();
+    }
+
+    fn parse_import_member(&mut self) {
+        self.start(NodeKind::ImportMember);
         self.expect(TokenKind::Identifier);
         self.finish();
+    }
+
+    fn parse_declaration(&mut self) {
+        match self.declaration_kind() {
+            Some((NodeKind::StructDeclaration, TokenKind::Struct)) => {
+                self.parse_record_declaration(NodeKind::StructDeclaration, TokenKind::Struct)
+            }
+            Some((NodeKind::InterfaceDeclaration, TokenKind::Interface)) => {
+                self.parse_record_declaration(NodeKind::InterfaceDeclaration, TokenKind::Interface)
+            }
+            Some((NodeKind::EnumDeclaration, TokenKind::Enum)) => self.parse_enum(),
+            Some((NodeKind::FunctionDeclaration, TokenKind::Fn)) => self.parse_function(),
+            _ => self.error_and_bump("expected `struct`, `enum`, `interface`, or `fn` after `pub`"),
+        }
+    }
+
+    fn declaration_kind(&self) -> Option<(NodeKind, TokenKind)> {
+        let mut index = self.position;
+        if self.kind_at(index) == TokenKind::Pub {
+            index += 1;
+            while self.kind_at(index) == TokenKind::Newline {
+                index += 1;
+            }
+        }
+        match self.kind_at(index) {
+            TokenKind::Struct => Some((NodeKind::StructDeclaration, TokenKind::Struct)),
+            TokenKind::Enum => Some((NodeKind::EnumDeclaration, TokenKind::Enum)),
+            TokenKind::Interface => Some((NodeKind::InterfaceDeclaration, TokenKind::Interface)),
+            TokenKind::Fn => Some((NodeKind::FunctionDeclaration, TokenKind::Fn)),
+            _ => None,
+        }
+    }
+
+    fn parse_record_declaration(&mut self, node_kind: NodeKind, keyword: TokenKind) {
+        self.start(node_kind);
+        self.parse_visibility();
+        self.expect(keyword);
+        self.expect(TokenKind::Identifier);
+        self.parse_optional_generic_parameters();
+        self.skip_newlines();
+        self.expect(TokenKind::LeftBrace);
+        self.skip_newlines();
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::End) {
+            let before = self.position;
+            self.parse_field();
+            if self.accept(TokenKind::Comma) {
+                self.skip_newlines();
+            } else if !self.at(TokenKind::RightBrace) && !self.skip_newlines() {
+                self.error_and_bump("expected a line break or comma between fields");
+            }
+            if self.position == before {
+                self.error_and_bump("parser made no progress in declaration body");
+            }
+        }
         self.expect(TokenKind::RightBrace);
         self.finish();
+    }
 
-        self.structures += 1;
-        if self.structures > 1 {
-            self.error_at_current("M1 accepts exactly one struct declaration");
+    fn parse_field(&mut self) {
+        self.start(NodeKind::Field);
+        self.expect(TokenKind::Identifier);
+        self.skip_newlines();
+        self.expect(TokenKind::Colon);
+        self.skip_newlines();
+        self.parse_type();
+        self.finish();
+    }
+
+    fn parse_enum(&mut self) {
+        self.start(NodeKind::EnumDeclaration);
+        self.parse_visibility();
+        self.expect(TokenKind::Enum);
+        self.expect(TokenKind::Identifier);
+        self.parse_optional_generic_parameters();
+        self.skip_newlines();
+        self.expect(TokenKind::LeftBrace);
+        self.skip_newlines();
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::End) {
+            let before = self.position;
+            self.start(NodeKind::Variant);
+            self.expect(TokenKind::Identifier);
+            if self.accept(TokenKind::LeftParen) {
+                self.skip_newlines();
+                if !self.at(TokenKind::RightParen) {
+                    self.parse_named_type_field();
+                    while self.accept(TokenKind::Comma) {
+                        self.skip_newlines();
+                        if self.at(TokenKind::RightParen) {
+                            break;
+                        }
+                        self.parse_named_type_field();
+                    }
+                }
+                self.skip_newlines();
+                self.expect(TokenKind::RightParen);
+            }
+            self.finish();
+            if self.accept(TokenKind::Comma) {
+                self.skip_newlines();
+            } else if !self.at(TokenKind::RightBrace) && !self.skip_newlines() {
+                self.error_and_bump("expected a line break or comma between variants");
+            }
+            if self.position == before {
+                self.error_and_bump("parser made no progress in enum body");
+            }
         }
+        self.expect(TokenKind::RightBrace);
+        self.finish();
+    }
+
+    fn parse_optional_generic_parameters(&mut self) {
+        if !self.at(TokenKind::Less) {
+            return;
+        }
+        self.start(NodeKind::GenericParameters);
+        self.bump();
+        self.skip_newlines();
+        self.parse_generic_parameter();
+        while self.accept(TokenKind::Comma) {
+            self.skip_newlines();
+            self.parse_generic_parameter();
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::Greater);
+        self.finish();
+    }
+
+    fn parse_generic_parameter(&mut self) {
+        self.start(NodeKind::GenericParameter);
+        self.expect(TokenKind::Identifier);
+        self.finish();
+    }
+
+    fn parse_named_type_field(&mut self) {
+        self.start(NodeKind::NamedTypeField);
+        self.expect(TokenKind::Identifier);
+        self.skip_newlines();
+        self.expect(TokenKind::Colon);
+        self.skip_newlines();
+        self.parse_type();
+        self.finish();
     }
 
     fn parse_function(&mut self) {
         self.start(NodeKind::FunctionDeclaration);
-        self.bump();
+        self.parse_visibility();
         self.expect(TokenKind::Fn);
         self.expect(TokenKind::Identifier);
+        self.parse_optional_generic_parameters();
+        self.skip_newlines();
+        self.parse_value_parameters();
+        self.parse_implementation_contract();
+        self.skip_newlines();
+        self.parse_m1_function_body();
+        self.finish();
+    }
+
+    fn parse_visibility(&mut self) {
+        if self.accept(TokenKind::Pub) {
+            self.skip_newlines();
+        }
+    }
+
+    fn parse_value_parameters(&mut self) {
+        self.start(NodeKind::ValueParameters);
         self.expect(TokenKind::LeftParen);
+        self.skip_newlines();
+        if !self.at(TokenKind::RightParen) {
+            self.parse_value_parameter();
+            while self.accept(TokenKind::Comma) {
+                self.skip_newlines();
+                if self.at(TokenKind::RightParen) {
+                    break;
+                }
+                self.parse_value_parameter();
+            }
+        }
+        self.skip_newlines();
         self.expect(TokenKind::RightParen);
+        self.finish();
+    }
+
+    fn parse_value_parameter(&mut self) {
+        self.start(NodeKind::ValueParameter);
+        self.expect(TokenKind::Identifier);
+        if self.accept(TokenKind::Colon) {
+            self.skip_newlines();
+            self.parse_type();
+        }
+        self.finish();
+    }
+
+    fn parse_implementation_contract(&mut self) {
+        self.start(NodeKind::ImplementationContract);
+        self.skip_newlines();
+        if self.accept(TokenKind::Arrow) {
+            self.skip_newlines();
+            self.parse_type();
+            self.skip_newlines();
+        }
+        if self.at(TokenKind::Needs) {
+            self.parse_requirement_clause();
+        }
+        self.finish();
+    }
+
+    fn parse_type(&mut self) {
+        self.start(NodeKind::Type);
+        self.skip_newlines();
+        if self.at(TokenKind::Fn) {
+            self.parse_function_type();
+        } else if self.accept(TokenKind::Identifier) || self.accept(TokenKind::Void) {
+            while self.accept(TokenKind::Dot) {
+                self.expect(TokenKind::Identifier);
+            }
+            self.parse_optional_type_arguments();
+        } else {
+            self.missing(TokenKind::Identifier, "type");
+        }
+        self.finish();
+    }
+
+    fn parse_function_type(&mut self) {
+        self.start(NodeKind::FunctionType);
+        self.bump();
+        self.skip_newlines();
+        self.expect(TokenKind::LeftParen);
+        self.skip_newlines();
+        if !self.at(TokenKind::RightParen) {
+            self.parse_type();
+            while self.accept(TokenKind::Comma) {
+                self.skip_newlines();
+                if self.at(TokenKind::RightParen) {
+                    break;
+                }
+                self.parse_type();
+            }
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::RightParen);
+        self.skip_newlines();
+        self.expect(TokenKind::Arrow);
+        self.skip_newlines();
+        self.parse_type();
+        self.skip_newlines();
+        if self.accept(TokenKind::Errors) {
+            self.skip_newlines();
+            self.parse_type();
+            self.skip_newlines();
+        }
+        if self.at(TokenKind::Needs) {
+            self.parse_requirement_clause();
+        }
+        self.finish();
+    }
+
+    fn parse_optional_type_arguments(&mut self) {
+        if !self.at(TokenKind::Less) {
+            return;
+        }
+        self.start(NodeKind::TypeArguments);
+        self.bump();
+        self.skip_newlines();
+        self.parse_type();
+        while self.accept(TokenKind::Comma) {
+            self.skip_newlines();
+            self.parse_type();
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::Greater);
+        self.finish();
+    }
+
+    fn parse_requirement_clause(&mut self) {
+        self.start(NodeKind::RequirementClause);
+        self.expect(TokenKind::Needs);
+        self.skip_newlines();
+        self.parse_requirement_atom();
+        while self.accept_after_newlines(TokenKind::Plus) {
+            self.skip_newlines();
+            self.parse_requirement_atom();
+        }
+        self.finish();
+    }
+
+    fn parse_requirement_atom(&mut self) {
+        if self.accept(TokenKind::Identifier) {
+            return;
+        }
+        self.start(NodeKind::RequirementRecord);
         self.expect(TokenKind::LeftBrace);
+        self.skip_newlines();
+        if self.at(TokenKind::RightBrace) {
+            self.error_at_current("empty requirement records are invalid");
+        } else {
+            self.parse_named_type_field();
+            while self.accept(TokenKind::Comma) {
+                self.skip_newlines();
+                if self.at(TokenKind::RightBrace) {
+                    break;
+                }
+                self.parse_named_type_field();
+            }
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::RightBrace);
+        self.finish();
+    }
+
+    fn parse_m1_function_body(&mut self) {
+        self.expect(TokenKind::LeftBrace);
+        self.skip_newlines();
         self.start(NodeKind::ConstructionExpression);
         self.expect(TokenKind::Identifier);
         self.expect(TokenKind::LeftParen);
@@ -473,13 +874,20 @@ impl<'source> Parser<'source> {
         }
         self.expect(TokenKind::RightParen);
         self.finish();
+        self.skip_newlines();
         self.expect(TokenKind::RightBrace);
-        self.finish();
+    }
 
-        self.functions += 1;
-        if self.functions > 1 {
-            self.error_at_current("M1 accepts exactly one function declaration");
-        }
+    fn is_top_level_start(&self) -> bool {
+        matches!(
+            self.kind(),
+            TokenKind::Import
+                | TokenKind::Pub
+                | TokenKind::Struct
+                | TokenKind::Enum
+                | TokenKind::Interface
+                | TokenKind::Fn
+        )
     }
 
     fn kind(&self) -> TokenKind {
@@ -490,8 +898,42 @@ impl<'source> Parser<'source> {
         &self.tokens[self.significant[self.position]]
     }
 
+    fn kind_at(&self, position: usize) -> TokenKind {
+        self.significant
+            .get(position)
+            .map_or(TokenKind::End, |index| self.tokens[*index].kind)
+    }
+
     fn at(&self, kind: TokenKind) -> bool {
         self.kind() == kind
+    }
+
+    fn accept(&mut self, kind: TokenKind) -> bool {
+        if !self.at(kind) {
+            return false;
+        }
+        self.bump();
+        true
+    }
+
+    fn skip_newlines(&mut self) -> bool {
+        let mut consumed = false;
+        while self.accept(TokenKind::Newline) {
+            consumed = true;
+        }
+        consumed
+    }
+
+    fn accept_after_newlines(&mut self, kind: TokenKind) -> bool {
+        let mut position = self.position;
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        if self.kind_at(position) != kind {
+            return false;
+        }
+        self.skip_newlines();
+        self.accept(kind)
     }
 
     fn bump(&mut self) {
@@ -679,5 +1121,75 @@ mod tests {
 
         assert_eq!(result.round_trip(), source);
         assert!(!result.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn declarations_and_type_contracts_round_trip_without_diagnostics() {
+        let source = include_str!("../tests/fixtures/declarations_and_types.chimi");
+        let snapshot = SourceSnapshot::from_text("declarations-and-types.chimi", source);
+        let result = parse(&snapshot);
+
+        assert_eq!(result.round_trip(), source);
+        assert_eq!(result.diagnostics(), []);
+        let root_kinds = result
+            .root()
+            .child_nodes()
+            .into_iter()
+            .map(|node| node.kind())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            root_kinds,
+            [
+                NodeKind::ImportDeclaration,
+                NodeKind::ImportDeclaration,
+                NodeKind::StructDeclaration,
+                NodeKind::EnumDeclaration,
+                NodeKind::InterfaceDeclaration,
+                NodeKind::FunctionDeclaration,
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_generic_delimiter_recovers_into_the_following_body() {
+        let source = "struct Box<Value {\n  value: Value\n}\n";
+        let snapshot = SourceSnapshot::from_text("missing-generic-close.chimi", source);
+        let result = parse(&snapshot);
+
+        assert_eq!(result.round_trip(), source);
+        assert_eq!(result.diagnostics().len(), 1);
+        assert_eq!(result.diagnostics()[0].message(), "expected `>`");
+        assert_eq!(
+            result
+                .root()
+                .descendant_tokens()
+                .into_iter()
+                .filter(|token| token.is_missing())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn empty_import_and_requirement_shapes_are_rejected_without_losing_source() {
+        let cases = [
+            (
+                "import modules/money.{}\n",
+                "member imports must name at least one type or constructor",
+            ),
+            (
+                "interface Service { call: fn() -> Void needs {} }\n",
+                "empty requirement records are invalid",
+            ),
+        ];
+
+        for (source, expected_message) in cases {
+            let snapshot = SourceSnapshot::from_text("empty-shape.chimi", source);
+            let result = parse(&snapshot);
+
+            assert_eq!(result.round_trip(), source);
+            assert_eq!(result.diagnostics().len(), 1);
+            assert_eq!(result.diagnostics()[0].message(), expected_message);
+        }
     }
 }

@@ -81,10 +81,30 @@ pub(crate) fn lower(source: Arc<SourceSnapshot>) -> SemanticProgram {
             NodeKind::StructDeclaration if lowerer.structure.is_none() => {
                 lowerer.structure = lowerer.lower_struct(node);
             }
+            NodeKind::StructDeclaration => {
+                lowerer.lowering_error(
+                    node,
+                    "additional struct declarations are not lowered by the executable subset",
+                );
+            }
             NodeKind::FunctionDeclaration if lowerer.functions.is_empty() => {
                 if let Some(function) = lowerer.lower_function(node) {
                     lowerer.functions.push(function);
                 }
+            }
+            NodeKind::FunctionDeclaration => {
+                lowerer.lowering_error(
+                    node,
+                    "additional function declarations are not lowered by the executable subset",
+                );
+            }
+            NodeKind::ImportDeclaration
+            | NodeKind::EnumDeclaration
+            | NodeKind::InterfaceDeclaration => {
+                lowerer.lowering_error(
+                    node,
+                    "declaration is parsed but not lowered by the executable subset",
+                );
             }
             _ => {}
         }
@@ -262,14 +282,11 @@ impl<'source> Lowerer<'source> {
         {
             return;
         }
-        let range = node
-            .descendant_tokens()
-            .into_iter()
-            .find(|token| !token.is_missing())
-            .map_or_else(
-                || TextRange::empty(self.source.text().len()),
-                |token| token.range(),
-            );
+        let tokens = significant_tokens(node);
+        let range = tokens.first().map_or_else(
+            || TextRange::empty(self.source.text().len()),
+            |token| token.range(),
+        );
         self.diagnostics.push(Diagnostic::error(
             DiagnosticStage::Lowering,
             "L2001",
