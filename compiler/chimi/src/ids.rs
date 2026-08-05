@@ -40,8 +40,8 @@ impl TextRange {
     pub(crate) fn new(start: usize, end: usize) -> Self {
         debug_assert!(start <= end);
         Self {
-            start: u32::try_from(start).expect("M1 source offsets fit in u32"),
-            end: u32::try_from(end).expect("M1 source offsets fit in u32"),
+            start: u32::try_from(start).expect("source offsets fit in u32"),
+            end: u32::try_from(end).expect("source offsets fit in u32"),
         }
     }
 

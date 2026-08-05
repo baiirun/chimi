@@ -1,6 +1,7 @@
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::ids::{SemanticId, TextRange};
 use crate::source::SourceSnapshot;
+use crate::syntax::{self, NodeKind, SyntaxNode, SyntaxToken, TokenKind};
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -71,336 +72,209 @@ pub(crate) struct SemanticProgram {
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum TokenKind {
-    Struct,
-    Pub,
-    Fn,
-    Identifier(String),
-    Integer(i64),
-    Text(String),
-    LeftBrace,
-    RightBrace,
-    LeftParen,
-    RightParen,
-    Colon,
-    Comma,
-    End,
-}
-
-#[derive(Clone, Debug)]
-struct Token {
-    kind: TokenKind,
-    range: TextRange,
-}
-
 pub(crate) fn lower(source: Arc<SourceSnapshot>) -> SemanticProgram {
-    let (tokens, diagnostics) = lex(&source);
-    Parser::new(source, tokens, diagnostics).parse()
-}
+    let parsed = syntax::parse(&source);
+    let mut lowerer = Lowerer::new(&source, parsed.diagnostics().to_vec());
 
-fn lex(source: &SourceSnapshot) -> (Vec<Token>, Vec<Diagnostic>) {
-    let text = source.text();
-    let bytes = text.as_bytes();
-    let mut tokens = Vec::new();
-    let mut diagnostics = Vec::new();
-    let mut offset = 0;
-
-    while offset < bytes.len() {
-        let start = offset;
-        let byte = bytes[offset];
-        match byte {
-            b' ' | b'\t' | b'\r' | b'\n' => {
-                offset += 1;
+    for node in parsed.root().child_nodes() {
+        match node.kind() {
+            NodeKind::StructDeclaration if lowerer.structure.is_none() => {
+                lowerer.structure = lowerer.lower_struct(node);
             }
-            b'/' if offset + 1 < bytes.len() && bytes[offset + 1] == b'/' => {
-                offset += 2;
-                while offset < bytes.len() && bytes[offset] != b'\n' {
-                    offset += 1;
+            NodeKind::FunctionDeclaration if lowerer.functions.is_empty() => {
+                if let Some(function) = lowerer.lower_function(node) {
+                    lowerer.functions.push(function);
                 }
             }
-            b'{' | b'}' | b'(' | b')' | b':' | b',' => {
-                offset += 1;
-                let kind = match byte {
-                    b'{' => TokenKind::LeftBrace,
-                    b'}' => TokenKind::RightBrace,
-                    b'(' => TokenKind::LeftParen,
-                    b')' => TokenKind::RightParen,
-                    b':' => TokenKind::Colon,
-                    b',' => TokenKind::Comma,
-                    _ => unreachable!(),
-                };
-                tokens.push(Token {
-                    kind,
-                    range: TextRange::new(start, offset),
-                });
-            }
-            b'0'..=b'9' => {
-                offset += 1;
-                while offset < bytes.len() && bytes[offset].is_ascii_digit() {
-                    offset += 1;
-                }
-                let value = match text[start..offset].parse() {
-                    Ok(value) => value,
-                    Err(_) => {
-                        diagnostics.push(Diagnostic::error(
-                            DiagnosticStage::Syntax,
-                            "S1002",
-                            source.file_id(),
-                            TextRange::new(start, offset),
-                            "integer literal is outside the supported range",
-                        ));
-                        0
-                    }
-                };
-                tokens.push(Token {
-                    kind: TokenKind::Integer(value),
-                    range: TextRange::new(start, offset),
-                });
-            }
-            b'"' => {
-                offset += 1;
-                let content_start = offset;
-                while offset < bytes.len() && bytes[offset] != b'"' && bytes[offset] != b'\n' {
-                    offset += 1;
-                }
-                if offset < bytes.len() && bytes[offset] == b'"' {
-                    let value = text[content_start..offset].to_owned();
-                    offset += 1;
-                    tokens.push(Token {
-                        kind: TokenKind::Text(value),
-                        range: TextRange::new(start, offset),
-                    });
-                } else {
-                    diagnostics.push(Diagnostic::error(
-                        DiagnosticStage::Syntax,
-                        "S1001",
-                        source.file_id(),
-                        TextRange::new(start, offset),
-                        "unterminated text literal",
-                    ));
-                }
-            }
-            _ if is_identifier_start(byte) => {
-                offset += 1;
-                while offset < bytes.len() && is_identifier_continue(bytes[offset]) {
-                    offset += 1;
-                }
-                let word = &text[start..offset];
-                let kind = match word {
-                    "struct" => TokenKind::Struct,
-                    "pub" => TokenKind::Pub,
-                    "fn" => TokenKind::Fn,
-                    _ => TokenKind::Identifier(word.to_owned()),
-                };
-                tokens.push(Token {
-                    kind,
-                    range: TextRange::new(start, offset),
-                });
-            }
-            _ => {
-                let character = text[start..]
-                    .chars()
-                    .next()
-                    .expect("offset is before source end");
-                offset += character.len_utf8();
-                diagnostics.push(Diagnostic::error(
-                    DiagnosticStage::Syntax,
-                    "S1001",
-                    source.file_id(),
-                    TextRange::new(start, offset),
-                    format!("unexpected source text `{character}`"),
-                ));
-            }
+            _ => {}
         }
     }
 
-    tokens.push(Token {
-        kind: TokenKind::End,
-        range: TextRange::empty(text.len()),
-    });
-    (tokens, diagnostics)
+    let Lowerer {
+        structure,
+        functions,
+        diagnostics,
+        ..
+    } = lowerer;
+    SemanticProgram {
+        source,
+        structure,
+        functions,
+        diagnostics,
+    }
 }
 
-fn is_identifier_start(byte: u8) -> bool {
-    byte == b'_' || byte.is_ascii_lowercase() || byte.is_ascii_uppercase()
-}
-
-fn is_identifier_continue(byte: u8) -> bool {
-    is_identifier_start(byte) || byte.is_ascii_digit()
-}
-
-struct Parser {
-    source: Arc<SourceSnapshot>,
-    tokens: Vec<Token>,
-    position: usize,
+struct Lowerer<'source> {
+    source: &'source SourceSnapshot,
     next_semantic_id: u32,
+    structure: Option<StructDeclaration>,
+    functions: Vec<FunctionDeclaration>,
     diagnostics: Vec<Diagnostic>,
 }
 
-impl Parser {
-    fn new(source: Arc<SourceSnapshot>, tokens: Vec<Token>, diagnostics: Vec<Diagnostic>) -> Self {
+impl<'source> Lowerer<'source> {
+    fn new(source: &'source SourceSnapshot, diagnostics: Vec<Diagnostic>) -> Self {
         Self {
             source,
-            tokens,
-            position: 0,
             next_semantic_id: 0,
+            structure: None,
+            functions: Vec::new(),
             diagnostics,
         }
     }
 
-    fn parse(mut self) -> SemanticProgram {
-        let mut structure = None;
-        let mut functions = Vec::new();
-        while !self.at(&TokenKind::End) {
-            if self.at(&TokenKind::Struct) {
-                if let Some(declaration) = self.parse_struct() {
-                    if structure.is_none() {
-                        structure = Some(declaration);
-                    } else {
-                        self.syntax_error("M1 accepts exactly one struct declaration");
-                    }
-                }
-            } else if self.at(&TokenKind::Pub) {
-                if let Some(function) = self.parse_function() {
-                    if functions.is_empty() {
-                        functions.push(function);
-                    } else {
-                        self.syntax_error("M1 accepts exactly one function declaration");
-                    }
-                }
-            } else {
-                self.syntax_error("expected `struct` or `pub fn`");
-                self.advance();
-            }
+    fn lower_struct(&mut self, node: SyntaxNode<'_>) -> Option<StructDeclaration> {
+        let tokens = significant_tokens(node);
+        let [_, name, _, field_name, _, field_type, _] = tokens.as_slice() else {
+            self.lowering_error(node, "incomplete struct declaration cannot be lowered");
+            return None;
+        };
+        if !matches_kinds(
+            &tokens,
+            &[
+                TokenKind::Struct,
+                TokenKind::Identifier,
+                TokenKind::LeftBrace,
+                TokenKind::Identifier,
+                TokenKind::Colon,
+                TokenKind::Identifier,
+                TokenKind::RightBrace,
+            ],
+        ) {
+            self.lowering_error(node, "malformed struct declaration cannot be lowered");
+            return None;
         }
-
-        SemanticProgram {
-            source: self.source,
-            structure,
-            functions,
-            diagnostics: self.diagnostics,
-        }
-    }
-
-    fn parse_struct(&mut self) -> Option<StructDeclaration> {
-        self.advance();
-        let name = self.take_identifier("expected struct name")?;
-        self.expect(TokenKind::LeftBrace, "expected `{` after struct name")?;
-        let field_name = self.take_identifier("expected struct field name")?;
-        self.expect(TokenKind::Colon, "expected `:` after struct field name")?;
-        let field_type = self.take_identifier("expected struct field type")?;
-        self.expect(TokenKind::RightBrace, "expected `}` after struct field")?;
         Some(StructDeclaration {
             semantic_id: self.allocate_semantic_id(),
-            name,
+            name: name_from(name),
             field_semantic_id: self.allocate_semantic_id(),
-            field_name,
-            field_type,
+            field_name: name_from(field_name),
+            field_type: name_from(field_type),
         })
     }
 
-    fn parse_function(&mut self) -> Option<FunctionDeclaration> {
-        self.advance();
-        self.expect(TokenKind::Fn, "expected `fn` after `pub`")?;
-        let name = self.take_identifier("expected function name")?;
+    fn lower_function(&mut self, node: SyntaxNode<'_>) -> Option<FunctionDeclaration> {
+        let tokens = significant_tokens(node);
+        if tokens.len() < 8
+            || !matches_kinds(
+                &tokens[..6],
+                &[
+                    TokenKind::Pub,
+                    TokenKind::Fn,
+                    TokenKind::Identifier,
+                    TokenKind::LeftParen,
+                    TokenKind::RightParen,
+                    TokenKind::LeftBrace,
+                ],
+            )
+            || tokens.last().map(SyntaxToken::kind) != Some(TokenKind::RightBrace)
+        {
+            self.lowering_error(node, "incomplete function declaration cannot be lowered");
+            return None;
+        }
+        let function_name = name_from(&tokens[2]);
         let function_semantic_id = self.allocate_semantic_id();
-        self.expect(TokenKind::LeftParen, "expected `(` after function name")?;
-        self.expect(TokenKind::RightParen, "M1 main does not accept parameters")?;
-        self.expect(TokenKind::LeftBrace, "expected `{` before function body")?;
-        let constructor = self.take_identifier("expected constructor expression")?;
-        let construction_semantic_id = self.allocate_semantic_id();
-        let construction_start = constructor.range.start() as usize;
-        self.expect(TokenKind::LeftParen, "expected `(` after constructor")?;
-        let field_name = self.take_identifier("expected constructor field name")?;
-        self.expect(TokenKind::Colon, "expected `:` after constructor field")?;
-        let value = self.take_literal()?;
-        let body_end = self.current().range.end() as usize;
-        self.expect(
-            TokenKind::RightParen,
-            "expected `)` after constructor field",
-        )?;
-        self.expect(TokenKind::RightBrace, "expected `}` after function body")?;
+        let Some(construction_node) = node
+            .child_nodes()
+            .into_iter()
+            .find(|child| child.kind() == NodeKind::ConstructionExpression)
+        else {
+            self.lowering_error(node, "function body has no construction expression");
+            return None;
+        };
+        let body = self.lower_construction(construction_node)?;
 
         Some(FunctionDeclaration {
             semantic_id: function_semantic_id,
             public: true,
-            name,
-            body: Construction {
-                semantic_id: construction_semantic_id,
-                range: TextRange::new(construction_start, body_end),
-                constructor,
-                field_name,
-                value,
-            },
+            name: function_name,
+            body,
         })
     }
 
-    fn take_literal(&mut self) -> Option<Literal> {
-        let token = self.current().clone();
-        let literal = match token.kind {
-            TokenKind::Integer(value) => Literal::Integer {
-                semantic_id: self.allocate_semantic_id(),
-                value,
-                range: token.range,
+    fn lower_construction(&mut self, node: SyntaxNode<'_>) -> Option<Construction> {
+        let tokens = significant_tokens(node);
+        let [constructor, _, field_name, _, value, right_paren] = tokens.as_slice() else {
+            self.lowering_error(node, "incomplete construction expression cannot be lowered");
+            return None;
+        };
+        if !matches_kinds(
+            &tokens[..4],
+            &[
+                TokenKind::Identifier,
+                TokenKind::LeftParen,
+                TokenKind::Identifier,
+                TokenKind::Colon,
+            ],
+        ) || right_paren.kind() != TokenKind::RightParen
+        {
+            self.lowering_error(node, "malformed construction expression cannot be lowered");
+            return None;
+        }
+        let construction_semantic_id = self.allocate_semantic_id();
+        let literal_semantic_id = self.allocate_semantic_id();
+        let literal = match value.kind() {
+            TokenKind::Integer => match value.text().replace('_', "").parse() {
+                Ok(integer) => Literal::Integer {
+                    semantic_id: literal_semantic_id,
+                    value: integer,
+                    range: value.range(),
+                },
+                Err(_) => {
+                    self.diagnostics.push(Diagnostic::error(
+                        DiagnosticStage::Syntax,
+                        "S1002",
+                        self.source.file_id(),
+                        value.range(),
+                        "integer literal is outside the supported range",
+                    ));
+                    return None;
+                }
             },
-            TokenKind::Text(value) => Literal::Text {
-                semantic_id: self.allocate_semantic_id(),
-                value,
-                range: token.range,
+            TokenKind::Text => Literal::Text {
+                semantic_id: literal_semantic_id,
+                value: value.text()[1..value.text().len() - 1].to_owned(),
+                range: value.range(),
             },
             _ => {
-                self.syntax_error("expected integer or text literal");
+                self.lowering_error(node, "construction value is not a supported literal");
                 return None;
             }
         };
-        self.advance();
-        Some(literal)
-    }
 
-    fn take_identifier(&mut self, message: &'static str) -> Option<Name> {
-        let token = self.current().clone();
-        let TokenKind::Identifier(text) = token.kind else {
-            self.syntax_error(message);
-            return None;
-        };
-        self.advance();
-        Some(Name {
-            text,
-            range: token.range,
+        Some(Construction {
+            semantic_id: construction_semantic_id,
+            range: TextRange::new(
+                constructor.range().start() as usize,
+                right_paren.range().end() as usize,
+            ),
+            constructor: name_from(constructor),
+            field_name: name_from(field_name),
+            value: literal,
         })
     }
 
-    fn expect(&mut self, expected: TokenKind, message: &'static str) -> Option<()> {
-        if self.at(&expected) {
-            self.advance();
-            Some(())
-        } else {
-            self.syntax_error(message);
-            None
+    fn lowering_error(&mut self, node: SyntaxNode<'_>, message: &'static str) {
+        if self
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.stage() == DiagnosticStage::Syntax)
+        {
+            return;
         }
-    }
-
-    fn at(&self, expected: &TokenKind) -> bool {
-        std::mem::discriminant(&self.current().kind) == std::mem::discriminant(expected)
-    }
-
-    fn current(&self) -> &Token {
-        &self.tokens[self.position]
-    }
-
-    fn advance(&mut self) {
-        if !self.at(&TokenKind::End) {
-            self.position += 1;
-        }
-    }
-
-    fn syntax_error(&mut self, message: impl Into<String>) {
+        let range = node
+            .descendant_tokens()
+            .into_iter()
+            .find(|token| !token.is_missing())
+            .map_or_else(
+                || TextRange::empty(self.source.text().len()),
+                |token| token.range(),
+            );
         self.diagnostics.push(Diagnostic::error(
-            DiagnosticStage::Syntax,
-            "S1001",
+            DiagnosticStage::Lowering,
+            "L2001",
             self.source.file_id(),
-            self.current().range,
+            range,
             message,
         ));
     }
@@ -409,5 +283,36 @@ impl Parser {
         let identifier = SemanticId::new(self.next_semantic_id);
         self.next_semantic_id += 1;
         identifier
+    }
+}
+
+fn significant_tokens(node: SyntaxNode<'_>) -> Vec<SyntaxToken<'_>> {
+    node.descendant_tokens()
+        .into_iter()
+        .filter(|token| {
+            !token.is_missing()
+                && !matches!(
+                    token.kind(),
+                    TokenKind::Whitespace
+                        | TokenKind::Newline
+                        | TokenKind::Comment
+                        | TokenKind::End
+                )
+        })
+        .collect()
+}
+
+fn matches_kinds(tokens: &[SyntaxToken<'_>], kinds: &[TokenKind]) -> bool {
+    tokens.len() == kinds.len()
+        && tokens
+            .iter()
+            .zip(kinds)
+            .all(|(token, kind)| token.kind() == *kind)
+}
+
+fn name_from(token: &SyntaxToken<'_>) -> Name {
+    Name {
+        text: token.text().to_owned(),
+        range: token.range(),
     }
 }

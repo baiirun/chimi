@@ -56,6 +56,7 @@ fn run_executes_source_and_prints_structured_events_and_outcome() {
 #[test]
 fn invalid_programs_stop_at_the_owning_stage() {
     let cases = [
+        ("missing_closing_brace", "error[S1001] syntax"),
         ("missing_main", "error[E5001] execution-setup"),
         ("unresolved_constructor", "error[N3001] name"),
         ("invalid_field_type", "error[T4001] type"),
