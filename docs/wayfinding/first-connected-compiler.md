@@ -75,6 +75,19 @@ valid programs stop explicitly at lowering. M2 remains active for the typed
 syntax facade and cursor, stable source identity, fuzz invariants, and measured
 syntax-performance workloads.
 
+The fourth M2 slice adds the tooling-facing syntax seam. Lightweight red
+cursors now derive absolute byte ranges, parent navigation, and deterministic
+snapshot-scoped `SyntaxId` values from immutable green nodes; parse snapshots
+resolve those IDs back to exact nodes or tokens. Typed wrappers for files,
+structs, fields, functions, blocks, postfix expressions, and call suffixes
+return optional children under recovery, and production semantic lowering now
+selects declarations and their names and bodies through that facade. The first
+wrappers are handwritten and isolated behind `syntax/typed.rs`; schema-driven
+generation should replace repetition when the facade expands. IDs deliberately
+do not claim stability across edits. M2 remains active for fuzz invariants and
+measured syntax-performance workloads, which will also determine whether the
+cursor's small ancestor-path clones need a more compact representation.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the
