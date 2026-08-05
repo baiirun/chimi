@@ -195,14 +195,14 @@ pub(crate) struct GreenNode {
 }
 
 impl GreenNode {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "frontend-benchmarks"))]
     pub(crate) fn text(&self) -> String {
         let mut text = String::with_capacity(self.text_len as usize);
         self.write_text(&mut text);
         text
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "frontend-benchmarks"))]
     fn write_text(&self, output: &mut String) {
         for child in &self.children {
             match child {
@@ -239,10 +239,99 @@ impl ParseResult {
         find_element(self.root(), id)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "frontend-benchmarks"))]
     fn round_trip(&self) -> String {
         self.root.text()
     }
+}
+
+#[cfg(any(test, feature = "frontend-benchmarks"))]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SyntaxStatistics {
+    pub(crate) node_count: usize,
+    pub(crate) token_count: usize,
+    pub(crate) missing_token_count: usize,
+}
+
+#[cfg(any(test, feature = "frontend-benchmarks"))]
+pub(crate) fn validate_parse(
+    parsed: &ParseResult,
+    source: &SourceSnapshot,
+) -> Result<SyntaxStatistics, String> {
+    use std::collections::BTreeSet;
+
+    if parsed.round_trip() != source.text() {
+        return Err("CST leaves do not reproduce the source".to_owned());
+    }
+    for diagnostic in parsed.diagnostics() {
+        if diagnostic.range().start() > diagnostic.range().end()
+            || diagnostic.range().end() as usize > source.text().len()
+        {
+            return Err("diagnostic range lies outside the source".to_owned());
+        }
+    }
+
+    fn visit(
+        parsed: &ParseResult,
+        node: &SyntaxNode<'_>,
+        source_len: usize,
+        ids: &mut BTreeSet<SyntaxId>,
+        statistics: &mut SyntaxStatistics,
+    ) -> Result<(), String> {
+        if node.range().end() as usize > source_len || !ids.insert(node.id()) {
+            return Err("node range or SyntaxId is invalid".to_owned());
+        }
+        if !matches!(parsed.element(node.id()), Some(SyntaxElement::Node(found)) if found.id() == node.id())
+        {
+            return Err("node SyntaxId does not resolve to the same node".to_owned());
+        }
+        statistics.node_count += 1;
+
+        for token in node.child_tokens() {
+            if token.range().start() > token.range().end()
+                || token.range().end() as usize > source_len
+                || !ids.insert(token.id())
+            {
+                return Err("token range or SyntaxId is invalid".to_owned());
+            }
+            if token.parent().id() != node.id()
+                || !matches!(parsed.element(token.id()), Some(SyntaxElement::Token(found)) if found.id() == token.id())
+            {
+                return Err("token cursor context or SyntaxId resolution is invalid".to_owned());
+            }
+            statistics.token_count += 1;
+            statistics.missing_token_count += usize::from(token.is_missing());
+        }
+        for child in node.child_nodes() {
+            if child.parent().map(|parent| parent.id()) != Some(node.id()) {
+                return Err("node parent navigation is invalid".to_owned());
+            }
+            visit(parsed, &child, source_len, ids, statistics)?;
+        }
+        Ok(())
+    }
+
+    let root = parsed.root();
+    if root.range() != TextRange::new(0, source.text().len()) || root.parent().is_some() {
+        return Err("root cursor range or parent is invalid".to_owned());
+    }
+    let mut ids = BTreeSet::new();
+    let mut statistics = SyntaxStatistics {
+        node_count: 0,
+        token_count: 0,
+        missing_token_count: 0,
+    };
+    visit(
+        parsed,
+        &root,
+        source.text().len(),
+        &mut ids,
+        &mut statistics,
+    )?;
+    if statistics.node_count + statistics.token_count != parsed.root.element_count as usize {
+        return Err("green subtree element count is inconsistent".to_owned());
+    }
+    Ok(statistics)
 }
 
 #[derive(Clone, Debug)]
@@ -2229,5 +2318,80 @@ mod tests {
         };
         assert!(function.name_token().is_none());
         assert!(function.body().is_some());
+    }
+
+    #[test]
+    fn fixed_seed_malformed_inputs_preserve_frontend_invariants() {
+        const FRAGMENTS: &[&str] = &[
+            " ",
+            "\n",
+            "\r\n",
+            "// comment\n",
+            "struct",
+            "enum",
+            "interface",
+            "fn",
+            "let",
+            "case",
+            "if",
+            "errors",
+            "needs",
+            "using",
+            "Void",
+            "name",
+            "123",
+            "\"text\"",
+            "{",
+            "}",
+            "(",
+            ")",
+            "[",
+            "]",
+            ":",
+            ",",
+            ".",
+            "/",
+            "<",
+            ">",
+            "+",
+            "-",
+            "*",
+            "=",
+            "->",
+            "|>",
+            "λ",
+            "💥",
+            "@",
+            "\"unterminated",
+        ];
+
+        let mut state = 0x5eed_f00d_cafe_babe_u64;
+        for case_index in 0..2_048 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let fragment_count = (state as usize % 96) + 1;
+            let mut source = String::new();
+            for _ in 0..fragment_count {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                source.push_str(FRAGMENTS[state as usize % FRAGMENTS.len()]);
+            }
+
+            let snapshot = SourceSnapshot::from_text(format!("fuzz-{case_index}.chimi"), source);
+            let parsed = parse(&snapshot);
+            let statistics = super::validate_parse(&parsed, &snapshot)
+                .unwrap_or_else(|error| panic!("case {case_index}: {error}"));
+
+            assert!(statistics.node_count > 0, "case {case_index}");
+            assert!(
+                parsed.diagnostics().len() <= (statistics.token_count + 1) * 4,
+                "case {case_index} produced {} diagnostics for {} tokens: {:?}",
+                parsed.diagnostics().len(),
+                statistics.token_count,
+                snapshot.text(),
+            );
+        }
     }
 }

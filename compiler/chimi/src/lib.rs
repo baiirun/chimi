@@ -2,6 +2,9 @@ mod compiler;
 pub mod diagnostic;
 mod executable;
 pub mod execution;
+#[cfg(feature = "frontend-benchmarks")]
+#[doc(hidden)]
+pub mod frontend_benchmark;
 mod ids;
 mod resolution;
 mod semantic;
