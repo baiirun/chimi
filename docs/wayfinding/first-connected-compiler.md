@@ -114,9 +114,15 @@ qualified origins, diagnostic spans, nested function scopes, guards, record
 values, and conflicting member imports. The narrow M1 executable adapter remains
 intact until M4 supplies the full typed-program handoff.
 
-M4 is the next frontier: attach canonical types and callable success, failure,
-and dependency-needs channels to the resolved project without rewriting its
-semantic or symbol identity.
+M4 is active. Its first slice preserves exact product fields, enum payloads,
+function inputs and results, nested callable `errors` rows, and named `needs`
+rows in the semantic handoff. The type checker interns nominal and callable
+types plus failure and needs rows against resolved `SymbolId` identities,
+infers whether declared generics occupy value, failure-row, or needs-row kinds,
+records poison facts for unresolved annotations, and exposes deterministic
+callable contracts through `Compiler::type_project`. M4 remains open for body
+inference, channel composition and discharge, structural provider checking,
+`Success`/`Failure`, and pattern exhaustiveness.
 
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
