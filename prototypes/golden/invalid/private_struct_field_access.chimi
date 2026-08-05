@@ -1,0 +1,12 @@
+// PROTOTYPE
+// EXPECT-COMPILE: failure
+// EXPECT-DIAGNOSTIC: E_PRIVATE_STRUCT_FIELD
+// EXPECT-MESSAGE: field cents of Money is module-private; use Money.cents(money)
+// EXPECT-SPAN: money.cents
+
+import modules/money as Money
+
+fn display(cents: Int) {
+  let money = Money.from_cents(cents)
+  Int.to_text(money.cents)
+}

@@ -1,0 +1,187 @@
+(* PROTOTYPE: corpus-driven working grammar, not a stable specification. *)
+
+(* Lexical layer. The lossless lexer emits every token, including trivia. *)
+
+IDENT          = IDENT_START, { IDENT_CONTINUE } ;
+IDENT_START    = "_" | ASCII_LETTER ;
+IDENT_CONTINUE = IDENT_START | ASCII_DIGIT ;
+ASCII_LETTER   = "A" ... "Z" | "a" ... "z" ;
+ASCII_DIGIT    = "0" ... "9" ;
+
+INT            = ASCII_DIGIT, { ASCII_DIGIT | "_" } ;
+TEXT           = '"', { TEXT_CHARACTER | ESCAPE }, '"' ;
+TEXT_CHARACTER = any Unicode scalar except '"', "\\", or NEWLINE ;
+ESCAPE         = "\\", ( '"' | "\\" | "n" | "r" | "t" ) ;
+
+COMMENT        = "//", { any character except NEWLINE } ;
+HSPACE         = ( " " | "\t" ), { " " | "\t" } ;
+NEWLINE        = "\n" ;
+
+keyword        = "pub" | "import" | "as" | "struct" | "enum" | "interface"
+               | "fn" | "let" | "case" | "if"
+               | "errors" | "needs" | "using" | "Void" ;
+literal        = INT | TEXT | "True" | "False" ;
+
+(* HSPACE and COMMENT are trivia. NEWLINE remains available to the parser. *)
+
+file           = optional_newlines,
+                 [ top_item, { line_breaks, top_item } ],
+                 optional_newlines, EOF ;
+top_item       = import_decl | declaration | let_binding | expression ;
+
+declaration    = [ "pub", soft_breaks ],
+                 ( struct_decl | enum_decl | interface_decl | function_decl ) ;
+
+import_decl    = "import", HSPACE, module_path,
+                 ( HSPACE, "as", HSPACE, IDENT
+                 | ".", "{", soft_breaks, import_members, soft_breaks, "}" ) ;
+module_path    = IDENT, { "/", IDENT } ;
+import_members = IDENT, { soft_breaks, ",", soft_breaks, IDENT },
+                 [ soft_breaks, "," ] ;
+
+struct_decl    = "struct", HSPACE, IDENT, [ generic_params ], soft_breaks,
+                 "{", optional_newlines,
+                 [ field, { member_separator, field } ],
+                 optional_newlines, "}" ;
+enum_decl      = "enum", HSPACE, IDENT, [ generic_params ], soft_breaks,
+                 "{", optional_newlines,
+                 [ variant, { member_separator, variant } ],
+                 optional_newlines, "}" ;
+interface_decl = "interface", HSPACE, IDENT, [ generic_params ], soft_breaks,
+                 "{", optional_newlines,
+                 [ field, { member_separator, field } ],
+                 optional_newlines, "}" ;
+
+field          = IDENT, soft_breaks, ":", soft_breaks, type ;
+variant        = IDENT, [ soft_breaks, "(", named_type_fields, ")" ] ;
+named_type_fields
+               = [ named_type_field,
+                   { soft_breaks, ",", soft_breaks, named_type_field },
+                   [ soft_breaks, "," ] ] ;
+named_type_field
+               = IDENT, soft_breaks, ":", soft_breaks, type ;
+generic_params = "<", soft_breaks, IDENT,
+                 { soft_breaks, ",", soft_breaks, IDENT },
+                 soft_breaks, ">" ;
+
+function_decl  = "fn", HSPACE, IDENT, [ generic_params ], soft_breaks, value_params,
+                 implementation_contract, soft_breaks, block ;
+implementation_contract
+               = [ soft_breaks, "->", soft_breaks, type ],
+                 [ soft_breaks, requirement_clause ] ;
+
+value_params   = "(", soft_breaks,
+                 [ value_param,
+                   { soft_breaks, ",", soft_breaks, value_param },
+                   [ soft_breaks, "," ] ],
+                 soft_breaks, ")" ;
+value_param    = IDENT, [ soft_breaks, ":", soft_breaks, type ] ;
+
+type           = function_type | named_type ;
+named_type     = type_name, [ soft_breaks, "<", soft_breaks, type_list,
+                          soft_breaks, ">" ] ;
+type_name      = IDENT, { ".", IDENT } | "Void" ;
+type_list      = type, { soft_breaks, ",", soft_breaks, type } ;
+function_type  = "fn", soft_breaks, "(", soft_breaks, [ type_list ],
+                 soft_breaks, ")", soft_breaks, "->", soft_breaks, type,
+                 [ soft_breaks, "errors", HSPACE, type ],
+                 [ soft_breaks, requirement_clause ] ;
+
+requirement_clause
+               = "needs", HSPACE, requirement_row ;
+requirement_row
+               = requirement_atom,
+                 { soft_breaks, "+", soft_breaks, requirement_atom } ;
+requirement_atom
+               = IDENT | requirement_record ;
+requirement_record
+               = "{", soft_breaks,
+                 named_type_field,
+                 { soft_breaks, ",", soft_breaks, named_type_field },
+                 [ soft_breaks, "," ],
+                 soft_breaks, "}" ;
+
+let_binding    = "let", HSPACE, IDENT, soft_breaks, "=", soft_breaks,
+                 expression ;
+
+expression     = using_expression ;
+using_expression
+               = pipeline,
+                 { soft_breaks, "using", soft_breaks, record } ;
+pipeline       = comparison,
+                 { soft_breaks, "|>", soft_breaks, comparison } ;
+case_expression
+               = "case", HSPACE, expression_list, soft_breaks,
+                 "{", optional_newlines,
+                 [ case_arm, { line_breaks, case_arm } ],
+                 optional_newlines, "}" ;
+expression_list
+               = expression, { soft_breaks, ",", soft_breaks, expression } ;
+case_arm       = pattern_list,
+                 [ HSPACE, "if", HSPACE, expression ],
+                 soft_breaks, "->", soft_breaks, expression ;
+pattern_list   = pattern, { soft_breaks, ",", soft_breaks, pattern } ;
+pattern        = literal | IDENT,
+                 [ soft_breaks, "(", soft_breaks,
+                   [ pattern_list ], soft_breaks, ")" ] ;
+
+function_expression
+               = "fn", soft_breaks, value_params,
+                 implementation_contract, soft_breaks, block ;
+
+comparison     = additive,
+                 { soft_breaks, ( "<" | "<=" | ">" | ">=" ),
+                   soft_breaks, additive } ;
+additive       = multiplicative,
+                 { soft_breaks, ( "+" | "-" ), soft_breaks,
+                   multiplicative } ;
+multiplicative = unary,
+                 { soft_breaks, ( "*" | "/" ), soft_breaks, unary } ;
+unary          = [ "-", soft_breaks ], postfix ;
+postfix        = primary,
+                 { member_access | call_suffix } ;
+member_access  = ".", IDENT ;
+call_suffix    = "(", soft_breaks,
+                 [ argument,
+                   { soft_breaks, ",", soft_breaks, argument },
+                   [ soft_breaks, "," ] ],
+                 soft_breaks, ")" ;
+argument       = [ IDENT, soft_breaks, ":", soft_breaks ], expression ;
+
+primary        = literal | IDENT | list | record | grouped
+               | case_expression | function_expression | block ;
+list           = "[", soft_breaks,
+                 [ expression_list, [ soft_breaks, "," ] ],
+                 soft_breaks, "]" ;
+record         = "{", soft_breaks,
+                 record_field,
+                 { soft_breaks, ",", soft_breaks, record_field },
+                 [ soft_breaks, "," ],
+                 soft_breaks, "}" ;
+record_field   = IDENT, soft_breaks, ":", soft_breaks, expression ;
+grouped        = "(", soft_breaks, expression, soft_breaks, ")" ;
+
+block          = "{", separators,
+                 block_item, { line_breaks, block_item },
+                 optional_newlines, "}" ;
+block_item     = let_binding | expression ;
+
+(* Contextual line handling. *)
+
+line_breaks    = NEWLINE, { NEWLINE } ;
+optional_newlines
+               = { NEWLINE } ;
+separators     = optional_newlines ;
+member_separator
+               = line_breaks | ( ",", soft_breaks ) ;
+soft_breaks    = { HSPACE | COMMENT | NEWLINE } ;
+
+(* A nonempty brace expression is a record when its first significant tokens
+   are IDENT ":". Otherwise it is a block. Empty braces are invalid. This is a
+   parser lookahead rule, not a separate lexical distinction. *)
+
+(* Pipelines are left-associative unary application: x |> f |> g means
+   g(f(x)). A call on the right constructs the unary function before applying
+   it, so x |> f(a) means f(a)(x), not f(x, a). *)
+
+(* No standalone if-expression exists. "if" is recognized only in case_arm. *)

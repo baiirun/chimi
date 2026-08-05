@@ -1,0 +1,61 @@
+// PROTOTYPE
+// This is a composite forcing example, not worker-specific language syntax.
+// EXPECT-COMPILE: success
+// EXPECT-SHAPE: process =
+//   fn(fn(Job) -> Done errors JobError needs R)
+//   -> fn(Job) -> Done errors JobError
+//   needs R + { clock: Clock }
+// EXPECT-ROOT-REQUIREMENTS: {}
+// EXPECT-EVENTS: computation.started, attempt.started, dependency.called,
+//   attempt.failed, retry.scheduled, attempt.started, dependency.called,
+//   attempt.succeeded, computation.completed
+
+enum Job {
+  SendReceipt(order_id: OrderId)
+}
+
+struct Done {
+}
+
+enum JobError {
+  TemporaryFailure(reason: Text)
+  PermanentFailure(reason: Text)
+}
+
+struct RetryPolicy<E> {
+  maximum_attempts: Int
+  retry_when: fn(E) -> Bool
+}
+
+interface Clock {
+  sleep: fn(Duration) -> Void
+}
+
+fn retryable(error: JobError) -> Bool {
+  case error {
+    TemporaryFailure(_) -> True
+    PermanentFailure(_) -> False
+  }
+}
+
+fn process<R>(
+  handle: fn(Job) -> Done errors JobError needs R,
+) -> fn(Job) -> Done errors JobError needs R + { clock: Clock } {
+  handle
+  |> Retry.with(
+    policy: RetryPolicy(
+      maximum_attempts: 3,
+      retry_when: retryable,
+    ),
+    delay: fn(_attempt) { Duration.seconds(1) },
+  )
+}
+
+let process_job = process(ReceiptJobs.handle)
+
+pub fn main() {
+  process_job(job) using {
+    clock: System.monotonic_clock(),
+    mailer: Mailer.smtp(configuration.smtp),
+  }
+}

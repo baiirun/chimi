@@ -1,0 +1,28 @@
+// PROTOTYPE
+// EXPECT-COMPILE: success
+// EXPECT-SHAPE: add_tax = fn(Percent) -> fn(Money) -> Money
+// EXPECT-SHAPE: price_for_alabama = fn(Money) -> Money
+// EXPECT-SHAPE: transform = fn(A, fn(A) -> B) -> B
+
+struct Money {
+  cents: Int
+}
+
+struct Percent {
+  basis_points: Int
+}
+
+fn add_tax(rate: Percent) -> fn(Money) -> Money {
+  fn(price) {
+    Money(
+      cents: price.cents + (price.cents * rate.basis_points / 10_000),
+    )
+  }
+}
+
+fn transform<A, B>(value: A, operation: fn(A) -> B) -> B {
+  operation(value)
+}
+
+let price_for_alabama = add_tax(Percent(basis_points: 400))
+let total = transform(Money(cents: 2_500), price_for_alabama)

@@ -1,0 +1,6 @@
+// PROTOTYPE
+// EXPECT-RESOLUTION: E_UNRESOLVED_VALUE
+
+import modules/money as Money
+
+let invalid = from_cents(1)

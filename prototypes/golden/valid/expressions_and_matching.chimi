@@ -1,0 +1,49 @@
+// PROTOTYPE
+// EXPECT-COMPILE: success
+// EXPECT-SHAPE: normalize = fn(Text) -> Text
+// EXPECT-SHAPE: authorize = fn(AccountState, Request) -> Decision
+
+struct Money {
+  cents: Int
+}
+
+enum AccountState {
+  Active
+  Suspended(reason: Text)
+}
+
+enum Request {
+  View
+  Transfer(amount: Money)
+}
+
+enum Decision {
+  Allowed(summary: Text)
+  Denied(reason: Text)
+}
+
+fn normalize(input: Text) -> Text {
+  let normalized = {
+    let trimmed = Text.trim(input)
+    Text.lowercase(trimmed)
+  }
+
+  normalized
+}
+
+fn authorize(state: AccountState, request: Request) -> Decision {
+  case state, request {
+    Suspended(reason), _ -> Denied(reason)
+    Active, Transfer(amount) if amount.cents <= 0 -> {
+      let reason = normalize("Transfer amount must be positive")
+      Denied(reason)
+    }
+    Active, View -> Allowed(summary: "view")
+    Active, Transfer(amount) -> {
+      let summary = Text.concat("transfer:", Int.to_text(amount.cents))
+      Allowed(summary: summary)
+    }
+  }
+}
+
+let decision = authorize(Active, Transfer(amount: Money(cents: 500)))

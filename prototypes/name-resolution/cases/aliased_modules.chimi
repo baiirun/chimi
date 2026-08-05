@@ -1,0 +1,7 @@
+// PROTOTYPE
+// EXPECT-RESOLUTION: success
+
+import billing/money as BillingMoney
+import ledger/money as LedgerMoney
+
+let value = BillingMoney.amount() + LedgerMoney.amount()

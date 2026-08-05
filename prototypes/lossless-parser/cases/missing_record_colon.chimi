@@ -1,0 +1,9 @@
+// PROTOTYPE
+// EXPECT-SYNTAX: failure
+
+let configuration = {
+  retry_limit 3,
+  tracing: True,
+}
+
+let after = 1

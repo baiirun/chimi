@@ -1,0 +1,6 @@
+// PROTOTYPE
+// EXPECT-RESOLUTION: E_UNQUALIFIED_FUNCTION_IMPORT
+
+import modules/money.{from_cents}
+
+let invalid = from_cents(1)

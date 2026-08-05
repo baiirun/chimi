@@ -113,8 +113,11 @@ The ability to understand what ran, what failed, which effects happened, which r
 _Avoid_: Black-box runtime, guess-and-check debugging, hidden execution
 
 **Module-Qualified Use**:
-A naming style where external functionality is called through its module, such as `Module.function`, rather than imported as unqualified names.
-_Avoid_: Arbitrary named import, invisible origin, unqualified external call
+A naming style where external behavior is called through its module, such as
+`Module.function`. Module bindings are explicitly named at import sites rather
+than inferred from paths. Explicit member imports may bind public types or
+constructors but never erase a function's module origin.
+_Avoid_: Wildcard import, invisible behavior origin, unqualified external call
 
 **Explicit Local Reasoning**:
 A design principle that favors visible dependencies, effects, failures, and concurrency behavior over terseness or ambient convention.
@@ -135,6 +138,10 @@ _Avoid_: Expected error, recoverable business failure
 **Requirement Contract**:
 A callable unit's declared needs from its environment, such as time, logging, persistence, network, configuration, randomness, or queues.
 _Avoid_: Ambient global, hidden dependency, framework injection
+
+**Provision Boundary**:
+An expression boundary where `using` supplies one or more dependency implementations and removes the corresponding entries from an operation's remaining needs.
+_Avoid_: Root-only dependency choice, ambient service lookup, untyped provider map
 
 **Composed Abstraction**:
 A reusable behavior or data model built through functions, modules, interfaces, records, enums, or components rather than classical inheritance.
@@ -216,9 +223,25 @@ _Avoid_: Dynamic core, annotation-only explicitness, weak typing
 An implementation stance where Chimi programs are compiled before running, without committing yet to a specific backend or artifact format.
 _Avoid_: Interpreter-first language, backend commitment
 
+**Single-Executable Distribution**:
+A build contract where an application, its Chimi dependencies, and the required Chimi runtime are linked into one deployable executable without requiring a separately installed Chimi runtime. Operating-system libraries may remain external and must be reported; fully static linkage is a target-specific capability.
+_Avoid_: Runtime bundle, implicit shared-library dependency, universally promised static linkage
+
+**Self-Hosted Compiler**:
+The long-term compiler state where a released Chimi compiler is implemented in Chimi and can rebuild itself reproducibly. The initial host compiler is a bootstrap implementation, not part of Chimi's permanent semantics.
+_Avoid_: Permanent bootstrap dependency, host-language semantic leak, self-hosting before the language is ready
+
+**Bootstrap Host**:
+The temporary implementation language used to build Chimi before the compiler becomes self-hosted. It does not define Chimi's source semantics, backend, runtime, or memory model.
+_Avoid_: Runtime target, permanent implementation language, language semantics
+
 **Single Runtime First**:
 A runtime strategy where Chimi validates one coherent execution target before optimizing for portability across many backends.
 _Avoid_: Backend matrix, premature portability, lowest-common-denominator runtime
+
+**Generational In-Place Deployment**:
+A future deployment model where a new program version runs beside the current version, receives new work, and replaces the old version after existing work drains without migrating live execution state.
+_Avoid_: Hot code upgrade, live code replacement, state migration
 
 **Uniform Inference**:
 A type-system stance where type annotations remain optional by default across both public and private code, avoiding different inference behavior at visibility boundaries.

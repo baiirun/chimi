@@ -1,0 +1,38 @@
+// PROTOTYPE
+// EXPECT-COMPILE: success
+// EXPECT-SHAPE: map_success =
+//   fn(
+//     fn(A) -> B errors E needs R,
+//     fn(B) -> C,
+//   ) -> fn(A) -> C errors E needs R
+// EXPECT-SHAPE: configured_submit =
+//   fn(Cart) -> Confirmation errors CheckoutError
+//   needs { payment: Payment, inventory: Inventory }
+
+fn map_success<A, B, C, E, R>(
+  operation: fn(A) -> B errors E needs R,
+  transform: fn(B) -> C,
+) -> fn(A) -> C errors E needs R {
+  fn(input) {
+    transform(operation(input))
+  }
+}
+
+fn confirm(order: Order) -> Confirmation {
+  Confirmation(order_id: order.id)
+}
+
+fn configure_submit(
+  submit: fn(Cart)
+    -> Order
+    errors CheckoutError
+    needs { payment: Payment, inventory: Inventory },
+) -> fn(Cart)
+  -> Confirmation
+  errors CheckoutError
+  needs { payment: Payment, inventory: Inventory }
+{
+  map_success(submit, confirm)
+}
+
+let configured_submit = configure_submit(Checkout.submit)

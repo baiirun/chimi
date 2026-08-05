@@ -1,0 +1,7 @@
+// PROTOTYPE
+// EXPECT-SYNTAX: failure
+
+let transformed = value
+|>
+
+let after = 1

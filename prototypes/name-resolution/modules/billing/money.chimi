@@ -1,0 +1,5 @@
+// PROTOTYPE
+
+pub fn amount() -> Int {
+  1
+}

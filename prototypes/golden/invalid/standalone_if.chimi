@@ -1,0 +1,14 @@
+// PROTOTYPE
+// EXPECT-COMPILE: failure
+// EXPECT-SYNTAX: failure
+// EXPECT-DIAGNOSTIC: E_STANDALONE_IF
+// EXPECT-MESSAGE: Chimi has no standalone if expression; match the Bool with case
+// EXPECT-SPAN: if enabled
+
+fn label(enabled: Bool) -> Text {
+  if enabled {
+    "enabled"
+  } else {
+    "disabled"
+  }
+}

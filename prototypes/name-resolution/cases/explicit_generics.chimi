@@ -1,0 +1,8 @@
+// PROTOTYPE
+// EXPECT-COMPILE: success
+
+fn preserve<A, E, R>(
+  operation: fn(A) -> A errors E needs R,
+) -> fn(A) -> A errors E needs R {
+  operation
+}

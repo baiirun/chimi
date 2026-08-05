@@ -1,0 +1,24 @@
+// PROTOTYPE
+// MODULE: Money (inferred from money.chimi)
+// EXPECT-COMPILE: success
+// EXPECT-SHAPE: from_cents = fn(Int) -> Money errors MoneyError
+// EXPECT-SHAPE: cents = fn(Money) -> Int
+
+pub struct Money {
+  cents: Int
+}
+
+pub enum MoneyError {
+  NegativeAmount(cents: Int)
+}
+
+pub fn from_cents(cents: Int) {
+  case cents >= 0 {
+    True -> Money(cents: cents)
+    False -> Failure(NegativeAmount(cents: cents))
+  }
+}
+
+pub fn cents(money: Money) -> Int {
+  money.cents
+}

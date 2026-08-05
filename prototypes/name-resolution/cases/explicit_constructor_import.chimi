@@ -1,0 +1,6 @@
+// PROTOTYPE
+// EXPECT-RESOLUTION: success
+
+import modules/money.{NegativeAmount}
+
+let error = NegativeAmount(cents: -1)

@@ -1,0 +1,11 @@
+// PROTOTYPE
+// EXPECT-COMPILE: failure
+// EXPECT-DIAGNOSTIC: E_MISSING_RUNTIME_DEPENDENCY
+// EXPECT-MESSAGE: main needs inventory: Inventory
+// EXPECT-SPAN: pub fn main
+
+pub fn main() {
+  Checkout.submit(cart) using {
+    payment: Stripe.gateway(client),
+  }
+}

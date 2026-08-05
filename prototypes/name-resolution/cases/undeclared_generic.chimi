@@ -1,0 +1,7 @@
+// PROTOTYPE
+// EXPECT-COMPILE: failure
+// EXPECT-DIAGNOSTIC: E_UNRESOLVED_TYPE
+
+fn identity(value: A) -> A {
+  value
+}

@@ -1,0 +1,27 @@
+// PROTOTYPE
+// EXPECT-COMPILE: failure
+// EXPECT-DIAGNOSTIC: E_OUTCOME_CASE_NOT_EXHAUSTIVE
+// EXPECT-MESSAGE: case does not handle Failure(PaymentError)
+// EXPECT-SPAN: case payment.charge(total)
+
+struct Money {
+  cents: Int
+}
+
+struct Receipt {
+  id: Text
+}
+
+enum PaymentError {
+  Declined(reason: Text)
+}
+
+interface Payment {
+  charge: fn(Money) -> Receipt errors PaymentError
+}
+
+fn charge(total: Money) needs { payment: Payment } {
+  case payment.charge(total) {
+    Success(receipt) -> receipt
+  }
+}

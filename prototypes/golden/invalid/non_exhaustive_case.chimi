@@ -1,0 +1,18 @@
+// PROTOTYPE
+// EXPECT-COMPILE: failure
+// EXPECT-DIAGNOSTIC: E_CASE_NOT_EXHAUSTIVE
+// EXPECT-MESSAGE: case does not handle CheckoutState.Submitted
+// EXPECT-SPAN: case state
+
+enum CheckoutState {
+  Empty
+  Ready
+  Submitted(order_id: Text)
+}
+
+fn is_open(state: CheckoutState) -> Bool {
+  case state {
+    Empty -> True
+    Ready -> True
+  }
+}

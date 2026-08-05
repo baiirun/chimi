@@ -1,0 +1,10 @@
+// PROTOTYPE
+// EXPECT-COMPILE: failure
+// EXPECT-SYNTAX: failure
+// EXPECT-DIAGNOSTIC: E_MISSING_MODULE_ALIAS
+// EXPECT-MESSAGE: module imports require an explicit alias with `as` or an explicit member list
+// EXPECT-SPAN: import modules/money
+
+import modules/money
+
+let value = 1

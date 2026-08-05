@@ -1,0 +1,7 @@
+// PROTOTYPE
+// EXPECT-RESOLUTION: E_IMPORT_BINDING_CONFLICT
+
+import billing/money as Money
+import ledger/money as Money
+
+let value = Money.amount()

@@ -1,0 +1,12 @@
+// PROTOTYPE
+// EXPECT-COMPILE: failure
+// EXPECT-DIAGNOSTIC: E_UNUSED_VALUE
+// EXPECT-MESSAGE: this call produces Money; bind or explicitly discard its successful value
+// EXPECT-SPAN: Money.from_cents(cents)
+
+import modules/money as Money
+
+fn validate(cents: Int) -> Money {
+  Money.from_cents(cents)
+  Money.from_cents(cents)
+}

@@ -1,0 +1,17 @@
+// PROTOTYPE
+// MODULE: UseMoney (inferred from use_money.chimi)
+// EXPECT-COMPILE: success
+// EXPECT-SHAPE: display = fn(Int) -> Text errors Money.MoneyError
+// EXPECT-SHAPE: display_money = fn(Money.Money) -> Text
+
+import modules/money as Money
+import modules/money.{Money}
+
+pub fn display(cents: Int) {
+  let money = Money.from_cents(cents)
+  Int.to_text(Money.cents(money))
+}
+
+pub fn display_money(money: Money) -> Text {
+  Int.to_text(Money.cents(money))
+}

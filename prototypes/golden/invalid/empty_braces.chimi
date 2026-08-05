@@ -1,0 +1,8 @@
+// PROTOTYPE
+// EXPECT-COMPILE: failure
+// EXPECT-SYNTAX: failure
+// EXPECT-DIAGNOSTIC: E_EMPTY_BRACES
+// EXPECT-MESSAGE: empty braces are invalid; write a nonempty record or block
+// EXPECT-SPAN: {}
+
+let empty = {}

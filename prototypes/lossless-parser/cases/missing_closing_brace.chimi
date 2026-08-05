@@ -1,0 +1,5 @@
+// PROTOTYPE
+// EXPECT-SYNTAX: failure
+
+fn transform(value: Int) -> Int {
+  value + 1

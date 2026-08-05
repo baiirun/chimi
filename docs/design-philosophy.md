@@ -43,7 +43,16 @@ The standard library is still part of the official Chimi experience, not just an
 
 A reader should be able to understand dependencies, effects, failures, module origins, and concurrency behavior without chasing hidden imports, ambient globals, framework conventions, or runtime magic.
 
-Chimi should prefer module-qualified use, such as `Module.function`, over arbitrary named imports.
+Chimi should require module-qualified behavior use, such as `Module.function`.
+Every module qualifier should be explicitly declared at its import site rather
+than inferred from the imported path.
+Explicit member imports may bind public types or constructors where their names
+carry the relevant identity, but must not erase a function's module origin at
+the call site.
+
+Dependency implementations may be supplied at any expression boundary. A
+runtime root closes and validates the remaining dependency needs rather than
+being the only place where dependencies can be chosen.
 
 ### 5. Inference Without Hidden Operations
 
@@ -102,6 +111,25 @@ Libraries and official tooling should carry the early design before the language
 ### 14. Local-First Ecosystem
 
 Package management should first solve local workspaces, reproducible builds, dependency boundaries, and curated dependencies. An open public registry and ecosystem governance can wait.
+
+### 15. Single-Executable Distribution and Eventual Self-Hosting
+
+The blessed application build should produce one deployable executable containing
+the application, its Chimi dependencies, and the required Chimi runtime. It
+should not require a separately installed Chimi VM, runtime, or package tree.
+Operating-system libraries may remain external when required and must be
+reported; fully static linkage is a target-specific capability rather than a
+universal promise.
+
+This deployment contract does not make compilation monolithic. The compiler
+should compile modules independently, retain cacheable intermediate artifacts,
+and perform a final link into the executable. Library artifact formats may be
+added when concrete interoperability needs justify them.
+
+The released compiler should eventually be implemented in Chimi, distributed
+as one executable, and able to rebuild itself reproducibly. The first compiler
+host is a bootstrap choice and must not define Chimi semantics or leak its
+object model into compiler representation contracts.
 
 ## Open Philosophy Questions
 

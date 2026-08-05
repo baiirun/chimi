@@ -1,0 +1,554 @@
+# Chimi Executable Kernel Specification
+
+## Status
+
+This document specifies Chimi's first executable language kernel. It is the
+normative consolidation of the accepted golden corpus and prototype verdicts.
+Chimi remains free to break; this is an implementation target, not a backwards-
+compatibility promise.
+
+The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY describe normative
+requirements. Examples use the first kernel's source dialect.
+
+## Purpose
+
+The kernel defines the smallest coherent language that lets programmers compose
+ordinary values, functions, expected failures, environmental dependencies, and
+observable execution while retaining explicit local reasoning and a lossless,
+tooling-oriented compiler frontend.
+
+It is designed to support a first real compiler. It does not define the
+production runtime architecture or the complete future Chimi language.
+
+## Scope
+
+The kernel specifies:
+
+- files, modules, imports, visibility, and name identity;
+- nominal structs, closed enums, anonymous records, and core value types;
+- functions, generics, expressions, blocks, pipelines, and pattern matching;
+- success, expected-failure, and dependency-needs channels;
+- structural dependency interfaces and provision with `using`;
+- root execution, evaluation order, outcomes, and structured events;
+- lossless parsing, semantic lowering, diagnostics, formatting, inspection, and
+  frontend performance obligations.
+
+It does not specify aliases, newtypes, nullability, exceptions, standalone
+conditionals, macros, mutation, resource ownership, structured concurrency,
+supervision, durability, a permanent backend, an artifact format, package
+management, deployment, or interoperability.
+
+## Source Files and Lexical Model
+
+- Chimi source files use the `.chimi` extension in the first kernel.
+- Source is UTF-8. Identifiers are ASCII letters or `_`, followed by ASCII
+  letters, digits, or `_`.
+- `//` begins a line comment. Comments and all whitespace are source trivia and
+  MUST remain losslessly represented in the CST.
+- Decimal integer literals MAY contain `_` separators. Text literals use double
+  quotes and backslash escaping.
+- Line breaks are syntactically significant between declarations, block items,
+  data members, and case arms. They are soft inside delimited lists and around
+  continued function contracts.
+- Semicolons are not part of the kernel.
+
+The parser MUST consume the entire file even when the source is malformed.
+
+## Modules and Visibility
+
+Each source file defines one module. Its workspace-relative path is its stable
+module identity. Source files MUST NOT contain module headers.
+
+A module import chooses its source binding explicitly:
+
+```chimi
+import billing/money as BillingMoney
+```
+
+The compiler MUST NOT derive `BillingMoney` from the path. External functions
+remain qualified through this binding:
+
+```chimi
+BillingMoney.from_cents(500)
+```
+
+An explicit member import MAY bind public types and enum constructors:
+
+```chimi
+import billing/money.{Money, NegativeAmount}
+```
+
+Member imports MUST NOT bind functions. Bare module imports and wildcard member
+imports are invalid.
+
+Module, type, and value names occupy separate namespaces. Every resolved
+external reference carries a stable module-qualified symbol identity even when
+an explicit member import permits an unqualified source spelling.
+
+Declarations are private unless prefixed with `pub`. Publishing a struct
+exposes its nominal type but does not expose its fields or implicit constructor.
+External construction and field access therefore use public module functions.
+Publishing an enum exposes its variants as constructors.
+
+## Data Types
+
+### Structs
+
+`struct` declares a nominal product:
+
+```chimi
+struct Money {
+  cents: Int
+}
+```
+
+Fields have declared types. Construction MUST provide exactly the required
+field names with compatible values. Struct representation is all-or-nothing;
+the kernel has no per-field visibility modifiers.
+
+### Enums
+
+`enum` declares a nominal closed sum:
+
+```chimi
+enum PaymentError {
+  Declined(reason: Text)
+  GatewayUnavailable
+}
+```
+
+Each variant is a constructor. Variant patterns MUST use the declared payload
+arity and field shape.
+
+### Anonymous records
+
+An anonymous record is a transparent structural product:
+
+```chimi
+{
+  charge: fn(total) { Receipt(id: "test") },
+}
+```
+
+Records MUST contain at least one field. Records provide open local data and
+structural interface implementations; they do not create nominal identity.
+
+### Absence and completion
+
+Chimi has no `Nil`, `null`, or nullable value. Optional data uses `Option<T>`.
+
+`Void` is the success type of an operation that completes without data. It has
+no source literal or public constructor. An empty block is invalid and MUST NOT
+stand in for completion.
+
+Aliases and newtype-like declarations are not part of the first kernel.
+
+## Generics
+
+Generic function and data declarations bind their parameters explicitly after
+the declaration name:
+
+```chimi
+struct Box<T> {
+  value: T
+}
+
+fn transform<A, B>(value: A, operation: fn(A) -> B) -> B {
+  operation(value)
+}
+```
+
+An unqualified type-like name that is neither a declared generic parameter nor
+a resolvable nominal or built-in type is a diagnostic. The compiler MUST NOT
+silently create generics from unresolved uppercase identifiers.
+
+The compiler infers each generic parameter's kind from use. Ordinary type
+positions constrain value types; `errors` positions constrain failure rows;
+`needs` positions constrain dependency rows. Inconsistent uses are diagnostics.
+
+The first kernel supports declaration-scoped parametric polymorphism. It does
+not require higher-rank types, explicit kind annotations, specialization
+syntax, or user-defined variance.
+
+## Functions and Callable Contracts
+
+Functions are values. Named and anonymous functions share the same callable
+model and functions MAY return functions.
+
+Every callable contract contains three independent channels:
+
+```text
+data inputs -> success type errors expected-failure-row needs dependency-row
+```
+
+For example:
+
+```chimi
+fn submit(cart: Cart) -> Order needs {
+    payment: Payment,
+    inventory: Inventory,
+} {
+  // implementation
+}
+```
+
+Tooling displays the inferred complete shape as:
+
+```text
+fn(Cart) -> Order errors CheckoutError
+needs { payment: Payment, inventory: Inventory }
+```
+
+The implementation MAY omit its success annotation and infer it from the body.
+Inference applies uniformly to public and private code. Tooling MUST expose the
+complete inferred callable contract.
+
+Implemented function headers infer their expected-failure rows in the first
+kernel. Function-type annotations use `fn(...) -> ... errors ... needs ...` to
+state the contract expected from a function value. Higher-order contracts MUST
+preserve relationships expressed through their declared generic type, failure-
+row, and needs-row parameters.
+
+## Expressions
+
+Every function body and nested block is an expression. A block contains one or
+more ordered items, and its final expression produces the block's value:
+
+```chimi
+let value = {
+  let intermediate = compute()
+  transform(intermediate)
+}
+```
+
+Blocks MUST NOT be empty. A block-local `return` is not part of the kernel.
+
+Calls and block items evaluate left to right. Member access and calls bind more
+tightly than unary, multiplicative, additive, and comparison operations.
+Pipelines apply after those ordinary expressions; postfix `using` applies to
+the resulting operation.
+
+Calling a function composes its invocation into the surrounding computation.
+Execution begins only when the external runner invokes the root. A compiler MAY
+evaluate, inline, or fuse deterministic requirement-free calls without changing
+their observable semantics.
+
+### Pipelines
+
+```chimi
+value |> transform
+```
+
+is exactly:
+
+```chimi
+transform(value)
+```
+
+Every type-compatible unary function is pipeable. Chimi MUST NOT automatically
+partially apply missing arguments or select a pipeline slot in a multi-argument
+call. An API intended for configured pipeline use explicitly returns a unary
+function:
+
+```chimi
+operation |> Retry.with(policy: policy, delay: delay)
+```
+
+### Case expressions
+
+`case` is the kernel's only branching expression:
+
+```chimi
+case state, request {
+  Suspended(reason), _ -> Denied(reason)
+  Active, Transfer(amount) if amount.cents <= 0 -> Denied("invalid")
+  Active, _ -> Allowed
+}
+```
+
+Ordinary matching over closed values MUST be exhaustive. `_` and an unguarded
+binding pattern are catch-alls. An unguarded catch-all MUST be last. A guarded
+catch-all does not prove exhaustiveness. Unreachable arms are diagnostics.
+
+`if` is valid only on a case-arm guard. A guard MUST be pure: it cannot expose
+dependency needs or other observable execution. Chimi has no standalone `if`
+expression in the first kernel.
+
+## Expected Failures
+
+Expected errors are ordinary typed values carried in a callable's separate
+failure row. Chimi has no exception throwing for expected failures.
+
+An ordinary expression implicitly constructs a successful computation outcome:
+
+```chimi
+Receipt(id: "receipt-1")
+```
+
+`Success(value)` is the optional explicit equivalent. Programmers are never
+required to wrap ordinary successful values.
+
+`Failure(error)` constructs a failed computation outcome:
+
+```chimi
+Failure(PaymentError.Declined(reason: "expired"))
+```
+
+It places the error value in the expected-failure channel. It does not perform
+untyped stack unwinding.
+
+An unhandled failure stops the remaining local sequence and joins the caller's
+inferred failure row without propagation syntax. A fallible expression can be
+matched directly:
+
+```chimi
+case payment.charge(total) {
+  Success(receipt) -> receipt
+  Failure(error) -> Failure(CheckoutError.PaymentFailed(error))
+}
+```
+
+These patterns inspect the same outcome constructors. A failure case MAY handle
+selected variants; unmatched failure variants continue bubbling. This differs
+from ordinary enum matching, which remains exhaustive.
+
+Failure rows retain variant identities. Tooling MAY display a whole error enum
+when every variant remains and individual variants after selective handling.
+
+A storable `Result<T, E>` is not built into this kernel. If later introduced,
+it is ordinary data and its qualified constructors remain distinct from live
+computation outcomes.
+
+Defects and cancellation are not expected failures and MUST NOT appear in
+callable failure rows.
+
+## Dependency Needs and Interfaces
+
+`needs` declares environmental dependencies separately from data inputs,
+success, and failure:
+
+```chimi
+fn checkout(cart: Cart) needs {
+  payment: Payment,
+  inventory: Inventory,
+} {
+  // payment and inventory are lexical values here
+}
+```
+
+Each need has a lexical name and an interface type. Composition unions
+compatible needs. Reusing one name with incompatible interface types is a
+diagnostic.
+
+An `interface` is a structural record of function contracts:
+
+```chimi
+interface Payment {
+  charge: fn(Money) -> Receipt errors PaymentError
+}
+```
+
+Conformance is implicit. Implementing an interface does not attach methods to a
+nominal type and does not alter name lookup. A provider method MAY expose fewer
+failures or needs than its interface permits, but MUST NOT expose more or change
+the required data inputs or success type.
+
+## Provision with `using`
+
+Postfix `using` supplies named providers at any expression boundary:
+
+```chimi
+let checkout = submit(cart) using {
+  payment: fake_payment,
+}
+```
+
+Successfully supplied needs are removed from the resulting callable contract;
+unsupplied needs remain. The provider record MUST be nonempty.
+
+A provider shape mismatch leaves the need unresolved for analysis but marks the
+mismatch as explained. A later closed-root check SHOULD NOT emit a redundant
+missing-dependency diagnostic for that same need.
+
+## Program Entry and Execution
+
+A runnable program exports a conventional `main` root:
+
+```chimi
+pub fn main() {
+  Checkout.submit(cart) using {
+    payment: Stripe.gateway(client),
+    inventory: Warehouse.inventory(database),
+  }
+}
+```
+
+After provision, `main` MUST have an empty needs row. Chimi source does not call
+`Runtime.run`.
+
+The toolchain or embedding host invokes `main`. It supplies operational
+execution configuration—such as tracing export, execution identity,
+cancellation, and resource policy—through an external runner boundary. Such
+configuration is not an ordinary program dependency map.
+
+The runtime representation distinguishes four terminal outcomes:
+
+- success with a value;
+- expected failure with an error value;
+- defect with invariant-failure context;
+- cancellation with cancellation context.
+
+Retry is ordinary higher-order composition over one operation. A retry policy
+MAY retry selected expected-failure variants. It MUST NOT retry defects or
+cancellation. Exhaustion preserves the final expected failure value.
+
+## Observable Execution
+
+Full tracing mode emits structured events for every executed semantic
+operation. Every canonical event contains or can losslessly recover:
+
+- deterministic sequence within one execution;
+- a stable low-cardinality computation kind;
+- a unique trace or execution ID;
+- span and parent-span causality;
+- semantic node or local operation identity;
+- source identity;
+- typed dynamic attributes.
+
+Dynamic identifiers MUST NOT be embedded in the computation kind. Structured
+computation context propagates across runtime-owned child work, retries, and
+dependency calls. Process or task labels MAY aid debugging but MUST NOT define
+or replace computation context.
+
+Exporters MAY encode context with repeated fields, interning, or context deltas.
+They MUST NOT invent or heuristically reconstruct computation identity.
+
+## Compiler and Tooling Contract
+
+### Parsing and CST
+
+The lexer preserves the exact source slice for every token, including trivia
+and invalid text. The parser emits structural events independently from the
+tree representation. A tree sink constructs an immutable, semantic-free green
+CST.
+
+Parsing always returns a CST and syntax diagnostics. Missing expected syntax is
+represented by a zero-width missing token. Unexpected consumed syntax remains
+inside an explicit error node. Recovery MUST make progress and SHOULD resume at
+the smallest useful enclosing boundary.
+
+Concatenating non-missing CST token text MUST reproduce the source exactly.
+
+### Semantic lowering and resolution
+
+Lowering produces a compact source-mapped semantic representation. It removes
+formatting trivia, separates block steps from their final value, normalizes
+pipelines to calls while retaining their origin, and preserves `using` as an
+explicit provision boundary.
+
+Malformed forms remain explicit invalid semantic nodes; lowering MUST NOT
+invent valid meaning for damaged source.
+
+Resolution assigns stable identities in the module, type, and value namespaces.
+It distinguishes declared generic parameters from nominal types and resolves
+pattern constructors before type checking.
+
+The concrete resolved-to-typed and typed-to-executable representations are
+implementation contracts specified separately from this source-language
+document.
+
+### Diagnostics
+
+Every diagnostic uses a shared envelope containing:
+
+- originating compiler stage;
+- stable diagnostic code;
+- severity;
+- primary source span;
+- optional secondary labels;
+- optional source edits.
+
+The common envelope MUST NOT blur syntax, lowering, name, type, or execution-
+setup errors. Later stages SHOULD suppress diagnostics caused solely by an
+already-reported earlier error.
+
+### Formatting and inspection
+
+Chimi has one canonical, non-configurable formatter. It consumes the lossless
+CST. When syntax damage prevents a complete safe rewrite, it MUST return the
+source unchanged with syntax diagnostics.
+
+Cursor inspection composes the containing CST path with source-mapped semantic
+facts. Tools MUST NOT derive semantic identity from formatted text.
+
+## Performance Contract
+
+The following correctness invariants do not depend on benchmark hardware:
+
+- every source byte remains represented;
+- malformed parsing consumes all input and terminates;
+- diagnostics and missing markers have valid source spans;
+- malformed regions do not cause unbounded diagnostic cascades;
+- future clean and incremental executions produce structurally equivalent
+  results.
+
+Performance reports record implementation revision, build mode, operating
+system, architecture, CPU, core count, and memory. The implementation measures
+cold startup, valid and malformed parsing, editor edits, retained CST storage,
+local semantic invalidation, and high-fanout invalidation.
+
+The provisional experience targets are 16 ms p95 for typical full-file syntax
+and editor reparses and 100 ms p95 for local semantic diagnostics on the
+recorded reference machine. These are design constraints, not portable claims.
+
+The implementation MUST NOT claim incremental semantic performance until an
+incremental semantic engine exists.
+
+## Non-Normative Implementation Model
+
+A conforming first compiler is expected to use this phase structure:
+
+```text
+source
+  -> lossless CST + syntax diagnostics
+  -> source-mapped semantic representation
+  -> resolved semantic representation
+  -> typed representation with success/failure/needs contracts
+  -> executable core
+  -> backend/runtime execution
+```
+
+The CST is authoritative for source-preserving tools. The semantic and later
+representations are derived and retain stable source identity. Compiler stages
+own their diagnostics while sharing the diagnostic envelope.
+
+This phase structure is normative at its semantic boundaries, not in its host
+language, allocation strategy, object layout, or choice of permanent backend.
+
+## Verification
+
+Run the combined executable validation:
+
+```sh
+python3 prototypes/kernel-validation/main.py --check
+```
+
+Every component probe MUST pass. Until resolved semantic expressions feed type
+inference and typed expressions feed executable lowering, the validator MUST
+report:
+
+```text
+specification-ready=true
+end-to-end-compiler=false
+```
+
+The files under `prototypes/golden/` are the acceptance corpus for this
+specification. A future implementation SHOULD convert each expectation comment
+into an automated compiler assertion without making those comments part of the
+language.
+
+## Non-Normative Sources
+
+The [decision inventory](executable-kernel-decision-inventory.md) links each
+contract area to its prototype and research evidence. Go and Python are
+disposable prototype hosts and impose no implementation requirement.

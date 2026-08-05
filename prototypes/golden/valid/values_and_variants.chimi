@@ -1,0 +1,24 @@
+// PROTOTYPE
+// EXPECT-COMPILE: success
+// EXPECT-SHAPE: describe = fn(CheckoutState) -> Text
+
+struct OrderId {
+  value: Text
+}
+
+enum CheckoutState {
+  Empty
+  Ready(item_count: Int)
+  Submitted(order_id: OrderId)
+}
+
+fn describe(state: CheckoutState) -> Text {
+  case state {
+    Empty -> "empty"
+    Ready(item_count) -> Text.concat("ready:", Int.to_text(item_count))
+    Submitted(order_id) -> Text.concat("submitted:", order_id.value)
+  }
+}
+
+let state = Ready(item_count: 2)
+let description = describe(state)

@@ -1,0 +1,25 @@
+// PROTOTYPE
+// EXPECT-COMPILE: failure
+// EXPECT-DIAGNOSTIC: E_OBSERVABLE_CASE_GUARD
+// EXPECT-MESSAGE: case guards must be pure; evaluate risk.check before this case
+// EXPECT-SPAN: risk.check(candidate)
+
+struct Transfer {
+  id: Text
+}
+
+enum Decision {
+  Allow
+  Review
+}
+
+interface Risk {
+  check: fn(Transfer) -> Bool
+}
+
+fn decide(transfer: Transfer) -> Decision needs { risk: Risk } {
+  case transfer {
+    candidate if risk.check(candidate) -> Review
+    _ -> Allow
+  }
+}
