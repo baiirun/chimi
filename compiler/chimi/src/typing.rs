@@ -113,6 +113,10 @@ pub(crate) enum CanonicalType {
     },
     Generic(SymbolId),
     Function(CallableContract),
+    PolymorphicFunction {
+        parameters: Vec<SymbolId>,
+        contract: CallableContract,
+    },
     InferenceVariable(u32),
     Poison,
 }
@@ -253,6 +257,9 @@ impl TypedProject {
             }
             CanonicalType::Generic(symbol) => self.resolved.symbol(*symbol).name.clone(),
             CanonicalType::Function(contract) => self.format_function_contract(contract),
+            CanonicalType::PolymorphicFunction { contract, .. } => {
+                self.format_function_contract(contract)
+            }
             CanonicalType::InferenceVariable(_) => "_".to_owned(),
             CanonicalType::Poison => "<invalid>".to_owned(),
         }
@@ -428,6 +435,13 @@ struct ProjectTypeChecker {
 struct ValueBinding {
     type_id: TypeId,
     need: Option<Need>,
+}
+
+#[derive(Default)]
+struct CallSubstitution {
+    values: HashMap<SymbolId, TypeId>,
+    failures: HashMap<SymbolId, FailureRowId>,
+    needs: HashMap<SymbolId, NeedsRowId>,
 }
 
 impl ProjectTypeChecker {
@@ -803,7 +817,7 @@ impl ProjectTypeChecker {
                     }
                 } else if let Some(contract) = self.contracts.get(&symbol).cloned() {
                     ExpressionFact {
-                        success: self.intern_type(CanonicalType::Function(contract)),
+                        success: self.callable_type_for_symbol(symbol, contract),
                         failures: FailureRowId::new(0),
                         needs: NeedsRowId::new(0),
                     }
@@ -865,23 +879,28 @@ impl ProjectTypeChecker {
                     .map(|argument| self.infer_expression(module_id, argument, generics, bindings))
                     .collect::<Vec<_>>();
                 let callee_type = self.resolve_inference_type(callee.success);
-                let Some(CanonicalType::Function(contract)) =
-                    self.types.get(callee_type.raw() as usize).cloned()
-                else {
-                    if callee_type != TypeId::new(0) {
-                        self.type_error_range(
-                            module_id,
-                            "T4201",
-                            *range,
-                            "expression is not callable",
-                        );
-                    }
-                    return self.record_expression_fact(
-                        module_id,
-                        expression,
-                        self.poison_expression_fact(),
-                    );
-                };
+                let (contract, mut substitution) =
+                    match self.types.get(callee_type.raw() as usize).cloned() {
+                        Some(CanonicalType::Function(contract)) => (contract, None),
+                        Some(CanonicalType::PolymorphicFunction { contract, .. }) => {
+                            (contract, Some(CallSubstitution::default()))
+                        }
+                        _ => {
+                            if callee_type != TypeId::new(0) {
+                                self.type_error_range(
+                                    module_id,
+                                    "T4201",
+                                    *range,
+                                    "expression is not callable",
+                                );
+                            }
+                            return self.record_expression_fact(
+                                module_id,
+                                expression,
+                                self.poison_expression_fact(),
+                            );
+                        }
+                    };
                 if contract.inputs.len() != argument_facts.len() {
                     self.type_error_range(
                         module_id,
@@ -895,26 +914,51 @@ impl ProjectTypeChecker {
                     );
                 }
                 for (argument, expected) in argument_facts.iter().zip(&contract.inputs) {
-                    self.unify_at(
-                        module_id,
-                        *range,
-                        argument.success,
-                        *expected,
-                        "call argument",
-                    );
+                    if let Some(substitution) = &mut substitution {
+                        if !self.match_call_type(argument.success, *expected, substitution) {
+                            self.type_error_range(
+                                module_id,
+                                "T4203",
+                                *range,
+                                "call argument has an incompatible type",
+                            );
+                        }
+                    } else {
+                        self.unify_at(
+                            module_id,
+                            *range,
+                            argument.success,
+                            *expected,
+                            "call argument",
+                        );
+                    }
                 }
+                let (success, contract_failures, contract_needs) =
+                    if let Some(substitution) = &mut substitution {
+                        (
+                            self.substitute_call_type(contract.success, substitution),
+                            self.substitute_call_failure_row(contract.failures, substitution),
+                            self.substitute_call_needs_row(contract.needs, substitution),
+                        )
+                    } else {
+                        (
+                            self.resolve_inference_type(contract.success),
+                            contract.failures,
+                            contract.needs,
+                        )
+                    };
                 let failures = self.union_failure_rows(
                     std::iter::once(callee.failures)
                         .chain(argument_facts.iter().map(|fact| fact.failures))
-                        .chain(std::iter::once(contract.failures)),
+                        .chain(std::iter::once(contract_failures)),
                 );
                 let needs = self.union_needs_rows(
                     std::iter::once(callee.needs)
                         .chain(argument_facts.iter().map(|fact| fact.needs))
-                        .chain(std::iter::once(contract.needs)),
+                        .chain(std::iter::once(contract_needs)),
                 );
                 ExpressionFact {
-                    success: self.resolve_inference_type(contract.success),
+                    success,
                     failures,
                     needs,
                 }
@@ -1290,10 +1334,42 @@ impl ProjectTypeChecker {
 
     fn symbol_value_type_or_contract(&mut self, symbol: SymbolId) -> Option<TypeId> {
         if let Some(contract) = self.contracts.get(&symbol).cloned() {
-            Some(self.intern_type(CanonicalType::Function(contract)))
+            Some(self.callable_type_for_symbol(symbol, contract))
         } else {
             self.symbol_value_type(symbol)
         }
+    }
+
+    fn callable_type_for_symbol(&mut self, symbol: SymbolId, contract: CallableContract) -> TypeId {
+        let parameters = self.function_generic_parameters(symbol);
+        if parameters.is_empty() {
+            self.intern_type(CanonicalType::Function(contract))
+        } else {
+            self.intern_type(CanonicalType::PolymorphicFunction {
+                parameters,
+                contract,
+            })
+        }
+    }
+
+    fn function_generic_parameters(&self, symbol: SymbolId) -> Vec<SymbolId> {
+        let symbol = self.resolved.symbol(symbol);
+        if symbol.kind != ProjectSymbolKind::Function {
+            return Vec::new();
+        }
+        let mut parameters = self
+            .resolved
+            .symbols
+            .iter()
+            .filter(|candidate| {
+                candidate.module_id == symbol.module_id
+                    && candidate.semantic_id == symbol.semantic_id
+                    && candidate.kind == ProjectSymbolKind::GenericParameter
+            })
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        parameters.sort_unstable();
+        parameters
     }
 
     fn field_type(&self, receiver: TypeId, member: &str) -> Option<TypeId> {
@@ -1306,6 +1382,250 @@ impl ProjectTypeChecker {
             .iter()
             .find(|field| field.name == member)
             .map(|field| field.type_id)
+    }
+
+    fn match_call_type(
+        &mut self,
+        actual: TypeId,
+        expected: TypeId,
+        substitution: &mut CallSubstitution,
+    ) -> bool {
+        let actual = self.resolve_inference_type(actual);
+        let expected = self.resolve_inference_type(expected);
+        if actual == TypeId::new(0) || expected == TypeId::new(0) {
+            return true;
+        }
+        match (
+            self.types[actual.raw() as usize].clone(),
+            self.types[expected.raw() as usize].clone(),
+        ) {
+            (_, CanonicalType::Generic(parameter)) => {
+                if let Some(bound) = substitution.values.get(&parameter).copied() {
+                    self.unify(actual, bound)
+                } else {
+                    substitution.values.insert(parameter, actual);
+                    true
+                }
+            }
+            (
+                CanonicalType::Named {
+                    symbol: actual_symbol,
+                    arguments: actual_arguments,
+                },
+                CanonicalType::Named {
+                    symbol: expected_symbol,
+                    arguments: expected_arguments,
+                },
+            ) => {
+                actual_symbol == expected_symbol
+                    && actual_arguments.len() == expected_arguments.len()
+                    && actual_arguments.into_iter().zip(expected_arguments).all(
+                        |(actual, expected)| self.match_call_type(actual, expected, substitution),
+                    )
+            }
+            (CanonicalType::Function(actual), CanonicalType::Function(expected)) => {
+                actual.inputs.len() == expected.inputs.len()
+                    && actual
+                        .inputs
+                        .into_iter()
+                        .zip(expected.inputs)
+                        .all(|(actual, expected)| {
+                            self.match_call_type(actual, expected, substitution)
+                        })
+                    && self.match_call_type(actual.success, expected.success, substitution)
+                    && self.match_call_failure_row(actual.failures, expected.failures, substitution)
+                    && self.match_call_needs_row(actual.needs, expected.needs, substitution)
+            }
+            _ => self.unify(actual, expected),
+        }
+    }
+
+    fn match_call_failure_row(
+        &mut self,
+        actual: FailureRowId,
+        expected: FailureRowId,
+        substitution: &mut CallSubstitution,
+    ) -> bool {
+        let actual = self.failure_rows[actual.raw() as usize].clone();
+        let expected = self.failure_rows[expected.raw() as usize].clone();
+        let mut remaining_variants = actual.variants;
+        for variant in &expected.variants {
+            let Some(index) = remaining_variants
+                .iter()
+                .position(|candidate| candidate == variant)
+            else {
+                return false;
+            };
+            remaining_variants.remove(index);
+        }
+        match expected.parameters.as_slice() {
+            [] => remaining_variants.is_empty() && actual.parameters.is_empty(),
+            [parameter] => {
+                let residual = self.intern_failure_row(FailureRow {
+                    variants: remaining_variants,
+                    parameters: actual.parameters,
+                });
+                if let Some(bound) = substitution.failures.get(parameter).copied() {
+                    self.failure_rows_equivalent(bound, residual)
+                } else {
+                    substitution.failures.insert(*parameter, residual);
+                    true
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn match_call_needs_row(
+        &mut self,
+        actual: NeedsRowId,
+        expected: NeedsRowId,
+        substitution: &mut CallSubstitution,
+    ) -> bool {
+        let actual = self.needs_rows[actual.raw() as usize].clone();
+        let expected = self.needs_rows[expected.raw() as usize].clone();
+        let mut remaining_entries = actual.entries;
+        for expected_need in &expected.entries {
+            let Some(index) = remaining_entries
+                .iter()
+                .position(|need| need.lexical_name == expected_need.lexical_name)
+            else {
+                return false;
+            };
+            let actual_need = remaining_entries.remove(index);
+            if !self.match_call_type(actual_need.interface, expected_need.interface, substitution) {
+                return false;
+            }
+        }
+        match expected.parameters.as_slice() {
+            [] => remaining_entries.is_empty() && actual.parameters.is_empty(),
+            [parameter] => {
+                let residual = self.intern_needs_row(NeedsRow {
+                    entries: remaining_entries,
+                    parameters: actual.parameters,
+                });
+                if let Some(bound) = substitution.needs.get(parameter).copied() {
+                    self.needs_rows_equivalent(bound, residual)
+                } else {
+                    substitution.needs.insert(*parameter, residual);
+                    true
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn substitute_call_type(
+        &mut self,
+        type_id: TypeId,
+        substitution: &mut CallSubstitution,
+    ) -> TypeId {
+        let type_id = self.resolve_inference_type(type_id);
+        match self.types[type_id.raw() as usize].clone() {
+            CanonicalType::Generic(parameter) => substitution
+                .values
+                .entry(parameter)
+                .or_insert_with(|| self.fresh_inference_type())
+                .to_owned(),
+            CanonicalType::Named { symbol, arguments } => {
+                let arguments = arguments
+                    .into_iter()
+                    .map(|argument| self.substitute_call_type(argument, substitution))
+                    .collect();
+                self.intern_type(CanonicalType::Named { symbol, arguments })
+            }
+            CanonicalType::Function(contract) => {
+                let contract = self.substitute_call_contract(contract, substitution);
+                self.intern_type(CanonicalType::Function(contract))
+            }
+            CanonicalType::PolymorphicFunction {
+                parameters,
+                contract,
+            } => self.intern_type(CanonicalType::PolymorphicFunction {
+                parameters,
+                contract,
+            }),
+            CanonicalType::InferenceVariable(_) | CanonicalType::Poison => type_id,
+        }
+    }
+
+    fn substitute_call_contract(
+        &mut self,
+        contract: CallableContract,
+        substitution: &mut CallSubstitution,
+    ) -> CallableContract {
+        CallableContract {
+            inputs: contract
+                .inputs
+                .into_iter()
+                .map(|input| self.substitute_call_type(input, substitution))
+                .collect(),
+            success: self.substitute_call_type(contract.success, substitution),
+            failures: self.substitute_call_failure_row(contract.failures, substitution),
+            needs: self.substitute_call_needs_row(contract.needs, substitution),
+        }
+    }
+
+    fn substitute_call_failure_row(
+        &mut self,
+        row: FailureRowId,
+        substitution: &CallSubstitution,
+    ) -> FailureRowId {
+        let row = self.failure_rows[row.raw() as usize].clone();
+        let mut rows = vec![self.intern_failure_row(FailureRow {
+            variants: row.variants,
+            parameters: Vec::new(),
+        })];
+        for parameter in row.parameters {
+            rows.push(
+                substitution
+                    .failures
+                    .get(&parameter)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        self.intern_failure_row(FailureRow {
+                            variants: Vec::new(),
+                            parameters: vec![parameter],
+                        })
+                    }),
+            );
+        }
+        self.union_failure_rows(rows)
+    }
+
+    fn substitute_call_needs_row(
+        &mut self,
+        row: NeedsRowId,
+        substitution: &mut CallSubstitution,
+    ) -> NeedsRowId {
+        let row = self.needs_rows[row.raw() as usize].clone();
+        let entries = row
+            .entries
+            .into_iter()
+            .map(|need| Need {
+                interface: self.substitute_call_type(need.interface, substitution),
+                ..need
+            })
+            .collect();
+        let mut rows = vec![self.intern_needs_row(NeedsRow {
+            entries,
+            parameters: Vec::new(),
+        })];
+        for parameter in row.parameters {
+            rows.push(
+                substitution
+                    .needs
+                    .get(&parameter)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        self.intern_needs_row(NeedsRow {
+                            entries: Vec::new(),
+                            parameters: vec![parameter],
+                        })
+                    }),
+            );
+        }
+        self.union_needs_rows(rows)
     }
 
     fn resolve_inference_type(&self, mut id: TypeId) -> TypeId {
