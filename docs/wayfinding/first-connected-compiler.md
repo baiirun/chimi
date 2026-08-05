@@ -120,9 +120,18 @@ rows in the semantic handoff. The type checker interns nominal and callable
 types plus failure and needs rows against resolved `SymbolId` identities,
 infers whether declared generics occupy value, failure-row, or needs-row kinds,
 records poison facts for unresolved annotations, and exposes deterministic
-callable contracts through `Compiler::type_project`. M4 remains open for body
-inference, channel composition and discharge, structural provider checking,
-`Success`/`Failure`, and pattern exhaustiveness.
+callable contracts through `Compiler::type_project`. That header slice left
+body inference, channel composition and discharge, structural provider
+checking, `Success`/`Failure`, and pattern exhaustiveness open.
+
+The second M4 slice makes literals and calls explicit semantic expressions and
+infers concrete body types through names, field selection, calls, blocks, and
+nested functions. Call sites validate arity and argument/result compatibility;
+expected-failure and named-needs channels accumulate through expressions and
+converge monotonically across forward function references. Captured bindings
+remain available while nested function parameters shadow them. M4 remains open
+for the rest of the expression algebra, generic call instantiation, `using`
+discharge and providers, `Success`/`Failure`, and full pattern analysis.
 
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
