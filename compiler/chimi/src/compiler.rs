@@ -1114,4 +1114,104 @@ mod tests {
             Some("fn(fn(Int) -> Text errors E needs R) -> fn(Int) -> Text errors E needs R")
         );
     }
+
+    #[test]
+    fn generic_composition_instantiates_value_failure_and_needs_rows_per_call() {
+        let report = Compiler::type_project(vec![module(
+            "contracts/map_success",
+            "map_success.chimi",
+            concat!(
+                "enum LeftError { LeftFailed }\n",
+                "enum RightError { RightFailed }\n",
+                "interface LeftDep { get: fn(Int) -> Text errors LeftError }\n",
+                "interface RightDep { get: fn(Text) -> Int errors RightError }\n",
+                "fn map_success<A, B, C, E, R>(\n",
+                "  operation: fn(A) -> B errors E needs R,\n",
+                "  transform: fn(B) -> C,\n",
+                ") -> fn(A) -> C errors E needs R {\n",
+                "  fn(input) { transform(operation(input)) }\n",
+                "}\n",
+                "fn left(value: Int) -> Text needs { dependency: LeftDep } {\n",
+                "  dependency.get(value)\n",
+                "}\n",
+                "fn text_to_int(value: Text) -> Int { 1 }\n",
+                "fn right(value: Text) -> Int needs { dependency: RightDep } {\n",
+                "  dependency.get(value)\n",
+                "}\n",
+                "fn int_to_text(value: Int) -> Text { \"done\" }\n",
+                "fn composed_left() -> fn(Int) -> Int errors LeftError needs { dependency: LeftDep } {\n",
+                "  map_success(left, text_to_int)\n",
+                "}\n",
+                "fn composed_right() -> fn(Text) -> Text errors RightError needs { dependency: RightDep } {\n",
+                "  map_success(right, int_to_text)\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report
+                .contract("contracts/map_success", "composed_left")
+                .as_deref(),
+            Some("fn() -> fn(Int) -> Int errors LeftError needs { dependency: LeftDep }")
+        );
+        assert_eq!(
+            report
+                .contract("contracts/map_success", "composed_right")
+                .as_deref(),
+            Some("fn() -> fn(Text) -> Text errors RightError needs { dependency: RightDep }")
+        );
+    }
+
+    #[test]
+    fn one_generic_call_keeps_repeated_value_parameters_consistent() {
+        let text = concat!(
+            "fn choose<A>(left: A, right: A) -> A { left }\n",
+            "fn invalid() -> Int { choose(1, \"text\") }\n",
+        );
+        let report = Compiler::type_project(vec![module(
+            "contracts/repeated_generic",
+            "repeated_generic.chimi",
+            text,
+        )]);
+
+        assert_eq!(report.diagnostics().len(), 1);
+        assert_eq!(report.diagnostics()[0].stage(), DiagnosticStage::Type);
+        assert_eq!(report.diagnostics()[0].code(), "T4203");
+        assert_eq!(
+            report.diagnostics()[0].range().start(),
+            text.find("choose(1, \"text\")").unwrap() as u32
+        );
+    }
+
+    #[test]
+    fn generic_needs_rows_preserve_concrete_entries_while_substituting_the_remainder() {
+        let report = Compiler::type_project(vec![module(
+            "contracts/needs_extension",
+            "needs_extension.chimi",
+            concat!(
+                "interface Clock { now: fn() -> Int }\n",
+                "interface Mailer { send: fn(Int) -> Text }\n",
+                "fn add_clock<R>(\n",
+                "  operation: fn(Int) -> Text needs R,\n",
+                ") -> fn(Int) -> Text needs R + { clock: Clock } {\n",
+                "  fn(value) needs { clock: Clock } { operation(value) }\n",
+                "}\n",
+                "fn mail(value: Int) -> Text needs { mailer: Mailer } {\n",
+                "  mailer.send(value)\n",
+                "}\n",
+                "fn configured() -> fn(Int) -> Text needs { clock: Clock, mailer: Mailer } {\n",
+                "  add_clock(mail)\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report
+                .contract("contracts/needs_extension", "configured")
+                .as_deref(),
+            Some("fn() -> fn(Int) -> Text needs { clock: Clock, mailer: Mailer }")
+        );
+    }
 }

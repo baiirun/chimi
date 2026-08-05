@@ -133,6 +133,16 @@ remain available while nested function parameters shadow them. M4 remains open
 for the rest of the expression algebra, generic call instantiation, `using`
 discharge and providers, `Success`/`Failure`, and full pattern analysis.
 
+The third M4 slice gives declared generic functions an explicit rank-one
+polymorphic callable representation. Each direct invocation creates a private
+substitution for value, failure-row, and needs-row parameters; repeated
+positions constrain one another within that call, while separate calls cannot
+share inferred bindings. Higher-order arguments bind complete callable
+contracts, allowing `map_success`-style composition to preserve concrete error
+and dependency rows. M4 remains open for contextual instantiation of generic
+function values, remaining expressions, `using` and structural providers,
+outcome recovery, and patterns.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the
