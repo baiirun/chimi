@@ -46,6 +46,15 @@ with the accepted lossless lexer, parser event stream, immutable green CST,
 recovery model, and deterministic semantic lowering without changing the
 downstream representation interfaces.
 
+The first M2 slice now establishes those boundaries in the Rust compiler for
+the executable M1 grammar. The lexer retains trivia and invalid text, the
+tree-independent parser emits events, the sink builds an immutable green CST,
+and missing syntax becomes zero-width tokens while diagnostics remain separate.
+Valid and malformed fixtures round-trip byte-for-byte, and CST lowering retains
+the source ranges consumed by the existing semantic and execution pipeline.
+M2 remains active for the full accepted grammar, broader recovery corpus, typed
+syntax facade, stable identity work, fuzz invariants, and performance workloads.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the

@@ -120,6 +120,27 @@ mod tests {
     }
 
     #[test]
+    fn source_ranges_survive_lossless_cst_lowering() {
+        let text = concat!(
+            "// retained trivia\r\n",
+            "struct Answer {\n  value: Int\n}\n\n",
+            "pub fn main() {\n  Answer( value: 42 ) // retained too\n}\n",
+        );
+        let report = Compiler::run(
+            source(text),
+            ExecutionConfig::new("source-range-test").unwrap(),
+        )
+        .expect("source with trivia executes");
+
+        let expression_start = text.find("Answer( value: 42 )").unwrap() as u32;
+        assert_eq!(report.events[0].source_range.start(), expression_start);
+        assert_eq!(
+            report.events[0].source_range.end(),
+            expression_start + "Answer( value: 42 )".len() as u32
+        );
+    }
+
+    #[test]
     fn missing_or_renamed_main_cannot_seal() {
         for text in [
             "struct Answer { value: Int }",
