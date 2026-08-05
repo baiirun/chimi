@@ -1,0 +1,21 @@
+import modules/money as Money
+import modules/money.{Money}
+
+pub struct Box<Value> {
+  value: Value,
+}
+
+enum CheckoutError {
+  Declined(reason: Text)
+  Unavailable(item: Money.Money)
+}
+
+interface Payment<Receipt> {
+  charge: fn(Money.Money) -> Receipt errors CheckoutError needs {
+    audit: Audit,
+  }
+}
+
+pub fn main() {
+  Box(value: 42)
+}

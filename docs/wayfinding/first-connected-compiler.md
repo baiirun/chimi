@@ -55,6 +55,14 @@ the source ranges consumed by the existing semantic and execution pipeline.
 M2 remains active for the full accepted grammar, broader recovery corpus, typed
 syntax facade, stable identity work, fuzz invariants, and performance workloads.
 
+The second M2 slice extends that same event/CST boundary across explicit module
+imports, visibility, structs, enums, interfaces, generics, qualified and
+callable types, `errors`, and `needs` rows. The executable semantic lowerer
+still accepts only the original M1 program shape and now emits an explicit
+lowering diagnostic for every parsed declaration it cannot represent, rather
+than silently dropping valid CST structure. Expression and pattern parsing is
+the next grammar slice.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the
