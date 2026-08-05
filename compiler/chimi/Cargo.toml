@@ -1,0 +1,10 @@
+[package]
+name = "chimi"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "chimi"
+path = "src/main.rs"
