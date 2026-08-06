@@ -87,6 +87,40 @@ STAGES = (
         "10/10 scenarios satisfy executable semantics",
     ),
     Stage(
+        "connected typing",
+        "resolved Rust semantic project",
+        "typed callable contracts",
+        (
+            "cargo",
+            "test",
+            "--quiet",
+            "-p",
+            "chimi",
+            "--lib",
+            "compiler::tests::calls_infer_failure_and_needs_channels_from_function_bodies",
+            "--",
+            "--exact",
+        ),
+        "test result: ok. 1 passed",
+    ),
+    Stage(
+        "connected execution",
+        "typed Rust project",
+        "verified core + execution report",
+        (
+            "cargo",
+            "test",
+            "--quiet",
+            "-p",
+            "chimi",
+            "--lib",
+            "compiler::tests::project_core_executes_the_dependency_forcing_program_from_source",
+            "--",
+            "--exact",
+        ),
+        "test result: ok. 1 passed",
+    ),
+    Stage(
         "tooling seams",
         "lossless CST + semantic file",
         "formatting + diagnostics + inspection",
@@ -118,14 +152,14 @@ SEAMS = (
     Seam(
         "resolved names",
         "typed contracts",
-        Evidence.INDEPENDENT,
-        "The contract algebra is exercised with source-shaped scenarios, not resolved semantic files.",
+        Evidence.CONNECTED,
+        "The Rust checker consumes the resolver's project and infers callable success, failure, and needs channels.",
     ),
     Seam(
         "typed contracts",
         "executable core",
-        Evidence.INDEPENDENT,
-        "The runner consumes hand-built executable nodes, not checked expressions.",
+        Evidence.CONNECTED,
+        "The Rust compiler seals a typed project, lowers its verified root, and executes the resulting core.",
     ),
     Seam(
         "CST + semantics",
@@ -162,6 +196,10 @@ def evaluate(results: tuple[ProbeResult, ...]) -> Verdict:
         if seam.evidence is Evidence.CONNECTED
     }
     coherent = probes_pass and required <= connected
+    compiler_required = {
+        ("resolved names", "typed contracts"),
+        ("typed contracts", "executable core"),
+    }
     blockers = tuple(
         f"{seam.source} -> {seam.target}: {seam.detail}"
         for seam in SEAMS
@@ -171,6 +209,6 @@ def evaluate(results: tuple[ProbeResult, ...]) -> Verdict:
         probes_pass=probes_pass,
         coherent=coherent,
         specification_ready=coherent,
-        end_to_end_compiler=coherent and not blockers,
+        end_to_end_compiler=coherent and compiler_required <= connected and not blockers,
         blockers=blockers,
     )

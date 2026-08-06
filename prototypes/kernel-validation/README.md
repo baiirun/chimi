@@ -1,6 +1,7 @@
 # Chimi Executable-Kernel Validation Prototype
 
-> PROTOTYPE: this is a disposable integration audit, not a Chimi compiler.
+> PROTOTYPE: this is a disposable integration audit of the Chimi compiler and
+> its earlier component models.
 
 ## Question
 
@@ -27,22 +28,12 @@ python3 prototypes/kernel-validation/main.py --check
 
 ## Verdict
 
-The explored kernel is coherent and ready to consolidate into a specification,
-but it is not an end-to-end compiler. Source through name resolution is truly
-connected: the parser produces the CST consumed by lowering, and the resolver
-consumes lowered modules. Formatting and inspection consume those same parser
-and lowering representations.
-
-Two central handoffs are still independent models:
-
-- type-contract scenarios do not consume resolved semantic expressions;
-- the runner consumes hand-built executable nodes rather than typed expressions.
-
-This is acceptable evidence for a language-design specification because both
-models exercise the same accepted corpus concepts and their boundaries are
-explicit. It is not evidence that arbitrary `.chimi` source can already compile
-and run. Connecting those handoffs belongs to the first implementation plan,
-not to further surface-language invention.
+The kernel is specification-ready and its first compiler path is end-to-end.
+The Rust checker consumes resolved semantic projects, sealing consumes the
+resulting typed contracts, and executable lowering consumes only a verified
+root. The validator runs focused Rust probes for both handoffs in addition to
+the earlier component probes. Formatting and inspection still consume the
+parser and lowering representations established by those component models.
 
 Production scheduling, supervision, durability, recovery, a permanent backend,
 and incremental semantic performance remain deliberately outside this kernel.
