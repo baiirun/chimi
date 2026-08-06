@@ -163,6 +163,19 @@ duplicate, missing, and incompatible providers produce bounded field-level type
 diagnostics without discharging the failed need. M4 remains open for outcomes,
 pattern analysis, and closed-root validation.
 
+The sixth M4 slice gives the contextual `Success` and `Failure` constructors
+their computation-channel semantics without introducing a storable result
+wrapper. Ordinary calls continue to bubble failure rows. `Failure(error)` adds
+the statically known enum variant (or the error enum's complete variant set)
+with a contextually inferred success type, while `Success(value)` is equivalent
+to the ordinary successful value. Outcome cases bind success and error values,
+remove selectively handled failure variants, preserve unmatched variants, and
+union any failures produced by recovery arms. Missing outcome channels,
+impossible variants, invalid error values, and malformed constructors receive
+bounded type diagnostics. M4 remains open for complete ordinary-pattern
+analysis, guard rules, explained-need root suppression, and closed-root
+validation.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the

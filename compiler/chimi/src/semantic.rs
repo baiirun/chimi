@@ -569,6 +569,7 @@ pub(crate) enum ModuleExpression {
         semantic_id: SemanticId,
         subjects: Vec<Self>,
         arms: Vec<ModuleCaseArm>,
+        range: TextRange,
     },
     Empty {
         semantic_id: SemanticId,
@@ -1287,6 +1288,7 @@ impl ProjectLowerer {
             semantic_id,
             subjects,
             arms,
+            range: significant_range(node),
         }
     }
 

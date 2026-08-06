@@ -5,8 +5,9 @@ use crate::resolution::{
 };
 use crate::semantic::Literal;
 use crate::semantic::{
-    BinaryOperator, FunctionSignature, ModuleBlockItem, ModuleDeclaration, ModuleDeclarationKind,
-    ModuleExpression, RequirementRowUse, RequirementTermUse, TypeUse, UnaryOperator,
+    BinaryOperator, FunctionSignature, ModuleBlockItem, ModuleCaseArm, ModuleDeclaration,
+    ModuleDeclarationKind, ModuleExpression, Pattern, RequirementRowUse, RequirementTermUse,
+    TypeUse, UnaryOperator,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -845,6 +846,16 @@ impl ProjectTypeChecker {
                         failures: FailureRowId::new(0),
                         needs,
                     }
+                } else if self.is_builtin_value(symbol, "Success")
+                    || self.is_builtin_value(symbol, "Failure")
+                {
+                    self.type_error_range(
+                        module_id,
+                        "T4221",
+                        expression_range(expression),
+                        "contextual outcome constructors must be called with one value",
+                    );
+                    self.poison_expression_fact()
                 } else if let Some(contract) = self.contracts.get(&symbol).cloned() {
                     ExpressionFact {
                         success: self.callable_type_for_symbol(symbol, contract),
@@ -904,15 +915,34 @@ impl ProjectTypeChecker {
                 ..
             } => {
                 let callee_symbol = self.expression_value_symbol(module_id, callee);
-                let callee = self.infer_expression(module_id, callee, generics, bindings);
-                let argument_facts = arguments
-                    .iter()
-                    .map(|argument| InvocationArgument {
-                        label: argument.label.clone(),
-                        fact: self.infer_expression(module_id, &argument.value, generics, bindings),
-                    })
-                    .collect::<Vec<_>>();
-                self.infer_invocation(module_id, *range, callee_symbol, callee, &argument_facts)
+                if callee_symbol.is_some_and(|symbol| {
+                    self.is_builtin_value(symbol, "Success")
+                        || self.is_builtin_value(symbol, "Failure")
+                }) {
+                    self.infer_outcome_constructor(
+                        module_id,
+                        callee_symbol.expect("outcome constructor is resolved"),
+                        arguments,
+                        *range,
+                        generics,
+                        bindings,
+                    )
+                } else {
+                    let callee = self.infer_expression(module_id, callee, generics, bindings);
+                    let argument_facts = arguments
+                        .iter()
+                        .map(|argument| InvocationArgument {
+                            label: argument.label.clone(),
+                            fact: self.infer_expression(
+                                module_id,
+                                &argument.value,
+                                generics,
+                                bindings,
+                            ),
+                        })
+                        .collect::<Vec<_>>();
+                    self.infer_invocation(module_id, *range, callee_symbol, callee, &argument_facts)
+                }
             }
             ModuleExpression::List {
                 elements, range, ..
@@ -1112,30 +1142,12 @@ impl ProjectTypeChecker {
                     needs: NeedsRowId::new(0),
                 }
             }
-            ModuleExpression::Case { subjects, arms, .. } => {
-                let mut facts = subjects
-                    .iter()
-                    .map(|subject| self.infer_expression(module_id, subject, generics, bindings))
-                    .collect::<Vec<_>>();
-                let mut success = None;
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        facts.push(self.infer_expression(module_id, guard, generics, bindings));
-                    }
-                    let body = self.infer_expression(module_id, &arm.body, generics, bindings);
-                    if let Some(expected) = success {
-                        self.unify_expression_result(module_id, &arm.body, body.success, expected);
-                    } else {
-                        success = Some(body.success);
-                    }
-                    facts.push(body);
-                }
-                ExpressionFact {
-                    success: success.unwrap_or(TypeId::new(0)),
-                    failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
-                    needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
-                }
-            }
+            ModuleExpression::Case {
+                subjects,
+                arms,
+                range,
+                ..
+            } => self.infer_case(module_id, subjects, arms, *range, generics, bindings),
             ModuleExpression::Empty { .. } => self.poison_expression_fact(),
         };
         self.record_expression_fact(module_id, expression, fact)
@@ -1158,6 +1170,537 @@ impl ProjectTypeChecker {
             failures: FailureRowId::new(0),
             needs: NeedsRowId::new(0),
         }
+    }
+
+    fn infer_outcome_constructor(
+        &mut self,
+        module_id: ModuleId,
+        constructor: SymbolId,
+        arguments: &[crate::semantic::CallArgument],
+        range: TextRange,
+        generics: &HashMap<String, SymbolId>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> ExpressionFact {
+        let facts = arguments
+            .iter()
+            .map(|argument| self.infer_expression(module_id, &argument.value, generics, bindings))
+            .collect::<Vec<_>>();
+        if arguments.len() != 1 || arguments.iter().any(|argument| argument.label.is_some()) {
+            self.type_error_range(
+                module_id,
+                "T4221",
+                range,
+                format!(
+                    "{} expects exactly one unlabeled value",
+                    self.resolved.symbol(constructor).name
+                ),
+            );
+        }
+        let argument = facts
+            .first()
+            .copied()
+            .unwrap_or_else(|| self.poison_expression_fact());
+        if self.is_builtin_value(constructor, "Success") {
+            return ExpressionFact {
+                success: argument.success,
+                failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
+                needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+            };
+        }
+
+        let variants =
+            arguments
+                .first()
+                .zip(facts.first())
+                .map_or_else(Vec::new, |(argument, fact)| {
+                    self.failure_variants_for_expression(module_id, &argument.value, fact.success)
+                });
+        if variants.is_empty() && arguments.len() == 1 {
+            self.type_error_range(
+                module_id,
+                "T4220",
+                expression_range(&arguments[0].value),
+                "Failure expects a value of an enum error type",
+            );
+        }
+        let constructed_failure = self.intern_failure_row(FailureRow {
+            variants,
+            parameters: Vec::new(),
+        });
+        ExpressionFact {
+            success: self.fresh_inference_type(),
+            failures: self.union_failure_rows(
+                facts
+                    .iter()
+                    .map(|fact| fact.failures)
+                    .chain(std::iter::once(constructed_failure)),
+            ),
+            needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+        }
+    }
+
+    fn failure_variants_for_expression(
+        &self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        type_id: TypeId,
+    ) -> Vec<SymbolId> {
+        let constructed = match expression {
+            ModuleExpression::Call { callee, .. } => {
+                self.expression_value_symbol(module_id, callee)
+            }
+            ModuleExpression::Name { .. } | ModuleExpression::Select { .. } => {
+                self.expression_value_symbol(module_id, expression)
+            }
+            ModuleExpression::Group { expression, .. } => {
+                return self.failure_variants_for_expression(module_id, expression, type_id);
+            }
+            _ => None,
+        };
+        if let Some(symbol) = constructed
+            && self.resolved.symbol(symbol).kind == ProjectSymbolKind::EnumConstructor
+        {
+            return vec![symbol];
+        }
+        let type_id = self.resolve_inference_type(type_id);
+        let CanonicalType::Named { symbol, .. } = self.types[type_id.raw() as usize] else {
+            return Vec::new();
+        };
+        if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Enum {
+            self.enum_variant_symbols(symbol)
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn infer_case(
+        &mut self,
+        module_id: ModuleId,
+        subjects: &[ModuleExpression],
+        arms: &[ModuleCaseArm],
+        range: TextRange,
+        generics: &HashMap<String, SymbolId>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> ExpressionFact {
+        let subject_facts = subjects
+            .iter()
+            .map(|subject| self.infer_expression(module_id, subject, generics, bindings))
+            .collect::<Vec<_>>();
+        let has_outcome_pattern = arms.iter().any(|arm| {
+            arm.patterns.first().is_some_and(|pattern| {
+                self.pattern_is_builtin(module_id, pattern, "Success")
+                    || self.pattern_is_builtin(module_id, pattern, "Failure")
+            })
+        });
+        if subjects.len() == 1 && has_outcome_pattern {
+            self.infer_outcome_case(module_id, subject_facts[0], arms, range, generics, bindings)
+        } else {
+            if subjects.len() == 1
+                && !has_outcome_pattern
+                && !self.failure_row_is_empty(subject_facts[0].failures)
+            {
+                self.type_error_range(
+                    module_id,
+                    "T4222",
+                    range,
+                    "a case over a fallible expression must use Success(...) and Failure(...) patterns",
+                );
+            }
+            self.infer_ordinary_case(module_id, &subject_facts, arms, generics, bindings)
+        }
+    }
+
+    fn infer_ordinary_case(
+        &mut self,
+        module_id: ModuleId,
+        subjects: &[ExpressionFact],
+        arms: &[ModuleCaseArm],
+        generics: &HashMap<String, SymbolId>,
+        bindings: &HashMap<SymbolId, ValueBinding>,
+    ) -> ExpressionFact {
+        let mut facts = subjects.to_vec();
+        let mut success = None;
+        for arm in arms {
+            let mut arm_bindings = bindings.clone();
+            for (pattern, subject) in arm.patterns.iter().zip(subjects) {
+                self.bind_value_pattern(module_id, pattern, subject.success, &mut arm_bindings);
+            }
+            if let Some(guard) = &arm.guard {
+                facts.push(self.infer_expression(module_id, guard, generics, &mut arm_bindings));
+            }
+            let body = self.infer_expression(module_id, &arm.body, generics, &mut arm_bindings);
+            if let Some(expected) = success {
+                self.unify_expression_result(module_id, &arm.body, body.success, expected);
+            } else {
+                success = Some(body.success);
+            }
+            facts.push(body);
+        }
+        ExpressionFact {
+            success: success.unwrap_or(TypeId::new(0)),
+            failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
+            needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+        }
+    }
+
+    fn infer_outcome_case(
+        &mut self,
+        module_id: ModuleId,
+        subject: ExpressionFact,
+        arms: &[ModuleCaseArm],
+        range: TextRange,
+        generics: &HashMap<String, SymbolId>,
+        bindings: &HashMap<SymbolId, ValueBinding>,
+    ) -> ExpressionFact {
+        let mut arm_facts = Vec::new();
+        let mut success = None;
+        let mut handled_variants = Vec::new();
+        let mut handles_unknown_row = false;
+        let mut saw_success = false;
+        let mut saw_failure = false;
+        for arm in arms {
+            let Some(pattern) = arm.patterns.first() else {
+                continue;
+            };
+            let mut arm_bindings = bindings.clone();
+            if self.pattern_is_builtin(module_id, pattern, "Success") {
+                saw_success = true;
+                if let Some(inner) = self.single_outcome_pattern_argument(module_id, pattern) {
+                    self.bind_value_pattern(module_id, inner, subject.success, &mut arm_bindings);
+                }
+            } else if self.pattern_is_builtin(module_id, pattern, "Failure") {
+                saw_failure = true;
+                if let Some(inner) = self.single_outcome_pattern_argument(module_id, pattern) {
+                    let (mut variants, catches_unknown) = self.handled_failure_pattern(
+                        module_id,
+                        inner,
+                        subject.failures,
+                        &mut arm_bindings,
+                    );
+                    handled_variants.append(&mut variants);
+                    handles_unknown_row |= catches_unknown;
+                }
+            } else {
+                let pattern_range = pattern.name.as_ref().map_or(range, |name| name.range);
+                self.type_error_range(
+                    module_id,
+                    "T4222",
+                    pattern_range,
+                    "a fallible case arm must begin with Success(...) or Failure(...)",
+                );
+            }
+            if let Some(guard) = &arm.guard {
+                arm_facts.push(self.infer_expression(
+                    module_id,
+                    guard,
+                    generics,
+                    &mut arm_bindings,
+                ));
+            }
+            let body = self.infer_expression(module_id, &arm.body, generics, &mut arm_bindings);
+            if let Some(expected) = success {
+                self.unify_expression_result(module_id, &arm.body, body.success, expected);
+            } else {
+                success = Some(body.success);
+            }
+            arm_facts.push(body);
+        }
+        if !saw_success {
+            self.type_error_range(
+                module_id,
+                "T4223",
+                range,
+                "outcome case does not handle Success",
+            );
+        }
+        if !saw_failure && !self.failure_row_is_empty(subject.failures) {
+            self.type_error_range(
+                module_id,
+                "T4223",
+                range,
+                "outcome case does not handle Failure",
+            );
+        }
+        handled_variants.sort_unstable();
+        handled_variants.dedup();
+        let remaining =
+            self.remove_handled_failures(subject.failures, &handled_variants, handles_unknown_row);
+        ExpressionFact {
+            success: success.unwrap_or(subject.success),
+            failures: self.union_failure_rows(
+                std::iter::once(remaining).chain(arm_facts.iter().map(|fact| fact.failures)),
+            ),
+            needs: self.union_needs_rows(
+                std::iter::once(subject.needs).chain(arm_facts.iter().map(|fact| fact.needs)),
+            ),
+        }
+    }
+
+    fn single_outcome_pattern_argument<'pattern>(
+        &mut self,
+        module_id: ModuleId,
+        pattern: &'pattern Pattern,
+    ) -> Option<&'pattern Pattern> {
+        if pattern.arguments.len() != 1 {
+            let range = pattern
+                .name
+                .as_ref()
+                .map_or(TextRange::empty(0), |name| name.range);
+            self.type_error_range(
+                module_id,
+                "T4222",
+                range,
+                "outcome patterns require exactly one nested pattern",
+            );
+            None
+        } else {
+            pattern.arguments.first()
+        }
+    }
+
+    fn handled_failure_pattern(
+        &mut self,
+        module_id: ModuleId,
+        pattern: &Pattern,
+        failures: FailureRowId,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> (Vec<SymbolId>, bool) {
+        let symbol = self.resolved_pattern_symbol(module_id, pattern);
+        if let Some(symbol) = symbol
+            && self.resolved.symbol(symbol).kind == ProjectSymbolKind::EnumConstructor
+        {
+            if !self.failure_rows[failures.raw() as usize]
+                .variants
+                .contains(&symbol)
+            {
+                let range = pattern
+                    .name
+                    .as_ref()
+                    .map_or(TextRange::empty(0), |name| name.range);
+                self.type_error_range(
+                    module_id,
+                    "T4224",
+                    range,
+                    "failure pattern is not present in the subject's failure channel",
+                );
+                return (Vec::new(), false);
+            }
+            let success = self.contracts[&symbol].success;
+            self.bind_value_pattern(module_id, pattern, success, bindings);
+            return (vec![symbol], false);
+        }
+
+        if self.pattern_binding_symbol(module_id, pattern).is_some() {
+            if let Some(error_type) = self.failure_value_type(failures) {
+                self.bind_value_pattern(module_id, pattern, error_type, bindings);
+            } else {
+                self.bind_value_pattern(module_id, pattern, TypeId::new(0), bindings);
+            }
+            return (
+                self.failure_rows[failures.raw() as usize].variants.clone(),
+                true,
+            );
+        }
+        if symbol.is_some() || pattern.name.is_none() {
+            let range = pattern
+                .name
+                .as_ref()
+                .map_or(TextRange::empty(0), |name| name.range);
+            self.type_error_range(
+                module_id,
+                "T4222",
+                range,
+                "Failure(...) expects an error variant or binding pattern",
+            );
+        }
+        (Vec::new(), false)
+    }
+
+    fn bind_value_pattern(
+        &mut self,
+        module_id: ModuleId,
+        pattern: &Pattern,
+        expected: TypeId,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) {
+        let Some(name) = &pattern.name else {
+            return;
+        };
+        if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
+            bindings.insert(
+                binding,
+                ValueBinding {
+                    type_id: expected,
+                    need: None,
+                },
+            );
+            return;
+        }
+        let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
+            return;
+        };
+        if self.resolved.symbol(constructor).kind != ProjectSymbolKind::EnumConstructor {
+            return;
+        }
+        let contract = self.contracts[&constructor].clone();
+        let mut substitution = CallSubstitution::default();
+        if !self.match_call_type(expected, contract.success, &mut substitution) {
+            self.type_error_range(
+                module_id,
+                "T4222",
+                name.range,
+                format!("pattern `{}` does not match the subject type", name.text),
+            );
+            return;
+        }
+        if pattern.arguments.len() != contract.inputs.len() {
+            self.type_error_range(
+                module_id,
+                "T4222",
+                name.range,
+                format!(
+                    "pattern `{}` expects {} fields, found {}",
+                    name.text,
+                    contract.inputs.len(),
+                    pattern.arguments.len()
+                ),
+            );
+        }
+        let inputs = contract
+            .inputs
+            .iter()
+            .map(|input| self.substitute_call_type(*input, &mut substitution))
+            .collect::<Vec<_>>();
+        for (argument, input) in pattern.arguments.iter().zip(inputs) {
+            self.bind_value_pattern(module_id, argument, input, bindings);
+        }
+    }
+
+    fn pattern_is_builtin(&self, module_id: ModuleId, pattern: &Pattern, name: &str) -> bool {
+        self.resolved_pattern_symbol(module_id, pattern)
+            .is_some_and(|symbol| self.is_builtin_value(symbol, name))
+    }
+
+    fn pattern_binding_symbol(&self, module_id: ModuleId, pattern: &Pattern) -> Option<SymbolId> {
+        self.find_symbol(
+            module_id,
+            Some(pattern.semantic_id),
+            ProjectSymbolKind::PatternBinding,
+            &pattern.name.as_ref()?.text,
+        )
+    }
+
+    fn resolved_pattern_symbol(&self, module_id: ModuleId, pattern: &Pattern) -> Option<SymbolId> {
+        self.resolved
+            .references
+            .iter()
+            .find(|reference| {
+                reference.file_id.raw() == module_id.raw()
+                    && reference.semantic_id == pattern.semantic_id
+                    && reference.namespace == Namespace::Value
+            })
+            .and_then(|reference| match reference.resolution {
+                ReferenceResolution::Resolved(symbol) => Some(symbol),
+                ReferenceResolution::Unresolved
+                | ReferenceResolution::Ambiguous
+                | ReferenceResolution::Inaccessible(_)
+                | ReferenceResolution::DeferredToType => None,
+            })
+    }
+
+    fn failure_value_type(&self, failures: FailureRowId) -> Option<TypeId> {
+        let row = &self.failure_rows[failures.raw() as usize];
+        if !row.parameters.is_empty() {
+            return None;
+        }
+        let mut owners = row
+            .variants
+            .iter()
+            .filter_map(|variant| self.enum_owner_for_variant(*variant))
+            .collect::<Vec<_>>();
+        owners.sort_unstable();
+        owners.dedup();
+        let [owner] = owners.as_slice() else {
+            return None;
+        };
+        let owner = self.resolved.symbol(*owner);
+        self.declaration_types
+            .get(&(owner.module_id?, owner.semantic_id?))
+            .copied()
+    }
+
+    fn remove_handled_failures(
+        &mut self,
+        failures: FailureRowId,
+        handled_variants: &[SymbolId],
+        handles_unknown_row: bool,
+    ) -> FailureRowId {
+        let mut row = self.failure_rows[failures.raw() as usize].clone();
+        row.variants
+            .retain(|variant| !handled_variants.contains(variant));
+        if handles_unknown_row {
+            row.parameters.clear();
+        }
+        self.intern_failure_row(row)
+    }
+
+    fn failure_row_is_empty(&self, failures: FailureRowId) -> bool {
+        let row = &self.failure_rows[failures.raw() as usize];
+        row.variants.is_empty() && row.parameters.is_empty()
+    }
+
+    fn enum_owner_for_variant(&self, variant: SymbolId) -> Option<SymbolId> {
+        let variant = self.resolved.symbol(variant);
+        let module_id = variant.module_id?;
+        let variant_semantic_id = variant.semantic_id?;
+        let declaration = self.resolved.semantic.modules[module_id.raw() as usize]
+            .declarations
+            .iter()
+            .find(|declaration| {
+                declaration.kind == ModuleDeclarationKind::Enum
+                    && declaration
+                        .variants
+                        .iter()
+                        .any(|candidate| candidate.semantic_id == variant_semantic_id)
+            })?;
+        self.find_symbol(
+            module_id,
+            Some(declaration.semantic_id),
+            ProjectSymbolKind::Enum,
+            &declaration.name.text,
+        )
+    }
+
+    fn enum_variant_symbols(&self, owner: SymbolId) -> Vec<SymbolId> {
+        let owner = self.resolved.symbol(owner);
+        let module_id = owner.module_id.expect("enum is source-backed");
+        let semantic_id = owner.semantic_id.expect("enum has semantic identity");
+        let declaration = self.resolved.semantic.modules[module_id.raw() as usize]
+            .declarations
+            .iter()
+            .find(|declaration| declaration.semantic_id == semantic_id)
+            .expect("enum symbol owns its declaration");
+        let mut variants = declaration
+            .variants
+            .iter()
+            .filter_map(|variant| {
+                self.find_symbol(
+                    module_id,
+                    Some(variant.semantic_id),
+                    ProjectSymbolKind::EnumConstructor,
+                    &variant.name.text,
+                )
+            })
+            .collect::<Vec<_>>();
+        variants.sort_unstable();
+        variants
+    }
+
+    fn is_builtin_value(&self, symbol: SymbolId, name: &str) -> bool {
+        let symbol = self.resolved.symbol(symbol);
+        symbol.module_id.is_none()
+            && symbol.kind == ProjectSymbolKind::BuiltinValue
+            && symbol.name == name
     }
 
     fn infer_using(
@@ -2567,11 +3110,7 @@ fn expression_range(expression: &ModuleExpression) -> TextRange {
             })
             .unwrap_or(TextRange::empty(0)),
         ModuleExpression::Function { body, .. } => expression_range(body),
-        ModuleExpression::Case { subjects, arms, .. } => subjects
-            .first()
-            .map(expression_range)
-            .or_else(|| arms.first().map(|arm| expression_range(&arm.body)))
-            .unwrap_or(TextRange::empty(0)),
+        ModuleExpression::Case { range, .. } => *range,
         ModuleExpression::Empty { .. } => TextRange::empty(0),
     }
 }
