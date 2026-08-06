@@ -199,6 +199,14 @@ shape errors do not trigger a redundant root error. M4 is complete. M5 owns the
 full `VerifiedRoot` reachability proof, executable-core lowering, and execution
 of the complete typed language.
 
+M5 is active. Its first slice makes the project-typed executability gate the
+canonical `seal_entry` interface and labels the original one-struct M1 path as
+legacy. Sealing now identifies an entry by module-local semantic identity,
+requires exactly one exported zero-input `main`, rejects generic or unresolved
+entry contracts, preserves all blocking compiler diagnostics, and returns an
+opaque `VerifiedRoot`. M5 remains open for the complete reachable-node and
+origin proof, backend-neutral core lowering, and runtime execution.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the
