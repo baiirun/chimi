@@ -25,9 +25,7 @@ pub(crate) struct LegacyCoreProgram {
     pub(crate) computation: String,
     pub(crate) root_node_id: CoreNodeId,
     pub(crate) origin: Origin,
-    pub(crate) constructor: SymbolId,
     pub(crate) constructor_name: String,
-    pub(crate) field: SymbolId,
     pub(crate) field_name: String,
     pub(crate) value: i64,
 }
@@ -36,6 +34,8 @@ pub(crate) struct LegacyCoreProgram {
 pub(crate) struct CoreProgram {
     pub(crate) computation: String,
     pub(crate) entry: SymbolId,
+    type_count: usize,
+    pub(crate) symbols: Vec<CoreSymbol>,
     pub(crate) functions: Vec<CoreFunction>,
     pub(crate) bindings: Vec<CoreBinding>,
     pub(crate) nodes: Vec<CoreNode>,
@@ -43,6 +43,13 @@ pub(crate) struct CoreProgram {
 }
 
 impl CoreProgram {
+    pub(crate) fn symbol(&self, id: SymbolId) -> &CoreSymbol {
+        self.symbols
+            .get(id.raw() as usize)
+            .filter(|symbol| symbol.id == id)
+            .expect("core symbol ID belongs to this program")
+    }
+
     fn assert_well_formed(&self) {
         debug_assert!(
             self.functions
@@ -50,18 +57,27 @@ impl CoreProgram {
                 .any(|function| function.symbol == self.entry)
         );
         debug_assert!(!self.computation.is_empty());
+        for (index, symbol) in self.symbols.iter().enumerate() {
+            debug_assert_eq!(symbol.id.raw() as usize, index);
+        }
         for (index, node) in self.nodes.iter().enumerate() {
             debug_assert_eq!(node.id.raw() as usize, index);
             debug_assert!((node.origin.raw() as usize) < self.origins.len());
-            let _ = node.type_id;
+            debug_assert!((node.type_id.raw() as usize) < self.type_count);
             self.assert_operation(&node.operation);
         }
         for function in &self.functions {
-            let _ = &function.parameters;
+            debug_assert!((function.symbol.raw() as usize) < self.symbols.len());
+            debug_assert!(
+                function
+                    .parameters
+                    .iter()
+                    .all(|parameter| (parameter.raw() as usize) < self.symbols.len())
+            );
             debug_assert!((function.body.raw() as usize) < self.nodes.len());
         }
         for binding in &self.bindings {
-            let _ = binding.symbol;
+            debug_assert!((binding.symbol.raw() as usize) < self.symbols.len());
             debug_assert!((binding.value.raw() as usize) < self.nodes.len());
         }
         for (index, origin) in self.origins.iter().enumerate() {
@@ -75,17 +91,31 @@ impl CoreProgram {
         }
     }
 
-    pub(crate) fn stats(&self) -> (usize, usize, usize, usize, usize, usize, usize, usize) {
+    pub(crate) fn stats(
+        &self,
+    ) -> (
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+    ) {
         let mut constants = 0;
         let mut constructions = 0;
         let mut calls = 0;
         let mut sequences = 0;
+        let mut dependencies = 0;
         for node in &self.nodes {
             match node.operation {
                 CoreOperation::Constant(_) => constants += 1,
                 CoreOperation::Construct { .. } => constructions += 1,
                 CoreOperation::Call { .. } => calls += 1,
                 CoreOperation::Sequence(_) => sequences += 1,
+                CoreOperation::DependencyMethod { .. } => dependencies += 1,
                 _ => {}
             }
         }
@@ -98,6 +128,7 @@ impl CoreProgram {
             constructions,
             calls,
             sequences,
+            dependencies,
         )
     }
 
@@ -106,17 +137,28 @@ impl CoreProgram {
         match operation {
             CoreOperation::Constant(literal) => touch_literal(literal),
             CoreOperation::Reference(symbol) => {
-                let _ = symbol;
+                debug_assert!((symbol.raw() as usize) < self.symbols.len());
             }
             CoreOperation::Select { receiver, member } => {
                 debug_assert!(node_exists(*receiver));
                 debug_assert!(!member.is_empty());
             }
+            CoreOperation::DependencyMethod {
+                requirement,
+                interface,
+                method,
+                name,
+            } => {
+                debug_assert!((requirement.raw() as usize) < self.symbols.len());
+                debug_assert!((interface.raw() as usize) < self.symbols.len());
+                let _ = method;
+                debug_assert!(!name.is_empty());
+            }
             CoreOperation::Construct {
                 constructor,
                 arguments,
             } => {
-                let _ = constructor;
+                debug_assert!((constructor.raw() as usize) < self.symbols.len());
                 for argument in arguments {
                     let _ = &argument.label;
                     debug_assert!(node_exists(argument.value));
@@ -166,7 +208,7 @@ impl CoreProgram {
                 for step in steps {
                     match step {
                         CoreStep::Bind { symbol, value } => {
-                            let _ = symbol;
+                            debug_assert!((symbol.raw() as usize) < self.symbols.len());
                             debug_assert!(node_exists(*value));
                         }
                         CoreStep::Expression(value) => debug_assert!(node_exists(*value)),
@@ -174,7 +216,11 @@ impl CoreProgram {
                 }
             }
             CoreOperation::Closure { parameters, body } => {
-                let _ = parameters;
+                debug_assert!(
+                    parameters
+                        .iter()
+                        .all(|parameter| (parameter.raw() as usize) < self.symbols.len())
+                );
                 debug_assert!(node_exists(*body));
             }
             CoreOperation::Match { subjects, arms } => {
@@ -228,6 +274,32 @@ fn touch_pattern(pattern: &CorePattern) {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct CoreSymbol {
+    pub(crate) id: SymbolId,
+    pub(crate) name: String,
+    pub(crate) kind: CoreSymbolKind,
+    pub(crate) constructor: Option<CoreConstructor>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CoreSymbolKind {
+    Function,
+    Binding,
+    Requirement,
+    Local,
+    Constructor,
+    Other,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CoreConstructor {
+    pub(crate) type_name: String,
+    pub(crate) variant_name: Option<String>,
+    pub(crate) fields: Vec<String>,
+    pub(crate) outcome_success: Option<bool>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct CoreFunction {
     pub(crate) symbol: SymbolId,
     pub(crate) parameters: Vec<SymbolId>,
@@ -255,6 +327,12 @@ pub(crate) enum CoreOperation {
     Select {
         receiver: CoreNodeId,
         member: String,
+    },
+    DependencyMethod {
+        requirement: SymbolId,
+        interface: SymbolId,
+        method: SemanticId,
+        name: String,
     },
     Construct {
         constructor: SymbolId,
@@ -652,7 +730,12 @@ fn collect_reachable_expression(
                     })
                 })
                 && matches!(receiver.as_ref(), ModuleExpression::Name { .. });
-            if !resolved_module_member {
+            let dependency_receiver =
+                referenced_expression_symbol(references, module.source.file_id(), receiver)
+                    .is_some_and(|symbol| {
+                        typed.resolved.symbol(symbol).kind == ProjectSymbolKind::Requirement
+                    });
+            if !resolved_module_member && !dependency_receiver {
                 visit(receiver);
             }
         }
@@ -666,20 +749,8 @@ fn collect_reachable_expression(
         ModuleExpression::Call {
             callee, arguments, ..
         } => {
-            let callee_symbol = match callee.as_ref() {
-                ModuleExpression::Name { semantic_id, .. }
-                | ModuleExpression::Select { semantic_id, .. } => references
-                    .get(&(module.source.file_id(), *semantic_id))
-                    .and_then(|references| {
-                        references
-                            .iter()
-                            .find_map(|reference| match reference.resolution {
-                                ReferenceResolution::Resolved(symbol) => Some(symbol),
-                                _ => None,
-                            })
-                    }),
-                _ => None,
-            };
+            let callee_symbol =
+                referenced_expression_symbol(references, module.source.file_id(), callee);
             let constructor =
                 callee_symbol.is_some_and(|symbol| is_core_constructor(typed, symbol));
             if !constructor {
@@ -741,6 +812,27 @@ fn collect_reachable_expression(
     }
 }
 
+fn referenced_expression_symbol(
+    references: &HashMap<(FileId, SemanticId), Vec<&crate::resolution::ProjectReference>>,
+    file_id: FileId,
+    expression: &ModuleExpression,
+) -> Option<SymbolId> {
+    match expression {
+        ModuleExpression::Name { semantic_id, .. }
+        | ModuleExpression::Select { semantic_id, .. } => references
+            .get(&(file_id, *semantic_id))?
+            .iter()
+            .find_map(|reference| match reference.resolution {
+                ReferenceResolution::Resolved(symbol) => Some(symbol),
+                _ => None,
+            }),
+        ModuleExpression::Group { expression, .. } => {
+            referenced_expression_symbol(references, file_id, expression)
+        }
+        _ => None,
+    }
+}
+
 fn type_is_nonpoisoned(
     typed: &TypedProject,
     type_id: crate::ids::TypeId,
@@ -770,6 +862,7 @@ fn type_is_nonpoisoned(
 
 pub(crate) fn lower(root: VerifiedRoot) -> CoreProgram {
     let computation = root.typed.resolved.symbol(root.entry).name.clone();
+    let symbols = lower_core_symbols(&root.typed);
     let origin_ids = root
         .origins
         .iter()
@@ -841,6 +934,8 @@ pub(crate) fn lower(root: VerifiedRoot) -> CoreProgram {
     let core = CoreProgram {
         computation,
         entry: root.entry,
+        type_count: root.typed.types.len(),
+        symbols,
         functions,
         bindings,
         nodes: lowerer.nodes,
@@ -876,6 +971,15 @@ impl CoreLowerer {
             } => {
                 if let Some(symbol) = self.value_symbol(module_id, *semantic_id) {
                     CoreOperation::Reference(symbol)
+                } else if let Some((requirement, interface, method)) =
+                    self.dependency_method(module_id, receiver, &member.text)
+                {
+                    CoreOperation::DependencyMethod {
+                        requirement,
+                        interface,
+                        method,
+                        name: member.text.clone(),
+                    }
                 } else {
                     let receiver = self.expression(module_id, receiver);
                     CoreOperation::Select {
@@ -1110,6 +1214,37 @@ impl CoreLowerer {
         }
     }
 
+    fn dependency_method(
+        &self,
+        module_id: ModuleId,
+        receiver: &ModuleExpression,
+        member: &str,
+    ) -> Option<(SymbolId, SymbolId, SemanticId)> {
+        let requirement = self.expression_symbol(module_id, receiver)?;
+        if self.typed.resolved.symbol(requirement).kind != ProjectSymbolKind::Requirement {
+            return None;
+        }
+        let receiver_type = self
+            .typed
+            .expression_facts
+            .get(&(module_id, receiver.semantic_id()))?
+            .success;
+        let CanonicalType::Named {
+            symbol: interface, ..
+        } = resolved_type(&self.typed, receiver_type)
+        else {
+            return None;
+        };
+        let method = self
+            .typed
+            .fields
+            .get(interface)?
+            .iter()
+            .find(|field| field.name == member)?
+            .semantic_id;
+        Some((requirement, *interface, method))
+    }
+
     fn value_symbol(&self, module_id: ModuleId, semantic_id: SemanticId) -> Option<SymbolId> {
         let file_id = self.typed.resolved.semantic.modules[module_id.raw() as usize]
             .source
@@ -1148,6 +1283,93 @@ impl CoreLowerer {
                     && symbol.kind == kind
             })
             .map(|symbol| symbol.id)
+    }
+}
+
+fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
+    typed
+        .resolved
+        .symbols
+        .iter()
+        .map(|symbol| {
+            let kind = match symbol.kind {
+                ProjectSymbolKind::Function => CoreSymbolKind::Function,
+                ProjectSymbolKind::ModuleBinding => CoreSymbolKind::Binding,
+                ProjectSymbolKind::Requirement => CoreSymbolKind::Requirement,
+                ProjectSymbolKind::Parameter
+                | ProjectSymbolKind::LocalBinding
+                | ProjectSymbolKind::PatternBinding => CoreSymbolKind::Local,
+                ProjectSymbolKind::StructConstructor | ProjectSymbolKind::EnumConstructor => {
+                    CoreSymbolKind::Constructor
+                }
+                ProjectSymbolKind::BuiltinValue
+                    if matches!(symbol.name.as_str(), "Success" | "Failure") =>
+                {
+                    CoreSymbolKind::Constructor
+                }
+                _ => CoreSymbolKind::Other,
+            };
+            CoreSymbol {
+                id: symbol.id,
+                name: symbol.name.clone(),
+                kind,
+                constructor: (kind == CoreSymbolKind::Constructor)
+                    .then(|| lower_core_constructor(typed, symbol.id)),
+            }
+        })
+        .collect()
+}
+
+fn lower_core_constructor(typed: &TypedProject, constructor: SymbolId) -> CoreConstructor {
+    let symbol = typed.resolved.symbol(constructor);
+    if symbol.kind == ProjectSymbolKind::BuiltinValue {
+        return CoreConstructor {
+            type_name: "Outcome".to_owned(),
+            variant_name: Some(symbol.name.clone()),
+            fields: vec!["value".to_owned()],
+            outcome_success: Some(symbol.name == "Success"),
+        };
+    }
+    let fields = typed
+        .fields
+        .get(&constructor)
+        .expect("verified nominal constructor has fields")
+        .iter()
+        .map(|field| field.name.clone())
+        .collect();
+    if symbol.kind == ProjectSymbolKind::StructConstructor {
+        return CoreConstructor {
+            type_name: symbol.name.clone(),
+            variant_name: None,
+            fields,
+            outcome_success: None,
+        };
+    }
+    let module_id = symbol
+        .module_id
+        .expect("enum constructor belongs to a module");
+    let semantic_id = symbol
+        .semantic_id
+        .expect("enum constructor has semantic identity");
+    let type_name = typed.resolved.semantic.modules[module_id.raw() as usize]
+        .declarations
+        .iter()
+        .find(|declaration| {
+            declaration.kind == ModuleDeclarationKind::Enum
+                && declaration
+                    .variants
+                    .iter()
+                    .any(|variant| variant.semantic_id == semantic_id)
+        })
+        .expect("verified enum constructor belongs to an enum")
+        .name
+        .text
+        .clone();
+    CoreConstructor {
+        type_name,
+        variant_name: Some(symbol.name.clone()),
+        fields,
+        outcome_success: None,
     }
 }
 
@@ -1276,9 +1498,7 @@ pub(crate) fn lower_legacy(root: LegacyVerifiedRoot) -> LegacyCoreProgram {
             semantic_id: entry.body.semantic_id,
             range: entry.body.range,
         },
-        constructor,
         constructor_name: typed.resolved.symbol(constructor).name.clone(),
-        field,
         field_name: typed.resolved.symbol(field).name.clone(),
         value,
     }

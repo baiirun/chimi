@@ -65,9 +65,9 @@ fn submit(cart: Cart)
   }
 {
   case inventory.reserve(cart.items) {
-    Failure(error) -> Failure(InventoryFailed(error))
+    Failure(error) -> Failure(InventoryFailed(error: error))
     Success(_reservation) -> case payment.charge(cart.total) {
-      Failure(error) -> Failure(PaymentFailed(error))
+      Failure(error) -> Failure(PaymentFailed(error: error))
       Success(_receipt) -> Order(id: OrderId(value: "order-1"))
     }
   }
