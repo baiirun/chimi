@@ -1,4 +1,4 @@
-use crate::executable::CoreProgram;
+use crate::executable::LegacyCoreProgram;
 use crate::ids::{CoreNodeId, FileId, OriginId, SemanticId, TextRange};
 use std::fmt::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -137,7 +137,7 @@ impl ExecutionReport {
     }
 }
 
-pub(crate) fn execute(core: CoreProgram, config: ExecutionConfig) -> ExecutionReport {
+pub(crate) fn execute(core: LegacyCoreProgram, config: ExecutionConfig) -> ExecutionReport {
     let event = |sequence, kind| ExecutionEvent {
         sequence,
         kind,
