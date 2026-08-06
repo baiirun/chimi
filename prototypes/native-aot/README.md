@@ -22,15 +22,16 @@ Run every fixed backend workload from the repository root:
 
 ```sh
 cargo run -p chimi --release --features native-aot-prototype \
-  --bin chimi-aot-prototype -- --samples 20
+  --bin chimi-aot-prototype -- --samples 40
 ```
 
 The command fails if off, boundary, or full JSONL output differs from the
 interpreter oracle. Off mode prints only the terminal outcome and bypasses
 event construction. Successful output uses the
 `chimi.native-aot-prototype.v1` JSONL schema and includes object emission,
-runtime/data compilation, linking, cold start, tracing-free steady state, peak
-RSS, artifact sizes, and dynamic dependencies.
+runtime/data compilation, linking, cold start, off/boundary/full steady state,
+peak RSS, artifact sizes, and dynamic dependencies. Traced steady-state runs
+format and export their real JSON events to a controlled null sink.
 
 The generated executables and intermediate artifacts are written below
 `target/native-aot-prototype/`.

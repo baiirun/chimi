@@ -6,7 +6,7 @@ use chimi::source::SourceSnapshot;
 use chimi::{BackendProgram, Compiler, ProjectSource};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy)]
@@ -107,16 +107,27 @@ fn run_workload(workload: Workload, samples: usize) -> Result<(), String> {
         }
     }
     durations.sort_unstable();
-    let mut steady_state = Vec::with_capacity(samples);
-    for _ in 0..samples {
-        steady_state.push(benchmark_execution(
-            &artifact,
-            workload.id,
-            workload.control,
-            100,
-        )?);
-    }
-    steady_state.sort_unstable();
+    let steady_off = benchmark_trace_mode(
+        &artifact,
+        workload.id,
+        workload.control,
+        TraceMode::Off,
+        samples,
+    )?;
+    let steady_boundaries = benchmark_trace_mode(
+        &artifact,
+        workload.id,
+        workload.control,
+        TraceMode::Boundaries,
+        samples,
+    )?;
+    let steady_full = benchmark_trace_mode(
+        &artifact,
+        workload.id,
+        workload.control,
+        TraceMode::Full,
+        samples,
+    )?;
     let peak_rss_bytes = peak_rss(&artifact, workload.id, workload.control)?;
     let dependencies = dynamic_dependencies(&artifact.executable_path)?;
     println!(
@@ -125,7 +136,9 @@ fn run_workload(workload: Workload, samples: usize) -> Result<(), String> {
             "\"id\":\"{}\",\"files\":{},\"source_bytes\":{},\"core_nodes\":{},",
             "\"object_emission_ns\":{},\"runtime_compilation_ns\":{},\"data_compilation_ns\":{},",
             "\"link_ns\":{},\"cold_start_p50_ns\":{},\"cold_start_p95_ns\":{},",
-            "\"steady_state_p50_ns\":{},\"steady_state_p95_ns\":{},\"peak_rss_bytes\":{},",
+            "\"steady_state_p50_ns\":{},\"steady_state_p95_ns\":{},",
+            "\"boundary_steady_state_p50_ns\":{},\"boundary_steady_state_p95_ns\":{},",
+            "\"full_steady_state_p50_ns\":{},\"full_steady_state_p95_ns\":{},\"peak_rss_bytes\":{},",
             "\"object_bytes\":{},\"runtime_archive_bytes\":{},\"executable_bytes\":{},",
             "\"dynamic_dependencies\":{},\"off_match\":true,\"boundary_match\":true,\"full_match\":true}}"
         ),
@@ -139,8 +152,12 @@ fn run_workload(workload: Workload, samples: usize) -> Result<(), String> {
         artifact.linking.as_nanos(),
         percentile(&durations, 50).as_nanos(),
         percentile(&durations, 95).as_nanos(),
-        percentile(&steady_state, 50).as_nanos(),
-        percentile(&steady_state, 95).as_nanos(),
+        percentile(&steady_off, 50).as_nanos(),
+        percentile(&steady_off, 95).as_nanos(),
+        percentile(&steady_boundaries, 50).as_nanos(),
+        percentile(&steady_boundaries, 95).as_nanos(),
+        percentile(&steady_full, 50).as_nanos(),
+        percentile(&steady_full, 95).as_nanos(),
         peak_rss_bytes,
         file_size(&artifact.object_path)?,
         file_size(&artifact.runtime_archive_path)?,
@@ -186,6 +203,47 @@ fn verify(
             trace
         ));
     }
+    verify_benchmark_export(artifact, id, control, trace, &expected)?;
+    Ok(())
+}
+
+fn verify_benchmark_export(
+    artifact: &NativePrototypeArtifact,
+    id: &str,
+    control: InitialControl,
+    trace: TraceMode,
+    oracle_output: &str,
+) -> Result<(), String> {
+    let mut command = Command::new(&artifact.executable_path);
+    command
+        .arg(trace_argument(trace))
+        .arg(format!("--execution-id={id}"))
+        .arg("--benchmark-repeats=1");
+    if matches!(control, InitialControl::Cancel) {
+        command.arg("--cancel");
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("verify {id} {trace:?} benchmark export: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{id} {trace:?} benchmark export exited with {}",
+            output.status
+        ));
+    }
+    let outcome = oracle_output
+        .rfind("{\"outcome\":")
+        .expect("oracle output has a terminal outcome");
+    if output.stdout != oracle_output.as_bytes()[..outcome] {
+        return Err(format!(
+            "{id} {trace:?} benchmark did not use the canonical event export path"
+        ));
+    }
+    String::from_utf8(output.stderr)
+        .map_err(|error| format!("benchmark timing was not UTF-8: {error}"))?
+        .trim()
+        .parse::<u64>()
+        .map_err(|error| format!("benchmark timing was invalid: {error}"))?;
     Ok(())
 }
 
@@ -196,11 +254,7 @@ fn execute(
     trace: TraceMode,
 ) -> Result<Output, String> {
     let mut command = Command::new(&artifact.executable_path);
-    command.arg(match trace {
-        TraceMode::Off => "--trace=off",
-        TraceMode::Boundaries => "--trace=boundaries",
-        TraceMode::Full => "--trace=full",
-    });
+    command.arg(trace_argument(trace));
     command.arg(format!("--execution-id={id}"));
     if matches!(control, InitialControl::Cancel) {
         command.arg("--cancel");
@@ -214,27 +268,55 @@ fn benchmark_execution(
     artifact: &NativePrototypeArtifact,
     id: &str,
     control: InitialControl,
+    trace: TraceMode,
     repeats: usize,
 ) -> Result<Duration, String> {
     let mut command = Command::new(&artifact.executable_path);
     command.arg(format!("--execution-id={id}"));
-    command.arg("--trace=off");
+    command.arg(trace_argument(trace));
     command.arg(format!("--benchmark-repeats={repeats}"));
     if matches!(control, InitialControl::Cancel) {
         command.arg("--cancel");
     }
     let output = command
+        .stdout(Stdio::null())
         .output()
         .map_err(|error| format!("benchmark {id}: {error}"))?;
     if !output.status.success() {
         return Err(format!("benchmark {id} exited with {}", output.status));
     }
-    let nanoseconds = String::from_utf8(output.stdout)
+    let nanoseconds = String::from_utf8(output.stderr)
         .map_err(|error| format!("benchmark output was not UTF-8: {error}"))?
         .trim()
         .parse::<u64>()
         .map_err(|error| format!("benchmark output was invalid: {error}"))?;
     Ok(Duration::from_nanos(nanoseconds))
+}
+
+fn benchmark_trace_mode(
+    artifact: &NativePrototypeArtifact,
+    id: &str,
+    control: InitialControl,
+    trace: TraceMode,
+    samples: usize,
+) -> Result<Vec<Duration>, String> {
+    for _ in 0..3 {
+        let _ = benchmark_execution(artifact, id, control, trace, 100)?;
+    }
+    let mut durations = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        durations.push(benchmark_execution(artifact, id, control, trace, 100)?);
+    }
+    durations.sort_unstable();
+    Ok(durations)
+}
+
+const fn trace_argument(trace: TraceMode) -> &'static str {
+    match trace {
+        TraceMode::Off => "--trace=off",
+        TraceMode::Boundaries => "--trace=boundaries",
+        TraceMode::Full => "--trace=full",
+    }
 }
 
 fn peak_rss(

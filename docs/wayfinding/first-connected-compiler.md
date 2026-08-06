@@ -358,6 +358,9 @@ in boundary and full trace modes. The host measurements, dependencies, known
 prototype shortcuts, and interpretation are recorded in
 `docs/performance/native-aot-m8-spike.md`. The embedded-bytecode spike
 (`prog show ts-8717b3`) is the next comparison frontier.
+The native sample-40 trace-cost run sends canonical JSON events to a null sink:
+boundary tracing costs 1.69–1.95x off-mode p50 and full tracing costs
+17.09–21.00x on the three substantial workloads (`prog show ts-636302`).
 
 Tracing configuration is a caller-owned runtime policy with three accepted
 modes: `off`, `boundaries`, and `full`. `off` is the performance path and does
