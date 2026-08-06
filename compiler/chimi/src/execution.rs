@@ -3,6 +3,7 @@ use crate::executable::{
     LegacyCoreProgram,
 };
 use crate::ids::{CoreNodeId, FileId, OriginId, SemanticId, SymbolId, TextRange};
+use crate::json::write_json_string;
 use crate::semantic::{BinaryOperator, UnaryOperator};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -1176,25 +1177,6 @@ fn write_json_fields(output: &mut String, fields: &[ValueField]) {
         write_json_value(output, &field.value);
     }
     output.push('}');
-}
-
-fn write_json_string(output: &mut String, value: &str) {
-    output.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            character if character.is_control() => {
-                write!(output, "\\u{:04x}", character as u32)
-                    .expect("writing JSON to a string cannot fail");
-            }
-            character => output.push(character),
-        }
-    }
-    output.push('"');
 }
 
 fn optional_u32(value: Option<u32>) -> String {

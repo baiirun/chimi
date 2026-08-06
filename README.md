@@ -49,3 +49,14 @@ cargo run -q -p chimi -- check --json compiler/chimi/tests/fixtures/invalid_fiel
 The JSON document keeps compiler stages distinct and includes explicit module,
 path, span, label, and fix fields. A successful check returns an empty
 `diagnostics` array.
+
+Inspect the compiler facts at a UTF-8 byte offset with:
+
+```sh
+cargo run -q -p chimi -- inspect prototypes/golden/valid/dependencies_and_execution.chimi 1535
+```
+
+The versioned `chimi.inspection.v1` document connects the containing lossless
+syntax, token, resolved declaration origin, inferred type and callable
+channels, and reachable executable origin. Offsets and ranges are zero-based
+UTF-8 bytes; lines and byte columns are one-based.

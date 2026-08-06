@@ -307,6 +307,16 @@ and successful checks emit an empty diagnostic list. Human diagnostics and
 their stdout/stderr behavior remain unchanged. Label and fix arrays are part of
 the stable envelope even though current producers do not populate them yet.
 
+The third M6 slice retains the exact lossless CST snapshot consumed by semantic
+lowering and connects a source cursor to the compiler's later facts without
+reparsing. `Compiler::inspect_project` returns the containing syntax path and
+token, reference status and declaration origin, inferred type, structured
+success/failure/needs channels, and the reachable executable origin when the
+project seals. Malformed snapshots remain inspectable alongside their
+diagnostics. `chimi inspect` exposes the versioned `chimi.inspection.v1`
+document; offsets and ranges are zero-based UTF-8 bytes, split code-point
+offsets are rejected, and displayed lines and byte columns are one-based.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the

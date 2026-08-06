@@ -7,6 +7,8 @@ mod formatter;
 #[doc(hidden)]
 pub mod frontend_benchmark;
 mod ids;
+mod inspection;
+mod json;
 pub mod project;
 mod resolution;
 mod semantic;
@@ -19,3 +21,7 @@ pub use compiler::{
     ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport,
 };
 pub use formatter::FormatReport;
+pub use inspection::{
+    CallableInspection, InspectedToken, InspectionError, InspectionReport, NeedInspection,
+    ReferenceInspection, SymbolInspection, SyntaxFrame,
+};

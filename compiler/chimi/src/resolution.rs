@@ -126,6 +126,16 @@ pub(crate) enum Namespace {
     Value,
 }
 
+impl Namespace {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Module => "module",
+            Self::Type => "type",
+            Self::Value => "value",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProjectSymbolKind {
     BuiltinModule,
@@ -146,6 +156,29 @@ pub(crate) enum ProjectSymbolKind {
     PatternBinding,
 }
 
+impl ProjectSymbolKind {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::BuiltinModule => "builtin module",
+            Self::BuiltinType => "builtin type",
+            Self::BuiltinValue => "builtin value",
+            Self::Module => "module",
+            Self::Struct => "struct",
+            Self::StructConstructor => "struct constructor",
+            Self::Enum => "enum",
+            Self::EnumConstructor => "enum constructor",
+            Self::Interface => "interface",
+            Self::Function => "function",
+            Self::ModuleBinding => "module binding",
+            Self::GenericParameter => "generic parameter",
+            Self::Parameter => "parameter",
+            Self::Requirement => "requirement",
+            Self::LocalBinding => "local binding",
+            Self::PatternBinding => "pattern binding",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ProjectSymbol {
     pub(crate) id: SymbolId,
@@ -164,6 +197,18 @@ pub(crate) enum ReferenceResolution {
     Ambiguous,
     Inaccessible(SymbolId),
     DeferredToType,
+}
+
+impl ReferenceResolution {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Resolved(_) => "resolved",
+            Self::Unresolved => "unresolved",
+            Self::Ambiguous => "ambiguous",
+            Self::Inaccessible(_) => "inaccessible",
+            Self::DeferredToType => "deferred-to-type",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

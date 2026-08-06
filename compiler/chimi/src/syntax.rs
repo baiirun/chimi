@@ -59,6 +59,56 @@ pub(crate) enum TokenKind {
 }
 
 impl TokenKind {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Whitespace => "whitespace",
+            Self::Newline => "newline",
+            Self::Comment => "comment",
+            Self::Import => "import",
+            Self::As => "as",
+            Self::Struct => "struct",
+            Self::Enum => "enum",
+            Self::Interface => "interface",
+            Self::Pub => "pub",
+            Self::Fn => "fn",
+            Self::Let => "let",
+            Self::Case => "case",
+            Self::If => "if",
+            Self::Errors => "errors",
+            Self::Needs => "needs",
+            Self::Using => "using",
+            Self::Void => "void",
+            Self::True => "true",
+            Self::False => "false",
+            Self::Identifier => "identifier",
+            Self::Integer => "integer",
+            Self::Text => "text",
+            Self::LeftBrace => "left_brace",
+            Self::RightBrace => "right_brace",
+            Self::LeftParen => "left_paren",
+            Self::RightParen => "right_paren",
+            Self::LeftBracket => "left_bracket",
+            Self::RightBracket => "right_bracket",
+            Self::Colon => "colon",
+            Self::Comma => "comma",
+            Self::Dot => "dot",
+            Self::Slash => "slash",
+            Self::Less => "less",
+            Self::LessEqual => "less_equal",
+            Self::Greater => "greater",
+            Self::GreaterEqual => "greater_equal",
+            Self::Plus => "plus",
+            Self::Minus => "minus",
+            Self::Star => "star",
+            Self::Equal => "equal",
+            Self::Arrow => "arrow",
+            Self::Pipe => "pipe",
+            Self::Invalid => "invalid",
+            Self::InvalidText => "invalid_text",
+            Self::End => "end",
+        }
+    }
+
     const fn is_trivia(self) -> bool {
         matches!(self, Self::Whitespace | Self::Comment)
     }
@@ -164,6 +214,61 @@ pub(crate) enum NodeKind {
     EmptyBraceExpression,
     ErrorIfExpression,
     Error,
+}
+
+impl NodeKind {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::ImportDeclaration => "import_declaration",
+            Self::ImportAlias => "import_alias",
+            Self::ImportMembers => "import_members",
+            Self::ImportMember => "import_member",
+            Self::StructDeclaration => "struct_declaration",
+            Self::EnumDeclaration => "enum_declaration",
+            Self::InterfaceDeclaration => "interface_declaration",
+            Self::Field => "field",
+            Self::Variant => "variant",
+            Self::NamedTypeField => "named_type_field",
+            Self::GenericParameters => "generic_parameters",
+            Self::GenericParameter => "generic_parameter",
+            Self::FunctionDeclaration => "function_declaration",
+            Self::ValueParameters => "value_parameters",
+            Self::ValueParameter => "value_parameter",
+            Self::ImplementationContract => "implementation_contract",
+            Self::Type => "type",
+            Self::FunctionType => "function_type",
+            Self::TypeArguments => "type_arguments",
+            Self::RequirementClause => "requirement_clause",
+            Self::RequirementRecord => "requirement_record",
+            Self::LetBinding => "let_binding",
+            Self::UsingExpression => "using_expression",
+            Self::PipelineExpression => "pipeline_expression",
+            Self::ComparisonExpression => "comparison_expression",
+            Self::AdditiveExpression => "additive_expression",
+            Self::MultiplicativeExpression => "multiplicative_expression",
+            Self::UnaryExpression => "unary_expression",
+            Self::PostfixExpression => "postfix_expression",
+            Self::Literal => "literal",
+            Self::NameReference => "name_reference",
+            Self::GroupedExpression => "grouped_expression",
+            Self::ListExpression => "list_expression",
+            Self::RecordExpression => "record_expression",
+            Self::RecordField => "record_field",
+            Self::BlockExpression => "block_expression",
+            Self::BlockItem => "block_item",
+            Self::CaseExpression => "case_expression",
+            Self::CaseArm => "case_arm",
+            Self::Pattern => "pattern",
+            Self::FunctionExpression => "function_expression",
+            Self::CallSuffix => "call_suffix",
+            Self::Argument => "argument",
+            Self::MemberAccess => "member_access",
+            Self::EmptyBraceExpression => "empty_brace_expression",
+            Self::ErrorIfExpression => "error_if_expression",
+            Self::Error => "error",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

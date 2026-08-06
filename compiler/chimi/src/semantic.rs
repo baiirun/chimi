@@ -2,7 +2,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::ids::{FileId, ModuleId, SemanticId, TextRange};
 use crate::source::SourceSnapshot;
 use crate::syntax::{
-    self, DeclarationSyntax, FileSyntax, FunctionDeclarationSyntax, NodeKind,
+    self, DeclarationSyntax, FileSyntax, FunctionDeclarationSyntax, NodeKind, ParseResult,
     StructDeclarationSyntax, SyntaxNode, SyntaxToken, TokenKind, TypedSyntaxNode,
 };
 use std::sync::Arc;
@@ -681,6 +681,7 @@ pub(crate) struct SemanticModule {
     pub(crate) id: ModuleId,
     pub(crate) path: String,
     pub(crate) source: Arc<SourceSnapshot>,
+    pub(crate) syntax: Arc<ParseResult>,
     pub(crate) imports: Vec<ModuleImport>,
     pub(crate) declarations: Vec<ModuleDeclaration>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -711,7 +712,7 @@ struct ProjectLowerer {
 impl ProjectLowerer {
     fn lower(id: ModuleId, path: String, source: SourceSnapshot) -> SemanticModule {
         let source = Arc::new(source);
-        let parsed = syntax::parse(&source);
+        let parsed = Arc::new(syntax::parse(&source));
         let root = parsed.root();
         let mut lowerer = Self {
             next_semantic_id: 0,
@@ -737,13 +738,15 @@ impl ProjectLowerer {
                 _ => {}
             }
         }
+        let diagnostics = parsed.diagnostics().to_vec();
         SemanticModule {
             id,
             path,
             source,
+            syntax: parsed,
             imports,
             declarations,
-            diagnostics: parsed.diagnostics().to_vec(),
+            diagnostics,
         }
     }
 
