@@ -203,6 +203,7 @@ static void emit_dependency(ChimiRuntime *runtime, uint32_t node_id, uint64_t sp
 }
 
 static uint64_t begin_node(ChimiRuntime *runtime, uint32_t node, uint64_t parent, const char *operation) {
+  if (runtime->silent) return parent;
   uint64_t span = runtime->next_span++;
   if (runtime->full_trace) emit_event(runtime, "operation_started", node, span, (int64_t)parent, operation, NULL);
   return span;
@@ -231,8 +232,10 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
                             uint32_t argument_count, uint64_t span, uint32_t call_node,
                             ChimiEnvironment *call_environment) {
   if (callable->kind == CALL_DEPENDENCY) {
-    uint64_t dependency_span = runtime->next_span++;
-    if (!runtime->silent) emit_dependency(runtime, call_node, dependency_span, span, callable);
+    if (!runtime->silent) {
+      uint64_t dependency_span = runtime->next_span++;
+      emit_dependency(runtime, call_node, dependency_span, span, callable);
+    }
     return invoke(runtime, callable->inner, arguments, argument_count, span, call_node, call_environment);
   }
   ChimiEnvironment *environment = clone_environment(callable->environment);
@@ -520,8 +523,9 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   uint32_t benchmark_repeats = 0;
   runtime.active_bindings = allocate(CHIMI_SYMBOL_COUNT, sizeof(*runtime.active_bindings));
   for (int32_t index = 1; index < argc; ++index) {
-    if (strcmp(argv[index], "--trace=full") == 0) runtime.full_trace = true;
-    else if (strcmp(argv[index], "--trace=boundaries") == 0) runtime.full_trace = false;
+    if (strcmp(argv[index], "--trace=full") == 0) { runtime.full_trace = true; runtime.silent = false; }
+    else if (strcmp(argv[index], "--trace=boundaries") == 0) { runtime.full_trace = false; runtime.silent = false; }
+    else if (strcmp(argv[index], "--trace=off") == 0) { runtime.full_trace = false; runtime.silent = true; }
     else if (strncmp(argv[index], "--execution-id=", 15) == 0) runtime.execution_id = argv[index] + 15;
     else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = true;
     else if (strncmp(argv[index], "--benchmark-repeats=", 20) == 0)
@@ -546,9 +550,9 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     printf("%" PRIu64 "\n", elapsed / benchmark_repeats);
     return 0;
   }
-  emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
+  if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
   ChimiControl *control = runtime.cancel ? cancelled() : entry(&runtime, new_environment(), 1);
-  emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
+  if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
   print_outcome(control);
   return 0;
 }

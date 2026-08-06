@@ -239,15 +239,14 @@ typed trees. Expected failures bubble as values until a contextual case handles
 them. Reports preserve distinct success, expected-failure, defect, and
 cancellation outcomes.
 
-`ExecutionConfig` currently selects full or boundary tracing and owns execution
-identity and an initial cancellation request. Full tracing emits paired
-start/end events for every executed core node; both implemented modes retain
-computation start/end and dependency-call events. Every event carries
+`ExecutionConfig` selects off, boundary, or full tracing and owns execution
+identity and an initial cancellation request. Off tracing bypasses event and
+span construction. Full tracing emits paired start/end events for every
+executed core node; boundary tracing retains computation start/end and
+dependency-call events. Every emitted event carries
 deterministic sequence, causal span identity, computation and execution
 identity, core and semantic origin, source span, operation kind, and typed
-attributes. The accepted runtime contract also includes an `off` mode that
-bypasses event construction, buffering, serialization, and export work without
-changing outcomes; its implementation is tracked in `prog`. M5 remains open
+attributes. Off mode does not change terminal outcomes. M5 remains open
 for executing the composite retry forcing example and replacing initial
 cancellation with a live cooperative signal.
 

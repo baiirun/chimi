@@ -25,8 +25,9 @@ cargo run -p chimi --release --features native-aot-prototype \
   --bin chimi-aot-prototype -- --samples 20
 ```
 
-The command fails if either boundary or full JSONL output differs from the
-interpreter oracle. Successful output uses the
+The command fails if off, boundary, or full JSONL output differs from the
+interpreter oracle. Off mode prints only the terminal outcome and bypasses
+event construction. Successful output uses the
 `chimi.native-aot-prototype.v1` JSONL schema and includes object emission,
 runtime/data compilation, linking, cold start, tracing-free steady state, peak
 RSS, artifact sizes, and dynamic dependencies.

@@ -22,6 +22,7 @@ static NEXT_EXECUTION_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TraceMode {
+    Off,
     Boundaries,
     Full,
 }
@@ -343,28 +344,31 @@ impl<'core> Evaluator<'core> {
             .find(|function| function.symbol == self.core.entry)
             .expect("well-formed core contains its entry function")
             .clone();
-        self.emit(
-            EventKind::ComputationStarted,
-            entry.body,
-            1,
-            None,
-            "computation",
-            Vec::new(),
-        );
+        if self.config.trace_mode != TraceMode::Off {
+            self.emit(
+                EventKind::ComputationStarted,
+                entry.body,
+                1,
+                None,
+                "computation",
+                Vec::new(),
+            );
+        }
         let control = if self.config.cancellation_requested {
             Control::Cancellation
         } else {
             self.eval_node(entry.body, 1, Environment::default())
         };
-        let outcome_name = control_name(&control);
-        self.emit(
-            EventKind::ComputationCompleted,
-            entry.body,
-            1,
-            None,
-            "computation",
-            vec![text_attribute("outcome", outcome_name)],
-        );
+        if self.config.trace_mode != TraceMode::Off {
+            self.emit(
+                EventKind::ComputationCompleted,
+                entry.body,
+                1,
+                None,
+                "computation",
+                vec![text_attribute("outcome", control_name(&control))],
+            );
+        }
         let outcome = self.public_outcome(control);
         ExecutionReport {
             events: self.events,
@@ -382,9 +386,18 @@ impl<'core> Evaluator<'core> {
             return Control::Cancellation;
         }
         let node = self.core.nodes[node_id.raw() as usize].clone();
-        let span = self.next_span;
-        self.next_span += 1;
-        let operation = operation_name(&node.operation);
+        let span = if self.config.trace_mode == TraceMode::Off {
+            parent_span
+        } else {
+            let span = self.next_span;
+            self.next_span += 1;
+            span
+        };
+        let operation = if self.config.trace_mode == TraceMode::Full {
+            operation_name(&node.operation)
+        } else {
+            ""
+        };
         if self.config.trace_mode == TraceMode::Full {
             self.emit(
                 EventKind::OperationStarted,
@@ -751,22 +764,27 @@ impl<'core> Evaluator<'core> {
                 method,
                 name,
             } => {
-                let dependency_span = self.next_span;
-                self.next_span += 1;
-                self.emit(
-                    EventKind::DependencyCalled,
-                    call_node,
-                    dependency_span,
-                    Some(span),
-                    "dependency_call",
-                    vec![
-                        text_attribute("requirement", self.core.symbol(requirement).name.clone()),
-                        symbol_attribute("requirement_symbol_id", requirement),
-                        symbol_attribute("interface_symbol_id", interface),
-                        text_attribute("method", name),
-                        semantic_attribute("method_semantic_id", method),
-                    ],
-                );
+                if self.config.trace_mode != TraceMode::Off {
+                    let dependency_span = self.next_span;
+                    self.next_span += 1;
+                    self.emit(
+                        EventKind::DependencyCalled,
+                        call_node,
+                        dependency_span,
+                        Some(span),
+                        "dependency_call",
+                        vec![
+                            text_attribute(
+                                "requirement",
+                                self.core.symbol(requirement).name.clone(),
+                            ),
+                            symbol_attribute("requirement_symbol_id", requirement),
+                            symbol_attribute("interface_symbol_id", interface),
+                            text_attribute("method", name),
+                            semantic_attribute("method_semantic_id", method),
+                        ],
+                    );
+                }
                 self.invoke(*callable, arguments, span, call_node, call_environment)
             }
         }
@@ -1250,6 +1268,13 @@ mod tests {
                 trace_mode: TraceMode::Boundaries,
                 cancellation_requested: false,
             }
+        );
+        assert_eq!(
+            ExecutionConfig::new("test")
+                .unwrap()
+                .with_trace_mode(TraceMode::Off)
+                .trace_mode,
+            TraceMode::Off,
         );
         assert_ne!(
             ExecutionConfig::for_process(),

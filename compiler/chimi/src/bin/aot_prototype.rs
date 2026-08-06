@@ -67,6 +67,13 @@ fn run_workload(workload: Workload, samples: usize) -> Result<(), String> {
         &artifact,
         workload.id,
         workload.control,
+        TraceMode::Off,
+    )?;
+    verify(
+        &program,
+        &artifact,
+        workload.id,
+        workload.control,
         TraceMode::Boundaries,
     )?;
     verify(
@@ -120,7 +127,7 @@ fn run_workload(workload: Workload, samples: usize) -> Result<(), String> {
             "\"link_ns\":{},\"cold_start_p50_ns\":{},\"cold_start_p95_ns\":{},",
             "\"steady_state_p50_ns\":{},\"steady_state_p95_ns\":{},\"peak_rss_bytes\":{},",
             "\"object_bytes\":{},\"runtime_archive_bytes\":{},\"executable_bytes\":{},",
-            "\"dynamic_dependencies\":{},\"boundary_match\":true,\"full_match\":true}}"
+            "\"dynamic_dependencies\":{},\"off_match\":true,\"boundary_match\":true,\"full_match\":true}}"
         ),
         workload.id,
         file_count,
@@ -190,6 +197,7 @@ fn execute(
 ) -> Result<Output, String> {
     let mut command = Command::new(&artifact.executable_path);
     command.arg(match trace {
+        TraceMode::Off => "--trace=off",
         TraceMode::Boundaries => "--trace=boundaries",
         TraceMode::Full => "--trace=full",
     });
@@ -210,6 +218,7 @@ fn benchmark_execution(
 ) -> Result<Duration, String> {
     let mut command = Command::new(&artifact.executable_path);
     command.arg(format!("--execution-id={id}"));
+    command.arg("--trace=off");
     command.arg(format!("--benchmark-repeats={repeats}"));
     if matches!(control, InitialControl::Cancel) {
         command.arg("--cancel");

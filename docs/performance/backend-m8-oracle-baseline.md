@@ -53,17 +53,19 @@ argument, field, element, sequence, closure, match, pattern, and literal shapes.
 
 ## Oracle measurements
 
-| Workload | Prepare p50/p95 | Boundary p50/p95 | Full p50/p95 | Prepare retained | Boundary/full retained |
+| Workload | Off p50/p95 | Boundary p50/p95 | Full p50/p95 | Off retained | Boundary/full retained |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Rich success | 252.96/301.67 us | 18.04/18.67 us | 27.88/35.83 us | 10,056 B | 1,234/26,312 B |
-| Checkout | 376.25/444.54 us | 24.88/30.63 us | 33.75/35.29 us | 13,041 B | 1,715/25,631 B |
-| Retry exhaustion | 294.83/360.04 us | 12.42/13.25 us | 20.92/21.67 us | 9,826 B | 1,518/26,155 B |
-| Defect | 15.71/18.17 us | 0.38/0.42 us | 1.29/1.38 us | 2,463 B | 789/3,183 B |
-| Cancellation | 12.79/14.29 us | 0.25/0.29 us | 0.25/0.25 us | 2,421 B | 815/815 B |
+| Rich success | 34.25/40.75 us | 35.17/35.92 us | 54.67/55.63 us | 107 B | 1,234/26,312 B |
+| Checkout | 38.46/43.92 us | 39.21/39.50 us | 50.67/51.13 us | 218 B | 1,715/25,631 B |
+| Retry exhaustion | 16.17/16.54 us | 16.92/17.13 us | 28.54/28.75 us | 21 B | 1,518/26,155 B |
+| Defect | 0.21/0.25 us | 0.46/0.50 us | 1.67/1.75 us | 24 B | 789/3,183 B |
+| Cancellation | 0.08/0.08 us | 0.33/0.33 us | 0.33/0.33 us | 44 B | 815/815 B |
 
-These interpreter timings are baselines, not candidate performance targets.
-They make regressions and tracing costs visible while the backend candidates
-establish their own results.
+These 20-sample off-mode additions were recorded on 2026-08-06 after the
+original baseline. Off mode produces zero events and avoids span sequencing and
+dependency-event attribute construction. These interpreter timings are
+baselines, not candidate performance targets; they make tracing costs visible
+while the backend candidates establish their own results.
 
 ## Candidate contract
 
@@ -75,7 +77,7 @@ Both backend spikes must:
 - reproduce computation and dependency-call boundary events, including source,
   semantic, core, causal-span, and execution identity;
 - report lowering or encoding time separately from execution;
-- report warm execution p50/p95, allocation or peak memory, tracing overhead,
+- report off-mode warm execution p50/p95, allocation or peak memory, tracing overhead,
   true cold-process startup, executable size, and external native dependencies;
 - link the application and required Chimi runtime support into one deployable
   executable;
