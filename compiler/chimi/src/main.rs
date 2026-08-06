@@ -8,8 +8,8 @@ use std::process::ExitCode;
 
 const VERSION: &str = concat!("chimi ", env!("CARGO_PKG_VERSION"), "-bootstrap");
 const USAGE: &str = concat!(
-    "usage: chimi --version | chimi format <path> | chimi check <path> | chimi run <path> | ",
-    "chimi check --root <project-dir> <entry-module> | ",
+    "usage: chimi --version | chimi format <path> | chimi check [--json] <path> | ",
+    "chimi run <path> | chimi check [--json] --root <project-dir> <entry-module> | ",
     "chimi run --root <project-dir> <entry-module>"
 );
 
@@ -22,9 +22,22 @@ enum Input {
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
     Version,
-    Format { path: PathBuf },
-    Check { input: Input },
-    Run { input: Input },
+    Format {
+        path: PathBuf,
+    },
+    Check {
+        input: Input,
+        output: DiagnosticOutput,
+    },
+    Run {
+        input: Input,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DiagnosticOutput {
+    Human,
+    Json,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -68,10 +81,21 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
     }
 
     if command == "check" || command == "run" {
-        let Some(first) = arguments.next() else {
+        let Some(mut first) = arguments.next() else {
             return Err(UsageError {
                 message: "check and run require a source path or project root",
             });
+        };
+        let output = if command == "check" && first == "--json" {
+            let Some(path_or_root) = arguments.next() else {
+                return Err(UsageError {
+                    message: "--json requires a source path or project root",
+                });
+            };
+            first = path_or_root;
+            DiagnosticOutput::Json
+        } else {
+            DiagnosticOutput::Human
         };
         let input = if first == "--root" {
             let Some(root) = arguments.next() else {
@@ -103,7 +127,7 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
                 message: "check and run received unexpected arguments",
             })
         } else if command == "check" {
-            Ok(Command::Check { input })
+            Ok(Command::Check { input, output })
         } else {
             Ok(Command::Run { input })
         };
@@ -121,7 +145,7 @@ fn execute(command: Command) -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Format { path } => format(path),
-        Command::Check { input } => check(input),
+        Command::Check { input, output } => check(input, output),
         Command::Run { input } => run(input),
     }
 }
@@ -144,14 +168,26 @@ fn format(path: PathBuf) -> ExitCode {
     }
 }
 
-fn check(input: Input) -> ExitCode {
+fn check(input: Input, output: DiagnosticOutput) -> ExitCode {
     let Some(project) = load_project(input) else {
         return ExitCode::FAILURE;
     };
     match Compiler::verify_project(project.sources()) {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(_) => {
+            if output == DiagnosticOutput::Json {
+                print!("{}", project.render_diagnostics_json(&[]));
+            }
+            ExitCode::SUCCESS
+        }
         Err(diagnostics) => {
-            eprint!("{}", project.render_diagnostics(&diagnostics));
+            match output {
+                DiagnosticOutput::Human => {
+                    eprint!("{}", project.render_diagnostics(&diagnostics));
+                }
+                DiagnosticOutput::Json => {
+                    print!("{}", project.render_diagnostics_json(&diagnostics));
+                }
+            }
             ExitCode::FAILURE
         }
     }
@@ -199,7 +235,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, Input, UsageError, parse_command};
+    use super::{Command, DiagnosticOutput, Input, UsageError, parse_command};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -228,7 +264,8 @@ mod tests {
             Ok(Command::Check {
                 input: Input::File {
                     path: PathBuf::from("program.chimi")
-                }
+                },
+                output: DiagnosticOutput::Human,
             })
         );
         assert_eq!(
@@ -249,6 +286,37 @@ mod tests {
                 input: Input::File {
                     path: PathBuf::from("program.chimi")
                 }
+            })
+        );
+    }
+
+    #[test]
+    fn parses_structured_check_for_files_and_projects() {
+        assert_eq!(
+            parse_command(arguments(&["check", "--json", "program.chimi"])),
+            Ok(Command::Check {
+                input: Input::File {
+                    path: PathBuf::from("program.chimi")
+                },
+                output: DiagnosticOutput::Json,
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&[
+                "check", "--json", "--root", "project", "app/main"
+            ])),
+            Ok(Command::Check {
+                input: Input::Project {
+                    root: PathBuf::from("project"),
+                    entry: "app/main".to_owned(),
+                },
+                output: DiagnosticOutput::Json,
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["check", "--json"])),
+            Err(UsageError {
+                message: "--json requires a source path or project root"
             })
         );
     }

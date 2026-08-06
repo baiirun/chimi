@@ -36,6 +36,48 @@ impl fmt::Display for Severity {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticLabel {
+    pub(crate) file_id: FileId,
+    pub(crate) range: TextRange,
+    pub(crate) message: String,
+}
+
+impl DiagnosticLabel {
+    pub const fn range(&self) -> TextRange {
+        self.range
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub(crate) const fn file_id(&self) -> FileId {
+        self.file_id
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticEdit {
+    pub(crate) file_id: FileId,
+    pub(crate) range: TextRange,
+    pub(crate) replacement: String,
+}
+
+impl DiagnosticEdit {
+    pub const fn range(&self) -> TextRange {
+        self.range
+    }
+
+    pub fn replacement(&self) -> &str {
+        &self.replacement
+    }
+
+    pub(crate) const fn file_id(&self) -> FileId {
+        self.file_id
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Diagnostic {
     stage: DiagnosticStage,
     code: &'static str,
@@ -43,6 +85,8 @@ pub struct Diagnostic {
     file_id: FileId,
     range: TextRange,
     message: String,
+    pub(crate) labels: Vec<DiagnosticLabel>,
+    pub(crate) fixes: Vec<DiagnosticEdit>,
 }
 
 impl Diagnostic {
@@ -60,6 +104,8 @@ impl Diagnostic {
             file_id,
             range,
             message: message.into(),
+            labels: Vec::new(),
+            fixes: Vec::new(),
         }
     }
 
@@ -75,12 +121,24 @@ impl Diagnostic {
         self.range
     }
 
+    pub const fn severity(&self) -> Severity {
+        self.severity
+    }
+
     pub(crate) const fn file_id(&self) -> FileId {
         self.file_id
     }
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn labels(&self) -> &[DiagnosticLabel] {
+        &self.labels
+    }
+
+    pub fn fixes(&self) -> &[DiagnosticEdit] {
+        &self.fixes
     }
 
     pub fn render(&self, source: &SourceSnapshot) -> String {

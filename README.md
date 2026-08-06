@@ -39,3 +39,13 @@ cargo run -q -p chimi -- format compiler/chimi/tests/fixtures/format_messy.chimi
 unchanged with syntax diagnostics and a failing status. `check` and `run`
 accept either one self-contained source file or an explicit project root and
 entry module through `--root <project-dir> <entry-module>`.
+
+Request versioned machine-readable diagnostics with:
+
+```sh
+cargo run -q -p chimi -- check --json compiler/chimi/tests/fixtures/invalid_field_type.chimi
+```
+
+The JSON document keeps compiler stages distinct and includes explicit module,
+path, span, label, and fix fields. A successful check returns an empty
+`diagnostics` array.
