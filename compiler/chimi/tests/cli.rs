@@ -126,10 +126,46 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         concat!(
-            "chimi: check and run accept exactly one source path\n",
-            "usage: chimi --version | chimi check <path> | chimi run <path>\n"
+            "chimi: check and run received unexpected arguments\n",
+            "usage: chimi --version | chimi check <path> | chimi run <path> | ",
+            "chimi check --root <project-dir> <entry-module> | ",
+            "chimi run --root <project-dir> <entry-module>\n"
         )
     );
+}
+
+#[test]
+fn explicit_project_root_loads_and_executes_imported_modules() {
+    let root = repository_path("compiler/chimi/tests/fixtures/project");
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .args(["run", "--root", root.to_str().unwrap(), "app/main"])
+        .output()
+        .expect("run a multi-module Chimi project");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .last()
+            .unwrap(),
+        "{\"outcome\":\"success\",\"value\":42}"
+    );
+}
+
+#[test]
+fn imported_module_diagnostics_render_against_the_owning_source() {
+    let root = repository_path("compiler/chimi/tests/fixtures/project-invalid");
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .args(["check", "--root", root.to_str().unwrap(), "app/main"])
+        .output()
+        .expect("check an invalid multi-module Chimi project");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("lib/broken.chimi"), "{stderr}");
+    assert!(stderr.contains("error[T"), "{stderr}");
 }
 
 #[test]
