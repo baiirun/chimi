@@ -258,9 +258,10 @@ failure, dependency, and observability semantics.
   sequence, matches, outcomes, dependency calls, and provision scopes.
 - Execute providers embedded by root `using` boundaries.
 - Implement structured events and the four terminal outcome classes.
-- Implement retry through ordinary standard-library composition. Introduce a
-  provisional intrinsic only if measured behavior requires it, keyed by stable
-  symbol identity and kept behind the intrinsic seam.
+- Implement retry through ordinary standard-library composition. Retry-once
+  exhaustion is verified with a polymorphic thunk transformer and requires no
+  intrinsic. Keep selective inspection of open failure rows as a separate
+  type-system question.
 
 ### Gate
 
