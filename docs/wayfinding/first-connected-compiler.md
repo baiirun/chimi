@@ -239,14 +239,17 @@ typed trees. Expected failures bubble as values until a contextual case handles
 them. Reports preserve distinct success, expected-failure, defect, and
 cancellation outcomes.
 
-`ExecutionConfig` selects full or boundary tracing and owns execution identity
-and an initial cancellation request. Full tracing emits paired start/end events
-for every executed core node; both modes retain computation start/end and
-dependency-call events. Every event carries deterministic sequence, causal span
-identity, computation and execution identity, core and semantic origin, source
-span, operation kind, and typed attributes. M5 remains open for executing the
-composite retry forcing example and replacing initial cancellation with a live
-cooperative signal.
+`ExecutionConfig` currently selects full or boundary tracing and owns execution
+identity and an initial cancellation request. Full tracing emits paired
+start/end events for every executed core node; both implemented modes retain
+computation start/end and dependency-call events. Every event carries
+deterministic sequence, causal span identity, computation and execution
+identity, core and semantic origin, source span, operation kind, and typed
+attributes. The accepted runtime contract also includes an `off` mode that
+bypasses event construction, buffering, serialization, and export work without
+changing outcomes; its implementation is tracked in `prog`. M5 remains open
+for executing the composite retry forcing example and replacing initial
+cancellation with a live cooperative signal.
 
 The fifth M5 slice makes the canonical pipeline directly testable from the
 command line. `chimi check <path>` and `chimi run <path>` treat the supplied
@@ -356,3 +359,11 @@ in boundary and full trace modes. The host measurements, dependencies, known
 prototype shortcuts, and interpretation are recorded in
 `docs/performance/native-aot-m8-spike.md`. The embedded-bytecode spike
 (`prog show ts-8717b3`) is the next comparison frontier.
+
+Tracing configuration is a caller-owned runtime policy with three accepted
+modes: `off`, `boundaries`, and `full`. `off` is the performance path and does
+not construct or export events; `boundaries` retains computation lifecycle and
+dependency calls; `full` makes every semantic operation observable. All three
+preserve the same terminal outcome contract.
+Implementation and cross-backend verification are tracked by
+`prog show ts-c19aa2`.

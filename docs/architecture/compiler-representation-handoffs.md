@@ -362,8 +362,11 @@ supplies operational configuration and begins evaluation:
 execute(core: CoreProgram, config: ExecutionConfig) -> ExecutionReport
 ```
 
-`ExecutionConfig` owns tracing export, unique execution identity, cancellation,
-and resource policy. It is not a Chimi source-level provider record.
+`ExecutionConfig` owns the `off | boundaries | full` tracing mode, tracing
+export, unique execution identity, cancellation, and resource policy. It is not
+a Chimi source-level provider record. `off` is a runtime fast path: it bypasses
+event construction and exporter work without changing evaluation or terminal
+outcomes.
 
 `ExecutionReport` distinguishes success, expected failure, defect, and
 cancellation and exposes the structured event stream or exporter result.

@@ -159,6 +159,10 @@ Evidence: [type-contract prototype](../../prototypes/type-contracts/README.md).
   expected failure variants; defects and cancellation MUST NOT retry.
 - Runtime completion has four distinct outcome classes: success, expected
   failure, defect, and cancellation.
+- The external runner selects `off`, `boundaries`, or `full` tracing without
+  changing evaluation or terminal outcomes. `off` MUST bypass event
+  construction, buffering, serialization, and export work; `boundaries`
+  retains computation lifecycle and dependency-call events.
 - Every executed semantic operation MUST be observable as structured runtime
   events in full tracing mode. Events MUST retain deterministic sequence within
   one execution, trace/span causality, source identity, semantic node or
