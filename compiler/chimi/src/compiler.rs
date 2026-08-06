@@ -1424,4 +1424,122 @@ mod tests {
                 .all(|diagnostic| diagnostic.stage() == DiagnosticStage::Type)
         );
     }
+
+    #[test]
+    fn outcomes_construct_bubble_recover_and_remap_failure_variants() {
+        let report = Compiler::type_project(vec![module(
+            "outcomes/recovery",
+            "recovery.chimi",
+            concat!(
+                "struct Receipt { id: Text }\n",
+                "enum PaymentError { Declined(reason: Text), Offline }\n",
+                "enum CheckoutError { Payment(error: PaymentError) }\n",
+                "fn operation(mode: Int) -> Receipt {\n",
+                "  case mode {\n",
+                "    0 -> Failure(Declined(reason: \"declined\"))\n",
+                "    _ -> Failure(Offline())\n",
+                "  }\n",
+                "}\n",
+                "fn bubble(mode: Int) -> Receipt { operation(mode) }\n",
+                "fn explicit_success() -> Int { Success(1) }\n",
+                "fn recover_declined(mode: Int) -> Receipt {\n",
+                "  case operation(mode) {\n",
+                "    Success(receipt) -> receipt\n",
+                "    Failure(Declined(_reason)) -> Receipt(id: \"fallback\")\n",
+                "  }\n",
+                "}\n",
+                "fn recover_all(mode: Int) -> Receipt {\n",
+                "  case operation(mode) {\n",
+                "    Success(receipt) -> receipt\n",
+                "    Failure(_error) -> Receipt(id: \"fallback\")\n",
+                "  }\n",
+                "}\n",
+                "fn remap(mode: Int) -> Receipt {\n",
+                "  case operation(mode) {\n",
+                "    Success(receipt) -> receipt\n",
+                "    Failure(error) -> Failure(Payment(error: error))\n",
+                "  }\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        for (function, contract) in [
+            ("operation", "fn(Int) -> Receipt errors PaymentError"),
+            ("bubble", "fn(Int) -> Receipt errors PaymentError"),
+            ("explicit_success", "fn() -> Int"),
+            (
+                "recover_declined",
+                "fn(Int) -> Receipt errors PaymentError.Offline",
+            ),
+            ("recover_all", "fn(Int) -> Receipt"),
+            ("remap", "fn(Int) -> Receipt errors CheckoutError"),
+        ] {
+            assert_eq!(
+                report.contract("outcomes/recovery", function).as_deref(),
+                Some(contract),
+                "unexpected contract for {function}"
+            );
+        }
+    }
+
+    #[test]
+    fn outcome_errors_are_bounded_and_leave_unhandled_failures_visible() {
+        let report = Compiler::type_project(vec![module(
+            "outcomes/invalid",
+            "invalid_outcomes.chimi",
+            concat!(
+                "struct Receipt { id: Text }\n",
+                "enum PaymentError { Declined(reason: Text), Offline }\n",
+                "fn operation() -> Receipt { Failure(Declined(reason: \"no\")) }\n",
+                "fn raw_case() -> Receipt {\n",
+                "  case operation() { _ -> Receipt(id: \"raw\") }\n",
+                "}\n",
+                "fn incomplete() -> Receipt {\n",
+                "  case operation() {\n",
+                "    Success(receipt) -> receipt\n",
+                "  }\n",
+                "}\n",
+                "fn impossible() -> Receipt {\n",
+                "  case operation() {\n",
+                "    Success(receipt) -> receipt\n",
+                "    Failure(Offline) -> Receipt(id: \"offline\")\n",
+                "  }\n",
+                "}\n",
+                "fn invalid_pattern() -> Receipt {\n",
+                "  case operation() {\n",
+                "    Success(receipt) -> receipt\n",
+                "    Failure(True) -> Receipt(id: \"invalid\")\n",
+                "  }\n",
+                "}\n",
+                "fn bad_failure() -> Int { Failure(1) }\n",
+                "fn bad_success() -> Int { Success() }\n",
+                "fn standalone() -> Int { Failure }\n",
+            ),
+        )]);
+
+        assert_eq!(
+            report
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            [
+                "T4222", "T4223", "T4224", "T4222", "T4220", "T4221", "T4221"
+            ]
+        );
+        for function in ["raw_case", "incomplete", "impossible", "invalid_pattern"] {
+            assert_eq!(
+                report.contract("outcomes/invalid", function).as_deref(),
+                Some("fn() -> Receipt errors PaymentError.Declined"),
+                "invalid recovery unexpectedly consumed {function}'s failure"
+            );
+        }
+        assert!(
+            report
+                .diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.stage() == DiagnosticStage::Type)
+        );
+    }
 }
