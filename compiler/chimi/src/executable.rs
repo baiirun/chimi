@@ -43,6 +43,10 @@ pub(crate) struct CoreProgram {
 }
 
 impl CoreProgram {
+    pub(crate) const fn type_count(&self) -> usize {
+        self.type_count
+    }
+
     pub(crate) fn symbol(&self, id: SymbolId) -> &CoreSymbol {
         self.symbols
             .get(id.raw() as usize)

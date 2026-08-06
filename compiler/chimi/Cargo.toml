@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [features]
+backend-benchmarks = []
 frontend-benchmarks = []
 
 [[bin]]
@@ -16,3 +17,8 @@ path = "src/main.rs"
 name = "frontend"
 harness = false
 required-features = ["frontend-benchmarks"]
+
+[[bench]]
+name = "backend"
+harness = false
+required-features = ["backend-benchmarks"]
