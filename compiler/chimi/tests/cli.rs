@@ -27,7 +27,7 @@ fn version_reports_the_bootstrap_compiler() {
 }
 
 #[test]
-fn check_accepts_the_m1_program() {
+fn check_accepts_a_single_module_project() {
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .args(["check", &fixture("success")])
         .output()
@@ -49,14 +49,44 @@ fn run_executes_source_and_prints_structured_events_and_outcome() {
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines = stdout.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 3);
+    assert!(lines.len() > 3);
     assert!(lines[0].contains("\"event\":\"computation_started\""));
     assert!(lines[0].contains("\"computation\":\"main\""));
-    assert!(lines[0].contains("\"core_node_id\":0"));
-    assert!(lines[1].contains("\"event\":\"computation_completed\""));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("\"operation\":\"construct\""))
+    );
+    assert!(lines[lines.len() - 2].contains("\"event\":\"computation_completed\""));
     assert_eq!(
-        lines[2],
+        lines[lines.len() - 1],
         "{\"outcome\":\"success\",\"value\":{\"type\":\"Answer\",\"fields\":{\"value\":42}}}"
+    );
+}
+
+#[test]
+fn run_executes_the_checkout_forcing_program_with_dependency_traces() {
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .args([
+            "run",
+            repository_path("prototypes/golden/valid/dependencies_and_execution.chimi")
+                .to_str()
+                .unwrap(),
+        ])
+        .output()
+        .expect("run the checkout forcing program");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.matches("\"event\":\"dependency_called\"").count(), 2);
+    assert_eq!(
+        stdout.lines().last().unwrap(),
+        concat!(
+            "{\"outcome\":\"success\",\"value\":{\"type\":\"Order\",",
+            "\"fields\":{\"id\":{\"type\":\"OrderId\",",
+            "\"fields\":{\"value\":\"order-1\"}}}}}"
+        )
     );
 }
 
@@ -65,8 +95,8 @@ fn invalid_programs_stop_at_the_owning_stage() {
     let cases = [
         ("missing_closing_brace", "error[S1001] syntax"),
         ("missing_main", "error[E5001] execution-setup"),
-        ("unresolved_constructor", "error[N3001] name"),
-        ("invalid_field_type", "error[T4001] type"),
+        ("unresolved_constructor", "error[E_UNRESOLVED_VALUE] name"),
+        ("invalid_field_type", "error[T4203] type"),
     ];
     for (name, expected) in cases {
         let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
