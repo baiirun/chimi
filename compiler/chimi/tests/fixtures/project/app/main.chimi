@@ -1,0 +1,5 @@
+import lib/answer as Answer
+
+pub fn main() -> Int {
+  Answer.value()
+}

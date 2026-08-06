@@ -244,9 +244,9 @@ and an initial cancellation request. Full tracing emits paired start/end events
 for every executed core node; both modes retain computation start/end and
 dependency-call events. Every event carries deterministic sequence, causal span
 identity, computation and execution identity, core and semantic origin, source
-span, operation kind, and typed attributes. M5 remains open for loading a
-multi-module project through the CLI, executing the composite retry forcing
-example, and replacing initial cancellation with a live cooperative signal.
+span, operation kind, and typed attributes. M5 remains open for executing the
+composite retry forcing example and replacing initial cancellation with a live
+cooperative signal.
 
 The fifth M5 slice makes the canonical pipeline directly testable from the
 command line. `chimi check <path>` and `chimi run <path>` treat the supplied
@@ -259,6 +259,20 @@ rules. The checkout dependency fixture is the end-to-end CLI gate and must
 retain two dependency-call events plus its nested `Order` success value. The
 fixed M1 library adapter remains only as transitional regression coverage and
 is no longer the user-facing command path.
+
+The sixth M5 slice adds explicit filesystem project loading without choosing a
+package manifest format. `chimi check --root <project-dir> <entry-module>` and
+`chimi run --root <project-dir> <entry-module>` map a module such as
+`billing/money` to `<project-dir>/billing/money.chimi`. The loader starts at the
+entry module and recursively follows its declared imports; unrelated source
+files under the root are not part of the compilation. It rejects missing
+modules, import cycles, paths that escape through symlinks, and different module
+names that resolve to one physical file. Compiler diagnostics retain the
+owning module's source path after loading. Single-file commands remain valid
+and do not infer a project root. The bootstrap loader currently parses each
+module once to discover imports and the canonical compiler parses it again;
+the incrementality milestone must cache and reuse that frontend snapshot rather
+than preserve this prototype cost.
 
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides

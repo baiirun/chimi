@@ -10,7 +10,7 @@ use crate::source::SourceSnapshot;
 use crate::typing::{GenericKind, TypedProject, check, check_project};
 use std::sync::Arc;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ProjectSource {
     module_path: String,
     source: SourceSnapshot,
@@ -22,18 +22,7 @@ impl ProjectSource {
         source: SourceSnapshot,
     ) -> Result<Self, ProjectPathError> {
         let module_path = module_path.into();
-        let valid = !module_path.is_empty()
-            && !module_path.starts_with('/')
-            && !module_path.ends_with('/')
-            && module_path.split('/').all(|part| {
-                !part.is_empty()
-                    && part != "."
-                    && part != ".."
-                    && part
-                        .chars()
-                        .all(|character| character == '_' || character.is_ascii_alphanumeric())
-            });
-        if !valid {
+        if !Self::is_valid_path(&module_path) {
             return Err(ProjectPathError { module_path });
         }
         Ok(Self {
@@ -45,11 +34,35 @@ impl ProjectSource {
     pub fn module_path(&self) -> &str {
         &self.module_path
     }
+
+    pub(crate) fn source(&self) -> &SourceSnapshot {
+        &self.source
+    }
+
+    pub(crate) fn is_valid_path(module_path: &str) -> bool {
+        !module_path.is_empty()
+            && !module_path.starts_with('/')
+            && !module_path.ends_with('/')
+            && module_path.split('/').all(|part| {
+                !part.is_empty()
+                    && part != "."
+                    && part != ".."
+                    && part
+                        .chars()
+                        .all(|character| character == '_' || character.is_ascii_alphanumeric())
+            })
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ProjectPathError {
     module_path: String,
+}
+
+impl ProjectPathError {
+    pub(crate) fn new(module_path: String) -> Self {
+        Self { module_path }
+    }
 }
 
 impl std::fmt::Display for ProjectPathError {

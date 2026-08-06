@@ -6,6 +6,7 @@ pub mod execution;
 #[doc(hidden)]
 pub mod frontend_benchmark;
 mod ids;
+pub mod project;
 mod resolution;
 mod semantic;
 pub mod source;

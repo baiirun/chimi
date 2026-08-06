@@ -1,20 +1,29 @@
-use chimi::diagnostic::Diagnostic;
+use chimi::Compiler;
 use chimi::execution::ExecutionConfig;
-use chimi::source::SourceSnapshot;
-use chimi::{Compiler, ProjectSource};
+use chimi::project::LoadedProject;
 use std::env;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 const VERSION: &str = concat!("chimi ", env!("CARGO_PKG_VERSION"), "-bootstrap");
-const USAGE: &str = "usage: chimi --version | chimi check <path> | chimi run <path>";
+const USAGE: &str = concat!(
+    "usage: chimi --version | chimi check <path> | chimi run <path> | ",
+    "chimi check --root <project-dir> <entry-module> | ",
+    "chimi run --root <project-dir> <entry-module>"
+);
+
+#[derive(Debug, Eq, PartialEq)]
+enum Input {
+    File { path: PathBuf },
+    Project { root: PathBuf, entry: String },
+}
 
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
     Version,
-    Check { path: PathBuf },
-    Run { path: PathBuf },
+    Check { input: Input },
+    Run { input: Input },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -41,22 +50,44 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
     }
 
     if command == "check" || command == "run" {
-        let Some(path) = arguments.next() else {
+        let Some(first) = arguments.next() else {
             return Err(UsageError {
-                message: "check and run require a source path",
+                message: "check and run require a source path or project root",
             });
         };
-        let path = PathBuf::from(path);
-        return if arguments.next().is_none() {
-            if command == "check" {
-                Ok(Command::Check { path })
-            } else {
-                Ok(Command::Run { path })
+        let input = if first == "--root" {
+            let Some(root) = arguments.next() else {
+                return Err(UsageError {
+                    message: "--root requires a project directory and entry module",
+                });
+            };
+            let Some(entry) = arguments.next() else {
+                return Err(UsageError {
+                    message: "--root requires a project directory and entry module",
+                });
+            };
+            let Ok(entry) = entry.into_string() else {
+                return Err(UsageError {
+                    message: "entry module must be valid UTF-8",
+                });
+            };
+            Input::Project {
+                root: PathBuf::from(root),
+                entry,
             }
         } else {
+            Input::File {
+                path: PathBuf::from(first),
+            }
+        };
+        return if arguments.next().is_some() {
             Err(UsageError {
-                message: "check and run accept exactly one source path",
+                message: "check and run received unexpected arguments",
             })
+        } else if command == "check" {
+            Ok(Command::Check { input })
+        } else {
+            Ok(Command::Run { input })
         };
     }
 
@@ -71,63 +102,49 @@ fn execute(command: Command) -> ExitCode {
             println!("{VERSION}");
             ExitCode::SUCCESS
         }
-        Command::Check { path } => check(path),
-        Command::Run { path } => run(path),
+        Command::Check { input } => check(input),
+        Command::Run { input } => run(input),
     }
 }
 
-fn check(path: PathBuf) -> ExitCode {
-    let Some(source) = read_source(&path) else {
+fn check(input: Input) -> ExitCode {
+    let Some(project) = load_project(input) else {
         return ExitCode::FAILURE;
     };
-    let diagnostic_source = source.clone();
-    match Compiler::verify_project(vec![single_module(source)]) {
+    match Compiler::verify_project(project.sources()) {
         Ok(_) => ExitCode::SUCCESS,
         Err(diagnostics) => {
-            eprint!("{}", render_diagnostics(&diagnostic_source, &diagnostics));
+            eprint!("{}", project.render_diagnostics(&diagnostics));
             ExitCode::FAILURE
         }
     }
 }
 
-fn run(path: PathBuf) -> ExitCode {
-    let Some(source) = read_source(&path) else {
+fn run(input: Input) -> ExitCode {
+    let Some(project) = load_project(input) else {
         return ExitCode::FAILURE;
     };
-    let diagnostic_source = source.clone();
-    match Compiler::run_project(vec![single_module(source)], ExecutionConfig::for_process()) {
+    match Compiler::run_project(project.sources(), ExecutionConfig::for_process()) {
         Ok(report) => {
             print!("{}", report.render_json_lines());
             ExitCode::SUCCESS
         }
         Err(diagnostics) => {
-            eprint!("{}", render_diagnostics(&diagnostic_source, &diagnostics));
+            eprint!("{}", project.render_diagnostics(&diagnostics));
             ExitCode::FAILURE
         }
     }
 }
 
-fn single_module(source: SourceSnapshot) -> ProjectSource {
-    ProjectSource::new("main", source).expect("the CLI single-module path is valid")
-}
-
-fn render_diagnostics(source: &SourceSnapshot, diagnostics: &[Diagnostic]) -> String {
-    let mut output = diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.render(source))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !output.is_empty() {
-        output.push('\n');
-    }
-    output
-}
-
-fn read_source(path: &Path) -> Option<SourceSnapshot> {
-    match SourceSnapshot::read(path) {
-        Ok(source) => Some(source),
+fn load_project(input: Input) -> Option<LoadedProject> {
+    let loaded = match input {
+        Input::File { path } => LoadedProject::single_file(path),
+        Input::Project { root, entry } => LoadedProject::load(root, entry),
+    };
+    match loaded {
+        Ok(project) => Some(project),
         Err(error) => {
-            eprintln!("chimi: cannot read {}: {error}", path.display());
+            eprintln!("chimi: {error}");
             None
         }
     }
@@ -145,7 +162,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, UsageError, parse_command};
+    use super::{Command, Input, UsageError, parse_command};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -172,25 +189,42 @@ mod tests {
         assert_eq!(
             parse_command(arguments(&["check", "program.chimi"])),
             Ok(Command::Check {
-                path: PathBuf::from("program.chimi")
+                input: Input::File {
+                    path: PathBuf::from("program.chimi")
+                }
             })
         );
         assert_eq!(
             parse_command(arguments(&["check"])),
             Err(UsageError {
-                message: "check and run require a source path"
+                message: "check and run require a source path or project root"
             })
         );
         assert_eq!(
             parse_command(arguments(&["check", "one.chimi", "two.chimi"])),
             Err(UsageError {
-                message: "check and run accept exactly one source path"
+                message: "check and run received unexpected arguments"
             })
         );
         assert_eq!(
             parse_command(arguments(&["run", "program.chimi"])),
             Ok(Command::Run {
-                path: PathBuf::from("program.chimi")
+                input: Input::File {
+                    path: PathBuf::from("program.chimi")
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn parses_an_explicit_project_root_and_entry_module() {
+        assert_eq!(
+            parse_command(arguments(&["run", "--root", "project", "app/main"])),
+            Ok(Command::Run {
+                input: Input::Project {
+                    root: PathBuf::from("project"),
+                    entry: "app/main".to_owned()
+                }
             })
         );
     }
