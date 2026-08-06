@@ -383,3 +383,14 @@ dependency calls; `full` makes every semantic operation observable. All three
 preserve the same terminal outcome contract.
 Implementation and cross-backend verification are tracked by
 `prog show ts-c19aa2`.
+
+The first selected-backend build slice (`prog show ts-a5f862`) promotes native
+emission into the default compiler and adds `chimi build`. A file or explicit
+multi-module project now reaches `BackendProgram`, per-module Cranelift objects,
+immutable runtime metadata, the embedded ABI-v1 runtime archive, and the host
+linker. The resulting `chimi.build.v1` report names each pre-link artifact,
+remaining dynamic dependencies, and the measured full-static status. The same
+five-workload harness still matches the interpreter oracle in off, boundary,
+and full modes. Direct native lowering and actual compilation-unit cache reuse
+remain subsequent runtime/compiler work; this slice deliberately retains the
+known helper-per-Core-node implementation behind the permanent build boundary.

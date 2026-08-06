@@ -374,6 +374,41 @@ cancellation and exposes the structured event stream or exporter result.
 This interface does not require an interpreter. A native binary, VM, or other
 backend may internalize `execute` while preserving its semantic contract.
 
+## Handoff 3: Executable Core to Native Build Artifacts
+
+The selected backend consumes only opaque `BackendProgram`, which contains the
+verified `CoreProgram`. The production build boundary is:
+
+```text
+build_application(
+  program: BackendProgram,
+  executable: Path,
+  artifacts: Path,
+) -> NativeBuildReport | ToolchainError
+```
+
+The first native implementation emits three independently addressable inputs
+before the final platform link:
+
+- one Cranelift object per source module containing its compiled Core node
+  functions, plus a small entry object;
+- an immutable metadata object containing symbols, values, source origins, and
+  runtime operation operands;
+- a static archive containing Chimi runtime ABI version 1.
+
+The linked executable embeds the Chimi runtime and needs no separately installed
+Chimi VM or package tree. The versioned `chimi.build.v1` report identifies all
+three intermediate artifacts, the target and code generator, runtime ABI,
+remaining dynamic system libraries, and whether the actual result is fully
+static. Full-static output is a measured target property, not inferred from the
+backend choice.
+
+The current module objects still use the M8 helper-per-Core-node lowering.
+That preserves oracle conformance while connecting the real toolchain; it is not
+the permanent runtime ABI granularity. Direct lowering, compilation-unit cache
+partitioning, and stable cache keys remain follow-up work behind this same
+handoff and MUST NOT change source or `CoreProgram` semantics.
+
 ## Module Depth and Seam Placement
 
 The intended compiler modules are:
@@ -384,6 +419,7 @@ The intended compiler modules are:
 | Type checking | `check(ResolvedProgram) -> TypedProgram` | kinds, unification, rows, structural providers, patterns, suppression |
 | Executability | `seal_entry(TypedProgram, SymbolId)` | reachability and all runnable-root invariants |
 | Executable lowering | `lower(VerifiedRoot) -> CoreProgram` | sequencing, handlers, provision, closures, origin preservation |
+| Native build | `build_application(BackendProgram, paths) -> NativeBuildReport` | object emission, embedded runtime materialization, platform linking, dependency inspection |
 
 These interfaces are the test surfaces. Internal solvers, arena builders,
 interners, and traversal passes remain implementation details.

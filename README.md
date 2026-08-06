@@ -40,6 +40,22 @@ unchanged with syntax diagnostics and a failing status. `check` and `run`
 accept either one self-contained source file or an explicit project root and
 entry module through `--root <project-dir> <entry-module>`.
 
+Compile the same program and its Chimi runtime into one native executable:
+
+```sh
+cargo run -q -p chimi -- build \
+  prototypes/golden/valid/dependencies_and_execution.chimi \
+  -o target/checkout
+target/checkout --trace=boundaries
+```
+
+`build` prints a versioned `chimi.build.v1` report and writes the same report
+as `target/chimi/checkout/build.json`. The report identifies the Cranelift
+backend and runtime ABI, separately cacheable module, metadata, and runtime
+artifacts, remaining dynamic system dependencies, and whether the target is
+fully static. Fully static output is reported only when the produced executable
+actually has no dynamic dependencies.
+
 Request versioned machine-readable diagnostics with:
 
 ```sh

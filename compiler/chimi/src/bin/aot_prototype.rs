@@ -159,7 +159,7 @@ fn run_workload(workload: Workload, samples: usize) -> Result<(), String> {
         percentile(&steady_full, 50).as_nanos(),
         percentile(&steady_full, 95).as_nanos(),
         peak_rss_bytes,
-        file_size(&artifact.object_path)?,
+        files_size(&artifact.object_paths)?,
         file_size(&artifact.runtime_archive_path)?,
         file_size(&artifact.executable_path)?,
         json_string(&dependencies),
@@ -384,6 +384,12 @@ fn file_size(path: &Path) -> Result<u64, String> {
     fs::metadata(path)
         .map(|m| m.len())
         .map_err(|e| format!("inspect {}: {e}", path.display()))
+}
+
+fn files_size(paths: &[PathBuf]) -> Result<u64, String> {
+    paths
+        .iter()
+        .try_fold(0, |total, path| file_size(path).map(|size| total + size))
 }
 
 fn dynamic_dependencies(executable: &Path) -> Result<String, String> {

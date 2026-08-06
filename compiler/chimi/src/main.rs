@@ -1,4 +1,5 @@
 use chimi::Compiler;
+use chimi::backend::native::build_application;
 use chimi::execution::ExecutionConfig;
 use chimi::project::LoadedProject;
 use std::env;
@@ -10,9 +11,10 @@ const VERSION: &str = concat!("chimi ", env!("CARGO_PKG_VERSION"), "-bootstrap")
 const USAGE: &str = concat!(
     "usage: chimi --version | chimi format <path> | chimi inspect <path> <byte-offset> | ",
     "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
-    "chimi check [--json] <path> | chimi run <path> | ",
+    "chimi check [--json] <path> | chimi run <path> | chimi build <path> [-o <executable>] | ",
     "chimi check [--json] --root <project-dir> <entry-module> | chimi run --root ",
-    "<project-dir> <entry-module>"
+    "<project-dir> <entry-module> | chimi build --root <project-dir> <entry-module> ",
+    "[-o <executable>]"
 );
 
 #[derive(Debug, Eq, PartialEq)]
@@ -38,6 +40,10 @@ enum Command {
     },
     Run {
         input: Input,
+    },
+    Build {
+        input: Input,
+        output: Option<PathBuf>,
     },
 }
 
@@ -150,10 +156,10 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
         };
     }
 
-    if command == "check" || command == "run" {
+    if command == "check" || command == "run" || command == "build" {
         let Some(mut first) = arguments.next() else {
             return Err(UsageError {
-                message: "check and run require a source path or project root",
+                message: "check, run, and build require a source path or project root",
             });
         };
         let output = if command == "check" && first == "--json" {
@@ -192,6 +198,31 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
                 path: PathBuf::from(first),
             }
         };
+        if command == "build" {
+            let output = match arguments.next() {
+                None => None,
+                Some(flag) if flag == "-o" => {
+                    let Some(path) = arguments.next() else {
+                        return Err(UsageError {
+                            message: "-o requires an executable path",
+                        });
+                    };
+                    Some(PathBuf::from(path))
+                }
+                Some(_) => {
+                    return Err(UsageError {
+                        message: "build received unexpected arguments",
+                    });
+                }
+            };
+            return if arguments.next().is_none() {
+                Ok(Command::Build { input, output })
+            } else {
+                Err(UsageError {
+                    message: "build received unexpected arguments",
+                })
+            };
+        }
         return if arguments.next().is_some() {
             Err(UsageError {
                 message: "check and run received unexpected arguments",
@@ -226,6 +257,7 @@ fn execute(command: Command) -> ExitCode {
         } => inspect(input, &module_path, offset),
         Command::Check { input, output } => check(input, output),
         Command::Run { input } => run(input),
+        Command::Build { input, output } => build(input, output),
     }
 }
 
@@ -304,6 +336,49 @@ fn run(input: Input) -> ExitCode {
     }
 }
 
+fn build(input: Input, output: Option<PathBuf>) -> ExitCode {
+    let output = output.unwrap_or_else(|| default_executable_path(&input));
+    let artifact_directory = artifact_directory(&output);
+    let Some(project) = load_project(input) else {
+        return ExitCode::FAILURE;
+    };
+    let program = match Compiler::prepare_backend(project.sources()) {
+        Ok(program) => program,
+        Err(diagnostics) => {
+            eprint!("{}", project.render_diagnostics(&diagnostics));
+            return ExitCode::FAILURE;
+        }
+    };
+    match build_application(&program, &output, &artifact_directory) {
+        Ok(report) => {
+            print!("{}", report.render_json());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("chimi: build failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn default_executable_path(input: &Input) -> PathBuf {
+    let name = match input {
+        Input::File { path } => path.file_stem().and_then(|name| name.to_str()),
+        Input::Project { entry, .. } => entry.rsplit('/').next(),
+    }
+    .filter(|name| !name.is_empty())
+    .unwrap_or("chimi-program");
+    PathBuf::from(name)
+}
+
+fn artifact_directory(output: &std::path::Path) -> PathBuf {
+    let name = output
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| std::ffi::OsStr::new("chimi-program"));
+    PathBuf::from("target/chimi").join(name)
+}
+
 fn load_project(input: Input) -> Option<LoadedProject> {
     let loaded = match input {
         Input::File { path } => LoadedProject::single_file(path),
@@ -366,7 +441,7 @@ mod tests {
         assert_eq!(
             parse_command(arguments(&["check"])),
             Err(UsageError {
-                message: "check and run require a source path or project root"
+                message: "check, run, and build require a source path or project root"
             })
         );
         assert_eq!(
@@ -479,6 +554,46 @@ mod tests {
                     root: PathBuf::from("project"),
                     entry: "app/main".to_owned()
                 }
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&[
+                "build", "--root", "project", "app/main", "-o", "dist/app"
+            ])),
+            Ok(Command::Build {
+                input: Input::Project {
+                    root: PathBuf::from("project"),
+                    entry: "app/main".to_owned()
+                },
+                output: Some(PathBuf::from("dist/app")),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_build_output_policy() {
+        assert_eq!(
+            parse_command(arguments(&["build", "program.chimi"])),
+            Ok(Command::Build {
+                input: Input::File {
+                    path: PathBuf::from("program.chimi")
+                },
+                output: None,
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["build", "program.chimi", "-o", "dist/program"])),
+            Ok(Command::Build {
+                input: Input::File {
+                    path: PathBuf::from("program.chimi")
+                },
+                output: Some(PathBuf::from("dist/program")),
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["build", "program.chimi", "-o"])),
+            Err(UsageError {
+                message: "-o requires an executable path"
             })
         );
     }

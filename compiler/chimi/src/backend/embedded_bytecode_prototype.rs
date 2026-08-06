@@ -1,7 +1,7 @@
 //! PROTOTYPE: disposable host-only embedded-bytecode candidate for M8.
 
 use super::BackendProgram;
-use super::prototype_program_data::render_program_data;
+use super::program_data::render_program_data;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
