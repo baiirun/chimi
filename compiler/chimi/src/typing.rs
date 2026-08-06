@@ -314,7 +314,7 @@ impl TypedProject {
         self.generic_kinds.get(&symbol.id).copied()
     }
 
-    fn format_type(&self, id: TypeId) -> String {
+    pub(crate) fn format_type(&self, id: TypeId) -> String {
         let id = self.resolve_type_id(id);
         match &self.types[id.raw() as usize] {
             CanonicalType::Named { symbol, arguments } => {
@@ -347,6 +347,14 @@ impl TypedProject {
             ),
             CanonicalType::InferenceVariable(_) => "_".to_owned(),
             CanonicalType::Poison => "<invalid>".to_owned(),
+        }
+    }
+
+    pub(crate) fn callable_contract_for_type(&self, id: TypeId) -> Option<&CallableContract> {
+        match &self.types[self.resolve_type_id(id).raw() as usize] {
+            CanonicalType::Function(contract)
+            | CanonicalType::PolymorphicFunction { contract, .. } => Some(contract),
+            _ => None,
         }
     }
 

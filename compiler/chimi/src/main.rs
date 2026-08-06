@@ -8,9 +8,11 @@ use std::process::ExitCode;
 
 const VERSION: &str = concat!("chimi ", env!("CARGO_PKG_VERSION"), "-bootstrap");
 const USAGE: &str = concat!(
-    "usage: chimi --version | chimi format <path> | chimi check [--json] <path> | ",
-    "chimi run <path> | chimi check [--json] --root <project-dir> <entry-module> | ",
-    "chimi run --root <project-dir> <entry-module>"
+    "usage: chimi --version | chimi format <path> | chimi inspect <path> <byte-offset> | ",
+    "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
+    "chimi check [--json] <path> | chimi run <path> | ",
+    "chimi check [--json] --root <project-dir> <entry-module> | chimi run --root ",
+    "<project-dir> <entry-module>"
 );
 
 #[derive(Debug, Eq, PartialEq)]
@@ -24,6 +26,11 @@ enum Command {
     Version,
     Format {
         path: PathBuf,
+    },
+    Inspect {
+        input: Input,
+        module_path: String,
+        offset: usize,
     },
     Check {
         input: Input,
@@ -76,6 +83,69 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
         } else {
             Err(UsageError {
                 message: "format received unexpected arguments",
+            })
+        };
+    }
+
+    if command == "inspect" {
+        let Some(first) = arguments.next() else {
+            return Err(UsageError {
+                message: "inspect requires a source path and byte offset",
+            });
+        };
+        let (input, module_path, offset) = if first == "--root" {
+            let Some(root) = arguments.next() else {
+                return Err(UsageError {
+                    message: "inspect --root requires a project directory, entry module, module, and byte offset",
+                });
+            };
+            let Some(entry) = arguments.next().and_then(|value| value.into_string().ok()) else {
+                return Err(UsageError {
+                    message: "inspect --root requires a project directory, entry module, module, and byte offset",
+                });
+            };
+            let Some(module_path) = arguments.next().and_then(|value| value.into_string().ok())
+            else {
+                return Err(UsageError {
+                    message: "inspect --root requires a project directory, entry module, module, and byte offset",
+                });
+            };
+            let Some(offset) = arguments.next().and_then(parse_offset) else {
+                return Err(UsageError {
+                    message: "inspection offset must be a non-negative decimal byte offset",
+                });
+            };
+            (
+                Input::Project {
+                    root: PathBuf::from(root),
+                    entry,
+                },
+                module_path,
+                offset,
+            )
+        } else {
+            let Some(offset) = arguments.next().and_then(parse_offset) else {
+                return Err(UsageError {
+                    message: "inspection offset must be a non-negative decimal byte offset",
+                });
+            };
+            (
+                Input::File {
+                    path: PathBuf::from(first),
+                },
+                "main".to_owned(),
+                offset,
+            )
+        };
+        return if arguments.next().is_none() {
+            Ok(Command::Inspect {
+                input,
+                module_path,
+                offset,
+            })
+        } else {
+            Err(UsageError {
+                message: "inspect received unexpected arguments",
             })
         };
     }
@@ -138,6 +208,10 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
     })
 }
 
+fn parse_offset(value: OsString) -> Option<usize> {
+    value.into_string().ok()?.parse().ok()
+}
+
 fn execute(command: Command) -> ExitCode {
     match command {
         Command::Version => {
@@ -145,8 +219,29 @@ fn execute(command: Command) -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Format { path } => format(path),
+        Command::Inspect {
+            input,
+            module_path,
+            offset,
+        } => inspect(input, &module_path, offset),
         Command::Check { input, output } => check(input, output),
         Command::Run { input } => run(input),
+    }
+}
+
+fn inspect(input: Input, module_path: &str, offset: usize) -> ExitCode {
+    let Some(project) = load_project(input) else {
+        return ExitCode::FAILURE;
+    };
+    match Compiler::inspect_project(project.sources(), module_path, offset) {
+        Ok(report) => {
+            print!("{}", report.render_json());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("chimi: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -333,6 +428,44 @@ mod tests {
             parse_command(arguments(&["format"])),
             Err(UsageError {
                 message: "format requires a source path"
+            })
+        );
+    }
+
+    #[test]
+    fn parses_file_and_project_inspection_offsets() {
+        assert_eq!(
+            parse_command(arguments(&["inspect", "program.chimi", "42"])),
+            Ok(Command::Inspect {
+                input: Input::File {
+                    path: PathBuf::from("program.chimi")
+                },
+                module_path: "main".to_owned(),
+                offset: 42,
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&[
+                "inspect",
+                "--root",
+                "project",
+                "app/main",
+                "lib/value",
+                "17"
+            ])),
+            Ok(Command::Inspect {
+                input: Input::Project {
+                    root: PathBuf::from("project"),
+                    entry: "app/main".to_owned(),
+                },
+                module_path: "lib/value".to_owned(),
+                offset: 17,
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["inspect", "program.chimi", "not-a-number"])),
+            Err(UsageError {
+                message: "inspection offset must be a non-negative decimal byte offset"
             })
         );
     }

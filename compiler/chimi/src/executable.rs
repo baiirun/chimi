@@ -429,6 +429,13 @@ pub(crate) struct VerifiedRoot {
 }
 
 impl VerifiedRoot {
+    pub(crate) fn origin_id(&self, module_id: ModuleId, semantic_id: SemanticId) -> Option<u32> {
+        self.origins
+            .iter()
+            .find(|origin| origin.module_id == module_id && origin.semantic_id == semantic_id)
+            .map(|origin| origin.origin_id.raw())
+    }
+
     pub(crate) fn verification_stats(&self) -> (usize, usize, usize) {
         let reachable_modules = self
             .origins

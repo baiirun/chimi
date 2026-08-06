@@ -227,6 +227,32 @@ fn structured_project_diagnostic_names_the_owning_module() {
 }
 
 #[test]
+fn inspect_explains_resolved_callable_channels_and_executable_origin() {
+    let path = repository_path("prototypes/golden/valid/dependencies_and_execution.chimi");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let offset = source.rfind("submit(").unwrap().to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .args(["inspect", path.to_str().unwrap(), &offset])
+        .output()
+        .expect("inspect the reachable submit call");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let document = String::from_utf8(output.stdout).unwrap();
+    assert!(document.starts_with("{\"schema\":\"chimi.inspection.v1\""));
+    assert!(document.contains("\"kind\":\"name_reference\""));
+    assert!(document.contains("\"text\":\"submit\""));
+    assert!(document.contains("\"status\":\"resolved\""));
+    assert!(document.contains("\"kind\":\"function\""));
+    assert!(document.contains("\"module\":\"main\""));
+    assert!(document.contains("\"display\":\"fn(Cart) -> Order errors CheckoutError needs"));
+    assert!(document.contains("\"failures\":[\"PaymentFailed\",\"InventoryFailed\"]"));
+    assert!(document.contains("\"name\":\"inventory\",\"interface\":\"Inventory\""));
+    assert!(!document.contains("\"executable_origin\":null"));
+    assert!(document.ends_with("\"diagnostic_count\":0}\n"));
+}
+
+#[test]
 fn invalid_cli_input_is_rejected_at_the_boundary() {
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .args(["check", "one.chimi", "two.chimi"])
@@ -240,6 +266,8 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
         concat!(
             "chimi: check and run received unexpected arguments\n",
             "usage: chimi --version | chimi format <path> | ",
+            "chimi inspect <path> <byte-offset> | ",
+            "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
             "chimi check [--json] <path> | chimi run <path> | ",
             "chimi check [--json] --root <project-dir> <entry-module> | ",
             "chimi run --root <project-dir> <entry-module>\n"

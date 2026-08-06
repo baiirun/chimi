@@ -1,6 +1,7 @@
 use crate::compiler::{ProjectPathError, ProjectSource};
 use crate::diagnostic::Diagnostic;
 use crate::ids::{FileId, TextRange};
+use crate::json::write_json_string;
 use crate::semantic::{self, ImportBinding, ModuleSource};
 use crate::source::SourceSnapshot;
 use std::collections::HashMap;
@@ -170,25 +171,6 @@ fn write_json_span(
         range.end()
     )
     .expect("writing JSON to a string cannot fail");
-}
-
-fn write_json_string(output: &mut String, value: &str) {
-    output.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            character if character.is_control() => {
-                write!(output, "\\u{:04x}", character as u32)
-                    .expect("writing JSON to a string cannot fail");
-            }
-            character => output.push(character),
-        }
-    }
-    output.push('"');
 }
 
 #[derive(Debug)]
@@ -387,7 +369,7 @@ fn validate_module_path(module_path: String) -> Result<(), ProjectLoadError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LoadedProject, ProjectLoadError, write_json_string};
+    use super::{LoadedProject, ProjectLoadError};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -425,14 +407,6 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.path).expect("remove isolated project loader fixture");
         }
-    }
-
-    #[test]
-    fn structured_diagnostic_strings_escape_json_control_characters() {
-        let mut output = String::new();
-        write_json_string(&mut output, "quote\" slash\\ line\n\t\u{1}");
-
-        assert_eq!(output, "\"quote\\\" slash\\\\ line\\n\\t\\u0001\"");
     }
 
     #[test]

@@ -3,9 +3,8 @@ use crate::executable::{lower, lower_legacy, seal_entry, seal_legacy_entry};
 use crate::execution::{ExecutionConfig, ExecutionReport, execute, execute_legacy};
 use crate::formatter::FormatReport;
 use crate::ids::SymbolId;
-use crate::resolution::{
-    Namespace, ProjectSymbolKind, ReferenceResolution, ResolvedProject, resolve, resolve_project,
-};
+use crate::inspection::{InspectionError, InspectionReport, inspect};
+use crate::resolution::{ReferenceResolution, ResolvedProject, resolve, resolve_project};
 use crate::semantic;
 use crate::source::SourceSnapshot;
 use crate::typing::{GenericKind, TypedProject, check, check_project};
@@ -277,8 +276,8 @@ impl NameReport {
                         .clone()
                 }),
                 name: symbol.name.clone(),
-                namespace: namespace_name(symbol.namespace),
-                kind: symbol_kind_name(symbol.kind),
+                namespace: symbol.namespace.name(),
+                kind: symbol.kind.name(),
                 public: symbol.public,
                 source_backed: symbol.semantic_id.is_some(),
             })
@@ -310,7 +309,7 @@ impl NameReport {
                 ReferenceInfo {
                     module_path,
                     text: reference.text.clone(),
-                    namespace: namespace_name(reference.namespace),
+                    namespace: reference.namespace.name(),
                     status,
                     target: target.map(SymbolHandle),
                     target_module_path,
@@ -338,35 +337,6 @@ fn render_project_diagnostics(resolved: &ResolvedProject, diagnostics: &[Diagnos
         output.push('\n');
     }
     output
-}
-
-const fn namespace_name(namespace: Namespace) -> &'static str {
-    match namespace {
-        Namespace::Module => "module",
-        Namespace::Type => "type",
-        Namespace::Value => "value",
-    }
-}
-
-const fn symbol_kind_name(kind: ProjectSymbolKind) -> &'static str {
-    match kind {
-        ProjectSymbolKind::BuiltinModule => "builtin module",
-        ProjectSymbolKind::BuiltinType => "builtin type",
-        ProjectSymbolKind::BuiltinValue => "builtin value",
-        ProjectSymbolKind::Module => "module",
-        ProjectSymbolKind::Struct => "struct",
-        ProjectSymbolKind::StructConstructor => "struct constructor",
-        ProjectSymbolKind::Enum => "enum",
-        ProjectSymbolKind::EnumConstructor => "enum constructor",
-        ProjectSymbolKind::Interface => "interface",
-        ProjectSymbolKind::Function => "function",
-        ProjectSymbolKind::ModuleBinding => "module binding",
-        ProjectSymbolKind::GenericParameter => "generic parameter",
-        ProjectSymbolKind::Parameter => "parameter",
-        ProjectSymbolKind::Requirement => "requirement",
-        ProjectSymbolKind::LocalBinding => "local binding",
-        ProjectSymbolKind::PatternBinding => "pattern binding",
-    }
 }
 
 #[derive(Debug)]
@@ -438,6 +408,22 @@ pub struct Compiler;
 impl Compiler {
     pub fn format(source: SourceSnapshot) -> FormatReport {
         FormatReport::new(source)
+    }
+
+    pub fn inspect_project(
+        sources: Vec<ProjectSource>,
+        module_path: &str,
+        offset: usize,
+    ) -> Result<InspectionReport, InspectionError> {
+        let typed = check_project(resolve_project_sources(sources));
+        let mut report = inspect(&typed, module_path, offset)?;
+        let location = report.semantic_location();
+        if let Ok(root) = seal_entry(typed) {
+            let origin = location
+                .and_then(|(module_id, semantic_id)| root.origin_id(module_id, semantic_id));
+            report.set_executable_origin(origin);
+        }
+        Ok(report)
     }
 
     pub fn resolve_project(sources: Vec<ProjectSource>) -> NameReport {
@@ -2188,6 +2174,117 @@ mod tests {
                 .filter(|event| event.kind == EventKind::DependencyCalled)
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn inspection_composes_syntax_resolution_types_contracts_and_executable_origins() {
+        const SOURCE: &str =
+            include_str!("../../../prototypes/golden/valid/dependencies_and_execution.chimi");
+        let offset = SOURCE.rfind("submit(").unwrap();
+        let report = Compiler::inspect_project(
+            vec![module("main", "dependencies_and_execution.chimi", SOURCE)],
+            "main",
+            offset,
+        )
+        .expect("inspect the reachable submit call");
+
+        assert_eq!(report.module_path(), "main");
+        assert_eq!(report.token().unwrap().text(), "submit");
+        assert!(
+            report
+                .syntax_path()
+                .iter()
+                .any(|frame| frame.kind() == "name_reference")
+        );
+        let reference = report.reference().expect("submit is a resolved reference");
+        assert_eq!(reference.status(), "resolved");
+        let target = reference.target().expect("submit has a target");
+        assert_eq!(target.name(), "submit");
+        assert_eq!(target.kind(), "function");
+        assert_eq!(target.module_path(), Some("main"));
+        assert!(target.declaration_range().is_some());
+        assert!(
+            report
+                .inferred_type()
+                .unwrap()
+                .starts_with("fn(Cart) -> Order")
+        );
+        let callable = report
+            .callable()
+            .expect("submit exposes its callable channels");
+        assert_eq!(callable.inputs(), ["Cart"]);
+        assert_eq!(callable.success(), "Order");
+        assert_eq!(callable.failures(), ["PaymentFailed", "InventoryFailed"]);
+        assert!(
+            callable
+                .needs()
+                .iter()
+                .any(|need| need.name() == "payment" && need.interface() == "Payment")
+        );
+        assert!(report.executable_origin().is_some());
+        assert!(report.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn inspection_resolves_imported_names_to_their_declaring_module() {
+        const USE_MONEY: &str =
+            include_str!("../../../prototypes/golden/valid/modules/use_money.chimi");
+        let offset = USE_MONEY.rfind("cents(money)").unwrap();
+        let report = Compiler::inspect_project(
+            vec![
+                module("modules/use_money", "use_money.chimi", USE_MONEY),
+                module(
+                    "modules/money",
+                    "money.chimi",
+                    include_str!("../../../prototypes/golden/valid/modules/money.chimi"),
+                ),
+            ],
+            "modules/use_money",
+            offset,
+        )
+        .expect("inspect the imported Money.cents reference");
+
+        let target = report
+            .reference()
+            .and_then(|reference| reference.target())
+            .expect("member reference resolves");
+        assert_eq!(target.name(), "cents");
+        assert_eq!(target.module_path(), Some("modules/money"));
+        assert_eq!(
+            target.source_path().unwrap(),
+            std::path::Path::new("money.chimi")
+        );
+        assert_eq!(report.callable().unwrap().display(), "fn(Money) -> Int");
+        assert_eq!(report.executable_origin(), None);
+    }
+
+    #[test]
+    fn malformed_snapshots_remain_inspectable() {
+        let source = "pub fn main() {\n  Answer(value 42)\n";
+        let offset = source.find("value").unwrap();
+        let report = Compiler::inspect_project(
+            vec![module("main", "malformed.chimi", source)],
+            "main",
+            offset,
+        )
+        .expect("syntax damage does not remove the CST cursor");
+
+        assert_eq!(report.token().unwrap().text(), "value");
+        assert!(!report.syntax_path().is_empty());
+        assert!(!report.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn inspection_rejects_offsets_inside_utf8_code_points() {
+        let source = "💥\n";
+        let error =
+            Compiler::inspect_project(vec![module("main", "unicode.chimi", source)], "main", 1)
+                .expect_err("byte offsets inside UTF-8 code points are invalid");
+
+        assert_eq!(
+            error.to_string(),
+            "inspection offset 1 splits a UTF-8 code point"
         );
     }
 
