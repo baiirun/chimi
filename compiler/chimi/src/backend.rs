@@ -1,6 +1,10 @@
 use crate::executable::{CoreLiteral, CoreOperation, CorePattern, CoreProgram};
 use crate::execution::{ExecutionConfig, ExecutionReport, execute};
 
+#[cfg(feature = "native-aot-prototype")]
+#[doc(hidden)]
+pub mod native_aot_prototype;
+
 /// The backend-neutral executable input produced by the verified compiler pipeline.
 ///
 /// Its representation remains opaque outside the compiler crate so backend layout

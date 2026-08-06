@@ -8,10 +8,29 @@ publish = false
 [features]
 backend-benchmarks = []
 frontend-benchmarks = []
+native-aot-prototype = [
+  "dep:cranelift-codegen",
+  "dep:cranelift-frontend",
+  "dep:cranelift-module",
+  "dep:cranelift-native",
+  "dep:cranelift-object",
+]
+
+[dependencies]
+cranelift-codegen = { version = "=0.131.3", optional = true }
+cranelift-frontend = { version = "=0.131.3", optional = true }
+cranelift-module = { version = "=0.131.3", optional = true }
+cranelift-native = { version = "=0.131.3", optional = true }
+cranelift-object = { version = "=0.131.3", optional = true, default-features = false }
 
 [[bin]]
 name = "chimi"
 path = "src/main.rs"
+
+[[bin]]
+name = "chimi-aot-prototype"
+path = "src/bin/aot_prototype.rs"
+required-features = ["native-aot-prototype"]
 
 [[bench]]
 name = "frontend"

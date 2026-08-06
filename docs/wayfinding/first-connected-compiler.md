@@ -348,3 +348,11 @@ Cold-process startup and artifact size remain explicit `null` values until a
 candidate produces an executable. The accepted oracle measurements and the
 contract that both native AOT and embedded-bytecode spikes must satisfy are in
 `docs/performance/backend-m8-oracle-baseline.md`.
+
+The native AOT spike (`prog show ts-47988d`) lowers each Core node to a host
+Cranelift function, links generated program data and a static prototype runtime,
+and produces one executable. All five workloads match the oracle byte for byte
+in boundary and full trace modes. The host measurements, dependencies, known
+prototype shortcuts, and interpretation are recorded in
+`docs/performance/native-aot-m8-spike.md`. The embedded-bytecode spike
+(`prog show ts-8717b3`) is the next comparison frontier.
