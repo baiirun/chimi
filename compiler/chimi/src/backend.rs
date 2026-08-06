@@ -295,8 +295,15 @@ mod tests {
                 .expect("execution ID is valid")
                 .with_trace_mode(TraceMode::Boundaries),
         );
+        let off = program.execute_oracle(
+            ExecutionConfig::new("backend-off")
+                .expect("execution ID is valid")
+                .with_trace_mode(TraceMode::Off),
+        );
 
         assert_eq!(boundaries.outcome, full.outcome);
+        assert_eq!(off.outcome, full.outcome);
+        assert!(off.events.is_empty());
         assert!(matches!(full.outcome, ExecutionOutcome::Success(_)));
         assert_eq!(boundaries.events[0].kind, EventKind::ComputationStarted);
         assert_eq!(

@@ -2,8 +2,8 @@
 
 These fixtures are shared input for Chimi's permanent backend decision. The
 native AOT and embedded bytecode candidates must consume the same prepared
-`BackendProgram` and match the existing interpreter's terminal outcome and
-boundary trace events.
+`BackendProgram` and match the existing interpreter's terminal outcome in off,
+boundary, and full trace modes.
 
 The workload set covers:
 

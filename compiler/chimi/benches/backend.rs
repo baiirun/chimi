@@ -94,6 +94,10 @@ struct ResultRow {
     prepare_p50: Duration,
     prepare_p95: Duration,
     prepare_memory: Memory,
+    off_p50: Duration,
+    off_p95: Duration,
+    off_memory: Memory,
+    off_events: usize,
     boundary_p50: Duration,
     boundary_p95: Duration,
     boundary_memory: Memory,
@@ -241,6 +245,13 @@ fn run_workload(workload: Workload, arguments: Arguments) -> ResultRow {
     let profile = program.profile();
     assert_eq!(profile.operations.total(), profile.nodes);
 
+    let off = measure_execution(
+        &program,
+        TraceMode::Off,
+        arguments,
+        workload.expected_outcome,
+        workload.initial_control,
+    );
     let boundary = measure_execution(
         &program,
         TraceMode::Boundaries,
@@ -255,6 +266,7 @@ fn run_workload(workload: Workload, arguments: Arguments) -> ResultRow {
         workload.expected_outcome,
         workload.initial_control,
     );
+    assert_eq!(off.outcome, boundary.outcome);
     assert_eq!(boundary.outcome, full.outcome);
 
     ResultRow {
@@ -265,6 +277,10 @@ fn run_workload(workload: Workload, arguments: Arguments) -> ResultRow {
         prepare_p50: percentile(&prepare_durations, 50),
         prepare_p95: percentile(&prepare_durations, 95),
         prepare_memory: prepared.memory,
+        off_p50: off.p50,
+        off_p95: off.p95,
+        off_memory: off.memory,
+        off_events: off.events,
         boundary_p50: boundary.p50,
         boundary_p95: boundary.p95,
         boundary_memory: boundary.memory,
@@ -312,14 +328,18 @@ fn measure_execution(
     let measured = measure(|| program.execute_oracle(config(trace_mode, initial_control)));
     let outcome = outcome_name(&measured.value.outcome);
     assert_eq!(outcome, expected_outcome);
-    assert_eq!(
-        measured.value.events.first().map(|event| event.kind),
-        Some(EventKind::ComputationStarted)
-    );
-    assert_eq!(
-        measured.value.events.last().map(|event| event.kind),
-        Some(EventKind::ComputationCompleted)
-    );
+    if trace_mode == TraceMode::Off {
+        assert!(measured.value.events.is_empty());
+    } else {
+        assert_eq!(
+            measured.value.events.first().map(|event| event.kind),
+            Some(EventKind::ComputationStarted)
+        );
+        assert_eq!(
+            measured.value.events.last().map(|event| event.kind),
+            Some(EventKind::ComputationCompleted)
+        );
+    }
     ExecutionMeasurement {
         p50: percentile(&durations, 50),
         p95: percentile(&durations, 95),
@@ -387,7 +407,7 @@ fn print_result(result: &ResultRow) {
             "\"max_record_fields\":{},\"max_provider_fields\":{},\"max_constructor_arguments\":{},",
             "\"max_call_arguments\":{},\"max_sequence_steps\":{},\"max_closure_parameters\":{},",
             "\"max_match_subjects\":{},\"max_match_arms\":{},\"max_pattern_depth\":{}}}}},",
-            "\"prepare\":{},\"boundary\":{},\"full\":{},\"startup_ns\":null,\"artifact_bytes\":null}}"
+            "\"prepare\":{},\"off\":{},\"boundary\":{},\"full\":{},\"startup_ns\":null,\"artifact_bytes\":null}}"
         ),
         result.id,
         result.files,
@@ -443,6 +463,12 @@ fn print_result(result: &ResultRow) {
             result.prepare_p95,
             result.prepare_memory,
             0
+        ),
+        memory_json(
+            result.off_p50,
+            result.off_p95,
+            result.off_memory,
+            result.off_events,
         ),
         memory_json(
             result.boundary_p50,
