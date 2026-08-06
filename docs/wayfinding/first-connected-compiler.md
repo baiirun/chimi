@@ -176,6 +176,18 @@ bounded type diagnostics. M4 remains open for complete ordinary-pattern
 analysis, guard rules, explained-need root suppression, and closed-root
 validation.
 
+The seventh M4 slice preserves literal identity and source ranges in semantic
+patterns, then applies recursive usefulness analysis to ordinary and outcome
+cases. Closed enum and Boolean spaces must be exhaustive; nested constructor
+patterns and multiple case subjects are analyzed without enumerating their
+Cartesian product, while integer and text literals remain open domains.
+Duplicate arms, arms after an unguarded catch-all, mismatched patterns, and
+non-exhaustive cases receive bounded diagnostics. Guards must be Boolean and
+may not expose failures or dependency needs; because a guard can reject its
+row, guarded patterns never establish coverage or discharge an outcome failure
+variant. M4 remains open for explained-need root suppression and closed-root
+validation.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the
