@@ -153,6 +153,16 @@ expected type for `[]`), and pipes reuse ordinary callable invocation and
 channel propagation. M4 remains open for `using`, structural interface
 conformance, outcomes, and pattern analysis.
 
+The fifth M4 slice retains postfix `using` as an explicit semantic provision
+scope and checks structural providers at any expression boundary. Successful
+providers remove matching needs from an executed expression or a latent
+function contract; partial provision preserves unsupplied needs. Provider
+records may contain extra members, and method contracts may narrow failures and
+needs but cannot widen channels or change inputs and success. Unknown,
+duplicate, missing, and incompatible providers produce bounded field-level type
+diagnostics without discharging the failed need. M4 remains open for outcomes,
+pattern analysis, and closed-root validation.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the

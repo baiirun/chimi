@@ -1035,6 +1035,11 @@ impl ProjectTypeChecker {
             ModuleExpression::Group { expression, .. } => {
                 self.infer_expression(module_id, expression, generics, bindings)
             }
+            ModuleExpression::Using {
+                expression,
+                providers,
+                ..
+            } => self.infer_using(module_id, expression, providers, generics, bindings),
             ModuleExpression::Sequence { expressions, .. } => {
                 let facts = expressions
                     .iter()
@@ -1153,6 +1158,272 @@ impl ProjectTypeChecker {
             failures: FailureRowId::new(0),
             needs: NeedsRowId::new(0),
         }
+    }
+
+    fn infer_using(
+        &mut self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        providers: &[crate::semantic::RecordValueField],
+        generics: &HashMap<String, SymbolId>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> ExpressionFact {
+        let expression_fact = self.infer_expression(module_id, expression, generics, bindings);
+        let mut provider_facts = Vec::with_capacity(providers.len());
+        let mut seen_names = Vec::<String>::new();
+        let mut duplicate_names = Vec::<String>::new();
+        for provider in providers {
+            let fact = self.infer_expression(module_id, &provider.value, generics, bindings);
+            if seen_names.iter().any(|name| name == &provider.name.text) {
+                self.type_error_range(
+                    module_id,
+                    "T4214",
+                    provider.name.range,
+                    format!("provider `{}` occurs more than once", provider.name.text),
+                );
+                duplicate_names.push(provider.name.text.clone());
+            } else {
+                seen_names.push(provider.name.text.clone());
+            }
+            provider_facts.push((provider, fact));
+        }
+
+        let (success, latent_needs) = self.callable_success_and_needs(expression_fact.success);
+        let available_needs = self.union_needs_rows([expression_fact.needs, latent_needs]);
+        let mut supplied_names = Vec::new();
+        for (provider, fact) in &provider_facts {
+            if duplicate_names
+                .iter()
+                .any(|name| name == &provider.name.text)
+            {
+                continue;
+            }
+            let matching_need = self.needs_rows[available_needs.raw() as usize]
+                .entries
+                .iter()
+                .find(|need| need.lexical_name == provider.name.text)
+                .cloned();
+            let Some(need) = matching_need else {
+                self.type_error_range(
+                    module_id,
+                    "T4212",
+                    provider.name.range,
+                    format!("expression does not need provider `{}`", provider.name.text),
+                );
+                continue;
+            };
+            if let Some(reason) = self.provider_conformance_error(fact.success, need.interface) {
+                self.type_error_range(
+                    module_id,
+                    "T4213",
+                    provider.name.range,
+                    format!("provider `{}` {reason}", provider.name.text),
+                );
+            } else {
+                supplied_names.push(provider.name.text.clone());
+            }
+        }
+
+        let remaining_expression_needs =
+            self.remove_supplied_needs(expression_fact.needs, &supplied_names);
+        let remaining_latent_needs = self.remove_supplied_needs(latent_needs, &supplied_names);
+        let success = self.with_callable_needs(success, remaining_latent_needs);
+        ExpressionFact {
+            success,
+            failures: self.union_failure_rows(
+                std::iter::once(expression_fact.failures)
+                    .chain(provider_facts.iter().map(|(_, fact)| fact.failures)),
+            ),
+            needs: self.union_needs_rows(
+                std::iter::once(remaining_expression_needs)
+                    .chain(provider_facts.iter().map(|(_, fact)| fact.needs)),
+            ),
+        }
+    }
+
+    fn callable_success_and_needs(&self, success: TypeId) -> (TypeId, NeedsRowId) {
+        let success = self.resolve_inference_type(success);
+        match &self.types[success.raw() as usize] {
+            CanonicalType::Function(contract)
+            | CanonicalType::PolymorphicFunction { contract, .. } => (success, contract.needs),
+            _ => (success, NeedsRowId::new(0)),
+        }
+    }
+
+    fn with_callable_needs(&mut self, success: TypeId, needs: NeedsRowId) -> TypeId {
+        let success = self.resolve_inference_type(success);
+        match self.types[success.raw() as usize].clone() {
+            CanonicalType::Function(mut contract) => {
+                contract.needs = needs;
+                self.intern_type(CanonicalType::Function(contract))
+            }
+            CanonicalType::PolymorphicFunction {
+                parameters,
+                mut contract,
+            } => {
+                contract.needs = needs;
+                self.intern_type(CanonicalType::PolymorphicFunction {
+                    parameters,
+                    contract,
+                })
+            }
+            _ => success,
+        }
+    }
+
+    fn remove_supplied_needs(&mut self, row: NeedsRowId, supplied: &[String]) -> NeedsRowId {
+        let mut row = self.needs_rows[row.raw() as usize].clone();
+        row.entries
+            .retain(|need| !supplied.iter().any(|name| name == &need.lexical_name));
+        self.intern_needs_row(row)
+    }
+
+    fn provider_conformance_error(
+        &mut self,
+        provider: TypeId,
+        interface: TypeId,
+    ) -> Option<String> {
+        let provider = self.resolve_inference_type(provider);
+        let interface = self.resolve_inference_type(interface);
+        let Some(expected_fields) = self.type_fields(interface) else {
+            return Some("targets a non-structural requirement".to_owned());
+        };
+        let Some(actual_fields) = self.type_fields(provider) else {
+            return Some("is not a structural value".to_owned());
+        };
+        for expected in expected_fields {
+            let Some(actual) = actual_fields
+                .iter()
+                .find(|actual| actual.name == expected.name)
+            else {
+                return Some(format!("is missing member `{}`", expected.name));
+            };
+            if let Some(reason) =
+                self.provider_member_conformance_error(actual.type_id, expected.type_id)
+            {
+                return Some(format!(
+                    "has incompatible member `{}`: {reason}",
+                    expected.name
+                ));
+            }
+        }
+        None
+    }
+
+    fn type_fields(&mut self, type_id: TypeId) -> Option<Vec<StructuralField>> {
+        match self.types[type_id.raw() as usize].clone() {
+            CanonicalType::Record(fields) => Some(fields),
+            CanonicalType::Named { symbol, arguments } => {
+                let fields = self.fields.get(&symbol)?.clone();
+                let parameters = self.named_type_generic_parameters(symbol);
+                let mut substitution = CallSubstitution::default();
+                substitution
+                    .values
+                    .extend(parameters.into_iter().zip(arguments));
+                Some(
+                    fields
+                        .into_iter()
+                        .map(|field| StructuralField {
+                            name: field.name,
+                            type_id: self.substitute_call_type(field.type_id, &mut substitution),
+                        })
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    fn named_type_generic_parameters(&self, symbol: SymbolId) -> Vec<SymbolId> {
+        let symbol = self.resolved.symbol(symbol);
+        let (Some(module_id), Some(semantic_id)) = (symbol.module_id, symbol.semantic_id) else {
+            return Vec::new();
+        };
+        let Some(declaration) = self.resolved.semantic.modules[module_id.raw() as usize]
+            .declarations
+            .iter()
+            .find(|declaration| declaration.semantic_id == semantic_id)
+        else {
+            return Vec::new();
+        };
+        declaration
+            .generic_parameters
+            .iter()
+            .filter_map(|parameter| {
+                self.find_symbol(
+                    module_id,
+                    Some(semantic_id),
+                    ProjectSymbolKind::GenericParameter,
+                    &parameter.text,
+                )
+            })
+            .collect()
+    }
+
+    fn provider_member_conformance_error(
+        &mut self,
+        actual: TypeId,
+        expected: TypeId,
+    ) -> Option<&'static str> {
+        let actual = self.resolve_inference_type(actual);
+        let expected = self.resolve_inference_type(expected);
+        match (
+            self.types[actual.raw() as usize].clone(),
+            self.types[expected.raw() as usize].clone(),
+        ) {
+            (CanonicalType::Function(actual), CanonicalType::Function(expected)) => {
+                if actual.inputs.len() != expected.inputs.len() {
+                    return Some("input count differs");
+                }
+                if !actual
+                    .inputs
+                    .iter()
+                    .zip(&expected.inputs)
+                    .all(|(actual, expected)| self.unify(*actual, *expected))
+                {
+                    return Some("input types differ");
+                }
+                if !self.unify(actual.success, expected.success) {
+                    return Some("success type differs");
+                }
+                if !self.failure_row_is_subset(actual.failures, expected.failures) {
+                    return Some("it exposes failures outside the interface contract");
+                }
+                if !self.needs_row_is_subset(actual.needs, expected.needs) {
+                    return Some("it needs dependencies outside the interface contract");
+                }
+                None
+            }
+            _ if self.unify(actual, expected) => None,
+            _ => Some("value type differs"),
+        }
+    }
+
+    fn failure_row_is_subset(&self, actual: FailureRowId, expected: FailureRowId) -> bool {
+        let actual = &self.failure_rows[actual.raw() as usize];
+        let expected = &self.failure_rows[expected.raw() as usize];
+        actual
+            .variants
+            .iter()
+            .all(|variant| expected.variants.contains(variant))
+            && actual
+                .parameters
+                .iter()
+                .all(|parameter| expected.parameters.contains(parameter))
+    }
+
+    fn needs_row_is_subset(&self, actual: NeedsRowId, expected: NeedsRowId) -> bool {
+        let actual = &self.needs_rows[actual.raw() as usize];
+        let expected = &self.needs_rows[expected.raw() as usize];
+        actual.entries.iter().all(|actual| {
+            expected.entries.iter().any(|expected| {
+                actual.lexical_name == expected.lexical_name
+                    && actual.interface == expected.interface
+            })
+        }) && actual
+            .parameters
+            .iter()
+            .all(|parameter| expected.parameters.contains(parameter))
     }
 
     fn lower_value_type(
@@ -2283,6 +2554,7 @@ fn expression_range(expression: &ModuleExpression) -> TextRange {
         | ModuleExpression::Unary { range, .. }
         | ModuleExpression::Binary { range, .. } => *range,
         ModuleExpression::Group { expression, .. } => expression_range(expression),
+        ModuleExpression::Using { range, .. } => *range,
         ModuleExpression::Sequence { expressions, .. } => expressions
             .first()
             .map_or(TextRange::empty(0), expression_range),

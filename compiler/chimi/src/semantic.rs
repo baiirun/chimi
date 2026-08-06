@@ -546,6 +546,12 @@ pub(crate) enum ModuleExpression {
         semantic_id: SemanticId,
         expression: Box<Self>,
     },
+    Using {
+        semantic_id: SemanticId,
+        expression: Box<Self>,
+        providers: Vec<RecordValueField>,
+        range: TextRange,
+    },
     Sequence {
         semantic_id: SemanticId,
         expressions: Vec<Self>,
@@ -581,6 +587,7 @@ impl ModuleExpression {
             | Self::Unary { semantic_id, .. }
             | Self::Binary { semantic_id, .. }
             | Self::Group { semantic_id, .. }
+            | Self::Using { semantic_id, .. }
             | Self::Sequence { semantic_id, .. }
             | Self::Block { semantic_id, .. }
             | Self::Function { semantic_id, .. }
@@ -1029,6 +1036,7 @@ impl ProjectLowerer {
             | NodeKind::MultiplicativeExpression
             | NodeKind::ComparisonExpression
             | NodeKind::PipelineExpression => self.lower_binary(node, semantic_id),
+            NodeKind::UsingExpression => self.lower_using(node, semantic_id),
             NodeKind::BlockExpression => ModuleExpression::Block {
                 semantic_id,
                 items: node
@@ -1155,6 +1163,42 @@ impl ProjectLowerer {
             };
         }
         left
+    }
+
+    fn lower_using(&mut self, node: &SyntaxNode<'_>, semantic_id: SemanticId) -> ModuleExpression {
+        let mut children = direct_expression_children(node).into_iter();
+        let Some(base) = children.next() else {
+            return ModuleExpression::Empty { semantic_id };
+        };
+        let provider_records = children
+            .filter(|child| child.kind() == NodeKind::RecordExpression)
+            .collect::<Vec<_>>();
+        let last_record = provider_records.len().saturating_sub(1);
+        let mut expression = self.lower_expression(&base);
+        for (index, record) in provider_records.into_iter().enumerate() {
+            let providers = record
+                .child_nodes()
+                .into_iter()
+                .filter(|child| child.kind() == NodeKind::RecordField)
+                .filter_map(|field| {
+                    Some(RecordValueField {
+                        name: direct_identifier(&field)?,
+                        value: self.lower_expression(&direct_expression_child(&field)?),
+                    })
+                })
+                .collect();
+            expression = ModuleExpression::Using {
+                semantic_id: if index == last_record {
+                    semantic_id
+                } else {
+                    self.allocate_semantic_id()
+                },
+                expression: Box::new(expression),
+                providers,
+                range: significant_range(node),
+            };
+        }
+        expression
     }
 
     fn lower_module_literal(
