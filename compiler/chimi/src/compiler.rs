@@ -1,5 +1,5 @@
 use crate::diagnostic::Diagnostic;
-use crate::executable::{lower, seal_entry};
+use crate::executable::{lower_legacy, seal_entry, seal_legacy_entry};
 use crate::execution::{ExecutionConfig, ExecutionReport, execute};
 use crate::ids::SymbolId;
 use crate::resolution::{
@@ -414,6 +414,12 @@ impl Compiler {
         }
     }
 
+    pub fn verify_project(sources: Vec<ProjectSource>) -> Result<(), Vec<Diagnostic>> {
+        let root = seal_entry(check_project(resolve_project_sources(sources)))?;
+        debug_assert!(root.typed.contracts.contains_key(&root.entry));
+        Ok(())
+    }
+
     pub fn check(source: SourceSnapshot) -> CheckReport {
         let source = Arc::new(source);
         match seal(source.clone()) {
@@ -429,7 +435,7 @@ impl Compiler {
         let source = Arc::new(source);
         let verified = seal(source.clone())
             .map_err(|diagnostics| CheckReport::failure(source, diagnostics))?;
-        let core = lower(verified);
+        let core = lower_legacy(verified);
         Ok(execute(core, config))
     }
 }
@@ -447,11 +453,13 @@ fn resolve_project_sources(sources: Vec<ProjectSource>) -> ResolvedProject {
     resolve_project(semantic)
 }
 
-fn seal(source: Arc<SourceSnapshot>) -> Result<crate::executable::VerifiedRoot, Vec<Diagnostic>> {
+fn seal(
+    source: Arc<SourceSnapshot>,
+) -> Result<crate::executable::LegacyVerifiedRoot, Vec<Diagnostic>> {
     let semantic = semantic::lower(source);
     let resolved = resolve(semantic);
     let typed = check(resolved);
-    seal_entry(typed)
+    seal_legacy_entry(typed)
 }
 
 #[cfg(test)]
@@ -1770,5 +1778,43 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["T4213", "E5002"]
         );
+    }
+
+    #[test]
+    fn project_entry_sealing_requires_one_concrete_zero_input_main() {
+        let valid = Compiler::verify_project(vec![
+            module(
+                "entry/helper",
+                "helper.chimi",
+                "fn helper(value: Int) -> Int { value }",
+            ),
+            module("entry/valid", "valid.chimi", "pub fn main() -> Int { 1 }"),
+        ]);
+        assert!(valid.is_ok());
+
+        for (source, code) in [
+            ("fn main() -> Int { 1 }", "E5001"),
+            ("pub fn main(value: Int) -> Int { value }", "E5004"),
+            ("pub fn main<A>() -> Int { 1 }", "E5005"),
+        ] {
+            let diagnostics =
+                Compiler::verify_project(vec![module("entry/invalid", "invalid.chimi", source)])
+                    .expect_err("invalid entry must not seal");
+            assert_eq!(diagnostics.len(), 1, "{source}");
+            assert_eq!(diagnostics[0].code(), code, "{source}");
+            assert_eq!(
+                diagnostics[0].stage(),
+                DiagnosticStage::ExecutionSetup,
+                "{source}"
+            );
+        }
+
+        let duplicate = Compiler::verify_project(vec![
+            module("entry/one", "one.chimi", "pub fn main() -> Int { 1 }"),
+            module("entry/two", "two.chimi", "pub fn main() -> Int { 2 }"),
+        ])
+        .expect_err("multiple exported roots must not seal");
+        assert_eq!(duplicate.len(), 1);
+        assert_eq!(duplicate[0].code(), "E5003");
     }
 }
