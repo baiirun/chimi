@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 const VERSION: &str = concat!("chimi ", env!("CARGO_PKG_VERSION"), "-bootstrap");
 const USAGE: &str = concat!(
-    "usage: chimi --version | chimi check <path> | chimi run <path> | ",
+    "usage: chimi --version | chimi format <path> | chimi check <path> | chimi run <path> | ",
     "chimi check --root <project-dir> <entry-module> | ",
     "chimi run --root <project-dir> <entry-module>"
 );
@@ -22,6 +22,7 @@ enum Input {
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
     Version,
+    Format { path: PathBuf },
     Check { input: Input },
     Run { input: Input },
 }
@@ -45,6 +46,23 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
         } else {
             Err(UsageError {
                 message: "--version does not accept arguments",
+            })
+        };
+    }
+
+    if command == "format" {
+        let Some(path) = arguments.next() else {
+            return Err(UsageError {
+                message: "format requires a source path",
+            });
+        };
+        return if arguments.next().is_none() {
+            Ok(Command::Format {
+                path: PathBuf::from(path),
+            })
+        } else {
+            Err(UsageError {
+                message: "format received unexpected arguments",
             })
         };
     }
@@ -102,8 +120,27 @@ fn execute(command: Command) -> ExitCode {
             println!("{VERSION}");
             ExitCode::SUCCESS
         }
+        Command::Format { path } => format(path),
         Command::Check { input } => check(input),
         Command::Run { input } => run(input),
+    }
+}
+
+fn format(path: PathBuf) -> ExitCode {
+    let source = match chimi::source::SourceSnapshot::read(&path) {
+        Ok(source) => source,
+        Err(error) => {
+            eprintln!("chimi: {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let report = Compiler::format(source);
+    print!("{}", report.text());
+    if report.is_blocked() {
+        eprint!("{}", report.render_diagnostics());
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
@@ -212,6 +249,22 @@ mod tests {
                 input: Input::File {
                     path: PathBuf::from("program.chimi")
                 }
+            })
+        );
+    }
+
+    #[test]
+    fn parses_one_format_path() {
+        assert_eq!(
+            parse_command(arguments(&["format", "program.chimi"])),
+            Ok(Command::Format {
+                path: PathBuf::from("program.chimi")
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["format"])),
+            Err(UsageError {
+                message: "format requires a source path"
             })
         );
     }

@@ -1,0 +1,3 @@
+// comments survive
+struct   Money{cents:Int}
+pub fn main(){Money(cents:1)}

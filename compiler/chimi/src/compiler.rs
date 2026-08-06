@@ -1,6 +1,7 @@
 use crate::diagnostic::Diagnostic;
 use crate::executable::{lower, lower_legacy, seal_entry, seal_legacy_entry};
 use crate::execution::{ExecutionConfig, ExecutionReport, execute, execute_legacy};
+use crate::formatter::FormatReport;
 use crate::ids::SymbolId;
 use crate::resolution::{
     Namespace, ProjectSymbolKind, ReferenceResolution, ResolvedProject, resolve, resolve_project,
@@ -435,6 +436,10 @@ pub struct CoreStats {
 pub struct Compiler;
 
 impl Compiler {
+    pub fn format(source: SourceSnapshot) -> FormatReport {
+        FormatReport::new(source)
+    }
+
     pub fn resolve_project(sources: Vec<ProjectSource>) -> NameReport {
         NameReport {
             resolved: resolve_project_sources(sources),

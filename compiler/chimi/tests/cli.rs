@@ -39,6 +39,37 @@ fn check_accepts_a_single_module_project() {
 }
 
 #[test]
+fn format_prints_canonical_source_without_modifying_the_file() {
+    let path = fixture("format_messy");
+    let before = std::fs::read_to_string(&path).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .args(["format", &path])
+        .output()
+        .expect("format valid Chimi source");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let formatted = String::from_utf8(output.stdout).unwrap();
+    assert!(formatted.contains("// comments survive"));
+    assert_ne!(formatted, before);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+}
+
+#[test]
+fn format_returns_malformed_source_unchanged_with_syntax_diagnostics() {
+    let path = fixture("missing_closing_brace");
+    let source = std::fs::read(&path).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .args(["format", &path])
+        .output()
+        .expect("format malformed Chimi source");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, source);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("error[S1001] syntax"));
+}
+
+#[test]
 fn run_executes_source_and_prints_structured_events_and_outcome() {
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .args(["run", &fixture("success")])
@@ -127,7 +158,8 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
         String::from_utf8_lossy(&output.stderr),
         concat!(
             "chimi: check and run received unexpected arguments\n",
-            "usage: chimi --version | chimi check <path> | chimi run <path> | ",
+            "usage: chimi --version | chimi format <path> | chimi check <path> | ",
+            "chimi run <path> | ",
             "chimi check --root <project-dir> <entry-module> | ",
             "chimi run --root <project-dir> <entry-module>\n"
         )
