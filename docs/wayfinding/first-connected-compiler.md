@@ -143,6 +143,16 @@ and dependency rows. M4 remains open for contextual instantiation of generic
 function values, remaining expressions, `using` and structural providers,
 outcome recovery, and patterns.
 
+The fourth M4 slice replaces the remaining flattened structural and operator
+expressions with explicit semantic forms for labeled calls, lists, records,
+groups, unary and binary operators, and pipelines. Nominal constructors own
+their declared field shapes, validate labels independently of source order,
+and instantiate generic struct or enum parameters per call. Structural records
+have canonical sorted field types, lists unify one element type (including an
+expected type for `[]`), and pipes reuse ordinary callable invocation and
+channel propagation. M4 remains open for `using`, structural interface
+conformance, outcomes, and pattern analysis.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the

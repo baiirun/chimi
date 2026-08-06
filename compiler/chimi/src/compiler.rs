@@ -1214,4 +1214,84 @@ mod tests {
             Some("fn() -> fn(Int) -> Text needs { clock: Clock, mailer: Mailer }")
         );
     }
+
+    #[test]
+    fn structural_expressions_preserve_labels_elements_operators_and_pipes() {
+        let report = Compiler::type_project(vec![module(
+            "expressions/structural",
+            "structural.chimi",
+            concat!(
+                "struct Money { id: Text, cents: Int }\n",
+                "struct Box<A> { value: A }\n",
+                "enum Maybe<A> { Some(value: A), None }\n",
+                "let provider = { value: 7, label: \"seven\" }\n",
+                "fn make_money() -> Money { Money(cents: 2500, id: \"m-1\") }\n",
+                "fn boxed_int() -> Box<Int> { Box(value: 1) }\n",
+                "fn boxed_text() -> Box<Text> { Box(value: \"text\") }\n",
+                "fn maybe_int() -> Maybe<Int> { Some(value: 1) }\n",
+                "fn read_money(value: Money) -> Int { value.cents }\n",
+                "fn read_record() -> Int { provider.value }\n",
+                "fn integers() -> List<Int> { [1, 2, 3] }\n",
+                "fn empty_integers() -> List<Int> { [] }\n",
+                "fn arithmetic() -> Bool { (1 + 2 * 3) > -1 }\n",
+                "fn boolean() -> Bool { True }\n",
+                "fn stringify(value: Int) -> Text { \"value\" }\n",
+                "fn piped() -> Text { 1 |> stringify }\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        for (function, contract) in [
+            ("make_money", "fn() -> Money"),
+            ("boxed_int", "fn() -> Box<Int>"),
+            ("boxed_text", "fn() -> Box<Text>"),
+            ("maybe_int", "fn() -> Maybe<Int>"),
+            ("read_money", "fn(Money) -> Int"),
+            ("read_record", "fn() -> Int"),
+            ("integers", "fn() -> List<Int>"),
+            ("empty_integers", "fn() -> List<Int>"),
+            ("arithmetic", "fn() -> Bool"),
+            ("boolean", "fn() -> Bool"),
+            ("piped", "fn() -> Text"),
+        ] {
+            assert_eq!(
+                report
+                    .contract("expressions/structural", function)
+                    .as_deref(),
+                Some(contract),
+                "unexpected contract for {function}"
+            );
+        }
+    }
+
+    #[test]
+    fn structural_expression_errors_stop_at_the_owning_shape() {
+        let report = Compiler::type_project(vec![module(
+            "expressions/invalid_structural",
+            "invalid_structural.chimi",
+            concat!(
+                "struct Money { cents: Int }\n",
+                "fn identity(value: Int) -> Int { value }\n",
+                "fn unknown_field() -> Money { Money(dollars: 1) }\n",
+                "fn wrong_field_type() -> Money { Money(cents: \"many\") }\n",
+                "fn mixed_list() -> List<Int> { [1, \"two\"] }\n",
+                "fn named_function_argument() -> Int { identity(value: 1) }\n",
+            ),
+        )]);
+
+        assert_eq!(
+            report
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            ["T4210", "T4203", "T4203", "T4210"]
+        );
+        assert!(
+            report
+                .diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.stage() == DiagnosticStage::Type)
+        );
+    }
 }

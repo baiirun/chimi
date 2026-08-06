@@ -51,18 +51,27 @@ pub(crate) enum Literal {
         value: String,
         range: TextRange,
     },
+    Boolean {
+        semantic_id: SemanticId,
+        value: bool,
+        range: TextRange,
+    },
 }
 
 impl Literal {
     pub(crate) const fn semantic_id(&self) -> SemanticId {
         match self {
-            Self::Integer { semantic_id, .. } | Self::Text { semantic_id, .. } => *semantic_id,
+            Self::Integer { semantic_id, .. }
+            | Self::Text { semantic_id, .. }
+            | Self::Boolean { semantic_id, .. } => *semantic_id,
         }
     }
 
     pub(crate) const fn range(&self) -> TextRange {
         match self {
-            Self::Integer { range, .. } | Self::Text { range, .. } => *range,
+            Self::Integer { range, .. }
+            | Self::Text { range, .. }
+            | Self::Boolean { range, .. } => *range,
         }
     }
 }
@@ -507,8 +516,35 @@ pub(crate) enum ModuleExpression {
     Call {
         semantic_id: SemanticId,
         callee: Box<Self>,
-        arguments: Vec<Self>,
+        arguments: Vec<CallArgument>,
         range: TextRange,
+    },
+    List {
+        semantic_id: SemanticId,
+        elements: Vec<Self>,
+        range: TextRange,
+    },
+    Record {
+        semantic_id: SemanticId,
+        fields: Vec<RecordValueField>,
+        range: TextRange,
+    },
+    Unary {
+        semantic_id: SemanticId,
+        operator: UnaryOperator,
+        operand: Box<Self>,
+        range: TextRange,
+    },
+    Binary {
+        semantic_id: SemanticId,
+        operator: BinaryOperator,
+        left: Box<Self>,
+        right: Box<Self>,
+        range: TextRange,
+    },
+    Group {
+        semantic_id: SemanticId,
+        expression: Box<Self>,
     },
     Sequence {
         semantic_id: SemanticId,
@@ -540,6 +576,11 @@ impl ModuleExpression {
             Self::Name { semantic_id, .. }
             | Self::Select { semantic_id, .. }
             | Self::Call { semantic_id, .. }
+            | Self::List { semantic_id, .. }
+            | Self::Record { semantic_id, .. }
+            | Self::Unary { semantic_id, .. }
+            | Self::Binary { semantic_id, .. }
+            | Self::Group { semantic_id, .. }
             | Self::Sequence { semantic_id, .. }
             | Self::Block { semantic_id, .. }
             | Self::Function { semantic_id, .. }
@@ -547,6 +588,36 @@ impl ModuleExpression {
             | Self::Empty { semantic_id } => *semantic_id,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CallArgument {
+    pub(crate) label: Option<Name>,
+    pub(crate) value: ModuleExpression,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RecordValueField {
+    pub(crate) name: Name,
+    pub(crate) value: ModuleExpression,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UnaryOperator {
+    Negate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BinaryOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Pipe,
 }
 
 #[derive(Clone, Debug)]
@@ -915,6 +986,49 @@ impl ProjectLowerer {
                     ModuleExpression::Name { semantic_id, name }
                 }),
             NodeKind::PostfixExpression => self.lower_postfix(node, semantic_id),
+            NodeKind::ListExpression => ModuleExpression::List {
+                semantic_id,
+                elements: direct_expression_children(node)
+                    .into_iter()
+                    .map(|element| self.lower_expression(&element))
+                    .collect(),
+                range: significant_range(node),
+            },
+            NodeKind::RecordExpression => ModuleExpression::Record {
+                semantic_id,
+                fields: node
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|child| child.kind() == NodeKind::RecordField)
+                    .filter_map(|field| {
+                        Some(RecordValueField {
+                            name: direct_identifier(&field)?,
+                            value: self.lower_expression(&direct_expression_child(&field)?),
+                        })
+                    })
+                    .collect(),
+                range: significant_range(node),
+            },
+            NodeKind::GroupedExpression => direct_expression_child(node).map_or(
+                ModuleExpression::Empty { semantic_id },
+                |expression| ModuleExpression::Group {
+                    semantic_id,
+                    expression: Box::new(self.lower_expression(&expression)),
+                },
+            ),
+            NodeKind::UnaryExpression => direct_expression_child(node).map_or(
+                ModuleExpression::Empty { semantic_id },
+                |operand| ModuleExpression::Unary {
+                    semantic_id,
+                    operator: UnaryOperator::Negate,
+                    operand: Box::new(self.lower_expression(&operand)),
+                    range: significant_range(node),
+                },
+            ),
+            NodeKind::AdditiveExpression
+            | NodeKind::MultiplicativeExpression
+            | NodeKind::ComparisonExpression
+            | NodeKind::PipelineExpression => self.lower_binary(node, semantic_id),
             NodeKind::BlockExpression => ModuleExpression::Block {
                 semantic_id,
                 items: node
@@ -980,8 +1094,12 @@ impl ProjectLowerer {
                         .child_nodes()
                         .into_iter()
                         .filter(|argument| argument.kind() == NodeKind::Argument)
-                        .filter_map(|argument| direct_expression_child(&argument))
-                        .map(|argument| self.lower_expression(&argument))
+                        .filter_map(|argument| {
+                            Some(CallArgument {
+                                label: direct_identifier(&argument),
+                                value: self.lower_expression(&direct_expression_child(&argument)?),
+                            })
+                        })
                         .collect();
                     expression = ModuleExpression::Call {
                         semantic_id: suffix_semantic_id,
@@ -996,16 +1114,60 @@ impl ProjectLowerer {
         expression
     }
 
+    fn lower_binary(&mut self, node: &SyntaxNode<'_>, semantic_id: SemanticId) -> ModuleExpression {
+        let mut operands = direct_expression_children(node).into_iter();
+        let Some(first) = operands.next() else {
+            return ModuleExpression::Empty { semantic_id };
+        };
+        let operators = node
+            .child_tokens()
+            .into_iter()
+            .filter_map(|token| {
+                let operator = match token.kind() {
+                    TokenKind::Plus => BinaryOperator::Add,
+                    TokenKind::Minus => BinaryOperator::Subtract,
+                    TokenKind::Star => BinaryOperator::Multiply,
+                    TokenKind::Slash => BinaryOperator::Divide,
+                    TokenKind::Less => BinaryOperator::Less,
+                    TokenKind::LessEqual => BinaryOperator::LessEqual,
+                    TokenKind::Greater => BinaryOperator::Greater,
+                    TokenKind::GreaterEqual => BinaryOperator::GreaterEqual,
+                    TokenKind::Pipe => BinaryOperator::Pipe,
+                    _ => return None,
+                };
+                Some(operator)
+            })
+            .collect::<Vec<_>>();
+        let operands = operands.collect::<Vec<_>>();
+        let last_operator = operators.len().saturating_sub(1);
+        let mut left = self.lower_expression(&first);
+        for (index, (operator, right)) in operators.into_iter().zip(operands).enumerate() {
+            left = ModuleExpression::Binary {
+                semantic_id: if index == last_operator {
+                    semantic_id
+                } else {
+                    self.allocate_semantic_id()
+                },
+                operator,
+                left: Box::new(left),
+                right: Box::new(self.lower_expression(&right)),
+                range: significant_range(node),
+            };
+        }
+        left
+    }
+
     fn lower_module_literal(
         &mut self,
         node: &SyntaxNode<'_>,
         semantic_id: SemanticId,
     ) -> ModuleExpression {
-        let Some(token) = node
-            .child_tokens()
-            .into_iter()
-            .find(|token| matches!(token.kind(), TokenKind::Integer | TokenKind::Text))
-        else {
+        let Some(token) = node.child_tokens().into_iter().find(|token| {
+            matches!(
+                token.kind(),
+                TokenKind::Integer | TokenKind::Text | TokenKind::True | TokenKind::False
+            )
+        }) else {
             return ModuleExpression::Empty { semantic_id };
         };
         let literal = match token.kind() {
@@ -1017,6 +1179,11 @@ impl ProjectLowerer {
             TokenKind::Text => Literal::Text {
                 semantic_id,
                 value: token.text().to_owned(),
+                range: token.range(),
+            },
+            TokenKind::True | TokenKind::False => Literal::Boolean {
+                semantic_id,
+                value: token.kind() == TokenKind::True,
                 range: token.range(),
             },
             _ => unreachable!("literal token was filtered above"),
