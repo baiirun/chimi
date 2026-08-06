@@ -357,7 +357,13 @@ and produces one executable. All five workloads match the oracle byte for byte
 in boundary and full trace modes. The host measurements, dependencies, known
 prototype shortcuts, and interpretation are recorded in
 `docs/performance/native-aot-m8-spike.md`. The embedded-bytecode spike
-(`prog show ts-8717b3`) is the next comparison frontier.
+(`prog show ts-8717b3`) encodes each Core node as an opcode plus operands,
+embeds the image with the same semantic runtime and a small interpreter, and
+also matches all five workloads byte for byte in every trace mode. Its image is
+smaller and cheaper to encode, while linked size, startup, RSS, and hot execution
+are effectively tied because the shared boxed runtime dominates both candidates.
+Measurements and the limits of that comparison are in
+`docs/performance/embedded-bytecode-m8-spike.md`.
 The native sample-40 trace-cost run sends canonical JSON events to a null sink:
 boundary tracing costs 1.69–1.95x off-mode p50 and full tracing costs
 17.09–21.00x on the three substantial workloads (`prog show ts-636302`).
