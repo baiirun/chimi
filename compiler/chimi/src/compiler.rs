@@ -1,5 +1,5 @@
 use crate::diagnostic::Diagnostic;
-use crate::executable::{lower_legacy, seal_entry, seal_legacy_entry};
+use crate::executable::{lower, lower_legacy, seal_entry, seal_legacy_entry};
 use crate::execution::{ExecutionConfig, ExecutionReport, execute};
 use crate::ids::SymbolId;
 use crate::resolution::{
@@ -406,6 +406,18 @@ pub struct VerificationStats {
     pub reachable_modules: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CoreStats {
+    pub functions: usize,
+    pub bindings: usize,
+    pub nodes: usize,
+    pub origins: usize,
+    pub constants: usize,
+    pub constructions: usize,
+    pub calls: usize,
+    pub sequences: usize,
+}
+
 pub struct Compiler;
 
 impl Compiler {
@@ -431,6 +443,22 @@ impl Compiler {
             reachable_declarations,
             origins,
             reachable_modules,
+        })
+    }
+
+    pub fn lower_project(sources: Vec<ProjectSource>) -> Result<CoreStats, Vec<Diagnostic>> {
+        let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?);
+        let (functions, bindings, nodes, origins, constants, constructions, calls, sequences) =
+            core.stats();
+        Ok(CoreStats {
+            functions,
+            bindings,
+            nodes,
+            origins,
+            constants,
+            constructions,
+            calls,
+            sequences,
         })
     }
 
@@ -1863,5 +1891,79 @@ mod tests {
             .expect("incomplete typed snapshots cannot seal");
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].code(), "E5006");
+    }
+
+    #[test]
+    fn verified_roots_lower_to_typed_origin_linked_core_arenas() {
+        let stats = Compiler::lower_project(vec![module(
+            "core/basic",
+            "basic_core.chimi",
+            concat!(
+                "struct Answer { value: Int }\n",
+                "fn make(value: Int) -> Answer { Answer(value: value) }\n",
+                "pub fn main() -> Answer {\n",
+                "  let answer = make(42)\n",
+                "  answer\n",
+                "}\n",
+            ),
+        )])
+        .expect("verified structural program lowers");
+
+        assert_eq!(
+            stats,
+            super::CoreStats {
+                functions: 2,
+                bindings: 0,
+                nodes: 8,
+                origins: 8,
+                constants: 1,
+                constructions: 1,
+                calls: 1,
+                sequences: 2,
+            }
+        );
+
+        let rich = Compiler::lower_project(vec![module(
+            "core/rich",
+            "rich_core.chimi",
+            concat!(
+                "enum State { Ready }\n",
+                "interface Source { read: fn() -> Int }\n",
+                "fn classify(state: State) -> Int {\n",
+                "  case state { Ready -> 1 }\n",
+                "}\n",
+                "fn read() -> Int needs { source: Source } { source.read() }\n",
+                "pub fn main() -> Int {\n",
+                "  let transform = fn(value: Int) -> Int { value + 1 }\n",
+                "  let values = [classify(Ready())]\n",
+                "  let source = { read: fn() -> Int { 1 } }\n",
+                "  let configured = read() using { source: source }\n",
+                "  let negative = -(1)\n",
+                "  let transformed = transform(configured)\n",
+                "  let provider = { value: transformed }\n",
+                "  provider.value\n",
+                "}\n",
+            ),
+        )])
+        .expect("the complete typed expression algebra lowers without semantic fallback nodes");
+        assert_eq!(rich.nodes, rich.origins);
+        assert!(rich.functions >= 3);
+
+        let outcomes = Compiler::lower_project(vec![module(
+            "core/outcomes",
+            "outcome_core.chimi",
+            concat!(
+                "enum Problem { Failed }\n",
+                "fn operation() -> Int { Failure(Failed()) }\n",
+                "pub fn main() -> Int {\n",
+                "  case operation() {\n",
+                "    Success(value) -> value\n",
+                "    Failure(Failed) -> 0\n",
+                "  }\n",
+                "}\n",
+            ),
+        )])
+        .expect("contextual outcome patterns remain explicit during lowering");
+        assert_eq!(outcomes.nodes, outcomes.origins);
     }
 }

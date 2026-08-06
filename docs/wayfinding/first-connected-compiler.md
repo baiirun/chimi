@@ -217,6 +217,19 @@ module/semantic order. Qualified module receivers remain namespace syntax, not
 executable value nodes. The opaque root retains the reachable declarations and
 origin table for the next M5 slice: backend-neutral core lowering.
 
+The third M5 slice introduces the canonical backend-neutral `CoreProgram` and
+renames the original fixed M1 representation `LegacyCoreProgram`. Lowering now
+consumes only `VerifiedRoot`, creates dense typed node arenas, preserves the
+verified origin on every node, records declared and closure parameter symbols,
+and makes block bindings and evaluation order explicit. Nominal calls normalize
+to construction nodes; ordinary calls, constants, references, selection,
+collections, records, operators, provision scopes, closures, and matches retain
+distinct core operations without falling back to semantic nodes. Contextual
+success and failure construction and patterns remain explicit in the core. A structural
+assertion pass verifies node, child, entry, function, binding, type, and origin
+links immediately after lowering. M5 remains open for dependency-call
+normalization, runtime outcome semantics, and execution of the project core.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the
