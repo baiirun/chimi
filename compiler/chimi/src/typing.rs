@@ -1210,7 +1210,17 @@ impl ProjectTypeChecker {
             ModuleExpression::Function {
                 signature, body, ..
             } => {
-                let mut contract = self.lower_signature(module_id, signature, generics);
+                let mut contract = self
+                    .expression_facts
+                    .get(&(module_id, expression.semantic_id()))
+                    .and_then(|fact| {
+                        let type_id = self.resolve_inference_type(fact.success);
+                        match &self.types[type_id.raw() as usize] {
+                            CanonicalType::Function(contract) => Some(contract.clone()),
+                            _ => None,
+                        }
+                    })
+                    .unwrap_or_else(|| self.lower_signature(module_id, signature, generics));
                 let mut function_bindings = bindings.clone();
                 function_bindings.extend(self.signature_bindings(module_id, signature, &contract));
                 let body_fact =

@@ -299,7 +299,7 @@ impl<'source> Lowerer<'source> {
             },
             TokenKind::Text => Literal::Text {
                 semantic_id: literal_semantic_id,
-                value: value.text()[1..value.text().len() - 1].to_owned(),
+                value: text_literal_value(value.text()),
                 range: value.range(),
             },
             _ => {
@@ -1286,7 +1286,7 @@ impl ProjectLowerer {
             },
             TokenKind::Text => Literal::Text {
                 semantic_id,
-                value: token.text().to_owned(),
+                value: text_literal_value(token.text()),
                 range: token.range(),
             },
             TokenKind::True | TokenKind::False => Literal::Boolean {
@@ -1370,7 +1370,7 @@ impl ProjectLowerer {
                 TokenKind::Integer => PatternLiteral::Integer(
                     token.text().replace('_', "").parse().unwrap_or_default(),
                 ),
-                TokenKind::Text => PatternLiteral::Text(token.text().to_owned()),
+                TokenKind::Text => PatternLiteral::Text(text_literal_value(token.text())),
                 TokenKind::True | TokenKind::False => {
                     PatternLiteral::Boolean(token.kind() == TokenKind::True)
                 }
@@ -1396,6 +1396,10 @@ impl ProjectLowerer {
         self.next_semantic_id += 1;
         id
     }
+}
+
+fn text_literal_value(source: &str) -> String {
+    source[1..source.len() - 1].to_owned()
 }
 
 fn direct_child<'tree>(node: &SyntaxNode<'tree>, kind: NodeKind) -> Option<SyntaxNode<'tree>> {

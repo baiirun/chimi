@@ -1,6 +1,6 @@
 use crate::diagnostic::Diagnostic;
 use crate::executable::{lower, lower_legacy, seal_entry, seal_legacy_entry};
-use crate::execution::{ExecutionConfig, ExecutionReport, execute};
+use crate::execution::{ExecutionConfig, ExecutionReport, execute, execute_legacy};
 use crate::ids::SymbolId;
 use crate::resolution::{
     Namespace, ProjectSymbolKind, ReferenceResolution, ResolvedProject, resolve, resolve_project,
@@ -416,6 +416,7 @@ pub struct CoreStats {
     pub constructions: usize,
     pub calls: usize,
     pub sequences: usize,
+    pub dependencies: usize,
 }
 
 pub struct Compiler;
@@ -448,8 +449,17 @@ impl Compiler {
 
     pub fn lower_project(sources: Vec<ProjectSource>) -> Result<CoreStats, Vec<Diagnostic>> {
         let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?);
-        let (functions, bindings, nodes, origins, constants, constructions, calls, sequences) =
-            core.stats();
+        let (
+            functions,
+            bindings,
+            nodes,
+            origins,
+            constants,
+            constructions,
+            calls,
+            sequences,
+            dependencies,
+        ) = core.stats();
         Ok(CoreStats {
             functions,
             bindings,
@@ -459,7 +469,16 @@ impl Compiler {
             constructions,
             calls,
             sequences,
+            dependencies,
         })
+    }
+
+    pub fn run_project(
+        sources: Vec<ProjectSource>,
+        config: ExecutionConfig,
+    ) -> Result<ExecutionReport, Vec<Diagnostic>> {
+        let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?);
+        Ok(execute(core, config))
     }
 
     pub fn check(source: SourceSnapshot) -> CheckReport {
@@ -478,7 +497,7 @@ impl Compiler {
         let verified = seal(source.clone())
             .map_err(|diagnostics| CheckReport::failure(source, diagnostics))?;
         let core = lower_legacy(verified);
-        Ok(execute(core, config))
+        Ok(execute_legacy(core, config))
     }
 }
 
@@ -508,7 +527,10 @@ fn seal(
 mod tests {
     use super::{Compiler, GenericParameterKind, ProjectSource};
     use crate::diagnostic::{Diagnostic, DiagnosticStage};
-    use crate::execution::{ExecutionConfig, ExecutionOutcome};
+    use crate::execution::{
+        EventKind, ExecutionAttributeValue, ExecutionConfig, ExecutionOutcome, ExecutionValue,
+        TraceMode,
+    };
     use crate::source::SourceSnapshot;
 
     const VALID: &str = "struct Answer { value: Int } pub fn main() { Answer(value: 42) }";
@@ -545,10 +567,18 @@ mod tests {
         );
         assert_eq!(report.events[0].origin_id, report.events[0].semantic_id);
         assert_eq!(report.events[0].file_id, 0);
-        let ExecutionOutcome::Success(value) = report.outcome;
-        assert_eq!(value.type_name, "Answer");
-        assert_eq!(value.field_name, "value");
-        assert_eq!(value.integer_value, 42);
+        let ExecutionOutcome::Success(ExecutionValue::Constructed {
+            type_name,
+            variant_name,
+            fields,
+        }) = report.outcome
+        else {
+            panic!("legacy execution returns its constructed success value")
+        };
+        assert_eq!(type_name, "Answer");
+        assert_eq!(variant_name, None);
+        assert_eq!(fields[0].name, "value");
+        assert_eq!(fields[0].value, ExecutionValue::Integer(42));
     }
 
     #[test]
@@ -1920,6 +1950,7 @@ mod tests {
                 constructions: 1,
                 calls: 1,
                 sequences: 2,
+                dependencies: 0,
             }
         );
 
@@ -1948,6 +1979,7 @@ mod tests {
         .expect("the complete typed expression algebra lowers without semantic fallback nodes");
         assert_eq!(rich.nodes, rich.origins);
         assert!(rich.functions >= 3);
+        assert_eq!(rich.dependencies, 1);
 
         let outcomes = Compiler::lower_project(vec![module(
             "core/outcomes",
@@ -1965,5 +1997,216 @@ mod tests {
         )])
         .expect("contextual outcome patterns remain explicit during lowering");
         assert_eq!(outcomes.nodes, outcomes.origins);
+    }
+
+    #[test]
+    fn project_core_executes_values_dependencies_outcomes_and_full_traces() {
+        let sources = || {
+            vec![module(
+                "runtime/main",
+                "runtime_main.chimi",
+                concat!(
+                    "interface Source { read: fn() -> Int }\n",
+                    "struct Answer { value: Int }\n",
+                    "enum Problem { Failed }\n",
+                    "fn read() -> Int needs { source: Source } { source.read() }\n",
+                    "fn maybe(value: Int) -> Int {\n",
+                    "  case value {\n",
+                    "    0 -> Failure(Failed())\n",
+                    "    _ -> value\n",
+                    "  }\n",
+                    "}\n",
+                    "let provider = { read: fn() -> Int { 41 } }\n",
+                    "pub fn main() -> Answer {\n",
+                    "  let increment = fn(value: Int) -> Int { value + 1 }\n",
+                    "  let configured_read = read using { source: provider }\n",
+                    "  case maybe(configured_read()) {\n",
+                    "    Success(value) -> Answer(value: value |> increment)\n",
+                    "    Failure(Failed) -> Answer(value: -1)\n",
+                    "  }\n",
+                    "}\n",
+                ),
+            )]
+        };
+        let report =
+            Compiler::run_project(sources(), ExecutionConfig::new("project-success").unwrap())
+                .expect("closed project core executes");
+        assert!(matches!(
+            &report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Constructed {
+                type_name,
+                variant_name: None,
+                fields,
+            }) if type_name == "Answer"
+                && fields[0].name == "value"
+                && fields[0].value == ExecutionValue::Integer(42)
+        ));
+        assert_eq!(report.events[0].kind, EventKind::ComputationStarted);
+        assert_eq!(
+            report.events.last().unwrap().kind,
+            EventKind::ComputationCompleted
+        );
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|event| event.kind == EventKind::DependencyCalled
+                    && event.attributes.iter().any(|attribute| {
+                        attribute.name == "requirement"
+                            && attribute.value == ExecutionAttributeValue::Text("source".to_owned())
+                    }))
+        );
+        assert!(
+            report
+                .events
+                .iter()
+                .enumerate()
+                .all(|(sequence, event)| event.sequence == sequence as u64)
+        );
+        assert!(
+            report
+                .events
+                .iter()
+                .all(|event| event.parent_span_id != Some(event.span_id))
+        );
+        assert_eq!(
+            report
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::OperationStarted)
+                .count(),
+            report
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::OperationCompleted)
+                .count()
+        );
+        assert!(report.events.iter().all(|event| {
+            event.computation == "main"
+                && event.execution_id == "project-success"
+                && event.source_range.start() < event.source_range.end()
+        }));
+
+        let boundaries = Compiler::run_project(
+            sources(),
+            ExecutionConfig::new("project-boundaries")
+                .unwrap()
+                .with_trace_mode(TraceMode::Boundaries),
+        )
+        .expect("boundary-only tracing does not change execution");
+        assert_eq!(boundaries.outcome, report.outcome);
+        assert_eq!(boundaries.events.len(), 3);
+        assert_eq!(boundaries.events[1].kind, EventKind::DependencyCalled);
+    }
+
+    #[test]
+    fn project_core_executes_the_dependency_forcing_program_from_source() {
+        let report = Compiler::run_project(
+            vec![module(
+                "forcing/checkout",
+                "dependencies_and_execution.chimi",
+                include_str!("../../../prototypes/golden/valid/dependencies_and_execution.chimi"),
+            )],
+            ExecutionConfig::new("checkout-forcing-program").unwrap(),
+        )
+        .expect("the self-contained dependency forcing program executes");
+
+        assert!(
+            matches!(
+                &report.outcome,
+                ExecutionOutcome::Success(ExecutionValue::Constructed {
+                    type_name,
+                    fields,
+                    ..
+                }) if type_name == "Order"
+                    && matches!(
+                        &fields[0].value,
+                        ExecutionValue::Constructed {
+                            type_name,
+                            fields,
+                            ..
+                        } if type_name == "OrderId"
+                            && fields[0].value == ExecutionValue::Text("order-1".to_owned())
+                    )
+            ),
+            "unexpected forcing outcome: {:#?}",
+            report.outcome
+        );
+        assert_eq!(
+            report
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::DependencyCalled)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn module_binding_closure_inference_converges() {
+        let report = Compiler::type_project(vec![module(
+            "typing/closure_binding",
+            "closure_binding.chimi",
+            concat!(
+                "let provider = { apply: fn(_value) { 1 } }\n",
+                "pub fn main() -> Int { 1 }\n",
+            ),
+        )]);
+        assert!(report.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn project_execution_preserves_all_terminal_outcome_classes() {
+        let failure = Compiler::run_project(
+            vec![module(
+                "runtime/failure",
+                "failure.chimi",
+                concat!(
+                    "enum Problem { Failed }\n",
+                    "pub fn main() -> Int { Failure(Failed()) }\n",
+                ),
+            )],
+            ExecutionConfig::new("project-failure").unwrap(),
+        )
+        .expect("fallible roots execute");
+        assert!(matches!(
+            failure.outcome,
+            ExecutionOutcome::ExpectedFailure(ExecutionValue::Constructed {
+                type_name,
+                variant_name: Some(variant),
+                ..
+            }) if type_name == "Problem" && variant == "Failed"
+        ));
+
+        let defect = Compiler::run_project(
+            vec![module(
+                "runtime/defect",
+                "defect.chimi",
+                "pub fn main() -> Int { 1 / 0 }",
+            )],
+            ExecutionConfig::new("project-defect").unwrap(),
+        )
+        .expect("runtime defects occur after successful compilation");
+        assert!(matches!(
+            defect.outcome,
+            ExecutionOutcome::Defect(ref defect) if defect.message == "integer division by zero"
+        ));
+
+        let cancellation = Compiler::run_project(
+            vec![module(
+                "runtime/cancel",
+                "cancel.chimi",
+                "pub fn main() -> Int { 1 }",
+            )],
+            ExecutionConfig::new("project-cancel")
+                .unwrap()
+                .with_cancellation_requested(),
+        )
+        .expect("cancelled execution still requires a verified root");
+        assert!(matches!(
+            cancellation.outcome,
+            ExecutionOutcome::Cancellation(_)
+        ));
+        assert_eq!(cancellation.events.len(), 2);
     }
 }

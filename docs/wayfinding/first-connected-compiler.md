@@ -225,10 +225,28 @@ and makes block bindings and evaluation order explicit. Nominal calls normalize
 to construction nodes; ordinary calls, constants, references, selection,
 collections, records, operators, provision scopes, closures, and matches retain
 distinct core operations without falling back to semantic nodes. Contextual
-success and failure construction and patterns remain explicit in the core. A structural
-assertion pass verifies node, child, entry, function, binding, type, and origin
-links immediately after lowering. M5 remains open for dependency-call
-normalization, runtime outcome semantics, and execution of the project core.
+success and failure construction and patterns remain explicit in the core. A
+structural assertion pass verifies node, child, entry, function, binding, type,
+and origin links immediately after lowering.
+
+The fourth M5 slice connects that project core to the disposable execution
+adapter through `Compiler::run_project`. Lowering now records runtime symbol and
+nominal-constructor metadata in the core itself and normalizes dependency method
+selection to stable requirement, interface, and method identities. The adapter
+evaluates values, module bindings, closures, calls, pipelines, sequences,
+matches, provision scopes, and dependency calls without consulting semantic or
+typed trees. Expected failures bubble as values until a contextual case handles
+them. Reports preserve distinct success, expected-failure, defect, and
+cancellation outcomes.
+
+`ExecutionConfig` selects full or boundary tracing and owns execution identity
+and an initial cancellation request. Full tracing emits paired start/end events
+for every executed core node; both modes retain computation start/end and
+dependency-call events. Every event carries deterministic sequence, causal span
+identity, computation and execution identity, core and semantic origin, source
+span, operation kind, and typed attributes. M5 remains open for loading a
+multi-module project through the CLI, executing the composite retry forcing
+example, and replacing initial cancellation with a live cooperative signal.
 
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
