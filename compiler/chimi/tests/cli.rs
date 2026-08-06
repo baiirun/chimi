@@ -146,6 +146,87 @@ fn invalid_programs_stop_at_the_owning_stage() {
 }
 
 #[test]
+fn structured_check_keeps_compiler_stages_and_source_ownership_explicit() {
+    let cases = [
+        ("missing_closing_brace", "syntax", "S1001"),
+        ("unresolved_constructor", "name", "E_UNRESOLVED_VALUE"),
+        ("invalid_field_type", "type", "T4203"),
+    ];
+    for (fixture_name, stage, code) in cases {
+        let path = fixture(fixture_name);
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .args(["check", "--json", &path])
+            .output()
+            .expect("run structured check");
+
+        assert_eq!(output.status.code(), Some(1), "fixture {fixture_name}");
+        assert!(output.stderr.is_empty(), "fixture {fixture_name}");
+        let document = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            document.starts_with("{\"schema\":\"chimi.diagnostics.v1\","),
+            "{document}"
+        );
+        assert!(document.contains(&format!("\"stage\":\"{stage}\"")));
+        assert!(document.contains(&format!("\"code\":\"{code}\"")));
+        assert!(document.contains("\"severity\":\"error\""));
+        assert!(document.contains("\"primary\":{\"module\":\"main\""));
+        assert!(document.contains("\"start\":"));
+        assert!(document.contains("\"end\":"));
+        assert!(document.contains("\"labels\":[]"));
+        assert!(document.contains("\"fixes\":[]"));
+        assert!(document.ends_with("\n"));
+        if fixture_name == "missing_closing_brace" {
+            let end = std::fs::read_to_string(&path).unwrap().len();
+            assert_eq!(
+                document,
+                format!(
+                    concat!(
+                        "{{\"schema\":\"chimi.diagnostics.v1\",\"diagnostics\":[{{",
+                        "\"stage\":\"syntax\",\"code\":\"S1001\",",
+                        "\"severity\":\"error\",\"message\":\"expected `}}`\",",
+                        "\"primary\":{{\"module\":\"main\",\"path\":\"{}\",",
+                        "\"start\":{},\"end\":{}}},\"labels\":[],\"fixes\":[]}}]}}\n"
+                    ),
+                    path, end, end
+                )
+            );
+        }
+    }
+
+    let success = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .args(["check", "--json", &fixture("success")])
+        .output()
+        .expect("run successful structured check");
+    assert!(success.status.success());
+    assert!(success.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(success.stdout).unwrap(),
+        "{\"schema\":\"chimi.diagnostics.v1\",\"diagnostics\":[]}\n"
+    );
+}
+
+#[test]
+fn structured_project_diagnostic_names_the_owning_module() {
+    let root = repository_path("compiler/chimi/tests/fixtures/project-invalid");
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .args([
+            "check",
+            "--json",
+            "--root",
+            root.to_str().unwrap(),
+            "app/main",
+        ])
+        .output()
+        .expect("check an invalid multi-module project as JSON");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stderr.is_empty());
+    let document = String::from_utf8(output.stdout).unwrap();
+    assert!(document.contains("\"module\":\"lib/broken\""));
+    assert!(document.contains("lib/broken.chimi"));
+}
+
+#[test]
 fn invalid_cli_input_is_rejected_at_the_boundary() {
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .args(["check", "one.chimi", "two.chimi"])
@@ -158,9 +239,9 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
         String::from_utf8_lossy(&output.stderr),
         concat!(
             "chimi: check and run received unexpected arguments\n",
-            "usage: chimi --version | chimi format <path> | chimi check <path> | ",
-            "chimi run <path> | ",
-            "chimi check --root <project-dir> <entry-module> | ",
+            "usage: chimi --version | chimi format <path> | ",
+            "chimi check [--json] <path> | chimi run <path> | ",
+            "chimi check [--json] --root <project-dir> <entry-module> | ",
             "chimi run --root <project-dir> <entry-module>\n"
         )
     );

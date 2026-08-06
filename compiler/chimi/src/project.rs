@@ -1,10 +1,10 @@
 use crate::compiler::{ProjectPathError, ProjectSource};
 use crate::diagnostic::Diagnostic;
-use crate::ids::FileId;
+use crate::ids::{FileId, TextRange};
 use crate::semantic::{self, ImportBinding, ModuleSource};
 use crate::source::SourceSnapshot;
 use std::collections::HashMap;
-use std::fmt;
+use std::fmt::{self, Write};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -63,15 +63,7 @@ impl LoadedProject {
     }
 
     pub fn render_diagnostics(&self, diagnostics: &[Diagnostic]) -> String {
-        let mut sources = self
-            .modules
-            .iter()
-            .map(|module| (module.module_path().to_owned(), module.source().clone()))
-            .collect::<Vec<_>>();
-        sources.sort_by(|left, right| left.0.cmp(&right.0));
-        for (index, (_, source)) in sources.iter_mut().enumerate() {
-            source.assign_file_id(FileId::new(index as u32));
-        }
+        let sources = self.diagnostic_sources();
 
         let mut output = diagnostics
             .iter()
@@ -90,6 +82,113 @@ impl LoadedProject {
         }
         output
     }
+
+    pub fn render_diagnostics_json(&self, diagnostics: &[Diagnostic]) -> String {
+        let sources = self.diagnostic_sources();
+        let mut output = String::from("{\"schema\":\"chimi.diagnostics.v1\",\"diagnostics\":[");
+        for (index, diagnostic) in diagnostics.iter().enumerate() {
+            if index > 0 {
+                output.push(',');
+            }
+            write_json_diagnostic(&mut output, diagnostic, &sources);
+        }
+        output.push_str("]}\n");
+        output
+    }
+
+    fn diagnostic_sources(&self) -> Vec<(String, SourceSnapshot)> {
+        let mut sources = self
+            .modules
+            .iter()
+            .map(|module| (module.module_path().to_owned(), module.source().clone()))
+            .collect::<Vec<_>>();
+        sources.sort_by(|left, right| left.0.cmp(&right.0));
+        for (index, (_, source)) in sources.iter_mut().enumerate() {
+            source.assign_file_id(FileId::new(index as u32));
+        }
+        sources
+    }
+}
+
+fn write_json_diagnostic(
+    output: &mut String,
+    diagnostic: &Diagnostic,
+    sources: &[(String, SourceSnapshot)],
+) {
+    output.push_str("{\"stage\":");
+    write_json_string(output, &diagnostic.stage().to_string());
+    output.push_str(",\"code\":");
+    write_json_string(output, diagnostic.code());
+    output.push_str(",\"severity\":");
+    write_json_string(output, &diagnostic.severity().to_string());
+    output.push_str(",\"message\":");
+    write_json_string(output, diagnostic.message());
+    output.push_str(",\"primary\":");
+    write_json_span(output, diagnostic.file_id(), diagnostic.range(), sources);
+    output.push_str(",\"labels\":[");
+    for (index, label) in diagnostic.labels().iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push_str("{\"message\":");
+        write_json_string(output, label.message());
+        output.push_str(",\"span\":");
+        write_json_span(output, label.file_id(), label.range(), sources);
+        output.push('}');
+    }
+    output.push_str("],\"fixes\":[");
+    for (index, fix) in diagnostic.fixes().iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push_str("{\"replacement\":");
+        write_json_string(output, fix.replacement());
+        output.push_str(",\"span\":");
+        write_json_span(output, fix.file_id(), fix.range(), sources);
+        output.push('}');
+    }
+    output.push_str("]}");
+}
+
+fn write_json_span(
+    output: &mut String,
+    file_id: FileId,
+    range: TextRange,
+    sources: &[(String, SourceSnapshot)],
+) {
+    let (module_path, source) = sources
+        .get(file_id.raw() as usize)
+        .expect("diagnostic file ID belongs to the loaded project");
+    output.push_str("{\"module\":");
+    write_json_string(output, module_path);
+    output.push_str(",\"path\":");
+    write_json_string(output, &source.path().to_string_lossy());
+    write!(
+        output,
+        ",\"start\":{},\"end\":{}}}",
+        range.start(),
+        range.end()
+    )
+    .expect("writing JSON to a string cannot fail");
+}
+
+fn write_json_string(output: &mut String, value: &str) {
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            character if character.is_control() => {
+                write!(output, "\\u{:04x}", character as u32)
+                    .expect("writing JSON to a string cannot fail");
+            }
+            character => output.push(character),
+        }
+    }
+    output.push('"');
 }
 
 #[derive(Debug)]
@@ -288,7 +387,7 @@ fn validate_module_path(module_path: String) -> Result<(), ProjectLoadError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LoadedProject, ProjectLoadError};
+    use super::{LoadedProject, ProjectLoadError, write_json_string};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -326,6 +425,14 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.path).expect("remove isolated project loader fixture");
         }
+    }
+
+    #[test]
+    fn structured_diagnostic_strings_escape_json_control_characters() {
+        let mut output = String::new();
+        write_json_string(&mut output, "quote\" slash\\ line\n\t\u{1}");
+
+        assert_eq!(output, "\"quote\\\" slash\\\\ line\\n\\t\\u0001\"");
     }
 
     #[test]

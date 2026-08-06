@@ -296,6 +296,17 @@ significant line breaks. `chimi format <path>` exposes the same report by
 writing source to stdout without modifying the file. The accepted syntax-valid
 golden corpus gates reparsing, idempotence, and comment preservation.
 
+The second M6 slice makes the compiler's shared diagnostic envelope explicit.
+Every diagnostic carries its owning stage, stable code, severity, primary
+source span, message, secondary labels, and source fixes; stages still own the
+meaning and production of their records. `chimi check --json` resolves internal
+snapshot file identities into module paths and source paths and emits the
+versioned `chimi.diagnostics.v1` document. Syntax, name, and type failures keep
+distinct stage values, multi-module diagnostics retain their owning source,
+and successful checks emit an empty diagnostic list. Human diagnostics and
+their stdout/stderr behavior remain unchanged. Label and fix arrays are part of
+the stable envelope even though current producers do not populate them yet.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the
