@@ -8,6 +8,7 @@ publish = false
 [features]
 backend-benchmarks = []
 frontend-benchmarks = []
+embedded-bytecode-prototype = []
 native-aot-prototype = [
   "dep:cranelift-codegen",
   "dep:cranelift-frontend",
@@ -31,6 +32,11 @@ path = "src/main.rs"
 name = "chimi-aot-prototype"
 path = "src/bin/aot_prototype.rs"
 required-features = ["native-aot-prototype"]
+
+[[bin]]
+name = "chimi-bytecode-prototype"
+path = "src/bin/bytecode_prototype.rs"
+required-features = ["embedded-bytecode-prototype"]
 
 [[bench]]
 name = "frontend"

@@ -1,9 +1,19 @@
 use crate::executable::{CoreLiteral, CoreOperation, CorePattern, CoreProgram};
 use crate::execution::{ExecutionConfig, ExecutionReport, execute};
 
+#[cfg(any(
+    feature = "embedded-bytecode-prototype",
+    feature = "native-aot-prototype"
+))]
+mod prototype_program_data;
+
 #[cfg(feature = "native-aot-prototype")]
 #[doc(hidden)]
 pub mod native_aot_prototype;
+
+#[cfg(feature = "embedded-bytecode-prototype")]
+#[doc(hidden)]
+pub mod embedded_bytecode_prototype;
 
 /// The backend-neutral executable input produced by the verified compiler pipeline.
 ///
