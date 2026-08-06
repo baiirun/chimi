@@ -384,6 +384,7 @@ fn name_from(token: &SyntaxToken<'_>) -> Name {
 pub(crate) struct ModuleSource {
     pub(crate) path: String,
     pub(crate) source: SourceSnapshot,
+    pub(crate) syntax: Option<Arc<ParseResult>>,
 }
 
 #[derive(Clone, Debug)]
@@ -689,7 +690,7 @@ pub(crate) struct SemanticModule {
 
 #[derive(Debug)]
 pub(crate) struct SemanticProject {
-    pub(crate) modules: Vec<SemanticModule>,
+    pub(crate) modules: Vec<Arc<SemanticModule>>,
 }
 
 pub(crate) fn lower_project(mut inputs: Vec<ModuleSource>) -> SemanticProject {
@@ -697,12 +698,42 @@ pub(crate) fn lower_project(mut inputs: Vec<ModuleSource>) -> SemanticProject {
     let modules = inputs
         .into_iter()
         .enumerate()
-        .map(|(index, mut input)| {
-            input.source.assign_file_id(FileId::new(index as u32));
-            ProjectLowerer::lower(ModuleId::new(index as u32), input.path, input.source)
+        .map(|(index, input)| {
+            let syntax = input
+                .syntax
+                .unwrap_or_else(|| Arc::new(syntax::parse(&input.source)));
+            lower_module(
+                ModuleId::new(index as u32),
+                input.path,
+                input.source,
+                syntax,
+            )
         })
         .collect();
     SemanticProject { modules }
+}
+
+pub(crate) fn lower_module(
+    id: ModuleId,
+    path: String,
+    mut source: SourceSnapshot,
+    syntax: Arc<ParseResult>,
+) -> Arc<SemanticModule> {
+    source.assign_file_id(FileId::new(id.raw()));
+    Arc::new(ProjectLowerer::lower(id, path, source, syntax))
+}
+
+pub(crate) fn discover_imports(parsed: &ParseResult) -> Vec<ModuleImport> {
+    let mut lowerer = ProjectLowerer {
+        next_semantic_id: 0,
+    };
+    parsed
+        .root()
+        .child_nodes()
+        .into_iter()
+        .filter(|node| node.kind() == NodeKind::ImportDeclaration)
+        .map(|node| lowerer.lower_import(&node))
+        .collect()
 }
 
 struct ProjectLowerer {
@@ -710,9 +741,13 @@ struct ProjectLowerer {
 }
 
 impl ProjectLowerer {
-    fn lower(id: ModuleId, path: String, source: SourceSnapshot) -> SemanticModule {
+    fn lower(
+        id: ModuleId,
+        path: String,
+        source: SourceSnapshot,
+        parsed: Arc<ParseResult>,
+    ) -> SemanticModule {
         let source = Arc::new(source);
-        let parsed = Arc::new(syntax::parse(&source));
         let root = parsed.root();
         let mut lowerer = Self {
             next_semantic_id: 0,
@@ -738,7 +773,12 @@ impl ProjectLowerer {
                 _ => {}
             }
         }
-        let diagnostics = parsed.diagnostics().to_vec();
+        let diagnostics = parsed
+            .diagnostics()
+            .iter()
+            .cloned()
+            .map(|diagnostic| diagnostic.with_file_id(source.file_id()))
+            .collect();
         SemanticModule {
             id,
             path,

@@ -141,6 +141,17 @@ impl Diagnostic {
         &self.fixes
     }
 
+    pub(crate) fn with_file_id(mut self, file_id: FileId) -> Self {
+        self.file_id = file_id;
+        for label in &mut self.labels {
+            label.file_id = file_id;
+        }
+        for fix in &mut self.fixes {
+            fix.file_id = file_id;
+        }
+        self
+    }
+
     pub fn render(&self, source: &SourceSnapshot) -> String {
         debug_assert_eq!(self.file_id, source.file_id());
         format!(

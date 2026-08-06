@@ -451,7 +451,10 @@ impl VerifiedRoot {
     }
 }
 
-pub(crate) fn seal_entry(typed: TypedProject) -> Result<VerifiedRoot, Vec<Diagnostic>> {
+pub(crate) fn seal_entry(
+    typed: impl Into<Arc<TypedProject>>,
+) -> Result<VerifiedRoot, Vec<Diagnostic>> {
+    let typed = typed.into();
     if !typed.diagnostics.is_empty() {
         return Err(typed.diagnostics.clone());
     }
@@ -553,7 +556,7 @@ pub(crate) fn seal_entry(typed: TypedProject) -> Result<VerifiedRoot, Vec<Diagno
 
     let reachable = collect_reachable_program(&typed, entry)?;
     Ok(VerifiedRoot {
-        typed: Arc::new(typed),
+        typed,
         entry,
         reachable_declarations: reachable.declarations,
         origins: reachable.origins,
@@ -1253,19 +1256,10 @@ impl CoreLowerer {
     }
 
     fn value_symbol(&self, module_id: ModuleId, semantic_id: SemanticId) -> Option<SymbolId> {
-        let file_id = self.typed.resolved.semantic.modules[module_id.raw() as usize]
-            .source
-            .file_id();
         self.typed
             .resolved
-            .references
-            .iter()
-            .find(|reference| {
-                reference.file_id == file_id
-                    && reference.semantic_id == semantic_id
-                    && reference.namespace == Namespace::Value
-            })
-            .and_then(|reference| match reference.resolution {
+            .reference_resolution(module_id, semantic_id, Namespace::Value)
+            .and_then(|resolution| match resolution {
                 ReferenceResolution::Resolved(symbol) => Some(symbol),
                 ReferenceResolution::Unresolved
                 | ReferenceResolution::Ambiguous
