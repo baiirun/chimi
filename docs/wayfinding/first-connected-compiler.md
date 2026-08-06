@@ -274,6 +274,18 @@ module once to discover imports and the canonical compiler parses it again;
 the incrementality milestone must cache and reuse that frontend snapshot rather
 than preserve this prototype cost.
 
+The seventh M5 slice proves retry-once exhaustion through ordinary function
+composition. A library `with` function accepts a policy and returns a
+polymorphic thunk transformer; piping an operation into that transformer
+produces a new thunk with the operation's success, failure, and `needs`
+channels. The executable fixture invokes the original thunk twice and returns
+its final expected failure. No retry syntax, compiler operation, or runtime
+intrinsic exists. This forced the general type system to preserve unresolved
+generic parameters on returned function values and exposed a fixed-point bug
+where module bindings compared raw type identities instead of equivalent
+resolved structure. Generic inspection of an open failure row remains a
+separate language-design question for selective policies.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the

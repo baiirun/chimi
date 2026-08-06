@@ -1209,6 +1209,37 @@ mod tests {
     }
 
     #[test]
+    fn generic_partial_application_through_nested_closures_converges() {
+        let report = Compiler::type_project(vec![
+            module(
+                "lib/partial",
+                "partial.chimi",
+                concat!(
+                    "pub fn with<A>() -> fn(fn() -> A) -> fn() -> A {\n",
+                    "  fn(operation: fn() -> A) { fn() { operation() } }\n",
+                    "}\n",
+                ),
+            ),
+            module(
+                "app/main",
+                "main.chimi",
+                concat!(
+                    "import lib/partial as Partial\n",
+                    "fn operation() -> Int { 1 }\n",
+                    "let configured = operation |> Partial.with()\n",
+                    "pub fn main() -> Int { configured() }\n",
+                ),
+            ),
+        ]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report.contract("lib/partial", "with").as_deref(),
+            Some("fn() -> fn(fn() -> A) -> fn() -> A")
+        );
+    }
+
+    #[test]
     fn generic_composition_instantiates_value_failure_and_needs_rows_per_call() {
         let report = Compiler::type_project(vec![module(
             "contracts/map_success",
@@ -2152,6 +2183,41 @@ mod tests {
                 .filter(|event| event.kind == EventKind::DependencyCalled)
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn project_core_executes_retry_as_ordinary_thunk_composition() {
+        const APP: &str = include_str!("../../../prototypes/retry-composition/app/main.chimi");
+        let report = Compiler::run_project(
+            vec![
+                module("app/main", "app/main.chimi", APP),
+                module(
+                    "lib/retry",
+                    "lib/retry.chimi",
+                    include_str!("../../../prototypes/retry-composition/lib/retry.chimi"),
+                ),
+            ],
+            ExecutionConfig::new("retry-composition").unwrap(),
+        )
+        .expect("ordinary higher-order functions implement retry");
+
+        assert!(matches!(
+            report.outcome,
+            ExecutionOutcome::ExpectedFailure(ExecutionValue::Constructed {
+                ref type_name,
+                variant_name: Some(ref variant),
+                ..
+            }) if type_name == "AttemptError" && variant == "Temporary"
+        ));
+        assert_eq!(
+            report
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::DependencyCalled)
+                .count(),
+            2,
+            "the composed thunk must invoke the required operation twice"
         );
     }
 

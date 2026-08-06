@@ -245,8 +245,8 @@ without a separate decision.
 
 ## Remaining Specification and Architecture Work
 
-- The concrete resolved, typed, and executable representations and the
-  source-identity contract between them.
+- How a polymorphic recovery combinator relates a captured failure value to an
+  open failure row for selective policies.
 
 These are not invitations to expand the source language. The normative
 specification and representation-handoff contracts MUST resolve them without

@@ -1,0 +1,26 @@
+// PROTOTYPE: retry is ordinary composition over a thunk.
+
+import lib/retry as Retry
+
+enum AttemptError {
+  Temporary
+}
+
+interface Source {
+  read: fn() -> Int errors AttemptError
+}
+
+fn operation() -> Int needs { source: Source } {
+  source.read()
+}
+
+let source = {
+  read: fn() -> Int { Failure(Temporary()) },
+}
+
+let retried = operation
+  |> Retry.with(Retry.once())
+
+pub fn main() -> Int {
+  retried() using { source: source }
+}

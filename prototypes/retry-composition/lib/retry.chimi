@@ -1,0 +1,24 @@
+// PROTOTYPE: this module must remain implementable without retry-specific machinery.
+
+pub enum Policy {
+  Once
+}
+
+pub fn once() -> Policy {
+  Once()
+}
+
+pub fn with<A, E, R>(
+  policy: Policy,
+) -> fn(fn() -> A errors E needs R) -> fn() -> A errors E needs R {
+  case policy {
+    Once -> fn(operation: fn() -> A errors E needs R) {
+      fn() {
+        case operation() {
+          Success(value) -> value
+          Failure(_error) -> operation()
+        }
+      }
+    }
+  }
+}
