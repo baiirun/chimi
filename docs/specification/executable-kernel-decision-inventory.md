@@ -276,8 +276,9 @@ python3 prototypes/kernel-validation/main.py --check
 ```
 
 The validator MUST report every component probe passing,
-`specification-ready=true`, and `end-to-end-compiler=false` until the two
-unconnected compiler handoffs are implemented.
+`specification-ready=true`, and `end-to-end-compiler=true`. The focused Rust
+probes establish the resolved-names-to-typed-contracts and
+typed-contracts-to-executable-core handoffs.
 
 Use the golden corpus as the behavioral acceptance input. A normative rule that
 cannot be tied to a corpus fixture, accepted prototype verdict, design

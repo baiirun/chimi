@@ -271,8 +271,8 @@ failure, dependency, and observability semantics.
 - Defects and cancellation never enter failure rows and never retry.
 - Every full-tracing event resolves to a computation kind, execution ID,
   causal span, core node, semantic origin, and source span.
-- The old kernel validator can replace its two `independent` handoffs with
-  `connected` and report `end-to-end-compiler=true`.
+- The kernel validator reports both formerly independent handoffs as
+  `connected` and gates `end-to-end-compiler=true` with focused Rust probes.
 
 ## M6 — Connect the Developer Toolchain
 

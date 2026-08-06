@@ -60,9 +60,12 @@ def render_summary(results: tuple[ProbeResult, ...]) -> None:
     print(f"{BOLD}design coherent:{RESET}       {verdict.coherent}")
     print(f"{BOLD}specification-ready:{RESET}   {verdict.specification_ready}")
     print(f"{BOLD}end-to-end compiler:{RESET}   {verdict.end_to_end_compiler}\n")
-    print("The explored kernel is coherent enough to specify, but it is not yet a")
-    print("compiler that can execute arbitrary .chimi source. Two implementation")
-    print("handoffs are represented by compatible independent models.")
+    if verdict.end_to_end_compiler:
+        print("The Rust compiler connects source, resolved names, typed contracts,")
+        print("verified executable core, and observable execution.")
+    else:
+        print("The kernel remains specification-ready, but one or more compiler")
+        print("handoffs or executable probes are not connected.")
 
 
 def render_stages(results: tuple[ProbeResult, ...]) -> None:
@@ -92,7 +95,7 @@ def render_gaps(results: tuple[ProbeResult, ...]) -> None:
     print(f"{BOLD}What this validation does not prove{RESET}\n")
     for blocker in verdict.blockers:
         print(f"- {blocker}")
-    print("- The permanent compiler representation, backend, and runtime architecture remain open.")
+    print("- The permanent backend and production runtime architecture remain open.")
     print("- Incremental semantic performance and production durability remain later work.")
 
 
@@ -130,7 +133,7 @@ def check(results: tuple[ProbeResult, ...]) -> bool:
     print()
     print(f"specification-ready={str(verdict.specification_ready).lower()}")
     print(f"end-to-end-compiler={str(verdict.end_to_end_compiler).lower()}")
-    return verdict.specification_ready
+    return verdict.specification_ready and verdict.end_to_end_compiler
 
 
 def main() -> None:

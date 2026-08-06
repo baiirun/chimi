@@ -533,13 +533,13 @@ Run the combined executable validation:
 python3 prototypes/kernel-validation/main.py --check
 ```
 
-Every component probe MUST pass. Until resolved semantic expressions feed type
-inference and typed expressions feed executable lowering, the validator MUST
-report:
+Every component probe MUST pass. Resolved semantic expressions now feed type
+inference, and typed expressions reach executable lowering only through a
+verified root, so the validator MUST report:
 
 ```text
 specification-ready=true
-end-to-end-compiler=false
+end-to-end-compiler=true
 ```
 
 The files under `prototypes/golden/` are the acceptance corpus for this
