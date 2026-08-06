@@ -404,8 +404,21 @@ cancellation. Exhaustion preserves the final expected failure value.
 
 ## Observable Execution
 
-Full tracing mode emits structured events for every executed semantic
-operation. Every canonical event contains or can losslessly recover:
+The external runner selects one of three tracing modes:
+
+- `off` emits and exports no runtime events;
+- `boundaries` emits computation lifecycle and dependency-call events;
+- `full` additionally emits paired events for every executed semantic
+  operation.
+
+Tracing mode does not change program evaluation or its terminal outcome. In
+`off` mode, the runtime MUST bypass event construction, buffering,
+serialization, and exporter calls rather than constructing events and dropping
+them afterward. Error values, defects, and cancellation still reach the caller
+through the ordinary terminal outcome.
+
+Every canonical event produced by boundary or full tracing contains or can
+losslessly recover:
 
 - deterministic sequence within one execution;
 - a stable low-cardinality computation kind;
