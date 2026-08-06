@@ -188,6 +188,17 @@ row, guarded patterns never establish coverage or discharge an outcome failure
 variant. M4 remains open for explained-need root suppression and closed-root
 validation.
 
+The eighth M4 slice closes callable-channel typing. Each normalized need now
+retains whether a failed provider check has already explained why it remains
+open. That provenance composes through calls and blocks, while union keeps a
+need unexplained if any contributing path is still missing a provider without a
+more specific diagnostic. After body inference converges, every conventional
+exported `main` receives an execution-setup diagnostic for each unresolved,
+unexplained dependency; successfully provided roots are closed, and provider
+shape errors do not trigger a redundant root error. M4 is complete. M5 owns the
+full `VerifiedRoot` reachability proof, executable-core lowering, and execution
+of the complete typed language.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the

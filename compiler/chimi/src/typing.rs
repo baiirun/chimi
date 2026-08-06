@@ -146,6 +146,7 @@ pub(crate) struct Need {
     pub(crate) requirement: SymbolId,
     pub(crate) lexical_name: String,
     pub(crate) interface: TypeId,
+    pub(crate) explained: bool,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -195,6 +196,70 @@ pub(crate) fn check_project(resolved: ResolvedProject) -> TypedProject {
 }
 
 impl TypedProject {
+    fn validate_closed_roots(&mut self) {
+        let roots = self
+            .resolved
+            .semantic
+            .modules
+            .iter()
+            .flat_map(|module| {
+                module
+                    .declarations
+                    .iter()
+                    .filter(|declaration| {
+                        declaration.kind == ModuleDeclarationKind::Function
+                            && declaration.public
+                            && declaration.name.text == "main"
+                    })
+                    .filter_map(|declaration| {
+                        self.resolved
+                            .symbols
+                            .iter()
+                            .find(|symbol| {
+                                symbol.module_id == Some(module.id)
+                                    && symbol.semantic_id == Some(declaration.semantic_id)
+                                    && symbol.kind == ProjectSymbolKind::Function
+                            })
+                            .map(|symbol| {
+                                (module.source.file_id(), declaration.name.range, symbol.id)
+                            })
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        for (file_id, range, symbol) in roots {
+            let Some(contract) = self.contracts.get(&symbol).cloned() else {
+                continue;
+            };
+            let row = self.needs_rows[contract.needs.raw() as usize].clone();
+            for need in row.entries.into_iter().filter(|need| !need.explained) {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::ExecutionSetup,
+                    "E5002",
+                    file_id,
+                    range,
+                    format!(
+                        "main needs {}: {}",
+                        need.lexical_name,
+                        self.format_type(need.interface)
+                    ),
+                ));
+            }
+            for parameter in row.parameters {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::ExecutionSetup,
+                    "E5002",
+                    file_id,
+                    range,
+                    format!(
+                        "main has unresolved dependency row {}",
+                        self.resolved.symbol(parameter).name
+                    ),
+                ));
+            }
+        }
+    }
+
     pub(crate) fn contract(
         &self,
         module_path: &str,
@@ -555,7 +620,7 @@ impl ProjectTypeChecker {
                 "monotonic body-contract inference must converge within the declaration count"
             );
         }
-        TypedProject {
+        let mut typed = TypedProject {
             resolved: self.resolved,
             types: self.types,
             failure_rows: self.failure_rows,
@@ -568,7 +633,9 @@ impl ProjectTypeChecker {
             generic_kinds: self.generic_kinds,
             diagnostics: self.diagnostics,
             inference_bindings: self.inference_bindings,
-        }
+        };
+        typed.validate_closed_roots();
+        typed
     }
 
     fn check_declaration(&mut self, module_id: ModuleId, declaration: &ModuleDeclaration) {
@@ -2120,6 +2187,7 @@ impl ProjectTypeChecker {
         let (success, latent_needs) = self.callable_success_and_needs(expression_fact.success);
         let available_needs = self.union_needs_rows([expression_fact.needs, latent_needs]);
         let mut supplied_names = Vec::new();
+        let mut explained_names = Vec::new();
         for (provider, fact) in &provider_facts {
             if duplicate_names
                 .iter()
@@ -2148,14 +2216,19 @@ impl ProjectTypeChecker {
                     provider.name.range,
                     format!("provider `{}` {reason}", provider.name.text),
                 );
+                explained_names.push(provider.name.text.clone());
             } else {
                 supplied_names.push(provider.name.text.clone());
             }
         }
 
-        let remaining_expression_needs =
+        let mut remaining_expression_needs =
             self.remove_supplied_needs(expression_fact.needs, &supplied_names);
-        let remaining_latent_needs = self.remove_supplied_needs(latent_needs, &supplied_names);
+        remaining_expression_needs =
+            self.mark_explained_needs(remaining_expression_needs, &explained_names);
+        let mut remaining_latent_needs = self.remove_supplied_needs(latent_needs, &supplied_names);
+        remaining_latent_needs =
+            self.mark_explained_needs(remaining_latent_needs, &explained_names);
         let success = self.with_callable_needs(success, remaining_latent_needs);
         ExpressionFact {
             success,
@@ -2204,6 +2277,16 @@ impl ProjectTypeChecker {
         let mut row = self.needs_rows[row.raw() as usize].clone();
         row.entries
             .retain(|need| !supplied.iter().any(|name| name == &need.lexical_name));
+        self.intern_needs_row(row)
+    }
+
+    fn mark_explained_needs(&mut self, row: NeedsRowId, explained: &[String]) -> NeedsRowId {
+        let mut row = self.needs_rows[row.raw() as usize].clone();
+        for need in &mut row.entries {
+            if explained.iter().any(|name| name == &need.lexical_name) {
+                need.explained = true;
+            }
+        }
         self.intern_needs_row(row)
     }
 
@@ -2542,6 +2625,7 @@ impl ProjectTypeChecker {
                         requirement,
                         lexical_name: name.text.clone(),
                         interface,
+                        explained: false,
                     });
                 }
             }
@@ -3282,10 +3366,14 @@ impl ProjectTypeChecker {
         for row in rows {
             let row = &self.needs_rows[row.raw() as usize];
             for need in &row.entries {
-                if !entries.iter().any(|existing| {
+                if let Some(existing) = entries.iter_mut().find(|existing| {
                     existing.lexical_name == need.lexical_name
                         && existing.interface == need.interface
                 }) {
+                    // A need is explained only when every contributing path has
+                    // already emitted a more specific diagnostic.
+                    existing.explained &= need.explained;
+                } else {
                     entries.push(need.clone());
                 }
             }

@@ -1694,4 +1694,81 @@ mod tests {
                 .all(|diagnostic| diagnostic.stage() == DiagnosticStage::Type)
         );
     }
+
+    #[test]
+    fn runtime_roots_require_unexplained_needs_without_provider_cascades() {
+        let declarations = concat!(
+            "interface Clock { now: fn() -> Int }\n",
+            "let clock = { now: fn() -> Int { 1 } }\n",
+            "let wrong = { now: fn(value: Int) -> Int { value } }\n",
+            "fn timestamp() -> Int needs { clock: Clock } { clock.now() }\n",
+        );
+
+        let closed = Compiler::type_project(vec![module(
+            "roots/closed",
+            "closed.chimi",
+            &format!(
+                "{declarations}pub fn main() -> Int {{ timestamp() using {{ clock: clock }} }}\n"
+            ),
+        )]);
+        assert!(closed.is_success(), "{}", closed.render_diagnostics());
+
+        let missing = Compiler::type_project(vec![module(
+            "roots/missing",
+            "missing.chimi",
+            &format!("{declarations}pub fn main() -> Int {{ timestamp() }}\n"),
+        )]);
+        assert_eq!(missing.diagnostics().len(), 1);
+        assert_eq!(missing.diagnostics()[0].code(), "E5002");
+        assert_eq!(
+            missing.diagnostics()[0].stage(),
+            DiagnosticStage::ExecutionSetup
+        );
+        assert_eq!(
+            missing.diagnostics()[0].message(),
+            "main needs clock: Clock"
+        );
+
+        let mismatch = Compiler::type_project(vec![module(
+            "roots/mismatch",
+            "mismatch.chimi",
+            &format!(
+                concat!(
+                    "{}fn misconfigured() -> Int {{ timestamp() using {{ clock: wrong }} }}\n",
+                    "pub fn main() -> Int {{ misconfigured() }}\n"
+                ),
+                declarations
+            ),
+        )]);
+        assert_eq!(
+            mismatch
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            ["T4213"]
+        );
+
+        let mixed = Compiler::type_project(vec![module(
+            "roots/mixed",
+            "mixed.chimi",
+            &format!(
+                concat!(
+                    "{}pub fn main() -> Int {{\n",
+                    "  timestamp() using {{ clock: wrong }}\n",
+                    "  timestamp()\n",
+                    "}}\n"
+                ),
+                declarations
+            ),
+        )]);
+        assert_eq!(
+            mixed
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            ["T4213", "E5002"]
+        );
+    }
 }
