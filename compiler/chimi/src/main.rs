@@ -1,6 +1,7 @@
-use chimi::Compiler;
+use chimi::diagnostic::Diagnostic;
 use chimi::execution::ExecutionConfig;
 use chimi::source::SourceSnapshot;
+use chimi::{Compiler, ProjectSource};
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -79,12 +80,13 @@ fn check(path: PathBuf) -> ExitCode {
     let Some(source) = read_source(&path) else {
         return ExitCode::FAILURE;
     };
-    let report = Compiler::check(source);
-    if report.is_success() {
-        ExitCode::SUCCESS
-    } else {
-        eprint!("{}", report.render_diagnostics());
-        ExitCode::FAILURE
+    let diagnostic_source = source.clone();
+    match Compiler::verify_project(vec![single_module(source)]) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(diagnostics) => {
+            eprint!("{}", render_diagnostics(&diagnostic_source, &diagnostics));
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -92,16 +94,33 @@ fn run(path: PathBuf) -> ExitCode {
     let Some(source) = read_source(&path) else {
         return ExitCode::FAILURE;
     };
-    match Compiler::run(source, ExecutionConfig::for_process()) {
+    let diagnostic_source = source.clone();
+    match Compiler::run_project(vec![single_module(source)], ExecutionConfig::for_process()) {
         Ok(report) => {
             print!("{}", report.render_json_lines());
             ExitCode::SUCCESS
         }
-        Err(report) => {
-            eprint!("{}", report.render_diagnostics());
+        Err(diagnostics) => {
+            eprint!("{}", render_diagnostics(&diagnostic_source, &diagnostics));
             ExitCode::FAILURE
         }
     }
+}
+
+fn single_module(source: SourceSnapshot) -> ProjectSource {
+    ProjectSource::new("main", source).expect("the CLI single-module path is valid")
+}
+
+fn render_diagnostics(source: &SourceSnapshot, diagnostics: &[Diagnostic]) -> String {
+    let mut output = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.render(source))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output
 }
 
 fn read_source(path: &Path) -> Option<SourceSnapshot> {

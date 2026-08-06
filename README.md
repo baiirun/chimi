@@ -18,3 +18,16 @@ The Last Programming Language
 - need to figure out package manager :notlikethis:
 - generics or nah
 - Logs/traces built into language with exporters. Internals are also logs so agents can debug runtime 
+
+## Try the Current Kernel
+
+From the repository root:
+
+```sh
+cargo run -q -p chimi -- run prototypes/golden/valid/dependencies_and_execution.chimi
+```
+
+The command executes the checkout forcing program and writes JSON Lines for
+every traced operation followed by the terminal outcome. `check` and `run`
+currently accept one self-contained source file; resolving imports from a
+project directory is not implemented yet.

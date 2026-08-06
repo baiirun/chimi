@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SourceSnapshot {
     file_id: FileId,
     path: PathBuf,

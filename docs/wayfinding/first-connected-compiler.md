@@ -248,6 +248,18 @@ span, operation kind, and typed attributes. M5 remains open for loading a
 multi-module project through the CLI, executing the composite retry forcing
 example, and replacing initial cancellation with a live cooperative signal.
 
+The fifth M5 slice makes the canonical pipeline directly testable from the
+command line. `chimi check <path>` and `chimi run <path>` treat the supplied
+file as a validated `main` module, then use project resolution, typing, entry
+sealing, core lowering, and—when running—the project evaluator. Diagnostics are
+rendered against that same immutable source snapshot. The CLI MUST NOT infer or
+silently search for imported modules yet: a supplied file must be
+self-contained until the project loader defines discovery and package-root
+rules. The checkout dependency fixture is the end-to-end CLI gate and must
+retain two dependency-call events plus its nested `Order` success value. The
+fixed M1 library adapter remains only as transitional regression coverage and
+is no longer the user-facing command path.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the
