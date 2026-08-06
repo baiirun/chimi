@@ -1,14 +1,18 @@
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
-use crate::ids::{CoreNodeId, FileId, OriginId, SemanticId, SymbolId, TextRange};
-use crate::resolution::{Resolution, SymbolKind};
-use crate::semantic::Literal;
+use crate::ids::{CoreNodeId, FileId, ModuleId, OriginId, SemanticId, SymbolId, TextRange};
+use crate::resolution::{
+    Namespace, ProjectSymbolKind, ReferenceResolution, Resolution, SymbolKind,
+};
+use crate::semantic::{Literal, ModuleBlockItem, ModuleDeclarationKind, ModuleExpression};
 use crate::typing::{CanonicalType, TypeFact, TypedProgram, TypedProject};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Origin {
     pub(crate) origin_id: OriginId,
     pub(crate) file_id: FileId,
+    pub(crate) module_id: ModuleId,
     pub(crate) semantic_id: SemanticId,
     pub(crate) range: TextRange,
 }
@@ -33,6 +37,24 @@ pub(crate) struct LegacyVerifiedRoot {
 pub(crate) struct VerifiedRoot {
     pub(crate) typed: Arc<TypedProject>,
     pub(crate) entry: SymbolId,
+    reachable_declarations: Vec<SymbolId>,
+    origins: Vec<Origin>,
+}
+
+impl VerifiedRoot {
+    pub(crate) fn verification_stats(&self) -> (usize, usize, usize) {
+        let reachable_modules = self
+            .origins
+            .iter()
+            .map(|origin| origin.module_id)
+            .collect::<HashSet<_>>()
+            .len();
+        (
+            self.reachable_declarations.len(),
+            self.origins.len(),
+            reachable_modules,
+        )
+    }
 }
 
 pub(crate) fn seal_entry(typed: TypedProject) -> Result<VerifiedRoot, Vec<Diagnostic>> {
@@ -135,10 +157,288 @@ pub(crate) fn seal_entry(typed: TypedProject) -> Result<VerifiedRoot, Vec<Diagno
         )]);
     }
 
+    let reachable = collect_reachable_program(&typed, entry)?;
     Ok(VerifiedRoot {
         typed: Arc::new(typed),
         entry,
+        reachable_declarations: reachable.declarations,
+        origins: reachable.origins,
     })
+}
+
+struct ReachableProgram {
+    declarations: Vec<SymbolId>,
+    origins: Vec<Origin>,
+}
+
+#[derive(Default)]
+struct ReachabilityState {
+    queue: VecDeque<SymbolId>,
+    seen_declarations: HashSet<SymbolId>,
+    origins: Vec<(ModuleId, SemanticId, TextRange)>,
+    seen_origins: HashSet<(ModuleId, SemanticId)>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+fn collect_reachable_program(
+    typed: &TypedProject,
+    entry: SymbolId,
+) -> Result<ReachableProgram, Vec<Diagnostic>> {
+    let mut references = HashMap::<(FileId, SemanticId), Vec<_>>::new();
+    for reference in &typed.resolved.references {
+        if reference.namespace == Namespace::Value {
+            references
+                .entry((reference.file_id, reference.semantic_id))
+                .or_default()
+                .push(reference);
+        }
+    }
+
+    let mut state = ReachabilityState {
+        queue: VecDeque::from([entry]),
+        ..ReachabilityState::default()
+    };
+    while let Some(symbol_id) = state.queue.pop_front() {
+        if !state.seen_declarations.insert(symbol_id) {
+            continue;
+        }
+        let symbol = typed.resolved.symbol(symbol_id);
+        let (Some(module_id), Some(semantic_id)) = (symbol.module_id, symbol.semantic_id) else {
+            continue;
+        };
+        let module = &typed.resolved.semantic.modules[module_id.raw() as usize];
+        let Some(declaration) = module
+            .declarations
+            .iter()
+            .find(|declaration| declaration.semantic_id == semantic_id)
+        else {
+            state.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::ExecutionSetup,
+                "E5006",
+                module.source.file_id(),
+                TextRange::empty(0),
+                "reachable symbol has no semantic declaration",
+            ));
+            continue;
+        };
+        if declaration.kind == ModuleDeclarationKind::Function
+            && !typed.contracts.contains_key(&symbol_id)
+        {
+            state.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::ExecutionSetup,
+                "E5006",
+                module.source.file_id(),
+                declaration.name.range,
+                format!(
+                    "reachable function `{}` has no callable contract",
+                    declaration.name.text
+                ),
+            ));
+        }
+        if let Some(body) = &declaration.body {
+            collect_reachable_expression(typed, module_id, body, &references, &mut state);
+        }
+    }
+    if !state.diagnostics.is_empty() {
+        return Err(state.diagnostics);
+    }
+
+    let mut declarations = state.seen_declarations.into_iter().collect::<Vec<_>>();
+    declarations.sort_unstable();
+    state
+        .origins
+        .sort_by_key(|(module_id, semantic_id, _)| (*module_id, *semantic_id));
+    let origins = state
+        .origins
+        .into_iter()
+        .enumerate()
+        .map(|(index, (module_id, semantic_id, range))| Origin {
+            origin_id: OriginId::new(index as u32),
+            file_id: typed.resolved.semantic.modules[module_id.raw() as usize]
+                .source
+                .file_id(),
+            module_id,
+            semantic_id,
+            range,
+        })
+        .collect();
+    Ok(ReachableProgram {
+        declarations,
+        origins,
+    })
+}
+
+fn collect_reachable_expression(
+    typed: &TypedProject,
+    module_id: ModuleId,
+    expression: &ModuleExpression,
+    references: &HashMap<(FileId, SemanticId), Vec<&crate::resolution::ProjectReference>>,
+    state: &mut ReachabilityState,
+) {
+    let module = &typed.resolved.semantic.modules[module_id.raw() as usize];
+    let semantic_id = expression.semantic_id();
+    let range = expression.range();
+    if range.start() == range.end() || range.end() as usize > module.source.text().len() {
+        state.diagnostics.push(Diagnostic::error(
+            DiagnosticStage::ExecutionSetup,
+            "E5008",
+            module.source.file_id(),
+            range,
+            "reachable expression has no valid source range",
+        ));
+    }
+    if state.seen_origins.insert((module_id, semantic_id)) {
+        state.origins.push((module_id, semantic_id, range));
+    }
+    match typed.expression_facts.get(&(module_id, semantic_id)) {
+        Some(fact) if type_is_nonpoisoned(typed, fact.success, &mut HashSet::new()) => {}
+        _ => state.diagnostics.push(Diagnostic::error(
+            DiagnosticStage::ExecutionSetup,
+            "E5006",
+            module.source.file_id(),
+            range,
+            "reachable expression has no complete type fact",
+        )),
+    }
+    if let Some(expression_references) = references.get(&(module.source.file_id(), semantic_id)) {
+        for reference in expression_references {
+            match reference.resolution {
+                ReferenceResolution::Resolved(symbol) => {
+                    if matches!(
+                        typed.resolved.symbol(symbol).kind,
+                        ProjectSymbolKind::Function | ProjectSymbolKind::ModuleBinding
+                    ) {
+                        state.queue.push_back(symbol);
+                    }
+                }
+                ReferenceResolution::DeferredToType => {}
+                ReferenceResolution::Unresolved
+                | ReferenceResolution::Ambiguous
+                | ReferenceResolution::Inaccessible(_) => {
+                    state.diagnostics.push(Diagnostic::error(
+                        DiagnosticStage::ExecutionSetup,
+                        "E5007",
+                        module.source.file_id(),
+                        reference.range,
+                        "reachable reference is not executable",
+                    ))
+                }
+            }
+        }
+    }
+
+    let mut visit = |child: &ModuleExpression| {
+        collect_reachable_expression(typed, module_id, child, references, state);
+    };
+    match expression {
+        ModuleExpression::Literal(_)
+        | ModuleExpression::Name { .. }
+        | ModuleExpression::Empty { .. } => {}
+        ModuleExpression::Select { receiver, .. } => {
+            let resolved_module_member = references
+                .get(&(module.source.file_id(), semantic_id))
+                .is_some_and(|references| {
+                    references.iter().any(|reference| {
+                        matches!(reference.resolution, ReferenceResolution::Resolved(_))
+                    })
+                })
+                && matches!(receiver.as_ref(), ModuleExpression::Name { .. });
+            if !resolved_module_member {
+                visit(receiver);
+            }
+        }
+        ModuleExpression::Group {
+            expression: receiver,
+            ..
+        }
+        | ModuleExpression::Unary {
+            operand: receiver, ..
+        } => visit(receiver),
+        ModuleExpression::Call {
+            callee, arguments, ..
+        } => {
+            visit(callee);
+            for argument in arguments {
+                visit(&argument.value);
+            }
+        }
+        ModuleExpression::List { elements, .. }
+        | ModuleExpression::Sequence {
+            expressions: elements,
+            ..
+        } => {
+            for element in elements {
+                visit(element);
+            }
+        }
+        ModuleExpression::Record { fields, .. } => {
+            for field in fields {
+                visit(&field.value);
+            }
+        }
+        ModuleExpression::Binary { left, right, .. } => {
+            visit(left);
+            visit(right);
+        }
+        ModuleExpression::Using {
+            expression,
+            providers,
+            ..
+        } => {
+            visit(expression);
+            for provider in providers {
+                visit(&provider.value);
+            }
+        }
+        ModuleExpression::Block { items, .. } => {
+            for item in items {
+                match item {
+                    ModuleBlockItem::Binding { value, .. } | ModuleBlockItem::Expression(value) => {
+                        visit(value)
+                    }
+                }
+            }
+        }
+        ModuleExpression::Function { body, .. } => visit(body),
+        ModuleExpression::Case { subjects, arms, .. } => {
+            for subject in subjects {
+                visit(subject);
+            }
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    visit(guard);
+                }
+                visit(&arm.body);
+            }
+        }
+    }
+}
+
+fn type_is_nonpoisoned(
+    typed: &TypedProject,
+    type_id: crate::ids::TypeId,
+    seen: &mut HashSet<crate::ids::TypeId>,
+) -> bool {
+    if !seen.insert(type_id) {
+        return true;
+    }
+    match resolved_type(typed, type_id) {
+        CanonicalType::Poison | CanonicalType::InferenceVariable(_) => false,
+        CanonicalType::Named { arguments, .. } => arguments
+            .iter()
+            .all(|argument| type_is_nonpoisoned(typed, *argument, seen)),
+        CanonicalType::Function(contract) | CanonicalType::PolymorphicFunction { contract, .. } => {
+            contract
+                .inputs
+                .iter()
+                .all(|input| type_is_nonpoisoned(typed, *input, seen))
+                && type_is_nonpoisoned(typed, contract.success, seen)
+        }
+        CanonicalType::Record(fields) => fields
+            .iter()
+            .all(|field| type_is_nonpoisoned(typed, field.type_id, seen)),
+        CanonicalType::Generic(_) => true,
+    }
 }
 
 fn resolved_type(typed: &TypedProject, mut type_id: crate::ids::TypeId) -> &CanonicalType {
@@ -253,6 +553,7 @@ pub(crate) fn lower_legacy(root: LegacyVerifiedRoot) -> CoreProgram {
         origin: Origin {
             origin_id: OriginId::new(entry.body.semantic_id.raw()),
             file_id: typed.resolved.semantic.source.file_id(),
+            module_id: ModuleId::new(0),
             semantic_id: entry.body.semantic_id,
             range: entry.body.range,
         },

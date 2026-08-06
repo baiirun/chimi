@@ -399,6 +399,13 @@ impl CheckReport {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerificationStats {
+    pub reachable_declarations: usize,
+    pub origins: usize,
+    pub reachable_modules: usize,
+}
+
 pub struct Compiler;
 
 impl Compiler {
@@ -414,10 +421,17 @@ impl Compiler {
         }
     }
 
-    pub fn verify_project(sources: Vec<ProjectSource>) -> Result<(), Vec<Diagnostic>> {
+    pub fn verify_project(
+        sources: Vec<ProjectSource>,
+    ) -> Result<VerificationStats, Vec<Diagnostic>> {
         let root = seal_entry(check_project(resolve_project_sources(sources)))?;
         debug_assert!(root.typed.contracts.contains_key(&root.entry));
-        Ok(())
+        let (reachable_declarations, origins, reachable_modules) = root.verification_stats();
+        Ok(VerificationStats {
+            reachable_declarations,
+            origins,
+            reachable_modules,
+        })
     }
 
     pub fn check(source: SourceSnapshot) -> CheckReport {
@@ -1786,11 +1800,26 @@ mod tests {
             module(
                 "entry/helper",
                 "helper.chimi",
-                "fn helper(value: Int) -> Int { value }",
+                "pub fn helper(value: Int) -> Int { value }",
             ),
-            module("entry/valid", "valid.chimi", "pub fn main() -> Int { 1 }"),
+            module(
+                "entry/valid",
+                "valid.chimi",
+                concat!(
+                    "import entry/helper as Helper\n",
+                    "fn unused() -> Int { 0 }\n",
+                    "pub fn main() -> Int { Helper.helper(1) }\n",
+                ),
+            ),
         ]);
-        assert!(valid.is_ok());
+        assert_eq!(
+            valid.expect("valid project seals"),
+            super::VerificationStats {
+                reachable_declarations: 2,
+                origins: 6,
+                reachable_modules: 2,
+            }
+        );
 
         for (source, code) in [
             ("fn main() -> Int { 1 }", "E5001"),
@@ -1816,5 +1845,23 @@ mod tests {
         .expect_err("multiple exported roots must not seal");
         assert_eq!(duplicate.len(), 1);
         assert_eq!(duplicate[0].code(), "E5003");
+
+        let mut incomplete = Compiler::type_project(vec![module(
+            "entry/incomplete",
+            "incomplete.chimi",
+            "pub fn main() -> Int { 1 }",
+        )]);
+        let expression = *incomplete
+            .typed
+            .expression_facts
+            .keys()
+            .next()
+            .expect("typed main has expression facts");
+        incomplete.typed.expression_facts.remove(&expression);
+        let diagnostics = crate::executable::seal_entry(incomplete.typed)
+            .err()
+            .expect("incomplete typed snapshots cannot seal");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code(), "E5006");
     }
 }
