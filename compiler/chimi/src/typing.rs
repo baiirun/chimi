@@ -6,8 +6,8 @@ use crate::resolution::{
 use crate::semantic::Literal;
 use crate::semantic::{
     BinaryOperator, FunctionSignature, ModuleBlockItem, ModuleCaseArm, ModuleDeclaration,
-    ModuleDeclarationKind, ModuleExpression, Pattern, RequirementRowUse, RequirementTermUse,
-    TypeUse, UnaryOperator,
+    ModuleDeclarationKind, ModuleExpression, Pattern, PatternLiteral, RequirementRowUse,
+    RequirementTermUse, TypeUse, UnaryOperator,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -467,6 +467,23 @@ struct CallSubstitution {
 struct InvocationArgument {
     label: Option<crate::semantic::Name>,
     fact: ExpressionFact,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum MatchTag {
+    EnumVariant(SymbolId),
+    Boolean(bool),
+    Integer(i64),
+    Text(String),
+}
+
+#[derive(Clone, Debug)]
+enum MatchPattern {
+    Wildcard,
+    Constructor {
+        tag: MatchTag,
+        fields: Vec<MatchPattern>,
+    },
 }
 
 impl ProjectTypeChecker {
@@ -1306,7 +1323,7 @@ impl ProjectTypeChecker {
                     "a case over a fallible expression must use Success(...) and Failure(...) patterns",
                 );
             }
-            self.infer_ordinary_case(module_id, &subject_facts, arms, generics, bindings)
+            self.infer_ordinary_case(module_id, &subject_facts, arms, range, generics, bindings)
         }
     }
 
@@ -1315,18 +1332,60 @@ impl ProjectTypeChecker {
         module_id: ModuleId,
         subjects: &[ExpressionFact],
         arms: &[ModuleCaseArm],
+        range: TextRange,
         generics: &HashMap<String, SymbolId>,
         bindings: &HashMap<SymbolId, ValueBinding>,
     ) -> ExpressionFact {
         let mut facts = subjects.to_vec();
         let mut success = None;
-        for arm in arms {
+        let subject_types = subjects
+            .iter()
+            .map(|subject| subject.success)
+            .collect::<Vec<_>>();
+        let mut coverage = Vec::<Vec<MatchPattern>>::new();
+        for (arm_index, arm) in arms.iter().enumerate() {
             let mut arm_bindings = bindings.clone();
-            for (pattern, subject) in arm.patterns.iter().zip(subjects) {
-                self.bind_value_pattern(module_id, pattern, subject.success, &mut arm_bindings);
+            if arm.patterns.len() != subjects.len() {
+                self.type_error_range(
+                    module_id,
+                    "T4230",
+                    arm.range,
+                    format!(
+                        "case arm has {} patterns for {} subjects",
+                        arm.patterns.len(),
+                        subjects.len()
+                    ),
+                );
+            }
+            let normalized = arm
+                .patterns
+                .iter()
+                .zip(subjects)
+                .map(|(pattern, subject)| {
+                    self.normalize_pattern(module_id, pattern, subject.success, &mut arm_bindings)
+                })
+                .collect::<Vec<_>>();
+            let useful = self.pattern_row_is_useful(&coverage, &normalized, &subject_types);
+            if !useful {
+                self.type_error_range(module_id, "T4232", arm.range, "case arm is unreachable");
+            }
+            let unguarded = arm.guard.is_none();
+            let catch_all = normalized
+                .iter()
+                .all(|pattern| matches!(pattern, MatchPattern::Wildcard));
+            if unguarded && catch_all && arm_index + 1 < arms.len() {
+                self.type_error_range(
+                    module_id,
+                    "T4233",
+                    arm.range,
+                    "an unguarded catch-all must be the final case arm",
+                );
+            }
+            if unguarded && useful && normalized.len() == subjects.len() {
+                coverage.push(normalized);
             }
             if let Some(guard) = &arm.guard {
-                facts.push(self.infer_expression(module_id, guard, generics, &mut arm_bindings));
+                facts.push(self.infer_case_guard(module_id, guard, generics, &mut arm_bindings));
             }
             let body = self.infer_expression(module_id, &arm.body, generics, &mut arm_bindings);
             if let Some(expected) = success {
@@ -1336,11 +1395,253 @@ impl ProjectTypeChecker {
             }
             facts.push(body);
         }
+        let missing = vec![MatchPattern::Wildcard; subjects.len()];
+        if self.pattern_row_is_useful(&coverage, &missing, &subject_types) {
+            self.type_error_range(module_id, "T4231", range, "case is not exhaustive");
+        }
         ExpressionFact {
             success: success.unwrap_or(TypeId::new(0)),
             failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
             needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
         }
+    }
+
+    fn normalize_pattern(
+        &mut self,
+        module_id: ModuleId,
+        pattern: &Pattern,
+        expected: TypeId,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> MatchPattern {
+        if let Some(literal) = &pattern.literal {
+            let (literal_type, tag) = match literal {
+                PatternLiteral::Integer(value) => {
+                    (self.builtin_type("Int"), MatchTag::Integer(*value))
+                }
+                PatternLiteral::Text(value) => {
+                    (self.builtin_type("Text"), MatchTag::Text(value.clone()))
+                }
+                PatternLiteral::Boolean(value) => {
+                    (self.builtin_type("Bool"), MatchTag::Boolean(*value))
+                }
+            };
+            if !self.unify(expected, literal_type) {
+                self.type_error_range(
+                    module_id,
+                    "T4230",
+                    pattern.range,
+                    "literal pattern does not match the subject type",
+                );
+            }
+            return MatchPattern::Constructor {
+                tag,
+                fields: Vec::new(),
+            };
+        }
+        if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
+            bindings.insert(
+                binding,
+                ValueBinding {
+                    type_id: expected,
+                    need: None,
+                },
+            );
+            return MatchPattern::Wildcard;
+        }
+        let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
+            return MatchPattern::Wildcard;
+        };
+        if self.resolved.symbol(constructor).kind != ProjectSymbolKind::EnumConstructor {
+            self.type_error_range(
+                module_id,
+                "T4230",
+                pattern.range,
+                "ordinary patterns require a value binding, literal, or enum variant",
+            );
+            return MatchPattern::Wildcard;
+        }
+        let Some(inputs) = self.instantiate_pattern_constructor(constructor, expected) else {
+            self.type_error_range(
+                module_id,
+                "T4230",
+                pattern.range,
+                format!(
+                    "pattern `{}` does not match the subject type",
+                    self.resolved.symbol(constructor).name
+                ),
+            );
+            return MatchPattern::Wildcard;
+        };
+        if pattern.arguments.len() != inputs.len() {
+            self.type_error_range(
+                module_id,
+                "T4230",
+                pattern.range,
+                format!(
+                    "pattern `{}` expects {} fields, found {}",
+                    self.resolved.symbol(constructor).name,
+                    inputs.len(),
+                    pattern.arguments.len()
+                ),
+            );
+        }
+        let fields = inputs
+            .iter()
+            .enumerate()
+            .map(|(index, input)| {
+                pattern
+                    .arguments
+                    .get(index)
+                    .map_or(MatchPattern::Wildcard, |argument| {
+                        self.normalize_pattern(module_id, argument, *input, bindings)
+                    })
+            })
+            .collect();
+        MatchPattern::Constructor {
+            tag: MatchTag::EnumVariant(constructor),
+            fields,
+        }
+    }
+
+    fn instantiate_pattern_constructor(
+        &mut self,
+        constructor: SymbolId,
+        expected: TypeId,
+    ) -> Option<Vec<TypeId>> {
+        let contract = self.contracts.get(&constructor)?.clone();
+        let mut substitution = CallSubstitution::default();
+        if !self.match_call_type(expected, contract.success, &mut substitution) {
+            return None;
+        }
+        Some(
+            contract
+                .inputs
+                .iter()
+                .map(|input| self.substitute_call_type(*input, &mut substitution))
+                .collect(),
+        )
+    }
+
+    fn infer_case_guard(
+        &mut self,
+        module_id: ModuleId,
+        guard: &ModuleExpression,
+        generics: &HashMap<String, SymbolId>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> ExpressionFact {
+        let fact = self.infer_expression(module_id, guard, generics, bindings);
+        let range = expression_range(guard);
+        let boolean = self.builtin_type("Bool");
+        if !self.unify(fact.success, boolean) {
+            self.type_error_range(module_id, "T4234", range, "case guard must produce Bool");
+        } else if !self.failure_row_is_empty(fact.failures) || !self.needs_row_is_empty(fact.needs)
+        {
+            self.type_error_range(
+                module_id,
+                "T4234",
+                range,
+                "case guards must be pure and cannot expose failures or dependencies",
+            );
+        }
+        fact
+    }
+
+    fn pattern_row_is_useful(
+        &mut self,
+        matrix: &[Vec<MatchPattern>],
+        candidate: &[MatchPattern],
+        types: &[TypeId],
+    ) -> bool {
+        if candidate.is_empty() {
+            return matrix.is_empty();
+        }
+        let Some(first_type) = types.first().copied() else {
+            return true;
+        };
+        let tail_types = &types[1..];
+        match &candidate[0] {
+            MatchPattern::Constructor { tag, fields } => {
+                let field_types = self
+                    .pattern_constructor_field_types(tag, first_type)
+                    .unwrap_or_else(|| vec![TypeId::new(0); fields.len()]);
+                let specialized = specialize_pattern_matrix(matrix, tag, field_types.len());
+                let mut specialized_candidate = fields.clone();
+                specialized_candidate.extend_from_slice(&candidate[1..]);
+                let mut specialized_types = field_types;
+                specialized_types.extend_from_slice(tail_types);
+                self.pattern_row_is_useful(&specialized, &specialized_candidate, &specialized_types)
+            }
+            MatchPattern::Wildcard => {
+                if let Some(domain) = self.complete_pattern_domain(first_type) {
+                    let present = matrix
+                        .iter()
+                        .filter_map(|row| match row.first() {
+                            Some(MatchPattern::Constructor { tag, .. }) => Some(tag),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    if domain.iter().all(|(tag, _)| present.contains(&tag)) {
+                        return domain.into_iter().any(|(tag, field_types)| {
+                            let specialized =
+                                specialize_pattern_matrix(matrix, &tag, field_types.len());
+                            let mut specialized_candidate =
+                                vec![MatchPattern::Wildcard; field_types.len()];
+                            specialized_candidate.extend_from_slice(&candidate[1..]);
+                            let mut specialized_types = field_types;
+                            specialized_types.extend_from_slice(tail_types);
+                            self.pattern_row_is_useful(
+                                &specialized,
+                                &specialized_candidate,
+                                &specialized_types,
+                            )
+                        });
+                    }
+                }
+                let default = default_pattern_matrix(matrix);
+                self.pattern_row_is_useful(&default, &candidate[1..], tail_types)
+            }
+        }
+    }
+
+    fn pattern_constructor_field_types(
+        &mut self,
+        tag: &MatchTag,
+        expected: TypeId,
+    ) -> Option<Vec<TypeId>> {
+        match tag {
+            MatchTag::EnumVariant(constructor) => {
+                self.instantiate_pattern_constructor(*constructor, expected)
+            }
+            MatchTag::Boolean(_) | MatchTag::Integer(_) | MatchTag::Text(_) => Some(Vec::new()),
+        }
+    }
+
+    fn complete_pattern_domain(&mut self, type_id: TypeId) -> Option<Vec<(MatchTag, Vec<TypeId>)>> {
+        let type_id = self.resolve_inference_type(type_id);
+        let CanonicalType::Named { symbol, .. } = self.types[type_id.raw() as usize].clone() else {
+            return None;
+        };
+        let symbol_kind = self.resolved.symbol(symbol).kind;
+        if symbol_kind == ProjectSymbolKind::BuiltinType
+            && self.resolved.symbol(symbol).name == "Bool"
+        {
+            return Some(vec![
+                (MatchTag::Boolean(false), Vec::new()),
+                (MatchTag::Boolean(true), Vec::new()),
+            ]);
+        }
+        if symbol_kind != ProjectSymbolKind::Enum {
+            return None;
+        }
+        Some(
+            self.enum_variant_symbols(symbol)
+                .into_iter()
+                .filter_map(|variant| {
+                    self.instantiate_pattern_constructor(variant, type_id)
+                        .map(|fields| (MatchTag::EnumVariant(variant), fields))
+                })
+                .collect(),
+        )
     }
 
     fn infer_outcome_case(
@@ -1354,9 +1655,11 @@ impl ProjectTypeChecker {
     ) -> ExpressionFact {
         let mut arm_facts = Vec::new();
         let mut success = None;
-        let mut handled_variants = Vec::new();
+        let mut success_coverage = Vec::<Vec<MatchPattern>>::new();
+        let failure_type = self.failure_value_type(subject.failures);
+        let mut failure_coverage = Vec::<Vec<MatchPattern>>::new();
+        let mut fallback_handled_variants = Vec::new();
         let mut handles_unknown_row = false;
-        let mut saw_success = false;
         let mut saw_failure = false;
         for arm in arms {
             let Some(pattern) = arm.patterns.first() else {
@@ -1364,9 +1667,26 @@ impl ProjectTypeChecker {
             };
             let mut arm_bindings = bindings.clone();
             if self.pattern_is_builtin(module_id, pattern, "Success") {
-                saw_success = true;
                 if let Some(inner) = self.single_outcome_pattern_argument(module_id, pattern) {
-                    self.bind_value_pattern(module_id, inner, subject.success, &mut arm_bindings);
+                    let normalized = self.normalize_pattern(
+                        module_id,
+                        inner,
+                        subject.success,
+                        &mut arm_bindings,
+                    );
+                    let row = vec![normalized];
+                    let useful =
+                        self.pattern_row_is_useful(&success_coverage, &row, &[subject.success]);
+                    if !useful {
+                        self.type_error_range(
+                            module_id,
+                            "T4232",
+                            arm.range,
+                            "outcome case arm is unreachable",
+                        );
+                    } else if arm.guard.is_none() {
+                        success_coverage.push(row);
+                    }
                 }
             } else if self.pattern_is_builtin(module_id, pattern, "Failure") {
                 saw_failure = true;
@@ -1377,8 +1697,34 @@ impl ProjectTypeChecker {
                         subject.failures,
                         &mut arm_bindings,
                     );
-                    handled_variants.append(&mut variants);
-                    handles_unknown_row |= catches_unknown;
+                    if variants.is_empty() && !catches_unknown {
+                        // The owning diagnostic already explains why this pattern cannot
+                        // participate in failure-channel coverage.
+                    } else if let Some(failure_type) = failure_type {
+                        let normalized = self.normalize_pattern(
+                            module_id,
+                            inner,
+                            failure_type,
+                            &mut arm_bindings,
+                        );
+                        let row = vec![normalized];
+                        let useful =
+                            self.pattern_row_is_useful(&failure_coverage, &row, &[failure_type]);
+                        if !useful && (!variants.is_empty() || catches_unknown) {
+                            self.type_error_range(
+                                module_id,
+                                "T4232",
+                                arm.range,
+                                "outcome case arm is unreachable",
+                            );
+                        } else if arm.guard.is_none() && useful {
+                            handles_unknown_row |= catches_unknown;
+                            failure_coverage.push(row);
+                        }
+                    } else if arm.guard.is_none() {
+                        fallback_handled_variants.append(&mut variants);
+                        handles_unknown_row |= catches_unknown;
+                    }
                 }
             } else {
                 let pattern_range = pattern.name.as_ref().map_or(range, |name| name.range);
@@ -1390,7 +1736,7 @@ impl ProjectTypeChecker {
                 );
             }
             if let Some(guard) = &arm.guard {
-                arm_facts.push(self.infer_expression(
+                arm_facts.push(self.infer_case_guard(
                     module_id,
                     guard,
                     generics,
@@ -1405,12 +1751,13 @@ impl ProjectTypeChecker {
             }
             arm_facts.push(body);
         }
-        if !saw_success {
+        let missing_success = vec![MatchPattern::Wildcard];
+        if self.pattern_row_is_useful(&success_coverage, &missing_success, &[subject.success]) {
             self.type_error_range(
                 module_id,
                 "T4223",
                 range,
-                "outcome case does not handle Success",
+                "outcome case does not fully handle Success",
             );
         }
         if !saw_failure && !self.failure_row_is_empty(subject.failures) {
@@ -1420,6 +1767,24 @@ impl ProjectTypeChecker {
                 range,
                 "outcome case does not handle Failure",
             );
+        }
+        let mut handled_variants = fallback_handled_variants;
+        if let Some(failure_type) = failure_type {
+            let subject_variants = self.failure_rows[subject.failures.raw() as usize]
+                .variants
+                .clone();
+            for variant in subject_variants {
+                let field_count = self
+                    .instantiate_pattern_constructor(variant, failure_type)
+                    .map_or(0, |fields| fields.len());
+                let candidate = vec![MatchPattern::Constructor {
+                    tag: MatchTag::EnumVariant(variant),
+                    fields: vec![MatchPattern::Wildcard; field_count],
+                }];
+                if !self.pattern_row_is_useful(&failure_coverage, &candidate, &[failure_type]) {
+                    handled_variants.push(variant);
+                }
+            }
         }
         handled_variants.sort_unstable();
         handled_variants.dedup();
@@ -1523,6 +1888,22 @@ impl ProjectTypeChecker {
         expected: TypeId,
         bindings: &mut HashMap<SymbolId, ValueBinding>,
     ) {
+        if let Some(literal) = &pattern.literal {
+            let literal_type = self.builtin_type(match literal {
+                PatternLiteral::Integer(_) => "Int",
+                PatternLiteral::Text(_) => "Text",
+                PatternLiteral::Boolean(_) => "Bool",
+            });
+            if !self.unify(expected, literal_type) {
+                self.type_error_range(
+                    module_id,
+                    "T4222",
+                    pattern.range,
+                    "nested outcome pattern does not match its value type",
+                );
+            }
+            return;
+        }
         let Some(name) = &pattern.name else {
             return;
         };
@@ -1647,6 +2028,11 @@ impl ProjectTypeChecker {
     fn failure_row_is_empty(&self, failures: FailureRowId) -> bool {
         let row = &self.failure_rows[failures.raw() as usize];
         row.variants.is_empty() && row.parameters.is_empty()
+    }
+
+    fn needs_row_is_empty(&self, needs: NeedsRowId) -> bool {
+        let row = &self.needs_rows[needs.raw() as usize];
+        row.entries.is_empty() && row.parameters.is_empty()
     }
 
     fn enum_owner_for_variant(&self, variant: SymbolId) -> Option<SymbolId> {
@@ -3084,6 +3470,45 @@ impl ProjectTypeChecker {
             message,
         ));
     }
+}
+
+fn specialize_pattern_matrix(
+    matrix: &[Vec<MatchPattern>],
+    tag: &MatchTag,
+    field_count: usize,
+) -> Vec<Vec<MatchPattern>> {
+    matrix
+        .iter()
+        .filter_map(|row| {
+            let (head, tail) = row.split_first()?;
+            match head {
+                MatchPattern::Wildcard => {
+                    let mut specialized = vec![MatchPattern::Wildcard; field_count];
+                    specialized.extend_from_slice(tail);
+                    Some(specialized)
+                }
+                MatchPattern::Constructor {
+                    tag: row_tag,
+                    fields,
+                } if row_tag == tag => {
+                    let mut specialized = fields.clone();
+                    specialized.extend_from_slice(tail);
+                    Some(specialized)
+                }
+                MatchPattern::Constructor { .. } => None,
+            }
+        })
+        .collect()
+}
+
+fn default_pattern_matrix(matrix: &[Vec<MatchPattern>]) -> Vec<Vec<MatchPattern>> {
+    matrix
+        .iter()
+        .filter_map(|row| {
+            let (head, tail) = row.split_first()?;
+            matches!(head, MatchPattern::Wildcard).then(|| tail.to_vec())
+        })
+        .collect()
 }
 
 fn expression_range(expression: &ModuleExpression) -> TextRange {

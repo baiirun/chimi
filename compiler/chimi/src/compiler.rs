@@ -1454,6 +1454,13 @@ mod tests {
                 "    Failure(_error) -> Receipt(id: \"fallback\")\n",
                 "  }\n",
                 "}\n",
+                "fn guarded_recovery(mode: Int) -> Receipt {\n",
+                "  case operation(mode) {\n",
+                "    Success(receipt) -> receipt\n",
+                "    Failure(Declined(_reason)) if True -> Receipt(id: \"declined\")\n",
+                "    Failure(Offline) -> Receipt(id: \"offline\")\n",
+                "  }\n",
+                "}\n",
                 "fn remap(mode: Int) -> Receipt {\n",
                 "  case operation(mode) {\n",
                 "    Success(receipt) -> receipt\n",
@@ -1473,6 +1480,10 @@ mod tests {
                 "fn(Int) -> Receipt errors PaymentError.Offline",
             ),
             ("recover_all", "fn(Int) -> Receipt"),
+            (
+                "guarded_recovery",
+                "fn(Int) -> Receipt errors PaymentError.Declined",
+            ),
             ("remap", "fn(Int) -> Receipt errors CheckoutError"),
         ] {
             assert_eq!(
@@ -1512,6 +1523,13 @@ mod tests {
                 "    Failure(True) -> Receipt(id: \"invalid\")\n",
                 "  }\n",
                 "}\n",
+                "fn unreachable_outcome() -> Receipt {\n",
+                "  case operation() {\n",
+                "    Success(receipt) -> receipt\n",
+                "    Failure(_error) -> Receipt(id: \"fallback\")\n",
+                "    Failure(Declined(_reason)) -> Receipt(id: \"duplicate\")\n",
+                "  }\n",
+                "}\n",
                 "fn bad_failure() -> Int { Failure(1) }\n",
                 "fn bad_success() -> Int { Success() }\n",
                 "fn standalone() -> Int { Failure }\n",
@@ -1525,7 +1543,7 @@ mod tests {
                 .map(Diagnostic::code)
                 .collect::<Vec<_>>(),
             [
-                "T4222", "T4223", "T4224", "T4222", "T4220", "T4221", "T4221"
+                "T4222", "T4223", "T4224", "T4222", "T4232", "T4220", "T4221", "T4221"
             ]
         );
         for function in ["raw_case", "incomplete", "impossible", "invalid_pattern"] {
@@ -1535,6 +1553,140 @@ mod tests {
                 "invalid recovery unexpectedly consumed {function}'s failure"
             );
         }
+        assert!(
+            report
+                .diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.stage() == DiagnosticStage::Type)
+        );
+    }
+
+    #[test]
+    fn ordinary_case_analysis_covers_nested_and_multi_subject_spaces() {
+        let report = Compiler::type_project(vec![module(
+            "patterns/coverage",
+            "coverage.chimi",
+            concat!(
+                "enum State { Empty, Ready, Submitted(id: Text) }\n",
+                "enum Request { View, Transfer(amount: Int) }\n",
+                "enum OptionBool { Some(value: Bool), None }\n",
+                "fn state_label(state: State) -> Text {\n",
+                "  case state {\n",
+                "    Empty -> \"empty\"\n",
+                "    Ready -> \"ready\"\n",
+                "    Submitted(id) -> id\n",
+                "  }\n",
+                "}\n",
+                "fn boolean_label(value: Bool) -> Text {\n",
+                "  case value {\n",
+                "    True -> \"true\"\n",
+                "    False -> \"false\"\n",
+                "  }\n",
+                "}\n",
+                "fn nested(value: OptionBool) -> Text {\n",
+                "  case value {\n",
+                "    Some(True) -> \"true\"\n",
+                "    Some(False) -> \"false\"\n",
+                "    None -> \"none\"\n",
+                "  }\n",
+                "}\n",
+                "fn matrix(state: State, request: Request) -> Text {\n",
+                "  case state, request {\n",
+                "    Empty, _ -> \"empty\"\n",
+                "    Ready, View -> \"view\"\n",
+                "    Ready, Transfer(_amount) -> \"transfer\"\n",
+                "    Submitted(_id), _ -> \"submitted\"\n",
+                "  }\n",
+                "}\n",
+                "fn open_literal(value: Int) -> Text {\n",
+                "  case value {\n",
+                "    0 -> \"zero\"\n",
+                "    _ -> \"other\"\n",
+                "  }\n",
+                "}\n",
+                "fn pure_guard(value: Int) -> Text {\n",
+                "  case value {\n",
+                "    candidate if candidate > 0 -> \"positive\"\n",
+                "    _ -> \"other\"\n",
+                "  }\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+    }
+
+    #[test]
+    fn ordinary_case_diagnostics_bound_exhaustiveness_reachability_and_guards() {
+        let report = Compiler::type_project(vec![module(
+            "patterns/invalid",
+            "invalid_patterns.chimi",
+            concat!(
+                "enum State { Empty, Ready, Submitted(id: Text) }\n",
+                "enum GuardError { Unavailable }\n",
+                "interface Risk { check: fn(State) -> Bool }\n",
+                "fn fallible_guard() -> Bool { Failure(Unavailable()) }\n",
+                "fn incomplete(state: State) -> Text {\n",
+                "  case state {\n",
+                "    Empty -> \"empty\"\n",
+                "    Ready -> \"ready\"\n",
+                "  }\n",
+                "}\n",
+                "fn duplicate(state: State) -> Text {\n",
+                "  case state {\n",
+                "    Empty -> \"first\"\n",
+                "    Empty -> \"second\"\n",
+                "    _ -> \"other\"\n",
+                "  }\n",
+                "}\n",
+                "fn early_catch_all(state: State) -> Text {\n",
+                "  case state {\n",
+                "    _ -> \"all\"\n",
+                "    Ready -> \"ready\"\n",
+                "  }\n",
+                "}\n",
+                "fn guarded_only(state: State) -> Text {\n",
+                "  case state {\n",
+                "    candidate if True -> \"guarded\"\n",
+                "  }\n",
+                "}\n",
+                "fn wrong_guard(state: State) -> Text {\n",
+                "  case state {\n",
+                "    candidate if 1 -> \"wrong\"\n",
+                "    _ -> \"other\"\n",
+                "  }\n",
+                "}\n",
+                "fn observable_guard(state: State) -> Text needs { risk: Risk } {\n",
+                "  case state {\n",
+                "    candidate if risk.check(candidate) -> \"risk\"\n",
+                "    _ -> \"other\"\n",
+                "  }\n",
+                "}\n",
+                "fn failed_guard(state: State) -> Text {\n",
+                "  case state {\n",
+                "    candidate if fallible_guard() -> \"guarded\"\n",
+                "    _ -> \"other\"\n",
+                "  }\n",
+                "}\n",
+                "fn wrong_pattern(state: State) -> Text {\n",
+                "  case state {\n",
+                "    True -> \"wrong\"\n",
+                "    _ -> \"other\"\n",
+                "  }\n",
+                "}\n",
+            ),
+        )]);
+
+        assert_eq!(
+            report
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            [
+                "T4231", "T4232", "T4233", "T4232", "T4231", "T4234", "T4234", "T4234", "T4230"
+            ]
+        );
         assert!(
             report
                 .diagnostics()

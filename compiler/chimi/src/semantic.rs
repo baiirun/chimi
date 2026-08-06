@@ -496,8 +496,17 @@ pub(crate) enum RequirementTermUse {
 pub(crate) struct Pattern {
     pub(crate) semantic_id: SemanticId,
     pub(crate) name: Option<Name>,
+    pub(crate) literal: Option<PatternLiteral>,
     pub(crate) applied: bool,
     pub(crate) arguments: Vec<Pattern>,
+    pub(crate) range: TextRange,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum PatternLiteral {
+    Integer(i64),
+    Text(String),
+    Boolean(bool),
 }
 
 #[derive(Clone, Debug)]
@@ -639,6 +648,7 @@ pub(crate) struct ModuleCaseArm {
     pub(crate) patterns: Vec<Pattern>,
     pub(crate) guard: Option<ModuleExpression>,
     pub(crate) body: ModuleExpression,
+    pub(crate) range: TextRange,
 }
 
 #[derive(Debug)]
@@ -1281,6 +1291,7 @@ impl ProjectLowerer {
                     patterns,
                     guard,
                     body,
+                    range: significant_range(&arm),
                 }
             })
             .collect();
@@ -1299,14 +1310,29 @@ impl ProjectLowerer {
             .filter(|child| child.kind() == NodeKind::Pattern)
             .map(|child| self.lower_pattern(&child))
             .collect();
+        let literal = node.child_tokens().into_iter().find_map(|token| {
+            let literal = match token.kind() {
+                TokenKind::Integer => PatternLiteral::Integer(
+                    token.text().replace('_', "").parse().unwrap_or_default(),
+                ),
+                TokenKind::Text => PatternLiteral::Text(token.text().to_owned()),
+                TokenKind::True | TokenKind::False => {
+                    PatternLiteral::Boolean(token.kind() == TokenKind::True)
+                }
+                _ => return None,
+            };
+            Some(literal)
+        });
         Pattern {
             semantic_id: self.allocate_semantic_id(),
             name: direct_identifier(node),
+            literal,
             applied: node
                 .child_tokens()
                 .iter()
                 .any(|token| token.kind() == TokenKind::LeftParen),
             arguments,
+            range: significant_range(node),
         }
     }
 
