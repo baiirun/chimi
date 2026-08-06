@@ -101,3 +101,15 @@ The native runner emits JSON Lines. It validates lossless, range, parent, and
 syntax-identity invariants outside the timed samples. Its counting allocator
 reports requested allocation bytes, peak live bytes, and retained parse bytes
 separately; peak RSS remains explicitly unavailable rather than estimated.
+
+The same runner now measures the connected clean semantic pipeline plus no-op,
+local-edit, and high-fanout reanalysis. Run one semantic case independently
+without changing the accepted sampling contract with:
+
+```sh
+cargo bench --bench frontend --features frontend-benchmarks -- \
+  --semantics-only --semantic-case local --warmups 5 --samples 40
+```
+
+Accepted M7 results are recorded in
+`docs/performance/compiler-m7-baseline.md`.

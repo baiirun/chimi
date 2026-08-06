@@ -228,6 +228,8 @@ pub(crate) struct ResolvedProject {
     pub(crate) symbols: Vec<ProjectSymbol>,
     pub(crate) references: Vec<ProjectReference>,
     pub(crate) diagnostics: Vec<Diagnostic>,
+    symbols_by_origin: HashMap<(ModuleId, SemanticId), Vec<SymbolId>>,
+    references_by_origin: HashMap<(FileId, SemanticId, Namespace), ReferenceResolution>,
 }
 
 impl ResolvedProject {
@@ -236,6 +238,46 @@ impl ResolvedProject {
             .get(id.raw() as usize)
             .filter(|symbol| symbol.id == id)
             .expect("project symbol ID belongs to this immutable snapshot")
+    }
+
+    pub(crate) fn source_symbol(
+        &self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        kind: ProjectSymbolKind,
+        name: &str,
+    ) -> Option<SymbolId> {
+        self.source_symbols(module_id, semantic_id)
+            .iter()
+            .copied()
+            .find(|symbol| {
+                let symbol = self.symbol(*symbol);
+                symbol.kind == kind && symbol.name == name
+            })
+    }
+
+    pub(crate) fn source_symbols(
+        &self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+    ) -> &[SymbolId] {
+        self.symbols_by_origin
+            .get(&(module_id, semantic_id))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn reference_resolution(
+        &self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        namespace: Namespace,
+    ) -> Option<ReferenceResolution> {
+        let file_id = self.semantic.modules[module_id.raw() as usize]
+            .source
+            .file_id();
+        self.references_by_origin
+            .get(&(file_id, semantic_id, namespace))
+            .copied()
     }
 }
 
@@ -285,12 +327,35 @@ pub(crate) fn resolve_project(semantic: SemanticProject) -> ResolvedProject {
     resolver
         .diagnostics
         .sort_by_key(|diagnostic| (diagnostic.file_id().raw(), diagnostic.range().start()));
+    let mut symbols_by_origin: HashMap<(ModuleId, SemanticId), Vec<SymbolId>> = HashMap::new();
+    for symbol in &resolver.symbols {
+        if let (Some(module_id), Some(semantic_id)) = (symbol.module_id, symbol.semantic_id) {
+            symbols_by_origin
+                .entry((module_id, semantic_id))
+                .or_default()
+                .push(symbol.id);
+        }
+    }
+    let mut references_by_origin = HashMap::new();
+    for reference in &resolver.references {
+        let prior = references_by_origin.insert(
+            (
+                reference.file_id,
+                reference.semantic_id,
+                reference.namespace,
+            ),
+            reference.resolution,
+        );
+        debug_assert!(prior.is_none(), "one semantic name owns one resolution");
+    }
     ResolvedProject {
         semantic,
         dependency_order,
         symbols: resolver.symbols,
         references: resolver.references,
         diagnostics: resolver.diagnostics,
+        symbols_by_origin,
+        references_by_origin,
     }
 }
 

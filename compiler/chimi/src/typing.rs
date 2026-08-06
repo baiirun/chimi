@@ -9,7 +9,7 @@ use crate::semantic::{
     ModuleDeclarationKind, ModuleExpression, Pattern, PatternLiteral, RequirementRowUse,
     RequirementTermUse, TypeUse, UnaryOperator,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -193,6 +193,15 @@ pub(crate) struct TypedProject {
 
 pub(crate) fn check_project(resolved: ResolvedProject) -> TypedProject {
     ProjectTypeChecker::new(resolved).check()
+}
+
+pub(crate) fn check_project_incremental(
+    resolved: ResolvedProject,
+    previous: &TypedProject,
+    affected_modules: &HashSet<ModuleId>,
+) -> TypedProject {
+    ProjectTypeChecker::from_previous(resolved, previous, affected_modules)
+        .check_modules(affected_modules, affected_modules)
 }
 
 impl TypedProject {
@@ -593,9 +602,138 @@ impl ProjectTypeChecker {
         checker
     }
 
-    fn check(mut self) -> TypedProject {
+    fn from_previous(
+        resolved: ResolvedProject,
+        previous: &TypedProject,
+        affected_modules: &HashSet<ModuleId>,
+    ) -> Self {
+        let resolved = Arc::new(resolved);
+        let affected_files = affected_modules
+            .iter()
+            .map(|module_id| {
+                resolved.semantic.modules[module_id.raw() as usize]
+                    .source
+                    .file_id()
+            })
+            .collect::<HashSet<_>>();
+        let affected_symbols = previous
+            .resolved
+            .symbols
+            .iter()
+            .filter(|symbol| {
+                symbol
+                    .module_id
+                    .is_some_and(|id| affected_modules.contains(&id))
+            })
+            .map(|symbol| symbol.id)
+            .collect::<HashSet<_>>();
+        let types = previous.types.clone();
+        let failure_rows = previous.failure_rows.clone();
+        let needs_rows = previous.needs_rows.clone();
+        let next_inference_variable = types
+            .iter()
+            .filter_map(|value| match value {
+                CanonicalType::InferenceVariable(variable) => Some(*variable),
+                _ => None,
+            })
+            .chain(previous.inference_bindings.keys().copied())
+            .max()
+            .map_or(0, |variable| variable + 1);
+        Self {
+            resolved: resolved.clone(),
+            type_intern: types
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, value)| (value, TypeId::new(index as u32)))
+                .collect(),
+            types,
+            failure_row_intern: failure_rows
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, value)| (value, FailureRowId::new(index as u32)))
+                .collect(),
+            failure_rows,
+            needs_row_intern: needs_rows
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, value)| (value, NeedsRowId::new(index as u32)))
+                .collect(),
+            needs_rows,
+            contracts: previous
+                .contracts
+                .iter()
+                .filter(|(symbol, _)| !affected_symbols.contains(symbol))
+                .map(|(symbol, contract)| (*symbol, contract.clone()))
+                .collect(),
+            declaration_types: previous
+                .declaration_types
+                .iter()
+                .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
+                .map(|(key, value)| (*key, *value))
+                .collect(),
+            type_facts: previous
+                .type_facts
+                .iter()
+                .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
+                .map(|(key, value)| (*key, *value))
+                .collect(),
+            expression_facts: previous
+                .expression_facts
+                .iter()
+                .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
+                .map(|(key, value)| (*key, *value))
+                .collect(),
+            fields: previous
+                .fields
+                .iter()
+                .filter(|(symbol, _)| !affected_symbols.contains(symbol))
+                .map(|(symbol, fields)| (*symbol, fields.clone()))
+                .collect(),
+            generic_kinds: previous
+                .generic_kinds
+                .iter()
+                .filter(|(symbol, _)| !affected_symbols.contains(symbol))
+                .map(|(symbol, kind)| (*symbol, *kind))
+                .collect(),
+            diagnostics: resolved
+                .diagnostics
+                .iter()
+                .cloned()
+                .chain(
+                    previous
+                        .diagnostics
+                        .iter()
+                        .filter(|diagnostic| {
+                            diagnostic.stage() == DiagnosticStage::Type
+                                && !affected_files.contains(&diagnostic.file_id())
+                        })
+                        .cloned(),
+                )
+                .collect(),
+            next_inference_variable,
+            inference_bindings: previous.inference_bindings.clone(),
+        }
+    }
+
+    fn check(self) -> TypedProject {
         let order = self.resolved.dependency_order.clone();
-        for module_id in &order {
+        let modules = order.iter().copied().collect::<HashSet<_>>();
+        self.check_modules(&modules, &modules)
+    }
+
+    fn check_modules(
+        mut self,
+        declaration_modules: &HashSet<ModuleId>,
+        body_modules: &HashSet<ModuleId>,
+    ) -> TypedProject {
+        let order = self.resolved.dependency_order.clone();
+        for module_id in order
+            .iter()
+            .filter(|module_id| declaration_modules.contains(module_id))
+        {
             let declarations = self.resolved.semantic.modules[module_id.raw() as usize]
                 .declarations
                 .clone();
@@ -603,16 +741,20 @@ impl ProjectTypeChecker {
                 self.check_declaration(*module_id, &declaration);
             }
         }
-        let declaration_count = self
-            .resolved
-            .semantic
-            .modules
+        let declaration_count = body_modules
             .iter()
-            .map(|module| module.declarations.len())
+            .map(|module_id| {
+                self.resolved.semantic.modules[module_id.raw() as usize]
+                    .declarations
+                    .len()
+            })
             .sum::<usize>();
         for pass in 0..=declaration_count {
             let mut changed = false;
-            for module_id in &order {
+            for module_id in order
+                .iter()
+                .filter(|module_id| body_modules.contains(module_id))
+            {
                 let declarations = self.resolved.semantic.modules[module_id.raw() as usize]
                     .declarations
                     .clone();
@@ -643,6 +785,12 @@ impl ProjectTypeChecker {
             inference_bindings: self.inference_bindings,
         };
         typed.validate_closed_roots();
+        typed.diagnostics.sort_by_key(|diagnostic| {
+            (
+                diagnostic_phase_order(diagnostic.stage()),
+                diagnostic.file_id().raw(),
+            )
+        });
         typed
     }
 
@@ -2061,14 +2209,8 @@ impl ProjectTypeChecker {
 
     fn resolved_pattern_symbol(&self, module_id: ModuleId, pattern: &Pattern) -> Option<SymbolId> {
         self.resolved
-            .references
-            .iter()
-            .find(|reference| {
-                reference.file_id.raw() == module_id.raw()
-                    && reference.semantic_id == pattern.semantic_id
-                    && reference.namespace == Namespace::Value
-            })
-            .and_then(|reference| match reference.resolution {
+            .reference_resolution(module_id, pattern.semantic_id, Namespace::Value)
+            .and_then(|resolution| match resolution {
                 ReferenceResolution::Resolved(symbol) => Some(symbol),
                 ReferenceResolution::Unresolved
                 | ReferenceResolution::Ambiguous
@@ -2685,14 +2827,8 @@ impl ProjectTypeChecker {
         semantic_id: SemanticId,
     ) -> Option<SymbolId> {
         self.resolved
-            .references
-            .iter()
-            .find(|reference| {
-                reference.file_id.raw() == module_id.raw()
-                    && reference.semantic_id == semantic_id
-                    && reference.namespace == Namespace::Value
-            })
-            .and_then(|reference| match reference.resolution {
+            .reference_resolution(module_id, semantic_id, Namespace::Value)
+            .and_then(|resolution| match resolution {
                 ReferenceResolution::Resolved(symbol) => Some(symbol),
                 ReferenceResolution::Unresolved
                 | ReferenceResolution::Ambiguous
@@ -2996,14 +3132,17 @@ impl ProjectTypeChecker {
         };
         let mut parameters = self
             .resolved
-            .symbols
+            .source_symbols(
+                symbol
+                    .module_id
+                    .expect("source callable belongs to a module"),
+                declaration_semantic_id.expect("source callable has a declaration identity"),
+            )
             .iter()
+            .copied()
             .filter(|candidate| {
-                candidate.module_id == symbol.module_id
-                    && candidate.semantic_id == declaration_semantic_id
-                    && candidate.kind == ProjectSymbolKind::GenericParameter
+                self.resolved.symbol(*candidate).kind == ProjectSymbolKind::GenericParameter
             })
-            .map(|candidate| candidate.id)
             .collect::<Vec<_>>();
         parameters.sort_unstable();
         parameters
@@ -3635,16 +3774,9 @@ impl ProjectTypeChecker {
         kind: ProjectSymbolKind,
         name: &str,
     ) -> Option<SymbolId> {
+        let semantic_id = semantic_id?;
         self.resolved
-            .symbols
-            .iter()
-            .find(|symbol| {
-                symbol.module_id == Some(module_id)
-                    && symbol.semantic_id == semantic_id
-                    && symbol.kind == kind
-                    && symbol.name == name
-            })
-            .map(|symbol| symbol.id)
+            .source_symbol(module_id, semantic_id, kind, name)
     }
 
     fn resolved_type_symbol(
@@ -3653,14 +3785,8 @@ impl ProjectTypeChecker {
         semantic_id: SemanticId,
     ) -> Option<SymbolId> {
         self.resolved
-            .references
-            .iter()
-            .find(|reference| {
-                reference.file_id.raw() == module_id.raw()
-                    && reference.semantic_id == semantic_id
-                    && reference.namespace == Namespace::Type
-            })
-            .and_then(|reference| match reference.resolution {
+            .reference_resolution(module_id, semantic_id, Namespace::Type)
+            .and_then(|resolution| match resolution {
                 ReferenceResolution::Resolved(symbol) => Some(symbol),
                 ReferenceResolution::Unresolved
                 | ReferenceResolution::Ambiguous
@@ -3748,6 +3874,14 @@ impl ProjectTypeChecker {
             range,
             message,
         ));
+    }
+}
+
+const fn diagnostic_phase_order(stage: DiagnosticStage) -> u8 {
+    match stage {
+        DiagnosticStage::Syntax | DiagnosticStage::Lowering | DiagnosticStage::Name => 0,
+        DiagnosticStage::Type => 1,
+        DiagnosticStage::ExecutionSetup => 2,
     }
 }
 

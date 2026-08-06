@@ -1,5 +1,6 @@
 use chimi::frontend_benchmark::{self, ParsedFrontend};
 use chimi::source::SourceSnapshot;
+use chimi::{Compiler, CompilerSession, IncrementalStatistics, ProjectSource, TypeArenaStats};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::process::Command;
@@ -100,6 +101,15 @@ struct Workload {
     target_ns_p95: Option<u64>,
 }
 
+struct Arguments {
+    warmups: usize,
+    samples: usize,
+    semantics_only: bool,
+    semantic_files: usize,
+    semantic_declarations: usize,
+    semantic_case: String,
+}
+
 struct ResultRow {
     id: &'static str,
     source_bytes: usize,
@@ -115,9 +125,36 @@ struct ResultRow {
 }
 
 fn main() {
-    let (warmups, samples) = arguments();
-    print_environment(warmups, samples);
+    let arguments = arguments();
+    print_environment(arguments.warmups, arguments.samples);
 
+    if !arguments.semantics_only {
+        run_syntax_benchmarks(arguments.warmups, arguments.samples);
+    }
+    if matches!(arguments.semantic_case.as_str(), "all" | "clean") {
+        let semantic = run_semantic_workload(
+            arguments.warmups,
+            arguments.samples,
+            arguments.semantic_files,
+            arguments.semantic_declarations,
+        );
+        print_semantic_result(&semantic);
+    }
+    if arguments.semantic_case != "clean" {
+        let incremental = run_incremental_workloads(
+            arguments.warmups,
+            arguments.samples,
+            arguments.semantic_files,
+            arguments.semantic_declarations,
+            &arguments.semantic_case,
+        );
+        for result in incremental {
+            print_incremental_result(&result);
+        }
+    }
+}
+
+fn run_syntax_benchmarks(warmups: usize, samples: usize) {
     let valid_500 = generate_module(0, 500);
     let workloads = [
         Workload {
@@ -168,24 +205,59 @@ fn main() {
     print_gate_summary(&results);
 }
 
-fn arguments() -> (usize, usize) {
-    let mut warmups = 5;
-    let mut samples = 40;
+fn arguments() -> Arguments {
+    let mut parsed = Arguments {
+        warmups: 5,
+        samples: 40,
+        semantics_only: false,
+        semantic_files: 256,
+        semantic_declarations: 20,
+        semantic_case: "all".to_owned(),
+    };
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--bench" => {}
             "--warmups" => {
-                warmups = parse_count("--warmups", arguments.next());
+                parsed.warmups = parse_count("--warmups", arguments.next());
             }
             "--samples" => {
-                samples = parse_count("--samples", arguments.next());
+                parsed.samples = parse_count("--samples", arguments.next());
+            }
+            "--semantics-only" => parsed.semantics_only = true,
+            "--semantic-files" => {
+                parsed.semantic_files = parse_count("--semantic-files", arguments.next());
+            }
+            "--semantic-declarations" => {
+                parsed.semantic_declarations =
+                    parse_count("--semantic-declarations", arguments.next());
+            }
+            "--semantic-case" => {
+                parsed.semantic_case = arguments
+                    .next()
+                    .filter(|value| {
+                        matches!(
+                            value.as_str(),
+                            "all" | "clean" | "no-op" | "local" | "fanout"
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("--semantic-case requires all, clean, no-op, local, or fanout")
+                    });
             }
             _ => panic!("unknown argument: {argument}"),
         }
     }
-    assert!(samples >= 2, "--samples must be at least 2");
-    (warmups, samples)
+    assert!(parsed.samples >= 2, "--samples must be at least 2");
+    assert!(
+        parsed.semantic_files > 0,
+        "--semantic-files must be positive"
+    );
+    assert!(
+        parsed.semantic_declarations > 0,
+        "--semantic-declarations must be positive"
+    );
+    parsed
 }
 
 fn parse_count(name: &str, value: Option<String>) -> usize {
@@ -245,6 +317,200 @@ struct StorageResult {
     tokens: usize,
 }
 
+struct SemanticResult {
+    files: usize,
+    source_bytes: usize,
+    samples: usize,
+    resolution_p50: Duration,
+    resolution_p95: Duration,
+    p50: Duration,
+    p95: Duration,
+    memory: Measurement,
+    statistics: TypeArenaStats,
+}
+
+struct IncrementalResult {
+    id: &'static str,
+    files: usize,
+    source_bytes: usize,
+    samples: usize,
+    p50: Duration,
+    p95: Duration,
+    clean_p95: Duration,
+    target_ns_p95: Option<u64>,
+    memory: Measurement,
+    statistics: IncrementalStatistics,
+    diagnostics: usize,
+}
+
+fn run_semantic_workload(
+    warmups: usize,
+    samples: usize,
+    files: usize,
+    declarations: usize,
+) -> SemanticResult {
+    let (sources, source_bytes) = generate_semantic_project(files, declarations, None);
+    for _ in 0..warmups {
+        let report = Compiler::resolve_project(black_box(sources.clone()));
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        black_box(report);
+    }
+    let mut resolution_durations = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let start = Instant::now();
+        let report = Compiler::resolve_project(black_box(sources.clone()));
+        resolution_durations.push(start.elapsed());
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        black_box(report);
+    }
+    resolution_durations.sort_unstable();
+
+    for _ in 0..warmups {
+        let report = Compiler::type_project(black_box(sources.clone()));
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        black_box(report);
+    }
+
+    let mut durations = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let start = Instant::now();
+        let report = Compiler::type_project(black_box(sources.clone()));
+        durations.push(start.elapsed());
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        black_box(report);
+    }
+    durations.sort_unstable();
+
+    let (report, memory) = measure_memory(|| Compiler::type_project(sources.clone()));
+    assert!(report.is_success(), "{}", report.render_diagnostics());
+    let statistics = report.arena_stats();
+    drop(report);
+    SemanticResult {
+        files: sources.len(),
+        source_bytes,
+        samples,
+        resolution_p50: percentile(&resolution_durations, 50),
+        resolution_p95: percentile(&resolution_durations, 95),
+        p50: percentile(&durations, 50),
+        p95: percentile(&durations, 95),
+        memory,
+        statistics,
+    }
+}
+
+fn run_incremental_workloads(
+    warmups: usize,
+    samples: usize,
+    files: usize,
+    declarations: usize,
+    semantic_case: &str,
+) -> Vec<IncrementalResult> {
+    let (before, source_bytes) = generate_semantic_project(files, declarations, None);
+    let (after, after_bytes) = generate_semantic_project(files, declarations, Some(files - 1));
+    assert_eq!(source_bytes, after_bytes);
+    let (fanout_before, _) = generate_fanout_project(files, declarations, false);
+    let (fanout_after, fanout_bytes) = generate_fanout_project(files, declarations, true);
+    let mut results = Vec::new();
+    if matches!(semantic_case, "all" | "no-op") {
+        results.push(run_incremental_workload(
+            "semantics.no-op-reanalysis",
+            &before,
+            &before,
+            source_bytes,
+            warmups,
+            samples,
+            Some(100_000_000),
+        ));
+    }
+    if matches!(semantic_case, "all" | "local") {
+        results.push(run_incremental_workload(
+            "semantics.local-edit",
+            &before,
+            &after,
+            source_bytes,
+            warmups,
+            samples,
+            Some(100_000_000),
+        ));
+    }
+    if matches!(semantic_case, "all" | "fanout") {
+        results.push(run_incremental_workload(
+            "semantics.fanout-edit",
+            &fanout_before,
+            &fanout_after,
+            fanout_bytes,
+            warmups,
+            samples,
+            None,
+        ));
+    }
+    results
+}
+
+fn run_incremental_workload(
+    id: &'static str,
+    before: &[ProjectSource],
+    after: &[ProjectSource],
+    source_bytes: usize,
+    warmups: usize,
+    samples: usize,
+    target_ns_p95: Option<u64>,
+) -> IncrementalResult {
+    let baseline = Compiler::type_project(before.to_vec());
+    assert!(baseline.is_success(), "{}", baseline.render_diagnostics());
+    let clean = Compiler::type_project(after.to_vec());
+    for _ in 0..warmups {
+        black_box(Compiler::type_project(black_box(after.to_vec())));
+    }
+    let mut clean_durations = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let start = Instant::now();
+        black_box(Compiler::type_project(black_box(after.to_vec())));
+        clean_durations.push(start.elapsed());
+    }
+    clean_durations.sort_unstable();
+    for _ in 0..warmups {
+        let mut session = CompilerSession::new();
+        drop(session.analyze_project(before.to_vec()));
+        let report = session.analyze_project(after.to_vec());
+        assert_eq!(report.diagnostics(), clean.diagnostics());
+        black_box(report);
+    }
+
+    let mut durations = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let mut session = CompilerSession::new();
+        drop(session.analyze_project(before.to_vec()));
+        let start = Instant::now();
+        let report = session.analyze_project(after.to_vec());
+        durations.push(start.elapsed());
+        assert_eq!(report.diagnostics(), clean.diagnostics());
+        black_box(report);
+    }
+    durations.sort_unstable();
+
+    let mut session = CompilerSession::new();
+    drop(session.analyze_project(before.to_vec()));
+    let (report, memory) = measure_memory(|| session.analyze_project(after.to_vec()));
+    assert_eq!(report.diagnostics(), clean.diagnostics());
+    assert_eq!(report.arena_stats(), clean.arena_stats());
+    let statistics = report.statistics();
+    drop(report);
+    IncrementalResult {
+        id,
+        files: after.len(),
+        source_bytes,
+        samples,
+        p50: percentile(&durations, 50),
+        p95: percentile(&durations, 95),
+        clean_p95: percentile(&clean_durations, 95),
+        target_ns_p95,
+        memory,
+        statistics,
+        diagnostics: clean.diagnostics().len(),
+    }
+}
+
 fn run_storage_workload() -> StorageResult {
     let snapshots = (0..64)
         .map(|index| {
@@ -288,6 +554,58 @@ fn generate_module(module: usize, declarations: usize) -> String {
         ));
     }
     source
+}
+
+fn generate_semantic_project(
+    files: usize,
+    declarations: usize,
+    edited_module: Option<usize>,
+) -> (Vec<ProjectSource>, usize) {
+    let mut source_bytes = 0;
+    let sources = (0..files)
+        .map(|module| {
+            let module_path = format!("generated/module_{module:04}");
+            let mut text = generate_module(module, declarations);
+            if edited_module == Some(module) {
+                let offset =
+                    text.find("value + 1").expect("generated function body") + "value + ".len();
+                text.replace_range(offset..offset + 1, "2");
+            }
+            source_bytes += text.len();
+            let source = SourceSnapshot::from_text(format!("{module_path}.chimi"), text);
+            ProjectSource::new(module_path, source).expect("generated module path is valid")
+        })
+        .collect();
+    (sources, source_bytes)
+}
+
+fn generate_fanout_project(
+    files: usize,
+    declarations: usize,
+    changed_contract: bool,
+) -> (Vec<ProjectSource>, usize) {
+    let mut source_bytes = 0;
+    let sources = (0..files)
+        .map(|module| {
+            let module_path = format!("generated/module_{module:04}");
+            let mut text = generate_module(module, declarations);
+            if module == 0 {
+                let input = if changed_contract { "Text" } else { "Int" };
+                text.push_str(&format!(
+                    "pub fn shared(value: {input}) -> Int {{\n  1\n}}\n"
+                ));
+            } else {
+                text.insert_str(0, "import generated/module_0000 as shared\n\n");
+                text.push_str(&format!(
+                    "pub fn use_shared_{module:04}(value: Int) -> Int {{\n  shared.shared(value)\n}}\n"
+                ));
+            }
+            source_bytes += text.len();
+            let source = SourceSnapshot::from_text(format!("{module_path}.chimi"), text);
+            ProjectSource::new(module_path, source).expect("generated module path is valid")
+        })
+        .collect();
+    (sources, source_bytes)
 }
 
 fn remove_record_colon(source: &str, middle: bool) -> String {
@@ -372,6 +690,61 @@ fn print_storage_result(result: &StorageResult) {
         result.memory.retained_bytes as f64 / result.source_bytes as f64,
         result.nodes,
         result.tokens,
+    );
+}
+
+fn print_semantic_result(result: &SemanticResult) {
+    println!(
+        "{{\"type\":\"workload\",\"id\":\"semantics.clean-project\",\"files\":{},\"source_bytes\":{},\"samples\":{},\"resolution_p50_ns\":{},\"resolution_p95_ns\":{},\"p50_ns\":{},\"p95_ns\":{},\"target_p95_ns\":null,\"allocated_bytes\":{},\"peak_live_bytes\":{},\"peak_rss_bytes\":null,\"retained_analysis_bytes\":{},\"types\":{},\"failure_rows\":{},\"needs_rows\":{},\"callable_contracts\":{},\"type_facts\":{},\"expression_facts\":{},\"declaration_types\":{},\"field_shapes\":{},\"invariants\":true}}",
+        result.files,
+        result.source_bytes,
+        result.samples,
+        result.resolution_p50.as_nanos(),
+        result.resolution_p95.as_nanos(),
+        result.p50.as_nanos(),
+        result.p95.as_nanos(),
+        result.memory.allocated_bytes,
+        result.memory.peak_live_bytes,
+        result.memory.retained_bytes,
+        result.statistics.types,
+        result.statistics.failure_rows,
+        result.statistics.needs_rows,
+        result.statistics.callable_contracts,
+        result.statistics.type_facts,
+        result.statistics.expression_facts,
+        result.statistics.declaration_types,
+        result.statistics.field_shapes,
+    );
+}
+
+fn print_incremental_result(result: &IncrementalResult) {
+    let target = result
+        .target_ns_p95
+        .map_or("null".to_owned(), |target| target.to_string());
+    println!(
+        "{{\"type\":\"workload\",\"id\":\"{}\",\"files\":{},\"source_bytes\":{},\"samples\":{},\"p50_ns\":{},\"p95_ns\":{},\"clean_p95_ns\":{},\"target_p95_ns\":{},\"allocated_bytes\":{},\"peak_live_bytes\":{},\"peak_rss_bytes\":null,\"retained_incremental_bytes\":{},\"reused_parsed_modules\":{},\"parsed_modules\":{},\"reused_semantic_modules\":{},\"lowered_modules\":{},\"invalidated_modules\":{},\"invalidated_bytes\":{},\"rechecked_modules\":{},\"reused_type_facts\":{},\"invalidated_type_facts\":{},\"diagnostics\":{},\"bounded_by_clean\":{},\"equivalent_to_clean\":true}}",
+        result.id,
+        result.files,
+        result.source_bytes,
+        result.samples,
+        result.p50.as_nanos(),
+        result.p95.as_nanos(),
+        result.clean_p95.as_nanos(),
+        target,
+        result.memory.allocated_bytes,
+        result.memory.peak_live_bytes,
+        result.memory.retained_bytes,
+        result.statistics.reused_parsed_modules,
+        result.statistics.parsed_modules,
+        result.statistics.reused_semantic_modules,
+        result.statistics.lowered_modules,
+        result.statistics.invalidated_modules,
+        result.statistics.invalidated_bytes,
+        result.statistics.rechecked_modules,
+        result.statistics.reused_type_facts,
+        result.statistics.invalidated_type_facts,
+        result.diagnostics,
+        result.p95 <= result.clean_p95,
     );
 }
 

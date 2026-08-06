@@ -2,7 +2,7 @@ use crate::compiler::{ProjectPathError, ProjectSource};
 use crate::diagnostic::Diagnostic;
 use crate::ids::{FileId, TextRange};
 use crate::json::write_json_string;
-use crate::semantic::{self, ImportBinding, ModuleSource};
+use crate::semantic::{self, ImportBinding};
 use crate::source::SourceSnapshot;
 use std::collections::HashMap;
 use std::fmt::{self, Write};
@@ -320,7 +320,9 @@ impl Loader {
                 path: path.clone(),
                 source,
             })?;
-        let imports = imports(module_path, source.clone());
+        let module = ProjectSource::parsed(module_path, source)
+            .expect("loaded module paths were validated before filesystem access");
+        let imports = imports(&module);
 
         self.states
             .insert(module_path.to_owned(), LoadState::Loading);
@@ -332,29 +334,22 @@ impl Loader {
         debug_assert_eq!(popped.as_deref(), Some(module_path));
         self.states
             .insert(module_path.to_owned(), LoadState::Loaded);
-        self.modules.push(
-            ProjectSource::new(module_path, source)
-                .expect("loaded module paths were validated before filesystem access"),
-        );
+        self.modules.push(module);
         Ok(())
     }
 }
 
-fn imports(module_path: &str, source: SourceSnapshot) -> Vec<String> {
-    let mut project = semantic::lower_project(vec![ModuleSource {
-        path: module_path.to_owned(),
-        source,
-    }]);
-    project
-        .modules
-        .pop()
-        .expect("one source lowers to one semantic module")
-        .imports
-        .into_iter()
-        .filter(|import| !matches!(import.binding, ImportBinding::Missing))
-        .map(|import| import.path)
-        .filter(|path| ProjectSource::is_valid_path(path))
-        .collect()
+fn imports(module: &ProjectSource) -> Vec<String> {
+    semantic::discover_imports(
+        module
+            .syntax()
+            .expect("filesystem modules are parsed before import discovery"),
+    )
+    .into_iter()
+    .filter(|import| !matches!(import.binding, ImportBinding::Missing))
+    .map(|import| import.path)
+    .filter(|path| ProjectSource::is_valid_path(path))
+    .collect()
 }
 
 fn validate_module_path(module_path: String) -> Result<(), ProjectLoadError> {

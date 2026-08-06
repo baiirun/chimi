@@ -317,6 +317,19 @@ diagnostics. `chimi inspect` exposes the versioned `chimi.inspection.v1`
 document; offsets and ranges are zero-based UTF-8 bytes, split code-point
 offsets are rejected, and displayed lines and byte columns are one-based.
 
+M7 profiles the connected clean pipeline before adding reuse. Semantic-origin
+indexes remove project-wide symbol and reference scans. `CompilerSession`
+centralizes source, CST, semantic-module, and typed snapshots: no-op analysis
+reuses the complete typed result, changed modules reparse and relower once, and
+typing invalidates the reverse-import closure while retaining facts elsewhere.
+Filesystem project loading passes its import-discovery parse into the compiler
+instead of parsing each module twice. Symbol-shape or module-set changes fall
+back to a clean check because dense identities may shift. The accepted
+256-module baseline records 34.53 ms p95 for an isolated edit and 79.88 ms p95
+for a complete fanout closure, with clean-result equivalence and explicit
+allocation, retained-memory, reuse, and invalidation counters. Peak RSS and
+cold process startup remain future out-of-process measurements.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the

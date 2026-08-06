@@ -7,13 +7,18 @@ use crate::inspection::{InspectionError, InspectionReport, inspect};
 use crate::resolution::{ReferenceResolution, ResolvedProject, resolve, resolve_project};
 use crate::semantic;
 use crate::source::SourceSnapshot;
+use crate::syntax::ParseResult;
 use crate::typing::{GenericKind, TypedProject, check, check_project};
 use std::sync::Arc;
+
+mod session;
+pub use session::{CompilerSession, IncrementalStatistics, IncrementalTypeReport};
 
 #[derive(Clone, Debug)]
 pub struct ProjectSource {
     module_path: String,
     source: SourceSnapshot,
+    syntax: Option<Arc<ParseResult>>,
 }
 
 impl ProjectSource {
@@ -28,7 +33,17 @@ impl ProjectSource {
         Ok(Self {
             module_path,
             source,
+            syntax: None,
         })
+    }
+
+    pub(crate) fn parsed(
+        module_path: impl Into<String>,
+        source: SourceSnapshot,
+    ) -> Result<Self, ProjectPathError> {
+        let mut source = Self::new(module_path, source)?;
+        source.syntax = Some(Arc::new(crate::syntax::parse(&source.source)));
+        Ok(source)
     }
 
     pub fn module_path(&self) -> &str {
@@ -37,6 +52,10 @@ impl ProjectSource {
 
     pub(crate) fn source(&self) -> &SourceSnapshot {
         &self.source
+    }
+
+    pub(crate) fn syntax(&self) -> Option<&Arc<ParseResult>> {
+        self.syntax.as_ref()
     }
 
     pub(crate) fn is_valid_path(module_path: &str) -> bool {
@@ -190,7 +209,7 @@ pub struct TypeArenaStats {
 
 #[derive(Debug)]
 pub struct TypeReport {
-    typed: TypedProject,
+    typed: Arc<TypedProject>,
 }
 
 impl TypeReport {
@@ -434,7 +453,7 @@ impl Compiler {
 
     pub fn type_project(sources: Vec<ProjectSource>) -> TypeReport {
         TypeReport {
-            typed: check_project(resolve_project_sources(sources)),
+            typed: Arc::new(check_project(resolve_project_sources(sources))),
         }
     }
 
@@ -512,6 +531,7 @@ fn resolve_project_sources(sources: Vec<ProjectSource>) -> ResolvedProject {
             .map(|source| semantic::ModuleSource {
                 path: source.module_path,
                 source: source.source,
+                syntax: source.syntax,
             })
             .collect(),
     );
@@ -536,6 +556,7 @@ mod tests {
         TraceMode,
     };
     use crate::source::SourceSnapshot;
+    use std::sync::Arc;
 
     const VALID: &str = "struct Answer { value: Int } pub fn main() { Answer(value: 42) }";
 
@@ -1950,7 +1971,10 @@ mod tests {
             .keys()
             .next()
             .expect("typed main has expression facts");
-        incomplete.typed.expression_facts.remove(&expression);
+        Arc::get_mut(&mut incomplete.typed)
+            .expect("the test report uniquely owns its typed snapshot")
+            .expression_facts
+            .remove(&expression);
         let diagnostics = crate::executable::seal_entry(incomplete.typed)
             .err()
             .expect("incomplete typed snapshots cannot seal");
@@ -2285,6 +2309,48 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "inspection offset 1 splits a UTF-8 code point"
+        );
+    }
+
+    #[test]
+    fn parsed_project_sources_reuse_the_exact_frontend_snapshot() {
+        let source = ProjectSource::parsed(
+            "main",
+            SourceSnapshot::from_text("main.chimi", "pub fn main() { 1 }\n"),
+        )
+        .expect("main is a valid module path");
+        let parsed = source.syntax.as_ref().unwrap().clone();
+
+        let resolved = super::resolve_project_sources(vec![source]);
+
+        assert!(Arc::ptr_eq(&parsed, &resolved.semantic.modules[0].syntax));
+    }
+
+    #[test]
+    fn reused_parse_diagnostics_are_rebased_to_deterministic_file_ids() {
+        let valid = ProjectSource::parsed(
+            "a",
+            SourceSnapshot::from_text("a.chimi", "pub fn valid() { 1 }\n"),
+        )
+        .unwrap();
+        let malformed = ProjectSource::parsed(
+            "z",
+            SourceSnapshot::from_text("z.chimi", "pub fn broken() {\n"),
+        )
+        .unwrap();
+
+        let report = Compiler::type_project(vec![malformed, valid]);
+
+        let diagnostic = report
+            .diagnostics()
+            .iter()
+            .find(|diagnostic| diagnostic.stage() == DiagnosticStage::Syntax)
+            .expect("malformed reused parse retains its syntax diagnostic");
+        assert_eq!(
+            diagnostic.file_id(),
+            crate::ids::FileId::new(1),
+            "{:?}",
+            report.diagnostics()
         );
     }
 

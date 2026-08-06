@@ -17,8 +17,9 @@ mod syntax;
 mod typing;
 
 pub use compiler::{
-    CheckReport, Compiler, GenericParameterKind, NameReport, ProjectPathError, ProjectSource,
-    ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport,
+    CheckReport, Compiler, CompilerSession, GenericParameterKind, IncrementalStatistics,
+    IncrementalTypeReport, NameReport, ProjectPathError, ProjectSource, ReferenceInfo,
+    SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport,
 };
 pub use formatter::FormatReport;
 pub use inspection::{
