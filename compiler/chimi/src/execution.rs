@@ -310,12 +310,12 @@ enum Control {
     Cancellation,
 }
 
-pub(crate) fn execute(core: CoreProgram, config: ExecutionConfig) -> ExecutionReport {
+pub(crate) fn execute(core: &CoreProgram, config: ExecutionConfig) -> ExecutionReport {
     Evaluator::new(core, config).execute()
 }
 
-struct Evaluator {
-    core: CoreProgram,
+struct Evaluator<'core> {
+    core: &'core CoreProgram,
     config: ExecutionConfig,
     events: Vec<ExecutionEvent>,
     next_sequence: u64,
@@ -323,8 +323,8 @@ struct Evaluator {
     active_bindings: HashSet<SymbolId>,
 }
 
-impl Evaluator {
-    fn new(core: CoreProgram, config: ExecutionConfig) -> Self {
+impl<'core> Evaluator<'core> {
+    fn new(core: &'core CoreProgram, config: ExecutionConfig) -> Self {
         Self {
             core,
             config,

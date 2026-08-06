@@ -1,0 +1,40 @@
+interface Source {
+  read: fn() -> Int
+}
+
+struct Answer {
+  value: Int
+}
+
+enum State {
+  Ready
+}
+
+fn classify(state: State) -> Int {
+  case state {
+    Ready -> 1
+  }
+}
+
+fn read() -> Int needs { source: Source } {
+  source.read()
+}
+
+let source = {
+  read: fn() -> Int { 40 },
+}
+
+pub fn main() -> Answer {
+  let increment = fn(value: Int) -> Int { value + 1 }
+  let values = [classify(Ready())]
+  let configured = read using { source: source }
+  let negative = -(1)
+  let record = { value: configured() |> increment }
+  let enabled = True
+  case enabled {
+    True -> case values {
+      _ -> Answer(value: record.value + negative + 2)
+    }
+    False -> Answer(value: 0)
+  }
+}

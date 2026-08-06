@@ -1,3 +1,4 @@
+use crate::backend::BackendProgram;
 use crate::diagnostic::Diagnostic;
 use crate::executable::{lower, lower_legacy, seal_entry, seal_legacy_entry};
 use crate::execution::{ExecutionConfig, ExecutionReport, execute, execute_legacy};
@@ -496,12 +497,17 @@ impl Compiler {
         })
     }
 
+    pub fn prepare_backend(sources: Vec<ProjectSource>) -> Result<BackendProgram, Vec<Diagnostic>> {
+        let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?);
+        Ok(BackendProgram::new(core))
+    }
+
     pub fn run_project(
         sources: Vec<ProjectSource>,
         config: ExecutionConfig,
     ) -> Result<ExecutionReport, Vec<Diagnostic>> {
         let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?);
-        Ok(execute(core, config))
+        Ok(execute(&core, config))
     }
 
     pub fn check(source: SourceSnapshot) -> CheckReport {

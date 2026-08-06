@@ -1,3 +1,4 @@
+pub mod backend;
 mod compiler;
 pub mod diagnostic;
 mod executable;
@@ -16,6 +17,7 @@ pub mod source;
 mod syntax;
 mod typing;
 
+pub use backend::{BackendOperationProfile, BackendProfile, BackendProgram, BackendValueProfile};
 pub use compiler::{
     CheckReport, Compiler, CompilerSession, GenericParameterKind, IncrementalStatistics,
     IncrementalTypeReport, NameReport, ProjectPathError, ProjectSource, ReferenceInfo,

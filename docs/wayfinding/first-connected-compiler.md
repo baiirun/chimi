@@ -331,9 +331,20 @@ allocation, retained-memory, reuse, and invalidation counters. Peak RSS and
 cold process startup remain future out-of-process measurements.
 
 Permanent backend and production runtime selection are tracked separately in
-the draft map `ep-60dc6f` and begin only after the connected compiler provides
-real program evidence. That decision must preserve the
+the active map `ep-60dc6f`, using the connected compiler's real program
+evidence. That decision must preserve the
 [single-executable distribution contract](../research/single-binary-compiler-host-constraints.md):
 one deployable application executable with the required Chimi runtime linked
 in, inspectable external system dependencies, and fully static output only on
 supported targets.
+
+M8 begins with an opaque `BackendProgram` boundary over verified `CoreProgram`.
+Its shared comparison runner fixes five workloads covering successful
+structural execution, dependency calls, retry exhaustion, defects, and
+cancellation. It records the complete core operation and value-layout profile,
+prepare and interpreter execution latency, allocation, retained output, and
+full-versus-boundary trace counts using the interpreter as a conformance oracle.
+Cold-process startup and artifact size remain explicit `null` values until a
+candidate produces an executable. The accepted oracle measurements and the
+contract that both native AOT and embedded-bytecode spikes must satisfy are in
+`docs/performance/backend-m8-oracle-baseline.md`.
