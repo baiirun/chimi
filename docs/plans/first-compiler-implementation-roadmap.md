@@ -339,6 +339,12 @@ establishes correctness and baseline costs.
 
 ## M8 — Decide the Permanent Backend and Runtime Direction
 
+**Decision:** Native AOT with a linked Chimi runtime is the permanent execution
+architecture. Cranelift is the first code generator, while recovery, tracing,
+cancellation, scheduling, and supervision remain runtime semantics above the
+backend. See
+[ADR 0002](../adr/0002-use-native-aot-with-a-linked-runtime.md).
+
 ### Purpose
 
 Use a working typed core and measured programs to choose the next execution
