@@ -28,6 +28,14 @@ cargo run -q -p chimi -- run prototypes/golden/valid/dependencies_and_execution.
 ```
 
 The command executes the checkout forcing program and writes JSON Lines for
-every traced operation followed by the terminal outcome. `check` and `run`
-currently accept one self-contained source file; resolving imports from a
-project directory is not implemented yet.
+every traced operation followed by the terminal outcome. Format source without
+modifying its file:
+
+```sh
+cargo run -q -p chimi -- format compiler/chimi/tests/fixtures/format_messy.chimi
+```
+
+`format` writes canonical source to stdout. Malformed source is returned
+unchanged with syntax diagnostics and a failing status. `check` and `run`
+accept either one self-contained source file or an explicit project root and
+entry module through `--root <project-dir> <entry-module>`.

@@ -286,6 +286,16 @@ where module bindings compared raw type identities instead of equivalent
 resolved structure. Generic inspection of an open failure row remains a
 separate language-design question for selective policies.
 
+The first M6 slice connects canonical formatting to the real lossless CST.
+`Compiler::format` returns complete canonical text for syntax-valid snapshots
+and the original bytes plus syntax diagnostics for malformed snapshots; it
+never applies a partial guessed rewrite. Formatting normalizes whitespace and
+brace layout while using CST ancestry to distinguish type arguments from
+comparison operators, and it preserves comment text and structurally
+significant line breaks. `chimi format <path>` exposes the same report by
+writing source to stdout without modifying the file. The accepted syntax-valid
+golden corpus gates reparsing, idempotence, and comment preservation.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the
