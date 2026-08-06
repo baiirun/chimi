@@ -3,9 +3,13 @@ use crate::execution::{ExecutionConfig, ExecutionReport, execute};
 
 #[cfg(any(
     feature = "embedded-bytecode-prototype",
+    feature = "native-backend",
     feature = "native-aot-prototype"
 ))]
-mod prototype_program_data;
+mod program_data;
+
+#[cfg(feature = "native-backend")]
+pub mod native;
 
 #[cfg(feature = "native-aot-prototype")]
 #[doc(hidden)]

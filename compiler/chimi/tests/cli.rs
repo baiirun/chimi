@@ -11,6 +11,19 @@ fn repository_path(relative: impl AsRef<Path>) -> PathBuf {
         .join(relative)
 }
 
+fn scratch_directory(name: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "chimi-cli-{name}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    if path.exists() {
+        std::fs::remove_dir_all(&path).unwrap();
+    }
+    std::fs::create_dir_all(&path).unwrap();
+    path
+}
+
 #[test]
 fn version_reports_the_bootstrap_compiler() {
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
@@ -93,6 +106,112 @@ fn run_executes_source_and_prints_structured_events_and_outcome() {
         lines[lines.len() - 1],
         "{\"outcome\":\"success\",\"value\":{\"type\":\"Answer\",\"fields\":{\"value\":42}}}"
     );
+}
+
+#[test]
+fn build_links_a_runnable_executable_and_reports_its_artifacts() {
+    let scratch = scratch_directory("build");
+    let executable = scratch.join("answer");
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", &fixture("success"), "-o"])
+        .arg(&executable)
+        .output()
+        .expect("build valid Chimi source");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(report.starts_with("{\"schema\":\"chimi.build.v1\""));
+    assert!(report.contains("\"backend\":\"native-aot\""));
+    assert!(report.contains("\"application_objects\":["));
+    assert!(report.contains("\"metadata_object\":"));
+    assert!(report.contains("\"runtime_archive\":"));
+    assert!(report.contains("\"dynamic_dependencies\":["));
+    assert!(executable.is_file());
+
+    let manifest = scratch.join("target/chimi/answer/build.json");
+    assert_eq!(std::fs::read_to_string(manifest).unwrap(), report);
+    let execution = Command::new(&executable)
+        .args(["--trace=boundaries", "--execution-id=cli-build"])
+        .output()
+        .expect("run built Chimi executable");
+    assert!(execution.status.success());
+    assert!(execution.stderr.is_empty());
+    let stdout = String::from_utf8(execution.stdout).unwrap();
+    assert!(
+        stdout
+            .lines()
+            .next()
+            .unwrap()
+            .contains("\"execution_id\":\"cli-build\"")
+    );
+    assert_eq!(
+        stdout.lines().last().unwrap(),
+        "{\"outcome\":\"success\",\"value\":{\"type\":\"Answer\",\"fields\":{\"value\":42}}}"
+    );
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn build_stops_before_artifact_emission_when_compilation_fails() {
+    let scratch = scratch_directory("invalid-build");
+    let executable = scratch.join("missing-main");
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", &fixture("missing_main"), "-o"])
+        .arg(&executable)
+        .output()
+        .expect("reject invalid Chimi build");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("error[E5001] execution-setup"));
+    assert!(!executable.exists());
+    assert!(!scratch.join("target/chimi/missing-main").exists());
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn build_loads_and_links_an_explicit_multi_module_project() {
+    let scratch = scratch_directory("project-build");
+    let executable = scratch.join("project");
+    let root = repository_path("compiler/chimi/tests/fixtures/project");
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", "--root"])
+        .arg(&root)
+        .args(["app/main", "-o"])
+        .arg(&executable)
+        .output()
+        .expect("build multi-module Chimi project");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(report.contains("module-0.o"));
+    assert!(report.contains("module-1.o"));
+    assert!(report.contains("entry.o"));
+    let execution = Command::new(&executable)
+        .args(["--trace=off", "--execution-id=project-build"])
+        .output()
+        .expect("run built multi-module executable");
+    assert!(execution.status.success());
+    assert_eq!(
+        String::from_utf8(execution.stdout).unwrap(),
+        "{\"outcome\":\"success\",\"value\":42}\n"
+    );
+
+    std::fs::remove_dir_all(scratch).unwrap();
 }
 
 #[test]
@@ -269,8 +388,11 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi inspect <path> <byte-offset> | ",
             "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
             "chimi check [--json] <path> | chimi run <path> | ",
+            "chimi build <path> [-o <executable>] | ",
             "chimi check [--json] --root <project-dir> <entry-module> | ",
-            "chimi run --root <project-dir> <entry-module>\n"
+            "chimi run --root <project-dir> <entry-module> | ",
+            "chimi build --root <project-dir> <entry-module> ",
+            "[-o <executable>]\n"
         )
     );
 }

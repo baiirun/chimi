@@ -4,12 +4,15 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
+default-run = "chimi"
 
 [features]
+default = ["native-backend"]
 backend-benchmarks = []
 frontend-benchmarks = []
 embedded-bytecode-prototype = []
-native-aot-prototype = [
+native-aot-prototype = ["native-backend"]
+native-backend = [
   "dep:cranelift-codegen",
   "dep:cranelift-frontend",
   "dep:cranelift-module",
