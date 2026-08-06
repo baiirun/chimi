@@ -364,6 +364,14 @@ smaller and cheaper to encode, while linked size, startup, RSS, and hot executio
 are effectively tied because the shared boxed runtime dominates both candidates.
 Measurements and the limits of that comparison are in
 `docs/performance/embedded-bytecode-m8-spike.md`.
+M8 selects native AOT with a statically linked Chimi runtime in
+[ADR 0002](../adr/0002-use-native-aot-with-a-linked-runtime.md). Cranelift is
+the first code generator behind `BackendProgram`; concurrency, supervision,
+durability, cancellation, outcomes, and canonical events remain owned by a
+backend-neutral runtime contract. Bytecode remains a future portability option,
+not the production default or durable state format. Primary-source constraints
+and required follow-up proofs are in
+`docs/research/permanent-execution-architecture-constraints.md`.
 The native sample-40 trace-cost run sends canonical JSON events to a null sink:
 boundary tracing costs 1.69–1.95x off-mode p50 and full tracing costs
 17.09–21.00x on the three substantial workloads (`prog show ts-636302`).
