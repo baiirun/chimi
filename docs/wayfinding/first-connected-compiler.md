@@ -207,6 +207,16 @@ entry contracts, preserves all blocking compiler diagnostics, and returns an
 opaque `VerifiedRoot`. M5 remains open for the complete reachable-node and
 origin proof, backend-neutral core lowering, and runtime execution.
 
+The second M5 slice completes the first reachable-root proof. Semantic lowering
+now preserves the exact source range of every expression shape instead of
+borrowing a child range or synthesizing `0..0`. Sealing walks resolved function
+and module-binding references from `main`, excludes unreferenced declarations,
+requires every reachable expression to have a complete non-poisoned type fact
+and valid source range, and assigns deterministic snapshot-local `OriginId`s in
+module/semantic order. Qualified module receivers remain namespace syntax, not
+executable value nodes. The opaque root retains the reachable declarations and
+origin table for the next M5 slice: backend-neutral core lowering.
+
 Permanent backend and production runtime selection are tracked separately in
 the draft map `ep-60dc6f` and begin only after the connected compiler provides
 real program evidence. That decision must preserve the

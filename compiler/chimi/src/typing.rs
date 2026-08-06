@@ -3600,30 +3600,5 @@ fn default_pattern_matrix(matrix: &[Vec<MatchPattern>]) -> Vec<Vec<MatchPattern>
 }
 
 fn expression_range(expression: &ModuleExpression) -> TextRange {
-    match expression {
-        ModuleExpression::Literal(literal) => literal.range(),
-        ModuleExpression::Name { name, .. } => name.range,
-        ModuleExpression::Select { range, .. }
-        | ModuleExpression::Call { range, .. }
-        | ModuleExpression::List { range, .. }
-        | ModuleExpression::Record { range, .. }
-        | ModuleExpression::Unary { range, .. }
-        | ModuleExpression::Binary { range, .. } => *range,
-        ModuleExpression::Group { expression, .. } => expression_range(expression),
-        ModuleExpression::Using { range, .. } => *range,
-        ModuleExpression::Sequence { expressions, .. } => expressions
-            .first()
-            .map_or(TextRange::empty(0), expression_range),
-        ModuleExpression::Block { items, .. } => items
-            .first()
-            .map(|item| match item {
-                ModuleBlockItem::Binding { value, .. } | ModuleBlockItem::Expression(value) => {
-                    expression_range(value)
-                }
-            })
-            .unwrap_or(TextRange::empty(0)),
-        ModuleExpression::Function { body, .. } => expression_range(body),
-        ModuleExpression::Case { range, .. } => *range,
-        ModuleExpression::Empty { .. } => TextRange::empty(0),
-    }
+    expression.range()
 }
