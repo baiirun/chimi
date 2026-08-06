@@ -1294,4 +1294,134 @@ mod tests {
                 .all(|diagnostic| diagnostic.stage() == DiagnosticStage::Type)
         );
     }
+
+    #[test]
+    fn using_closes_executed_and_latent_needs_at_arbitrary_boundaries() {
+        let report = Compiler::type_project(vec![module(
+            "dependencies/provision",
+            "provision.chimi",
+            concat!(
+                "interface Clock { now: fn() -> Int }\n",
+                "interface Mailer { send: fn(Int) -> Text }\n",
+                "let clock = { now: fn() -> Int { 1 }, extra: \"allowed\" }\n",
+                "let mailer = { send: fn(value: Int) -> Text { \"sent\" } }\n",
+                "fn timestamp() -> Int needs { clock: Clock } { clock.now() }\n",
+                "fn notify() -> Text needs { clock: Clock, mailer: Mailer } {\n",
+                "  mailer.send(clock.now())\n",
+                "}\n",
+                "fn closed_call() -> Int { timestamp() using { clock: clock } }\n",
+                "fn configured() -> fn() -> Int { timestamp using { clock: clock } }\n",
+                "fn partial() -> Text needs { mailer: Mailer } {\n",
+                "  notify() using { clock: clock }\n",
+                "}\n",
+                "fn closed_nested() -> Text {\n",
+                "  let operation = notify using { clock: clock }\n",
+                "  let fully_configured = operation using { mailer: mailer }\n",
+                "  fully_configured()\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        for (function, contract) in [
+            ("closed_call", "fn() -> Int"),
+            ("configured", "fn() -> fn() -> Int"),
+            ("partial", "fn() -> Text needs { mailer: Mailer }"),
+            ("closed_nested", "fn() -> Text"),
+        ] {
+            assert_eq!(
+                report
+                    .contract("dependencies/provision", function)
+                    .as_deref(),
+                Some(contract),
+                "unexpected contract for {function}"
+            );
+        }
+    }
+
+    #[test]
+    fn using_reports_unknown_duplicate_and_mismatched_providers_without_discharge() {
+        let report = Compiler::type_project(vec![module(
+            "dependencies/invalid_provision",
+            "invalid_provision.chimi",
+            concat!(
+                "interface Clock { now: fn() -> Int }\n",
+                "let wrong = { now: fn(value: Int) -> Int { value } }\n",
+                "let clock = { now: fn() -> Int { 1 } }\n",
+                "fn timestamp() -> Int needs { clock: Clock } { clock.now() }\n",
+                "fn mismatch() -> Int {\n",
+                "  timestamp() using { clock: wrong }\n",
+                "}\n",
+                "fn unknown() -> Int {\n",
+                "  timestamp() using { logger: clock }\n",
+                "}\n",
+                "fn duplicate() -> Int {\n",
+                "  timestamp() using { clock: clock, clock: clock }\n",
+                "}\n",
+                "interface Source { read: fn() -> Int }\n",
+                "interface FlexibleClock { now: fn() -> Int needs { source: Source } }\n",
+                "interface ValueSource<A> { get: fn() -> A }\n",
+                "let narrow = { now: fn() -> Int { 1 } }\n",
+                "let wide = { now: fn() -> Int needs { source: Source } { 1 } }\n",
+                "let missing = { other: fn() -> Int { 1 } }\n",
+                "let int_source = { get: fn() -> Int { 1 } }\n",
+                "fn flexible() -> Int needs { clock: FlexibleClock } { 1 }\n",
+                "fn strict() -> Int needs { clock: Clock } { 1 }\n",
+                "fn generic() -> Int needs { source: ValueSource<Int> } { 1 }\n",
+                "fn narrowed() -> Int { flexible() using { clock: narrow } }\n",
+                "fn generic_closed() -> Int { generic() using { source: int_source } }\n",
+                "fn widened() -> Int {\n",
+                "  strict() using { clock: wide }\n",
+                "}\n",
+                "fn missing_member() -> Int {\n",
+                "  strict() using { clock: missing }\n",
+                "}\n",
+            ),
+        )]);
+
+        assert_eq!(
+            report
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            ["T4213", "T4212", "T4214", "T4213", "T4213"]
+        );
+        assert!(
+            report.diagnostics()[0]
+                .message()
+                .contains("member `now`: input count differs")
+        );
+        assert!(
+            report.diagnostics()[3]
+                .message()
+                .contains("needs dependencies outside the interface contract")
+        );
+        assert!(
+            report.diagnostics()[4]
+                .message()
+                .contains("missing member `now`")
+        );
+        for function in [
+            "mismatch",
+            "unknown",
+            "duplicate",
+            "widened",
+            "missing_member",
+        ] {
+            assert_eq!(
+                report
+                    .contract("dependencies/invalid_provision", function)
+                    .as_deref(),
+                Some("fn() -> Int needs { clock: Clock }"),
+                "failed provision unexpectedly discharged {function}"
+            );
+        }
+        assert!(
+            report
+                .diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.stage() == DiagnosticStage::Type)
+        );
+    }
 }

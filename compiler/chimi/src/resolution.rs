@@ -951,6 +951,16 @@ impl ProjectResolver {
             ModuleExpression::Group { expression, .. } => {
                 self.resolve_expression(module_index, expression, generics, scope);
             }
+            ModuleExpression::Using {
+                expression,
+                providers,
+                ..
+            } => {
+                self.resolve_expression(module_index, expression, generics, scope);
+                for provider in providers {
+                    self.resolve_expression(module_index, &provider.value, generics, scope);
+                }
+            }
             ModuleExpression::Sequence { expressions, .. } => {
                 for child in expressions {
                     self.resolve_expression(module_index, child, generics, scope);
