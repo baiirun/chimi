@@ -928,8 +928,28 @@ impl ProjectResolver {
             } => {
                 self.resolve_expression(module_index, callee, generics, scope);
                 for argument in arguments {
-                    self.resolve_expression(module_index, argument, generics, scope);
+                    self.resolve_expression(module_index, &argument.value, generics, scope);
                 }
+            }
+            ModuleExpression::List { elements, .. } => {
+                for element in elements {
+                    self.resolve_expression(module_index, element, generics, scope);
+                }
+            }
+            ModuleExpression::Record { fields, .. } => {
+                for field in fields {
+                    self.resolve_expression(module_index, &field.value, generics, scope);
+                }
+            }
+            ModuleExpression::Unary { operand, .. } => {
+                self.resolve_expression(module_index, operand, generics, scope);
+            }
+            ModuleExpression::Binary { left, right, .. } => {
+                self.resolve_expression(module_index, left, generics, scope);
+                self.resolve_expression(module_index, right, generics, scope);
+            }
+            ModuleExpression::Group { expression, .. } => {
+                self.resolve_expression(module_index, expression, generics, scope);
             }
             ModuleExpression::Sequence { expressions, .. } => {
                 for child in expressions {
