@@ -536,18 +536,21 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   for (uint32_t i = 0; i < CHIMI_FUNCTION_COUNT; ++i)
     if (CHIMI_NODE_FUNCTIONS[CHIMI_FUNCTIONS[i].body] == entry) { entry_node = CHIMI_FUNCTIONS[i].body; break; }
   if (benchmark_repeats > 0) {
-    runtime.silent = true;
     struct timespec started, finished;
     clock_gettime(CLOCK_MONOTONIC, &started);
     for (uint32_t repeat = 0; repeat < benchmark_repeats; ++repeat) {
+      runtime.next_sequence = 0;
       runtime.next_span = 2;
+      if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
       ChimiControl *control = runtime.cancel ? cancelled() : entry(&runtime, new_environment(), 1);
       if (control == NULL) return 70;
+      if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
     }
+    fflush(stdout);
     clock_gettime(CLOCK_MONOTONIC, &finished);
     int64_t elapsed = (int64_t)(finished.tv_sec - started.tv_sec) * INT64_C(1000000000)
                     + (int64_t)finished.tv_nsec - (int64_t)started.tv_nsec;
-    printf("%" PRIu64 "\n", elapsed / benchmark_repeats);
+    fprintf(stderr, "%" PRIu64 "\n", elapsed / benchmark_repeats);
     return 0;
   }
   if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
