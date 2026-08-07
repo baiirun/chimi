@@ -5,10 +5,11 @@ use crate::executable::{
 use crate::ids::{CoreNodeId, FileId, OriginId, SemanticId, SymbolId, TextRange};
 use crate::json::{JsonData, decode_json, write_json_data, write_json_string};
 use crate::semantic::{BinaryOperator, UnaryOperator};
-use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol};
+use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol, StandardType};
 use std::cmp::Ordering as Comparison;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
+use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -35,6 +36,9 @@ pub struct ExecutionConfig {
     execution_id: String,
     trace_mode: TraceMode,
     cancellation_requested: bool,
+    application_arguments: Vec<String>,
+    standard_input: Vec<u8>,
+    max_line_bytes: usize,
 }
 
 impl ExecutionConfig {
@@ -51,6 +55,9 @@ impl ExecutionConfig {
             execution_id,
             trace_mode: TraceMode::Full,
             cancellation_requested: false,
+            application_arguments: Vec::new(),
+            standard_input: Vec::new(),
+            max_line_bytes: 1024 * 1024,
         })
     }
 
@@ -74,6 +81,25 @@ impl ExecutionConfig {
 
     pub const fn with_cancellation_requested(mut self) -> Self {
         self.cancellation_requested = true;
+        self
+    }
+
+    pub fn with_application_arguments(
+        mut self,
+        arguments: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.application_arguments = arguments.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_standard_input(mut self, input: impl Into<Vec<u8>>) -> Self {
+        self.standard_input = input.into();
+        self
+    }
+
+    pub const fn with_max_line_bytes(mut self, max_line_bytes: usize) -> Self {
+        assert!(max_line_bytes > 0, "maximum line bytes must be positive");
+        self.max_line_bytes = max_line_bytes;
         self
     }
 }
@@ -138,6 +164,7 @@ pub struct ValueField {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecutionValue {
+    Void,
     Integer(i64),
     Text(String),
     Boolean(bool),
@@ -177,6 +204,8 @@ pub enum ExecutionOutcome {
 pub struct ExecutionReport {
     pub events: Vec<ExecutionEvent>,
     pub outcome: ExecutionOutcome,
+    pub application_stdout: String,
+    pub application_stderr: String,
 }
 
 impl ExecutionReport {
@@ -279,6 +308,7 @@ impl ExecutionReport {
 
 #[derive(Clone, Debug)]
 enum RuntimeValue {
+    Void,
     Integer(i64),
     Text(String),
     Boolean(bool),
@@ -490,6 +520,14 @@ enum RuntimeCallable {
         name: String,
     },
     Intrinsic(StandardFunction),
+    Host(HostFunction),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HostFunction {
+    ProcessUtf8Lines,
+    WriteLine,
+    WriteError,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -520,6 +558,8 @@ struct Evaluator<'core> {
     next_sequence: u64,
     next_span: u64,
     active_bindings: HashSet<SymbolId>,
+    application_stdout: String,
+    application_stderr: String,
 }
 
 impl<'core> Evaluator<'core> {
@@ -531,6 +571,8 @@ impl<'core> Evaluator<'core> {
             next_sequence: 0,
             next_span: 2,
             active_bindings: HashSet::new(),
+            application_stdout: String::new(),
+            application_stderr: String::new(),
         }
     }
 
@@ -555,7 +597,21 @@ impl<'core> Evaluator<'core> {
         let control = if self.config.cancellation_requested {
             Control::Cancellation
         } else {
-            self.eval_node(entry.body, 1, Environment::default())
+            let mut environment = Environment::default();
+            if let Some(parameter) = entry.parameters.first() {
+                environment.locals.insert(
+                    *parameter,
+                    RuntimeValue::List(
+                        self.config
+                            .application_arguments
+                            .iter()
+                            .cloned()
+                            .map(RuntimeValue::Text)
+                            .collect(),
+                    ),
+                );
+            }
+            self.eval_node(entry.body, 1, environment)
         };
         if self.config.trace_mode != TraceMode::Off {
             self.emit(
@@ -571,6 +627,8 @@ impl<'core> Evaluator<'core> {
         ExecutionReport {
             events: self.events,
             outcome,
+            application_stdout: self.application_stdout,
+            application_stderr: self.application_stderr,
         }
     }
 
@@ -644,20 +702,25 @@ impl<'core> Evaluator<'core> {
                 name,
             } => {
                 let requirement_name = self.core.symbol(requirement).name.clone();
-                let Some(provider) = environment.requirements.get(&requirement_name).cloned()
-                else {
+                let callable = if let Some(provider) =
+                    environment.requirements.get(&requirement_name).cloned()
+                {
+                    let Some(Control::Success(RuntimeValue::Callable(callable))) =
+                        select_field(provider, &name)
+                    else {
+                        return Control::Defect {
+                            message: format!(
+                                "provider {requirement_name} has no callable field {name}"
+                            ),
+                            node: Some(node_id),
+                        };
+                    };
+                    callable
+                } else if let Some(host) = self.host_function(interface, method) {
+                    RuntimeCallable::Host(host)
+                } else {
                     return Control::Defect {
                         message: format!("closed core has no provider for {requirement_name}"),
-                        node: Some(node_id),
-                    };
-                };
-                let Some(Control::Success(RuntimeValue::Callable(callable))) =
-                    select_field(provider, &name)
-                else {
-                    return Control::Defect {
-                        message: format!(
-                            "provider {requirement_name} has no callable field {name}"
-                        ),
                         node: Some(node_id),
                     };
                 };
@@ -997,7 +1060,189 @@ impl<'core> Evaluator<'core> {
             RuntimeCallable::Intrinsic(function) => {
                 self.invoke_intrinsic(function, arguments, span, call_node, call_environment)
             }
+            RuntimeCallable::Host(function) => {
+                self.invoke_host(function, arguments, span, call_node, call_environment)
+            }
         }
+    }
+
+    fn host_function(&self, interface: SymbolId, method: SemanticId) -> Option<HostFunction> {
+        match (self.core.symbol(interface).standard, method.raw()) {
+            (Some(StandardSymbol::Type(StandardType::FileSystem)), 0) => {
+                Some(HostFunction::ProcessUtf8Lines)
+            }
+            (Some(StandardSymbol::Type(StandardType::Console)), 0) => Some(HostFunction::WriteLine),
+            (Some(StandardSymbol::Type(StandardType::Console)), 1) => {
+                Some(HostFunction::WriteError)
+            }
+            _ => None,
+        }
+    }
+
+    fn invoke_host(
+        &mut self,
+        function: HostFunction,
+        arguments: Vec<RuntimeValue>,
+        span: u64,
+        call_node: CoreNodeId,
+        environment: Environment,
+    ) -> Control {
+        match function {
+            HostFunction::WriteLine | HostFunction::WriteError => {
+                let [RuntimeValue::Text(line)] = arguments.as_slice() else {
+                    return Control::Defect {
+                        message: "verified console call has invalid runtime arguments".to_owned(),
+                        node: Some(call_node),
+                    };
+                };
+                let output = if matches!(function, HostFunction::WriteLine) {
+                    &mut self.application_stdout
+                } else {
+                    &mut self.application_stderr
+                };
+                output.push_str(line);
+                output.push('\n');
+                Control::Success(RuntimeValue::Void)
+            }
+            HostFunction::ProcessUtf8Lines => {
+                let [
+                    RuntimeValue::Text(path),
+                    initial,
+                    RuntimeValue::Callable(callback),
+                ] = arguments.as_slice()
+                else {
+                    return Control::Defect {
+                        message: "verified filesystem call has invalid runtime arguments"
+                            .to_owned(),
+                        node: Some(call_node),
+                    };
+                };
+                let mut input: Box<dyn Read> = if path == "-" {
+                    Box::new(std::io::Cursor::new(self.config.standard_input.clone()))
+                } else {
+                    match std::fs::File::open(path) {
+                        Ok(file) => Box::new(file),
+                        Err(error) => {
+                            return Control::Failure(self.standard_value(
+                                StandardConstructor::FileOpen,
+                                vec![
+                                    RuntimeValue::Text(path.clone()),
+                                    RuntimeValue::Text(error.to_string()),
+                                ],
+                            ));
+                        }
+                    }
+                };
+                let mut state = initial.clone();
+                let mut line = Vec::with_capacity(self.config.max_line_bytes.min(4096));
+                let mut line_number = 1_i64;
+                let mut byte = [0_u8; 1];
+                loop {
+                    if self.config.cancellation_requested {
+                        return Control::Cancellation;
+                    }
+                    match input.read(&mut byte) {
+                        Ok(0) => {
+                            if line.is_empty() {
+                                return Control::Success(state);
+                            }
+                            return self.invoke_utf8_line(
+                                callback.clone(),
+                                state,
+                                &line,
+                                path,
+                                line_number,
+                                span,
+                                call_node,
+                                environment,
+                            );
+                        }
+                        Ok(_) if byte[0] == b'\n' => {
+                            let length = if line.last() == Some(&b'\r') {
+                                line.len() - 1
+                            } else {
+                                line.len()
+                            };
+                            state = success_or_return!(self.invoke_utf8_line(
+                                callback.clone(),
+                                state,
+                                &line[..length],
+                                path,
+                                line_number,
+                                span,
+                                call_node,
+                                environment.clone(),
+                            ));
+                            line.clear();
+                            line_number += 1;
+                        }
+                        Ok(_) => {
+                            if line.len() == self.config.max_line_bytes {
+                                return Control::Failure(self.standard_value(
+                                    StandardConstructor::FileLineTooLong,
+                                    vec![
+                                        RuntimeValue::Text(path.clone()),
+                                        RuntimeValue::Integer(
+                                            i64::try_from(self.config.max_line_bytes)
+                                                .unwrap_or(i64::MAX),
+                                        ),
+                                    ],
+                                ));
+                            }
+                            line.push(byte[0]);
+                        }
+                        Err(error) => {
+                            return Control::Failure(self.standard_value(
+                                StandardConstructor::FileRead,
+                                vec![
+                                    RuntimeValue::Text(path.clone()),
+                                    RuntimeValue::Text(error.to_string()),
+                                ],
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_utf8_line(
+        &mut self,
+        callback: RuntimeCallable,
+        state: RuntimeValue,
+        bytes: &[u8],
+        path: &str,
+        line_number: i64,
+        span: u64,
+        call_node: CoreNodeId,
+        environment: Environment,
+    ) -> Control {
+        let Ok(line) = std::str::from_utf8(bytes) else {
+            return Control::Failure(self.standard_value(
+                StandardConstructor::Utf8Invalid,
+                vec![
+                    RuntimeValue::Text(path.to_owned()),
+                    RuntimeValue::Integer(line_number),
+                ],
+            ));
+        };
+        if line.contains('\0') {
+            return Control::Failure(self.standard_value(
+                StandardConstructor::Utf8Invalid,
+                vec![
+                    RuntimeValue::Text(path.to_owned()),
+                    RuntimeValue::Integer(line_number),
+                ],
+            ));
+        }
+        self.invoke(
+            callback,
+            vec![state, RuntimeValue::Text(line.to_owned())],
+            span,
+            call_node,
+            environment,
+        )
     }
 
     fn invoke_intrinsic(
@@ -1009,6 +1254,31 @@ impl<'core> Evaluator<'core> {
         environment: Environment,
     ) -> Control {
         match function {
+            StandardFunction::IoPath => {
+                let [RuntimeValue::Text(path)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(RuntimeValue::Text(path.clone()))
+            }
+            StandardFunction::ListFirst => {
+                let [RuntimeValue::List(values)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(match values.first() {
+                    Some(value) => {
+                        self.standard_value(StandardConstructor::OptionSome, vec![value.clone()])
+                    }
+                    None => self.standard_value(StandardConstructor::OptionNone, Vec::new()),
+                })
+            }
+            StandardFunction::ListLength => {
+                let [RuntimeValue::List(values)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(RuntimeValue::Integer(
+                    i64::try_from(values.len()).unwrap_or(i64::MAX),
+                ))
+            }
             StandardFunction::MapEmpty => {
                 Control::Success(RuntimeValue::Map(RuntimeMap::default()))
             }
@@ -1553,6 +1823,7 @@ fn runtime_literal(literal: CoreLiteral) -> RuntimeValue {
 
 fn public_value(value: RuntimeValue) -> ExecutionValue {
     match value {
+        RuntimeValue::Void => ExecutionValue::Void,
         RuntimeValue::Integer(value) => ExecutionValue::Integer(value),
         RuntimeValue::Text(value) => ExecutionValue::Text(value),
         RuntimeValue::Boolean(value) => ExecutionValue::Boolean(value),
@@ -1602,6 +1873,9 @@ fn callable_name(callable: &RuntimeCallable) -> &str {
         RuntimeCallable::Closure { name, .. } => name,
         RuntimeCallable::Dependency { name, .. } => name,
         RuntimeCallable::Intrinsic(function) => function.name(),
+        RuntimeCallable::Host(HostFunction::ProcessUtf8Lines) => "process_utf8_lines",
+        RuntimeCallable::Host(HostFunction::WriteLine) => "write_line",
+        RuntimeCallable::Host(HostFunction::WriteError) => "write_error",
     }
 }
 
@@ -1667,6 +1941,7 @@ fn checked_integer(node: CoreNodeId, value: Option<i64>, operation: &str) -> Con
 
 fn write_json_value(output: &mut String, value: &ExecutionValue) {
     match value {
+        ExecutionValue::Void => output.push_str("{\"type\":\"Void\"}"),
         ExecutionValue::Integer(value) => {
             write!(output, "{value}").expect("writing JSON to a string cannot fail")
         }
@@ -1765,6 +2040,8 @@ pub(crate) fn execute_legacy(core: LegacyCoreProgram, config: ExecutionConfig) -
                 value: ExecutionValue::Integer(core.value),
             }],
         }),
+        application_stdout: String::new(),
+        application_stderr: String::new(),
     }
 }
 
@@ -1802,6 +2079,9 @@ mod tests {
                 execution_id: "test".to_owned(),
                 trace_mode: TraceMode::Boundaries,
                 cancellation_requested: false,
+                application_arguments: Vec::new(),
+                standard_input: Vec::new(),
+                max_line_bytes: 1024 * 1024,
             }
         );
         assert_eq!(

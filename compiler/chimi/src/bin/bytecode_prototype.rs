@@ -1,7 +1,7 @@
 //! PROTOTYPE: build and validate the disposable embedded-bytecode backend candidate.
 
 use chimi::backend::embedded_bytecode_prototype::{BytecodePrototypeArtifact, build_executable};
-use chimi::execution::{ExecutionConfig, TraceMode};
+use chimi::execution::{ExecutionConfig, ExecutionOutcome, TraceMode};
 use chimi::source::SourceSnapshot;
 use chimi::{BackendProgram, Compiler, ProjectSource};
 use std::fs;
@@ -93,6 +93,11 @@ fn run_workload(workload: Workload, samples: usize) -> Result<(), String> {
         )?;
     }
     let mut durations = Vec::with_capacity(samples);
+    let expected_status = expected_status(
+        &program
+            .execute_oracle(config(workload.id, workload.control, TraceMode::Boundaries))
+            .outcome,
+    );
     for _ in 0..samples {
         let started = Instant::now();
         let output = execute(
@@ -102,7 +107,7 @@ fn run_workload(workload: Workload, samples: usize) -> Result<(), String> {
             TraceMode::Boundaries,
         )?;
         durations.push(started.elapsed());
-        if !output.process.status.success() {
+        if output.process.status.code() != Some(expected_status) {
             return Err(format!(
                 "{} exited with {}",
                 workload.id, output.process.status
@@ -131,7 +136,7 @@ fn run_workload(workload: Workload, samples: usize) -> Result<(), String> {
         TraceMode::Full,
         samples,
     )?;
-    let peak_rss_bytes = peak_rss(&artifact, workload.id, workload.control)?;
+    let peak_rss_bytes = peak_rss(&artifact, workload.id, workload.control, expected_status)?;
     let dependencies = dynamic_dependencies(&artifact.executable_path)?;
     println!(
         concat!(
@@ -184,7 +189,7 @@ fn verify(
     let expected = report.render_json_lines();
     let output = execute(artifact, id, control, trace)?;
     let actual = output.exported;
-    if !output.process.status.success() {
+    if output.process.status.code() != Some(expected_status(&report.outcome)) {
         return Err(format!(
             "{id} exited with {}: {}",
             output.process.status,
@@ -209,6 +214,15 @@ fn verify(
     }
     verify_benchmark_export(artifact, id, control, trace, &expected_telemetry)?;
     Ok(())
+}
+
+const fn expected_status(outcome: &ExecutionOutcome) -> i32 {
+    match outcome {
+        ExecutionOutcome::Success(_) => 0,
+        ExecutionOutcome::ExpectedFailure(_) => 1,
+        ExecutionOutcome::Defect(_) => 70,
+        ExecutionOutcome::Cancellation(_) => 130,
+    }
 }
 
 fn verify_benchmark_export(
@@ -363,6 +377,7 @@ fn peak_rss(
     artifact: &BytecodePrototypeArtifact,
     id: &str,
     control: InitialControl,
+    expected_status: i32,
 ) -> Result<u64, String> {
     let mut command = Command::new("/usr/bin/time");
     if cfg!(target_os = "macos") {
@@ -383,7 +398,7 @@ fn peak_rss(
     let output = command
         .output()
         .map_err(|error| format!("measure peak RSS for {id}: {error}"))?;
-    if !output.status.success() {
+    if output.status.code() != Some(expected_status) {
         return Err(format!(
             "peak RSS run for {id} exited with {}",
             output.status

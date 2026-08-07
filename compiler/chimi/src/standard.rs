@@ -1,14 +1,16 @@
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum StandardModule {
+    Io,
     Json,
     Map,
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 2] = [Self::Json, Self::Map];
+    pub(crate) const ALL: [Self; 3] = [Self::Io, Self::Json, Self::Map];
 
     pub(crate) const fn path(self) -> &'static str {
         match self {
+            Self::Io => "std/io",
             Self::Json => "std/json",
             Self::Map => "std/map",
         }
@@ -17,7 +19,13 @@ impl StandardModule {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum StandardType {
+    Console,
+    ConsoleError,
+    FileError,
+    FileSystem,
     Map,
+    Path,
+    Utf8Error,
     JsonValue,
     JsonNumber,
     DecodeError,
@@ -28,7 +36,13 @@ pub(crate) enum StandardType {
 impl StandardType {
     pub(crate) const fn name(self) -> &'static str {
         match self {
+            Self::Console => "Console",
+            Self::ConsoleError => "ConsoleError",
+            Self::FileError => "FileError",
+            Self::FileSystem => "FileSystem",
             Self::Map => "Map",
+            Self::Path => "Path",
+            Self::Utf8Error => "Utf8Error",
             Self::JsonValue => "Value",
             Self::JsonNumber => "Number",
             Self::DecodeError => "DecodeError",
@@ -36,10 +50,17 @@ impl StandardType {
             Self::Option => "Option",
         }
     }
+
+    pub(crate) const fn runtime_id(self) -> u32 {
+        self as u32
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum StandardFunction {
+    IoPath,
+    ListFirst,
+    ListLength,
     MapEmpty,
     MapGet,
     MapPut,
@@ -57,7 +78,8 @@ pub(crate) enum StandardFunction {
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 13] = [
+    pub(crate) const ALL: [Self; 14] = [
+        Self::IoPath,
         Self::MapEmpty,
         Self::MapGet,
         Self::MapPut,
@@ -75,6 +97,7 @@ impl StandardFunction {
 
     pub(crate) const fn module(self) -> Option<StandardModule> {
         match self {
+            Self::IoPath => Some(StandardModule::Io),
             Self::MapEmpty | Self::MapGet | Self::MapPut | Self::MapUpdate | Self::MapMapValues => {
                 Some(StandardModule::Map)
             }
@@ -86,12 +109,15 @@ impl StandardFunction {
             | Self::JsonArray
             | Self::JsonObject
             | Self::JsonNumberToInt => Some(StandardModule::Json),
-            Self::TextAppend => None,
+            Self::ListFirst | Self::ListLength | Self::TextAppend => None,
         }
     }
 
     pub(crate) const fn name(self) -> &'static str {
         match self {
+            Self::IoPath => "path",
+            Self::ListFirst => "first",
+            Self::ListLength => "length",
             Self::MapEmpty => "empty",
             Self::MapGet => "get",
             Self::MapPut => "put",
@@ -116,6 +142,12 @@ impl StandardFunction {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum StandardConstructor {
+    ConsoleWriteFailed,
+    FileClose,
+    FileLineTooLong,
+    FileOpen,
+    FileRead,
+    Utf8Invalid,
     OptionSome,
     OptionNone,
     JsonNull,
@@ -130,7 +162,13 @@ pub(crate) enum StandardConstructor {
 }
 
 impl StandardConstructor {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 17] = [
+        Self::ConsoleWriteFailed,
+        Self::FileClose,
+        Self::FileLineTooLong,
+        Self::FileOpen,
+        Self::FileRead,
+        Self::Utf8Invalid,
         Self::OptionSome,
         Self::OptionNone,
         Self::JsonNull,
@@ -146,6 +184,11 @@ impl StandardConstructor {
 
     pub(crate) const fn type_kind(self) -> StandardType {
         match self {
+            Self::ConsoleWriteFailed => StandardType::ConsoleError,
+            Self::FileClose | Self::FileLineTooLong | Self::FileOpen | Self::FileRead => {
+                StandardType::FileError
+            }
+            Self::Utf8Invalid => StandardType::Utf8Error,
             Self::OptionSome | Self::OptionNone => StandardType::Option,
             Self::JsonNull
             | Self::JsonBoolean
@@ -158,8 +201,31 @@ impl StandardConstructor {
         }
     }
 
+    pub(crate) const fn module(self) -> Option<StandardModule> {
+        match self.type_kind() {
+            StandardType::ConsoleError | StandardType::FileError | StandardType::Utf8Error => {
+                Some(StandardModule::Io)
+            }
+            StandardType::JsonValue
+            | StandardType::JsonNumber
+            | StandardType::DecodeError
+            | StandardType::NumberError => Some(StandardModule::Json),
+            StandardType::Option => None,
+            StandardType::Console
+            | StandardType::FileSystem
+            | StandardType::Map
+            | StandardType::Path => None,
+        }
+    }
+
     pub(crate) const fn name(self) -> &'static str {
         match self {
+            Self::ConsoleWriteFailed => "WriteFailed",
+            Self::FileClose => "Close",
+            Self::FileLineTooLong => "LineTooLong",
+            Self::FileOpen => "Open",
+            Self::FileRead => "Read",
+            Self::Utf8Invalid => "InvalidUtf8",
             Self::OptionSome => "Some",
             Self::OptionNone => "None",
             Self::JsonNull => "Null",
@@ -176,6 +242,10 @@ impl StandardConstructor {
 
     pub(crate) const fn field_names(self) -> &'static [&'static str] {
         match self {
+            Self::ConsoleWriteFailed => &["stream", "message"],
+            Self::FileClose | Self::FileOpen | Self::FileRead => &["path", "message"],
+            Self::FileLineTooLong => &["path", "limit"],
+            Self::Utf8Invalid => &["path", "line"],
             Self::OptionSome => &["value"],
             Self::OptionNone | Self::JsonNull => &[],
             Self::JsonBoolean | Self::JsonNumber | Self::JsonText => &["value"],
@@ -210,6 +280,12 @@ pub(crate) enum StandardGenericKind {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum StandardGeneric {
+    FileState,
+    FileFailures,
+    FileNeeds,
+    FileEffects,
+    ListFirstValue,
+    ListLengthValue,
     OptionValue,
     MapEmptyKey,
     MapEmptyValue,
@@ -231,7 +307,13 @@ pub(crate) enum StandardGeneric {
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 18] = [
+    pub(crate) const ALL: [Self; 24] = [
+        Self::FileState,
+        Self::FileFailures,
+        Self::FileNeeds,
+        Self::FileEffects,
+        Self::ListFirstValue,
+        Self::ListLengthValue,
         Self::OptionValue,
         Self::MapEmptyKey,
         Self::MapEmptyValue,
@@ -254,6 +336,12 @@ impl StandardGeneric {
 
     pub(crate) const fn name(self) -> &'static str {
         match self {
+            Self::FileState => "$file_state",
+            Self::FileFailures => "$file_failures",
+            Self::FileNeeds => "$file_needs",
+            Self::FileEffects => "$file_effects",
+            Self::ListFirstValue => "$list_first_value",
+            Self::ListLengthValue => "$list_length_value",
             Self::OptionValue => "$option_value",
             Self::MapEmptyKey => "$map_empty_key",
             Self::MapEmptyValue => "$map_empty_value",
@@ -277,9 +365,15 @@ impl StandardGeneric {
 
     pub(crate) const fn kind(self) -> StandardGenericKind {
         match self {
-            Self::MapUpdateFailures | Self::MapValuesFailures => StandardGenericKind::FailureRow,
-            Self::MapUpdateNeeds | Self::MapValuesNeeds => StandardGenericKind::NeedsRow,
-            Self::MapUpdateEffects | Self::MapValuesEffects => StandardGenericKind::EffectRow,
+            Self::FileFailures | Self::MapUpdateFailures | Self::MapValuesFailures => {
+                StandardGenericKind::FailureRow
+            }
+            Self::FileNeeds | Self::MapUpdateNeeds | Self::MapValuesNeeds => {
+                StandardGenericKind::NeedsRow
+            }
+            Self::FileEffects | Self::MapUpdateEffects | Self::MapValuesEffects => {
+                StandardGenericKind::EffectRow
+            }
             _ => StandardGenericKind::Value,
         }
     }

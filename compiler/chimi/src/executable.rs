@@ -544,13 +544,18 @@ pub(crate) fn seal_entry(
         .get(&entry)
         .expect("typed entry function has a callable contract");
     let module = &typed.resolved.semantic.modules[root_module.raw() as usize];
-    if !contract.inputs.is_empty() {
+    if !(contract.inputs.is_empty()
+        || matches!(
+            contract.inputs.as_slice(),
+            [input] if is_application_arguments_type(&typed, *input)
+        ))
+    {
         return Err(vec![Diagnostic::error(
             DiagnosticStage::ExecutionSetup,
             "E5004",
             module.source.file_id(),
             root.name.range,
-            "program entry `main` cannot accept arguments",
+            "program entry `main` must accept no arguments or one `List<Text>`",
         )]);
     }
     if !root.generic_parameters.is_empty()
@@ -584,6 +589,23 @@ pub(crate) fn seal_entry(
         reachable_declarations: reachable.declarations,
         origins: reachable.origins,
     })
+}
+
+fn is_application_arguments_type(typed: &TypedProject, type_id: TypeId) -> bool {
+    let CanonicalType::Named { symbol, arguments } = resolved_type(typed, type_id) else {
+        return false;
+    };
+    if typed.resolved.symbol(*symbol).name != "List" || arguments.len() != 1 {
+        return false;
+    }
+    let CanonicalType::Named {
+        symbol: value_symbol,
+        arguments: value_arguments,
+    } = resolved_type(typed, arguments[0])
+    else {
+        return false;
+    };
+    typed.resolved.symbol(*value_symbol).name == "Text" && value_arguments.is_empty()
 }
 
 struct ReachableProgram {

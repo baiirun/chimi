@@ -397,7 +397,8 @@ before the final platform link:
   functions, plus a small entry object;
 - an immutable metadata object containing symbols, values, source origins, and
   runtime operation operands;
-- a static archive containing Chimi runtime ABI version 2.
+- a static archive containing the compiler-matched Chimi runtime ABI (currently
+  version 4).
 
 The linked executable embeds the Chimi runtime and needs no separately installed
 Chimi VM or package tree. The versioned `chimi.build.v1` report identifies all

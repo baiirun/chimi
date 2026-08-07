@@ -444,7 +444,7 @@ impl ProjectResolver {
                     .insert(id, StandardSymbol::Type(StandardType::Option));
             }
         }
-        for module_name in ["Int", "Text"] {
+        for module_name in ["Int", "List", "Text"] {
             let module = self.add_symbol(
                 None,
                 None,
@@ -453,29 +453,36 @@ impl ProjectResolver {
                 module_name,
                 true,
             );
-            let member_name = if module_name == "Int" {
-                "to_text"
-            } else {
-                "append"
+            let member_names: &[&str] = match module_name {
+                "Int" => &["to_text"],
+                "List" => &["first", "length"],
+                "Text" => &["append"],
+                _ => unreachable!(),
             };
-            let member = self.add_symbol(
-                None,
-                None,
-                Namespace::Value,
-                ProjectSymbolKind::BuiltinValue,
-                member_name,
-                true,
-            );
-            self.builtin_modules.insert(
-                module_name.to_owned(),
-                (module, HashMap::from([(member_name.to_owned(), member)])),
-            );
-            if module_name == "Text" {
-                self.standard_symbols.insert(
-                    member,
-                    StandardSymbol::Function(StandardFunction::TextAppend),
+            let mut members = HashMap::new();
+            for member_name in member_names {
+                let member = self.add_symbol(
+                    None,
+                    None,
+                    Namespace::Value,
+                    ProjectSymbolKind::BuiltinValue,
+                    member_name,
+                    true,
                 );
+                members.insert((*member_name).to_owned(), member);
+                let standard = match (module_name, *member_name) {
+                    ("List", "first") => Some(StandardFunction::ListFirst),
+                    ("List", "length") => Some(StandardFunction::ListLength),
+                    ("Text", "append") => Some(StandardFunction::TextAppend),
+                    _ => None,
+                };
+                if let Some(standard) = standard {
+                    self.standard_symbols
+                        .insert(member, StandardSymbol::Function(standard));
+                }
             }
+            self.builtin_modules
+                .insert(module_name.to_owned(), (module, members));
         }
         for name in ["Failure", "False", "None", "Some", "Success", "True"] {
             let id = self.add_symbol(
@@ -527,6 +534,12 @@ impl ProjectResolver {
         }
 
         for (kind, module) in [
+            (StandardType::Console, StandardModule::Io),
+            (StandardType::ConsoleError, StandardModule::Io),
+            (StandardType::FileError, StandardModule::Io),
+            (StandardType::FileSystem, StandardModule::Io),
+            (StandardType::Path, StandardModule::Io),
+            (StandardType::Utf8Error, StandardModule::Io),
             (StandardType::Map, StandardModule::Map),
             (StandardType::JsonValue, StandardModule::Json),
             (StandardType::JsonNumber, StandardModule::Json),
@@ -589,11 +602,13 @@ impl ProjectResolver {
             let owner = self.standard_types[&constructor.type_kind()];
             self.standard_type_members
                 .insert((owner, constructor.name().to_owned()), symbol);
-            self.standard_modules
-                .get_mut(&StandardModule::Json)
-                .expect("JSON module is indexed")
-                .values
-                .insert(constructor.name().to_owned(), symbol);
+            if let Some(module) = constructor.module() {
+                self.standard_modules
+                    .get_mut(&module)
+                    .expect("constructor module is indexed")
+                    .values
+                    .insert(constructor.name().to_owned(), symbol);
+            }
         }
 
         for generic in StandardGeneric::ALL {
@@ -611,6 +626,14 @@ impl ProjectResolver {
         }
 
         for (callable, parameters) in [
+            (
+                self.standard_function_symbol(StandardFunction::ListFirst),
+                vec![StandardGeneric::ListFirstValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::ListLength),
+                vec![StandardGeneric::ListLengthValue],
+            ),
             (
                 self.standard_function_symbol(StandardFunction::MapEmpty),
                 vec![StandardGeneric::MapEmptyKey, StandardGeneric::MapEmptyValue],

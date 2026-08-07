@@ -67,6 +67,9 @@ typedef struct {
   uint32_t function;
   uint32_t binding;
   uint32_t constructor;
+  uint32_t intrinsic;
+  uint32_t standard_constructor;
+  uint32_t standard_type;
 } ChimiSymbol;
 
 typedef struct {

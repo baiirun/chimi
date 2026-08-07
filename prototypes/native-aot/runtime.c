@@ -635,5 +635,12 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   if (runtime.outcome) print_outcome(runtime.outcome, control);
   bool write_failed = close_output(runtime.telemetry);
   write_failed = close_output(runtime.outcome) || write_failed;
-  return write_failed ? 74 : 0;
+  if (write_failed) return 74;
+  switch (control->kind) {
+    case CONTROL_SUCCESS: return 0;
+    case CONTROL_FAILURE: return 1;
+    case CONTROL_DEFECT: return 70;
+    case CONTROL_CANCEL: return 130;
+  }
+  return 70;
 }

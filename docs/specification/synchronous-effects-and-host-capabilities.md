@@ -168,6 +168,20 @@ dependencies or reinterpret effect names as providers.
 
 ## Synchronous Files and Console
 
+The first concrete standard-library surface is explicit and module-qualified:
+
+```chimi
+import std/io as IO
+import std/io.{Console}
+import std/io.{FileSystem}
+```
+
+`IO.path(Text) -> Path` validates the nominal boundary while keeping the path's
+runtime representation opaque. `List.first(List<A>) -> Option<A>` and
+`List.length(List<A>) -> Int` expose application arguments without adding an
+arguments capability. `Console` contains `write_line` for stdout and
+`write_error` for stderr; both append one LF and return `Void`.
+
 The accepted general data-processing API is specified by
 [trace data and processing](trace-data-and-processing.md) (`prog show
 ts-2ac2de`). The first filesystem boundary MUST own resource scope. Its contract
@@ -189,6 +203,9 @@ interface Console {
   write_line: fn(Text) -> Void
     errors ConsoleError
     effects { io }
+  write_error: fn(Text) -> Void
+    errors ConsoleError
+    effects { io }
 }
 ```
 
@@ -208,6 +225,12 @@ cancellation remains primary, and the close failure is attached as suppressed
 runtime context. Full tracing MUST expose both the body outcome and cleanup
 failure. This precedence keeps defects and cancellation distinct while ensuring
 that a failed cleanup cannot be mistaken for a clean resource boundary.
+
+The native provider interprets `IO.path("-")` as standard input. The runner's
+`--max-line-bytes=<positive integer>` option defaults to 1 MiB and bounds the
+buffer before another byte is accepted. The current runtime rejects embedded
+NUL bytes as `Utf8Error.InvalidUtf8` because Chimi `Text` is NUL-terminated at
+this ABI boundary; it MUST NOT silently truncate them.
 
 Raw handles and a general `with_resource` abstraction are rejected for this
 milestone because preventing a handle from escaping would require a resource,

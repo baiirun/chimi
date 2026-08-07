@@ -1,4 +1,4 @@
-/* Chimi native runtime ABI version 3. */
+/* Chimi native runtime ABI version 4. */
 #include "runtime.h"
 
 #include <inttypes.h>
@@ -11,9 +11,10 @@
 #include <time.h>
 #include <unistd.h>
 
-typedef enum { VALUE_INTEGER, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
+typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
                VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER } ValueKind;
-typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_INTRINSIC } CallableKind;
+typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC } CallableKind;
+typedef enum { HOST_PROCESS_UTF8_LINES, HOST_WRITE_LINE, HOST_WRITE_ERROR } HostFunction;
 typedef enum { CONTROL_SUCCESS, CONTROL_FAILURE, CONTROL_DEFECT, CONTROL_CANCEL } ControlKind;
 
 typedef struct ChimiValue ChimiValue;
@@ -41,6 +42,7 @@ typedef struct ChimiCallable {
   uint32_t method;
   const char *name;
   uint32_t intrinsic;
+  HostFunction host;
 } ChimiCallable;
 
 struct ChimiValue {
@@ -78,6 +80,7 @@ struct ChimiRuntime {
   bool silent;
   FILE *telemetry;
   FILE *outcome;
+  uint32_t max_line_bytes;
   uint64_t next_sequence;
   uint64_t next_span;
   bool *active_bindings;
@@ -167,6 +170,7 @@ static void json_fields(FILE *output, const RuntimeField *fields, uint32_t lengt
 }
 static void json_value(FILE *output, const ChimiValue *value) {
   switch (value->kind) {
+    case VALUE_VOID: fputs("{\"type\":\"Void\"}", output); break;
     case VALUE_INTEGER: fprintf(output, "%" PRId64, value->as.integer); break;
     case VALUE_TEXT: json_string(output, value->as.text); break;
     case VALUE_BOOLEAN: fputs(value->as.boolean ? "true" : "false", output); break;
@@ -243,6 +247,7 @@ static ChimiControl *finish_node(ChimiRuntime *runtime, uint32_t node, uint64_t 
 }
 
 static ChimiValue *integer_value(int64_t raw) { ChimiValue *v = new_value(VALUE_INTEGER); v->as.integer = raw; return v; }
+static ChimiValue *void_value(void) { return new_value(VALUE_VOID); }
 static ChimiValue *text_value(const char *raw) { ChimiValue *v = new_value(VALUE_TEXT); v->as.text = raw; return v; }
 static ChimiValue *boolean_value(bool raw) { ChimiValue *v = new_value(VALUE_BOOLEAN); v->as.boolean = raw; return v; }
 static ChimiValue *callable_value(ChimiCallable *raw) { ChimiValue *v = new_value(VALUE_CALLABLE); v->as.callable = raw; return v; }
@@ -580,6 +585,144 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment);
 
+static char *copy_bytes(const unsigned char *source, size_t length) {
+  char *copy = allocate(length + 1, 1);
+  memcpy(copy, source, length);
+  return copy;
+}
+
+static bool valid_utf8(const unsigned char *text, size_t length) {
+  size_t offset = 0;
+  while (offset < length) {
+    unsigned char first = text[offset++];
+    if (first <= 0x7f) {
+      if (first == 0) return false;
+      continue;
+    }
+    if (first >= 0xc2 && first <= 0xdf) {
+      if (offset >= length || (text[offset++] & 0xc0) != 0x80) return false;
+      continue;
+    }
+    if (first >= 0xe0 && first <= 0xef) {
+      if (offset + 1 >= length) return false;
+      unsigned char second = text[offset++], third = text[offset++];
+      if ((third & 0xc0) != 0x80) return false;
+      if (first == 0xe0) { if (second < 0xa0 || second > 0xbf) return false; }
+      else if (first == 0xed) { if (second < 0x80 || second > 0x9f) return false; }
+      else if ((second & 0xc0) != 0x80) return false;
+      continue;
+    }
+    if (first >= 0xf0 && first <= 0xf4) {
+      if (offset + 2 >= length) return false;
+      unsigned char second = text[offset++], third = text[offset++], fourth = text[offset++];
+      if ((third & 0xc0) != 0x80 || (fourth & 0xc0) != 0x80) return false;
+      if (first == 0xf0) { if (second < 0x90 || second > 0xbf) return false; }
+      else if (first == 0xf4) { if (second < 0x80 || second > 0x8f) return false; }
+      else if ((second & 0xc0) != 0x80) return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+static ChimiControl *host_file_message(uint32_t constructor, const char *path,
+                                       const char *message) {
+  ChimiValue *fields[] = {
+    text_value(path),
+    text_value(strdup(message ? message : "unknown I/O error")),
+  };
+  return failure(standard_value(constructor, fields, 2));
+}
+
+static ChimiControl *invoke_line_callback(ChimiRuntime *runtime, ChimiCallable *callback,
+                                          ChimiValue *state, unsigned char *bytes, size_t length,
+                                          uint64_t line, const char *path, uint64_t span,
+                                          uint32_t call_node, ChimiEnvironment *environment) {
+  if (!valid_utf8(bytes, length)) {
+    ChimiValue *fields[] = {text_value(path), integer_value((int64_t)line)};
+    return failure(standard_value(CHIMI_CONSTRUCTOR_UTF8_INVALID, fields, 2));
+  }
+  ChimiValue *arguments[] = {state, text_value(copy_bytes(bytes, length))};
+  return invoke(runtime, callback, arguments, 2, span, call_node, environment);
+}
+
+static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **arguments,
+                                        uint32_t argument_count, uint64_t span,
+                                        uint32_t call_node, ChimiEnvironment *environment) {
+  if (argument_count != 3 || arguments[0]->kind != VALUE_TEXT ||
+      arguments[2]->kind != VALUE_CALLABLE)
+    return defect("verified host function has invalid runtime arguments", call_node);
+  if (runtime->cancel) return cancelled();
+  const char *path = arguments[0]->as.text;
+  bool owns_file = strcmp(path, "-") != 0;
+  FILE *input = owns_file ? fopen(path, "rb") : stdin;
+  if (!input) return host_file_message(CHIMI_CONSTRUCTOR_FILE_OPEN, path, strerror(errno));
+  unsigned char *line = allocate((size_t)runtime->max_line_bytes + 1, 1);
+  size_t length = 0;
+  uint64_t line_number = 1;
+  ChimiValue *state = arguments[1];
+  ChimiControl *control = NULL;
+  for (;;) {
+    if (runtime->cancel) { control = cancelled(); break; }
+    errno = 0;
+    int byte = fgetc(input);
+    if (byte == EOF) {
+      if (ferror(input)) {
+        control = runtime->cancel && errno == EINTR
+          ? cancelled()
+          : host_file_message(CHIMI_CONSTRUCTOR_FILE_READ, path, strerror(errno));
+      } else if (length > 0) {
+        control = invoke_line_callback(runtime, arguments[2]->as.callable, state, line, length,
+                                       line_number, path, span, call_node, environment);
+        if (control->kind == CONTROL_SUCCESS) state = control->value;
+      } else {
+        control = success(state);
+      }
+      break;
+    }
+    if (byte == '\n') {
+      size_t content_length = length > 0 && line[length - 1] == '\r' ? length - 1 : length;
+      control = invoke_line_callback(runtime, arguments[2]->as.callable, state, line,
+                                     content_length, line_number, path, span, call_node,
+                                     environment);
+      if (control->kind != CONTROL_SUCCESS) break;
+      state = control->value;
+      length = 0;
+      ++line_number;
+      continue;
+    }
+    if (length == runtime->max_line_bytes) {
+      ChimiValue *fields[] = {text_value(path), integer_value(runtime->max_line_bytes)};
+      control = failure(standard_value(CHIMI_CONSTRUCTOR_FILE_LINE_TOO_LONG, fields, 2));
+      break;
+    }
+    line[length++] = (unsigned char)byte;
+  }
+  if (owns_file && fclose(input) != 0 &&
+      (control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE))
+    return host_file_message(CHIMI_CONSTRUCTOR_FILE_CLOSE, path, strerror(errno));
+  return control;
+}
+
+static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
+                                 ChimiValue **arguments, uint32_t argument_count,
+                                 uint64_t span, uint32_t call_node,
+                                 ChimiEnvironment *environment) {
+  if (function == HOST_PROCESS_UTF8_LINES)
+    return process_utf8_lines(runtime, arguments, argument_count, span, call_node, environment);
+  if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT)
+    return defect("verified host function has invalid runtime arguments", call_node);
+  if (runtime->cancel) return cancelled();
+  FILE *output = function == HOST_WRITE_LINE ? stdout : stderr;
+  if (fputs(arguments[0]->as.text, output) < 0 || fputc('\n', output) == EOF || fflush(output) != 0) {
+    const char *stream = function == HOST_WRITE_LINE ? "stdout" : "stderr";
+    ChimiValue *fields[] = {text_value(stream), text_value(strdup(strerror(errno)))};
+    return failure(standard_value(CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED, fields, 2));
+  }
+  return runtime->cancel ? cancelled() : success(void_value());
+}
+
 static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
                             uint32_t argument_count, uint64_t span, uint32_t call_node,
                             ChimiEnvironment *call_environment) {
@@ -593,6 +736,9 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
   if (callable->kind == CALL_INTRINSIC)
     return invoke_intrinsic(runtime, callable->intrinsic, arguments, argument_count,
                             span, call_node, call_environment);
+  if (callable->kind == CALL_HOST)
+    return invoke_host(runtime, callable->host, arguments, argument_count,
+                       span, call_node, call_environment);
   ChimiEnvironment *environment = clone_environment(callable->environment);
   for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)
     if (call_environment->requirements[symbol] != NULL)
@@ -628,6 +774,22 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment) {
   switch (intrinsic) {
+    case CHIMI_INTRINSIC_IO_PATH:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT)
+        return intrinsic_shape_defect(call_node);
+      return success(arguments[0]);
+    case CHIMI_INTRINSIC_LIST_FIRST: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST)
+        return intrinsic_shape_defect(call_node);
+      if (arguments[0]->as.list.length == 0)
+        return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
+      ChimiValue *fields[] = {arguments[0]->as.list.items[0]};
+      return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
+    }
+    case CHIMI_INTRINSIC_LIST_LENGTH:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST)
+        return intrinsic_shape_defect(call_node);
+      return success(integer_value((int64_t)arguments[0]->as.list.length));
     case CHIMI_INTRINSIC_MAP_EMPTY:
       return argument_count == 0 ? success(map_value(NULL)) : intrinsic_shape_defect(call_node);
     case CHIMI_INTRINSIC_MAP_GET: {
@@ -787,11 +949,26 @@ NODE_WRAPPER(select, "select", {
 })
 NODE_WRAPPER(dependency_method, "dependency_method", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *provider = environment->requirements[node->a];
-  if (!provider) { result = defect("closed core has no provider", node_id); break; }
-  ChimiValue *method = select_value(provider, CHIMI_STRINGS[node->d]);
-  if (!method || method->kind != VALUE_CALLABLE) { result = defect("provider has no callable field", node_id); break; }
+  ChimiCallable *inner = NULL;
+  if (!provider) {
+    uint32_t standard_type = CHIMI_SYMBOLS[node->b].standard_type;
+    inner = allocate(1, sizeof(*inner)); inner->kind = CALL_HOST;
+    if (standard_type == CHIMI_TYPE_FILE_SYSTEM && node->c == 0)
+      inner->host = HOST_PROCESS_UTF8_LINES;
+    else if (standard_type == CHIMI_TYPE_CONSOLE && node->c == 0)
+      inner->host = HOST_WRITE_LINE;
+    else if (standard_type == CHIMI_TYPE_CONSOLE && node->c == 1)
+      inner->host = HOST_WRITE_ERROR;
+    else { result = defect("closed core has no provider", node_id); break; }
+  } else {
+    ChimiValue *method = select_value(provider, CHIMI_STRINGS[node->d]);
+    if (!method || method->kind != VALUE_CALLABLE) {
+      result = defect("provider has no callable field", node_id); break;
+    }
+    inner = method->as.callable;
+  }
   ChimiCallable *callable = allocate(1, sizeof(*callable)); callable->kind = CALL_DEPENDENCY;
-  callable->inner = method->as.callable; callable->requirement = node->a; callable->interface_symbol = node->b;
+  callable->inner = inner; callable->requirement = node->a; callable->interface_symbol = node->b;
   callable->method = node->c; callable->name = CHIMI_STRINGS[node->d]; result = success(callable_value(callable));
 })
 
@@ -1025,6 +1202,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   ChimiRuntime runtime = {
     .execution_id = generated_execution_id,
     .silent = true,
+    .max_line_bytes = 1024 * 1024,
     .next_span = 2,
   };
   uint32_t benchmark_repeats = 0;
@@ -1032,11 +1210,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   const char *outcome_path = NULL;
   runtime.active_bindings = allocate(CHIMI_SYMBOL_COUNT, sizeof(*runtime.active_bindings));
   int32_t index = 1;
-  if (index < argc && strcmp(argv[index], "--chimi-runner") != 0) {
-    fputs("application arguments are not supported yet\n", stderr);
-    return 64;
-  }
-  if (index < argc) {
+  if (index < argc && strcmp(argv[index], "--chimi-runner") == 0) {
     ++index;
     bool found_boundary = false;
     for (; index < argc; ++index) {
@@ -1052,6 +1226,17 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     else if (strncmp(argv[index], "--outcome-file=", 15) == 0) outcome_path = argv[index] + 15;
     else if (strncmp(argv[index], "--execution-id=", 15) == 0) runtime.execution_id = argv[index] + 15;
     else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = true;
+    else if (strncmp(argv[index], "--max-line-bytes=", 17) == 0) {
+      errno = 0;
+      char *end = NULL;
+      unsigned long value = strtoul(argv[index] + 17, &end, 10);
+      if (errno == ERANGE || end == argv[index] + 17 || *end != '\0' ||
+          value == 0 || value > UINT32_MAX) {
+        fputs("--max-line-bytes requires an integer from 1 through 4294967295\n", stderr);
+        return 64;
+      }
+      runtime.max_line_bytes = (uint32_t)value;
+    }
     else if (strncmp(argv[index], "--benchmark-repeats=", 20) == 0)
       benchmark_repeats = (uint32_t)strtoul(argv[index] + 20, NULL, 10);
     else { fprintf(stderr, "unknown Chimi runtime argument: %s\n", argv[index]); return 64; }
@@ -1060,10 +1245,6 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       fputs("Chimi runner configuration must end with --\n", stderr);
       return 64;
     }
-  }
-  if (index < argc) {
-    fputs("application arguments are not supported yet\n", stderr);
-    return 64;
   }
   if (!runtime.silent && telemetry_path == NULL) {
     fputs("boundary or full tracing requires --telemetry-file\n", stderr);
@@ -1089,8 +1270,18 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     }
   }
   uint32_t entry_node = 0;
+  const ChimiFunction *entry_function = NULL;
   for (uint32_t i = 0; i < CHIMI_FUNCTION_COUNT; ++i)
-    if (CHIMI_NODE_FUNCTIONS[CHIMI_FUNCTIONS[i].body] == entry) { entry_node = CHIMI_FUNCTIONS[i].body; break; }
+    if (CHIMI_NODE_FUNCTIONS[CHIMI_FUNCTIONS[i].body] == entry) {
+      entry_node = CHIMI_FUNCTIONS[i].body;
+      entry_function = &CHIMI_FUNCTIONS[i];
+      break;
+    }
+  if (entry_function == NULL) return 70;
+  if (entry_function->parameters_length == 0 && index < argc) {
+    fputs("program entry does not accept application arguments\n", stderr);
+    return 64;
+  }
   if (benchmark_repeats > 0) {
     struct timespec started, finished;
     clock_gettime(CLOCK_MONOTONIC, &started);
@@ -1098,7 +1289,16 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       runtime.next_sequence = 0;
       runtime.next_span = 2;
       if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
-      ChimiControl *control = runtime.cancel ? cancelled() : entry(&runtime, new_environment(), 1);
+      ChimiEnvironment *environment = new_environment();
+      if (entry_function->parameters_length == 1) {
+        ChimiValue *arguments = new_value(VALUE_LIST);
+        arguments->as.list.length = (uint32_t)(argc - index);
+        arguments->as.list.items = allocate(arguments->as.list.length, sizeof(*arguments->as.list.items));
+        for (uint32_t argument = 0; argument < arguments->as.list.length; ++argument)
+          arguments->as.list.items[argument] = text_value(argv[index + (int32_t)argument]);
+        environment->locals[CHIMI_IDS[entry_function->parameters_offset]] = arguments;
+      }
+      ChimiControl *control = runtime.cancel ? cancelled() : entry(&runtime, environment, 1);
       if (control == NULL) return 70;
       if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
     }
@@ -1113,10 +1313,26 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     return write_failed ? 74 : 0;
   }
   if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
-  ChimiControl *control = runtime.cancel ? cancelled() : entry(&runtime, new_environment(), 1);
+  ChimiEnvironment *environment = new_environment();
+  if (entry_function->parameters_length == 1) {
+    ChimiValue *arguments = new_value(VALUE_LIST);
+    arguments->as.list.length = (uint32_t)(argc - index);
+    arguments->as.list.items = allocate(arguments->as.list.length, sizeof(*arguments->as.list.items));
+    for (uint32_t argument = 0; argument < arguments->as.list.length; ++argument)
+      arguments->as.list.items[argument] = text_value(argv[index + (int32_t)argument]);
+    environment->locals[CHIMI_IDS[entry_function->parameters_offset]] = arguments;
+  }
+  ChimiControl *control = runtime.cancel ? cancelled() : entry(&runtime, environment, 1);
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
   if (runtime.outcome) print_outcome(runtime.outcome, control);
   bool write_failed = close_output(runtime.telemetry);
   write_failed = close_output(runtime.outcome) || write_failed;
-  return write_failed ? 74 : 0;
+  if (write_failed) return 74;
+  switch (control->kind) {
+    case CONTROL_SUCCESS: return 0;
+    case CONTROL_FAILURE: return 1;
+    case CONTROL_DEFECT: return 70;
+    case CONTROL_CANCEL: return 130;
+  }
+  return 70;
 }

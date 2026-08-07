@@ -1,5 +1,6 @@
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/{name}.chimi", env!("CARGO_MANIFEST_DIR"))
@@ -264,7 +265,7 @@ fn native_runner_options_require_the_explicit_configuration_boundary() {
     assert!(execution.stdout.is_empty());
     assert!(
         String::from_utf8_lossy(&execution.stderr)
-            .contains("application arguments are not supported yet")
+            .contains("program entry does not accept application arguments")
     );
 
     let missing_telemetry = Command::new(&executable)
@@ -287,6 +288,133 @@ fn native_runner_options_require_the_explicit_configuration_boundary() {
         .expect("reject one file for both runner protocols");
     assert_eq!(shared_sinks.status.code(), Some(64));
     assert!(!shared_path.exists());
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_main_receives_arguments_and_uses_real_scoped_host_io() {
+    let scratch = scratch_directory("host-io");
+    let executable = scratch.join("host-io");
+    let project = repository_path("compiler/chimi/tests/fixtures/project-host-io");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", "--root"])
+        .arg(&project)
+        .args(["app/main", "-o"])
+        .arg(&executable)
+        .output()
+        .expect("build host-I/O fixture");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let input = scratch.join("input.txt");
+    std::fs::write(&input, "alpha\r\n\nβ").unwrap();
+    let telemetry = scratch.join("telemetry.jsonl");
+    let outcome = scratch.join("outcome.jsonl");
+    let execution = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=boundaries")
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg(format!("--outcome-file={}", outcome.display()))
+        .arg("--execution-id=host-io")
+        .arg("--")
+        .arg(&input)
+        .output()
+        .expect("execute real host-I/O fixture");
+
+    assert!(execution.status.success());
+    assert_eq!(String::from_utf8(execution.stdout).unwrap(), "alpha\n\nβ\n");
+    assert_eq!(
+        String::from_utf8(execution.stderr).unwrap(),
+        "processed input\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(outcome).unwrap(),
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":{\"type\":\"Void\"}}\n"
+    );
+    let telemetry = std::fs::read_to_string(telemetry).unwrap();
+    assert!(telemetry.contains("\"method\":\"process_utf8_lines\""));
+    assert_eq!(telemetry.matches("\"method\":\"write_line\"").count(), 3);
+    assert!(telemetry.contains("\"method\":\"write_error\""));
+
+    let stdin_outcome = scratch.join("stdin-outcome.jsonl");
+    let mut stdin_execution = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--outcome-file={}", stdin_outcome.display()))
+        .arg("--")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start stdin host-I/O fixture");
+    stdin_execution
+        .stdin
+        .take()
+        .unwrap()
+        .write_all("from stdin\n".as_bytes())
+        .unwrap();
+    let stdin_execution = stdin_execution.wait_with_output().unwrap();
+    assert!(stdin_execution.status.success());
+    assert_eq!(stdin_execution.stdout, b"from stdin\n");
+
+    let missing_outcome = scratch.join("missing-outcome.jsonl");
+    let missing = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--outcome-file={}", missing_outcome.display()))
+        .arg("--")
+        .output()
+        .expect("run without required application data");
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(
+        std::fs::read_to_string(missing_outcome)
+            .unwrap()
+            .contains("\"type\":\"UsageError\",\"variant\":\"MissingPath\"")
+    );
+
+    let invalid = scratch.join("invalid.txt");
+    std::fs::write(&invalid, [0xff]).unwrap();
+    let invalid_outcome = scratch.join("invalid-outcome.jsonl");
+    let invalid = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--outcome-file={}", invalid_outcome.display()))
+        .arg("--")
+        .arg(&invalid)
+        .output()
+        .expect("reject invalid UTF-8");
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(invalid.stdout.is_empty());
+    assert!(
+        std::fs::read_to_string(invalid_outcome)
+            .unwrap()
+            .contains("\"type\":\"Utf8Error\",\"variant\":\"InvalidUtf8\"")
+    );
+
+    let oversized = scratch.join("oversized.txt");
+    std::fs::write(&oversized, "four").unwrap();
+    let oversized_outcome = scratch.join("oversized-outcome.jsonl");
+    let oversized = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg("--max-line-bytes=3")
+        .arg(format!("--outcome-file={}", oversized_outcome.display()))
+        .arg("--")
+        .arg(&oversized)
+        .output()
+        .expect("enforce the configured line bound");
+    assert_eq!(oversized.status.code(), Some(1));
+    assert!(
+        std::fs::read_to_string(oversized_outcome)
+            .unwrap()
+            .contains("\"type\":\"FileError\",\"variant\":\"LineTooLong\"")
+    );
 
     std::fs::remove_dir_all(scratch).unwrap();
 }
@@ -408,7 +536,7 @@ fn native_json_decode_reports_malformed_input_as_an_expected_failure() {
     );
 
     let execution = execute_native(&executable, &scratch, "malformed-json", "off");
-    assert!(execution.process.status.success());
+    assert_eq!(execution.process.status.code(), Some(1));
     assert!(execution.outcome.starts_with(concat!(
         "{\"schema\":\"chimi.runtime.v1\",",
         "\"outcome\":\"expected_failure\",\"error\":",
@@ -587,7 +715,7 @@ fn direct_integer_overflow_returns_the_existing_runtime_defect() {
         String::from_utf8_lossy(&output.stderr)
     );
     let execution = execute_native(&executable, &scratch, "overflow", "off");
-    assert!(execution.process.status.success());
+    assert_eq!(execution.process.status.code(), Some(70));
     assert!(execution.outcome.contains("\"outcome\":\"defect\""));
     assert!(
         execution

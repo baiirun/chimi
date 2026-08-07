@@ -138,6 +138,10 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                 Some(StandardSymbol::Constructor(constructor)) => constructor.runtime_id(),
                 _ => u32::MAX,
             },
+            match symbol.standard {
+                Some(StandardSymbol::Type(kind)) => kind.runtime_id(),
+                _ => u32::MAX,
+            },
         ));
     }
 
@@ -322,8 +326,8 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         &symbols,
         |r| {
             format!(
-                "{{{}, {}, {}, {}, {}, {}, {}}}",
-                r.0, r.1, r.2, r.3, r.4, r.5, r.6
+                "{{{}, {}, {}, {}, {}, {}, {}, {}}}",
+                r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7
             )
         },
     );

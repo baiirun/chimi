@@ -262,7 +262,12 @@ impl TypedProject {
                 continue;
             };
             let row = self.needs_rows[contract.needs.raw() as usize].clone();
-            for need in row.entries.into_iter().filter(|need| !need.explained) {
+            let unresolved = row
+                .entries
+                .into_iter()
+                .filter(|need| !need.explained && !self.native_host_need(need.interface))
+                .collect::<Vec<_>>();
+            for need in unresolved {
                 self.diagnostics.push(Diagnostic::error(
                     DiagnosticStage::ExecutionSetup,
                     "E5002",
@@ -288,6 +293,20 @@ impl TypedProject {
                 ));
             }
         }
+    }
+
+    fn native_host_need(&self, interface: TypeId) -> bool {
+        matches!(
+            &self.types[interface.raw() as usize],
+            CanonicalType::Named { symbol, arguments }
+                if arguments.is_empty()
+                    && matches!(
+                        self.resolved.standard_symbol(*symbol),
+                        Some(StandardSymbol::Type(
+                            StandardType::Console | StandardType::FileSystem
+                        ))
+                    )
+        )
     }
 
     pub(crate) fn contract(
@@ -670,6 +689,8 @@ impl ProjectTypeChecker {
         let text = self.builtin_type("Text");
         let int = self.builtin_type("Int");
         let bool_type = self.builtin_type("Bool");
+        let void = self.builtin_type("Void");
+        let path = self.standard_named_type(StandardType::Path, Vec::new());
         let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
         let number = self.standard_named_type(StandardType::JsonNumber, Vec::new());
         let decode_failure = self.standard_failure_row(&[StandardConstructor::DecodeInvalidJson]);
@@ -677,6 +698,11 @@ impl ProjectTypeChecker {
             StandardConstructor::NumberNotInteger,
             StandardConstructor::NumberOutOfRange,
         ]);
+        let console_failure = self.standard_failure_row(&[StandardConstructor::ConsoleWriteFailed]);
+        let io_effect = self.intern_effect_row(EffectRow {
+            effects: vec![Effect::Io],
+            parameters: Vec::new(),
+        });
 
         let map_contracts = [
             (
@@ -771,6 +797,134 @@ impl ProjectTypeChecker {
                 needs: pure.1,
                 effects: pure.2,
             },
+        );
+        let io_path = self.standard_function_symbol(StandardFunction::IoPath);
+        self.contracts.insert(
+            io_path,
+            CallableContract {
+                inputs: vec![text],
+                success: path,
+                failures: pure.0,
+                needs: pure.1,
+                effects: pure.2,
+            },
+        );
+        let list_value = self.standard_generic_type(StandardGeneric::ListFirstValue);
+        let list = self.builtin_type_with_arguments("List", vec![list_value]);
+        let option = self.standard_named_type(StandardType::Option, vec![list_value]);
+        let list_first = self.standard_function_symbol(StandardFunction::ListFirst);
+        self.contracts.insert(
+            list_first,
+            CallableContract {
+                inputs: vec![list],
+                success: option,
+                failures: pure.0,
+                needs: pure.1,
+                effects: pure.2,
+            },
+        );
+        let list_length = self.standard_function_symbol(StandardFunction::ListLength);
+        let any_list_value = self.standard_generic_type(StandardGeneric::ListLengthValue);
+        let any_list = self.builtin_type_with_arguments("List", vec![any_list_value]);
+        self.contracts.insert(
+            list_length,
+            CallableContract {
+                inputs: vec![any_list],
+                success: int,
+                failures: pure.0,
+                needs: pure.1,
+                effects: pure.2,
+            },
+        );
+
+        let console = self.resolved.standard_type(StandardType::Console);
+        let console_method = self.intern_type(CanonicalType::Function(CallableContract {
+            inputs: vec![text],
+            success: void,
+            failures: console_failure,
+            needs: pure.1,
+            effects: io_effect,
+        }));
+        self.fields.insert(
+            console,
+            vec![
+                FieldShape {
+                    semantic_id: SemanticId::new(0),
+                    name: "write_line".to_owned(),
+                    type_id: console_method,
+                },
+                FieldShape {
+                    semantic_id: SemanticId::new(1),
+                    name: "write_error".to_owned(),
+                    type_id: console_method,
+                },
+            ],
+        );
+
+        let file_state = self.standard_generic_type(StandardGeneric::FileState);
+        let callback_failures = self.intern_failure_row(FailureRow {
+            variants: Vec::new(),
+            parameters: vec![
+                self.resolved
+                    .standard_generic(StandardGeneric::FileFailures),
+            ],
+        });
+        let callback_needs = self.intern_needs_row(NeedsRow {
+            entries: Vec::new(),
+            parameters: vec![self.resolved.standard_generic(StandardGeneric::FileNeeds)],
+        });
+        let callback_effects = self.intern_effect_row(EffectRow {
+            effects: Vec::new(),
+            parameters: vec![self.resolved.standard_generic(StandardGeneric::FileEffects)],
+        });
+        let callback = self.intern_type(CanonicalType::Function(CallableContract {
+            inputs: vec![file_state, text],
+            success: file_state,
+            failures: callback_failures,
+            needs: callback_needs,
+            effects: callback_effects,
+        }));
+        let file_failures = self.intern_failure_row(FailureRow {
+            variants: vec![
+                self.standard_constructor_symbol(StandardConstructor::FileClose),
+                self.standard_constructor_symbol(StandardConstructor::FileLineTooLong),
+                self.standard_constructor_symbol(StandardConstructor::FileOpen),
+                self.standard_constructor_symbol(StandardConstructor::FileRead),
+                self.standard_constructor_symbol(StandardConstructor::Utf8Invalid),
+            ],
+            parameters: vec![
+                self.resolved
+                    .standard_generic(StandardGeneric::FileFailures),
+            ],
+        });
+        let file_effects = self.intern_effect_row(EffectRow {
+            effects: vec![Effect::Io],
+            parameters: vec![self.resolved.standard_generic(StandardGeneric::FileEffects)],
+        });
+        let file_contract = CallableContract {
+            inputs: vec![path, file_state, callback],
+            success: file_state,
+            failures: file_failures,
+            needs: callback_needs,
+            effects: file_effects,
+        };
+        let file_method = self.intern_type(CanonicalType::PolymorphicFunction {
+            parameters: vec![
+                self.resolved.standard_generic(StandardGeneric::FileState),
+                self.resolved
+                    .standard_generic(StandardGeneric::FileFailures),
+                self.resolved.standard_generic(StandardGeneric::FileNeeds),
+                self.resolved.standard_generic(StandardGeneric::FileEffects),
+            ],
+            contract: file_contract,
+        });
+        self.fields.insert(
+            self.resolved.standard_type(StandardType::FileSystem),
+            vec![FieldShape {
+                semantic_id: SemanticId::new(0),
+                name: "process_utf8_lines".to_owned(),
+                type_id: file_method,
+            }],
         );
 
         for constructor in StandardConstructor::ALL {
@@ -935,6 +1089,24 @@ impl ProjectTypeChecker {
         let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
         let number = self.standard_named_type(StandardType::JsonNumber, Vec::new());
         match constructor {
+            StandardConstructor::ConsoleWriteFailed => (
+                vec![text, text],
+                self.standard_named_type(StandardType::ConsoleError, Vec::new()),
+            ),
+            StandardConstructor::FileClose
+            | StandardConstructor::FileOpen
+            | StandardConstructor::FileRead => (
+                vec![text, text],
+                self.standard_named_type(StandardType::FileError, Vec::new()),
+            ),
+            StandardConstructor::FileLineTooLong => (
+                vec![text, int],
+                self.standard_named_type(StandardType::FileError, Vec::new()),
+            ),
+            StandardConstructor::Utf8Invalid => (
+                vec![text, int],
+                self.standard_named_type(StandardType::Utf8Error, Vec::new()),
+            ),
             StandardConstructor::OptionSome => {
                 let value = self.standard_generic_type(StandardGeneric::OptionValue);
                 (

@@ -2782,6 +2782,43 @@ mod tests {
     }
 
     #[test]
+    fn oracle_supplies_arguments_and_scoped_host_capabilities() {
+        let input = std::env::temp_dir().join(format!(
+            "chimi-oracle-host-io-{}-{:?}.txt",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&input, "alpha\r\n\nβ").unwrap();
+        let report = Compiler::run_project(
+            vec![module(
+                "app/main",
+                "app/main.chimi",
+                include_str!("../tests/fixtures/project-host-io/app/main.chimi"),
+            )],
+            ExecutionConfig::new("oracle-host-io")
+                .unwrap()
+                .with_application_arguments([input.to_string_lossy()]),
+        )
+        .expect("host-capability root executes through the oracle");
+
+        assert_eq!(
+            report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Void)
+        );
+        assert_eq!(report.application_stdout, "alpha\n\nβ\n");
+        assert_eq!(report.application_stderr, "processed input\n");
+        assert_eq!(
+            report
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::DependencyCalled)
+                .count(),
+            5
+        );
+        std::fs::remove_file(input).unwrap();
+    }
+
+    #[test]
     fn module_binding_closure_inference_converges() {
         let report = Compiler::type_project(vec![module(
             "typing/closure_binding",

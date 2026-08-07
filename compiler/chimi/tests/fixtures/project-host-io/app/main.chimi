@@ -1,0 +1,25 @@
+import std/io as IO
+import std/io.{Console}
+import std/io.{FileSystem}
+
+enum UsageError {
+  MissingPath
+}
+
+pub fn main(arguments: List<Text>) -> Void
+  needs {
+    files: FileSystem,
+    console: Console,
+  }
+  effects { io } {
+  case List.first(arguments) {
+    Some(path) -> {
+      let processed = files.process_utf8_lines(IO.path(path), 0, fn(count, line) {
+        console.write_line(line)
+        count + 1
+      })
+      console.write_error("processed input")
+    }
+    None -> Failure(MissingPath())
+  }
+}

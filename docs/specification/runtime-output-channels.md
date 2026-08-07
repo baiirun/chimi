@@ -57,15 +57,22 @@ program --chimi-runner \
   --telemetry-file=/path/to/trace.jsonl \
   --outcome-file=/path/to/outcome.jsonl \
   --execution-id=example \
+  --max-line-bytes=1048576 \
   -- \
   application arguments
 ```
 
-Supported trace modes are `off`, `boundaries`, and `full`. Cancellation and
-benchmark configuration remain runner-owned options inside the same boundary.
-Until `ts-e2d9a9` connects arguments to `main`, a native executable accepts no
-application arguments and reports them as unsupported rather than consuming
-them as runner options.
+Supported trace modes are `off`, `boundaries`, and `full`. Cancellation,
+benchmark configuration, and the maximum UTF-8 line size remain runner-owned
+options inside the same boundary. Arguments after `--` are passed as the one
+`List<Text>` input to `main`; without a runner marker, every process argument is
+application data. A zero-input `main()` rejects nonempty application arguments
+rather than silently discarding them.
+
+An ordinary success exits zero, an expected failure exits 1, a defect exits 70,
+and cancellation exits 130. Sink failures exit 74 and invalid runner
+configuration exits 64. The terminal record remains available only through the
+outcome sink; exit status does not copy it into an application stream.
 
 Telemetry contains event records only:
 
