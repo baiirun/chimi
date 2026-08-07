@@ -64,7 +64,13 @@ cargo run -q -p chimi -- build \
   --root programs/chimi-trace-summary \
   app/main \
   -o target/chimi-trace-summary
-target/chimi-trace-summary target/execution.jsonl
+```
+
+Summarize the checkout execution produced above:
+
+```sh
+cat target/checkout.trace.jsonl target/checkout.outcome.jsonl \
+  | target/chimi-trace-summary -
 ```
 
 See `programs/chimi-trace-summary/README.md` for input rules and runner options.

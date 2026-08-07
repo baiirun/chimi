@@ -15,18 +15,40 @@ cargo run -q -p chimi -- build \
 
 ## Quick Start
 
-Summarize a combined telemetry and outcome file.
+Build an instrumented Chimi program.
 
 ```sh
-target/chimi-trace-summary target/execution.jsonl
+cargo run -q -p chimi -- build \
+  prototypes/golden/valid/dependencies_and_execution.chimi \
+  -o target/checkout
+```
+
+Export its telemetry and terminal outcome.
+
+```sh
+target/checkout \
+  --chimi-runner \
+  --trace=boundaries \
+  --telemetry-file=target/checkout.trace.jsonl \
+  --outcome-file=target/checkout.outcome.jsonl \
+  --
+```
+
+Summarize both streams through standard input.
+
+```sh
+cat target/checkout.trace.jsonl target/checkout.outcome.jsonl \
+  | target/chimi-trace-summary -
 ```
 
 ## Usage
 
-Pass `-` to consume standard input.
+Combine both streams before using a file argument.
 
 ```sh
-cat target/execution.jsonl | target/chimi-trace-summary -
+cat target/checkout.trace.jsonl target/checkout.outcome.jsonl \
+  > target/checkout.execution.jsonl
+target/chimi-trace-summary target/checkout.execution.jsonl
 ```
 
 Export the summarizer's own telemetry separately.
@@ -38,7 +60,7 @@ target/chimi-trace-summary \
   --telemetry-file=target/summary.trace.jsonl \
   --outcome-file=target/summary.outcome.jsonl \
   -- \
-  target/execution.jsonl
+  target/checkout.execution.jsonl
 ```
 
 ## Configuration
