@@ -2761,23 +2761,35 @@ mod tests {
             vec![module(
                 "app/main",
                 "app/main.chimi",
-                include_str!("../tests/fixtures/project-trace-summary/app/main.chimi"),
+                include_str!("../../../programs/chimi-trace-summary/app/main.chimi"),
             )],
-            ExecutionConfig::new("trace-summary-core").unwrap(),
+            ExecutionConfig::new("trace-summary-core")
+                .unwrap()
+                .with_application_arguments(["-"])
+                .with_standard_input(concat!(
+                    "{\"schema\":\"chimi.runtime.v1\",\"event\":\"operation_completed\",",
+                    "\"sequence\":0,\"execution_id\":\"example\",\"computation\":\"main\",",
+                    "\"operation\":\"call\"}\n",
+                    "{\"schema\":\"chimi.runtime.v1\",\"event\":\"dependency_called\",",
+                    "\"sequence\":1,\"execution_id\":\"example\",\"computation\":\"main\",",
+                    "\"attributes\":{\"requirement\":\"payment\",\"method\":\"charge\"}}\n",
+                    "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n",
+                )),
         )
-        .expect("trace classification and aggregation execute through ordinary Chimi code");
+        .expect("trace summary executes through ordinary Chimi code");
 
         assert_eq!(
             report.outcome,
-            ExecutionOutcome::Success(ExecutionValue::Text(
-                concat!(
-                    "{\"dependency_calls\":{\"payment.charge\":1},",
-                    "\"events\":2,\"operations\":{\"call\":1},",
-                    "\"records\":3,\"schema\":\"chimi.trace-summary.v1\",",
-                    "\"terminal_outcomes\":{\"success\":1}}",
-                )
-                .to_owned(),
-            ))
+            ExecutionOutcome::Success(ExecutionValue::Void)
+        );
+        assert_eq!(
+            report.application_stdout,
+            concat!(
+                "{\"dependency_calls\":{\"payment.charge\":1},",
+                "\"events\":2,\"operations\":{\"call\":1},",
+                "\"records\":3,\"schema\":\"chimi.trace-summary.v1\",",
+                "\"terminal_outcomes\":{\"success\":1}}\n",
+            )
         );
     }
 

@@ -143,10 +143,10 @@ rows.
 | Compiler | Callable contracts carry success, failure, needs, and effect rows through typing, inspection, and executable metadata. | Implement no additional compiler channel for the first CLI. | `ts-5b0547` |
 | Language and standard library | `Text`, `Int`, `Bool`, `List`, `Option`, structs, enums, records, case expressions, pipelines, and the accepted [trace data and processing](../specification/trace-data-and-processing.md) contract exist. | Implement the accepted JSON, immutable map, and bounded line-processing behavior. | `ts-2ac2de` |
 | Runtime contract | The versioned [`chimi.runtime.v1`](../specification/runtime-output-channels.md) export separates telemetry, terminal outcomes, application streams, and an optional memory report. | Preserve the contract while validating the maintained CLI. | `ts-65a567` |
-| Program boundary | `main()` and `main(List<Text>)` seal; the native runner supplies arguments after its reserved boundary and installs the standard `FileSystem` and `Console` providers. | Use the connected boundary in the maintained trace summarizer. | `ts-65a567` |
-| Standard library | Module-qualified JSON, persistent maps, list argument access, nominal paths, bounded `process_utf8_lines`, and stdout/stderr console operations execute through both the oracle and native AOT paths. | Use the surface from the maintained summarizer. | `ts-65a567` |
+| Program boundary | `main()` and `main(List<Text>)` seal; the native runner supplies arguments after its reserved boundary and installs the standard `FileSystem` and `Console` providers. | Keep the boundary stable while adding programs. | complete |
+| Standard library | Module-qualified JSON, persistent maps, list and text operations, nominal paths, bounded `process_utf8_lines`, and console operations execute through both the oracle and native AOT paths. | Grow only from another maintained call site. | complete |
 | Native memory | `process_utf8_lines` precisely retains callback state and reclaims unreachable line-local values; the runtime can emit an optional scoped memory report. | Reduce the measured per-record allocation churn without changing ownership semantics. | future optimization |
-| Application | `chimi build` produces one executable and reports linked system dependencies. | Write the maintained Chimi program and validate real trace inputs, failures, performance, and artifact shape. | `ts-65a567` |
+| Application | `programs/chimi-trace-summary` builds one executable, validates real runtime traces, emits deterministic summaries, and carries end-to-end and performance evidence. | Use it against compiler development traces. | complete |
 
 Direct lowering beyond pure integer expressions is not a prerequisite. The
 final performance evidence MAY graduate a measured hotspot into a separate
@@ -212,6 +212,5 @@ than mocks of compiler or runtime internals.
 - `ts-da83af`: bound native allocation for streaming workloads.
 - `ts-65a567`: build and validate `chimi-trace-summary`.
 
-The first three follow-up decisions may proceed independently after this
-inventory. Implementation and final validation remain dependency-gated in
-`prog`.
+Every work-map ticket is complete. The maintained program, native integration
+goldens, and performance baseline are the final evidence for `ep-0738db`.

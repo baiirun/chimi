@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 4
+#define CHIMI_RUNTIME_ABI_VERSION 5
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -53,6 +53,7 @@ enum {
   CHIMI_INTRINSIC_JSON_OBJECT,
   CHIMI_INTRINSIC_JSON_NUMBER_TO_INT,
   CHIMI_INTRINSIC_TEXT_APPEND,
+  CHIMI_INTRINSIC_TEXT_EQUAL,
 };
 
 enum {

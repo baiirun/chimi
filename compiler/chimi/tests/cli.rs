@@ -624,9 +624,9 @@ fn native_json_decode_reports_malformed_input_as_an_expected_failure() {
 
 #[test]
 fn native_chimi_code_classifies_and_aggregates_trace_records() {
-    let scratch = scratch_directory("trace-summary-core");
-    let executable = scratch.join("trace-summary-core");
-    let root = repository_path("compiler/chimi/tests/fixtures/project-trace-summary");
+    let scratch = scratch_directory("trace-summary");
+    let executable = scratch.join("chimi-trace-summary");
+    let root = repository_path("programs/chimi-trace-summary");
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .current_dir(&scratch)
         .args(["build", "--root"])
@@ -634,27 +634,342 @@ fn native_chimi_code_classifies_and_aggregates_trace_records() {
         .args(["app/main", "-o"])
         .arg(&executable)
         .output()
-        .expect("build the pure Chimi trace-summary core");
+        .expect("build chimi-trace-summary");
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let execution = execute_native(&executable, &scratch, "trace-summary", "off");
+    let producer = scratch.join("producer");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", &fixture("success"), "-o"])
+        .arg(&producer)
+        .output()
+        .expect("build trace producer");
+    assert!(build.status.success());
+
+    let capture = |producer: &Path, name: &str, trace: &str, cancel: bool| {
+        let telemetry = scratch.join(format!("{name}-source-telemetry.jsonl"));
+        let outcome = scratch.join(format!("{name}-source-outcome.jsonl"));
+        let mut command = Command::new(producer);
+        command
+            .arg("--chimi-runner")
+            .arg(format!("--trace={trace}"))
+            .arg(format!("--telemetry-file={}", telemetry.display()))
+            .arg(format!("--outcome-file={}", outcome.display()))
+            .arg(format!("--execution-id=source-{name}"));
+        if cancel {
+            command.arg("--cancel");
+        }
+        let output = command.arg("--").output().expect("capture native trace");
+        assert!(output.status.code().is_some());
+        let input = scratch.join(format!("{name}-input.jsonl"));
+        let records = format!(
+            "{}{}",
+            std::fs::read_to_string(telemetry).unwrap(),
+            std::fs::read_to_string(outcome).unwrap()
+        );
+        std::fs::write(&input, records).unwrap();
+        input
+    };
+
+    let summarize = |input: &Path, name: &str, trace: &str, max_line_bytes: Option<usize>| {
+        let telemetry = scratch.join(format!("{name}-summary-telemetry.jsonl"));
+        let outcome = scratch.join(format!("{name}-summary-outcome.jsonl"));
+        let mut command = Command::new(&executable);
+        command
+            .arg("--chimi-runner")
+            .arg(format!("--trace={trace}"))
+            .arg(format!("--telemetry-file={}", telemetry.display()))
+            .arg(format!("--outcome-file={}", outcome.display()))
+            .arg(format!("--execution-id=summary-{name}"));
+        if let Some(limit) = max_line_bytes {
+            command.arg(format!("--max-line-bytes={limit}"));
+        }
+        let process = command
+            .arg("--")
+            .arg(input)
+            .output()
+            .expect("execute chimi-trace-summary");
+        NativeExecution {
+            process,
+            telemetry: std::fs::read_to_string(telemetry).unwrap(),
+            outcome: std::fs::read_to_string(outcome).unwrap(),
+        }
+    };
+
+    let modes = [
+        (
+            "off",
+            concat!(
+                "{\"dependency_calls\":{},\"events\":0,\"operations\":{},",
+                "\"records\":1,\"schema\":\"chimi.trace-summary.v1\",",
+                "\"terminal_outcomes\":{\"success\":1}}\n",
+            ),
+        ),
+        (
+            "boundaries",
+            concat!(
+                "{\"dependency_calls\":{},\"events\":2,\"operations\":{},",
+                "\"records\":3,\"schema\":\"chimi.trace-summary.v1\",",
+                "\"terminal_outcomes\":{\"success\":1}}\n",
+            ),
+        ),
+        (
+            "full",
+            concat!(
+                "{\"dependency_calls\":{},\"events\":8,",
+                "\"operations\":{\"constant\":1,\"construct\":1,\"sequence\":1},",
+                "\"records\":9,\"schema\":\"chimi.trace-summary.v1\",",
+                "\"terminal_outcomes\":{\"success\":1}}\n",
+            ),
+        ),
+    ];
+    for (mode, expected) in modes {
+        let input = capture(&producer, mode, mode, false);
+        let summary_modes: &[&str] = if mode == "boundaries" {
+            &["off", "boundaries", "full"]
+        } else {
+            &[mode]
+        };
+        for summary_mode in summary_modes {
+            let name = format!("{mode}-under-{summary_mode}");
+            let execution = summarize(&input, &name, summary_mode, None);
+            assert!(execution.process.status.success(), "{name}");
+            assert_eq!(
+                String::from_utf8(execution.process.stdout).unwrap(),
+                expected
+            );
+            assert!(execution.process.stderr.is_empty());
+            assert!(execution.outcome.contains("\"outcome\":\"success\""));
+            if *summary_mode == "off" {
+                assert!(execution.telemetry.is_empty());
+            } else {
+                assert!(!execution.telemetry.is_empty());
+            }
+        }
+    }
+
+    let dependency = scratch.join("dependency-producer");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(repository_path(
+            "prototypes/golden/valid/dependencies_and_execution.chimi",
+        ))
+        .arg("-o")
+        .arg(&dependency)
+        .output()
+        .expect("build dependency trace producer");
+    assert!(build.status.success());
+    let input = capture(&dependency, "dependency", "boundaries", false);
+    let execution = summarize(&input, "dependency", "off", None);
     assert!(execution.process.status.success());
-    assert!(execution.process.stderr.is_empty());
     assert_eq!(
-        execution.outcome,
+        String::from_utf8(execution.process.stdout).unwrap(),
         concat!(
-            "{\"schema\":\"chimi.runtime.v1\",",
-            "\"outcome\":\"success\",\"value\":\"",
-            "{\\\"dependency_calls\\\":{\\\"payment.charge\\\":1},",
-            "\\\"events\\\":2,\\\"operations\\\":{\\\"call\\\":1},",
-            "\\\"records\\\":3,\\\"schema\\\":\\\"chimi.trace-summary.v1\\\",",
-            "\\\"terminal_outcomes\\\":{\\\"success\\\":1}}",
-            "\"}\n",
+            "{\"dependency_calls\":{\"inventory.reserve\":1,\"payment.charge\":1},",
+            "\"events\":4,\"operations\":{},\"records\":5,",
+            "\"schema\":\"chimi.trace-summary.v1\",",
+            "\"terminal_outcomes\":{\"success\":1}}\n",
         )
+    );
+
+    let defect = scratch.join("defect-producer");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(repository_path(
+            "prototypes/backend-comparison/defect.chimi",
+        ))
+        .arg("-o")
+        .arg(&defect)
+        .output()
+        .expect("build defect trace producer");
+    assert!(build.status.success());
+
+    let failure_project = scratch.join("failure-project");
+    std::fs::create_dir_all(failure_project.join("app")).unwrap();
+    std::fs::write(
+        failure_project.join("app/main.chimi"),
+        concat!(
+            "import std/json as Json\n",
+            "import std/json.{Value}\n\n",
+            "pub fn main() -> Value { Json.decode(\"{\") }\n",
+        ),
+    )
+    .unwrap();
+    let failure = scratch.join("failure-producer");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", "--root"])
+        .arg(&failure_project)
+        .args(["app/main", "-o"])
+        .arg(&failure)
+        .output()
+        .expect("build expected-failure trace producer");
+    assert!(build.status.success());
+
+    let terminal_cases = [
+        (&failure, "expected-failure", false, "expected_failure"),
+        (&defect, "defect", false, "defect"),
+        (&producer, "cancellation", true, "cancellation"),
+    ];
+    for (producer, name, cancel, outcome) in terminal_cases {
+        let input = capture(producer, name, "off", cancel);
+        let execution = summarize(&input, name, "off", None);
+        assert!(execution.process.status.success(), "{name}");
+        assert_eq!(
+            String::from_utf8(execution.process.stdout).unwrap(),
+            format!(
+                concat!(
+                    "{{\"dependency_calls\":{{}},\"events\":0,\"operations\":{{}},",
+                    "\"records\":1,\"schema\":\"chimi.trace-summary.v1\",",
+                    "\"terminal_outcomes\":{{\"{}\":1}}}}\n",
+                ),
+                outcome
+            )
+        );
+    }
+
+    let invalid_cases = [
+        (
+            "malformed",
+            "{\n",
+            "\"type\":\"TraceError\",\"variant\":\"InvalidJson\",\"fields\":{\"line\":1}",
+        ),
+        (
+            "blank",
+            "\n",
+            "\"type\":\"TraceError\",\"variant\":\"BlankLine\",\"fields\":{\"line\":1}",
+        ),
+        (
+            "schema",
+            "{\"schema\":\"other.v1\",\"outcome\":\"success\"}\n",
+            "\"type\":\"TraceError\",\"variant\":\"InvalidSchema\",\"fields\":{\"line\":1}",
+        ),
+        (
+            "event",
+            concat!(
+                "{\"schema\":\"chimi.runtime.v1\",\"event\":\"unknown\",",
+                "\"sequence\":0,\"execution_id\":\"one\",\"computation\":\"main\"}\n",
+            ),
+            "\"type\":\"TraceError\",\"variant\":\"InvalidEvent\",\"fields\":{\"line\":1}",
+        ),
+        (
+            "missing-outcome",
+            concat!(
+                "{\"schema\":\"chimi.runtime.v1\",\"event\":\"computation_started\",",
+                "\"sequence\":0,\"execution_id\":\"one\",\"computation\":\"main\"}\n",
+            ),
+            "\"type\":\"TraceError\",\"variant\":\"MissingOutcome\",\"fields\":{\"line\":2}",
+        ),
+        (
+            "mixed-execution",
+            concat!(
+                "{\"schema\":\"chimi.runtime.v1\",\"event\":\"computation_started\",",
+                "\"sequence\":0,\"execution_id\":\"one\",\"computation\":\"main\"}\n",
+                "{\"schema\":\"chimi.runtime.v1\",\"event\":\"computation_completed\",",
+                "\"sequence\":1,\"execution_id\":\"two\",\"computation\":\"main\"}\n",
+            ),
+            "\"type\":\"TraceError\",\"variant\":\"MixedExecution\",\"fields\":{\"line\":2}",
+        ),
+        (
+            "sequence",
+            concat!(
+                "{\"schema\":\"chimi.runtime.v1\",\"event\":\"computation_started\",",
+                "\"sequence\":1,\"execution_id\":\"one\",\"computation\":\"main\"}\n",
+                "{\"schema\":\"chimi.runtime.v1\",\"event\":\"computation_completed\",",
+                "\"sequence\":1,\"execution_id\":\"one\",\"computation\":\"main\"}\n",
+            ),
+            "\"type\":\"TraceError\",\"variant\":\"InvalidSequence\",\"fields\":{\"line\":2}",
+        ),
+        (
+            "mixed-computation",
+            concat!(
+                "{\"schema\":\"chimi.runtime.v1\",\"event\":\"computation_started\",",
+                "\"sequence\":0,\"execution_id\":\"one\",\"computation\":\"main\"}\n",
+                "{\"schema\":\"chimi.runtime.v1\",\"event\":\"computation_completed\",",
+                "\"sequence\":1,\"execution_id\":\"one\",\"computation\":\"other\"}\n",
+            ),
+            "\"type\":\"TraceError\",\"variant\":\"MixedComputation\",\"fields\":{\"line\":2}",
+        ),
+        (
+            "after-outcome",
+            concat!(
+                "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":1}\n",
+                "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":1}\n",
+            ),
+            "\"type\":\"TraceError\",\"variant\":\"RecordAfterOutcome\",\"fields\":{\"line\":2}",
+        ),
+    ];
+    for (name, source, expected_error) in invalid_cases {
+        let input = scratch.join(format!("invalid-{name}.jsonl"));
+        std::fs::write(&input, source).unwrap();
+        let execution = summarize(&input, &format!("invalid-{name}"), "off", None);
+        assert_eq!(execution.process.status.code(), Some(1), "{name}");
+        assert!(execution.process.stdout.is_empty(), "{name}");
+        assert_eq!(
+            execution.process.stderr, b"trace summary failed\n",
+            "{name}"
+        );
+        assert!(execution.outcome.contains(expected_error), "{name}");
+    }
+
+    let oversized = scratch.join("oversized-summary-input.jsonl");
+    std::fs::write(&oversized, "{\"schema\":\"chimi.runtime.v1\"}\n").unwrap();
+    let execution = summarize(&oversized, "oversized", "off", Some(8));
+    assert_eq!(execution.process.status.code(), Some(1));
+    assert!(execution.process.stdout.is_empty());
+    assert_eq!(
+        execution.process.stderr,
+        b"trace summary input record is too large\n"
+    );
+    assert!(execution.outcome.contains("\"variant\":\"LineTooLong\""));
+
+    let invalid_utf8 = scratch.join("invalid-utf8-summary-input.jsonl");
+    std::fs::write(&invalid_utf8, [0xff]).unwrap();
+    let execution = summarize(&invalid_utf8, "invalid-utf8", "off", None);
+    assert_eq!(execution.process.status.code(), Some(1));
+    assert!(execution.process.stdout.is_empty());
+    assert_eq!(
+        execution.process.stderr,
+        b"trace summary input is not UTF-8\n"
+    );
+    assert!(execution.outcome.contains("\"variant\":\"InvalidUtf8\""));
+
+    let missing = summarize(
+        &scratch.join("does-not-exist.jsonl"),
+        "missing-file",
+        "off",
+        None,
+    );
+    assert_eq!(missing.process.status.code(), Some(1));
+    assert!(missing.process.stdout.is_empty());
+    assert_eq!(missing.process.stderr, b"trace summary file IO failed\n");
+    assert!(missing.outcome.contains("\"variant\":\"Open\""));
+
+    let usage = Command::new(&executable)
+        .output()
+        .expect("reject missing application argument");
+    assert_eq!(usage.status.code(), Some(1));
+    assert!(usage.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(usage.stderr).unwrap(),
+        "usage: chimi-trace-summary <path-or-dash>\n"
+    );
+
+    let extra = Command::new(&executable)
+        .args(["one", "two"])
+        .output()
+        .expect("reject extra application arguments");
+    assert_eq!(extra.status.code(), Some(1));
+    assert!(extra.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(extra.stderr).unwrap(),
+        "usage: chimi-trace-summary <path-or-dash>\n"
     );
 
     std::fs::remove_dir_all(scratch).unwrap();

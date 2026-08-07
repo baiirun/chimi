@@ -413,14 +413,15 @@ off-mode p50 from 12,745 ns to 175 ns and boundary p50 from 16,768 ns to
 4,088 ns without a measurable full-trace regression. The accepted scope and
 measurements are in `docs/performance/native-direct-integer-baseline.md`.
 
-The post-kernel map now moves from compiler proving scenarios to one maintained
-program. `prog show ep-0738db` tracks `chimi-trace-summary`, a Chimi CLI that
-consumes versioned runtime JSONL and emits a deterministic execution summary.
-Its contract and capability inventory are in
-`docs/plans/first-useful-cli.md`. The first frontier separates synchronous
-effects from dependency needs, defines the minimum functional data-processing
-surface, and separates application output from telemetry before platform I/O,
-memory reclamation, or application implementation begins.
+The first post-kernel map is complete. `programs/chimi-trace-summary` is a
+maintained Chimi CLI that consumes versioned runtime JSONL and emits a
+deterministic execution summary. It exercises arguments, scoped host I/O,
+failure values, functional aggregation, optional tracing, bounded native
+memory, and single-executable distribution. Its contract is in
+`docs/plans/first-useful-cli.md`; measured application evidence is in
+`docs/performance/chimi-trace-summary-baseline.md`. The measured allocation
+rate, rather than retained memory or a missing language channel, is the next
+known execution-performance frontier.
 
 The first post-kernel semantic extension (`prog show ts-8cec2f`) adds an
 inferred effect row independent of failures and dependency needs. `FileSystem`

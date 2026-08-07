@@ -75,6 +75,7 @@ pub(crate) enum StandardFunction {
     JsonObject,
     JsonNumberToInt,
     TextAppend,
+    TextEqual,
 }
 
 impl StandardFunction {
@@ -109,7 +110,7 @@ impl StandardFunction {
             | Self::JsonArray
             | Self::JsonObject
             | Self::JsonNumberToInt => Some(StandardModule::Json),
-            Self::ListFirst | Self::ListLength | Self::TextAppend => None,
+            Self::ListFirst | Self::ListLength | Self::TextAppend | Self::TextEqual => None,
         }
     }
 
@@ -132,6 +133,7 @@ impl StandardFunction {
             Self::JsonObject => "object",
             Self::JsonNumberToInt => "number_to_int",
             Self::TextAppend => "append",
+            Self::TextEqual => "equal",
         }
     }
 

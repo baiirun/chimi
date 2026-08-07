@@ -57,6 +57,18 @@ Native executables leave stdout and stderr to the application. Runner telemetry
 and the terminal outcome are optional, versioned JSONL exports written only to
 their explicitly configured files.
 
+Build the maintained trace summarizer:
+
+```sh
+cargo run -q -p chimi -- build \
+  --root programs/chimi-trace-summary \
+  app/main \
+  -o target/chimi-trace-summary
+target/chimi-trace-summary target/execution.jsonl
+```
+
+See `programs/chimi-trace-summary/README.md` for input rules and runner options.
+
 `build` prints a versioned `chimi.build.v1` report and writes the same report
 as `target/chimi/checkout/build.json`. The report identifies the Cranelift
 backend and runtime ABI, separately cacheable module, metadata, and runtime

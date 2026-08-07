@@ -456,7 +456,7 @@ impl ProjectResolver {
             let member_names: &[&str] = match module_name {
                 "Int" => &["to_text"],
                 "List" => &["first", "length"],
-                "Text" => &["append"],
+                "Text" => &["append", "equal"],
                 _ => unreachable!(),
             };
             let mut members = HashMap::new();
@@ -474,6 +474,7 @@ impl ProjectResolver {
                     ("List", "first") => Some(StandardFunction::ListFirst),
                     ("List", "length") => Some(StandardFunction::ListLength),
                     ("Text", "append") => Some(StandardFunction::TextAppend),
+                    ("Text", "equal") => Some(StandardFunction::TextEqual),
                     _ => None,
                 };
                 if let Some(standard) = standard {

@@ -149,6 +149,7 @@ Json.text(Text) -> Value
 Json.array(List<Value>) -> Value
 Json.object(Map<Text, Value>) -> Value
 Json.number_to_int(Number) -> Int errors NumberError
+Text.equal(Text, Text) -> Bool
 ```
 
 `Json.encode` MUST recursively sort object keys by ascending UTF-8 bytes. It
@@ -162,6 +163,9 @@ uses the short JSON escapes for backspace, form feed, newline, carriage return,
 and tab, and uses lowercase four-digit Unicode escapes for other control
 characters. `Json.int` encodes canonical base-ten integers. A decoded opaque
 `Number` retains its validated source spelling when re-encoded.
+`Text.equal` compares Unicode scalar sequences exactly and performs no locale,
+case, or normalization folding. It remains a general text operation; trace
+identity is application policy.
 
 ## Interfaces
 

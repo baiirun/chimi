@@ -1,0 +1,315 @@
+import std/io as IO
+import std/io.{Close}
+import std/io.{Console}
+import std/io.{FileSystem}
+import std/io.{InvalidUtf8}
+import std/io.{LineTooLong}
+import std/io.{Open}
+import std/io.{Read}
+import std/json as Json
+import std/json.{Number}
+import std/json.{Value}
+import std/map as Map
+import std/map.{Map}
+
+struct Summary {
+  line: Int,
+  records: Int,
+  events: Int,
+  previous_sequence: Option<Int>,
+  execution_id: Option<Text>,
+  computation: Option<Text>,
+  terminal_seen: Bool,
+  operations: Map<Text, Int>,
+  dependency_calls: Map<Text, Int>,
+  terminal_outcomes: Map<Text, Int>,
+}
+
+enum TraceError {
+  InvalidArgumentCount(actual: Int)
+  BlankLine(line: Int)
+  InvalidJson(line: Int)
+  InvalidSchema(line: Int)
+  InvalidRecord(line: Int)
+  InvalidEvent(line: Int)
+  InvalidSequence(line: Int)
+  MixedExecution(line: Int)
+  MixedComputation(line: Int)
+  RecordAfterOutcome(line: Int)
+  MissingOutcome(line: Int)
+}
+
+fn increment(counts: Map<Text, Int>, key: Text) {
+  Map.update(counts, key, fn(current) {
+    case current {
+      Some(count) -> count + 1
+      None -> 1
+    }
+  })
+}
+
+fn empty() -> Summary {
+  Summary(
+    line: 1,
+    records: 0,
+    events: 0,
+    previous_sequence: None(),
+    execution_id: None(),
+    computation: None(),
+    terminal_seen: False,
+    operations: Map.empty(),
+    dependency_calls: Map.empty(),
+    terminal_outcomes: Map.empty(),
+  )
+}
+
+fn same_execution(current: Option<Text>, candidate: Text, line: Int) {
+  case current {
+    Some(value) -> case Text.equal(value, candidate) {
+      True -> current
+      False -> Failure(MixedExecution(line: line))
+    }
+    None -> Some(candidate)
+  }
+}
+
+fn same_computation(current: Option<Text>, candidate: Text, line: Int) {
+  case current {
+    Some(value) -> case Text.equal(value, candidate) {
+      True -> current
+      False -> Failure(MixedComputation(line: line))
+    }
+    None -> Some(candidate)
+  }
+}
+
+fn increasing_sequence(previous: Option<Int>, raw: Number, line: Int) {
+  case Json.number_to_int(raw) {
+    Success(sequence) -> case previous {
+      Some(value) -> case sequence > value {
+        True -> Some(sequence)
+        False -> Failure(InvalidSequence(line: line))
+      }
+      None -> Some(sequence)
+    }
+    Failure(_) -> Failure(InvalidSequence(line: line))
+  }
+}
+
+fn validate_schema(fields: Map<Text, Value>, line: Int) {
+  case Map.get(fields, "schema") {
+    Some(Value.Text(schema)) -> case Text.equal(schema, "chimi.runtime.v1") {
+      True -> fields
+      False -> Failure(InvalidSchema(line: line))
+    }
+    _ -> Failure(InvalidSchema(line: line))
+  }
+}
+
+fn validate_event_context(state: Summary, fields: Map<Text, Value>) {
+  case Map.get(fields, "sequence"), Map.get(fields, "execution_id"), Map.get(fields, "computation") {
+    Some(Value.Number(sequence)), Some(Value.Text(execution_id)), Some(Value.Text(computation)) -> {
+      let next_sequence = increasing_sequence(state.previous_sequence, sequence, state.line)
+      let next_execution = same_execution(state.execution_id, execution_id, state.line)
+      let next_computation = same_computation(state.computation, computation, state.line)
+      Summary(
+        line: state.line,
+        records: state.records,
+        events: state.events,
+        previous_sequence: next_sequence,
+        execution_id: next_execution,
+        computation: next_computation,
+        terminal_seen: state.terminal_seen,
+        operations: state.operations,
+        dependency_calls: state.dependency_calls,
+        terminal_outcomes: state.terminal_outcomes,
+      )
+    }
+    _, _, _ -> Failure(InvalidRecord(line: state.line))
+  }
+}
+
+fn add_dependency(state: Summary, attributes: Map<Text, Value>) {
+  case Map.get(attributes, "requirement"), Map.get(attributes, "method") {
+    Some(Value.Text(requirement)), Some(Value.Text(method)) -> {
+      let prefix = Text.append(requirement, ".")
+      Summary(
+        line: state.line + 1,
+        records: state.records + 1,
+        events: state.events + 1,
+        previous_sequence: state.previous_sequence,
+        execution_id: state.execution_id,
+        computation: state.computation,
+        terminal_seen: state.terminal_seen,
+        operations: state.operations,
+        dependency_calls: increment(state.dependency_calls, Text.append(prefix, method)),
+        terminal_outcomes: state.terminal_outcomes,
+      )
+    }
+    _, _ -> Failure(InvalidRecord(line: state.line))
+  }
+}
+
+fn add_event(state: Summary, fields: Map<Text, Value>, event: Text) {
+  let context = validate_event_context(state, fields)
+  case event {
+    "dependency_called" -> case Map.get(fields, "attributes") {
+      Some(Value.Object(attributes)) -> add_dependency(context, attributes)
+      _ -> Failure(InvalidRecord(line: state.line))
+    }
+    "operation_completed" -> case Map.get(fields, "operation") {
+      Some(Value.Text(operation)) -> Summary(
+        line: state.line + 1,
+        records: state.records + 1,
+        events: state.events + 1,
+        previous_sequence: context.previous_sequence,
+        execution_id: context.execution_id,
+        computation: context.computation,
+        terminal_seen: state.terminal_seen,
+        operations: increment(state.operations, operation),
+        dependency_calls: state.dependency_calls,
+        terminal_outcomes: state.terminal_outcomes,
+      )
+      _ -> Failure(InvalidRecord(line: state.line))
+    }
+    "computation_started" -> add_plain_event(context)
+    "computation_completed" -> add_plain_event(context)
+    "operation_started" -> add_plain_event(context)
+    _ -> Failure(InvalidEvent(line: state.line))
+  }
+}
+
+fn add_plain_event(state: Summary) {
+  Summary(
+    line: state.line + 1,
+    records: state.records + 1,
+    events: state.events + 1,
+    previous_sequence: state.previous_sequence,
+    execution_id: state.execution_id,
+    computation: state.computation,
+    terminal_seen: state.terminal_seen,
+    operations: state.operations,
+    dependency_calls: state.dependency_calls,
+    terminal_outcomes: state.terminal_outcomes,
+  )
+}
+
+fn add_outcome(state: Summary, outcome: Text) {
+  let terminal_outcomes = case outcome {
+    "success" -> increment(state.terminal_outcomes, outcome)
+    "expected_failure" -> increment(state.terminal_outcomes, outcome)
+    "defect" -> increment(state.terminal_outcomes, outcome)
+    "cancellation" -> increment(state.terminal_outcomes, outcome)
+    _ -> Failure(InvalidRecord(line: state.line))
+  }
+  Summary(
+    line: state.line + 1,
+    records: state.records + 1,
+    events: state.events,
+    previous_sequence: state.previous_sequence,
+    execution_id: state.execution_id,
+    computation: state.computation,
+    terminal_seen: True,
+    operations: state.operations,
+    dependency_calls: state.dependency_calls,
+    terminal_outcomes: terminal_outcomes,
+  )
+}
+
+fn decode_line(state: Summary, line: Text) {
+  case line {
+    "" -> Failure(BlankLine(line: state.line))
+    _ -> case Json.decode(line) {
+      Success(Value.Object(fields)) -> {
+        let checked = validate_schema(fields, state.line)
+        case Map.get(checked, "event"), Map.get(checked, "outcome") {
+          Some(Value.Text(event)), None -> add_event(state, checked, event)
+          None, Some(Value.Text(outcome)) -> add_outcome(state, outcome)
+          _, _ -> Failure(InvalidRecord(line: state.line))
+        }
+      }
+      Success(_) -> Failure(InvalidRecord(line: state.line))
+      Failure(_) -> Failure(InvalidJson(line: state.line))
+    }
+  }
+}
+
+fn add_line(state: Summary, line: Text) {
+  case state.terminal_seen {
+    True -> Failure(RecordAfterOutcome(line: state.line))
+    False -> decode_line(state, line)
+  }
+}
+
+fn render(state: Summary) -> Text {
+  let fields0 = Map.put(Map.empty(), "schema", Json.text("chimi.trace-summary.v1"))
+  let fields1 = Map.put(fields0, "records", Json.int(state.records))
+  let fields2 = Map.put(fields1, "events", Json.int(state.events))
+  let fields3 = Map.put(fields2, "operations", Json.object(Map.map_values(state.operations, Json.int)))
+  let fields4 = Map.put(fields3, "dependency_calls", Json.object(Map.map_values(state.dependency_calls, Json.int)))
+  let fields5 = Map.put(fields4, "terminal_outcomes", Json.object(Map.map_values(state.terminal_outcomes, Json.int)))
+  Json.encode(Json.object(fields5))
+}
+
+fn finish(state: Summary) {
+  case state.terminal_seen {
+    True -> render(state)
+    False -> Failure(MissingOutcome(line: state.line))
+  }
+}
+
+fn report_trace(error: TraceError) -> Void
+  needs { console: Console }
+  effects { io } {
+  console.write_error("trace summary failed")
+  Failure(error)
+}
+
+pub fn main(arguments: List<Text>) -> Void
+  needs {
+    files: FileSystem,
+    console: Console,
+  }
+  effects { io } {
+  case List.length(arguments), List.first(arguments) {
+    1, Some(path) -> case files.process_utf8_lines(IO.path(path), empty(), add_line) {
+      Success(state) -> case finish(state) {
+        Success(report) -> console.write_line(report)
+        Failure(MissingOutcome(line)) -> report_trace(MissingOutcome(line: line))
+      }
+      Failure(BlankLine(line)) -> report_trace(BlankLine(line: line))
+      Failure(InvalidJson(line)) -> report_trace(InvalidJson(line: line))
+      Failure(InvalidSchema(line)) -> report_trace(InvalidSchema(line: line))
+      Failure(InvalidRecord(line)) -> report_trace(InvalidRecord(line: line))
+      Failure(InvalidEvent(line)) -> report_trace(InvalidEvent(line: line))
+      Failure(InvalidSequence(line)) -> report_trace(InvalidSequence(line: line))
+      Failure(MixedExecution(line)) -> report_trace(MixedExecution(line: line))
+      Failure(MixedComputation(line)) -> report_trace(MixedComputation(line: line))
+      Failure(RecordAfterOutcome(line)) -> report_trace(RecordAfterOutcome(line: line))
+      Failure(Open(path, message)) -> {
+        console.write_error("trace summary file IO failed")
+        Failure(Open(path, message))
+      }
+      Failure(Read(path, message)) -> {
+        console.write_error("trace summary file IO failed")
+        Failure(Read(path, message))
+      }
+      Failure(Close(path, message)) -> {
+        console.write_error("trace summary file IO failed")
+        Failure(Close(path, message))
+      }
+      Failure(LineTooLong(path, limit)) -> {
+        console.write_error("trace summary input record is too large")
+        Failure(LineTooLong(path, limit))
+      }
+      Failure(InvalidUtf8(path, line)) -> {
+        console.write_error("trace summary input is not UTF-8")
+        Failure(InvalidUtf8(path, line))
+      }
+    }
+    count, _ -> {
+      console.write_error("usage: chimi-trace-summary <path-or-dash>")
+      Failure(InvalidArgumentCount(actual: count))
+    }
+  }
+}

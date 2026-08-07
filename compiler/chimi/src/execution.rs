@@ -1446,6 +1446,13 @@ impl<'core> Evaluator<'core> {
                 };
                 Control::Success(RuntimeValue::Text(format!("{left}{right}")))
             }
+            StandardFunction::TextEqual => {
+                let [RuntimeValue::Text(left), RuntimeValue::Text(right)] = arguments.as_slice()
+                else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(RuntimeValue::Boolean(left == right))
+            }
         }
     }
 

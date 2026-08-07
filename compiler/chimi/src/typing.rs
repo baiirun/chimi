@@ -798,6 +798,17 @@ impl ProjectTypeChecker {
                 effects: pure.2,
             },
         );
+        let text_equal = self.standard_function_symbol(StandardFunction::TextEqual);
+        self.contracts.insert(
+            text_equal,
+            CallableContract {
+                inputs: vec![text, text],
+                success: bool_type,
+                failures: pure.0,
+                needs: pure.1,
+                effects: pure.2,
+            },
+        );
         let io_path = self.standard_function_symbol(StandardFunction::IoPath);
         self.contracts.insert(
             io_path,

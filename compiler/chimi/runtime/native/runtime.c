@@ -1,4 +1,4 @@
-/* Chimi native runtime ABI version 4. */
+/* Chimi native runtime ABI version 5. */
 #include "runtime.h"
 
 #include <inttypes.h>
@@ -1107,6 +1107,10 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       memcpy(output + left, arguments[1]->as.text, right);
       return success(text_value(output));
     }
+    case CHIMI_INTRINSIC_TEXT_EQUAL:
+      if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT ||
+          arguments[1]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
+      return success(boolean_value(strcmp(arguments[0]->as.text, arguments[1]->as.text) == 0));
   }
   return defect("unknown standard intrinsic", call_node);
 }
