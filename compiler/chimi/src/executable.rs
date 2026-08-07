@@ -7,7 +7,7 @@ use crate::semantic::{
     BinaryOperator, Literal, ModuleBlockItem, ModuleDeclarationKind, ModuleExpression, Pattern,
     PatternLiteral, UnaryOperator,
 };
-use crate::typing::{CanonicalType, TypeFact, TypedProgram, TypedProject};
+use crate::typing::{CanonicalType, Effect, TypeFact, TypedProgram, TypedProject};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -79,6 +79,12 @@ impl CoreProgram {
                     .all(|parameter| (parameter.raw() as usize) < self.symbols.len())
             );
             debug_assert!((function.body.raw() as usize) < self.nodes.len());
+            debug_assert!(
+                function
+                    .effect_parameters
+                    .iter()
+                    .all(|parameter| (parameter.raw() as usize) < self.symbols.len())
+            );
         }
         for binding in &self.bindings {
             debug_assert!((binding.symbol.raw() as usize) < self.symbols.len());
@@ -308,6 +314,13 @@ pub(crate) struct CoreFunction {
     pub(crate) symbol: SymbolId,
     pub(crate) parameters: Vec<SymbolId>,
     pub(crate) body: CoreNodeId,
+    pub(crate) effects: Vec<CoreEffect>,
+    pub(crate) effect_parameters: Vec<SymbolId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CoreEffect {
+    Io,
 }
 
 #[derive(Clone, Debug)]
@@ -542,6 +555,9 @@ pub(crate) fn seal_entry(
             .parameters
             .is_empty()
         || !typed.needs_rows[contract.needs.raw() as usize]
+            .parameters
+            .is_empty()
+        || !typed.effect_rows[contract.effects.raw() as usize]
             .parameters
             .is_empty()
         || matches!(
@@ -929,11 +945,27 @@ pub(crate) fn lower(root: VerifiedRoot) -> CoreProgram {
             .clone();
         let body = lowerer.expression(module_id, &body);
         match kind {
-            ModuleDeclarationKind::Function => functions.push(CoreFunction {
-                symbol: symbol_id,
-                parameters,
-                body,
-            }),
+            ModuleDeclarationKind::Function => {
+                let contract = lowerer
+                    .typed
+                    .contracts
+                    .get(&symbol_id)
+                    .expect("verified function owns a callable contract");
+                let effect_row = &lowerer.typed.effect_rows[contract.effects.raw() as usize];
+                functions.push(CoreFunction {
+                    symbol: symbol_id,
+                    parameters,
+                    body,
+                    effects: effect_row
+                        .effects
+                        .iter()
+                        .map(|effect| match effect {
+                            Effect::Io => CoreEffect::Io,
+                        })
+                        .collect(),
+                    effect_parameters: effect_row.parameters.clone(),
+                });
+            }
             ModuleDeclarationKind::Binding => bindings.push(CoreBinding {
                 symbol: symbol_id,
                 value: body,

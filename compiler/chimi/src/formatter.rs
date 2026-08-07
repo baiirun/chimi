@@ -179,7 +179,7 @@ fn format_parse(parsed: &ParseResult) -> String {
 }
 
 fn should_join_line(previous: Option<TokenKind>, next: Option<TokenKind>) -> bool {
-    next == Some(TokenKind::Needs)
+    matches!(next, Some(TokenKind::Needs | TokenKind::Effects))
         || next == Some(TokenKind::LeftBrace)
             && matches!(
                 previous,
@@ -262,6 +262,7 @@ const fn word_kind(kind: TokenKind) -> bool {
             | TokenKind::If
             | TokenKind::Errors
             | TokenKind::Needs
+            | TokenKind::Effects
             | TokenKind::Using
             | TokenKind::Void
             | TokenKind::True

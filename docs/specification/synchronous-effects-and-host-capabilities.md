@@ -52,15 +52,18 @@ The first source spelling places effects after needs:
 
 ```chimi
 fn load(path: Path) -> Text
-  errors FileError
   needs { files: FileSystem }
-  effects { io }
+  effects { io } {
+  files.load(path)
+}
 ```
 
-Implemented functions MAY omit success, errors, needs, and effects annotations;
-the compiler infers them uniformly for public and private code. Function-value
-types and interface methods MAY state an effect row with `effects`. Empty rows
-are omitted from ordinary source and displayed as `{}` by inspection tools.
+Implemented functions infer failures from their bodies and MAY omit success,
+needs, and effects annotations; the compiler infers those uniformly for public
+and private code. Function-value types and interface methods MAY state failure
+and effect rows. Empty rows are omitted from ordinary source and exposed as
+empty collections by inspection tools. In this example, tooling reports the
+`FileError` failure row inherited from `FileSystem.load`.
 
 `io` is a compiler-known effect identity, not a value, type, module, interface,
 dependency name, failure, or runner option. It does not require an import. The
@@ -230,7 +233,6 @@ The first CLI root can expose the full shape directly:
 
 ```chimi
 pub fn main(arguments: List<Text>) -> Void
-  errors UsageError + FileError + ConsoleError
   needs {
     files: FileSystem,
     console: Console,
@@ -239,6 +241,9 @@ pub fn main(arguments: List<Text>) -> Void
   TraceSummary.run(arguments)
 }
 ```
+
+Tooling reports the inferred `UsageError`, `FileError`, and `ConsoleError`
+failure variants; implemented-function syntax does not restate them.
 
 An embedding caller can instead supply in-memory providers with `using` at any
 expression boundary. Arguments stay data in both cases; no `Arguments` service

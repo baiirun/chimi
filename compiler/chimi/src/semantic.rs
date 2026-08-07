@@ -436,6 +436,7 @@ pub(crate) enum TypeUse {
         success: Box<TypeUse>,
         failures: Option<Box<TypeUse>>,
         requirements: RequirementRowUse,
+        effects: EffectRowUse,
     },
 }
 
@@ -473,6 +474,18 @@ pub(crate) struct FunctionSignature {
     pub(crate) parameters: Vec<ValueParameter>,
     pub(crate) success: Option<TypeUse>,
     pub(crate) requirements: RequirementRowUse,
+    pub(crate) effects: EffectRowUse,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct EffectRowUse {
+    pub(crate) terms: Vec<EffectTermUse>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EffectTermUse {
+    pub(crate) semantic_id: SemanticId,
+    pub(crate) name: Name,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -933,12 +946,16 @@ impl ProjectLowerer {
             let requirements = direct_child(&function, NodeKind::RequirementClause)
                 .map(|requirements| self.lower_requirement_row(&requirements))
                 .unwrap_or_default();
+            let effects = direct_child(&function, NodeKind::EffectClause)
+                .map(|effects| self.lower_effect_row(&effects))
+                .unwrap_or_default();
             return TypeUse::Function {
                 semantic_id,
                 inputs,
                 success: Box::new(success),
                 failures,
                 requirements,
+                effects,
             };
         }
         let path = node
@@ -1013,10 +1030,16 @@ impl ProjectLowerer {
             .and_then(|contract| direct_child(contract, NodeKind::RequirementClause))
             .map(|requirements| self.lower_requirement_row(&requirements))
             .unwrap_or_default();
+        let effects = contract
+            .as_ref()
+            .and_then(|contract| direct_child(contract, NodeKind::EffectClause))
+            .map(|effects| self.lower_effect_row(&effects))
+            .unwrap_or_default();
         FunctionSignature {
             parameters,
             success,
             requirements,
+            effects,
         }
     }
 
@@ -1061,6 +1084,35 @@ impl ProjectLowerer {
             );
         }
         RequirementRowUse { terms }
+    }
+
+    fn lower_effect_row(&mut self, node: &SyntaxNode<'_>) -> EffectRowUse {
+        let mut terms = node
+            .child_tokens()
+            .into_iter()
+            .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+            .map(|token| EffectTermUse {
+                semantic_id: self.allocate_semantic_id(),
+                name: name_from(&token),
+            })
+            .collect::<Vec<_>>();
+        for record in node
+            .child_nodes()
+            .into_iter()
+            .filter(|child| child.kind() == NodeKind::EffectRecord)
+        {
+            terms.extend(
+                record
+                    .child_tokens()
+                    .into_iter()
+                    .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+                    .map(|token| EffectTermUse {
+                        semantic_id: self.allocate_semantic_id(),
+                        name: name_from(&token),
+                    }),
+            );
+        }
+        EffectRowUse { terms }
     }
 
     fn lower_expression(&mut self, node: &SyntaxNode<'_>) -> ModuleExpression {

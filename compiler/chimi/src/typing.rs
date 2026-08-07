@@ -1,13 +1,15 @@
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
-use crate::ids::{FailureRowId, ModuleId, NeedsRowId, SemanticId, SymbolId, TextRange, TypeId};
+use crate::ids::{
+    EffectRowId, FailureRowId, ModuleId, NeedsRowId, SemanticId, SymbolId, TextRange, TypeId,
+};
 use crate::resolution::{
     Namespace, ProjectSymbolKind, ReferenceResolution, Resolution, ResolvedProgram, ResolvedProject,
 };
 use crate::semantic::Literal;
 use crate::semantic::{
-    BinaryOperator, FunctionSignature, ModuleBlockItem, ModuleCaseArm, ModuleDeclaration,
-    ModuleDeclarationKind, ModuleExpression, Pattern, PatternLiteral, RequirementRowUse,
-    RequirementTermUse, TypeUse, UnaryOperator,
+    BinaryOperator, EffectRowUse, FunctionSignature, ModuleBlockItem, ModuleCaseArm,
+    ModuleDeclaration, ModuleDeclarationKind, ModuleExpression, Pattern, PatternLiteral,
+    RequirementRowUse, RequirementTermUse, TypeUse, UnaryOperator,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -107,6 +109,7 @@ pub(crate) enum GenericKind {
     Value,
     FailureRow,
     NeedsRow,
+    EffectRow,
     Conflicting,
 }
 
@@ -133,6 +136,7 @@ pub(crate) struct CallableContract {
     pub(crate) success: TypeId,
     pub(crate) failures: FailureRowId,
     pub(crate) needs: NeedsRowId,
+    pub(crate) effects: EffectRowId,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -155,6 +159,17 @@ pub(crate) struct NeedsRow {
     pub(crate) parameters: Vec<SymbolId>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) enum Effect {
+    Io,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct EffectRow {
+    pub(crate) effects: Vec<Effect>,
+    pub(crate) parameters: Vec<SymbolId>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FieldShape {
     pub(crate) semantic_id: SemanticId,
@@ -173,6 +188,7 @@ pub(crate) struct ExpressionFact {
     pub(crate) success: TypeId,
     pub(crate) failures: FailureRowId,
     pub(crate) needs: NeedsRowId,
+    pub(crate) effects: EffectRowId,
 }
 
 #[derive(Debug)]
@@ -181,6 +197,7 @@ pub(crate) struct TypedProject {
     pub(crate) types: Vec<CanonicalType>,
     pub(crate) failure_rows: Vec<FailureRow>,
     pub(crate) needs_rows: Vec<NeedsRow>,
+    pub(crate) effect_rows: Vec<EffectRow>,
     pub(crate) contracts: HashMap<SymbolId, CallableContract>,
     pub(crate) declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
@@ -392,7 +409,29 @@ impl TypedProject {
             result.push_str(" needs ");
             result.push_str(&self.format_needs_row(needs));
         }
+        let effects = &self.effect_rows[contract.effects.raw() as usize];
+        if !effects.effects.is_empty() || !effects.parameters.is_empty() {
+            result.push_str(" effects ");
+            result.push_str(&self.format_effect_row(effects));
+        }
         result
+    }
+
+    fn format_effect_row(&self, row: &EffectRow) -> String {
+        let mut members = row
+            .parameters
+            .iter()
+            .map(|symbol| self.resolved.symbol(*symbol).name.clone())
+            .collect::<Vec<_>>();
+        members.extend(row.effects.iter().map(|effect| match effect {
+            Effect::Io => "io".to_owned(),
+        }));
+        members.sort();
+        if members.len() == 1 {
+            members.pop().expect("one member")
+        } else {
+            format!("{{ {} }}", members.join(", "))
+        }
     }
 
     fn format_failure_row(&self, row: &FailureRow) -> String {
@@ -522,6 +561,8 @@ struct ProjectTypeChecker {
     failure_row_intern: HashMap<FailureRow, FailureRowId>,
     needs_rows: Vec<NeedsRow>,
     needs_row_intern: HashMap<NeedsRow, NeedsRowId>,
+    effect_rows: Vec<EffectRow>,
+    effect_row_intern: HashMap<EffectRow, EffectRowId>,
     contracts: HashMap<SymbolId, CallableContract>,
     declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
@@ -544,6 +585,7 @@ struct CallSubstitution {
     values: HashMap<SymbolId, TypeId>,
     failures: HashMap<SymbolId, FailureRowId>,
     needs: HashMap<SymbolId, NeedsRowId>,
+    effects: HashMap<SymbolId, EffectRowId>,
 }
 
 struct InvocationArgument {
@@ -580,6 +622,8 @@ impl ProjectTypeChecker {
             failure_row_intern: HashMap::new(),
             needs_rows: Vec::new(),
             needs_row_intern: HashMap::new(),
+            effect_rows: Vec::new(),
+            effect_row_intern: HashMap::new(),
             contracts: HashMap::new(),
             declaration_types: HashMap::new(),
             type_facts: HashMap::new(),
@@ -597,6 +641,10 @@ impl ProjectTypeChecker {
         });
         checker.intern_needs_row(NeedsRow {
             entries: Vec::new(),
+            parameters: Vec::new(),
+        });
+        checker.intern_effect_row(EffectRow {
+            effects: Vec::new(),
             parameters: Vec::new(),
         });
         checker
@@ -630,6 +678,7 @@ impl ProjectTypeChecker {
         let types = previous.types.clone();
         let failure_rows = previous.failure_rows.clone();
         let needs_rows = previous.needs_rows.clone();
+        let effect_rows = previous.effect_rows.clone();
         let next_inference_variable = types
             .iter()
             .filter_map(|value| match value {
@@ -662,6 +711,13 @@ impl ProjectTypeChecker {
                 .map(|(index, value)| (value, NeedsRowId::new(index as u32)))
                 .collect(),
             needs_rows,
+            effect_row_intern: effect_rows
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, value)| (value, EffectRowId::new(index as u32)))
+                .collect(),
+            effect_rows,
             contracts: previous
                 .contracts
                 .iter()
@@ -775,6 +831,7 @@ impl ProjectTypeChecker {
             types: self.types,
             failure_rows: self.failure_rows,
             needs_rows: self.needs_rows,
+            effect_rows: self.effect_rows,
             contracts: self.contracts,
             declaration_types: self.declaration_types,
             type_facts: self.type_facts,
@@ -860,6 +917,7 @@ impl ProjectTypeChecker {
                             success: declaration_type,
                             failures: FailureRowId::new(0),
                             needs: NeedsRowId::new(0),
+                            effects: EffectRowId::new(0),
                         };
                         self.contracts.insert(constructor, contract.clone());
                         self.fields.insert(constructor, variant_fields);
@@ -883,6 +941,7 @@ impl ProjectTypeChecker {
                             success: declaration_type,
                             failures: FailureRowId::new(0),
                             needs: NeedsRowId::new(0),
+                            effects: EffectRowId::new(0),
                         };
                         self.contracts.insert(constructor, contract.clone());
                         self.fields.insert(constructor, constructor_fields);
@@ -936,6 +995,7 @@ impl ProjectTypeChecker {
                 inferred.failures =
                     self.union_failure_rows([inferred.failures, body_fact.failures]);
                 inferred.needs = self.union_needs_rows([inferred.needs, body_fact.needs]);
+                inferred.effects = self.union_effect_rows([inferred.effects, body_fact.effects]);
                 self.contracts.insert(function_symbol, inferred);
                 self.contracts[&function_symbol] != previous
             }
@@ -1035,11 +1095,13 @@ impl ProjectTypeChecker {
             None => self.fresh_inference_type(),
         };
         let needs = self.lower_needs_row(module_id, &signature.requirements, generics);
+        let effects = self.lower_effect_row(module_id, &signature.effects, generics);
         CallableContract {
             inputs,
             success,
             failures: FailureRowId::new(0),
             needs,
+            effects,
         }
     }
 
@@ -1068,6 +1130,7 @@ impl ProjectTypeChecker {
                 }),
                 failures: FailureRowId::new(0),
                 needs: NeedsRowId::new(0),
+                effects: EffectRowId::new(0),
             },
             ModuleExpression::Name { semantic_id, .. } => {
                 let Some(symbol) = self.resolved_value_symbol(module_id, *semantic_id) else {
@@ -1088,6 +1151,7 @@ impl ProjectTypeChecker {
                         success: binding.type_id,
                         failures: FailureRowId::new(0),
                         needs,
+                        effects: EffectRowId::new(0),
                     }
                 } else if self.is_builtin_value(symbol, "Success")
                     || self.is_builtin_value(symbol, "Failure")
@@ -1104,12 +1168,14 @@ impl ProjectTypeChecker {
                         success: self.callable_type_for_symbol(symbol, contract),
                         failures: FailureRowId::new(0),
                         needs: NeedsRowId::new(0),
+                        effects: EffectRowId::new(0),
                     }
                 } else if let Some(type_id) = self.symbol_value_type(symbol) {
                     ExpressionFact {
                         success: type_id,
                         failures: FailureRowId::new(0),
                         needs: NeedsRowId::new(0),
+                        effects: EffectRowId::new(0),
                     }
                 } else {
                     self.poison_expression_fact()
@@ -1128,6 +1194,7 @@ impl ProjectTypeChecker {
                         success: type_id,
                         failures: FailureRowId::new(0),
                         needs: NeedsRowId::new(0),
+                        effects: EffectRowId::new(0),
                     }
                 } else {
                     let receiver = self.infer_expression(module_id, receiver, generics, bindings);
@@ -1148,6 +1215,7 @@ impl ProjectTypeChecker {
                         success,
                         failures: receiver.failures,
                         needs: receiver.needs,
+                        effects: receiver.effects,
                     }
                 }
             }
@@ -1210,6 +1278,7 @@ impl ProjectTypeChecker {
                     success: self.builtin_type_with_arguments("List", vec![element_type]),
                     failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
                     needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+                    effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
                 }
             }
             ModuleExpression::Record { fields, .. } => {
@@ -1240,6 +1309,7 @@ impl ProjectTypeChecker {
                     success: self.intern_type(CanonicalType::Record(structural_fields)),
                     failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
                     needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+                    effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
                 }
             }
             ModuleExpression::Unary {
@@ -1255,6 +1325,7 @@ impl ProjectTypeChecker {
                     success: int,
                     failures: fact.failures,
                     needs: fact.needs,
+                    effects: fact.effects,
                 }
             }
             ModuleExpression::Binary {
@@ -1302,6 +1373,7 @@ impl ProjectTypeChecker {
                         },
                         failures: self.union_failure_rows([left.failures, right.failures]),
                         needs: self.union_needs_rows([left.needs, right.needs]),
+                        effects: self.union_effect_rows([left.effects, right.effects]),
                     }
                 }
             }
@@ -1322,6 +1394,7 @@ impl ProjectTypeChecker {
                     success: facts.last().map_or(TypeId::new(0), |fact| fact.success),
                     failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
                     needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+                    effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
                 }
             }
             ModuleExpression::Block { items, .. } => {
@@ -1364,6 +1437,7 @@ impl ProjectTypeChecker {
                     success: facts.last().map_or(TypeId::new(0), |fact| fact.success),
                     failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
                     needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+                    effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
                 }
             }
             ModuleExpression::Function {
@@ -1389,10 +1463,12 @@ impl ProjectTypeChecker {
                 contract.failures =
                     self.union_failure_rows([contract.failures, body_fact.failures]);
                 contract.needs = self.union_needs_rows([contract.needs, body_fact.needs]);
+                contract.effects = self.union_effect_rows([contract.effects, body_fact.effects]);
                 ExpressionFact {
                     success: self.intern_type(CanonicalType::Function(contract)),
                     failures: FailureRowId::new(0),
                     needs: NeedsRowId::new(0),
+                    effects: EffectRowId::new(0),
                 }
             }
             ModuleExpression::Case {
@@ -1422,6 +1498,7 @@ impl ProjectTypeChecker {
             success: TypeId::new(0),
             failures: FailureRowId::new(0),
             needs: NeedsRowId::new(0),
+            effects: EffectRowId::new(0),
         }
     }
 
@@ -1458,6 +1535,7 @@ impl ProjectTypeChecker {
                 success: argument.success,
                 failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
                 needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+                effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
             };
         }
 
@@ -1489,6 +1567,7 @@ impl ProjectTypeChecker {
                     .chain(std::iter::once(constructed_failure)),
             ),
             needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+            effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
         }
     }
 
@@ -1639,6 +1718,7 @@ impl ProjectTypeChecker {
             success: success.unwrap_or(TypeId::new(0)),
             failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
             needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+            effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
         }
     }
 
@@ -1770,13 +1850,15 @@ impl ProjectTypeChecker {
         let boolean = self.builtin_type("Bool");
         if !self.unify(fact.success, boolean) {
             self.type_error_range(module_id, "T4234", range, "case guard must produce Bool");
-        } else if !self.failure_row_is_empty(fact.failures) || !self.needs_row_is_empty(fact.needs)
+        } else if !self.failure_row_is_empty(fact.failures)
+            || !self.needs_row_is_empty(fact.needs)
+            || !self.effect_row_is_empty(fact.effects)
         {
             self.type_error_range(
                 module_id,
                 "T4234",
                 range,
-                "case guards must be pure and cannot expose failures or dependencies",
+                "case guards must be pure and cannot expose failures, dependencies, or effects",
             );
         }
         fact
@@ -2034,6 +2116,9 @@ impl ProjectTypeChecker {
             needs: self.union_needs_rows(
                 std::iter::once(subject.needs).chain(arm_facts.iter().map(|fact| fact.needs)),
             ),
+            effects: self.union_effect_rows(
+                std::iter::once(subject.effects).chain(arm_facts.iter().map(|fact| fact.effects)),
+            ),
         }
     }
 
@@ -2265,6 +2350,11 @@ impl ProjectTypeChecker {
         row.entries.is_empty() && row.parameters.is_empty()
     }
 
+    fn effect_row_is_empty(&self, effects: EffectRowId) -> bool {
+        let row = &self.effect_rows[effects.raw() as usize];
+        row.effects.is_empty() && row.parameters.is_empty()
+    }
+
     fn enum_owner_for_variant(&self, variant: SymbolId) -> Option<SymbolId> {
         let variant = self.resolved.symbol(variant);
         let module_id = variant.module_id?;
@@ -2402,6 +2492,10 @@ impl ProjectTypeChecker {
             needs: self.union_needs_rows(
                 std::iter::once(remaining_expression_needs)
                     .chain(provider_facts.iter().map(|(_, fact)| fact.needs)),
+            ),
+            effects: self.union_effect_rows(
+                std::iter::once(expression_fact.effects)
+                    .chain(provider_facts.iter().map(|(_, fact)| fact.effects)),
             ),
         }
     }
@@ -2567,6 +2661,9 @@ impl ProjectTypeChecker {
                 if !self.needs_row_is_subset(actual.needs, expected.needs) {
                     return Some("it needs dependencies outside the interface contract");
                 }
+                if !self.effect_row_is_subset(actual.effects, expected.effects) {
+                    return Some("it performs effects outside the interface contract");
+                }
                 None
             }
             _ if self.unify(actual, expected) => None,
@@ -2599,6 +2696,19 @@ impl ProjectTypeChecker {
             .parameters
             .iter()
             .all(|parameter| expected.parameters.contains(parameter))
+    }
+
+    fn effect_row_is_subset(&self, actual: EffectRowId, expected: EffectRowId) -> bool {
+        let actual = &self.effect_rows[actual.raw() as usize];
+        let expected = &self.effect_rows[expected.raw() as usize];
+        actual
+            .effects
+            .iter()
+            .all(|effect| expected.effects.contains(effect))
+            && actual
+                .parameters
+                .iter()
+                .all(|parameter| expected.parameters.contains(parameter))
     }
 
     fn lower_value_type(
@@ -2640,6 +2750,7 @@ impl ProjectTypeChecker {
                 success,
                 failures,
                 requirements,
+                effects,
                 ..
             } => {
                 let inputs = inputs
@@ -2651,17 +2762,56 @@ impl ProjectTypeChecker {
                     self.lower_failure_row(module_id, failures, generics)
                 });
                 let needs = self.lower_needs_row(module_id, requirements, generics);
+                let effects = self.lower_effect_row(module_id, effects, generics);
                 self.intern_type(CanonicalType::Function(CallableContract {
                     inputs,
                     success,
                     failures,
                     needs,
+                    effects,
                 }))
             }
         };
         self.type_facts
             .insert((module_id, type_use.semantic_id()), result);
         result
+    }
+
+    fn lower_effect_row(
+        &mut self,
+        module_id: ModuleId,
+        row: &EffectRowUse,
+        generics: &HashMap<String, SymbolId>,
+    ) -> EffectRowId {
+        let mut effects = Vec::new();
+        let mut parameters = Vec::new();
+        for term in &row.terms {
+            let name = &term.name;
+            if name.text == "io" {
+                effects.push(Effect::Io);
+            } else if let Some(symbol) = generics.get(&name.text).copied() {
+                self.constrain_generic(module_id, symbol, GenericKind::EffectRow, name);
+                parameters.push(symbol);
+            } else {
+                self.type_error(
+                    module_id,
+                    "T4104",
+                    name,
+                    format!(
+                        "unknown effect `{}`; the only built-in effect is `io`",
+                        name.text
+                    ),
+                );
+            }
+        }
+        effects.sort_unstable();
+        effects.dedup();
+        parameters.sort_unstable();
+        parameters.dedup();
+        self.intern_effect_row(EffectRow {
+            effects,
+            parameters,
+        })
     }
 
     fn lower_failure_row(
@@ -2887,6 +3037,10 @@ impl ProjectTypeChecker {
                         std::iter::once(callee.needs)
                             .chain(arguments.iter().map(|argument| argument.fact.needs)),
                     ),
+                    effects: self.union_effect_rows(
+                        std::iter::once(callee.effects)
+                            .chain(arguments.iter().map(|argument| argument.fact.effects)),
+                    ),
                 };
             }
         };
@@ -2935,24 +3089,28 @@ impl ProjectTypeChecker {
                 );
             }
         }
-        let (success, contract_failures, contract_needs) = if let Some(substitution) =
-            &mut substitution
-        {
-            let unresolved = self.unresolved_call_parameters(&parameters, substitution);
-            let success =
-                self.substitute_call_type_preserving(contract.success, substitution, &unresolved);
-            (
-                self.generalize_callable_type(success, unresolved),
-                self.substitute_call_failure_row(contract.failures, substitution),
-                self.substitute_call_needs_row(contract.needs, substitution),
-            )
-        } else {
-            (
-                self.resolve_inference_type(contract.success),
-                contract.failures,
-                contract.needs,
-            )
-        };
+        let (success, contract_failures, contract_needs, contract_effects) =
+            if let Some(substitution) = &mut substitution {
+                let unresolved = self.unresolved_call_parameters(&parameters, substitution);
+                let success = self.substitute_call_type_preserving(
+                    contract.success,
+                    substitution,
+                    &unresolved,
+                );
+                (
+                    self.generalize_callable_type(success, unresolved),
+                    self.substitute_call_failure_row(contract.failures, substitution),
+                    self.substitute_call_needs_row(contract.needs, substitution),
+                    self.substitute_call_effect_row(contract.effects, substitution),
+                )
+            } else {
+                (
+                    self.resolve_inference_type(contract.success),
+                    contract.failures,
+                    contract.needs,
+                    contract.effects,
+                )
+            };
         ExpressionFact {
             success,
             failures: self.union_failure_rows(
@@ -2964,6 +3122,11 @@ impl ProjectTypeChecker {
                 std::iter::once(callee.needs)
                     .chain(arguments.iter().map(|argument| argument.fact.needs))
                     .chain(std::iter::once(contract_needs)),
+            ),
+            effects: self.union_effect_rows(
+                std::iter::once(callee.effects)
+                    .chain(arguments.iter().map(|argument| argument.fact.effects))
+                    .chain(std::iter::once(contract_effects)),
             ),
         }
     }
@@ -2981,10 +3144,12 @@ impl ProjectTypeChecker {
                     Some(GenericKind::Value) => !substitution.values.contains_key(parameter),
                     Some(GenericKind::FailureRow) => !substitution.failures.contains_key(parameter),
                     Some(GenericKind::NeedsRow) => !substitution.needs.contains_key(parameter),
+                    Some(GenericKind::EffectRow) => !substitution.effects.contains_key(parameter),
                     Some(GenericKind::Unconstrained | GenericKind::Conflicting) | None => {
                         !substitution.values.contains_key(parameter)
                             && !substitution.failures.contains_key(parameter)
                             && !substitution.needs.contains_key(parameter)
+                            && !substitution.effects.contains_key(parameter)
                     }
                 },
             )
@@ -3216,6 +3381,7 @@ impl ProjectTypeChecker {
                     && self.match_call_type(actual.success, expected.success, substitution)
                     && self.match_call_failure_row(actual.failures, expected.failures, substitution)
                     && self.match_call_needs_row(actual.needs, expected.needs, substitution)
+                    && self.match_call_effect_row(actual.effects, expected.effects, substitution)
             }
             (CanonicalType::Record(actual), CanonicalType::Record(expected)) => {
                 actual.len() == expected.len()
@@ -3296,6 +3462,42 @@ impl ProjectTypeChecker {
                     self.needs_rows_equivalent(bound, residual)
                 } else {
                     substitution.needs.insert(*parameter, residual);
+                    true
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn match_call_effect_row(
+        &mut self,
+        actual: EffectRowId,
+        expected: EffectRowId,
+        substitution: &mut CallSubstitution,
+    ) -> bool {
+        let actual = self.effect_rows[actual.raw() as usize].clone();
+        let expected = self.effect_rows[expected.raw() as usize].clone();
+        let mut remaining_effects = actual.effects;
+        for effect in &expected.effects {
+            let Some(index) = remaining_effects
+                .iter()
+                .position(|candidate| candidate == effect)
+            else {
+                return false;
+            };
+            remaining_effects.remove(index);
+        }
+        match expected.parameters.as_slice() {
+            [] => remaining_effects.is_empty() && actual.parameters.is_empty(),
+            [parameter] => {
+                let residual = self.intern_effect_row(EffectRow {
+                    effects: remaining_effects,
+                    parameters: actual.parameters,
+                });
+                if let Some(bound) = substitution.effects.get(parameter).copied() {
+                    self.effect_rows_equivalent(bound, residual)
+                } else {
+                    substitution.effects.insert(*parameter, residual);
                     true
                 }
             }
@@ -3391,6 +3593,7 @@ impl ProjectTypeChecker {
                 substitution,
                 preserved,
             ),
+            effects: self.substitute_call_effect_row(contract.effects, substitution),
         }
     }
 
@@ -3467,6 +3670,33 @@ impl ProjectTypeChecker {
             );
         }
         self.union_needs_rows(rows)
+    }
+
+    fn substitute_call_effect_row(
+        &mut self,
+        row: EffectRowId,
+        substitution: &CallSubstitution,
+    ) -> EffectRowId {
+        let row = self.effect_rows[row.raw() as usize].clone();
+        let mut rows = vec![self.intern_effect_row(EffectRow {
+            effects: row.effects,
+            parameters: Vec::new(),
+        })];
+        for parameter in row.parameters {
+            rows.push(
+                substitution
+                    .effects
+                    .get(&parameter)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        self.intern_effect_row(EffectRow {
+                            effects: Vec::new(),
+                            parameters: vec![parameter],
+                        })
+                    }),
+            );
+        }
+        self.union_effect_rows(rows)
     }
 
     fn resolve_inference_type(&self, mut id: TypeId) -> TypeId {
@@ -3564,6 +3794,7 @@ impl ProjectTypeChecker {
                     && self.unify(left.success, right.success)
                     && self.failure_rows_equivalent(left.failures, right.failures)
                     && self.needs_rows_equivalent(left.needs, right.needs)
+                    && self.effect_rows_equivalent(left.effects, right.effects)
             }
             (CanonicalType::Record(left), CanonicalType::Record(right)) => {
                 left.len() == right.len()
@@ -3590,6 +3821,10 @@ impl ProjectTypeChecker {
                         && left_need.interface == right_need.interface
                 })
             })
+    }
+
+    fn effect_rows_equivalent(&self, left: EffectRowId, right: EffectRowId) -> bool {
+        self.effect_rows[left.raw() as usize] == self.effect_rows[right.raw() as usize]
     }
 
     fn types_equivalent(&self, left: TypeId, right: TypeId) -> bool {
@@ -3656,6 +3891,7 @@ impl ProjectTypeChecker {
             && self.types_equivalent(left.success, right.success)
             && self.failure_rows_equivalent(left.failures, right.failures)
             && self.needs_rows_structurally_equivalent(left.needs, right.needs)
+            && self.effect_rows_equivalent(left.effects, right.effects)
     }
 
     fn needs_rows_structurally_equivalent(&self, left: NeedsRowId, right: NeedsRowId) -> bool {
@@ -3714,6 +3950,24 @@ impl ProjectTypeChecker {
         parameters.dedup();
         self.intern_needs_row(NeedsRow {
             entries,
+            parameters,
+        })
+    }
+
+    fn union_effect_rows(&mut self, rows: impl IntoIterator<Item = EffectRowId>) -> EffectRowId {
+        let mut effects = Vec::new();
+        let mut parameters = Vec::new();
+        for row in rows {
+            let row = &self.effect_rows[row.raw() as usize];
+            effects.extend(&row.effects);
+            parameters.extend(&row.parameters);
+        }
+        effects.sort_unstable();
+        effects.dedup();
+        parameters.sort_unstable();
+        parameters.dedup();
+        self.intern_effect_row(EffectRow {
+            effects,
             parameters,
         })
     }
@@ -3828,6 +4082,16 @@ impl ProjectTypeChecker {
         let id = NeedsRowId::new(self.needs_rows.len() as u32);
         self.needs_rows.push(value.clone());
         self.needs_row_intern.insert(value, id);
+        id
+    }
+
+    fn intern_effect_row(&mut self, value: EffectRow) -> EffectRowId {
+        if let Some(id) = self.effect_row_intern.get(&value).copied() {
+            return id;
+        }
+        let id = EffectRowId::new(self.effect_rows.len() as u32);
+        self.effect_rows.push(value.clone());
+        self.effect_row_intern.insert(value, id);
         id
     }
 

@@ -193,6 +193,7 @@ pub enum GenericParameterKind {
     Value,
     FailureRow,
     NeedsRow,
+    EffectRow,
     Conflicting,
 }
 
@@ -201,6 +202,7 @@ pub struct TypeArenaStats {
     pub types: usize,
     pub failure_rows: usize,
     pub needs_rows: usize,
+    pub effect_rows: usize,
     pub callable_contracts: usize,
     pub type_facts: usize,
     pub expression_facts: usize,
@@ -241,6 +243,7 @@ impl TypeReport {
                 GenericKind::Value => GenericParameterKind::Value,
                 GenericKind::FailureRow => GenericParameterKind::FailureRow,
                 GenericKind::NeedsRow => GenericParameterKind::NeedsRow,
+                GenericKind::EffectRow => GenericParameterKind::EffectRow,
                 GenericKind::Conflicting => GenericParameterKind::Conflicting,
             })
     }
@@ -250,6 +253,7 @@ impl TypeReport {
             types: self.typed.types.len(),
             failure_rows: self.typed.failure_rows.len(),
             needs_rows: self.typed.needs_rows.len(),
+            effect_rows: self.typed.effect_rows.len(),
             callable_contracts: self.typed.contracts.len(),
             type_facts: self.typed.type_facts.len(),
             expression_facts: self.typed.expression_facts.len(),
@@ -555,13 +559,15 @@ fn seal(
 
 #[cfg(test)]
 mod tests {
-    use super::{Compiler, GenericParameterKind, ProjectSource};
+    use super::{Compiler, GenericParameterKind, ProjectSource, resolve_project_sources};
     use crate::diagnostic::{Diagnostic, DiagnosticStage};
+    use crate::executable::{lower, seal_entry};
     use crate::execution::{
         EventKind, ExecutionAttributeValue, ExecutionConfig, ExecutionOutcome, ExecutionValue,
         TraceMode,
     };
     use crate::source::SourceSnapshot;
+    use crate::typing::check_project;
     use std::sync::Arc;
 
     const VALID: &str = "struct Answer { value: Int } pub fn main() { Answer(value: 42) }";
@@ -1303,6 +1309,206 @@ mod tests {
                 .as_deref(),
             Some("fn() -> fn(Text) -> Text errors RightError needs { dependency: RightDep }")
         );
+    }
+
+    #[test]
+    fn effects_are_inferred_and_substituted_through_higher_order_calls() {
+        let report = Compiler::type_project(vec![module(
+            "contracts/effects",
+            "effects.chimi",
+            concat!(
+                "interface Console { write: fn(Text) -> Void effects { io } }\n",
+                "fn apply<A, B, E, R>(value: A, operation: fn(A) -> B needs R effects E) -> B needs R effects E {\n",
+                "  operation(value)\n",
+                "}\n",
+                "fn write(value: Text) -> Void needs { console: Console } {\n",
+                "  console.write(value)\n",
+                "}\n",
+                "fn composed() -> Void needs { console: Console } {\n",
+                "  apply(\"hello\", write)\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report.contract("contracts/effects", "write").as_deref(),
+            Some("fn(Text) -> Void needs { console: Console } effects io")
+        );
+        assert_eq!(
+            report.contract("contracts/effects", "composed").as_deref(),
+            Some("fn() -> Void needs { console: Console } effects io")
+        );
+        assert_eq!(
+            report.generic_kind("contracts/effects", "apply", "E"),
+            Some(GenericParameterKind::EffectRow)
+        );
+    }
+
+    #[test]
+    fn effects_are_checked_in_guards_and_provider_contracts() {
+        let guard_source = concat!(
+            "interface Probe { test: fn() -> Bool effects { io } }\n",
+            "fn choose() -> Int needs { probe: Probe } {\n",
+            "  case True {\n",
+            "    value if probe.test() -> 1,\n",
+            "    _ -> 0,\n",
+            "  }\n",
+            "}\n",
+        );
+        let guard = Compiler::type_project(vec![module(
+            "contracts/effect_guard",
+            "effect_guard.chimi",
+            guard_source,
+        )]);
+        assert!(guard.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code() == "T4234"
+                && diagnostic.message().contains("dependencies, or effects")
+        }));
+
+        let provider_source = concat!(
+            "interface PureProbe { test: fn() -> Bool }\n",
+            "fn consume() -> Bool needs { probe: PureProbe } { probe.test() }\n",
+            "let effectful = { test: fn() effects { io } { True } }\n",
+            "fn invalid() -> Bool { consume() using { probe: effectful } }\n",
+        );
+        let provider = Compiler::type_project(vec![module(
+            "contracts/effect_provider",
+            "effect_provider.chimi",
+            provider_source,
+        )]);
+        assert!(provider.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code() == "T4213"
+                && diagnostic
+                    .message()
+                    .contains("effects outside the interface contract")
+        }));
+    }
+
+    #[test]
+    fn using_and_failure_recovery_preserve_effects() {
+        let report = Compiler::type_project(vec![module(
+            "contracts/effect_preservation",
+            "effect_preservation.chimi",
+            concat!(
+                "enum ProbeError { Failed }\n",
+                "interface Probe { test: fn() -> Bool errors ProbeError effects { io } }\n",
+                "fn probe() -> Bool needs { probe: Probe } { probe.test() }\n",
+                "let provider = { test: fn() effects { io } { True } }\n",
+                "fn configured() -> Bool { probe() using { probe: provider } }\n",
+                "fn recovered() -> Bool needs { probe: Probe } {\n",
+                "  case probe.test() {\n",
+                "    Success(value) -> value\n",
+                "    Failure(_error) -> False\n",
+                "  }\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report
+                .contract("contracts/effect_preservation", "configured")
+                .as_deref(),
+            Some("fn() -> Bool errors ProbeError effects io")
+        );
+        assert_eq!(
+            report
+                .contract("contracts/effect_preservation", "recovered")
+                .as_deref(),
+            Some("fn() -> Bool needs { probe: Probe } effects io")
+        );
+    }
+
+    #[test]
+    fn unknown_effects_are_type_errors() {
+        let report = Compiler::type_project(vec![module(
+            "contracts/unknown_effect",
+            "unknown_effect.chimi",
+            "fn invalid() effects { network } { 1 }\n",
+        )]);
+
+        assert_eq!(report.diagnostics().len(), 1);
+        assert_eq!(report.diagnostics()[0].code(), "T4104");
+        assert!(
+            report.diagnostics()[0]
+                .message()
+                .contains("unknown effect `network`")
+        );
+    }
+
+    #[test]
+    fn one_generic_cannot_be_both_a_value_and_effect_row() {
+        let report = Compiler::type_project(vec![module(
+            "contracts/conflicting_effect",
+            "conflicting_effect.chimi",
+            "fn invalid<E>(value: E) effects E { value }\n",
+        )]);
+
+        assert!(
+            report
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code() == "T4101")
+        );
+        assert_eq!(
+            report.generic_kind("contracts/conflicting_effect", "invalid", "E"),
+            Some(GenericParameterKind::Conflicting)
+        );
+    }
+
+    #[test]
+    fn generic_effect_terms_resolve_to_their_declared_binder() {
+        let report = Compiler::resolve_project(vec![module(
+            "contracts/effect_resolution",
+            "effect_resolution.chimi",
+            "fn apply<E>(operation: fn() -> Void effects E) effects E { operation() }\n",
+        )]);
+
+        let references = report
+            .references()
+            .into_iter()
+            .filter(|reference| reference.text() == "E")
+            .collect::<Vec<_>>();
+        assert_eq!(references.len(), 2);
+        assert!(
+            references
+                .iter()
+                .all(|reference| reference.status() == "resolved")
+        );
+    }
+
+    #[test]
+    fn inspection_and_core_retain_normalized_effect_rows() {
+        let source = concat!(
+            "fn work() -> Int effects { io } { 1 }\n",
+            "pub fn main() -> Int { work() }\n",
+        );
+        let sources = vec![module("main", "main.chimi", source)];
+        let inspection = Compiler::inspect_project(
+            sources.clone(),
+            "main",
+            source.rfind("work").expect("work call"),
+        )
+        .expect("inspect effectful entry");
+        let callable = inspection
+            .callable()
+            .expect("entry has callable inspection");
+        assert_eq!(callable.effects(), ["io"]);
+        assert!(callable.effect_parameters().is_empty());
+        assert!(inspection.render_json().contains("\"effects\":[\"io\"]"));
+
+        let core = lower(
+            seal_entry(check_project(resolve_project_sources(sources)))
+                .expect("effectful root is executable"),
+        );
+        let entry = core
+            .functions
+            .iter()
+            .find(|function| function.symbol == core.entry)
+            .expect("core retains entry");
+        assert_eq!(entry.effects, [crate::executable::CoreEffect::Io]);
+        assert!(entry.effect_parameters.is_empty());
     }
 
     #[test]

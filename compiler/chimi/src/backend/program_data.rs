@@ -1,7 +1,7 @@
 //! Immutable runtime metadata encoding shared by native emission and comparison tools.
 
 use crate::executable::{
-    CoreLiteral, CoreOperation, CorePattern, CoreProgram, CoreStep, CoreSymbolKind,
+    CoreEffect, CoreLiteral, CoreOperation, CorePattern, CoreProgram, CoreStep, CoreSymbolKind,
 };
 use crate::semantic::{BinaryOperator, UnaryOperator};
 use std::collections::HashMap;
@@ -78,9 +78,17 @@ impl ProgramData {
 pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String {
     let mut data = ProgramData::default();
     let mut functions = Vec::new();
+    let mut function_effects = Vec::new();
     for function in &core.functions {
         let (offset, length) = data.ids(function.parameters.iter().map(|symbol| symbol.raw()));
         functions.push((function.symbol.raw(), function.body.raw(), offset, length));
+        let (effect_parameter_offset, effect_parameter_length) =
+            data.ids(function.effect_parameters.iter().map(|symbol| symbol.raw()));
+        function_effects.push((
+            u32::from(function.effects.contains(&CoreEffect::Io)),
+            effect_parameter_offset,
+            effect_parameter_length,
+        ));
     }
     let mut constructors = Vec::new();
     let mut symbols = Vec::new();
@@ -260,6 +268,12 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         c_string(&core.computation)
     )
     .unwrap();
+    render_array(
+        &mut output,
+        "const uint32_t CHIMI_FUNCTION_EFFECTS[][3]",
+        &function_effects,
+        |r| format!("{{{}, {}, {}}}", r.0, r.1, r.2),
+    );
     render_array(
         &mut output,
         "const char *CHIMI_STRINGS[]",

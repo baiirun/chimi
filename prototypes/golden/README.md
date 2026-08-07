@@ -25,7 +25,7 @@ can be judged in complete programs instead of prose.
   may omit its success type; the compiler infers it from the body.
 - Generic functions and data types declare their parameters explicitly after
   the declaration name, such as `fn transform<A, B>(...)`. The compiler infers
-  whether each parameter is a value type, failure row, or needs row from its
+  whether each parameter is a value type, failure row, needs row, or effect row from its
   use; an undeclared type-like name is a diagnostic rather than an implicit
   generic.
 - Applying a function constructs an invocation. It executes only as part of a
@@ -38,8 +38,8 @@ can be judged in complete programs instead of prose.
   not gain automatic partial application or a special pipeline argument slot;
   an API intended for pipelines explicitly returns a unary function.
 - Every expression and function has separate inferred success, expected-error,
-  and requirement types. This separation is part of the semantic model and
-  tooling shape; it is not mandatory surface annotation.
+  requirement, and effect types. This separation is part of the semantic model
+  and tooling shape; it is not mandatory surface annotation.
 - A normal call binds its successful value. An unhandled expected error stops
   the remaining computation and joins the caller's inferred error row.
 - A direct `case` over a fallible expression handles its complete outcome with
@@ -75,6 +75,9 @@ can be judged in complete programs instead of prose.
 - `operation using { name: provider }` supplies any subset of an operation's
   needs at an arbitrary expression boundary. The resulting operation retains
   only unresolved needs; the runtime root rejects a nonempty remainder.
+- `effects { io }` describes observable synchronous IO independently from the
+  dependency that performs it. `using` removes supplied needs but leaves effects
+  unchanged; handling an expected failure removes only that failure channel.
 - A runnable program exposes a conventional root function whose ordinary
   dependencies are closed with `using`. The toolchain or embedding host invokes
   that root and supplies operational execution configuration; Chimi source does
@@ -88,8 +91,7 @@ can be judged in complete programs instead of prose.
   expressions, requires exhaustive patterns, and permits expression blocks as
   branch bodies. There is no standalone `if` expression.
 - `if` appears only in a case guard. Guards may use expressions proven pure by
-  the compiler; they may not invoke work with dependencies or other observable
-  behavior.
+  the compiler; they may not invoke work with failures, dependencies, or effects.
 - Calls sequence normally. Suspension is a runtime implementation detail;
   detached or concurrent execution requires a separate explicit operation.
 - Public and private contracts use the same inference rules. A written `-> T`

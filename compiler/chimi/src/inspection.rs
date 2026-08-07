@@ -4,7 +4,7 @@ use crate::json::write_json_string;
 use crate::resolution::{ProjectReference, ReferenceResolution};
 use crate::semantic::{ModuleBlockItem, ModuleExpression, SemanticModule};
 use crate::syntax::ParseResult;
-use crate::typing::{CallableContract, TypedProject};
+use crate::typing::{CallableContract, Effect, TypedProject};
 use std::fmt::{self, Write};
 use std::path::PathBuf;
 
@@ -137,6 +137,8 @@ pub struct CallableInspection {
     failure_parameters: Vec<String>,
     needs: Vec<NeedInspection>,
     needs_parameters: Vec<String>,
+    effects: Vec<String>,
+    effect_parameters: Vec<String>,
 }
 
 impl CallableInspection {
@@ -166,6 +168,14 @@ impl CallableInspection {
 
     pub fn needs_parameters(&self) -> &[String] {
         &self.needs_parameters
+    }
+
+    pub fn effects(&self) -> &[String] {
+        &self.effects
+    }
+
+    pub fn effect_parameters(&self) -> &[String] {
+        &self.effect_parameters
     }
 }
 
@@ -465,6 +475,7 @@ fn inspect_symbol(typed: &TypedProject, symbol_id: SymbolId) -> SymbolInspection
 fn inspect_callable(typed: &TypedProject, contract: &CallableContract) -> CallableInspection {
     let failures = &typed.failure_rows[contract.failures.raw() as usize];
     let needs = &typed.needs_rows[contract.needs.raw() as usize];
+    let effects = &typed.effect_rows[contract.effects.raw() as usize];
     CallableInspection {
         display: typed.format_function_contract(contract),
         inputs: contract
@@ -492,6 +503,18 @@ fn inspect_callable(typed: &TypedProject, contract: &CallableContract) -> Callab
             })
             .collect(),
         needs_parameters: needs
+            .parameters
+            .iter()
+            .map(|symbol| typed.resolved.symbol(*symbol).name.clone())
+            .collect(),
+        effects: effects
+            .effects
+            .iter()
+            .map(|effect| match effect {
+                Effect::Io => "io".to_owned(),
+            })
+            .collect(),
+        effect_parameters: effects
             .parameters
             .iter()
             .map(|symbol| typed.resolved.symbol(*symbol).name.clone())
@@ -688,6 +711,10 @@ fn write_json_callable(output: &mut String, callable: Option<&CallableInspection
     }
     output.push_str("],\"needs_parameters\":");
     write_json_strings(output, &callable.needs_parameters);
+    output.push_str(",\"effects\":");
+    write_json_strings(output, &callable.effects);
+    output.push_str(",\"effect_parameters\":");
+    write_json_strings(output, &callable.effect_parameters);
     output.push('}');
 }
 

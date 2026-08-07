@@ -26,6 +26,7 @@ pub(crate) enum TokenKind {
     If,
     Errors,
     Needs,
+    Effects,
     Using,
     Void,
     True,
@@ -76,6 +77,7 @@ impl TokenKind {
             Self::If => "if",
             Self::Errors => "errors",
             Self::Needs => "needs",
+            Self::Effects => "effects",
             Self::Using => "using",
             Self::Void => "void",
             Self::True => "true",
@@ -127,6 +129,7 @@ impl TokenKind {
             Self::If => "`if`",
             Self::Errors => "`errors`",
             Self::Needs => "`needs`",
+            Self::Effects => "`effects`",
             Self::Using => "`using`",
             Self::Void => "`Void`",
             Self::True => "`True`",
@@ -188,6 +191,8 @@ pub(crate) enum NodeKind {
     TypeArguments,
     RequirementClause,
     RequirementRecord,
+    EffectClause,
+    EffectRecord,
     LetBinding,
     UsingExpression,
     PipelineExpression,
@@ -241,6 +246,8 @@ impl NodeKind {
             Self::TypeArguments => "type_arguments",
             Self::RequirementClause => "requirement_clause",
             Self::RequirementRecord => "requirement_record",
+            Self::EffectClause => "effect_clause",
+            Self::EffectRecord => "effect_record",
             Self::LetBinding => "let_binding",
             Self::UsingExpression => "using_expression",
             Self::PipelineExpression => "pipeline_expression",
@@ -848,6 +855,7 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                     "if" => TokenKind::If,
                     "errors" => TokenKind::Errors,
                     "needs" => TokenKind::Needs,
+                    "effects" => TokenKind::Effects,
                     "using" => TokenKind::Using,
                     "Void" => TokenKind::Void,
                     "True" => TokenKind::True,
@@ -1200,6 +1208,10 @@ impl<'source> Parser<'source> {
         if self.at(TokenKind::Needs) {
             self.parse_requirement_clause();
         }
+        self.skip_newlines();
+        if self.at(TokenKind::Effects) {
+            self.parse_effect_clause();
+        }
         self.finish();
     }
 
@@ -1250,6 +1262,10 @@ impl<'source> Parser<'source> {
         if self.at(TokenKind::Needs) {
             self.parse_requirement_clause();
         }
+        self.skip_newlines();
+        if self.at(TokenKind::Effects) {
+            self.parse_effect_clause();
+        }
         self.finish();
     }
 
@@ -1299,6 +1315,42 @@ impl<'source> Parser<'source> {
                     break;
                 }
                 self.parse_named_type_field();
+            }
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::RightBrace);
+        self.finish();
+    }
+
+    fn parse_effect_clause(&mut self) {
+        self.start(NodeKind::EffectClause);
+        self.expect(TokenKind::Effects);
+        self.skip_newlines();
+        self.parse_effect_atom();
+        while self.accept_after_newlines(TokenKind::Plus) {
+            self.skip_newlines();
+            self.parse_effect_atom();
+        }
+        self.finish();
+    }
+
+    fn parse_effect_atom(&mut self) {
+        if self.accept(TokenKind::Identifier) {
+            return;
+        }
+        self.start(NodeKind::EffectRecord);
+        self.expect(TokenKind::LeftBrace);
+        self.skip_newlines();
+        if self.at(TokenKind::RightBrace) {
+            self.error_at_current("empty effect records are invalid");
+        } else {
+            self.expect(TokenKind::Identifier);
+            while self.accept(TokenKind::Comma) {
+                self.skip_newlines();
+                if self.at(TokenKind::RightBrace) {
+                    break;
+                }
+                self.expect(TokenKind::Identifier);
             }
         }
         self.skip_newlines();
@@ -2111,6 +2163,20 @@ mod tests {
     }
 
     #[test]
+    fn effect_rows_round_trip_in_function_types_and_implementations() {
+        let source = concat!(
+            "interface Console { write: fn(Text) -> Void effects { io } }\n",
+            "fn apply<E>(operation: fn() -> Void effects E) effects E { operation() }\n",
+        );
+        let result = parse(&SourceSnapshot::from_text("effects.chimi", source));
+
+        assert_eq!(result.round_trip(), source);
+        assert_eq!(result.diagnostics(), []);
+        assert!(contains_node(&result.root(), NodeKind::EffectClause));
+        assert!(contains_node(&result.root(), NodeKind::EffectRecord));
+    }
+
+    #[test]
     fn missing_generic_delimiter_recovers_into_the_following_body() {
         let source = "struct Box<Value {\n  value: Value\n}\n";
         let snapshot = SourceSnapshot::from_text("missing-generic-close.chimi", source);
@@ -2140,6 +2206,10 @@ mod tests {
             (
                 "interface Service { call: fn() -> Void needs {} }\n",
                 "empty requirement records are invalid",
+            ),
+            (
+                "interface Service { call: fn() -> Void effects {} }\n",
+                "empty effect records are invalid",
             ),
         ];
 
@@ -2441,6 +2511,7 @@ mod tests {
             "if",
             "errors",
             "needs",
+            "effects",
             "using",
             "Void",
             "name",

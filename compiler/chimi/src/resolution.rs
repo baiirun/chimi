@@ -1,9 +1,9 @@
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::ids::{FileId, ModuleId, SemanticId, SymbolId};
 use crate::semantic::{
-    ImportBinding, ModuleBlockItem, ModuleCaseArm, ModuleDeclarationKind, ModuleExpression, Name,
-    Pattern, RequirementRowUse, RequirementTermUse, SemanticModule, SemanticProgram,
-    SemanticProject, StructDeclaration, TypeUse,
+    EffectRowUse, ImportBinding, ModuleBlockItem, ModuleCaseArm, ModuleDeclarationKind,
+    ModuleExpression, Name, Pattern, RequirementRowUse, RequirementTermUse, SemanticModule,
+    SemanticProgram, SemanticProject, StructDeclaration, TypeUse,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -815,6 +815,7 @@ impl ProjectResolver {
                 &generics,
                 Some(&mut scope),
             );
+            self.resolve_effect_row(module_index, &signature.effects, &generics);
         }
         if let Some(body) = &declaration.body {
             self.resolve_expression(module_index, body, &generics, &mut scope);
@@ -838,6 +839,7 @@ impl ProjectResolver {
                 success,
                 failures,
                 requirements,
+                effects,
                 ..
             } = type_use
             else {
@@ -851,6 +853,7 @@ impl ProjectResolver {
                 self.resolve_type(module_index, failures, generics);
             }
             self.resolve_requirement_row(module_index, requirements, generics, None);
+            self.resolve_effect_row(module_index, effects, generics);
             return;
         };
         if let Some(first) = path.first() {
@@ -987,6 +990,28 @@ impl ProjectResolver {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    fn resolve_effect_row(
+        &mut self,
+        module_index: usize,
+        row: &EffectRowUse,
+        generics: &HashMap<String, SymbolId>,
+    ) {
+        for term in &row.terms {
+            if term.name.text == "io" {
+                continue;
+            }
+            if let Some(symbol) = generics.get(&term.name.text).copied() {
+                self.reference(
+                    module_index,
+                    term.semantic_id,
+                    Namespace::Type,
+                    &term.name,
+                    ReferenceResolution::Resolved(symbol),
+                );
             }
         }
     }

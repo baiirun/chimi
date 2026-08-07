@@ -141,7 +141,7 @@ internal compiler defect.
 - `SemanticId -> TypeId` for every value-producing expression and pattern;
 - `SemanticId -> CallableContract` for every callable expression;
 - generic parameter kinds, constraints, instantiations, and substitutions;
-- normalized expected-failure and needs rows;
+- normalized expected-failure, needs, and effect rows;
 - resolved member selection after receiver typing;
 - struct construction and field-shape checks;
 - case coverage, reachability, guard purity, and bound-pattern types;
@@ -157,6 +157,7 @@ CallableContract {
   success: TypeId
   failures: FailureRowId
   needs: NeedsRowId
+  effects: EffectRowId
 }
 ```
 
@@ -185,11 +186,11 @@ Every generic binder has one inferred kind:
 - value type;
 - failure row;
 - needs row.
+- effect row.
 
 Constraint generation is driven by its declared uses. A generic used in
 incompatible kinds is a diagnostic. Function application instantiates declared
-parameters with fresh inference variables and unifies all three callable
-channels.
+parameters with fresh inference variables and unifies every callable channel.
 
 The first implementation needs declaration-scoped, rank-one polymorphism only.
 It MUST preserve row parameters through higher-order functions but need not
@@ -215,9 +216,10 @@ the declared interface. `using` checks each provider structurally against its
 named requirement and produces the input contract minus successfully provided
 needs.
 
-A provider can narrow method failures and needs but cannot widen them, change
-inputs, or change success. A failed provider match records an explained need so
-root validation does not emit a redundant missing-dependency diagnostic.
+A provider can narrow method failures, needs, and effects but cannot widen
+them, change inputs, or change success. A failed provider match records an
+explained need so root validation does not emit a redundant missing-dependency
+diagnostic.
 
 ### Diagnostics
 
@@ -255,6 +257,7 @@ Successful sealing proves:
 - every ordinary closed match is exhaustive and has no invalid patterns;
 - every provider conforms;
 - the root needs row is empty;
+- the root effect row is concrete and retained for target and runtime policy;
 - no blocking syntax, lowering, name, or type diagnostic is reachable;
 - every reachable semantic operation has a valid `OriginId`.
 
