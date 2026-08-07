@@ -403,11 +403,22 @@ remaining dynamic system libraries, and whether the actual result is fully
 static. Full-static output is a measured target property, not inferred from the
 backend choice.
 
+The build cache is content-addressed and shared by sibling application outputs.
+Module keys cover their verified Core nodes and origins, target CPU features,
+Cranelift identity and settings, the native-lowering revision, and cache schema.
+The entry object is keyed separately. Metadata keys cover the exact generated
+program data, runtime header, C compiler identity, target, and C settings;
+runtime keys cover the embedded sources, ABI version, C compiler identity,
+archive mode, and target. A hit materializes the immutable cached artifact into
+the ordinary build directory before every final link, so cache policy does not
+alter the artifact or deployment contract. The build report exposes hit and
+miss labels.
+
 The current module objects still use the M8 helper-per-Core-node lowering.
 That preserves oracle conformance while connecting the real toolchain; it is not
-the permanent runtime ABI granularity. Direct lowering, compilation-unit cache
-partitioning, and stable cache keys remain follow-up work behind this same
-handoff and MUST NOT change source or `CoreProgram` semantics.
+the permanent runtime ABI granularity. Direct lowering and more stable local
+node identities remain follow-up work behind this same handoff and MUST NOT
+change source or `CoreProgram` semantics.
 
 ## Module Depth and Seam Placement
 

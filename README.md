@@ -56,6 +56,12 @@ artifacts, remaining dynamic system dependencies, and whether the target is
 fully static. Fully static output is reported only when the produced executable
 actually has no dynamic dependencies.
 
+Build artifacts use a content-addressed cache under `target/chimi/.cache`.
+The report's `cache.hits` and `cache.misses` arrays show exactly which module
+objects, entry object, metadata object, and runtime archive were reused. A Core
+change invalidates its owning module object and whole-program metadata without
+forcing unrelated modules or the versioned runtime archive to rebuild.
+
 Request versioned machine-readable diagnostics with:
 
 ```sh

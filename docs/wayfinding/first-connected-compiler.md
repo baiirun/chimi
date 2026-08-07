@@ -394,3 +394,12 @@ five-workload harness still matches the interpreter oracle in off, boundary,
 and full modes. Direct native lowering and actual compilation-unit cache reuse
 remain subsequent runtime/compiler work; this slice deliberately retains the
 known helper-per-Core-node implementation behind the permanent build boundary.
+
+Native artifact reuse (`prog show ts-d31a46`) adds deterministic content keys
+and a shared cache behind that boundary. Identical builds reuse every pre-link
+artifact; changing one imported module reuses the entry object, unrelated module
+objects, and ABI-v1 runtime archive while rebuilding the changed module and
+whole-program metadata. The executable is still linked and dependency-inspected
+on every build. Release-mode edit/rebuild evidence is recorded in
+`docs/performance/native-build-cache-baseline.md`. Direct native lowering is the
+remaining execution-performance frontier.

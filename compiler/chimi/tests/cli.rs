@@ -215,6 +215,76 @@ fn build_loads_and_links_an_explicit_multi_module_project() {
 }
 
 #[test]
+fn build_reuses_unchanged_artifacts_and_invalidates_only_changed_core_inputs() {
+    let scratch = scratch_directory("build-cache");
+    let project = scratch.join("project");
+    std::fs::create_dir_all(project.join("app")).unwrap();
+    std::fs::create_dir_all(project.join("lib")).unwrap();
+    std::fs::write(
+        project.join("app/main.chimi"),
+        "import lib/answer as Answer\n\npub fn main() -> Int {\n  Answer.value()\n}\n",
+    )
+    .unwrap();
+    let answer = project.join("lib/answer.chimi");
+    std::fs::write(&answer, "pub fn value() -> Int {\n  42\n}\n").unwrap();
+    let executable = scratch.join("cached-app");
+
+    let build = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .args(["build", "--root"])
+            .arg(&project)
+            .args(["app/main", "-o"])
+            .arg(&executable)
+            .output()
+            .expect("build cache test project");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    let cold = build();
+    let cold_cache = cold.split("\"cache\":").nth(1).unwrap();
+    assert!(cold_cache.starts_with("{\"hits\":[],\"misses\":["));
+    assert_eq!(cold_cache.matches("module-").count(), 2);
+    assert!(cold_cache.contains("entry.o"));
+    assert!(cold_cache.contains("libchimi_rt.a"));
+    assert!(cold_cache.contains("program_data.o"));
+
+    let unchanged = build();
+    let unchanged_cache = unchanged.split("\"cache\":").nth(1).unwrap();
+    assert!(unchanged_cache.ends_with("\"misses\":[]}}\n"));
+    assert_eq!(unchanged_cache.matches("module-").count(), 2);
+    assert!(unchanged_cache.contains("entry.o"));
+    assert!(unchanged_cache.contains("libchimi_rt.a"));
+    assert!(unchanged_cache.contains("program_data.o"));
+
+    std::fs::write(&answer, "pub fn value() -> Int {\n  43\n}\n").unwrap();
+    let changed = build();
+    let changed_cache = changed.split("\"cache\":").nth(1).unwrap();
+    let (hits, misses) = changed_cache.split_once("],\"misses\":[").unwrap();
+    assert_eq!(hits.matches("module-").count(), 1);
+    assert!(hits.contains("entry.o"));
+    assert!(hits.contains("libchimi_rt.a"));
+    assert_eq!(misses.matches("module-").count(), 1);
+    assert!(misses.contains("program_data.o"));
+    let execution = Command::new(&executable)
+        .arg("--trace=off")
+        .output()
+        .expect("run selectively rebuilt executable");
+    assert!(execution.status.success());
+    assert_eq!(
+        String::from_utf8(execution.stdout).unwrap(),
+        "{\"outcome\":\"success\",\"value\":43}\n"
+    );
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
 fn run_executes_the_checkout_forcing_program_with_dependency_traces() {
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .args([

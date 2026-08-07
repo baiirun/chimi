@@ -6,6 +6,7 @@ use crate::executable::{CoreOperation, CoreProgram};
 use crate::json::write_json_string;
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, types};
+use cranelift_codegen::isa::OwnedTargetIsa;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
@@ -13,7 +14,16 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+const CACHE_SCHEMA: &str = "chimi.native-cache.v1";
+const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
+const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
+const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
+const NATIVE_LOWERING_REVISION: &str = "wrapper-per-core-node-v1";
+const RUNTIME_ABI_VERSION: u32 = 1;
+static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct NativeArtifact {
     pub object_paths: Vec<PathBuf>,
@@ -24,6 +34,8 @@ pub struct NativeArtifact {
     pub runtime_compilation: Duration,
     pub data_compilation: Duration,
     pub linking: Duration,
+    pub cache_hits: Vec<String>,
+    pub cache_misses: Vec<String>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -36,13 +48,18 @@ pub struct NativeBuildReport {
     pub manifest_path: PathBuf,
     pub dynamic_dependencies: Vec<String>,
     pub fully_static: bool,
+    pub cache_hits: Vec<String>,
+    pub cache_misses: Vec<String>,
 }
 
 impl NativeBuildReport {
     pub fn render_json(&self) -> String {
-        let mut output = String::from(
-            "{\"schema\":\"chimi.build.v1\",\"backend\":\"native-aot\",\"codegen\":\"cranelift-0.131.3\",\"runtime_abi\":1,\"target\":{\"os\":",
-        );
+        let mut output =
+            String::from("{\"schema\":\"chimi.build.v1\",\"backend\":\"native-aot\",\"codegen\":");
+        write_json_string(&mut output, CODEGEN_IDENTITY);
+        output.push_str(",\"runtime_abi\":");
+        output.push_str(&RUNTIME_ABI_VERSION.to_string());
+        output.push_str(",\"target\":{\"os\":");
         write_json_string(&mut output, std::env::consts::OS);
         output.push_str(",\"arch\":");
         write_json_string(&mut output, std::env::consts::ARCH);
@@ -73,6 +90,11 @@ impl NativeBuildReport {
         }
         output.push_str("],\"fully_static\":");
         output.push_str(if self.fully_static { "true" } else { "false" });
+        output.push_str(",\"cache\":{\"hits\":[");
+        write_strings(&mut output, &self.cache_hits);
+        output.push_str("],\"misses\":[");
+        write_strings(&mut output, &self.cache_misses);
+        output.push_str("]}");
         output.push_str("}\n");
         output
     }
@@ -95,6 +117,8 @@ pub fn build_application(
         manifest_path: manifest_path.clone(),
         fully_static: dynamic_dependencies.is_empty(),
         dynamic_dependencies,
+        cache_hits: artifact.cache_hits,
+        cache_misses: artifact.cache_misses,
     };
     std::fs::write(&manifest_path, report.render_json())
         .map_err(|error| format!("write native build manifest: {error}"))?;
@@ -127,57 +151,97 @@ fn build_to_path(
     let runtime_object_path = output_directory.join("runtime.o");
     let runtime_archive_path = output_directory.join("libchimi_rt.a");
     let include_directory = output_directory.to_path_buf();
+    let cache_directory = output_directory
+        .parent()
+        .unwrap_or(output_directory)
+        .join(".cache/native-v1");
+    let mut cache = ArtifactCache::new(cache_directory)?;
+    let target = native_target_fingerprint()?;
+    let cc = command_identity("cc")?;
 
     let started = Instant::now();
     let mut object_paths = Vec::new();
-    for (name, object) in emit_objects(&program.core)? {
-        let path = output_directory.join(name);
-        std::fs::write(&path, object)
-            .map_err(|error| format!("write native application object: {error}"))?;
+    for (file_id, node_ids) in module_nodes(&program.core) {
+        let name = format!("module-{file_id}.o");
+        let path = output_directory.join(&name);
+        let key = module_cache_key(&program.core, file_id, &node_ids, &target);
+        cache.materialize(&key, "o", &path, &name, |temporary| {
+            std::fs::write(
+                temporary,
+                emit_module_object(&program.core, file_id, &node_ids)?,
+            )
+            .map_err(|error| format!("write native module object: {error}"))
+        })?;
         object_paths.push(path);
     }
+    let entry_path = output_directory.join("entry.o");
+    let entry_key = entry_cache_key(&program.core, &target);
+    cache.materialize(&entry_key, "o", &entry_path, "entry.o", |temporary| {
+        std::fs::write(temporary, emit_entry_object(&program.core)?)
+            .map_err(|error| format!("write native entry object: {error}"))
+    })?;
+    object_paths.push(entry_path);
     let object_emission = started.elapsed();
 
-    std::fs::write(&data_source_path, render_program_data(&program.core, false))
+    let data_source = render_program_data(&program.core, false);
+    std::fs::write(&data_source_path, &data_source)
         .map_err(|error| format!("write native program data: {error}"))?;
     std::fs::write(output_directory.join("runtime.c"), RUNTIME_SOURCE)
         .map_err(|error| format!("write embedded runtime source: {error}"))?;
     std::fs::write(output_directory.join("runtime.h"), RUNTIME_HEADER)
         .map_err(|error| format!("write embedded runtime header: {error}"))?;
     let started = Instant::now();
-    run(
-        Command::new("cc")
-            .arg("-std=c11")
-            .arg("-O2")
-            .arg("-I")
-            .arg(&include_directory)
-            .arg("-c")
-            .arg(include_directory.join("runtime.c"))
-            .arg("-o")
-            .arg(&runtime_object_path),
-        "compile native backend runtime",
-    )?;
-    run(
-        Command::new("ar")
-            .arg("rcs")
-            .arg(&runtime_archive_path)
-            .arg(&runtime_object_path),
-        "archive native backend runtime",
+    let runtime_key = runtime_cache_key(&target, &cc);
+    cache.materialize(
+        &runtime_key,
+        "a",
+        &runtime_archive_path,
+        "libchimi_rt.a",
+        |temporary| {
+            run(
+                Command::new("cc")
+                    .arg("-std=c11")
+                    .arg("-O2")
+                    .arg("-I")
+                    .arg(&include_directory)
+                    .arg("-c")
+                    .arg(include_directory.join("runtime.c"))
+                    .arg("-o")
+                    .arg(&runtime_object_path),
+                "compile native backend runtime",
+            )?;
+            run(
+                Command::new("ar")
+                    .arg("rcs")
+                    .arg(temporary)
+                    .arg(&runtime_object_path),
+                "archive native backend runtime",
+            )
+        },
     )?;
     let runtime_compilation = started.elapsed();
 
     let started = Instant::now();
-    run(
-        Command::new("cc")
-            .arg("-std=c11")
-            .arg("-O2")
-            .arg("-I")
-            .arg(&include_directory)
-            .arg("-c")
-            .arg(&data_source_path)
-            .arg("-o")
-            .arg(&data_object_path),
-        "compile native backend program data",
+    let data_key = metadata_cache_key(&data_source, &target, &cc);
+    cache.materialize(
+        &data_key,
+        "o",
+        &data_object_path,
+        "program_data.o",
+        |temporary| {
+            run(
+                Command::new("cc")
+                    .arg("-std=c11")
+                    .arg("-O2")
+                    .arg("-I")
+                    .arg(&include_directory)
+                    .arg("-c")
+                    .arg(&data_source_path)
+                    .arg("-o")
+                    .arg(temporary),
+                "compile native backend program data",
+            )
+        },
     )?;
     let data_compilation = started.elapsed();
 
@@ -190,6 +254,7 @@ fn build_to_path(
         .arg(executable_path);
     run(&mut link, "link native backend executable")?;
     let linking = started.elapsed();
+    let (cache_hits, cache_misses) = cache.finish();
 
     Ok(NativeArtifact {
         object_paths,
@@ -200,6 +265,8 @@ fn build_to_path(
         runtime_compilation,
         data_compilation,
         linking,
+        cache_hits,
+        cache_misses,
     })
 }
 
@@ -218,6 +285,197 @@ fn run(command: &mut Command, operation: &str) -> Result<(), String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
+}
+
+fn command_identity(command: &str) -> Result<String, String> {
+    let output = Command::new(command)
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("inspect {command} identity: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "inspect {command} identity: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
+fn write_strings(output: &mut String, values: &[String]) {
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        write_json_string(output, value);
+    }
+}
+
+struct ArtifactCache {
+    directory: PathBuf,
+    hits: Vec<String>,
+    misses: Vec<String>,
+}
+
+impl ArtifactCache {
+    fn new(directory: PathBuf) -> Result<Self, String> {
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| format!("create native cache directory: {error}"))?;
+        Ok(Self {
+            directory,
+            hits: Vec::new(),
+            misses: Vec::new(),
+        })
+    }
+
+    fn materialize(
+        &mut self,
+        key: &str,
+        extension: &str,
+        output_path: &Path,
+        label: &str,
+        create: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let cached = self.directory.join(format!("{key}.{extension}"));
+        let hit = cached.is_file();
+        if !hit {
+            let sequence = CACHE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let temporary =
+                self.directory
+                    .join(format!(".{key}.{}.{}.tmp", std::process::id(), sequence));
+            if let Err(error) = create(&temporary) {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(error);
+            }
+            if let Err(error) = std::fs::rename(&temporary, &cached) {
+                if cached.is_file() {
+                    let _ = std::fs::remove_file(&temporary);
+                } else {
+                    let _ = std::fs::remove_file(&temporary);
+                    return Err(format!("publish cached native artifact: {error}"));
+                }
+            }
+        }
+        std::fs::copy(&cached, output_path)
+            .map_err(|error| format!("materialize cached native artifact {label}: {error}"))?;
+        if hit {
+            self.hits.push(label.to_owned());
+        } else {
+            self.misses.push(label.to_owned());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> (Vec<String>, Vec<String>) {
+        (self.hits, self.misses)
+    }
+}
+
+fn cache_key(kind: &str, parts: &[&[u8]]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for part in [CACHE_SCHEMA.as_bytes(), kind.as_bytes()]
+        .into_iter()
+        .chain(parts.iter().copied())
+    {
+        hasher.update(&(part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn module_cache_key(core: &CoreProgram, file_id: u32, node_ids: &[u32], target: &str) -> String {
+    let mut content = format!("file={file_id}\n");
+    for &node_id in node_ids {
+        let node = &core.nodes[node_id as usize];
+        let origin = &core.origins[node.origin.raw() as usize];
+        content.push_str(&format!("{node:?}\n{origin:?}\n"));
+    }
+    let runtime_abi = RUNTIME_ABI_VERSION.to_string();
+    cache_key(
+        "module-object",
+        &[
+            CODEGEN_IDENTITY.as_bytes(),
+            CODEGEN_SETTINGS.as_bytes(),
+            NATIVE_LOWERING_REVISION.as_bytes(),
+            runtime_abi.as_bytes(),
+            target.as_bytes(),
+            content.as_bytes(),
+        ],
+    )
+}
+
+fn entry_cache_key(core: &CoreProgram, target: &str) -> String {
+    let entry = core
+        .functions
+        .iter()
+        .find(|function| function.symbol == core.entry)
+        .expect("well-formed core has entry");
+    let content = format!("entry={:?};body={:?}", core.entry, entry.body);
+    let runtime_abi = RUNTIME_ABI_VERSION.to_string();
+    cache_key(
+        "entry-object",
+        &[
+            CODEGEN_IDENTITY.as_bytes(),
+            CODEGEN_SETTINGS.as_bytes(),
+            NATIVE_LOWERING_REVISION.as_bytes(),
+            runtime_abi.as_bytes(),
+            target.as_bytes(),
+            content.as_bytes(),
+        ],
+    )
+}
+
+fn metadata_cache_key(source: &str, target: &str, cc: &str) -> String {
+    cache_key(
+        "metadata-object",
+        &[
+            C_SETTINGS.as_bytes(),
+            target.as_bytes(),
+            cc.as_bytes(),
+            RUNTIME_HEADER.as_bytes(),
+            source.as_bytes(),
+        ],
+    )
+}
+
+fn runtime_cache_key(target: &str, cc: &str) -> String {
+    let runtime_abi = RUNTIME_ABI_VERSION.to_string();
+    cache_key(
+        "runtime-archive",
+        &[
+            C_SETTINGS.as_bytes(),
+            target.as_bytes(),
+            cc.as_bytes(),
+            runtime_abi.as_bytes(),
+            RUNTIME_HEADER.as_bytes(),
+            RUNTIME_SOURCE.as_bytes(),
+            b"ar:rcs",
+        ],
+    )
+}
+
+fn native_isa() -> Result<OwnedTargetIsa, String> {
+    let mut flags = settings::builder();
+    flags
+        .set("is_pic", "true")
+        .map_err(|error| format!("enable position-independent native code: {error}"))?;
+    cranelift_native::builder()
+        .map_err(str::to_owned)?
+        .finish(settings::Flags::new(flags))
+        .map_err(|error| format!("finish native Cranelift target: {error}"))
+}
+
+fn native_target_fingerprint() -> Result<String, String> {
+    let isa = native_isa()?;
+    let mut fingerprint = format!("{}|{}", isa.triple(), isa.flags());
+    for flag in isa.isa_flags() {
+        fingerprint.push('|');
+        fingerprint.push_str(&flag.to_string());
+    }
+    Ok(fingerprint)
 }
 
 fn dynamic_dependencies(executable: &Path) -> Result<Vec<String>, String> {
@@ -269,33 +527,17 @@ fn write_path(output: &mut String, path: &Path) {
     write_json_string(output, &path.to_string_lossy());
 }
 
-fn emit_objects(core: &CoreProgram) -> Result<Vec<(String, Vec<u8>)>, String> {
+fn module_nodes(core: &CoreProgram) -> BTreeMap<u32, Vec<u32>> {
     let mut modules = BTreeMap::<u32, Vec<u32>>::new();
     for node in &core.nodes {
         let file_id = core.origins[node.origin.raw() as usize].file_id.raw();
         modules.entry(file_id).or_default().push(node.id.raw());
     }
-
-    let mut objects = Vec::with_capacity(modules.len() + 1);
-    for (file_id, nodes) in modules {
-        objects.push((
-            format!("module-{file_id}.o"),
-            emit_module_object(core, file_id, &nodes)?,
-        ));
-    }
-    objects.push(("entry.o".to_owned(), emit_entry_object(core)?));
-    Ok(objects)
+    modules
 }
 
 fn new_object_module(name: &str) -> Result<ObjectModule, String> {
-    let mut flags = settings::builder();
-    flags
-        .set("is_pic", "true")
-        .map_err(|error| format!("enable position-independent native code: {error}"))?;
-    let isa = cranelift_native::builder()
-        .map_err(str::to_owned)?
-        .finish(settings::Flags::new(flags))
-        .map_err(|error| format!("finish native Cranelift target: {error}"))?;
+    let isa = native_isa()?;
     let builder = ObjectBuilder::new(isa, name, default_libcall_names())
         .map_err(|error| format!("create Cranelift object builder: {error}"))?;
     Ok(ObjectModule::new(builder))
@@ -535,7 +777,31 @@ fn operation_name(operation: &CoreOperation) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_dependency;
+    use super::{CACHE_SCHEMA, RUNTIME_ABI_VERSION, RUNTIME_HEADER, cache_key, parse_dependency};
+
+    #[test]
+    fn cache_keys_preserve_input_and_artifact_boundaries() {
+        assert_eq!(
+            cache_key("module", &[b"alpha", b"beta"]),
+            cache_key("module", &[b"alpha", b"beta"])
+        );
+        assert_ne!(
+            cache_key("module", &[b"alpha", b"beta"]),
+            cache_key("entry", &[b"alpha", b"beta"])
+        );
+        assert_ne!(
+            cache_key("module", &[b"ab", b"c"]),
+            cache_key("module", &[b"a", b"bc"])
+        );
+        assert!(CACHE_SCHEMA.ends_with(".v1"));
+    }
+
+    #[test]
+    fn rust_and_embedded_runtime_agree_on_the_abi_version() {
+        assert!(RUNTIME_HEADER.contains(&format!(
+            "#define CHIMI_RUNTIME_ABI_VERSION {RUNTIME_ABI_VERSION}"
+        )));
+    }
 
     #[test]
     fn parses_platform_dependency_report_lines_without_hiding_missing_libraries() {
