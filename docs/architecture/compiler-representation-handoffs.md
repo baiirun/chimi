@@ -394,7 +394,7 @@ before the final platform link:
   functions, plus a small entry object;
 - an immutable metadata object containing symbols, values, source origins, and
   runtime operation operands;
-- a static archive containing Chimi runtime ABI version 1.
+- a static archive containing Chimi runtime ABI version 2.
 
 The linked executable embeds the Chimi runtime and needs no separately installed
 Chimi VM or package tree. The versioned `chimi.build.v1` report identifies all
@@ -414,11 +414,22 @@ the ordinary build directory before every final link, so cache policy does not
 alter the artifact or deployment contract. The build report exposes hit and
 miss labels.
 
-The current module objects still use the M8 helper-per-Core-node lowering.
-That preserves oracle conformance while connecting the real toolchain; it is not
-the permanent runtime ABI granularity. Direct lowering and more stable local
-node identities remain follow-up work behind this same handoff and MUST NOT
-change source or `CoreProgram` semantics.
+The first direct-lowering slice recognizes maximal expression roots composed of
+integer constants, transparent identities, negation, addition, subtraction, and
+multiplication. It emits those finite pure trees as checked Cranelift SSA and
+boxes only the final successful integer. Full tracing branches to the original
+helper-per-Core-node evaluator so every semantic event remains observable;
+overflow takes the same fallback to preserve its existing defect. Boundary mode
+reserves the fused tree's span count before returning, preserving later causal
+event identities without constructing operation events. ABI-v2 exposes only the
+full-trace query and direct-integer success boundary needed by this policy.
+
+Only maximal roots are fused. Emitting SSA in every eligible inner wrapper was
+measured and rejected because it duplicated nested subtrees quadratically.
+Calls, division, comparisons, closures, matching, dependencies, and other
+runtime-owned operations still use the M8 helper path. Broader direct lowering
+and more stable local node identities remain follow-up work behind this same
+handoff and MUST NOT change source or `CoreProgram` semantics.
 
 ## Module Depth and Seam Placement
 

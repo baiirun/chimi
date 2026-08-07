@@ -434,7 +434,19 @@ fn workloads() -> Vec<Workload> {
     let retry_main = include_str!("../../../../prototypes/retry-composition/app/main.chimi");
     let defect = include_str!("../../../../prototypes/backend-comparison/defect.chimi");
     let cancellation = include_str!("../../../../prototypes/backend-comparison/cancellation.chimi");
+    let direct_integer =
+        include_str!("../../../../prototypes/native-direct-lowering/integer-arithmetic.chimi");
     vec![
+        Workload {
+            id: "direct-integer",
+            sources: vec![source(
+                "native/direct_integer",
+                "prototypes/native-direct-lowering/integer-arithmetic.chimi",
+                direct_integer,
+            )],
+            source_bytes: direct_integer.len(),
+            control: InitialControl::Run,
+        },
         Workload {
             id: "rich-success",
             sources: vec![source(

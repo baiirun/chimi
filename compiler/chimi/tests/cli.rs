@@ -285,6 +285,83 @@ fn build_reuses_unchanged_artifacts_and_invalidates_only_changed_core_inputs() {
 }
 
 #[test]
+fn direct_integer_build_preserves_off_boundary_and_full_trace_behavior() {
+    let scratch = scratch_directory("direct-integer");
+    let executable = scratch.join("integer");
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(repository_path(
+            "prototypes/native-direct-lowering/integer-arithmetic.chimi",
+        ))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("build direct integer workload");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let execute = |trace: &str| {
+        let output = Command::new(&executable)
+            .args([trace, "--execution-id=direct-integer-test"])
+            .output()
+            .expect("execute direct integer workload");
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+    assert_eq!(
+        execute("--trace=off"),
+        "{\"outcome\":\"success\",\"value\":-529}\n"
+    );
+    let boundaries = execute("--trace=boundaries");
+    assert_eq!(boundaries.lines().count(), 3);
+    assert!(boundaries.contains("\"event\":\"computation_started\""));
+    assert!(boundaries.ends_with("{\"outcome\":\"success\",\"value\":-529}\n"));
+    let full = execute("--trace=full");
+    assert!(full.lines().count() > 200);
+    assert!(full.contains("\"operation\":\"constant\""));
+    assert!(full.contains("\"operation\":\"binary\""));
+    assert!(full.contains("\"operation\":\"unary\""));
+    assert!(full.ends_with("{\"outcome\":\"success\",\"value\":-529}\n"));
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn direct_integer_overflow_returns_the_existing_runtime_defect() {
+    let scratch = scratch_directory("direct-integer-overflow");
+    let executable = scratch.join("overflow");
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(repository_path(
+            "prototypes/native-direct-lowering/integer-overflow.chimi",
+        ))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("build direct integer overflow workload");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let execution = Command::new(&executable)
+        .arg("--trace=off")
+        .output()
+        .expect("execute direct integer overflow workload");
+    assert!(execution.status.success());
+    let outcome = String::from_utf8(execution.stdout).unwrap();
+    assert!(outcome.contains("\"outcome\":\"defect\""));
+    assert!(outcome.contains("\"message\":\"integer arithmetic overflow\""));
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
 fn run_executes_the_checkout_forcing_program_with_dependency_traces() {
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .args([
