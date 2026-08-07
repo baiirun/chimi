@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 1
+#define CHIMI_RUNTIME_ABI_VERSION 2
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -130,6 +130,8 @@ extern const ChimiPattern CHIMI_PATTERNS[];
 extern ChimiNodeFn CHIMI_NODE_FUNCTIONS[];
 
 int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv);
+int32_t chimi_rt_full_trace(const ChimiRuntime *);
+ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *, uint32_t, int64_t);
 
 ChimiControl *chimi_rt_constant(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
 ChimiControl *chimi_rt_reference(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);

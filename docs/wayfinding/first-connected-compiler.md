@@ -403,3 +403,12 @@ whole-program metadata. The executable is still linked and dependency-inspected
 on every build. Release-mode edit/rebuild evidence is recorded in
 `docs/performance/native-build-cache-baseline.md`. Direct native lowering is the
 remaining execution-performance frontier.
+
+The first direct native slice (`prog show ts-02d20b`) fuses maximal pure integer
+trees into checked Cranelift SSA for off and boundary tracing. ABI-v2 boxes one
+result and reserves boundary span identities; full tracing and overflow retain
+the canonical helper evaluator. The expanded six-workload native oracle matches
+off, boundary, and full output exactly. The 132-node forcing workload reduces
+off-mode p50 from 12,745 ns to 175 ns and boundary p50 from 16,768 ns to
+4,088 ns without a measurable full-trace regression. The accepted scope and
+measurements are in `docs/performance/native-direct-integer-baseline.md`.

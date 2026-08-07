@@ -1,4 +1,4 @@
-/* Chimi native runtime ABI version 1. */
+/* Chimi native runtime ABI version 2. */
 #include "runtime.h"
 
 #include <inttypes.h>
@@ -219,6 +219,13 @@ static ChimiValue *integer_value(int64_t raw) { ChimiValue *v = new_value(VALUE_
 static ChimiValue *text_value(const char *raw) { ChimiValue *v = new_value(VALUE_TEXT); v->as.text = raw; return v; }
 static ChimiValue *boolean_value(bool raw) { ChimiValue *v = new_value(VALUE_BOOLEAN); v->as.boolean = raw; return v; }
 static ChimiValue *callable_value(ChimiCallable *raw) { ChimiValue *v = new_value(VALUE_CALLABLE); v->as.callable = raw; return v; }
+
+int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace; }
+ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t node_count,
+                                               int64_t raw) {
+  if (!runtime->silent) runtime->next_span += node_count;
+  return success(integer_value(raw));
+}
 
 static ChimiValue *select_value(ChimiValue *value, const char *name) {
   RuntimeField *fields = NULL; uint32_t length = 0;

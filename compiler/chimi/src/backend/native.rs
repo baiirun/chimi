@@ -4,8 +4,11 @@ use super::BackendProgram;
 use super::program_data::render_program_data;
 use crate::executable::{CoreOperation, CoreProgram};
 use crate::json::write_json_string;
+use crate::semantic::{BinaryOperator, UnaryOperator};
 use cranelift_codegen::Context;
-use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, types};
+use cranelift_codegen::ir::{
+    AbiParam, Function, InstBuilder, Signature, UserFuncName, Value, types,
+};
 use cranelift_codegen::isa::OwnedTargetIsa;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -21,8 +24,8 @@ const CACHE_SCHEMA: &str = "chimi.native-cache.v1";
 const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
 const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
 const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
-const NATIVE_LOWERING_REVISION: &str = "wrapper-per-core-node-v1";
-const RUNTIME_ABI_VERSION: u32 = 1;
+const NATIVE_LOWERING_REVISION: &str = "maximal-pure-integer-ssa-v1";
+const RUNTIME_ABI_VERSION: u32 = 2;
 static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct NativeArtifact {
@@ -161,6 +164,7 @@ fn build_to_path(
 
     let started = Instant::now();
     let mut object_paths = Vec::new();
+    let direct_integer_roots = direct_integer_roots(&program.core);
     for (file_id, node_ids) in module_nodes(&program.core) {
         let name = format!("module-{file_id}.o");
         let path = output_directory.join(&name);
@@ -168,7 +172,7 @@ fn build_to_path(
         cache.materialize(&key, "o", &path, &name, |temporary| {
             std::fs::write(
                 temporary,
-                emit_module_object(&program.core, file_id, &node_ids)?,
+                emit_module_object(&program.core, file_id, &node_ids, &direct_integer_roots)?,
             )
             .map_err(|error| format!("write native module object: {error}"))
         })?;
@@ -574,10 +578,26 @@ fn emit_module_object(
     core: &CoreProgram,
     file_id: u32,
     node_ids: &[u32],
+    direct_integer_roots: &HashMap<u32, u32>,
 ) -> Result<Vec<u8>, String> {
     let mut module = new_object_module(&format!("chimi_module_{file_id}"))?;
     let node_signature = node_signature(&module);
     let runtime_signature = runtime_signature(&module);
+    let pointer = module.target_config().pointer_type();
+    let full_trace_signature = Signature {
+        params: vec![AbiParam::new(pointer)],
+        returns: vec![AbiParam::new(types::I32)],
+        call_conv: module.target_config().default_call_conv,
+    };
+    let direct_integer_success_signature = Signature {
+        params: vec![
+            AbiParam::new(pointer),
+            AbiParam::new(types::I32),
+            AbiParam::new(types::I64),
+        ],
+        returns: vec![AbiParam::new(pointer)],
+        call_conv: module.target_config().default_call_conv,
+    };
     let mut functions = HashMap::new();
     for &node_id in node_ids {
         functions.insert(
@@ -621,14 +641,34 @@ fn emit_module_object(
                 .map_err(|error| format!("declare runtime helper {operation}: {error}"))?,
         );
     }
+    let full_trace = module
+        .declare_function(
+            "chimi_rt_full_trace",
+            Linkage::Import,
+            &full_trace_signature,
+        )
+        .map_err(|error| format!("declare full-trace runtime query: {error}"))?;
+    let direct_integer_success = module
+        .declare_function(
+            "chimi_rt_direct_integer_success",
+            Linkage::Import,
+            &direct_integer_success_signature,
+        )
+        .map_err(|error| format!("declare direct-integer runtime result: {error}"))?;
 
     for &node_id in node_ids {
         let node = &core.nodes[node_id as usize];
         define_node(
             &mut module,
+            core,
             functions[&node_id],
-            helpers[operation_name(&node.operation)],
             node_id,
+            direct_integer_roots.get(&node_id).copied(),
+            NodeRuntimeFunctions {
+                fallback: helpers[operation_name(&node.operation)],
+                full_trace,
+                direct_integer_success,
+            },
             node_signature.clone(),
         )?;
     }
@@ -688,11 +728,20 @@ fn emit_entry_object(core: &CoreProgram) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("emit native entry object: {error}"))
 }
 
+#[derive(Clone, Copy)]
+struct NodeRuntimeFunctions {
+    fallback: FuncId,
+    full_trace: FuncId,
+    direct_integer_success: FuncId,
+}
+
 fn define_node(
     module: &mut ObjectModule,
+    core: &CoreProgram,
     function_id: FuncId,
-    helper_id: FuncId,
     node_id: u32,
+    direct_integer_node_count: Option<u32>,
+    runtime: NodeRuntimeFunctions,
     signature: Signature,
 ) -> Result<(), String> {
     let mut context = Context::new();
@@ -705,19 +754,191 @@ fn define_node(
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
         let parameters = builder.block_params(entry).to_vec();
-        let helper = module.declare_func_in_func(helper_id, builder.func);
-        let node = builder.ins().iconst(types::I32, i64::from(node_id));
-        let call = builder
-            .ins()
-            .call(helper, &[parameters[0], node, parameters[1], parameters[2]]);
-        let result = builder.inst_results(call)[0];
-        builder.ins().return_(&[result]);
+        let fallback = module.declare_func_in_func(runtime.fallback, builder.func);
+        if let Some(node_count) = direct_integer_node_count {
+            let full_trace = module.declare_func_in_func(runtime.full_trace, builder.func);
+            let direct_success =
+                module.declare_func_in_func(runtime.direct_integer_success, builder.func);
+            let direct_block = builder.create_block();
+            let success_block = builder.create_block();
+            let fallback_block = builder.create_block();
+            let return_block = builder.create_block();
+            builder.append_block_param(return_block, module.target_config().pointer_type());
+
+            let trace_call = builder.ins().call(full_trace, &[parameters[0]]);
+            let requires_trace = builder.inst_results(trace_call)[0];
+            builder
+                .ins()
+                .brif(requires_trace, fallback_block, &[], direct_block, &[]);
+
+            builder.switch_to_block(direct_block);
+            let (value, overflow) = emit_pure_integer(&mut builder, core, node_id);
+            builder
+                .ins()
+                .brif(overflow, fallback_block, &[], success_block, &[]);
+
+            builder.switch_to_block(success_block);
+            let count = builder.ins().iconst(types::I32, i64::from(node_count));
+            let call = builder
+                .ins()
+                .call(direct_success, &[parameters[0], count, value]);
+            let result = builder.inst_results(call)[0];
+            builder.ins().jump(return_block, &[result.into()]);
+
+            builder.switch_to_block(fallback_block);
+            let node = builder.ins().iconst(types::I32, i64::from(node_id));
+            let call = builder.ins().call(
+                fallback,
+                &[parameters[0], node, parameters[1], parameters[2]],
+            );
+            let result = builder.inst_results(call)[0];
+            builder.ins().jump(return_block, &[result.into()]);
+
+            builder.switch_to_block(return_block);
+            let result = builder.block_params(return_block)[0];
+            builder.ins().return_(&[result]);
+        } else {
+            let node = builder.ins().iconst(types::I32, i64::from(node_id));
+            let call = builder.ins().call(
+                fallback,
+                &[parameters[0], node, parameters[1], parameters[2]],
+            );
+            let result = builder.inst_results(call)[0];
+            builder.ins().return_(&[result]);
+        }
         builder.seal_all_blocks();
         builder.finalize();
     }
     module
         .define_function(function_id, &mut context)
         .map_err(|error| format!("define native node {node_id}: {error}"))
+}
+
+#[derive(Clone, Copy)]
+enum PureIntegerState {
+    Unknown,
+    Visiting,
+    Known(Option<u32>),
+}
+
+fn pure_integer_node_counts(core: &CoreProgram) -> Vec<Option<u32>> {
+    let mut states = vec![PureIntegerState::Unknown; core.nodes.len()];
+    for node_id in 0..core.nodes.len() as u32 {
+        pure_integer_node_count(core, node_id, &mut states);
+    }
+    states
+        .into_iter()
+        .map(|state| match state {
+            PureIntegerState::Known(count) => count,
+            PureIntegerState::Unknown | PureIntegerState::Visiting => {
+                unreachable!("every Core node was classified")
+            }
+        })
+        .collect()
+}
+
+fn pure_integer_node_count(
+    core: &CoreProgram,
+    node_id: u32,
+    states: &mut [PureIntegerState],
+) -> Option<u32> {
+    match states[node_id as usize] {
+        PureIntegerState::Known(count) => return count,
+        PureIntegerState::Visiting => return None,
+        PureIntegerState::Unknown => states[node_id as usize] = PureIntegerState::Visiting,
+    }
+    let node = &core.nodes[node_id as usize];
+    let count = (|| -> Option<u32> {
+        match &node.operation {
+            CoreOperation::Constant(crate::executable::CoreLiteral::Integer(_)) => Some(1),
+            CoreOperation::Unary {
+                operator: UnaryOperator::Negate,
+                operand,
+            } => pure_integer_node_count(core, operand.raw(), states)?.checked_add(1),
+            CoreOperation::Identity(value) => {
+                pure_integer_node_count(core, value.raw(), states)?.checked_add(1)
+            }
+            CoreOperation::Binary {
+                operator: BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply,
+                left,
+                right,
+            } => pure_integer_node_count(core, left.raw(), states)?
+                .checked_add(pure_integer_node_count(core, right.raw(), states)?)?
+                .checked_add(1),
+            _ => None,
+        }
+    })();
+    states[node_id as usize] = PureIntegerState::Known(count);
+    count
+}
+
+fn direct_integer_roots(core: &CoreProgram) -> HashMap<u32, u32> {
+    let counts = pure_integer_node_counts(core);
+    let mut roots = counts
+        .iter()
+        .enumerate()
+        .filter_map(|(node_id, count)| count.map(|count| (node_id as u32, count)))
+        .collect::<HashMap<_, _>>();
+    for node in &core.nodes {
+        if counts[node.id.raw() as usize].is_none() {
+            continue;
+        }
+        match &node.operation {
+            CoreOperation::Unary { operand, .. } => {
+                roots.remove(&operand.raw());
+            }
+            CoreOperation::Identity(value) => {
+                roots.remove(&value.raw());
+            }
+            CoreOperation::Binary { left, right, .. } => {
+                roots.remove(&left.raw());
+                roots.remove(&right.raw());
+            }
+            _ => {}
+        }
+    }
+    roots
+}
+
+fn emit_pure_integer(
+    builder: &mut FunctionBuilder<'_>,
+    core: &CoreProgram,
+    node_id: u32,
+) -> (Value, Value) {
+    let node = &core.nodes[node_id as usize];
+    match &node.operation {
+        CoreOperation::Constant(crate::executable::CoreLiteral::Integer(value)) => (
+            builder.ins().iconst(types::I64, *value),
+            builder.ins().iconst(types::I8, 0),
+        ),
+        CoreOperation::Unary {
+            operator: UnaryOperator::Negate,
+            operand,
+        } => {
+            let (operand, child_overflow) = emit_pure_integer(builder, core, operand.raw());
+            let zero = builder.ins().iconst(types::I64, 0);
+            let (value, overflow) = builder.ins().ssub_overflow(zero, operand);
+            (value, builder.ins().bor(child_overflow, overflow))
+        }
+        CoreOperation::Identity(value) => emit_pure_integer(builder, core, value.raw()),
+        CoreOperation::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            let (left, left_overflow) = emit_pure_integer(builder, core, left.raw());
+            let (right, right_overflow) = emit_pure_integer(builder, core, right.raw());
+            let child_overflow = builder.ins().bor(left_overflow, right_overflow);
+            let (value, overflow) = match operator {
+                BinaryOperator::Add => builder.ins().sadd_overflow(left, right),
+                BinaryOperator::Subtract => builder.ins().ssub_overflow(left, right),
+                BinaryOperator::Multiply => builder.ins().smul_overflow(left, right),
+                _ => unreachable!("only direct-lowerable integer operators reach emission"),
+            };
+            (value, builder.ins().bor(child_overflow, overflow))
+        }
+        _ => unreachable!("only direct-lowerable integer nodes reach emission"),
+    }
 }
 
 fn define_main(
@@ -777,7 +998,80 @@ fn operation_name(operation: &CoreOperation) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{CACHE_SCHEMA, RUNTIME_ABI_VERSION, RUNTIME_HEADER, cache_key, parse_dependency};
+    use super::{
+        BinaryOperator, CACHE_SCHEMA, CoreOperation, RUNTIME_ABI_VERSION, RUNTIME_HEADER,
+        cache_key, direct_integer_roots, parse_dependency, pure_integer_node_counts,
+    };
+    use crate::source::SourceSnapshot;
+    use crate::{BackendProgram, Compiler, ProjectSource};
+
+    fn prepared(source: &str) -> BackendProgram {
+        Compiler::prepare_backend(vec![
+            ProjectSource::new(
+                "test/main",
+                SourceSnapshot::from_text("test/main.chimi", source),
+            )
+            .unwrap(),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn direct_integer_plan_accepts_only_the_bounded_pure_operator_set() {
+        let direct = prepared("pub fn main() -> Int { -(1 + 2) * 3 - 4 }");
+        let direct_counts = pure_integer_node_counts(&direct.core);
+        let mut operators = [false; 4];
+        for node in &direct.core.nodes {
+            match node.operation {
+                CoreOperation::Unary { .. } => {
+                    operators[0] = true;
+                    assert!(direct_counts[node.id.raw() as usize].is_some());
+                }
+                CoreOperation::Binary {
+                    operator: BinaryOperator::Add,
+                    ..
+                } => {
+                    operators[1] = true;
+                    assert!(direct_counts[node.id.raw() as usize].is_some());
+                }
+                CoreOperation::Binary {
+                    operator: BinaryOperator::Subtract,
+                    ..
+                } => {
+                    operators[2] = true;
+                    assert!(direct_counts[node.id.raw() as usize].is_some());
+                }
+                CoreOperation::Binary {
+                    operator: BinaryOperator::Multiply,
+                    ..
+                } => {
+                    operators[3] = true;
+                    assert!(direct_counts[node.id.raw() as usize].is_some());
+                }
+                _ => {}
+            }
+        }
+        assert!(operators.into_iter().all(|covered| covered));
+        assert_eq!(direct_integer_roots(&direct.core).len(), 1);
+
+        let unsupported = prepared("pub fn main() -> Int { (8 / 2) }");
+        let unsupported_counts = pure_integer_node_counts(&unsupported.core);
+        let divide = unsupported
+            .core
+            .nodes
+            .iter()
+            .find(|node| {
+                matches!(
+                    node.operation,
+                    CoreOperation::Binary {
+                        operator: BinaryOperator::Divide,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        assert!(unsupported_counts[divide.id.raw() as usize].is_none());
+    }
 
     #[test]
     fn cache_keys_preserve_input_and_artifact_boundaries() {
