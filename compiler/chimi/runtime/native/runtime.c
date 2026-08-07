@@ -1,7 +1,8 @@
-/* Chimi native runtime ABI version 2. */
+/* Chimi native runtime ABI version 3. */
 #include "runtime.h"
 
 #include <inttypes.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -11,12 +12,21 @@
 #include <unistd.h>
 
 typedef enum { VALUE_INTEGER, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
-               VALUE_CONSTRUCTED, VALUE_CALLABLE } ValueKind;
-typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY } CallableKind;
+               VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER } ValueKind;
+typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_INTRINSIC } CallableKind;
 typedef enum { CONTROL_SUCCESS, CONTROL_FAILURE, CONTROL_DEFECT, CONTROL_CANCEL } ControlKind;
 
 typedef struct ChimiValue ChimiValue;
 typedef struct { const char *name; ChimiValue *value; } RuntimeField;
+typedef struct MapNode MapNode;
+
+struct MapNode {
+  const char *key;
+  ChimiValue *value;
+  MapNode *left;
+  MapNode *right;
+  uint16_t height;
+};
 
 typedef struct ChimiCallable {
   CallableKind kind;
@@ -30,6 +40,7 @@ typedef struct ChimiCallable {
   uint32_t interface_symbol;
   uint32_t method;
   const char *name;
+  uint32_t intrinsic;
 } ChimiCallable;
 
 struct ChimiValue {
@@ -43,6 +54,8 @@ struct ChimiValue {
     struct { uint32_t constructor; const char *type_name; const char *variant_name;
              RuntimeField *fields; uint32_t length; } constructed;
     ChimiCallable *callable;
+    MapNode *map;
+    const char *json_number;
   } as;
 };
 
@@ -166,6 +179,8 @@ static void json_value(const ChimiValue *value) {
       json_fields(value->as.constructed.fields, value->as.constructed.length); putchar('}'); break;
     case VALUE_CALLABLE:
       fputs("{\"callable\":", stdout); json_string(value->as.callable->name); putchar('}'); break;
+    case VALUE_MAP: fputs("{\"map\":\"opaque\"}", stdout); break;
+    case VALUE_JSON_NUMBER: json_string(value->as.json_number); break;
   }
 }
 
@@ -219,6 +234,8 @@ static ChimiValue *integer_value(int64_t raw) { ChimiValue *v = new_value(VALUE_
 static ChimiValue *text_value(const char *raw) { ChimiValue *v = new_value(VALUE_TEXT); v->as.text = raw; return v; }
 static ChimiValue *boolean_value(bool raw) { ChimiValue *v = new_value(VALUE_BOOLEAN); v->as.boolean = raw; return v; }
 static ChimiValue *callable_value(ChimiCallable *raw) { ChimiValue *v = new_value(VALUE_CALLABLE); v->as.callable = raw; return v; }
+static ChimiValue *map_value(MapNode *raw) { ChimiValue *v = new_value(VALUE_MAP); v->as.map = raw; return v; }
+static ChimiValue *json_number_value(const char *raw) { ChimiValue *v = new_value(VALUE_JSON_NUMBER); v->as.json_number = raw; return v; }
 
 int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace; }
 ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t node_count,
@@ -236,6 +253,321 @@ static ChimiValue *select_value(ChimiValue *value, const char *name) {
   return NULL;
 }
 
+static uint16_t map_height(const MapNode *node) { return node ? node->height : 0; }
+static uint16_t map_max(uint16_t left, uint16_t right) { return left > right ? left : right; }
+static MapNode *map_node(const char *key, ChimiValue *value, MapNode *left, MapNode *right) {
+  MapNode *node = allocate(1, sizeof(*node));
+  node->key = key; node->value = value; node->left = left; node->right = right;
+  node->height = (uint16_t)(1 + map_max(map_height(left), map_height(right)));
+  return node;
+}
+static MapNode *map_rotate_left(MapNode *node) {
+  MapNode *right = node->right;
+  MapNode *left = map_node(node->key, node->value, node->left, right->left);
+  return map_node(right->key, right->value, left, right->right);
+}
+static MapNode *map_rotate_right(MapNode *node) {
+  MapNode *left = node->left;
+  MapNode *right = map_node(node->key, node->value, left->right, node->right);
+  return map_node(left->key, left->value, left->left, right);
+}
+static MapNode *map_balance(MapNode *node) {
+  int balance = (int)map_height(node->left) - (int)map_height(node->right);
+  if (balance > 1) {
+    if (map_height(node->left->right) > map_height(node->left->left))
+      node = map_node(node->key, node->value, map_rotate_left(node->left), node->right);
+    return map_rotate_right(node);
+  }
+  if (balance < -1) {
+    if (map_height(node->right->left) > map_height(node->right->right))
+      node = map_node(node->key, node->value, node->left, map_rotate_right(node->right));
+    return map_rotate_left(node);
+  }
+  return node;
+}
+static MapNode *map_put_node(MapNode *node, const char *key, ChimiValue *value) {
+  if (!node) return map_node(key, value, NULL, NULL);
+  int order = strcmp(key, node->key);
+  if (order == 0) return map_node(key, value, node->left, node->right);
+  if (order < 0) return map_balance(map_node(node->key, node->value,
+                                            map_put_node(node->left, key, value), node->right));
+  return map_balance(map_node(node->key, node->value, node->left,
+                              map_put_node(node->right, key, value)));
+}
+static ChimiValue *map_get_node(MapNode *node, const char *key) {
+  while (node) {
+    int order = strcmp(key, node->key);
+    if (order == 0) return node->value;
+    node = order < 0 ? node->left : node->right;
+  }
+  return NULL;
+}
+
+static uint32_t standard_constructor_symbol(uint32_t standard_constructor) {
+  for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)
+    if (CHIMI_SYMBOLS[symbol].standard_constructor == standard_constructor) return symbol;
+  return UINT32_MAX;
+}
+static ChimiValue *standard_value(uint32_t standard_constructor, ChimiValue **values,
+                                  uint32_t value_count) {
+  uint32_t symbol = standard_constructor_symbol(standard_constructor);
+  if (symbol == UINT32_MAX) return NULL;
+  const ChimiConstructor *shape = &CHIMI_CONSTRUCTORS[CHIMI_SYMBOLS[symbol].constructor];
+  if (shape->fields_length != value_count) return NULL;
+  ChimiValue *value = new_value(VALUE_CONSTRUCTED);
+  value->as.constructed.constructor = symbol;
+  value->as.constructed.type_name = CHIMI_STRINGS[shape->type_name];
+  value->as.constructed.variant_name = shape->variant_name == UINT32_MAX ? NULL : CHIMI_STRINGS[shape->variant_name];
+  value->as.constructed.length = value_count;
+  value->as.constructed.fields = allocate(value_count, sizeof(*value->as.constructed.fields));
+  for (uint32_t field = 0; field < value_count; ++field)
+    value->as.constructed.fields[field] = (RuntimeField){
+      CHIMI_STRINGS[CHIMI_IDS[shape->fields_offset + field]], values[field]
+    };
+  return value;
+}
+
+typedef struct { char *data; size_t length; size_t capacity; } TextBuffer;
+static void buffer_reserve(TextBuffer *buffer, size_t extra) {
+  if (buffer->length + extra + 1 <= buffer->capacity) return;
+  size_t capacity = buffer->capacity ? buffer->capacity : 64;
+  while (capacity < buffer->length + extra + 1) capacity *= 2;
+  char *data = realloc(buffer->data, capacity);
+  if (!data) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  buffer->data = data; buffer->capacity = capacity;
+}
+static void buffer_bytes(TextBuffer *buffer, const char *value, size_t length) {
+  buffer_reserve(buffer, length); memcpy(buffer->data + buffer->length, value, length);
+  buffer->length += length; buffer->data[buffer->length] = '\0';
+}
+static void buffer_char(TextBuffer *buffer, char value) { buffer_bytes(buffer, &value, 1); }
+static void buffer_json_string(TextBuffer *buffer, const char *value) {
+  buffer_char(buffer, '"');
+  for (const unsigned char *cursor = (const unsigned char *)value; *cursor; ++cursor) {
+    switch (*cursor) {
+      case '"': buffer_bytes(buffer, "\\\"", 2); break;
+      case '\\': buffer_bytes(buffer, "\\\\", 2); break;
+      case '\b': buffer_bytes(buffer, "\\b", 2); break;
+      case '\f': buffer_bytes(buffer, "\\f", 2); break;
+      case '\n': buffer_bytes(buffer, "\\n", 2); break;
+      case '\r': buffer_bytes(buffer, "\\r", 2); break;
+      case '\t': buffer_bytes(buffer, "\\t", 2); break;
+      default:
+        if (*cursor < 0x20) {
+          char escaped[7]; snprintf(escaped, sizeof(escaped), "\\u%04x", *cursor);
+          buffer_bytes(buffer, escaped, 6);
+        } else buffer_char(buffer, (char)*cursor);
+    }
+  }
+  buffer_char(buffer, '"');
+}
+
+static bool encode_json_value(TextBuffer *buffer, const ChimiValue *value);
+static bool encode_json_map(TextBuffer *buffer, const MapNode *node, bool *first) {
+  if (!node) return true;
+  if (!encode_json_map(buffer, node->left, first)) return false;
+  if (!*first) buffer_char(buffer, ','); *first = false;
+  buffer_json_string(buffer, node->key); buffer_char(buffer, ':');
+  if (!encode_json_value(buffer, node->value)) return false;
+  return encode_json_map(buffer, node->right, first);
+}
+static bool encode_json_value(TextBuffer *buffer, const ChimiValue *value) {
+  if (value->kind != VALUE_CONSTRUCTED) return false;
+  uint32_t kind = CHIMI_SYMBOLS[value->as.constructed.constructor].standard_constructor;
+  ChimiValue *field = value->as.constructed.length ? value->as.constructed.fields[0].value : NULL;
+  switch (kind) {
+    case CHIMI_CONSTRUCTOR_JSON_NULL: buffer_bytes(buffer, "null", 4); return true;
+    case CHIMI_CONSTRUCTOR_JSON_BOOLEAN:
+      if (!field || field->kind != VALUE_BOOLEAN) return false;
+      buffer_bytes(buffer, field->as.boolean ? "true" : "false", field->as.boolean ? 4 : 5); return true;
+    case CHIMI_CONSTRUCTOR_JSON_NUMBER:
+      if (!field || field->kind != VALUE_JSON_NUMBER) return false;
+      buffer_bytes(buffer, field->as.json_number, strlen(field->as.json_number)); return true;
+    case CHIMI_CONSTRUCTOR_JSON_TEXT:
+      if (!field || field->kind != VALUE_TEXT) return false;
+      buffer_json_string(buffer, field->as.text); return true;
+    case CHIMI_CONSTRUCTOR_JSON_ARRAY:
+      if (!field || field->kind != VALUE_LIST) return false;
+      buffer_char(buffer, '[');
+      for (uint32_t index = 0; index < field->as.list.length; ++index) {
+        if (index) buffer_char(buffer, ',');
+        if (!encode_json_value(buffer, field->as.list.items[index])) return false;
+      }
+      buffer_char(buffer, ']'); return true;
+    case CHIMI_CONSTRUCTOR_JSON_OBJECT: {
+      if (!field || field->kind != VALUE_MAP) return false;
+      buffer_char(buffer, '{'); bool first = true;
+      if (!encode_json_map(buffer, field->as.map, &first)) return false;
+      buffer_char(buffer, '}'); return true;
+    }
+    default: return false;
+  }
+}
+
+typedef struct { const char *source; size_t length; size_t offset; const char *message; } JsonParser;
+static void json_skip_space(JsonParser *parser) {
+  while (parser->offset < parser->length &&
+         strchr(" \t\r\n", parser->source[parser->offset])) ++parser->offset;
+}
+static bool json_hex(char value, uint32_t *digit) {
+  if (value >= '0' && value <= '9') *digit = (uint32_t)(value - '0');
+  else if (value >= 'a' && value <= 'f') *digit = (uint32_t)(value - 'a' + 10);
+  else if (value >= 'A' && value <= 'F') *digit = (uint32_t)(value - 'A' + 10);
+  else return false;
+  return true;
+}
+static bool json_code_unit(JsonParser *parser, uint32_t *value) {
+  if (parser->offset + 4 > parser->length) return false;
+  *value = 0;
+  for (uint32_t index = 0; index < 4; ++index) {
+    uint32_t digit;
+    if (!json_hex(parser->source[parser->offset++], &digit)) return false;
+    *value = *value * 16 + digit;
+  }
+  return true;
+}
+static void buffer_utf8(TextBuffer *buffer, uint32_t value) {
+  if (value <= 0x7f) buffer_char(buffer, (char)value);
+  else if (value <= 0x7ff) {
+    buffer_char(buffer, (char)(0xc0 | value >> 6)); buffer_char(buffer, (char)(0x80 | (value & 0x3f)));
+  } else if (value <= 0xffff) {
+    buffer_char(buffer, (char)(0xe0 | value >> 12)); buffer_char(buffer, (char)(0x80 | ((value >> 6) & 0x3f)));
+    buffer_char(buffer, (char)(0x80 | (value & 0x3f)));
+  } else {
+    buffer_char(buffer, (char)(0xf0 | value >> 18)); buffer_char(buffer, (char)(0x80 | ((value >> 12) & 0x3f)));
+    buffer_char(buffer, (char)(0x80 | ((value >> 6) & 0x3f))); buffer_char(buffer, (char)(0x80 | (value & 0x3f)));
+  }
+}
+static char *json_parse_string(JsonParser *parser) {
+  if (parser->offset >= parser->length || parser->source[parser->offset++] != '"') return NULL;
+  TextBuffer buffer = {0};
+  while (parser->offset < parser->length) {
+    unsigned char value = (unsigned char)parser->source[parser->offset++];
+    if (value == '"') return buffer.data ? buffer.data : strdup("");
+    if (value < 0x20) { parser->message = "unescaped control character"; return NULL; }
+    if (value != '\\') { buffer_char(&buffer, (char)value); continue; }
+    if (parser->offset >= parser->length) break;
+    char escaped = parser->source[parser->offset++];
+    switch (escaped) {
+      case '"': case '\\': case '/': buffer_char(&buffer, escaped); break;
+      case 'b': buffer_char(&buffer, '\b'); break; case 'f': buffer_char(&buffer, '\f'); break;
+      case 'n': buffer_char(&buffer, '\n'); break; case 'r': buffer_char(&buffer, '\r'); break;
+      case 't': buffer_char(&buffer, '\t'); break;
+      case 'u': {
+        uint32_t code;
+        if (!json_code_unit(parser, &code)) { parser->message = "invalid Unicode escape"; return NULL; }
+        if (code >= 0xd800 && code <= 0xdbff) {
+          if (parser->offset + 2 > parser->length || parser->source[parser->offset] != '\\' ||
+              parser->source[parser->offset + 1] != 'u') { parser->message = "missing low surrogate"; return NULL; }
+          parser->offset += 2; uint32_t low;
+          if (!json_code_unit(parser, &low) || low < 0xdc00 || low > 0xdfff) {
+            parser->message = "invalid low surrogate"; return NULL;
+          }
+          code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
+        } else if (code >= 0xdc00 && code <= 0xdfff) {
+          parser->message = "unexpected low surrogate"; return NULL;
+        }
+        buffer_utf8(&buffer, code); break;
+      }
+      default: parser->message = "invalid string escape"; return NULL;
+    }
+  }
+  parser->message = "unterminated string"; return NULL;
+}
+
+static ChimiValue *json_parse_value(JsonParser *parser, uint32_t depth);
+static ChimiValue *json_parse_array(JsonParser *parser, uint32_t depth) {
+  ++parser->offset; json_skip_space(parser);
+  ChimiValue **items = NULL; uint32_t length = 0, capacity = 0;
+  if (parser->offset < parser->length && parser->source[parser->offset] == ']') ++parser->offset;
+  else for (;;) {
+    ChimiValue *item = json_parse_value(parser, depth + 1); if (!item) return NULL;
+    if (length == capacity) { capacity = capacity ? capacity * 2 : 4; items = realloc(items, capacity * sizeof(*items));
+      if (!items) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); } }
+    items[length++] = item; json_skip_space(parser);
+    if (parser->offset >= parser->length) { parser->message = "unterminated array"; return NULL; }
+    char separator = parser->source[parser->offset++]; if (separator == ']') break;
+    if (separator != ',') { parser->message = "expected comma in array"; return NULL; }
+    json_skip_space(parser);
+  }
+  ChimiValue *list = new_value(VALUE_LIST);
+  list->as.list.items = items; list->as.list.length = length;
+  ChimiValue *fields[] = {list}; return standard_value(CHIMI_CONSTRUCTOR_JSON_ARRAY, fields, 1);
+}
+static ChimiValue *json_parse_object(JsonParser *parser, uint32_t depth) {
+  ++parser->offset; json_skip_space(parser); MapNode *map = NULL;
+  if (parser->offset < parser->length && parser->source[parser->offset] == '}') ++parser->offset;
+  else for (;;) {
+    if (parser->offset >= parser->length || parser->source[parser->offset] != '"') {
+      parser->message = "expected object key"; return NULL;
+    }
+    char *key = json_parse_string(parser); if (!key) return NULL; json_skip_space(parser);
+    if (parser->offset >= parser->length || parser->source[parser->offset++] != ':') {
+      parser->message = "expected colon after object key"; return NULL;
+    }
+    if (map_get_node(map, key)) { parser->message = "duplicate object key"; return NULL; }
+    ChimiValue *item = json_parse_value(parser, depth + 1); if (!item) return NULL;
+    map = map_put_node(map, key, item); json_skip_space(parser);
+    if (parser->offset >= parser->length) { parser->message = "unterminated object"; return NULL; }
+    char separator = parser->source[parser->offset++]; if (separator == '}') break;
+    if (separator != ',') { parser->message = "expected comma in object"; return NULL; }
+    json_skip_space(parser);
+  }
+  ChimiValue *fields_value = map_value(map); ChimiValue *fields[] = {fields_value};
+  return standard_value(CHIMI_CONSTRUCTOR_JSON_OBJECT, fields, 1);
+}
+static ChimiValue *json_parse_number(JsonParser *parser) {
+  size_t start = parser->offset;
+  if (parser->source[parser->offset] == '-') ++parser->offset;
+  if (parser->offset >= parser->length) { parser->message = "invalid number"; return NULL; }
+  if (parser->source[parser->offset] == '0') ++parser->offset;
+  else if (parser->source[parser->offset] >= '1' && parser->source[parser->offset] <= '9')
+    while (parser->offset < parser->length && parser->source[parser->offset] >= '0' && parser->source[parser->offset] <= '9') ++parser->offset;
+  else { parser->message = "invalid number"; return NULL; }
+  if (parser->offset < parser->length && parser->source[parser->offset] == '.') {
+    ++parser->offset; size_t digits = parser->offset;
+    while (parser->offset < parser->length && parser->source[parser->offset] >= '0' && parser->source[parser->offset] <= '9') ++parser->offset;
+    if (digits == parser->offset) { parser->message = "invalid fraction"; return NULL; }
+  }
+  if (parser->offset < parser->length && (parser->source[parser->offset] == 'e' || parser->source[parser->offset] == 'E')) {
+    ++parser->offset; if (parser->offset < parser->length && (parser->source[parser->offset] == '+' || parser->source[parser->offset] == '-')) ++parser->offset;
+    size_t digits = parser->offset;
+    while (parser->offset < parser->length && parser->source[parser->offset] >= '0' && parser->source[parser->offset] <= '9') ++parser->offset;
+    if (digits == parser->offset) { parser->message = "invalid exponent"; return NULL; }
+  }
+  size_t length = parser->offset - start; char *number = allocate(length + 1, 1);
+  memcpy(number, parser->source + start, length); ChimiValue *raw = json_number_value(number);
+  ChimiValue *fields[] = {raw}; return standard_value(CHIMI_CONSTRUCTOR_JSON_NUMBER, fields, 1);
+}
+static ChimiValue *json_parse_value(JsonParser *parser, uint32_t depth) {
+  if (depth > 128) { parser->message = "JSON nesting limit exceeded"; return NULL; }
+  json_skip_space(parser); if (parser->offset >= parser->length) { parser->message = "expected JSON value"; return NULL; }
+  char value = parser->source[parser->offset];
+  if (value == 'n' && parser->length - parser->offset >= 4 && memcmp(parser->source + parser->offset, "null", 4) == 0) {
+    parser->offset += 4; return standard_value(CHIMI_CONSTRUCTOR_JSON_NULL, NULL, 0);
+  }
+  if ((value == 't' && parser->length - parser->offset >= 4 && memcmp(parser->source + parser->offset, "true", 4) == 0) ||
+      (value == 'f' && parser->length - parser->offset >= 5 && memcmp(parser->source + parser->offset, "false", 5) == 0)) {
+    bool raw = value == 't'; parser->offset += raw ? 4 : 5; ChimiValue *boolean = boolean_value(raw);
+    ChimiValue *fields[] = {boolean}; return standard_value(CHIMI_CONSTRUCTOR_JSON_BOOLEAN, fields, 1);
+  }
+  if (value == '"') { char *text = json_parse_string(parser); if (!text) return NULL;
+    ChimiValue *raw = text_value(text); ChimiValue *fields[] = {raw}; return standard_value(CHIMI_CONSTRUCTOR_JSON_TEXT, fields, 1); }
+  if (value == '[') return json_parse_array(parser, depth);
+  if (value == '{') return json_parse_object(parser, depth);
+  if (value == '-' || (value >= '0' && value <= '9')) return json_parse_number(parser);
+  parser->message = "expected JSON value"; return NULL;
+}
+
+static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
+                            uint32_t argument_count, uint64_t span, uint32_t call_node,
+                            ChimiEnvironment *call_environment);
+
+static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
+                                      ChimiValue **arguments, uint32_t argument_count,
+                                      uint64_t span, uint32_t call_node,
+                                      ChimiEnvironment *environment);
+
 static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
                             uint32_t argument_count, uint64_t span, uint32_t call_node,
                             ChimiEnvironment *call_environment) {
@@ -246,6 +578,9 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
     }
     return invoke(runtime, callable->inner, arguments, argument_count, span, call_node, call_environment);
   }
+  if (callable->kind == CALL_INTRINSIC)
+    return invoke_intrinsic(runtime, callable->intrinsic, arguments, argument_count,
+                            span, call_node, call_environment);
   ChimiEnvironment *environment = clone_environment(callable->environment);
   for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)
     if (call_environment->requirements[symbol] != NULL)
@@ -254,6 +589,132 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
   for (uint32_t index = 0; index < count; ++index)
     environment->locals[CHIMI_IDS[callable->parameters_offset + index]] = arguments[index];
   return run_node(callable->body, runtime, environment, span);
+}
+
+static ChimiControl *map_values_node(ChimiRuntime *runtime, MapNode *node,
+                                     ChimiCallable *callback, MapNode **output,
+                                     uint64_t span, uint32_t call_node,
+                                     ChimiEnvironment *environment) {
+  if (!node) return success(NULL);
+  ChimiControl *control = map_values_node(runtime, node->left, callback, output,
+                                         span, call_node, environment);
+  if (control->kind != CONTROL_SUCCESS) return control;
+  ChimiValue *arguments[] = {node->value};
+  control = invoke(runtime, callback, arguments, 1, span, call_node, environment);
+  if (control->kind != CONTROL_SUCCESS) return control;
+  *output = map_put_node(*output, node->key, control->value);
+  return map_values_node(runtime, node->right, callback, output,
+                         span, call_node, environment);
+}
+
+static ChimiControl *intrinsic_shape_defect(uint32_t call_node) {
+  return defect("verified standard function has invalid runtime arguments", call_node);
+}
+
+static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
+                                      ChimiValue **arguments, uint32_t argument_count,
+                                      uint64_t span, uint32_t call_node,
+                                      ChimiEnvironment *environment) {
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_MAP_EMPTY:
+      return argument_count == 0 ? success(map_value(NULL)) : intrinsic_shape_defect(call_node);
+    case CHIMI_INTRINSIC_MAP_GET: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_MAP || arguments[1]->kind != VALUE_TEXT)
+        return intrinsic_shape_defect(call_node);
+      ChimiValue *found = map_get_node(arguments[0]->as.map, arguments[1]->as.text);
+      if (!found) return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
+      ChimiValue *fields[] = {found};
+      return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
+    }
+    case CHIMI_INTRINSIC_MAP_PUT: {
+      if (argument_count != 3 || arguments[0]->kind != VALUE_MAP || arguments[1]->kind != VALUE_TEXT)
+        return intrinsic_shape_defect(call_node);
+      return success(map_value(map_put_node(arguments[0]->as.map, arguments[1]->as.text, arguments[2])));
+    }
+    case CHIMI_INTRINSIC_MAP_UPDATE: {
+      if (argument_count != 3 || arguments[0]->kind != VALUE_MAP || arguments[1]->kind != VALUE_TEXT ||
+          arguments[2]->kind != VALUE_CALLABLE) return intrinsic_shape_defect(call_node);
+      ChimiValue *found = map_get_node(arguments[0]->as.map, arguments[1]->as.text);
+      ChimiValue *current;
+      if (found) { ChimiValue *fields[] = {found}; current = standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1); }
+      else current = standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0);
+      ChimiValue *callback_arguments[] = {current};
+      ChimiControl *control = invoke(runtime, arguments[2]->as.callable, callback_arguments, 1,
+                                     span, call_node, environment);
+      if (control->kind != CONTROL_SUCCESS) return control;
+      return success(map_value(map_put_node(arguments[0]->as.map, arguments[1]->as.text, control->value)));
+    }
+    case CHIMI_INTRINSIC_MAP_MAP_VALUES: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_MAP || arguments[1]->kind != VALUE_CALLABLE)
+        return intrinsic_shape_defect(call_node);
+      MapNode *output = NULL;
+      ChimiControl *control = map_values_node(runtime, arguments[0]->as.map, arguments[1]->as.callable,
+                                              &output, span, call_node, environment);
+      return control->kind == CONTROL_SUCCESS ? success(map_value(output)) : control;
+    }
+    case CHIMI_INTRINSIC_JSON_DECODE: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
+      JsonParser parser = {arguments[0]->as.text, strlen(arguments[0]->as.text), 0, NULL};
+      ChimiValue *value = json_parse_value(&parser, 0); json_skip_space(&parser);
+      if (value && parser.offset == parser.length) return success(value);
+      if (!parser.message) parser.message = "unexpected trailing JSON input";
+      ChimiValue *fields[] = {text_value(parser.message), integer_value((int64_t)parser.offset)};
+      return failure(standard_value(CHIMI_CONSTRUCTOR_DECODE_INVALID_JSON, fields, 2));
+    }
+    case CHIMI_INTRINSIC_JSON_ENCODE: {
+      if (argument_count != 1) return intrinsic_shape_defect(call_node);
+      TextBuffer buffer = {0};
+      if (!encode_json_value(&buffer, arguments[0])) return intrinsic_shape_defect(call_node);
+      if (!buffer.data) buffer.data = strdup("");
+      return success(text_value(buffer.data));
+    }
+    case CHIMI_INTRINSIC_JSON_BOOLEAN: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_BOOLEAN) return intrinsic_shape_defect(call_node);
+      ChimiValue *fields[] = {arguments[0]}; return success(standard_value(CHIMI_CONSTRUCTOR_JSON_BOOLEAN, fields, 1));
+    }
+    case CHIMI_INTRINSIC_JSON_INT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
+      char *number = allocate(32, 1); snprintf(number, 32, "%" PRId64, arguments[0]->as.integer);
+      ChimiValue *raw = json_number_value(number); ChimiValue *fields[] = {raw};
+      return success(standard_value(CHIMI_CONSTRUCTOR_JSON_NUMBER, fields, 1));
+    }
+    case CHIMI_INTRINSIC_JSON_TEXT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
+      ChimiValue *fields[] = {arguments[0]}; return success(standard_value(CHIMI_CONSTRUCTOR_JSON_TEXT, fields, 1));
+    }
+    case CHIMI_INTRINSIC_JSON_ARRAY: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST) return intrinsic_shape_defect(call_node);
+      ChimiValue *fields[] = {arguments[0]}; return success(standard_value(CHIMI_CONSTRUCTOR_JSON_ARRAY, fields, 1));
+    }
+    case CHIMI_INTRINSIC_JSON_OBJECT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_MAP) return intrinsic_shape_defect(call_node);
+      ChimiValue *fields[] = {arguments[0]}; return success(standard_value(CHIMI_CONSTRUCTOR_JSON_OBJECT, fields, 1));
+    }
+    case CHIMI_INTRINSIC_JSON_NUMBER_TO_INT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_JSON_NUMBER) return intrinsic_shape_defect(call_node);
+      const char *number = arguments[0]->as.json_number;
+      if (strpbrk(number, ".eE")) {
+        ChimiValue *fields[] = {arguments[0]};
+        return failure(standard_value(CHIMI_CONSTRUCTOR_NUMBER_NOT_INTEGER, fields, 1));
+      }
+      errno = 0; char *end = NULL; int64_t value = strtoll(number, &end, 10);
+      if (errno == ERANGE || !end || *end) {
+        ChimiValue *fields[] = {arguments[0]};
+        return failure(standard_value(CHIMI_CONSTRUCTOR_NUMBER_OUT_OF_RANGE, fields, 1));
+      }
+      return success(integer_value(value));
+    }
+    case CHIMI_INTRINSIC_TEXT_APPEND: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT ||
+          arguments[1]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
+      size_t left = strlen(arguments[0]->as.text), right = strlen(arguments[1]->as.text);
+      char *output = allocate(left + right + 1, 1);
+      memcpy(output, arguments[0]->as.text, left);
+      memcpy(output + left, arguments[1]->as.text, right);
+      return success(text_value(output));
+    }
+  }
+  return defect("unknown standard intrinsic", call_node);
 }
 
 static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
@@ -280,6 +741,11 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
     case CHIMI_SYMBOL_LOCAL:
       if (environment->locals[symbol]) return success(environment->locals[symbol]);
       return defect("verified local is not bound", -1);
+    case CHIMI_SYMBOL_INTRINSIC: {
+      ChimiCallable *callable = allocate(1, sizeof(*callable)); callable->kind = CALL_INTRINSIC;
+      callable->intrinsic = shape->intrinsic; callable->name = CHIMI_STRINGS[shape->name];
+      return success(callable_value(callable));
+    }
     default: return defect("symbol is not a runtime value", -1);
   }
 }

@@ -1110,6 +1110,10 @@ mod tests {
 
     #[test]
     fn repeated_annotations_share_canonical_types() {
+        let baseline =
+            Compiler::type_project(vec![module("contracts/baseline", "baseline.chimi", "")])
+                .arena_stats()
+                .types;
         let report = Compiler::type_project(vec![module(
             "contracts/interning",
             "interning.chimi",
@@ -1117,12 +1121,16 @@ mod tests {
         )]);
 
         assert!(report.is_success(), "{}", report.render_diagnostics());
-        assert_eq!(report.arena_stats().types, 3);
+        assert_eq!(report.arena_stats().types, baseline + 1);
         assert_eq!(report.arena_stats().type_facts, 3);
     }
 
     #[test]
     fn unresolved_annotations_still_receive_poison_facts() {
+        let baseline =
+            Compiler::type_project(vec![module("contracts/baseline", "baseline.chimi", "")])
+                .arena_stats()
+                .types;
         let report = Compiler::type_project(vec![module(
             "contracts/poison",
             "poison.chimi",
@@ -1130,7 +1138,7 @@ mod tests {
         )]);
 
         assert!(!report.is_success());
-        assert_eq!(report.arena_stats().types, 2);
+        assert_eq!(report.arena_stats().types, baseline + 1);
         assert_eq!(report.arena_stats().type_facts, 2);
     }
 
@@ -2598,6 +2606,178 @@ mod tests {
                 .count(),
             2,
             "the composed thunk must invoke the required operation twice"
+        );
+    }
+
+    #[test]
+    fn project_core_executes_the_json_and_map_standard_surface() {
+        let report = Compiler::run_project(
+            vec![module(
+                "stdlib/summary",
+                "summary.chimi",
+                concat!(
+                    "import std/json as Json\n",
+                    "import std/json.{Value}\n",
+                    "import std/map as Map\n",
+                    "import std/map.{Map}\n",
+                    "\n",
+                    "fn increment(counts: Map<Text, Int>, key: Text) {\n",
+                    "  Map.update(counts, key, fn(current) {\n",
+                    "    case current {\n",
+                    "      Some(count) -> count + 1\n",
+                    "      None -> 1\n",
+                    "    }\n",
+                    "  })\n",
+                    "}\n",
+                    "\n",
+                    "pub fn main() -> Text {\n",
+                    "  let empty = Map.empty()\n",
+                    "  let once = increment(empty, \"zeta\")\n",
+                    "  let twice = increment(once, \"alpha\")\n",
+                    "  let counts = increment(twice, \"zeta\")\n",
+                    "  let encoded = Json.encode(Json.object(Map.map_values(counts, Json.int)))\n",
+                    "  let decoded = Json.decode(encoded)\n",
+                    "  case decoded {\n",
+                    "    Value.Object(fields) -> Json.encode(Json.object(fields))\n",
+                    "    _ -> \"unexpected\"\n",
+                    "  }\n",
+                    "}\n",
+                ),
+            )],
+            ExecutionConfig::new("stdlib-summary").unwrap(),
+        )
+        .expect("official JSON and map modules compile and execute");
+
+        assert_eq!(
+            report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Text("{\"alpha\":1,\"zeta\":2}".to_owned()))
+        );
+    }
+
+    #[test]
+    fn json_null_remains_distinct_from_map_absence() {
+        let report = Compiler::run_project(
+            vec![module(
+                "stdlib/null",
+                "null.chimi",
+                concat!(
+                    "import std/json as Json\n",
+                    "import std/json.{Value}\n",
+                    "import std/map as Map\n",
+                    "import std/map.{Map}\n",
+                    "\n",
+                    "fn classify(fields: Map<Text, Value>) -> Text {\n",
+                    "  case Map.get(fields, \"value\") {\n",
+                    "    None -> \"null\"\n",
+                    "    Some(_) -> \"present\"\n",
+                    "  }\n",
+                    "}\n",
+                    "\n",
+                    "pub fn main() -> Text {\n",
+                    "  let decoded = Json.decode(\"null\")\n",
+                    "  case decoded {\n",
+                    "    Value.Null -> classify(Map.empty())\n",
+                    "    _ -> \"not-null\"\n",
+                    "  }\n",
+                    "}\n",
+                ),
+            )],
+            ExecutionConfig::new("stdlib-null").unwrap(),
+        )
+        .expect("JSON null and map absence have distinct patterns");
+
+        assert_eq!(
+            report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Text("null".to_owned()))
+        );
+    }
+
+    #[test]
+    fn malformed_json_is_an_expected_failure() {
+        let report = Compiler::run_project(
+            vec![module(
+                "stdlib/malformed",
+                "malformed.chimi",
+                concat!(
+                    "import std/json as Json\n",
+                    "import std/json.{Value}\n",
+                    "\n",
+                    "pub fn main() -> Value { Json.decode(\"{\") }\n",
+                ),
+            )],
+            ExecutionConfig::new("stdlib-malformed").unwrap(),
+        )
+        .expect("malformed JSON reaches the expected failure channel");
+
+        assert!(matches!(
+            report.outcome,
+            ExecutionOutcome::ExpectedFailure(ExecutionValue::Constructed {
+                ref type_name,
+                variant_name: Some(ref variant),
+                ..
+            }) if type_name == "DecodeError" && variant == "InvalidJson"
+        ));
+    }
+
+    #[test]
+    fn map_transformations_preserve_callback_failure_channels() {
+        let report = Compiler::run_project(
+            vec![module(
+                "stdlib/map_failure",
+                "map_failure.chimi",
+                concat!(
+                    "import std/map as Map\n",
+                    "import std/map.{Map}\n",
+                    "\n",
+                    "enum UpdateError { Stopped }\n",
+                    "\n",
+                    "pub fn main() -> Map<Text, Int> {\n",
+                    "  Map.update(Map.empty(), \"key\", fn(current) {\n",
+                    "    case current {\n",
+                    "      Some(count) -> count + 1\n",
+                    "      None -> Failure(Stopped())\n",
+                    "    }\n",
+                    "  })\n",
+                    "}\n",
+                ),
+            )],
+            ExecutionConfig::new("stdlib-map-failure").unwrap(),
+        )
+        .expect("map callback failures remain expected values");
+
+        assert!(matches!(
+            report.outcome,
+            ExecutionOutcome::ExpectedFailure(ExecutionValue::Constructed {
+                ref type_name,
+                variant_name: Some(ref variant),
+                ..
+            }) if type_name == "UpdateError" && variant == "Stopped"
+        ));
+    }
+
+    #[test]
+    fn pure_chimi_classifies_and_aggregates_trace_records() {
+        let report = Compiler::run_project(
+            vec![module(
+                "app/main",
+                "app/main.chimi",
+                include_str!("../tests/fixtures/project-trace-summary/app/main.chimi"),
+            )],
+            ExecutionConfig::new("trace-summary-core").unwrap(),
+        )
+        .expect("trace classification and aggregation execute through ordinary Chimi code");
+
+        assert_eq!(
+            report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Text(
+                concat!(
+                    "{\"dependency_calls\":{\"payment.charge\":1},",
+                    "\"events\":2,\"operations\":{\"call\":1},",
+                    "\"records\":3,\"schema\":\"chimi.trace-summary.v1\",",
+                    "\"terminal_outcomes\":{\"success\":1}}",
+                )
+                .to_owned(),
+            ))
         );
     }
 

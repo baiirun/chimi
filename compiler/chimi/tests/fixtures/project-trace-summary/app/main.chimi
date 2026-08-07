@@ -1,0 +1,119 @@
+import std/json as Json
+import std/json.{Value}
+import std/map as Map
+import std/map.{Map}
+
+struct Summary {
+  records: Int,
+  events: Int,
+  operations: Map<Text, Int>,
+  dependency_calls: Map<Text, Int>,
+  terminal_outcomes: Map<Text, Int>,
+}
+
+enum TraceError {
+  InvalidRecord
+}
+
+fn increment(counts: Map<Text, Int>, key: Text) {
+  Map.update(counts, key, fn(current) {
+    case current {
+      Some(count) -> count + 1
+      None -> 1
+    }
+  })
+}
+
+fn empty() -> Summary {
+  Summary(
+    records: 0,
+    events: 0,
+    operations: Map.empty(),
+    dependency_calls: Map.empty(),
+    terminal_outcomes: Map.empty(),
+  )
+}
+
+fn add_dependency(state: Summary, attributes: Map<Text, Value>) {
+  case Map.get(attributes, "requirement"), Map.get(attributes, "method") {
+    Some(Value.Text(requirement)), Some(Value.Text(method)) -> {
+      let prefix = Text.append(requirement, ".")
+      Summary(
+        records: state.records + 1,
+        events: state.events + 1,
+        operations: state.operations,
+        dependency_calls: increment(state.dependency_calls, Text.append(prefix, method)),
+        terminal_outcomes: state.terminal_outcomes,
+      )
+    }
+    _, _ -> Failure(InvalidRecord())
+  }
+}
+
+fn add_event(state: Summary, fields: Map<Text, Value>, event: Text) {
+  case event {
+    "dependency_called" -> case Map.get(fields, "attributes") {
+      Some(Value.Object(attributes)) -> add_dependency(state, attributes)
+      _ -> Failure(InvalidRecord())
+    }
+    "operation_completed" -> case Map.get(fields, "operation") {
+      Some(Value.Text(operation)) -> Summary(
+        records: state.records + 1,
+        events: state.events + 1,
+        operations: increment(state.operations, operation),
+        dependency_calls: state.dependency_calls,
+        terminal_outcomes: state.terminal_outcomes,
+      )
+      _ -> Failure(InvalidRecord())
+    }
+    _ -> Summary(
+      records: state.records + 1,
+      events: state.events + 1,
+      operations: state.operations,
+      dependency_calls: state.dependency_calls,
+      terminal_outcomes: state.terminal_outcomes,
+    )
+  }
+}
+
+fn add_line(state: Summary, line: Text) {
+  let decoded = Json.decode(line)
+  case decoded {
+    Value.Object(fields) -> case Map.get(fields, "event"), Map.get(fields, "outcome") {
+      Some(Value.Text(event)), None -> add_event(state, fields, event)
+      None, Some(Value.Text(outcome)) -> Summary(
+        records: state.records + 1,
+        events: state.events,
+        operations: state.operations,
+        dependency_calls: state.dependency_calls,
+        terminal_outcomes: increment(state.terminal_outcomes, outcome),
+      )
+      _, _ -> Failure(InvalidRecord())
+    }
+    _ -> Failure(InvalidRecord())
+  }
+}
+
+fn render(state: Summary) -> Text {
+  let fields0 = Map.put(Map.empty(), "schema", Json.text("chimi.trace-summary.v1"))
+  let fields1 = Map.put(fields0, "records", Json.int(state.records))
+  let fields2 = Map.put(fields1, "events", Json.int(state.events))
+  let fields3 = Map.put(fields2, "operations", Json.object(Map.map_values(state.operations, Json.int)))
+  let fields4 = Map.put(fields3, "dependency_calls", Json.object(Map.map_values(state.dependency_calls, Json.int)))
+  let fields5 = Map.put(fields4, "terminal_outcomes", Json.object(Map.map_values(state.terminal_outcomes, Json.int)))
+  Json.encode(Json.object(fields5))
+}
+
+pub fn main() -> Text {
+  let operation0 = Map.put(Map.empty(), "event", Json.text("operation_completed"))
+  let operation = Map.put(operation0, "operation", Json.text("call"))
+  let attributes0 = Map.put(Map.empty(), "requirement", Json.text("payment"))
+  let attributes = Map.put(attributes0, "method", Json.text("charge"))
+  let dependency0 = Map.put(Map.empty(), "event", Json.text("dependency_called"))
+  let dependency = Map.put(dependency0, "attributes", Json.object(attributes))
+  let terminal = Map.put(Map.empty(), "outcome", Json.text("success"))
+  let state0 = add_line(empty(), Json.encode(Json.object(operation)))
+  let state1 = add_line(state0, Json.encode(Json.object(dependency)))
+  let state2 = add_line(state1, Json.encode(Json.object(terminal)))
+  render(state2)
+}

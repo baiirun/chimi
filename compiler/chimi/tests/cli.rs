@@ -215,6 +215,121 @@ fn build_loads_and_links_an_explicit_multi_module_project() {
 }
 
 #[test]
+fn build_executes_virtual_json_and_map_standard_modules() {
+    let scratch = scratch_directory("stdlib-project-build");
+    let executable = scratch.join("stdlib-project");
+    let root = repository_path("compiler/chimi/tests/fixtures/project-stdlib");
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", "--root"])
+        .arg(&root)
+        .args(["app/main", "-o"])
+        .arg(&executable)
+        .output()
+        .expect("build project using virtual standard modules");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let execution = Command::new(&executable)
+        .arg("--trace=off")
+        .output()
+        .expect("run native standard-library executable");
+    assert!(execution.status.success());
+    assert!(execution.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(execution.stdout).unwrap(),
+        "{\"outcome\":\"success\",\"value\":\"{\\\"alpha\\\":1,\\\"zeta\\\":2}\"}\n"
+    );
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_json_decode_reports_malformed_input_as_an_expected_failure() {
+    let scratch = scratch_directory("stdlib-malformed-json");
+    let project = scratch.join("project");
+    std::fs::create_dir_all(project.join("app")).unwrap();
+    std::fs::write(
+        project.join("app/main.chimi"),
+        concat!(
+            "import std/json as Json\n",
+            "import std/json.{Value}\n\n",
+            "pub fn main() -> Value { Json.decode(\"{\") }\n",
+        ),
+    )
+    .unwrap();
+    let executable = scratch.join("malformed-json");
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", "--root"])
+        .arg(&project)
+        .args(["app/main", "-o"])
+        .arg(&executable)
+        .output()
+        .expect("build malformed JSON program");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let execution = Command::new(&executable)
+        .arg("--trace=off")
+        .output()
+        .expect("run malformed JSON program");
+    let stdout = String::from_utf8(execution.stdout).unwrap();
+    assert!(execution.status.success());
+    assert!(stdout.starts_with(
+        "{\"outcome\":\"expected_failure\",\"error\":{\"type\":\"DecodeError\",\"variant\":\"InvalidJson\""
+    ));
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_chimi_code_classifies_and_aggregates_trace_records() {
+    let scratch = scratch_directory("trace-summary-core");
+    let executable = scratch.join("trace-summary-core");
+    let root = repository_path("compiler/chimi/tests/fixtures/project-trace-summary");
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", "--root"])
+        .arg(&root)
+        .args(["app/main", "-o"])
+        .arg(&executable)
+        .output()
+        .expect("build the pure Chimi trace-summary core");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let execution = Command::new(&executable)
+        .arg("--trace=off")
+        .output()
+        .expect("run the pure Chimi trace-summary core");
+    assert!(execution.status.success());
+    assert!(execution.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(execution.stdout).unwrap(),
+        concat!(
+            "{\"outcome\":\"success\",\"value\":\"",
+            "{\\\"dependency_calls\\\":{\\\"payment.charge\\\":1},",
+            "\\\"events\\\":2,\\\"operations\\\":{\\\"call\\\":1},",
+            "\\\"records\\\":3,\\\"schema\\\":\\\"chimi.trace-summary.v1\\\",",
+            "\\\"terminal_outcomes\\\":{\\\"success\\\":1}}",
+            "\"}\n",
+        )
+    );
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
 fn build_reuses_unchanged_artifacts_and_invalidates_only_changed_core_inputs() {
     let scratch = scratch_directory("build-cache");
     let project = scratch.join("project");

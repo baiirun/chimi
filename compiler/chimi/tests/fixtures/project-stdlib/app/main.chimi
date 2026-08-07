@@ -1,0 +1,26 @@
+import std/json as Json
+import std/json.{Value}
+import std/map as Map
+import std/map.{Map}
+
+fn increment(counts: Map<Text, Int>, key: Text) {
+  Map.update(counts, key, fn(current) {
+    case current {
+      Some(count) -> count + 1
+      None -> 1
+    }
+  })
+}
+
+pub fn main() -> Text {
+  let empty = Map.empty()
+  let once = increment(empty, "zeta")
+  let twice = increment(once, "alpha")
+  let counts = increment(twice, "zeta")
+  let encoded = Json.encode(Json.object(Map.map_values(counts, Json.int)))
+  let decoded = Json.decode(encoded)
+  case decoded {
+    Value.Object(fields) -> Json.encode(Json.object(fields))
+    _ -> "unexpected"
+  }
+}

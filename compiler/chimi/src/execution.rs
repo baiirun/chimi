@@ -3,10 +3,13 @@ use crate::executable::{
     LegacyCoreProgram,
 };
 use crate::ids::{CoreNodeId, FileId, OriginId, SemanticId, SymbolId, TextRange};
-use crate::json::write_json_string;
+use crate::json::{JsonData, decode_json, write_json_data, write_json_string};
 use crate::semantic::{BinaryOperator, UnaryOperator};
+use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol};
+use std::cmp::Ordering as Comparison;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 macro_rules! success_or_return {
@@ -264,7 +267,178 @@ enum RuntimeValue {
         variant_name: Option<String>,
         fields: Vec<RuntimeField>,
     },
+    Map(RuntimeMap),
+    JsonNumber(String),
     Callable(RuntimeCallable),
+}
+
+#[derive(Clone, Debug, Default)]
+struct RuntimeMap {
+    root: Option<Arc<RuntimeMapNode>>,
+}
+
+#[derive(Clone, Debug)]
+struct RuntimeMapNode {
+    key: String,
+    value: RuntimeValue,
+    height: u16,
+    left: Option<Arc<Self>>,
+    right: Option<Arc<Self>>,
+}
+
+impl RuntimeMap {
+    fn get(&self, key: &str) -> Option<RuntimeValue> {
+        let mut node = self.root.as_deref();
+        while let Some(current) = node {
+            match key.as_bytes().cmp(current.key.as_bytes()) {
+                Comparison::Less => node = current.left.as_deref(),
+                Comparison::Equal => return Some(current.value.clone()),
+                Comparison::Greater => node = current.right.as_deref(),
+            }
+        }
+        None
+    }
+
+    fn put(&self, key: String, value: RuntimeValue) -> Self {
+        Self {
+            root: Some(map_insert(self.root.clone(), key, value)),
+        }
+    }
+
+    fn entries(&self) -> Vec<(String, RuntimeValue)> {
+        fn visit(node: &Option<Arc<RuntimeMapNode>>, entries: &mut Vec<(String, RuntimeValue)>) {
+            if let Some(node) = node {
+                visit(&node.left, entries);
+                entries.push((node.key.clone(), node.value.clone()));
+                visit(&node.right, entries);
+            }
+        }
+        let mut entries = Vec::new();
+        visit(&self.root, &mut entries);
+        entries
+    }
+}
+
+fn map_insert(
+    node: Option<Arc<RuntimeMapNode>>,
+    key: String,
+    value: RuntimeValue,
+) -> Arc<RuntimeMapNode> {
+    let Some(node) = node else {
+        return map_node(key, value, None, None);
+    };
+    let updated = match key.as_bytes().cmp(node.key.as_bytes()) {
+        Comparison::Less => map_node(
+            node.key.clone(),
+            node.value.clone(),
+            Some(map_insert(node.left.clone(), key, value)),
+            node.right.clone(),
+        ),
+        Comparison::Equal => map_node(key, value, node.left.clone(), node.right.clone()),
+        Comparison::Greater => map_node(
+            node.key.clone(),
+            node.value.clone(),
+            node.left.clone(),
+            Some(map_insert(node.right.clone(), key, value)),
+        ),
+    };
+    map_balance(updated)
+}
+
+fn map_height(node: &Option<Arc<RuntimeMapNode>>) -> u16 {
+    node.as_ref().map_or(0, |node| node.height)
+}
+
+fn map_node(
+    key: String,
+    value: RuntimeValue,
+    left: Option<Arc<RuntimeMapNode>>,
+    right: Option<Arc<RuntimeMapNode>>,
+) -> Arc<RuntimeMapNode> {
+    Arc::new(RuntimeMapNode {
+        key,
+        value,
+        height: 1 + map_height(&left).max(map_height(&right)),
+        left,
+        right,
+    })
+}
+
+fn map_balance(node: Arc<RuntimeMapNode>) -> Arc<RuntimeMapNode> {
+    let balance = i32::from(map_height(&node.left)) - i32::from(map_height(&node.right));
+    if balance > 1 {
+        let mut root = node;
+        let left = root
+            .left
+            .as_ref()
+            .expect("left-heavy map node has a left child");
+        if map_height(&left.left) < map_height(&left.right) {
+            root = map_node(
+                root.key.clone(),
+                root.value.clone(),
+                Some(map_rotate_left(left.clone())),
+                root.right.clone(),
+            );
+        }
+        return map_rotate_right(root);
+    }
+    if balance < -1 {
+        let mut root = node;
+        let right = root
+            .right
+            .as_ref()
+            .expect("right-heavy map node has a right child");
+        if map_height(&right.right) < map_height(&right.left) {
+            root = map_node(
+                root.key.clone(),
+                root.value.clone(),
+                root.left.clone(),
+                Some(map_rotate_right(right.clone())),
+            );
+        }
+        return map_rotate_left(root);
+    }
+    node
+}
+
+fn map_rotate_left(root: Arc<RuntimeMapNode>) -> Arc<RuntimeMapNode> {
+    let right = root
+        .right
+        .as_ref()
+        .expect("left rotation requires a right child")
+        .clone();
+    let left = map_node(
+        root.key.clone(),
+        root.value.clone(),
+        root.left.clone(),
+        right.left.clone(),
+    );
+    map_node(
+        right.key.clone(),
+        right.value.clone(),
+        Some(left),
+        right.right.clone(),
+    )
+}
+
+fn map_rotate_right(root: Arc<RuntimeMapNode>) -> Arc<RuntimeMapNode> {
+    let left = root
+        .left
+        .as_ref()
+        .expect("right rotation requires a left child")
+        .clone();
+    let right = map_node(
+        root.key.clone(),
+        root.value.clone(),
+        left.right.clone(),
+        root.right.clone(),
+    );
+    map_node(
+        left.key.clone(),
+        left.value.clone(),
+        left.left.clone(),
+        Some(right),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -292,6 +466,7 @@ enum RuntimeCallable {
         method: SemanticId,
         name: String,
     },
+    Intrinsic(StandardFunction),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -706,6 +881,15 @@ impl<'core> Evaluator<'core> {
                     message: format!("verified local {} is not bound", core_symbol.name),
                     node: None,
                 }),
+            CoreSymbolKind::Intrinsic => match core_symbol.standard {
+                Some(StandardSymbol::Function(function)) => {
+                    Control::Success(RuntimeValue::Callable(RuntimeCallable::Intrinsic(function)))
+                }
+                _ => Control::Defect {
+                    message: format!("intrinsic symbol {} has no operation", core_symbol.name),
+                    node: None,
+                },
+            },
             CoreSymbolKind::Constructor | CoreSymbolKind::Other => Control::Defect {
                 message: format!("symbol {} is not a runtime value", core_symbol.name),
                 node: None,
@@ -787,6 +971,322 @@ impl<'core> Evaluator<'core> {
                 }
                 self.invoke(*callable, arguments, span, call_node, call_environment)
             }
+            RuntimeCallable::Intrinsic(function) => {
+                self.invoke_intrinsic(function, arguments, span, call_node, call_environment)
+            }
+        }
+    }
+
+    fn invoke_intrinsic(
+        &mut self,
+        function: StandardFunction,
+        arguments: Vec<RuntimeValue>,
+        span: u64,
+        call_node: CoreNodeId,
+        environment: Environment,
+    ) -> Control {
+        match function {
+            StandardFunction::MapEmpty => {
+                Control::Success(RuntimeValue::Map(RuntimeMap::default()))
+            }
+            StandardFunction::MapGet => {
+                let [RuntimeValue::Map(map), RuntimeValue::Text(key)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                let value = map.get(key);
+                Control::Success(match value {
+                    Some(value) => {
+                        self.standard_value(StandardConstructor::OptionSome, vec![value])
+                    }
+                    None => self.standard_value(StandardConstructor::OptionNone, Vec::new()),
+                })
+            }
+            StandardFunction::MapPut => {
+                let [RuntimeValue::Map(map), RuntimeValue::Text(key), value] = arguments.as_slice()
+                else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(RuntimeValue::Map(map.put(key.clone(), value.clone())))
+            }
+            StandardFunction::MapUpdate => {
+                let [
+                    RuntimeValue::Map(map),
+                    RuntimeValue::Text(key),
+                    RuntimeValue::Callable(callback),
+                ] = arguments.as_slice()
+                else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                let current = match map.get(key) {
+                    Some(value) => {
+                        self.standard_value(StandardConstructor::OptionSome, vec![value])
+                    }
+                    None => self.standard_value(StandardConstructor::OptionNone, Vec::new()),
+                };
+                let value = success_or_return!(self.invoke(
+                    callback.clone(),
+                    vec![current],
+                    span,
+                    call_node,
+                    environment,
+                ));
+                Control::Success(RuntimeValue::Map(map.put(key.clone(), value)))
+            }
+            StandardFunction::MapMapValues => {
+                let [RuntimeValue::Map(map), RuntimeValue::Callable(callback)] =
+                    arguments.as_slice()
+                else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                let mut output = RuntimeMap::default();
+                for (key, value) in map.entries() {
+                    let value = success_or_return!(self.invoke(
+                        callback.clone(),
+                        vec![value],
+                        span,
+                        call_node,
+                        environment.clone(),
+                    ));
+                    output = output.put(key, value);
+                }
+                Control::Success(RuntimeValue::Map(output))
+            }
+            StandardFunction::JsonDecode => {
+                let [RuntimeValue::Text(source)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                match decode_json(source) {
+                    Ok(value) => Control::Success(self.json_to_runtime(value)),
+                    Err(error) => Control::Failure(self.standard_value(
+                        StandardConstructor::DecodeInvalidJson,
+                        vec![
+                            RuntimeValue::Text(error.message),
+                            RuntimeValue::Integer(i64::try_from(error.offset).unwrap_or(i64::MAX)),
+                        ],
+                    )),
+                }
+            }
+            StandardFunction::JsonEncode => {
+                let [value] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                let Ok(value) = self.runtime_to_json(value) else {
+                    return Control::Defect {
+                        message: "verified JSON value has an invalid runtime shape".to_owned(),
+                        node: Some(call_node),
+                    };
+                };
+                let mut output = String::new();
+                write_json_data(&mut output, &value);
+                Control::Success(RuntimeValue::Text(output))
+            }
+            StandardFunction::JsonBoolean => {
+                let [RuntimeValue::Boolean(value)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(self.standard_value(
+                    StandardConstructor::JsonBoolean,
+                    vec![RuntimeValue::Boolean(*value)],
+                ))
+            }
+            StandardFunction::JsonInt => {
+                let [RuntimeValue::Integer(value)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(self.standard_value(
+                    StandardConstructor::JsonNumber,
+                    vec![RuntimeValue::JsonNumber(value.to_string())],
+                ))
+            }
+            StandardFunction::JsonText => {
+                let [RuntimeValue::Text(value)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(self.standard_value(
+                    StandardConstructor::JsonText,
+                    vec![RuntimeValue::Text(value.clone())],
+                ))
+            }
+            StandardFunction::JsonArray => {
+                let [RuntimeValue::List(values)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(self.standard_value(
+                    StandardConstructor::JsonArray,
+                    vec![RuntimeValue::List(values.clone())],
+                ))
+            }
+            StandardFunction::JsonObject => {
+                let [RuntimeValue::Map(fields)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(self.standard_value(
+                    StandardConstructor::JsonObject,
+                    vec![RuntimeValue::Map(fields.clone())],
+                ))
+            }
+            StandardFunction::JsonNumberToInt => {
+                let [RuntimeValue::JsonNumber(number)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                if number
+                    .bytes()
+                    .any(|byte| matches!(byte, b'.' | b'e' | b'E'))
+                {
+                    return Control::Failure(self.standard_value(
+                        StandardConstructor::NumberNotInteger,
+                        vec![RuntimeValue::JsonNumber(number.clone())],
+                    ));
+                }
+                match number.parse::<i64>() {
+                    Ok(value) => Control::Success(RuntimeValue::Integer(value)),
+                    Err(_) => Control::Failure(self.standard_value(
+                        StandardConstructor::NumberOutOfRange,
+                        vec![RuntimeValue::JsonNumber(number.clone())],
+                    )),
+                }
+            }
+            StandardFunction::TextAppend => {
+                let [RuntimeValue::Text(left), RuntimeValue::Text(right)] = arguments.as_slice()
+                else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(RuntimeValue::Text(format!("{left}{right}")))
+            }
+        }
+    }
+
+    fn intrinsic_shape_defect(&self, function: StandardFunction, call_node: CoreNodeId) -> Control {
+        Control::Defect {
+            message: format!(
+                "verified arguments for standard function {} have invalid runtime shapes",
+                function.name()
+            ),
+            node: Some(call_node),
+        }
+    }
+
+    fn standard_value(
+        &self,
+        constructor: StandardConstructor,
+        values: Vec<RuntimeValue>,
+    ) -> RuntimeValue {
+        let symbol = self.standard_constructor_symbol(constructor);
+        let shape = self
+            .core
+            .symbol(symbol)
+            .constructor
+            .as_ref()
+            .expect("standard constructor owns a core shape");
+        RuntimeValue::Constructed {
+            constructor: symbol,
+            type_name: shape.type_name.clone(),
+            variant_name: shape.variant_name.clone(),
+            fields: shape
+                .fields
+                .iter()
+                .cloned()
+                .zip(values)
+                .map(|(name, value)| RuntimeField { name, value })
+                .collect(),
+        }
+    }
+
+    fn standard_constructor_symbol(&self, constructor: StandardConstructor) -> SymbolId {
+        self.core
+            .symbols
+            .iter()
+            .find_map(|symbol| {
+                (symbol.standard == Some(StandardSymbol::Constructor(constructor)))
+                    .then_some(symbol.id)
+            })
+            .expect("core retains every standard constructor")
+    }
+
+    fn json_to_runtime(&self, value: JsonData) -> RuntimeValue {
+        match value {
+            JsonData::Null => self.standard_value(StandardConstructor::JsonNull, Vec::new()),
+            JsonData::Boolean(value) => self.standard_value(
+                StandardConstructor::JsonBoolean,
+                vec![RuntimeValue::Boolean(value)],
+            ),
+            JsonData::Number(value) => self.standard_value(
+                StandardConstructor::JsonNumber,
+                vec![RuntimeValue::JsonNumber(value)],
+            ),
+            JsonData::Text(value) => self.standard_value(
+                StandardConstructor::JsonText,
+                vec![RuntimeValue::Text(value)],
+            ),
+            JsonData::Array(values) => self.standard_value(
+                StandardConstructor::JsonArray,
+                vec![RuntimeValue::List(
+                    values
+                        .into_iter()
+                        .map(|value| self.json_to_runtime(value))
+                        .collect(),
+                )],
+            ),
+            JsonData::Object(fields) => {
+                let mut map = RuntimeMap::default();
+                for (name, value) in fields {
+                    map = map.put(name, self.json_to_runtime(value));
+                }
+                self.standard_value(
+                    StandardConstructor::JsonObject,
+                    vec![RuntimeValue::Map(map)],
+                )
+            }
+        }
+    }
+
+    fn runtime_to_json(&self, value: &RuntimeValue) -> Result<JsonData, ()> {
+        let RuntimeValue::Constructed {
+            constructor,
+            fields,
+            ..
+        } = value
+        else {
+            return Err(());
+        };
+        let Some(StandardSymbol::Constructor(constructor)) =
+            self.core.symbol(*constructor).standard
+        else {
+            return Err(());
+        };
+        let field = |index: usize| fields.get(index).map(|field| &field.value).ok_or(());
+        match constructor {
+            StandardConstructor::JsonNull => Ok(JsonData::Null),
+            StandardConstructor::JsonBoolean => match field(0)? {
+                RuntimeValue::Boolean(value) => Ok(JsonData::Boolean(*value)),
+                _ => Err(()),
+            },
+            StandardConstructor::JsonNumber => match field(0)? {
+                RuntimeValue::JsonNumber(value) => Ok(JsonData::Number(value.clone())),
+                _ => Err(()),
+            },
+            StandardConstructor::JsonText => match field(0)? {
+                RuntimeValue::Text(value) => Ok(JsonData::Text(value.clone())),
+                _ => Err(()),
+            },
+            StandardConstructor::JsonArray => match field(0)? {
+                RuntimeValue::List(values) => values
+                    .iter()
+                    .map(|value| self.runtime_to_json(value))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(JsonData::Array),
+                _ => Err(()),
+            },
+            StandardConstructor::JsonObject => match field(0)? {
+                RuntimeValue::Map(fields) => fields
+                    .entries()
+                    .into_iter()
+                    .map(|(name, value)| self.runtime_to_json(&value).map(|value| (name, value)))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(JsonData::Object),
+                _ => Err(()),
+            },
+            _ => Err(()),
         }
     }
 
@@ -1047,6 +1547,16 @@ fn public_value(value: RuntimeValue) -> ExecutionValue {
             variant_name,
             fields: public_fields(fields),
         },
+        RuntimeValue::Map(map) => ExecutionValue::Record(
+            map.entries()
+                .into_iter()
+                .map(|(name, value)| ValueField {
+                    name,
+                    value: public_value(value),
+                })
+                .collect(),
+        ),
+        RuntimeValue::JsonNumber(value) => ExecutionValue::Text(value),
         RuntimeValue::Callable(callable) => ExecutionValue::Callable {
             name: callable_name(&callable).to_owned(),
         },
@@ -1068,6 +1578,7 @@ fn callable_name(callable: &RuntimeCallable) -> &str {
         RuntimeCallable::Declared { .. } => "function",
         RuntimeCallable::Closure { name, .. } => name,
         RuntimeCallable::Dependency { name, .. } => name,
+        RuntimeCallable::Intrinsic(function) => function.name(),
     }
 }
 
@@ -1252,7 +1763,8 @@ const fn file_id(identifier: FileId) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionConfig, TraceMode};
+    use super::{ExecutionConfig, RuntimeMap, RuntimeValue, TraceMode};
+    use std::sync::Arc;
 
     #[test]
     fn execution_ids_and_trace_configuration_are_validated_at_the_boundary() {
@@ -1280,5 +1792,32 @@ mod tests {
             ExecutionConfig::for_process(),
             ExecutionConfig::for_process()
         );
+    }
+
+    #[test]
+    fn persistent_maps_retain_prior_values_and_share_untouched_branches() {
+        let mut map = RuntimeMap::default();
+        for (index, key) in ["d", "b", "f", "a", "c", "e", "g"].into_iter().enumerate() {
+            map = map.put(key.to_owned(), RuntimeValue::Integer(index as i64));
+        }
+        let prior = map.clone();
+        let updated = map.put("g".to_owned(), RuntimeValue::Integer(99));
+
+        assert!(matches!(prior.get("g"), Some(RuntimeValue::Integer(6))));
+        assert!(matches!(updated.get("g"), Some(RuntimeValue::Integer(99))));
+        let prior_left = prior.root.as_ref().unwrap().left.as_ref().unwrap();
+        let updated_left = updated.root.as_ref().unwrap().left.as_ref().unwrap();
+        assert!(Arc::ptr_eq(prior_left, updated_left));
+    }
+
+    #[test]
+    fn ordered_insertions_keep_map_height_logarithmic() {
+        let mut map = RuntimeMap::default();
+        for value in 0..10_000 {
+            map = map.put(format!("{value:05}"), RuntimeValue::Integer(value));
+        }
+
+        assert!(map.root.as_ref().unwrap().height <= 20);
+        assert_eq!(map.entries().len(), 10_000);
     }
 }

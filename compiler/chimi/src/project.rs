@@ -4,6 +4,7 @@ use crate::ids::{FileId, TextRange};
 use crate::json::write_json_string;
 use crate::semantic::{self, ImportBinding};
 use crate::source::SourceSnapshot;
+use crate::standard::StandardModule;
 use std::collections::HashMap;
 use std::fmt::{self, Write};
 use std::io;
@@ -328,7 +329,12 @@ impl Loader {
             .insert(module_path.to_owned(), LoadState::Loading);
         self.stack.push(module_path.to_owned());
         for import in imports {
-            self.load_module(&import)?;
+            if !StandardModule::ALL
+                .iter()
+                .any(|module| module.path() == import)
+            {
+                self.load_module(&import)?;
+            }
         }
         let popped = self.stack.pop();
         debug_assert_eq!(popped.as_deref(), Some(module_path));

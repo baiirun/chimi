@@ -5,6 +5,10 @@ use crate::semantic::{
     ModuleExpression, Name, Pattern, RequirementRowUse, RequirementTermUse, SemanticModule,
     SemanticProgram, SemanticProject, StructDeclaration, TypeUse,
 };
+use crate::standard::{
+    StandardConstructor, StandardFunction, StandardGeneric, StandardModule, StandardSymbol,
+    StandardType,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -230,6 +234,10 @@ pub(crate) struct ResolvedProject {
     pub(crate) diagnostics: Vec<Diagnostic>,
     symbols_by_origin: HashMap<(ModuleId, SemanticId), Vec<SymbolId>>,
     references_by_origin: HashMap<(FileId, SemanticId, Namespace), ReferenceResolution>,
+    standard_symbols: HashMap<SymbolId, StandardSymbol>,
+    standard_types: HashMap<StandardType, SymbolId>,
+    standard_generics: HashMap<StandardGeneric, SymbolId>,
+    standard_callable_parameters: HashMap<SymbolId, Vec<SymbolId>>,
 }
 
 impl ResolvedProject {
@@ -279,6 +287,24 @@ impl ResolvedProject {
             .get(&(file_id, semantic_id, namespace))
             .copied()
     }
+
+    pub(crate) fn standard_symbol(&self, id: SymbolId) -> Option<StandardSymbol> {
+        self.standard_symbols.get(&id).copied()
+    }
+
+    pub(crate) fn standard_type(&self, kind: StandardType) -> SymbolId {
+        self.standard_types[&kind]
+    }
+
+    pub(crate) fn standard_generic(&self, generic: StandardGeneric) -> SymbolId {
+        self.standard_generics[&generic]
+    }
+
+    pub(crate) fn standard_callable_parameters(&self, callable: SymbolId) -> &[SymbolId] {
+        self.standard_callable_parameters
+            .get(&callable)
+            .map_or(&[], Vec::as_slice)
+    }
 }
 
 #[derive(Default)]
@@ -295,7 +321,14 @@ struct ModuleIndex {
 #[derive(Clone, Copy)]
 enum AliasBinding {
     Module(ModuleId),
+    Standard(StandardModule),
     Ambiguous,
+}
+
+struct StandardModuleIndex {
+    module: SymbolId,
+    types: HashMap<String, SymbolId>,
+    values: HashMap<String, SymbolId>,
 }
 
 struct ProjectResolver {
@@ -306,6 +339,12 @@ struct ProjectResolver {
     builtin_types: HashMap<String, SymbolId>,
     builtin_modules: HashMap<String, (SymbolId, HashMap<String, SymbolId>)>,
     prelude_values: HashMap<String, SymbolId>,
+    standard_modules: HashMap<StandardModule, StandardModuleIndex>,
+    standard_symbols: HashMap<SymbolId, StandardSymbol>,
+    standard_types: HashMap<StandardType, SymbolId>,
+    standard_type_members: HashMap<(SymbolId, String), SymbolId>,
+    standard_generics: HashMap<StandardGeneric, SymbolId>,
+    standard_callable_parameters: HashMap<SymbolId, Vec<SymbolId>>,
     references: Vec<ProjectReference>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -356,6 +395,10 @@ pub(crate) fn resolve_project(semantic: SemanticProject) -> ResolvedProject {
         diagnostics: resolver.diagnostics,
         symbols_by_origin,
         references_by_origin,
+        standard_symbols: resolver.standard_symbols,
+        standard_types: resolver.standard_types,
+        standard_generics: resolver.standard_generics,
+        standard_callable_parameters: resolver.standard_callable_parameters,
     }
 }
 
@@ -371,6 +414,12 @@ impl ProjectResolver {
             builtin_types: HashMap::new(),
             builtin_modules: HashMap::new(),
             prelude_values: HashMap::new(),
+            standard_modules: HashMap::new(),
+            standard_symbols: HashMap::new(),
+            standard_types: HashMap::new(),
+            standard_type_members: HashMap::new(),
+            standard_generics: HashMap::new(),
+            standard_callable_parameters: HashMap::new(),
             references: Vec::new(),
             diagnostics: Vec::new(),
         };
@@ -389,6 +438,11 @@ impl ProjectResolver {
                 true,
             );
             self.builtin_types.insert(name.to_owned(), id);
+            if name == "Option" {
+                self.standard_types.insert(StandardType::Option, id);
+                self.standard_symbols
+                    .insert(id, StandardSymbol::Type(StandardType::Option));
+            }
         }
         for module_name in ["Int", "Text"] {
             let module = self.add_symbol(
@@ -416,8 +470,14 @@ impl ProjectResolver {
                 module_name.to_owned(),
                 (module, HashMap::from([(member_name.to_owned(), member)])),
             );
+            if module_name == "Text" {
+                self.standard_symbols.insert(
+                    member,
+                    StandardSymbol::Function(StandardFunction::TextAppend),
+                );
+            }
         }
-        for name in ["Failure", "False", "Success", "True"] {
+        for name in ["Failure", "False", "None", "Some", "Success", "True"] {
             let id = self.add_symbol(
                 None,
                 None,
@@ -427,7 +487,198 @@ impl ProjectResolver {
                 true,
             );
             self.prelude_values.insert(name.to_owned(), id);
+            let constructor = match name {
+                "None" => Some(StandardConstructor::OptionNone),
+                "Some" => Some(StandardConstructor::OptionSome),
+                _ => None,
+            };
+            if let Some(constructor) = constructor {
+                self.standard_symbols
+                    .insert(id, StandardSymbol::Constructor(constructor));
+                let owner = self.standard_types[&StandardType::Option];
+                self.standard_type_members
+                    .insert((owner, name.to_owned()), id);
+            }
         }
+
+        self.index_standard_modules();
+    }
+
+    fn index_standard_modules(&mut self) {
+        for module in StandardModule::ALL {
+            let symbol = self.add_symbol(
+                None,
+                None,
+                Namespace::Module,
+                ProjectSymbolKind::BuiltinModule,
+                module.path(),
+                true,
+            );
+            self.standard_symbols
+                .insert(symbol, StandardSymbol::Module(module));
+            self.standard_modules.insert(
+                module,
+                StandardModuleIndex {
+                    module: symbol,
+                    types: HashMap::new(),
+                    values: HashMap::new(),
+                },
+            );
+        }
+
+        for (kind, module) in [
+            (StandardType::Map, StandardModule::Map),
+            (StandardType::JsonValue, StandardModule::Json),
+            (StandardType::JsonNumber, StandardModule::Json),
+            (StandardType::DecodeError, StandardModule::Json),
+            (StandardType::NumberError, StandardModule::Json),
+        ] {
+            let symbol = self.add_symbol(
+                None,
+                None,
+                Namespace::Type,
+                ProjectSymbolKind::BuiltinType,
+                kind.name(),
+                true,
+            );
+            self.standard_symbols
+                .insert(symbol, StandardSymbol::Type(kind));
+            self.standard_types.insert(kind, symbol);
+            self.standard_modules
+                .get_mut(&module)
+                .expect("standard module is indexed")
+                .types
+                .insert(kind.name().to_owned(), symbol);
+        }
+
+        for function in StandardFunction::ALL {
+            let symbol = self.add_symbol(
+                None,
+                None,
+                Namespace::Value,
+                ProjectSymbolKind::BuiltinValue,
+                function.name(),
+                true,
+            );
+            self.standard_symbols
+                .insert(symbol, StandardSymbol::Function(function));
+            self.standard_modules
+                .get_mut(&function.module().expect("module function owns a module"))
+                .expect("standard module is indexed")
+                .values
+                .insert(function.name().to_owned(), symbol);
+        }
+
+        for constructor in StandardConstructor::ALL {
+            if matches!(
+                constructor,
+                StandardConstructor::OptionSome | StandardConstructor::OptionNone
+            ) {
+                continue;
+            }
+            let symbol = self.add_symbol(
+                None,
+                None,
+                Namespace::Value,
+                ProjectSymbolKind::BuiltinValue,
+                constructor.name(),
+                true,
+            );
+            self.standard_symbols
+                .insert(symbol, StandardSymbol::Constructor(constructor));
+            let owner = self.standard_types[&constructor.type_kind()];
+            self.standard_type_members
+                .insert((owner, constructor.name().to_owned()), symbol);
+            self.standard_modules
+                .get_mut(&StandardModule::Json)
+                .expect("JSON module is indexed")
+                .values
+                .insert(constructor.name().to_owned(), symbol);
+        }
+
+        for generic in StandardGeneric::ALL {
+            let symbol = self.add_symbol(
+                None,
+                None,
+                Namespace::Type,
+                ProjectSymbolKind::GenericParameter,
+                generic.name(),
+                false,
+            );
+            self.standard_generics.insert(generic, symbol);
+            self.standard_symbols
+                .insert(symbol, StandardSymbol::Generic(generic));
+        }
+
+        for (callable, parameters) in [
+            (
+                self.standard_function_symbol(StandardFunction::MapEmpty),
+                vec![StandardGeneric::MapEmptyKey, StandardGeneric::MapEmptyValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::MapGet),
+                vec![StandardGeneric::MapGetKey, StandardGeneric::MapGetValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::MapPut),
+                vec![StandardGeneric::MapPutKey, StandardGeneric::MapPutValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::MapUpdate),
+                vec![
+                    StandardGeneric::MapUpdateKey,
+                    StandardGeneric::MapUpdateValue,
+                    StandardGeneric::MapUpdateFailures,
+                    StandardGeneric::MapUpdateNeeds,
+                    StandardGeneric::MapUpdateEffects,
+                ],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::MapMapValues),
+                vec![
+                    StandardGeneric::MapValuesKey,
+                    StandardGeneric::MapValuesInput,
+                    StandardGeneric::MapValuesOutput,
+                    StandardGeneric::MapValuesFailures,
+                    StandardGeneric::MapValuesNeeds,
+                    StandardGeneric::MapValuesEffects,
+                ],
+            ),
+            (
+                self.standard_constructor_symbol(StandardConstructor::OptionSome),
+                vec![StandardGeneric::OptionValue],
+            ),
+            (
+                self.standard_constructor_symbol(StandardConstructor::OptionNone),
+                vec![StandardGeneric::OptionValue],
+            ),
+        ] {
+            self.standard_callable_parameters.insert(
+                callable,
+                parameters
+                    .into_iter()
+                    .map(|generic| self.standard_generics[&generic])
+                    .collect(),
+            );
+        }
+    }
+
+    fn standard_function_symbol(&self, function: StandardFunction) -> SymbolId {
+        self.standard_symbols
+            .iter()
+            .find_map(|(symbol, standard)| {
+                (*standard == StandardSymbol::Function(function)).then_some(*symbol)
+            })
+            .expect("standard function is indexed")
+    }
+
+    fn standard_constructor_symbol(&self, constructor: StandardConstructor) -> SymbolId {
+        self.standard_symbols
+            .iter()
+            .find_map(|(symbol, standard)| {
+                (*standard == StandardSymbol::Constructor(constructor)).then_some(*symbol)
+            })
+            .expect("standard constructor is indexed")
     }
 
     fn index_modules(&mut self) {
@@ -582,7 +833,42 @@ impl ProjectResolver {
         for module_index in 0..self.semantic.modules.len() {
             let imports = self.semantic.modules[module_index].imports.clone();
             for import in imports {
-                let Some(&target) = self.module_paths.get(&import.path) else {
+                if let Some(&target) = self.module_paths.get(&import.path) {
+                    match import.binding {
+                        ImportBinding::Alias(alias) => {
+                            self.bind_alias(module_index, target, alias, import.range)
+                        }
+                        ImportBinding::Members(members) => {
+                            for member in members {
+                                self.bind_member(module_index, target, &member);
+                            }
+                        }
+                        ImportBinding::Missing => {
+                            self.missing_import_alias(module_index, import.range)
+                        }
+                    }
+                    continue;
+                }
+                if let Some(standard) = StandardModule::ALL
+                    .into_iter()
+                    .find(|module| module.path() == import.path)
+                {
+                    match import.binding {
+                        ImportBinding::Alias(alias) => {
+                            self.bind_standard_alias(module_index, standard, alias, import.range)
+                        }
+                        ImportBinding::Members(members) => {
+                            for member in members {
+                                self.bind_standard_member(module_index, standard, &member);
+                            }
+                        }
+                        ImportBinding::Missing => {
+                            self.missing_import_alias(module_index, import.range)
+                        }
+                    }
+                    continue;
+                }
+                {
                     let module = &self.semantic.modules[module_index];
                     self.diagnostics.push(name_error(
                         module,
@@ -591,28 +877,88 @@ impl ProjectResolver {
                         format!("cannot find module {}", import.path),
                     ));
                     continue;
-                };
-                match import.binding {
-                    ImportBinding::Alias(alias) => {
-                        self.bind_alias(module_index, target, alias, import.range)
-                    }
-                    ImportBinding::Members(members) => {
-                        for member in members {
-                            self.bind_member(module_index, target, &member);
-                        }
-                    }
-                    ImportBinding::Missing => {
-                        let module = &self.semantic.modules[module_index];
-                        self.diagnostics.push(name_error(
-                            module,
-                            "E_MISSING_MODULE_ALIAS",
-                            import.range,
-                            "module imports require an explicit alias",
-                        ));
-                    }
                 }
             }
         }
+    }
+
+    fn missing_import_alias(&mut self, module_index: usize, range: crate::ids::TextRange) {
+        let module = &self.semantic.modules[module_index];
+        self.diagnostics.push(name_error(
+            module,
+            "E_MISSING_MODULE_ALIAS",
+            range,
+            "module imports require an explicit alias",
+        ));
+    }
+
+    fn bind_standard_alias(
+        &mut self,
+        module_index: usize,
+        target: StandardModule,
+        alias: Name,
+        range: crate::ids::TextRange,
+    ) {
+        let prior = self.modules[module_index].aliases.get(&alias.text).copied();
+        if prior.is_some() {
+            self.modules[module_index]
+                .aliases
+                .insert(alias.text.clone(), AliasBinding::Ambiguous);
+            let module = &self.semantic.modules[module_index];
+            self.diagnostics.push(name_error(
+                module,
+                "E_IMPORT_BINDING_CONFLICT",
+                range,
+                format!("module alias {} is bound more than once", alias.text),
+            ));
+        } else {
+            self.modules[module_index]
+                .aliases
+                .insert(alias.text, AliasBinding::Standard(target));
+        }
+    }
+
+    fn bind_standard_member(&mut self, module_index: usize, target: StandardModule, member: &Name) {
+        let standard = self
+            .standard_modules
+            .get(&target)
+            .expect("standard module is indexed");
+        if let Some(symbol) = standard.types.get(&member.text).copied() {
+            self.import_symbol(module_index, Namespace::Type, member, symbol);
+            return;
+        }
+        if let Some(symbol) = standard.values.get(&member.text).copied() {
+            if matches!(
+                self.standard_symbols.get(&symbol),
+                Some(StandardSymbol::Constructor(_))
+            ) {
+                self.import_symbol(module_index, Namespace::Value, member, symbol);
+            } else {
+                let module = &self.semantic.modules[module_index];
+                self.diagnostics.push(name_error(
+                    module,
+                    "E_UNQUALIFIED_FUNCTION_IMPORT",
+                    member.range,
+                    format!(
+                        "functions remain module-qualified; call {}.{}",
+                        module_name(target.path()),
+                        member.text
+                    ),
+                ));
+            }
+            return;
+        }
+        let module = &self.semantic.modules[module_index];
+        self.diagnostics.push(name_error(
+            module,
+            "E_UNRESOLVED_IMPORT_MEMBER",
+            member.range,
+            format!(
+                "{} has no public type or constructor named {}",
+                module_name(target.path()),
+                member.text
+            ),
+        ));
     }
 
     fn bind_alias(
@@ -929,6 +1275,12 @@ impl ProjectResolver {
                 let ids = self.modules[target.raw() as usize].types.get(name);
                 resolve_external(ids, &self.symbols)
             }
+            Some(AliasBinding::Standard(target)) => self.standard_modules[target]
+                .types
+                .get(name)
+                .copied()
+                .map(ReferenceResolution::Resolved)
+                .unwrap_or(ReferenceResolution::Unresolved),
             None => ReferenceResolution::Unresolved,
         }
     }
@@ -1178,9 +1530,32 @@ impl ProjectResolver {
     }
 
     fn resolve_pattern(&mut self, module_index: usize, pattern: &Pattern, scope: &mut Scope) {
-        if let Some(name) = &pattern.name {
+        if let Some(name) = pattern.path.last() {
             if pattern.applied || starts_upper(&name.text) {
-                let resolution = if self.modules[module_index]
+                let resolution = if let [owner, member] = pattern.path.as_slice() {
+                    let owner_resolution = resolve_local(
+                        self.modules[module_index].types.get(&owner.text),
+                        self.modules[module_index].imported_types.get(&owner.text),
+                        self.builtin_types.get(&owner.text).copied(),
+                    );
+                    self.reference(
+                        module_index,
+                        pattern.semantic_id,
+                        Namespace::Type,
+                        owner,
+                        owner_resolution,
+                    );
+                    match owner_resolution {
+                        ReferenceResolution::Resolved(owner) => self
+                            .standard_type_members
+                            .get(&(owner, member.text.clone()))
+                            .copied()
+                            .map(ReferenceResolution::Resolved)
+                            .unwrap_or(ReferenceResolution::Unresolved),
+                        ReferenceResolution::Ambiguous => ReferenceResolution::Ambiguous,
+                        _ => ReferenceResolution::Unresolved,
+                    }
+                } else if self.modules[module_index]
                     .ambiguous_values
                     .contains(&name.text)
                 {
@@ -1294,7 +1669,70 @@ impl ProjectResolver {
                         resolution,
                     );
                 }
+                AliasBinding::Standard(target) => {
+                    let standard = self
+                        .standard_modules
+                        .get(&target)
+                        .expect("standard module is indexed");
+                    let module_symbol = standard.module;
+                    let member_resolution = standard
+                        .values
+                        .get(&member.text)
+                        .copied()
+                        .map(ReferenceResolution::Resolved)
+                        .unwrap_or(ReferenceResolution::Unresolved);
+                    self.reference(
+                        module_index,
+                        base_semantic_id,
+                        Namespace::Module,
+                        base,
+                        ReferenceResolution::Resolved(module_symbol),
+                    );
+                    self.reference(
+                        module_index,
+                        member_semantic_id,
+                        Namespace::Value,
+                        member,
+                        member_resolution,
+                    );
+                    if member_resolution == ReferenceResolution::Unresolved {
+                        let current = &self.semantic.modules[module_index];
+                        self.diagnostics.push(name_error(
+                            current,
+                            "E_UNRESOLVED_MEMBER",
+                            member.range,
+                            format!("{} has no member {}", base.text, member.text),
+                        ));
+                    }
+                }
             }
+            return true;
+        }
+        let type_resolution = resolve_local(
+            self.modules[module_index].types.get(&base.text),
+            self.modules[module_index].imported_types.get(&base.text),
+            self.builtin_types.get(&base.text).copied(),
+        );
+        if let ReferenceResolution::Resolved(owner) = type_resolution
+            && let Some(constructor) = self
+                .standard_type_members
+                .get(&(owner, member.text.clone()))
+                .copied()
+        {
+            self.reference(
+                module_index,
+                base_semantic_id,
+                Namespace::Type,
+                base,
+                type_resolution,
+            );
+            self.reference(
+                module_index,
+                member_semantic_id,
+                Namespace::Value,
+                member,
+                ReferenceResolution::Resolved(constructor),
+            );
             return true;
         }
         if let Some((module, members)) = self.builtin_modules.get(&base.text) {

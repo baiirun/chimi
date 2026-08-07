@@ -11,6 +11,10 @@ use crate::semantic::{
     ModuleDeclaration, ModuleDeclarationKind, ModuleExpression, Pattern, PatternLiteral,
     RequirementRowUse, RequirementTermUse, TypeUse, UnaryOperator,
 };
+use crate::standard::{
+    StandardConstructor, StandardFunction, StandardGeneric, StandardGenericKind, StandardSymbol,
+    StandardType,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -647,7 +651,349 @@ impl ProjectTypeChecker {
             effects: Vec::new(),
             parameters: Vec::new(),
         });
+        checker.index_standard_contracts();
         checker
+    }
+
+    fn index_standard_contracts(&mut self) {
+        for generic in StandardGeneric::ALL {
+            let kind = match generic.kind() {
+                StandardGenericKind::Value => GenericKind::Value,
+                StandardGenericKind::FailureRow => GenericKind::FailureRow,
+                StandardGenericKind::NeedsRow => GenericKind::NeedsRow,
+                StandardGenericKind::EffectRow => GenericKind::EffectRow,
+            };
+            self.generic_kinds
+                .insert(self.resolved.standard_generic(generic), kind);
+        }
+
+        let text = self.builtin_type("Text");
+        let int = self.builtin_type("Int");
+        let bool_type = self.builtin_type("Bool");
+        let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
+        let number = self.standard_named_type(StandardType::JsonNumber, Vec::new());
+        let decode_failure = self.standard_failure_row(&[StandardConstructor::DecodeInvalidJson]);
+        let number_failure = self.standard_failure_row(&[
+            StandardConstructor::NumberNotInteger,
+            StandardConstructor::NumberOutOfRange,
+        ]);
+
+        let map_contracts = [
+            (
+                StandardFunction::MapEmpty,
+                CallableContract {
+                    inputs: Vec::new(),
+                    success: self.standard_map_type(
+                        StandardGeneric::MapEmptyKey,
+                        StandardGeneric::MapEmptyValue,
+                    ),
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                    effects: EffectRowId::new(0),
+                },
+            ),
+            (StandardFunction::MapGet, self.standard_map_get_contract()),
+            (StandardFunction::MapPut, self.standard_map_put_contract()),
+            (
+                StandardFunction::MapUpdate,
+                self.standard_map_transform_contract(false),
+            ),
+            (
+                StandardFunction::MapMapValues,
+                self.standard_map_transform_contract(true),
+            ),
+        ];
+        for (function, contract) in map_contracts {
+            let symbol = self.standard_function_symbol(function);
+            self.contracts.insert(symbol, contract);
+        }
+
+        let pure = (
+            FailureRowId::new(0),
+            NeedsRowId::new(0),
+            EffectRowId::new(0),
+        );
+        let json_contracts = [
+            (
+                StandardFunction::JsonDecode,
+                vec![text],
+                value,
+                decode_failure,
+            ),
+            (StandardFunction::JsonEncode, vec![value], text, pure.0),
+            (
+                StandardFunction::JsonBoolean,
+                vec![bool_type],
+                value,
+                pure.0,
+            ),
+            (StandardFunction::JsonInt, vec![int], value, pure.0),
+            (StandardFunction::JsonText, vec![text], value, pure.0),
+            (
+                StandardFunction::JsonArray,
+                vec![self.builtin_type_with_arguments("List", vec![value])],
+                value,
+                pure.0,
+            ),
+            (
+                StandardFunction::JsonObject,
+                vec![self.standard_named_type(StandardType::Map, vec![text, value])],
+                value,
+                pure.0,
+            ),
+            (
+                StandardFunction::JsonNumberToInt,
+                vec![number],
+                int,
+                number_failure,
+            ),
+        ];
+        for (function, inputs, success, failures) in json_contracts {
+            let symbol = self.standard_function_symbol(function);
+            self.contracts.insert(
+                symbol,
+                CallableContract {
+                    inputs,
+                    success,
+                    failures,
+                    needs: pure.1,
+                    effects: pure.2,
+                },
+            );
+        }
+        let text_append = self.standard_function_symbol(StandardFunction::TextAppend);
+        self.contracts.insert(
+            text_append,
+            CallableContract {
+                inputs: vec![text, text],
+                success: text,
+                failures: pure.0,
+                needs: pure.1,
+                effects: pure.2,
+            },
+        );
+
+        for constructor in StandardConstructor::ALL {
+            let symbol = self.standard_constructor_symbol(constructor);
+            let (inputs, success) = self.standard_constructor_shape(constructor);
+            self.fields.insert(
+                symbol,
+                constructor
+                    .field_names()
+                    .iter()
+                    .zip(&inputs)
+                    .enumerate()
+                    .map(|(index, (name, type_id))| FieldShape {
+                        semantic_id: SemanticId::new(index as u32),
+                        name: (*name).to_owned(),
+                        type_id: *type_id,
+                    })
+                    .collect(),
+            );
+            self.contracts.insert(
+                symbol,
+                CallableContract {
+                    inputs,
+                    success,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                    effects: EffectRowId::new(0),
+                },
+            );
+        }
+    }
+
+    fn standard_generic_type(&mut self, generic: StandardGeneric) -> TypeId {
+        self.intern_type(CanonicalType::Generic(
+            self.resolved.standard_generic(generic),
+        ))
+    }
+
+    fn standard_named_type(&mut self, kind: StandardType, arguments: Vec<TypeId>) -> TypeId {
+        self.intern_type(CanonicalType::Named {
+            symbol: self.resolved.standard_type(kind),
+            arguments,
+        })
+    }
+
+    fn standard_map_type(&mut self, key: StandardGeneric, value: StandardGeneric) -> TypeId {
+        let key = self.standard_generic_type(key);
+        let value = self.standard_generic_type(value);
+        self.standard_named_type(StandardType::Map, vec![key, value])
+    }
+
+    fn standard_map_get_contract(&mut self) -> CallableContract {
+        let key = self.standard_generic_type(StandardGeneric::MapGetKey);
+        let value = self.standard_generic_type(StandardGeneric::MapGetValue);
+        let map = self.standard_named_type(StandardType::Map, vec![key, value]);
+        let option = self.standard_named_type(StandardType::Option, vec![value]);
+        CallableContract {
+            inputs: vec![map, key],
+            success: option,
+            failures: FailureRowId::new(0),
+            needs: NeedsRowId::new(0),
+            effects: EffectRowId::new(0),
+        }
+    }
+
+    fn standard_map_put_contract(&mut self) -> CallableContract {
+        let key = self.standard_generic_type(StandardGeneric::MapPutKey);
+        let value = self.standard_generic_type(StandardGeneric::MapPutValue);
+        let map = self.standard_named_type(StandardType::Map, vec![key, value]);
+        CallableContract {
+            inputs: vec![map, key, value],
+            success: map,
+            failures: FailureRowId::new(0),
+            needs: NeedsRowId::new(0),
+            effects: EffectRowId::new(0),
+        }
+    }
+
+    fn standard_map_transform_contract(&mut self, changes_value_type: bool) -> CallableContract {
+        let (key_generic, input_generic, output_generic, failures, needs, effects) =
+            if changes_value_type {
+                (
+                    StandardGeneric::MapValuesKey,
+                    StandardGeneric::MapValuesInput,
+                    StandardGeneric::MapValuesOutput,
+                    StandardGeneric::MapValuesFailures,
+                    StandardGeneric::MapValuesNeeds,
+                    StandardGeneric::MapValuesEffects,
+                )
+            } else {
+                (
+                    StandardGeneric::MapUpdateKey,
+                    StandardGeneric::MapUpdateValue,
+                    StandardGeneric::MapUpdateValue,
+                    StandardGeneric::MapUpdateFailures,
+                    StandardGeneric::MapUpdateNeeds,
+                    StandardGeneric::MapUpdateEffects,
+                )
+            };
+        let key = self.standard_generic_type(key_generic);
+        let input = self.standard_generic_type(input_generic);
+        let output = self.standard_generic_type(output_generic);
+        let failures = self.intern_failure_row(FailureRow {
+            variants: Vec::new(),
+            parameters: vec![self.resolved.standard_generic(failures)],
+        });
+        let needs = self.intern_needs_row(NeedsRow {
+            entries: Vec::new(),
+            parameters: vec![self.resolved.standard_generic(needs)],
+        });
+        let effects = self.intern_effect_row(EffectRow {
+            effects: Vec::new(),
+            parameters: vec![self.resolved.standard_generic(effects)],
+        });
+        let callback_input = if changes_value_type {
+            input
+        } else {
+            self.standard_named_type(StandardType::Option, vec![input])
+        };
+        let callback = self.intern_type(CanonicalType::Function(CallableContract {
+            inputs: vec![callback_input],
+            success: output,
+            failures,
+            needs,
+            effects,
+        }));
+        let input_map = self.standard_named_type(StandardType::Map, vec![key, input]);
+        let output_map = self.standard_named_type(StandardType::Map, vec![key, output]);
+        let inputs = if changes_value_type {
+            vec![input_map, callback]
+        } else {
+            vec![input_map, key, callback]
+        };
+        CallableContract {
+            inputs,
+            success: output_map,
+            failures,
+            needs,
+            effects,
+        }
+    }
+
+    fn standard_failure_row(&mut self, constructors: &[StandardConstructor]) -> FailureRowId {
+        let mut variants = constructors
+            .iter()
+            .map(|constructor| self.standard_constructor_symbol(*constructor))
+            .collect::<Vec<_>>();
+        variants.sort_unstable();
+        self.intern_failure_row(FailureRow {
+            variants,
+            parameters: Vec::new(),
+        })
+    }
+
+    fn standard_constructor_shape(
+        &mut self,
+        constructor: StandardConstructor,
+    ) -> (Vec<TypeId>, TypeId) {
+        let text = self.builtin_type("Text");
+        let int = self.builtin_type("Int");
+        let bool_type = self.builtin_type("Bool");
+        let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
+        let number = self.standard_named_type(StandardType::JsonNumber, Vec::new());
+        match constructor {
+            StandardConstructor::OptionSome => {
+                let value = self.standard_generic_type(StandardGeneric::OptionValue);
+                (
+                    vec![value],
+                    self.standard_named_type(StandardType::Option, vec![value]),
+                )
+            }
+            StandardConstructor::OptionNone => {
+                let value = self.standard_generic_type(StandardGeneric::OptionValue);
+                (
+                    Vec::new(),
+                    self.standard_named_type(StandardType::Option, vec![value]),
+                )
+            }
+            StandardConstructor::JsonNull => (Vec::new(), value),
+            StandardConstructor::JsonBoolean => (vec![bool_type], value),
+            StandardConstructor::JsonNumber => (vec![number], value),
+            StandardConstructor::JsonText => (vec![text], value),
+            StandardConstructor::JsonArray => (
+                vec![self.builtin_type_with_arguments("List", vec![value])],
+                value,
+            ),
+            StandardConstructor::JsonObject => (
+                vec![self.standard_named_type(StandardType::Map, vec![text, value])],
+                value,
+            ),
+            StandardConstructor::DecodeInvalidJson => (
+                vec![text, int],
+                self.standard_named_type(StandardType::DecodeError, Vec::new()),
+            ),
+            StandardConstructor::NumberNotInteger | StandardConstructor::NumberOutOfRange => (
+                vec![number],
+                self.standard_named_type(StandardType::NumberError, Vec::new()),
+            ),
+        }
+    }
+
+    fn standard_function_symbol(&self, function: StandardFunction) -> SymbolId {
+        self.resolved
+            .symbols
+            .iter()
+            .find_map(|symbol| {
+                (self.resolved.standard_symbol(symbol.id)
+                    == Some(StandardSymbol::Function(function)))
+                .then_some(symbol.id)
+            })
+            .expect("standard function is resolved")
+    }
+
+    fn standard_constructor_symbol(&self, constructor: StandardConstructor) -> SymbolId {
+        self.resolved
+            .symbols
+            .iter()
+            .find_map(|symbol| {
+                (self.resolved.standard_symbol(symbol.id)
+                    == Some(StandardSymbol::Constructor(constructor)))
+                .then_some(symbol.id)
+            })
+            .expect("standard constructor is resolved")
     }
 
     fn from_previous(
@@ -1590,7 +1936,7 @@ impl ProjectTypeChecker {
             _ => None,
         };
         if let Some(symbol) = constructed
-            && self.resolved.symbol(symbol).kind == ProjectSymbolKind::EnumConstructor
+            && self.is_enum_constructor(symbol)
         {
             return vec![symbol];
         }
@@ -1598,7 +1944,14 @@ impl ProjectTypeChecker {
         let CanonicalType::Named { symbol, .. } = self.types[type_id.raw() as usize] else {
             return Vec::new();
         };
-        if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Enum {
+        if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Enum
+            || matches!(
+                self.resolved.standard_symbol(symbol),
+                Some(StandardSymbol::Type(
+                    StandardType::DecodeError | StandardType::NumberError
+                ))
+            )
+        {
             self.enum_variant_symbols(symbol)
         } else {
             Vec::new()
@@ -1767,7 +2120,7 @@ impl ProjectTypeChecker {
         let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
             return MatchPattern::Wildcard;
         };
-        if self.resolved.symbol(constructor).kind != ProjectSymbolKind::EnumConstructor {
+        if !self.is_enum_constructor(constructor) {
             self.type_error_range(
                 module_id,
                 "T4230",
@@ -1826,6 +2179,29 @@ impl ProjectTypeChecker {
     ) -> Option<Vec<TypeId>> {
         let contract = self.contracts.get(&constructor)?.clone();
         let mut substitution = CallSubstitution::default();
+        let standard_parameters = self
+            .resolved
+            .standard_callable_parameters(constructor)
+            .to_vec();
+        for parameter in &standard_parameters {
+            if self.generic_kinds.get(parameter) == Some(&GenericKind::Value) {
+                let fresh = self.fresh_inference_type();
+                substitution.values.insert(*parameter, fresh);
+            }
+        }
+        if !standard_parameters.is_empty() {
+            let success = self.substitute_call_type(contract.success, &mut substitution);
+            if !self.unify(expected, success) {
+                return None;
+            }
+            return Some(
+                contract
+                    .inputs
+                    .iter()
+                    .map(|input| self.substitute_call_type(*input, &mut substitution))
+                    .collect(),
+            );
+        }
         if !self.match_call_type(expected, contract.success, &mut substitution) {
             return None;
         }
@@ -1948,7 +2324,16 @@ impl ProjectTypeChecker {
                 (MatchTag::Boolean(true), Vec::new()),
             ]);
         }
-        if symbol_kind != ProjectSymbolKind::Enum {
+        let standard_enum = matches!(
+            self.resolved.standard_symbol(symbol),
+            Some(StandardSymbol::Type(
+                StandardType::Option
+                    | StandardType::JsonValue
+                    | StandardType::DecodeError
+                    | StandardType::NumberError
+            ))
+        );
+        if symbol_kind != ProjectSymbolKind::Enum && !standard_enum {
             return None;
         }
         Some(
@@ -2045,7 +2430,7 @@ impl ProjectTypeChecker {
                     }
                 }
             } else {
-                let pattern_range = pattern.name.as_ref().map_or(range, |name| name.range);
+                let pattern_range = pattern.path.last().map_or(range, |name| name.range);
                 self.type_error_range(
                     module_id,
                     "T4222",
@@ -2129,8 +2514,8 @@ impl ProjectTypeChecker {
     ) -> Option<&'pattern Pattern> {
         if pattern.arguments.len() != 1 {
             let range = pattern
-                .name
-                .as_ref()
+                .path
+                .last()
                 .map_or(TextRange::empty(0), |name| name.range);
             self.type_error_range(
                 module_id,
@@ -2153,15 +2538,15 @@ impl ProjectTypeChecker {
     ) -> (Vec<SymbolId>, bool) {
         let symbol = self.resolved_pattern_symbol(module_id, pattern);
         if let Some(symbol) = symbol
-            && self.resolved.symbol(symbol).kind == ProjectSymbolKind::EnumConstructor
+            && self.is_enum_constructor(symbol)
         {
             if !self.failure_rows[failures.raw() as usize]
                 .variants
                 .contains(&symbol)
             {
                 let range = pattern
-                    .name
-                    .as_ref()
+                    .path
+                    .last()
                     .map_or(TextRange::empty(0), |name| name.range);
                 self.type_error_range(
                     module_id,
@@ -2187,10 +2572,10 @@ impl ProjectTypeChecker {
                 true,
             );
         }
-        if symbol.is_some() || pattern.name.is_none() {
+        if symbol.is_some() || pattern.path.is_empty() {
             let range = pattern
-                .name
-                .as_ref()
+                .path
+                .last()
                 .map_or(TextRange::empty(0), |name| name.range);
             self.type_error_range(
                 module_id,
@@ -2225,7 +2610,7 @@ impl ProjectTypeChecker {
             }
             return;
         }
-        let Some(name) = &pattern.name else {
+        let Some(name) = pattern.path.last() else {
             return;
         };
         if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
@@ -2241,7 +2626,7 @@ impl ProjectTypeChecker {
         let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
             return;
         };
-        if self.resolved.symbol(constructor).kind != ProjectSymbolKind::EnumConstructor {
+        if !self.is_enum_constructor(constructor) {
             return;
         }
         let contract = self.contracts[&constructor].clone();
@@ -2288,7 +2673,7 @@ impl ProjectTypeChecker {
             module_id,
             Some(pattern.semantic_id),
             ProjectSymbolKind::PatternBinding,
-            &pattern.name.as_ref()?.text,
+            &pattern.path.last()?.text,
         )
     }
 
@@ -2319,6 +2704,22 @@ impl ProjectTypeChecker {
         let [owner] = owners.as_slice() else {
             return None;
         };
+        if matches!(
+            self.resolved.standard_symbol(*owner),
+            Some(StandardSymbol::Type(_))
+        ) {
+            return self
+                .types
+                .iter()
+                .position(|candidate| {
+                    matches!(
+                        candidate,
+                        CanonicalType::Named { symbol, arguments }
+                            if symbol == owner && arguments.is_empty()
+                    )
+                })
+                .map(|index| TypeId::new(index as u32));
+        }
         let owner = self.resolved.symbol(*owner);
         self.declaration_types
             .get(&(owner.module_id?, owner.semantic_id?))
@@ -2356,6 +2757,11 @@ impl ProjectTypeChecker {
     }
 
     fn enum_owner_for_variant(&self, variant: SymbolId) -> Option<SymbolId> {
+        if let Some(StandardSymbol::Constructor(constructor)) =
+            self.resolved.standard_symbol(variant)
+        {
+            return Some(self.resolved.standard_type(constructor.type_kind()));
+        }
         let variant = self.resolved.symbol(variant);
         let module_id = variant.module_id?;
         let variant_semantic_id = variant.semantic_id?;
@@ -2378,6 +2784,23 @@ impl ProjectTypeChecker {
     }
 
     fn enum_variant_symbols(&self, owner: SymbolId) -> Vec<SymbolId> {
+        if let Some(StandardSymbol::Type(kind)) = self.resolved.standard_symbol(owner) {
+            let mut variants = self
+                .resolved
+                .symbols
+                .iter()
+                .filter_map(|symbol| match self.resolved.standard_symbol(symbol.id) {
+                    Some(StandardSymbol::Constructor(constructor))
+                        if constructor.type_kind() == kind =>
+                    {
+                        Some(symbol.id)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            variants.sort_unstable();
+            return variants;
+        }
         let owner = self.resolved.symbol(owner);
         let module_id = owner.module_id.expect("enum is source-backed");
         let semantic_id = owner.semantic_id.expect("enum has semantic identity");
@@ -2407,6 +2830,14 @@ impl ProjectTypeChecker {
         symbol.module_id.is_none()
             && symbol.kind == ProjectSymbolKind::BuiltinValue
             && symbol.name == name
+    }
+
+    fn is_enum_constructor(&self, symbol: SymbolId) -> bool {
+        self.resolved.symbol(symbol).kind == ProjectSymbolKind::EnumConstructor
+            || matches!(
+                self.resolved.standard_symbol(symbol),
+                Some(StandardSymbol::Constructor(_))
+            )
     }
 
     fn infer_using(
@@ -2839,6 +3270,17 @@ impl ProjectTypeChecker {
                 parameters: vec![symbol],
             });
         }
+        if matches!(
+            self.resolved.standard_symbol(symbol),
+            Some(StandardSymbol::Type(
+                StandardType::DecodeError | StandardType::NumberError
+            ))
+        ) {
+            return self.intern_failure_row(FailureRow {
+                variants: self.enum_variant_symbols(symbol),
+                parameters: Vec::new(),
+            });
+        }
         if self.resolved.symbol(symbol).kind != ProjectSymbolKind::Enum {
             self.type_error(
                 module_id,
@@ -3091,6 +3533,21 @@ impl ProjectTypeChecker {
         }
         let (success, contract_failures, contract_needs, contract_effects) =
             if let Some(substitution) = &mut substitution {
+                if callee_symbol.is_some_and(|symbol| {
+                    matches!(
+                        self.resolved.standard_symbol(symbol),
+                        Some(StandardSymbol::Function(_) | StandardSymbol::Constructor(_))
+                    )
+                }) {
+                    for parameter in &parameters {
+                        if self.generic_kinds.get(parameter) == Some(&GenericKind::Value)
+                            && !substitution.values.contains_key(parameter)
+                        {
+                            let fresh = self.fresh_inference_type();
+                            substitution.values.insert(*parameter, fresh);
+                        }
+                    }
+                }
                 let unresolved = self.unresolved_call_parameters(&parameters, substitution);
                 let success = self.substitute_call_type_preserving(
                     contract.success,
@@ -3269,6 +3726,10 @@ impl ProjectTypeChecker {
     }
 
     fn callable_generic_parameters(&self, symbol: SymbolId) -> Vec<SymbolId> {
+        let standard = self.resolved.standard_callable_parameters(symbol);
+        if !standard.is_empty() {
+            return standard.to_vec();
+        }
         let symbol = self.resolved.symbol(symbol);
         if !matches!(
             symbol.kind,

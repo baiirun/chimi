@@ -144,7 +144,7 @@ rows.
 | Language and standard library | `Text`, `Int`, `Bool`, `List`, `Option`, structs, enums, records, case expressions, pipelines, and the accepted [trace data and processing](../specification/trace-data-and-processing.md) contract exist. | Implement the accepted JSON, immutable map, and bounded line-processing behavior. | `ts-2ac2de` |
 | Runtime contract | Off, boundary, and full tracing preserve terminal outcomes and canonical event order. | Version the export and separate telemetry, runner outcomes, and application stdout/stderr. | `ts-eaae0e` |
 | Program boundary | `main` is currently a closed zero-input root; native runtime flags consume every process argument. | Supply application arguments and synchronous host I/O while keeping runtime configuration external. | `ts-e2d9a9` |
-| Standard library | JSON values, `Map<K, V>`, deterministic encoding, and `process_utf8_lines` are specified but not implemented. | Implement the smallest module-qualified trace-processing slice. | `ts-41796d` |
+| Standard library | Module-qualified JSON values, persistent `Map<K, V>`, `Text.append`, deterministic encoding, and ordinary Chimi trace aggregation execute through both the oracle and native AOT paths. | Connect the specified bounded `process_utf8_lines` capability without moving trace policy into the runtime. | `ts-e2d9a9` |
 | Native memory | The current runtime allocates boxed values and environments for process lifetime. | Reclaim line-local state so peak live memory is independent of total input size. | `ts-da83af` |
 | Application | `chimi build` produces one executable and reports linked system dependencies. | Write the maintained Chimi program and validate real trace inputs, failures, performance, and artifact shape. | `ts-65a567` |
 

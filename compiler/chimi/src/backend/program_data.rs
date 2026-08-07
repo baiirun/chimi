@@ -4,6 +4,7 @@ use crate::executable::{
     CoreEffect, CoreLiteral, CoreOperation, CorePattern, CoreProgram, CoreStep, CoreSymbolKind,
 };
 use crate::semantic::{BinaryOperator, UnaryOperator};
+use crate::standard::StandardSymbol;
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -129,6 +130,14 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
             function,
             binding,
             constructor,
+            match symbol.standard {
+                Some(StandardSymbol::Function(function)) => function.runtime_id(),
+                _ => u32::MAX,
+            },
+            match symbol.standard {
+                Some(StandardSymbol::Constructor(constructor)) => constructor.runtime_id(),
+                _ => u32::MAX,
+            },
         ));
     }
 
@@ -311,7 +320,12 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         &mut output,
         "const ChimiSymbol CHIMI_SYMBOLS[]",
         &symbols,
-        |r| format!("{{{}, {}, {}, {}, {}}}", r.0, r.1, r.2, r.3, r.4),
+        |r| {
+            format!(
+                "{{{}, {}, {}, {}, {}, {}, {}}}",
+                r.0, r.1, r.2, r.3, r.4, r.5, r.6
+            )
+        },
     );
     writeln!(
         output,
@@ -468,7 +482,8 @@ const fn symbol_kind(kind: CoreSymbolKind) -> u32 {
         CoreSymbolKind::Requirement => 2,
         CoreSymbolKind::Local => 3,
         CoreSymbolKind::Constructor => 4,
-        CoreSymbolKind::Other => 5,
+        CoreSymbolKind::Intrinsic => 5,
+        CoreSymbolKind::Other => 6,
     }
 }
 const fn binary_operator(operator: BinaryOperator) -> u32 {

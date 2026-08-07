@@ -509,7 +509,7 @@ pub(crate) enum RequirementTermUse {
 #[derive(Clone, Debug)]
 pub(crate) struct Pattern {
     pub(crate) semantic_id: SemanticId,
-    pub(crate) name: Option<Name>,
+    pub(crate) path: Vec<Name>,
     pub(crate) literal: Option<PatternLiteral>,
     pub(crate) applied: bool,
     pub(crate) arguments: Vec<Pattern>,
@@ -1475,7 +1475,12 @@ impl ProjectLowerer {
         });
         Pattern {
             semantic_id: self.allocate_semantic_id(),
-            name: direct_identifier(node),
+            path: node
+                .child_tokens()
+                .into_iter()
+                .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+                .map(|token| name_from(&token))
+                .collect(),
             literal,
             applied: node
                 .child_tokens()

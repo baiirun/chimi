@@ -1760,6 +1760,9 @@ impl<'source> Parser<'source> {
             }
             TokenKind::Identifier => {
                 self.bump();
+                while self.accept(TokenKind::Dot) {
+                    self.expect(TokenKind::Identifier);
+                }
                 if self.accept(TokenKind::LeftParen) {
                     self.skip_newlines();
                     if !self.at(TokenKind::RightParen) {

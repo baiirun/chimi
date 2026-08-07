@@ -14,6 +14,7 @@ pub mod project;
 mod resolution;
 mod semantic;
 pub mod source;
+mod standard;
 mod syntax;
 mod typing;
 

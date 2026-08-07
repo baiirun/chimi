@@ -7,6 +7,7 @@ use crate::semantic::{
     BinaryOperator, Literal, ModuleBlockItem, ModuleDeclarationKind, ModuleExpression, Pattern,
     PatternLiteral, UnaryOperator,
 };
+use crate::standard::StandardSymbol;
 use crate::typing::{CanonicalType, Effect, TypeFact, TypedProgram, TypedProject};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -289,6 +290,7 @@ pub(crate) struct CoreSymbol {
     pub(crate) name: String,
     pub(crate) kind: CoreSymbolKind,
     pub(crate) constructor: Option<CoreConstructor>,
+    pub(crate) standard: Option<StandardSymbol>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -298,6 +300,7 @@ pub(crate) enum CoreSymbolKind {
     Requirement,
     Local,
     Constructor,
+    Intrinsic,
     Other,
 }
 
@@ -1184,7 +1187,7 @@ impl CoreLowerer {
                 PatternLiteral::Boolean(value) => CoreLiteral::Boolean(*value),
             });
         }
-        let Some(name) = &pattern.name else {
+        let Some(name) = pattern.path.last() else {
             return CorePattern::Wildcard;
         };
         if name.text == "_" {
@@ -1212,7 +1215,12 @@ impl CoreLowerer {
                 success: resolved.name == "Success",
                 value: Box::new(self.pattern(module_id, value)),
             }
-        } else if resolved.kind == ProjectSymbolKind::EnumConstructor {
+        } else if resolved.kind == ProjectSymbolKind::EnumConstructor
+            || matches!(
+                self.typed.resolved.standard_symbol(symbol),
+                Some(StandardSymbol::Constructor(_))
+            )
+        {
             CorePattern::Constructor {
                 symbol,
                 fields: pattern
@@ -1344,6 +1352,22 @@ fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
                 {
                     CoreSymbolKind::Constructor
                 }
+                ProjectSymbolKind::BuiltinValue
+                    if matches!(
+                        typed.resolved.standard_symbol(symbol.id),
+                        Some(StandardSymbol::Constructor(_))
+                    ) =>
+                {
+                    CoreSymbolKind::Constructor
+                }
+                ProjectSymbolKind::BuiltinValue
+                    if matches!(
+                        typed.resolved.standard_symbol(symbol.id),
+                        Some(StandardSymbol::Function(_))
+                    ) =>
+                {
+                    CoreSymbolKind::Intrinsic
+                }
                 _ => CoreSymbolKind::Other,
             };
             CoreSymbol {
@@ -1352,6 +1376,7 @@ fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
                 kind,
                 constructor: (kind == CoreSymbolKind::Constructor)
                     .then(|| lower_core_constructor(typed, symbol.id)),
+                standard: typed.resolved.standard_symbol(symbol.id),
             }
         })
         .collect()
@@ -1359,6 +1384,20 @@ fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
 
 fn lower_core_constructor(typed: &TypedProject, constructor: SymbolId) -> CoreConstructor {
     let symbol = typed.resolved.symbol(constructor);
+    if let Some(StandardSymbol::Constructor(constructor)) =
+        typed.resolved.standard_symbol(constructor)
+    {
+        return CoreConstructor {
+            type_name: constructor.type_kind().name().to_owned(),
+            variant_name: Some(constructor.name().to_owned()),
+            fields: constructor
+                .field_names()
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            outcome_success: None,
+        };
+    }
     if symbol.kind == ProjectSymbolKind::BuiltinValue {
         return CoreConstructor {
             type_name: "Outcome".to_owned(),
@@ -1416,7 +1455,11 @@ fn is_core_constructor(typed: &TypedProject, symbol: SymbolId) -> bool {
         symbol.kind,
         ProjectSymbolKind::StructConstructor | ProjectSymbolKind::EnumConstructor
     ) || (symbol.kind == ProjectSymbolKind::BuiltinValue
-        && matches!(symbol.name.as_str(), "Success" | "Failure"))
+        && (matches!(symbol.name.as_str(), "Success" | "Failure")
+            || matches!(
+                typed.resolved.standard_symbol(symbol.id),
+                Some(StandardSymbol::Constructor(_))
+            )))
 }
 
 fn resolved_type(typed: &TypedProject, mut type_id: crate::ids::TypeId) -> &CanonicalType {
