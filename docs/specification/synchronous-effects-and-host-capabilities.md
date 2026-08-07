@@ -232,6 +232,16 @@ buffer before another byte is accepted. The current runtime rejects embedded
 NUL bytes as `Utf8Error.InvalidUtf8` because Chimi `Text` is NUL-terminated at
 this ABI boundary; it MUST NOT silently truncate them.
 
+The native implementation establishes a private reclamation scope around line
+callbacks. After each callback it retains the complete returned state or
+terminal control value, including structurally shared maps, closures, captured
+environments, and dependency providers, then reclaims unreachable line-local
+values. Nested scopes transfer retained values to their parent. This is a
+runtime ownership mechanism only; it does not add regions or manual lifetimes
+to the language surface. The measured contract and current allocation-rate
+ceiling are recorded in
+[native streaming memory](../performance/native-streaming-memory.md).
+
 Raw handles and a general `with_resource` abstraction are rejected for this
 milestone because preventing a handle from escaping would require a resource,
 region, capture, or lifetime model not otherwise earned by the program.

@@ -1,6 +1,10 @@
 import std/io as IO
 import std/io.{Console}
 import std/io.{FileSystem}
+import std/json as Json
+import std/json.{Value}
+import std/map as Map
+import std/map.{Map}
 
 enum UsageError {
   MissingPath
@@ -14,9 +18,15 @@ pub fn main(arguments: List<Text>) -> Void
   effects { io } {
   case List.first(arguments) {
     Some(path) -> {
-      let processed = files.process_utf8_lines(IO.path(path), 0, fn(count, line) {
-        console.write_line(line)
-        count + 1
+      let processed = files.process_utf8_lines(IO.path(path), Map.empty(), fn(state: Map<Text, Value>, line: Text) {
+        case line {
+          "" -> state
+          _ -> {
+            let decoded = Json.decode(line)
+            console.write_line(line)
+            Map.put(state, "last", decoded)
+          }
+        }
       })
       console.write_error("processed input")
     }

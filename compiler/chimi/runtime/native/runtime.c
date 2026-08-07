@@ -4,6 +4,7 @@
 #include <inttypes.h>
 #include <errno.h>
 #include <limits.h>
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,20 +84,89 @@ struct ChimiRuntime {
   uint32_t max_line_bytes;
   uint64_t next_sequence;
   uint64_t next_span;
+  size_t scoped_total_allocated_bytes;
+  size_t scoped_peak_live_bytes;
+  size_t scoped_retained_bytes;
+  uint64_t scoped_collections;
   bool *active_bindings;
 };
 
+typedef enum {
+  ALLOCATION_BYTES,
+  ALLOCATION_VALUE,
+  ALLOCATION_CONTROL,
+  ALLOCATION_ENVIRONMENT,
+  ALLOCATION_VALUE_POINTERS,
+  ALLOCATION_FIELDS,
+  ALLOCATION_CALLABLE,
+  ALLOCATION_MAP_NODE,
+} AllocationKind;
+
+typedef struct AllocationHeader AllocationHeader;
+struct AllocationHeader {
+  AllocationHeader *next;
+  size_t bytes;
+  uint64_t mark_epoch;
+  AllocationKind kind;
+};
+
+typedef struct AllocationScope AllocationScope;
+struct AllocationScope {
+  AllocationScope *parent;
+  AllocationHeader *allocations;
+  size_t live_bytes;
+  size_t peak_live_bytes;
+  size_t total_allocated_bytes;
+  uint64_t collections;
+};
+
+static AllocationScope *current_allocation_scope;
+static uint64_t next_mark_epoch = 1;
+
 static void *allocate(size_t count, size_t size) {
-  void *value = calloc(count == 0 ? 1 : count, size);
-  if (value == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
-  return value;
+  if (count == 0) count = 1;
+  if (size != 0 && count > SIZE_MAX / size) {
+    fputs("Chimi runtime allocation overflow\n", stderr); exit(70);
+  }
+  size_t bytes = count * size;
+  if (bytes > SIZE_MAX - sizeof(AllocationHeader)) {
+    fputs("Chimi runtime allocation overflow\n", stderr); exit(70);
+  }
+  AllocationHeader *header = calloc(1, sizeof(*header) + bytes);
+  if (header == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  header->bytes = bytes;
+  if (current_allocation_scope) {
+    header->next = current_allocation_scope->allocations;
+    current_allocation_scope->allocations = header;
+    current_allocation_scope->live_bytes += bytes;
+    current_allocation_scope->total_allocated_bytes += bytes;
+    if (current_allocation_scope->live_bytes > current_allocation_scope->peak_live_bytes)
+      current_allocation_scope->peak_live_bytes = current_allocation_scope->live_bytes;
+  }
+  return header + 1;
+}
+
+static AllocationHeader *allocation_header(const void *value) {
+  return value ? (AllocationHeader *)value - 1 : NULL;
+}
+
+static void allocation_kind(void *value, AllocationKind kind) {
+  allocation_header(value)->kind = kind;
+}
+
+static void *reallocate_bytes(void *value, size_t old_bytes, size_t new_bytes) {
+  void *replacement = allocate(new_bytes, 1);
+  if (value) memcpy(replacement, value, old_bytes < new_bytes ? old_bytes : new_bytes);
+  return replacement;
 }
 
 static ChimiValue *new_value(ValueKind kind) {
-  ChimiValue *value = allocate(1, sizeof(*value)); value->kind = kind; return value;
+  ChimiValue *value = allocate(1, sizeof(*value));
+  allocation_kind(value, ALLOCATION_VALUE); value->kind = kind; return value;
 }
 static ChimiControl *new_control(ControlKind kind, ChimiValue *value, const char *message, int64_t node) {
   ChimiControl *control = allocate(1, sizeof(*control));
+  allocation_kind(control, ALLOCATION_CONTROL);
   control->kind = kind; control->value = value; control->message = message; control->node = node;
   return control;
 }
@@ -107,8 +177,11 @@ static ChimiControl *cancelled(void) { return new_control(CONTROL_CANCEL, NULL, 
 
 static ChimiEnvironment *new_environment(void) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
+  allocation_kind(environment, ALLOCATION_ENVIRONMENT);
   environment->locals = allocate(CHIMI_SYMBOL_COUNT, sizeof(*environment->locals));
+  allocation_kind(environment->locals, ALLOCATION_VALUE_POINTERS);
   environment->requirements = allocate(CHIMI_SYMBOL_COUNT, sizeof(*environment->requirements));
+  allocation_kind(environment->requirements, ALLOCATION_VALUE_POINTERS);
   return environment;
 }
 static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
@@ -117,6 +190,118 @@ static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
   memcpy(environment->requirements, source->requirements,
          CHIMI_SYMBOL_COUNT * sizeof(*environment->requirements));
   return environment;
+}
+
+static void mark_value(ChimiValue *value, uint64_t epoch);
+
+static bool mark_allocation(void *value, uint64_t epoch, AllocationKind expected_kind) {
+  if (!value) return false;
+  AllocationHeader *header = allocation_header(value);
+  if (header->kind != expected_kind) {
+    fputs("Chimi runtime allocation graph is inconsistent\n", stderr); exit(70);
+  }
+  if (header->mark_epoch == epoch) return false;
+  header->mark_epoch = epoch;
+  return true;
+}
+
+static void mark_value_pointers(ChimiValue **values, uint64_t epoch) {
+  if (!values || !mark_allocation(values, epoch, ALLOCATION_VALUE_POINTERS)) return;
+  AllocationHeader *header = allocation_header(values);
+  size_t length = header->bytes / sizeof(*values);
+  for (size_t index = 0; index < length; ++index) mark_value(values[index], epoch);
+}
+
+static void mark_fields(RuntimeField *fields, uint64_t epoch) {
+  if (!fields || !mark_allocation(fields, epoch, ALLOCATION_FIELDS)) return;
+  AllocationHeader *header = allocation_header(fields);
+  size_t length = header->bytes / sizeof(*fields);
+  for (size_t index = 0; index < length; ++index) mark_value(fields[index].value, epoch);
+}
+
+static void mark_environment(ChimiEnvironment *environment, uint64_t epoch) {
+  if (!environment || !mark_allocation(environment, epoch, ALLOCATION_ENVIRONMENT)) return;
+  mark_value_pointers(environment->locals, epoch);
+  mark_value_pointers(environment->requirements, epoch);
+}
+
+static void mark_callable(ChimiCallable *callable, uint64_t epoch) {
+  if (!callable || !mark_allocation(callable, epoch, ALLOCATION_CALLABLE)) return;
+  mark_environment(callable->environment, epoch);
+  mark_callable(callable->inner, epoch);
+}
+
+static void mark_map(MapNode *node, uint64_t epoch) {
+  if (!node || !mark_allocation(node, epoch, ALLOCATION_MAP_NODE)) return;
+  mark_allocation((void *)node->key, epoch, ALLOCATION_BYTES);
+  mark_value(node->value, epoch);
+  mark_map(node->left, epoch);
+  mark_map(node->right, epoch);
+}
+
+static void mark_value(ChimiValue *value, uint64_t epoch) {
+  if (!value || !mark_allocation(value, epoch, ALLOCATION_VALUE)) return;
+  switch (value->kind) {
+    case VALUE_TEXT: mark_allocation((void *)value->as.text, epoch, ALLOCATION_BYTES); break;
+    case VALUE_LIST: mark_value_pointers(value->as.list.items, epoch); break;
+    case VALUE_RECORD: mark_fields(value->as.record.fields, epoch); break;
+    case VALUE_CONSTRUCTED: mark_fields(value->as.constructed.fields, epoch); break;
+    case VALUE_CALLABLE: mark_callable(value->as.callable, epoch); break;
+    case VALUE_MAP: mark_map(value->as.map, epoch); break;
+    case VALUE_JSON_NUMBER:
+      mark_allocation((void *)value->as.json_number, epoch, ALLOCATION_BYTES); break;
+    case VALUE_VOID:
+    case VALUE_INTEGER:
+    case VALUE_BOOLEAN: break;
+  }
+}
+
+static void mark_control(ChimiControl *control, uint64_t epoch) {
+  if (!control || !mark_allocation(control, epoch, ALLOCATION_CONTROL)) return;
+  mark_value(control->value, epoch);
+}
+
+static void allocation_scope_begin(AllocationScope *scope) {
+  memset(scope, 0, sizeof(*scope));
+  scope->parent = current_allocation_scope;
+  current_allocation_scope = scope;
+}
+
+static void allocation_scope_collect(AllocationScope *scope, ChimiValue *value,
+                                     ChimiControl *control) {
+  uint64_t epoch = next_mark_epoch++;
+  if (next_mark_epoch == 0) {
+    fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); exit(70);
+  }
+  mark_value(value, epoch);
+  mark_control(control, epoch);
+  AllocationHeader **cursor = &scope->allocations;
+  while (*cursor) {
+    AllocationHeader *header = *cursor;
+    if (header->mark_epoch == epoch) {
+      cursor = &header->next;
+    } else {
+      *cursor = header->next;
+      scope->live_bytes -= header->bytes;
+      free(header);
+    }
+  }
+  ++scope->collections;
+}
+
+static void allocation_scope_end(AllocationScope *scope) {
+  current_allocation_scope = scope->parent;
+  if (!scope->parent || !scope->allocations) return;
+  size_t nested_peak = scope->parent->live_bytes + scope->peak_live_bytes;
+  if (nested_peak > scope->parent->peak_live_bytes)
+    scope->parent->peak_live_bytes = nested_peak;
+  AllocationHeader *tail = scope->allocations;
+  while (tail->next) tail = tail->next;
+  tail->next = scope->parent->allocations;
+  scope->parent->allocations = scope->allocations;
+  scope->parent->live_bytes += scope->live_bytes;
+  scope->parent->total_allocated_bytes += scope->total_allocated_bytes;
+  scope->parent->collections += scope->collections;
 }
 
 static const ChimiFunction *find_function(uint32_t symbol) {
@@ -248,11 +433,17 @@ static ChimiControl *finish_node(ChimiRuntime *runtime, uint32_t node, uint64_t 
 
 static ChimiValue *integer_value(int64_t raw) { ChimiValue *v = new_value(VALUE_INTEGER); v->as.integer = raw; return v; }
 static ChimiValue *void_value(void) { return new_value(VALUE_VOID); }
-static ChimiValue *text_value(const char *raw) { ChimiValue *v = new_value(VALUE_TEXT); v->as.text = raw; return v; }
+static char *copy_text(const char *raw) {
+  size_t length = strlen(raw);
+  char *copy = allocate(length + 1, 1);
+  memcpy(copy, raw, length);
+  return copy;
+}
+static ChimiValue *text_value(const char *raw) { ChimiValue *v = new_value(VALUE_TEXT); v->as.text = copy_text(raw); return v; }
 static ChimiValue *boolean_value(bool raw) { ChimiValue *v = new_value(VALUE_BOOLEAN); v->as.boolean = raw; return v; }
 static ChimiValue *callable_value(ChimiCallable *raw) { ChimiValue *v = new_value(VALUE_CALLABLE); v->as.callable = raw; return v; }
 static ChimiValue *map_value(MapNode *raw) { ChimiValue *v = new_value(VALUE_MAP); v->as.map = raw; return v; }
-static ChimiValue *json_number_value(const char *raw) { ChimiValue *v = new_value(VALUE_JSON_NUMBER); v->as.json_number = raw; return v; }
+static ChimiValue *json_number_value(const char *raw) { ChimiValue *v = new_value(VALUE_JSON_NUMBER); v->as.json_number = copy_text(raw); return v; }
 
 int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace; }
 ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t node_count,
@@ -274,6 +465,7 @@ static uint16_t map_height(const MapNode *node) { return node ? node->height : 0
 static uint16_t map_max(uint16_t left, uint16_t right) { return left > right ? left : right; }
 static MapNode *map_node(const char *key, ChimiValue *value, MapNode *left, MapNode *right) {
   MapNode *node = allocate(1, sizeof(*node));
+  allocation_kind(node, ALLOCATION_MAP_NODE);
   node->key = key; node->value = value; node->left = left; node->right = right;
   node->height = (uint16_t)(1 + map_max(map_height(left), map_height(right)));
   return node;
@@ -337,6 +529,7 @@ static ChimiValue *standard_value(uint32_t standard_constructor, ChimiValue **va
   value->as.constructed.variant_name = shape->variant_name == UINT32_MAX ? NULL : CHIMI_STRINGS[shape->variant_name];
   value->as.constructed.length = value_count;
   value->as.constructed.fields = allocate(value_count, sizeof(*value->as.constructed.fields));
+  allocation_kind(value->as.constructed.fields, ALLOCATION_FIELDS);
   for (uint32_t field = 0; field < value_count; ++field)
     value->as.constructed.fields[field] = (RuntimeField){
       CHIMI_STRINGS[CHIMI_IDS[shape->fields_offset + field]], values[field]
@@ -349,8 +542,7 @@ static void buffer_reserve(TextBuffer *buffer, size_t extra) {
   if (buffer->length + extra + 1 <= buffer->capacity) return;
   size_t capacity = buffer->capacity ? buffer->capacity : 64;
   while (capacity < buffer->length + extra + 1) capacity *= 2;
-  char *data = realloc(buffer->data, capacity);
-  if (!data) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  char *data = reallocate_bytes(buffer->data, buffer->capacity, capacity);
   buffer->data = data; buffer->capacity = capacity;
 }
 static void buffer_bytes(TextBuffer *buffer, const char *value, size_t length) {
@@ -460,7 +652,7 @@ static char *json_parse_string(JsonParser *parser) {
   TextBuffer buffer = {0};
   while (parser->offset < parser->length) {
     unsigned char value = (unsigned char)parser->source[parser->offset++];
-    if (value == '"') return buffer.data ? buffer.data : strdup("");
+    if (value == '"') return buffer.data ? buffer.data : allocate(1, 1);
     if (value < 0x20) { parser->message = "unescaped control character"; return NULL; }
     if (value != '\\') { buffer_char(&buffer, (char)value); continue; }
     if (parser->offset >= parser->length) break;
@@ -499,8 +691,12 @@ static ChimiValue *json_parse_array(JsonParser *parser, uint32_t depth) {
   if (parser->offset < parser->length && parser->source[parser->offset] == ']') ++parser->offset;
   else for (;;) {
     ChimiValue *item = json_parse_value(parser, depth + 1); if (!item) return NULL;
-    if (length == capacity) { capacity = capacity ? capacity * 2 : 4; items = realloc(items, capacity * sizeof(*items));
-      if (!items) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); } }
+    if (length == capacity) {
+      uint32_t old_capacity = capacity;
+      capacity = capacity ? capacity * 2 : 4;
+      items = reallocate_bytes(items, old_capacity * sizeof(*items), capacity * sizeof(*items));
+      allocation_kind(items, ALLOCATION_VALUE_POINTERS);
+    }
     items[length++] = item; json_skip_space(parser);
     if (parser->offset >= parser->length) { parser->message = "unterminated array"; return NULL; }
     char separator = parser->source[parser->offset++]; if (separator == ']') break;
@@ -630,7 +826,7 @@ static ChimiControl *host_file_message(uint32_t constructor, const char *path,
                                        const char *message) {
   ChimiValue *fields[] = {
     text_value(path),
-    text_value(strdup(message ? message : "unknown I/O error")),
+    text_value(message ? message : "unknown I/O error"),
   };
   return failure(standard_value(constructor, fields, 2));
 }
@@ -663,8 +859,14 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
   uint64_t line_number = 1;
   ChimiValue *state = arguments[1];
   ChimiControl *control = NULL;
+  AllocationScope allocation_scope;
+  allocation_scope_begin(&allocation_scope);
   for (;;) {
-    if (runtime->cancel) { control = cancelled(); break; }
+    if (runtime->cancel) {
+      control = cancelled();
+      allocation_scope_collect(&allocation_scope, NULL, control);
+      break;
+    }
     errno = 0;
     int byte = fgetc(input);
     if (byte == EOF) {
@@ -672,12 +874,14 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
         control = runtime->cancel && errno == EINTR
           ? cancelled()
           : host_file_message(CHIMI_CONSTRUCTOR_FILE_READ, path, strerror(errno));
+        allocation_scope_collect(&allocation_scope, NULL, control);
       } else if (length > 0) {
         control = invoke_line_callback(runtime, arguments[2]->as.callable, state, line, length,
                                        line_number, path, span, call_node, environment);
-        if (control->kind == CONTROL_SUCCESS) state = control->value;
+        allocation_scope_collect(&allocation_scope, NULL, control);
       } else {
         control = success(state);
+        allocation_scope_collect(&allocation_scope, NULL, control);
       }
       break;
     }
@@ -686,8 +890,12 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
       control = invoke_line_callback(runtime, arguments[2]->as.callable, state, line,
                                      content_length, line_number, path, span, call_node,
                                      environment);
-      if (control->kind != CONTROL_SUCCESS) break;
+      if (control->kind != CONTROL_SUCCESS) {
+        allocation_scope_collect(&allocation_scope, NULL, control);
+        break;
+      }
       state = control->value;
+      allocation_scope_collect(&allocation_scope, state, NULL);
       length = 0;
       ++line_number;
       continue;
@@ -695,13 +903,25 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
     if (length == runtime->max_line_bytes) {
       ChimiValue *fields[] = {text_value(path), integer_value(runtime->max_line_bytes)};
       control = failure(standard_value(CHIMI_CONSTRUCTOR_FILE_LINE_TOO_LONG, fields, 2));
+      allocation_scope_collect(&allocation_scope, NULL, control);
       break;
     }
     line[length++] = (unsigned char)byte;
   }
   if (owns_file && fclose(input) != 0 &&
-      (control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE))
-    return host_file_message(CHIMI_CONSTRUCTOR_FILE_CLOSE, path, strerror(errno));
+      (control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE)) {
+    control = host_file_message(CHIMI_CONSTRUCTOR_FILE_CLOSE, path, strerror(errno));
+    allocation_scope_collect(&allocation_scope, NULL, control);
+  }
+  bool top_scope = allocation_scope.parent == NULL;
+  allocation_scope_end(&allocation_scope);
+  if (top_scope) {
+    runtime->scoped_total_allocated_bytes += allocation_scope.total_allocated_bytes;
+    if (allocation_scope.peak_live_bytes > runtime->scoped_peak_live_bytes)
+      runtime->scoped_peak_live_bytes = allocation_scope.peak_live_bytes;
+    runtime->scoped_retained_bytes += allocation_scope.live_bytes;
+    runtime->scoped_collections += allocation_scope.collections;
+  }
   return control;
 }
 
@@ -717,7 +937,7 @@ static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
   FILE *output = function == HOST_WRITE_LINE ? stdout : stderr;
   if (fputs(arguments[0]->as.text, output) < 0 || fputc('\n', output) == EOF || fflush(output) != 0) {
     const char *stream = function == HOST_WRITE_LINE ? "stdout" : "stderr";
-    ChimiValue *fields[] = {text_value(stream), text_value(strdup(strerror(errno)))};
+    ChimiValue *fields[] = {text_value(stream), text_value(strerror(errno))};
     return failure(standard_value(CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED, fields, 2));
   }
   return runtime->cancel ? cancelled() : success(void_value());
@@ -839,7 +1059,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       if (argument_count != 1) return intrinsic_shape_defect(call_node);
       TextBuffer buffer = {0};
       if (!encode_json_value(&buffer, arguments[0])) return intrinsic_shape_defect(call_node);
-      if (!buffer.data) buffer.data = strdup("");
+      if (!buffer.data) buffer.data = allocate(1, 1);
       return success(text_value(buffer.data));
     }
     case CHIMI_INTRINSIC_JSON_BOOLEAN: {
@@ -897,7 +1117,8 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
   switch (shape->kind) {
     case CHIMI_SYMBOL_FUNCTION: {
       const ChimiFunction *function = find_function(symbol);
-      ChimiCallable *callable = allocate(1, sizeof(*callable)); callable->kind = CALL_DECLARED;
+      ChimiCallable *callable = allocate(1, sizeof(*callable));
+      allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_DECLARED;
       callable->symbol = symbol; callable->body = function->body;
       callable->parameters_offset = function->parameters_offset; callable->parameters_length = function->parameters_length;
       callable->environment = clone_environment(environment); callable->name = "function";
@@ -916,7 +1137,8 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
       if (environment->locals[symbol]) return success(environment->locals[symbol]);
       return defect("verified local is not bound", -1);
     case CHIMI_SYMBOL_INTRINSIC: {
-      ChimiCallable *callable = allocate(1, sizeof(*callable)); callable->kind = CALL_INTRINSIC;
+      ChimiCallable *callable = allocate(1, sizeof(*callable));
+      allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_INTRINSIC;
       callable->intrinsic = shape->intrinsic; callable->name = CHIMI_STRINGS[shape->name];
       return success(callable_value(callable));
     }
@@ -952,7 +1174,8 @@ NODE_WRAPPER(dependency_method, "dependency_method", {
   ChimiCallable *inner = NULL;
   if (!provider) {
     uint32_t standard_type = CHIMI_SYMBOLS[node->b].standard_type;
-    inner = allocate(1, sizeof(*inner)); inner->kind = CALL_HOST;
+    inner = allocate(1, sizeof(*inner)); allocation_kind(inner, ALLOCATION_CALLABLE);
+    inner->kind = CALL_HOST;
     if (standard_type == CHIMI_TYPE_FILE_SYSTEM && node->c == 0)
       inner->host = HOST_PROCESS_UTF8_LINES;
     else if (standard_type == CHIMI_TYPE_CONSOLE && node->c == 0)
@@ -967,7 +1190,8 @@ NODE_WRAPPER(dependency_method, "dependency_method", {
     }
     inner = method->as.callable;
   }
-  ChimiCallable *callable = allocate(1, sizeof(*callable)); callable->kind = CALL_DEPENDENCY;
+  ChimiCallable *callable = allocate(1, sizeof(*callable));
+  allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_DEPENDENCY;
   callable->inner = inner; callable->requirement = node->a; callable->interface_symbol = node->b;
   callable->method = node->c; callable->name = CHIMI_STRINGS[node->d]; result = success(callable_value(callable));
 })
@@ -989,6 +1213,7 @@ NODE_WRAPPER(construct, "construct", {
   value->as.constructed.variant_name = shape->variant_name == UINT32_MAX ? NULL : CHIMI_STRINGS[shape->variant_name];
   value->as.constructed.length = shape->fields_length;
   value->as.constructed.fields = allocate(shape->fields_length, sizeof(*value->as.constructed.fields));
+  allocation_kind(value->as.constructed.fields, ALLOCATION_FIELDS);
   for (uint32_t field = 0; field < shape->fields_length; ++field) {
     const char *name = CHIMI_STRINGS[CHIMI_IDS[shape->fields_offset + field]]; uint32_t selected = field;
     for (uint32_t argument = 0; argument < node->length; ++argument) {
@@ -1016,6 +1241,7 @@ NODE_WRAPPER(call, "call", {
 NODE_WRAPPER(list, "list", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *value = new_value(VALUE_LIST);
   value->as.list.length = node->length; value->as.list.items = allocate(node->length, sizeof(*value->as.list.items));
+  allocation_kind(value->as.list.items, ALLOCATION_VALUE_POINTERS);
   bool stopped = false; for (uint32_t i = 0; i < node->length; ++i) {
     ChimiControl *control = RUN(CHIMI_IDS[node->offset + i]);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
@@ -1026,6 +1252,7 @@ NODE_WRAPPER(list, "list", {
 NODE_WRAPPER(record, "record", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *value = new_value(VALUE_RECORD);
   value->as.record.length = node->length; value->as.record.fields = allocate(node->length, sizeof(*value->as.record.fields));
+  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
   bool stopped = false; for (uint32_t i = 0; i < node->length; ++i) {
     const ChimiNamedNode *field = &CHIMI_NAMED_NODES[node->offset + i]; ChimiControl *control = RUN(field->node);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
@@ -1094,6 +1321,7 @@ NODE_WRAPPER(sequence, "sequence", {
 
 NODE_WRAPPER(closure, "closure", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiCallable *callable = allocate(1, sizeof(*callable));
+  allocation_kind(callable, ALLOCATION_CALLABLE);
   callable->kind = CALL_CLOSURE; callable->body = node->a; callable->parameters_offset = node->offset;
   callable->parameters_length = node->length; callable->environment = clone_environment(environment);
   callable->name = "closure"; result = success(callable_value(callable));
@@ -1192,6 +1420,24 @@ static bool close_output(FILE *output) {
   return failed;
 }
 
+static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
+  if (!path) return false;
+  FILE *output = fopen(path, "wx");
+  if (!output) {
+    fprintf(stderr, "cannot open memory report file %s: %s\n", path, strerror(errno));
+    return true;
+  }
+  fprintf(output,
+          "{\"schema\":\"chimi.runtime-memory.v1\",\"scoped_total_allocated_bytes\":%zu,"
+          "\"scoped_peak_live_bytes\":%zu,\"scoped_retained_bytes\":%zu,"
+          "\"scoped_collections\":%" PRIu64 "}\n",
+          runtime->scoped_total_allocated_bytes,
+          runtime->scoped_peak_live_bytes,
+          runtime->scoped_retained_bytes,
+          runtime->scoped_collections);
+  return close_output(output);
+}
+
 int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   struct timespec identity_time;
   clock_gettime(CLOCK_REALTIME, &identity_time);
@@ -1208,6 +1454,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   uint32_t benchmark_repeats = 0;
   const char *telemetry_path = NULL;
   const char *outcome_path = NULL;
+  const char *memory_report_path = NULL;
   runtime.active_bindings = allocate(CHIMI_SYMBOL_COUNT, sizeof(*runtime.active_bindings));
   int32_t index = 1;
   if (index < argc && strcmp(argv[index], "--chimi-runner") == 0) {
@@ -1224,6 +1471,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     else if (strcmp(argv[index], "--trace=off") == 0) { runtime.full_trace = false; runtime.silent = true; }
     else if (strncmp(argv[index], "--telemetry-file=", 17) == 0) telemetry_path = argv[index] + 17;
     else if (strncmp(argv[index], "--outcome-file=", 15) == 0) outcome_path = argv[index] + 15;
+    else if (strncmp(argv[index], "--memory-report-file=", 21) == 0) memory_report_path = argv[index] + 21;
     else if (strncmp(argv[index], "--execution-id=", 15) == 0) runtime.execution_id = argv[index] + 15;
     else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = true;
     else if (strncmp(argv[index], "--max-line-bytes=", 17) == 0) {
@@ -1252,6 +1500,11 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   }
   if (telemetry_path && outcome_path && strcmp(telemetry_path, outcome_path) == 0) {
     fputs("telemetry and runner outcome require distinct files\n", stderr);
+    return 64;
+  }
+  if ((memory_report_path && telemetry_path && strcmp(memory_report_path, telemetry_path) == 0) ||
+      (memory_report_path && outcome_path && strcmp(memory_report_path, outcome_path) == 0)) {
+    fputs("memory report, telemetry, and runner outcome require distinct files\n", stderr);
     return 64;
   }
   if (telemetry_path) {
@@ -1294,6 +1547,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
         ChimiValue *arguments = new_value(VALUE_LIST);
         arguments->as.list.length = (uint32_t)(argc - index);
         arguments->as.list.items = allocate(arguments->as.list.length, sizeof(*arguments->as.list.items));
+        allocation_kind(arguments->as.list.items, ALLOCATION_VALUE_POINTERS);
         for (uint32_t argument = 0; argument < arguments->as.list.length; ++argument)
           arguments->as.list.items[argument] = text_value(argv[index + (int32_t)argument]);
         environment->locals[CHIMI_IDS[entry_function->parameters_offset]] = arguments;
@@ -1302,7 +1556,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       if (control == NULL) return 70;
       if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
     }
-    bool write_failed = close_output(runtime.telemetry);
+    bool write_failed = write_memory_report(memory_report_path, &runtime);
+    write_failed = close_output(runtime.telemetry) || write_failed;
     runtime.telemetry = NULL;
     write_failed = close_output(runtime.outcome) || write_failed;
     runtime.outcome = NULL;
@@ -1318,6 +1573,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     ChimiValue *arguments = new_value(VALUE_LIST);
     arguments->as.list.length = (uint32_t)(argc - index);
     arguments->as.list.items = allocate(arguments->as.list.length, sizeof(*arguments->as.list.items));
+    allocation_kind(arguments->as.list.items, ALLOCATION_VALUE_POINTERS);
     for (uint32_t argument = 0; argument < arguments->as.list.length; ++argument)
       arguments->as.list.items[argument] = text_value(argv[index + (int32_t)argument]);
     environment->locals[CHIMI_IDS[entry_function->parameters_offset]] = arguments;
@@ -1325,7 +1581,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   ChimiControl *control = runtime.cancel ? cancelled() : entry(&runtime, environment, 1);
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
   if (runtime.outcome) print_outcome(runtime.outcome, control);
-  bool write_failed = close_output(runtime.telemetry);
+  bool write_failed = write_memory_report(memory_report_path, &runtime);
+  write_failed = close_output(runtime.telemetry) || write_failed;
   write_failed = close_output(runtime.outcome) || write_failed;
   if (write_failed) return 74;
   switch (control->kind) {

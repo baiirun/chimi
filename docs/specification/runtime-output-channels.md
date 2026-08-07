@@ -56,6 +56,7 @@ program --chimi-runner \
   --trace=full \
   --telemetry-file=/path/to/trace.jsonl \
   --outcome-file=/path/to/outcome.jsonl \
+  --memory-report-file=/path/to/memory.json \
   --execution-id=example \
   --max-line-bytes=1048576 \
   -- \
@@ -73,6 +74,12 @@ An ordinary success exits zero, an expected failure exits 1, a defect exits 70,
 and cancellation exits 130. Sink failures exit 74 and invalid runner
 configuration exits 64. The terminal record remains available only through the
 outcome sink; exit status does not copy it into an application stream.
+
+`--memory-report-file` is an optional runner-owned diagnostic sink. It writes
+one `chimi.runtime-memory.v1` record after execution and MUST be distinct from
+the telemetry and outcome paths. Its scoped allocation counters are neither
+application output nor semantic trace events. Omitting it avoids the report
+open, serialization, and write entirely.
 
 Telemetry contains event records only:
 

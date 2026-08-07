@@ -2788,7 +2788,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::write(&input, "alpha\r\n\nβ").unwrap();
+        std::fs::write(&input, "\"alpha\"\r\n\n\"β\"").unwrap();
         let report = Compiler::run_project(
             vec![module(
                 "app/main",
@@ -2805,7 +2805,7 @@ mod tests {
             report.outcome,
             ExecutionOutcome::Success(ExecutionValue::Void)
         );
-        assert_eq!(report.application_stdout, "alpha\n\nβ\n");
+        assert_eq!(report.application_stdout, "\"alpha\"\n\"β\"\n");
         assert_eq!(report.application_stderr, "processed input\n");
         assert_eq!(
             report
@@ -2813,7 +2813,7 @@ mod tests {
                 .iter()
                 .filter(|event| event.kind == EventKind::DependencyCalled)
                 .count(),
-            5
+            4
         );
         std::fs::remove_file(input).unwrap();
     }

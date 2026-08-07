@@ -289,6 +289,17 @@ fn native_runner_options_require_the_explicit_configuration_boundary() {
     assert_eq!(shared_sinks.status.code(), Some(64));
     assert!(!shared_path.exists());
 
+    let shared_memory_sink = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--outcome-file={}", shared_path.display()))
+        .arg(format!("--memory-report-file={}", shared_path.display()))
+        .arg("--")
+        .output()
+        .expect("reject one file for distinct outcome and memory protocols");
+    assert_eq!(shared_memory_sink.status.code(), Some(64));
+    assert!(!shared_path.exists());
+
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
@@ -312,7 +323,7 @@ fn native_main_receives_arguments_and_uses_real_scoped_host_io() {
     );
 
     let input = scratch.join("input.txt");
-    std::fs::write(&input, "alpha\r\n\nβ").unwrap();
+    std::fs::write(&input, "\"alpha\"\r\n\n\"β\"").unwrap();
     let telemetry = scratch.join("telemetry.jsonl");
     let outcome = scratch.join("outcome.jsonl");
     let execution = Command::new(&executable)
@@ -327,7 +338,10 @@ fn native_main_receives_arguments_and_uses_real_scoped_host_io() {
         .expect("execute real host-I/O fixture");
 
     assert!(execution.status.success());
-    assert_eq!(String::from_utf8(execution.stdout).unwrap(), "alpha\n\nβ\n");
+    assert_eq!(
+        String::from_utf8(execution.stdout).unwrap(),
+        "\"alpha\"\n\"β\"\n"
+    );
     assert_eq!(
         String::from_utf8(execution.stderr).unwrap(),
         "processed input\n"
@@ -338,7 +352,7 @@ fn native_main_receives_arguments_and_uses_real_scoped_host_io() {
     );
     let telemetry = std::fs::read_to_string(telemetry).unwrap();
     assert!(telemetry.contains("\"method\":\"process_utf8_lines\""));
-    assert_eq!(telemetry.matches("\"method\":\"write_line\"").count(), 3);
+    assert_eq!(telemetry.matches("\"method\":\"write_line\"").count(), 2);
     assert!(telemetry.contains("\"method\":\"write_error\""));
 
     let stdin_outcome = scratch.join("stdin-outcome.jsonl");
@@ -357,11 +371,11 @@ fn native_main_receives_arguments_and_uses_real_scoped_host_io() {
         .stdin
         .take()
         .unwrap()
-        .write_all("from stdin\n".as_bytes())
+        .write_all("\"from stdin\"\n".as_bytes())
         .unwrap();
     let stdin_execution = stdin_execution.wait_with_output().unwrap();
     assert!(stdin_execution.status.success());
-    assert_eq!(stdin_execution.stdout, b"from stdin\n");
+    assert_eq!(stdin_execution.stdout, b"\"from stdin\"\n");
 
     let missing_outcome = scratch.join("missing-outcome.jsonl");
     let missing = Command::new(&executable)
@@ -397,6 +411,25 @@ fn native_main_receives_arguments_and_uses_real_scoped_host_io() {
             .contains("\"type\":\"Utf8Error\",\"variant\":\"InvalidUtf8\"")
     );
 
+    let malformed = scratch.join("malformed.jsonl");
+    std::fs::write(&malformed, "{").unwrap();
+    let malformed_outcome = scratch.join("malformed-outcome.jsonl");
+    let malformed = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--outcome-file={}", malformed_outcome.display()))
+        .arg("--")
+        .arg(&malformed)
+        .output()
+        .expect("retain callback failure across allocation cleanup");
+    assert_eq!(malformed.status.code(), Some(1));
+    assert!(malformed.stdout.is_empty());
+    assert!(
+        std::fs::read_to_string(malformed_outcome)
+            .unwrap()
+            .contains("\"type\":\"DecodeError\",\"variant\":\"InvalidJson\"")
+    );
+
     let oversized = scratch.join("oversized.txt");
     std::fs::write(&oversized, "four").unwrap();
     let oversized_outcome = scratch.join("oversized-outcome.jsonl");
@@ -416,7 +449,50 @@ fn native_main_receives_arguments_and_uses_real_scoped_host_io() {
             .contains("\"type\":\"FileError\",\"variant\":\"LineTooLong\"")
     );
 
+    let measure_stream = |name: &str, lines: usize| {
+        let input = scratch.join(format!("{name}.jsonl"));
+        std::fs::write(&input, "{\"value\":1}\n".repeat(lines)).unwrap();
+        let report = scratch.join(format!("{name}-memory.json"));
+        let execution = Command::new(&executable)
+            .arg("--chimi-runner")
+            .arg("--trace=off")
+            .arg(format!("--memory-report-file={}", report.display()))
+            .arg("--")
+            .arg(input)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("measure bounded streaming allocation");
+        assert!(execution.success());
+        let report = std::fs::read_to_string(report).unwrap();
+        (
+            json_u64_field(&report, "scoped_total_allocated_bytes"),
+            json_u64_field(&report, "scoped_peak_live_bytes"),
+            json_u64_field(&report, "scoped_retained_bytes"),
+            json_u64_field(&report, "scoped_collections"),
+        )
+    };
+    let small = measure_stream("small", 64);
+    let large = measure_stream("large", 16_384);
+    assert!(large.0 > small.0 * 100, "{small:?} {large:?}");
+    assert_eq!(large.1, small.1, "{small:?} {large:?}");
+    assert_eq!(large.2, small.2, "{small:?} {large:?}");
+    assert!(large.3 > small.3 * 100, "{small:?} {large:?}");
+
     std::fs::remove_dir_all(scratch).unwrap();
+}
+
+fn json_u64_field(document: &str, name: &str) -> u64 {
+    let marker = format!("\"{name}\":");
+    document
+        .split_once(&marker)
+        .unwrap()
+        .1
+        .split(|character: char| !character.is_ascii_digit())
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap()
 }
 
 #[test]
