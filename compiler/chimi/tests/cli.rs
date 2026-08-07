@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/{name}.chimi", env!("CARGO_MANIFEST_DIR"))
@@ -22,6 +22,31 @@ fn scratch_directory(name: &str) -> PathBuf {
     }
     std::fs::create_dir_all(&path).unwrap();
     path
+}
+
+struct NativeExecution {
+    process: Output,
+    telemetry: String,
+    outcome: String,
+}
+
+fn execute_native(executable: &Path, scratch: &Path, name: &str, trace: &str) -> NativeExecution {
+    let telemetry_path = scratch.join(format!("{name}-telemetry.jsonl"));
+    let outcome_path = scratch.join(format!("{name}-outcome.jsonl"));
+    let process = Command::new(executable)
+        .arg("--chimi-runner")
+        .arg(format!("--trace={trace}"))
+        .arg(format!("--telemetry-file={}", telemetry_path.display()))
+        .arg(format!("--outcome-file={}", outcome_path.display()))
+        .arg(format!("--execution-id={name}"))
+        .arg("--")
+        .output()
+        .expect("execute native Chimi program");
+    NativeExecution {
+        process,
+        telemetry: std::fs::read_to_string(telemetry_path).unwrap(),
+        outcome: std::fs::read_to_string(outcome_path).unwrap(),
+    }
 }
 
 #[test]
@@ -104,7 +129,10 @@ fn run_executes_source_and_prints_structured_events_and_outcome() {
     assert!(lines[lines.len() - 2].contains("\"event\":\"computation_completed\""));
     assert_eq!(
         lines[lines.len() - 1],
-        "{\"outcome\":\"success\",\"value\":{\"type\":\"Answer\",\"fields\":{\"value\":42}}}"
+        concat!(
+            "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",",
+            "\"value\":{\"type\":\"Answer\",\"fields\":{\"value\":42}}}"
+        )
     );
 }
 
@@ -136,24 +164,129 @@ fn build_links_a_runnable_executable_and_reports_its_artifacts() {
 
     let manifest = scratch.join("target/chimi/answer/build.json");
     assert_eq!(std::fs::read_to_string(manifest).unwrap(), report);
-    let execution = Command::new(&executable)
-        .args(["--trace=boundaries", "--execution-id=cli-build"])
-        .output()
-        .expect("run built Chimi executable");
-    assert!(execution.status.success());
-    assert!(execution.stderr.is_empty());
-    let stdout = String::from_utf8(execution.stdout).unwrap();
+    let execution = execute_native(&executable, &scratch, "cli-build", "boundaries");
+    assert!(execution.process.status.success());
+    assert!(execution.process.stdout.is_empty());
+    assert!(execution.process.stderr.is_empty());
     assert!(
-        stdout
+        execution
+            .telemetry
             .lines()
             .next()
             .unwrap()
             .contains("\"execution_id\":\"cli-build\"")
     );
     assert_eq!(
-        stdout.lines().last().unwrap(),
-        "{\"outcome\":\"success\",\"value\":{\"type\":\"Answer\",\"fields\":{\"value\":42}}}"
+        execution.outcome,
+        concat!(
+            "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",",
+            "\"value\":{\"type\":\"Answer\",\"fields\":{\"value\":42}}}\n"
+        )
     );
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_runner_separates_versioned_telemetry_outcome_and_application_streams() {
+    let scratch = scratch_directory("runner-channels");
+    let executable = scratch.join("answer");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", &fixture("success"), "-o"])
+        .arg(&executable)
+        .output()
+        .expect("build runner-channel fixture");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let default_execution = Command::new(&executable)
+        .output()
+        .expect("run with the default trace-off policy");
+    assert!(default_execution.status.success());
+    assert!(default_execution.stdout.is_empty());
+    assert!(default_execution.stderr.is_empty());
+
+    let telemetry = scratch.join("telemetry.jsonl");
+    let outcome = scratch.join("outcome.jsonl");
+    let execution = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=full")
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg(format!("--outcome-file={}", outcome.display()))
+        .arg("--execution-id=separated-run")
+        .arg("--")
+        .output()
+        .expect("run with separate runner sinks");
+    assert!(execution.status.success());
+    assert!(execution.stdout.is_empty());
+    assert!(execution.stderr.is_empty());
+
+    let telemetry = std::fs::read_to_string(&telemetry).unwrap();
+    assert!(telemetry.lines().count() > 3);
+    assert!(
+        telemetry
+            .lines()
+            .all(|line| line.starts_with("{\"schema\":\"chimi.runtime.v1\",\"event\":"))
+    );
+    assert!(telemetry.contains("\"execution_id\":\"separated-run\""));
+    assert_eq!(
+        std::fs::read_to_string(&outcome).unwrap(),
+        concat!(
+            "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",",
+            "\"value\":{\"type\":\"Answer\",\"fields\":{\"value\":42}}}\n",
+        )
+    );
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_runner_options_require_the_explicit_configuration_boundary() {
+    let scratch = scratch_directory("runner-boundary");
+    let executable = scratch.join("answer");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", &fixture("success"), "-o"])
+        .arg(&executable)
+        .output()
+        .expect("build runner-boundary fixture");
+    assert!(build.status.success());
+
+    let execution = Command::new(&executable)
+        .arg("--trace=full")
+        .output()
+        .expect("keep unbounded arguments application-owned");
+    assert_eq!(execution.status.code(), Some(64));
+    assert!(execution.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&execution.stderr)
+            .contains("application arguments are not supported yet")
+    );
+
+    let missing_telemetry = Command::new(&executable)
+        .args(["--chimi-runner", "--trace=full", "--"])
+        .output()
+        .expect("reject tracing without a selected sink");
+    assert_eq!(missing_telemetry.status.code(), Some(64));
+    assert!(
+        String::from_utf8_lossy(&missing_telemetry.stderr).contains("requires --telemetry-file")
+    );
+
+    let shared_path = scratch.join("shared.jsonl");
+    let shared_sinks = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--telemetry-file={}", shared_path.display()))
+        .arg(format!("--outcome-file={}", shared_path.display()))
+        .arg("--")
+        .output()
+        .expect("reject one file for both runner protocols");
+    assert_eq!(shared_sinks.status.code(), Some(64));
+    assert!(!shared_path.exists());
 
     std::fs::remove_dir_all(scratch).unwrap();
 }
@@ -201,14 +334,12 @@ fn build_loads_and_links_an_explicit_multi_module_project() {
     assert!(report.contains("module-0.o"));
     assert!(report.contains("module-1.o"));
     assert!(report.contains("entry.o"));
-    let execution = Command::new(&executable)
-        .args(["--trace=off", "--execution-id=project-build"])
-        .output()
-        .expect("run built multi-module executable");
-    assert!(execution.status.success());
+    let execution = execute_native(&executable, &scratch, "project-build", "off");
+    assert!(execution.process.status.success());
+    assert!(execution.telemetry.is_empty());
     assert_eq!(
-        String::from_utf8(execution.stdout).unwrap(),
-        "{\"outcome\":\"success\",\"value\":42}\n"
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
     );
 
     std::fs::remove_dir_all(scratch).unwrap();
@@ -233,15 +364,15 @@ fn build_executes_virtual_json_and_map_standard_modules() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let execution = Command::new(&executable)
-        .arg("--trace=off")
-        .output()
-        .expect("run native standard-library executable");
-    assert!(execution.status.success());
-    assert!(execution.stderr.is_empty());
+    let execution = execute_native(&executable, &scratch, "stdlib", "off");
+    assert!(execution.process.status.success());
+    assert!(execution.process.stderr.is_empty());
     assert_eq!(
-        String::from_utf8(execution.stdout).unwrap(),
-        "{\"outcome\":\"success\",\"value\":\"{\\\"alpha\\\":1,\\\"zeta\\\":2}\"}\n"
+        execution.outcome,
+        concat!(
+            "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",",
+            "\"value\":\"{\\\"alpha\\\":1,\\\"zeta\\\":2}\"}\n"
+        )
     );
 
     std::fs::remove_dir_all(scratch).unwrap();
@@ -276,15 +407,13 @@ fn native_json_decode_reports_malformed_input_as_an_expected_failure() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let execution = Command::new(&executable)
-        .arg("--trace=off")
-        .output()
-        .expect("run malformed JSON program");
-    let stdout = String::from_utf8(execution.stdout).unwrap();
-    assert!(execution.status.success());
-    assert!(stdout.starts_with(
-        "{\"outcome\":\"expected_failure\",\"error\":{\"type\":\"DecodeError\",\"variant\":\"InvalidJson\""
-    ));
+    let execution = execute_native(&executable, &scratch, "malformed-json", "off");
+    assert!(execution.process.status.success());
+    assert!(execution.outcome.starts_with(concat!(
+        "{\"schema\":\"chimi.runtime.v1\",",
+        "\"outcome\":\"expected_failure\",\"error\":",
+        "{\"type\":\"DecodeError\",\"variant\":\"InvalidJson\""
+    )));
 
     std::fs::remove_dir_all(scratch).unwrap();
 }
@@ -308,16 +437,14 @@ fn native_chimi_code_classifies_and_aggregates_trace_records() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let execution = Command::new(&executable)
-        .arg("--trace=off")
-        .output()
-        .expect("run the pure Chimi trace-summary core");
-    assert!(execution.status.success());
-    assert!(execution.stderr.is_empty());
+    let execution = execute_native(&executable, &scratch, "trace-summary", "off");
+    assert!(execution.process.status.success());
+    assert!(execution.process.stderr.is_empty());
     assert_eq!(
-        String::from_utf8(execution.stdout).unwrap(),
+        execution.outcome,
         concat!(
-            "{\"outcome\":\"success\",\"value\":\"",
+            "{\"schema\":\"chimi.runtime.v1\",",
+            "\"outcome\":\"success\",\"value\":\"",
             "{\\\"dependency_calls\\\":{\\\"payment.charge\\\":1},",
             "\\\"events\\\":2,\\\"operations\\\":{\\\"call\\\":1},",
             "\\\"records\\\":3,\\\"schema\\\":\\\"chimi.trace-summary.v1\\\",",
@@ -386,14 +513,11 @@ fn build_reuses_unchanged_artifacts_and_invalidates_only_changed_core_inputs() {
     assert!(hits.contains("libchimi_rt.a"));
     assert_eq!(misses.matches("module-").count(), 1);
     assert!(misses.contains("program_data.o"));
-    let execution = Command::new(&executable)
-        .arg("--trace=off")
-        .output()
-        .expect("run selectively rebuilt executable");
-    assert!(execution.status.success());
+    let execution = execute_native(&executable, &scratch, "cache", "off");
+    assert!(execution.process.status.success());
     assert_eq!(
-        String::from_utf8(execution.stdout).unwrap(),
-        "{\"outcome\":\"success\",\"value\":43}\n"
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":43}\n"
     );
 
     std::fs::remove_dir_all(scratch).unwrap();
@@ -419,28 +543,26 @@ fn direct_integer_build_preserves_off_boundary_and_full_trace_behavior() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let execute = |trace: &str| {
-        let output = Command::new(&executable)
-            .args([trace, "--execution-id=direct-integer-test"])
-            .output()
-            .expect("execute direct integer workload");
-        assert!(output.status.success());
-        String::from_utf8(output.stdout).unwrap()
-    };
+    let off = execute_native(&executable, &scratch, "direct-off", "off");
+    assert!(off.process.status.success());
+    assert!(off.telemetry.is_empty());
     assert_eq!(
-        execute("--trace=off"),
-        "{\"outcome\":\"success\",\"value\":-529}\n"
+        off.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":-529}\n"
     );
-    let boundaries = execute("--trace=boundaries");
-    assert_eq!(boundaries.lines().count(), 3);
-    assert!(boundaries.contains("\"event\":\"computation_started\""));
-    assert!(boundaries.ends_with("{\"outcome\":\"success\",\"value\":-529}\n"));
-    let full = execute("--trace=full");
-    assert!(full.lines().count() > 200);
-    assert!(full.contains("\"operation\":\"constant\""));
-    assert!(full.contains("\"operation\":\"binary\""));
-    assert!(full.contains("\"operation\":\"unary\""));
-    assert!(full.ends_with("{\"outcome\":\"success\",\"value\":-529}\n"));
+    let boundaries = execute_native(&executable, &scratch, "direct-boundaries", "boundaries");
+    assert_eq!(boundaries.telemetry.lines().count(), 2);
+    assert!(
+        boundaries
+            .telemetry
+            .contains("\"event\":\"computation_started\"")
+    );
+    let full = execute_native(&executable, &scratch, "direct-full", "full");
+    assert!(full.telemetry.lines().count() > 200);
+    assert!(full.telemetry.contains("\"operation\":\"constant\""));
+    assert!(full.telemetry.contains("\"operation\":\"binary\""));
+    assert!(full.telemetry.contains("\"operation\":\"unary\""));
+    assert_eq!(full.outcome, off.outcome);
 
     std::fs::remove_dir_all(scratch).unwrap();
 }
@@ -464,14 +586,14 @@ fn direct_integer_overflow_returns_the_existing_runtime_defect() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let execution = Command::new(&executable)
-        .arg("--trace=off")
-        .output()
-        .expect("execute direct integer overflow workload");
-    assert!(execution.status.success());
-    let outcome = String::from_utf8(execution.stdout).unwrap();
-    assert!(outcome.contains("\"outcome\":\"defect\""));
-    assert!(outcome.contains("\"message\":\"integer arithmetic overflow\""));
+    let execution = execute_native(&executable, &scratch, "overflow", "off");
+    assert!(execution.process.status.success());
+    assert!(execution.outcome.contains("\"outcome\":\"defect\""));
+    assert!(
+        execution
+            .outcome
+            .contains("\"message\":\"integer arithmetic overflow\"")
+    );
 
     std::fs::remove_dir_all(scratch).unwrap();
 }
@@ -495,7 +617,8 @@ fn run_executes_the_checkout_forcing_program_with_dependency_traces() {
     assert_eq!(
         stdout.lines().last().unwrap(),
         concat!(
-            "{\"outcome\":\"success\",\"value\":{\"type\":\"Order\",",
+            "{\"schema\":\"chimi.runtime.v1\",",
+            "\"outcome\":\"success\",\"value\":{\"type\":\"Order\",",
             "\"fields\":{\"id\":{\"type\":\"OrderId\",",
             "\"fields\":{\"value\":\"order-1\"}}}}}"
         )
@@ -674,7 +797,7 @@ fn explicit_project_root_loads_and_executes_imported_modules() {
             .lines()
             .last()
             .unwrap(),
-        "{\"outcome\":\"success\",\"value\":42}"
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}"
     );
 }
 

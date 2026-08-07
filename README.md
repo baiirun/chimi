@@ -46,8 +46,16 @@ Compile the same program and its Chimi runtime into one native executable:
 cargo run -q -p chimi -- build \
   prototypes/golden/valid/dependencies_and_execution.chimi \
   -o target/checkout
-target/checkout --trace=boundaries
+target/checkout --chimi-runner \
+  --trace=boundaries \
+  --telemetry-file=target/checkout.trace.jsonl \
+  --outcome-file=target/checkout.outcome.jsonl \
+  --
 ```
+
+Native executables leave stdout and stderr to the application. Runner telemetry
+and the terminal outcome are optional, versioned JSONL exports written only to
+their explicitly configured files.
 
 `build` prints a versioned `chimi.build.v1` report and writes the same report
 as `target/chimi/checkout/build.json`. The report identifies the Cranelift

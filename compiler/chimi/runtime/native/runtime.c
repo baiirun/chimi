@@ -76,6 +76,8 @@ struct ChimiRuntime {
   bool full_trace;
   bool cancel;
   bool silent;
+  FILE *telemetry;
+  FILE *outcome;
   uint64_t next_sequence;
   uint64_t next_span;
   bool *active_bindings;
@@ -136,51 +138,56 @@ static const char *control_name(const ChimiControl *control) {
   return "defect";
 }
 
-static void json_string(const char *value) {
-  putchar('"');
+static void json_string(FILE *output, const char *value) {
+  fputc('"', output);
   for (const unsigned char *cursor = (const unsigned char *)value; *cursor; ++cursor) {
     switch (*cursor) {
-      case '"': fputs("\\\"", stdout); break;
-      case '\\': fputs("\\\\", stdout); break;
-      case '\n': fputs("\\n", stdout); break;
-      case '\r': fputs("\\r", stdout); break;
-      case '\t': fputs("\\t", stdout); break;
+      case '"': fputs("\\\"", output); break;
+      case '\\': fputs("\\\\", output); break;
+      case '\n': fputs("\\n", output); break;
+      case '\r': fputs("\\r", output); break;
+      case '\t': fputs("\\t", output); break;
       default:
-        if (*cursor < 0x20) printf("\\u%04x", *cursor); else putchar(*cursor);
+        if (*cursor < 0x20) fprintf(output, "\\u%04x", *cursor); else fputc(*cursor, output);
     }
   }
-  putchar('"');
+  fputc('"', output);
 }
 
-static void json_value(const ChimiValue *value);
-static void json_fields(const RuntimeField *fields, uint32_t length) {
-  putchar('{');
+static void json_value(FILE *output, const ChimiValue *value);
+static void json_fields(FILE *output, const RuntimeField *fields, uint32_t length) {
+  fputc('{', output);
   for (uint32_t index = 0; index < length; ++index) {
-    if (index) putchar(','); json_string(fields[index].name); putchar(':'); json_value(fields[index].value);
+    if (index) fputc(',', output);
+    json_string(output, fields[index].name);
+    fputc(':', output);
+    json_value(output, fields[index].value);
   }
-  putchar('}');
+  fputc('}', output);
 }
-static void json_value(const ChimiValue *value) {
+static void json_value(FILE *output, const ChimiValue *value) {
   switch (value->kind) {
-    case VALUE_INTEGER: printf("%" PRId64, value->as.integer); break;
-    case VALUE_TEXT: json_string(value->as.text); break;
-    case VALUE_BOOLEAN: fputs(value->as.boolean ? "true" : "false", stdout); break;
+    case VALUE_INTEGER: fprintf(output, "%" PRId64, value->as.integer); break;
+    case VALUE_TEXT: json_string(output, value->as.text); break;
+    case VALUE_BOOLEAN: fputs(value->as.boolean ? "true" : "false", output); break;
     case VALUE_LIST:
-      putchar('['); for (uint32_t i = 0; i < value->as.list.length; ++i) {
-        if (i) putchar(','); json_value(value->as.list.items[i]);
-      } putchar(']'); break;
-    case VALUE_RECORD: json_fields(value->as.record.fields, value->as.record.length); break;
+      fputc('[', output); for (uint32_t i = 0; i < value->as.list.length; ++i) {
+        if (i) fputc(',', output); json_value(output, value->as.list.items[i]);
+      } fputc(']', output); break;
+    case VALUE_RECORD: json_fields(output, value->as.record.fields, value->as.record.length); break;
     case VALUE_CONSTRUCTED:
-      fputs("{\"type\":", stdout); json_string(value->as.constructed.type_name);
+      fputs("{\"type\":", output); json_string(output, value->as.constructed.type_name);
       if (value->as.constructed.variant_name) {
-        fputs(",\"variant\":", stdout); json_string(value->as.constructed.variant_name);
+        fputs(",\"variant\":", output); json_string(output, value->as.constructed.variant_name);
       }
-      fputs(",\"fields\":", stdout);
-      json_fields(value->as.constructed.fields, value->as.constructed.length); putchar('}'); break;
+      fputs(",\"fields\":", output);
+      json_fields(output, value->as.constructed.fields, value->as.constructed.length);
+      fputc('}', output); break;
     case VALUE_CALLABLE:
-      fputs("{\"callable\":", stdout); json_string(value->as.callable->name); putchar('}'); break;
-    case VALUE_MAP: fputs("{\"map\":\"opaque\"}", stdout); break;
-    case VALUE_JSON_NUMBER: json_string(value->as.json_number); break;
+      fputs("{\"callable\":", output); json_string(output, value->as.callable->name);
+      fputc('}', output); break;
+    case VALUE_MAP: fputs("{\"map\":\"opaque\"}", output); break;
+    case VALUE_JSON_NUMBER: json_string(output, value->as.json_number); break;
   }
 }
 
@@ -189,33 +196,38 @@ static void emit_event(ChimiRuntime *runtime, const char *event, uint32_t node_i
                        const ChimiControl *outcome) {
   const ChimiNode *node = &CHIMI_NODES[node_id];
   const ChimiOrigin *origin = &CHIMI_ORIGINS[node->origin];
-  fputs("{\"event\":", stdout); json_string(event);
-  printf(",\"sequence\":%" PRIu64 ",\"computation\":", runtime->next_sequence++);
-  json_string(CHIMI_COMPUTATION); fputs(",\"execution_id\":", stdout); json_string(runtime->execution_id);
-  printf(",\"span_id\":%" PRIu64 ",\"parent_span_id\":", span);
-  if (parent < 0) fputs("null", stdout); else printf("%" PRId64, parent);
-  printf(",\"core_node_id\":%u,\"origin_id\":%u,\"semantic_id\":%u,\"file_id\":%u,"
+  FILE *output = runtime->telemetry;
+  fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":", output); json_string(output, event);
+  fprintf(output, ",\"sequence\":%" PRIu64 ",\"computation\":", runtime->next_sequence++);
+  json_string(output, CHIMI_COMPUTATION); fputs(",\"execution_id\":", output);
+  json_string(output, runtime->execution_id);
+  fprintf(output, ",\"span_id\":%" PRIu64 ",\"parent_span_id\":", span);
+  if (parent < 0) fputs("null", output); else fprintf(output, "%" PRId64, parent);
+  fprintf(output, ",\"core_node_id\":%u,\"origin_id\":%u,\"semantic_id\":%u,\"file_id\":%u,"
          "\"source_start\":%u,\"source_end\":%u,\"operation\":",
          node_id, node->origin, origin->semantic_id, origin->file_id, origin->start, origin->end);
-  json_string(operation); fputs(",\"attributes\":{", stdout);
-  if (outcome) { fputs("\"outcome\":", stdout); json_string(control_name(outcome)); }
-  fputs("}}\n", stdout);
+  json_string(output, operation); fputs(",\"attributes\":{", output);
+  if (outcome) { fputs("\"outcome\":", output); json_string(output, control_name(outcome)); }
+  fputs("}}\n", output);
 }
 
 static void emit_dependency(ChimiRuntime *runtime, uint32_t node_id, uint64_t span,
                             uint64_t parent, const ChimiCallable *callable) {
   const ChimiNode *node = &CHIMI_NODES[node_id]; const ChimiOrigin *origin = &CHIMI_ORIGINS[node->origin];
-  fputs("{\"event\":\"dependency_called\",\"sequence\":", stdout);
-  printf("%" PRIu64 ",\"computation\":", runtime->next_sequence++); json_string(CHIMI_COMPUTATION);
-  fputs(",\"execution_id\":", stdout); json_string(runtime->execution_id);
-  printf(",\"span_id\":%" PRIu64 ",\"parent_span_id\":%" PRIu64
+  FILE *output = runtime->telemetry;
+  fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":\"dependency_called\",\"sequence\":", output);
+  fprintf(output, "%" PRIu64 ",\"computation\":", runtime->next_sequence++);
+  json_string(output, CHIMI_COMPUTATION);
+  fputs(",\"execution_id\":", output); json_string(output, runtime->execution_id);
+  fprintf(output, ",\"span_id\":%" PRIu64 ",\"parent_span_id\":%" PRIu64
          ",\"core_node_id\":%u,\"origin_id\":%u,\"semantic_id\":%u,\"file_id\":%u,"
          "\"source_start\":%u,\"source_end\":%u,\"operation\":\"dependency_call\",\"attributes\":{",
          span, parent, node_id, node->origin, origin->semantic_id, origin->file_id, origin->start, origin->end);
-  fputs("\"requirement\":", stdout); json_string(CHIMI_STRINGS[CHIMI_SYMBOLS[callable->requirement].name]);
-  printf(",\"requirement_symbol_id\":%u,\"interface_symbol_id\":%u,\"method\":",
-         callable->requirement, callable->interface_symbol); json_string(callable->name);
-  printf(",\"method_semantic_id\":%u}}\n", callable->method);
+  fputs("\"requirement\":", output);
+  json_string(output, CHIMI_STRINGS[CHIMI_SYMBOLS[callable->requirement].name]);
+  fprintf(output, ",\"requirement_symbol_id\":%u,\"interface_symbol_id\":%u,\"method\":",
+          callable->requirement, callable->interface_symbol); json_string(output, callable->name);
+  fprintf(output, ",\"method_semantic_id\":%u}}\n", callable->method);
 }
 
 static uint64_t begin_node(ChimiRuntime *runtime, uint32_t node, uint64_t parent, const char *operation) {
@@ -977,19 +989,30 @@ NODE_WRAPPER(match, "match", {
   }
 })
 
-static void print_outcome(const ChimiControl *control) {
+static void print_outcome(FILE *output, const ChimiControl *control) {
+  fputs("{\"schema\":\"chimi.runtime.v1\",", output);
   switch (control->kind) {
-    case CONTROL_SUCCESS: fputs("{\"outcome\":\"success\",\"value\":", stdout); json_value(control->value); break;
-    case CONTROL_FAILURE: fputs("{\"outcome\":\"expected_failure\",\"error\":", stdout); json_value(control->value); break;
+    case CONTROL_SUCCESS:
+      fputs("\"outcome\":\"success\",\"value\":", output); json_value(output, control->value); break;
+    case CONTROL_FAILURE:
+      fputs("\"outcome\":\"expected_failure\",\"error\":", output); json_value(output, control->value); break;
     case CONTROL_DEFECT:
-      fputs("{\"outcome\":\"defect\",\"message\":", stdout); json_string(control->message);
-      if (control->node < 0) fputs(",\"core_node_id\":null,\"origin_id\":null", stdout);
-      else printf(",\"core_node_id\":%" PRId64 ",\"origin_id\":%u", control->node, CHIMI_NODES[control->node].origin);
+      fputs("\"outcome\":\"defect\",\"message\":", output); json_string(output, control->message);
+      if (control->node < 0) fputs(",\"core_node_id\":null,\"origin_id\":null", output);
+      else fprintf(output, ",\"core_node_id\":%" PRId64 ",\"origin_id\":%u",
+                   control->node, CHIMI_NODES[control->node].origin);
       break;
     case CONTROL_CANCEL:
-      fputs("{\"outcome\":\"cancellation\",\"reason\":\"requested before the next semantic operation\"", stdout); break;
+      fputs("\"outcome\":\"cancellation\",\"reason\":\"requested before the next semantic operation\"", output); break;
   }
-  fputs("}\n", stdout);
+  fputs("}\n", output);
+}
+
+static bool close_output(FILE *output) {
+  if (output == NULL) return false;
+  bool failed = fflush(output) != 0;
+  if (fclose(output) != 0) failed = true;
+  return failed;
 }
 
 int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
@@ -999,18 +1022,71 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   snprintf(generated_execution_id, sizeof(generated_execution_id),
            "execution-%ld-%" PRId64 "-%ld", (long)getpid(),
            (int64_t)identity_time.tv_sec, identity_time.tv_nsec);
-  ChimiRuntime runtime = {.execution_id = generated_execution_id, .next_span = 2};
+  ChimiRuntime runtime = {
+    .execution_id = generated_execution_id,
+    .silent = true,
+    .next_span = 2,
+  };
   uint32_t benchmark_repeats = 0;
+  const char *telemetry_path = NULL;
+  const char *outcome_path = NULL;
   runtime.active_bindings = allocate(CHIMI_SYMBOL_COUNT, sizeof(*runtime.active_bindings));
-  for (int32_t index = 1; index < argc; ++index) {
+  int32_t index = 1;
+  if (index < argc && strcmp(argv[index], "--chimi-runner") != 0) {
+    fputs("application arguments are not supported yet\n", stderr);
+    return 64;
+  }
+  if (index < argc) {
+    ++index;
+    bool found_boundary = false;
+    for (; index < argc; ++index) {
+      if (strcmp(argv[index], "--") == 0) {
+        found_boundary = true;
+        ++index;
+        break;
+      }
     if (strcmp(argv[index], "--trace=full") == 0) { runtime.full_trace = true; runtime.silent = false; }
     else if (strcmp(argv[index], "--trace=boundaries") == 0) { runtime.full_trace = false; runtime.silent = false; }
     else if (strcmp(argv[index], "--trace=off") == 0) { runtime.full_trace = false; runtime.silent = true; }
+    else if (strncmp(argv[index], "--telemetry-file=", 17) == 0) telemetry_path = argv[index] + 17;
+    else if (strncmp(argv[index], "--outcome-file=", 15) == 0) outcome_path = argv[index] + 15;
     else if (strncmp(argv[index], "--execution-id=", 15) == 0) runtime.execution_id = argv[index] + 15;
     else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = true;
     else if (strncmp(argv[index], "--benchmark-repeats=", 20) == 0)
       benchmark_repeats = (uint32_t)strtoul(argv[index] + 20, NULL, 10);
     else { fprintf(stderr, "unknown Chimi runtime argument: %s\n", argv[index]); return 64; }
+    }
+    if (!found_boundary) {
+      fputs("Chimi runner configuration must end with --\n", stderr);
+      return 64;
+    }
+  }
+  if (index < argc) {
+    fputs("application arguments are not supported yet\n", stderr);
+    return 64;
+  }
+  if (!runtime.silent && telemetry_path == NULL) {
+    fputs("boundary or full tracing requires --telemetry-file\n", stderr);
+    return 64;
+  }
+  if (telemetry_path && outcome_path && strcmp(telemetry_path, outcome_path) == 0) {
+    fputs("telemetry and runner outcome require distinct files\n", stderr);
+    return 64;
+  }
+  if (telemetry_path) {
+    runtime.telemetry = fopen(telemetry_path, strcmp(telemetry_path, "/dev/null") == 0 ? "w" : "wx");
+    if (!runtime.telemetry) {
+      fprintf(stderr, "cannot open telemetry file %s: %s\n", telemetry_path, strerror(errno));
+      return 74;
+    }
+  }
+  if (outcome_path) {
+    runtime.outcome = fopen(outcome_path, "wx");
+    if (!runtime.outcome) {
+      fprintf(stderr, "cannot open outcome file %s: %s\n", outcome_path, strerror(errno));
+      if (runtime.telemetry) fclose(runtime.telemetry);
+      return 74;
+    }
   }
   uint32_t entry_node = 0;
   for (uint32_t i = 0; i < CHIMI_FUNCTION_COUNT; ++i)
@@ -1026,16 +1102,21 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       if (control == NULL) return 70;
       if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
     }
-    fflush(stdout);
+    bool write_failed = close_output(runtime.telemetry);
+    runtime.telemetry = NULL;
+    write_failed = close_output(runtime.outcome) || write_failed;
+    runtime.outcome = NULL;
     clock_gettime(CLOCK_MONOTONIC, &finished);
     int64_t elapsed = (int64_t)(finished.tv_sec - started.tv_sec) * INT64_C(1000000000)
                     + (int64_t)finished.tv_nsec - (int64_t)started.tv_nsec;
     fprintf(stderr, "%" PRIu64 "\n", elapsed / benchmark_repeats);
-    return 0;
+    return write_failed ? 74 : 0;
   }
   if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
   ChimiControl *control = runtime.cancel ? cancelled() : entry(&runtime, new_environment(), 1);
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
-  print_outcome(control);
-  return 0;
+  if (runtime.outcome) print_outcome(runtime.outcome, control);
+  bool write_failed = close_output(runtime.telemetry);
+  write_failed = close_output(runtime.outcome) || write_failed;
+  return write_failed ? 74 : 0;
 }

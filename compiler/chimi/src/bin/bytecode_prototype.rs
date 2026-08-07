@@ -102,8 +102,11 @@ fn run_workload(workload: Workload, samples: usize) -> Result<(), String> {
             TraceMode::Boundaries,
         )?;
         durations.push(started.elapsed());
-        if !output.status.success() {
-            return Err(format!("{} exited with {}", workload.id, output.status));
+        if !output.process.status.success() {
+            return Err(format!(
+                "{} exited with {}",
+                workload.id, output.process.status
+            ));
         }
     }
     durations.sort_unstable();
@@ -176,17 +179,16 @@ fn verify(
     control: InitialControl,
     trace: TraceMode,
 ) -> Result<(), String> {
-    let expected = program
-        .execute_oracle(config(id, control, trace))
-        .render_json_lines();
+    let report = program.execute_oracle(config(id, control, trace));
+    let expected_telemetry = report.render_telemetry_json_lines();
+    let expected = report.render_json_lines();
     let output = execute(artifact, id, control, trace)?;
-    let actual = String::from_utf8(output.stdout)
-        .map_err(|error| format!("bytecode output was not UTF-8: {error}"))?;
-    if !output.status.success() {
+    let actual = output.exported;
+    if !output.process.status.success() {
         return Err(format!(
             "{id} exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
+            output.process.status,
+            String::from_utf8_lossy(&output.process.stderr)
         ));
     }
     if actual != expected {
@@ -205,7 +207,7 @@ fn verify(
             trace
         ));
     }
-    verify_benchmark_export(artifact, id, control, trace, &expected)?;
+    verify_benchmark_export(artifact, id, control, trace, &expected_telemetry)?;
     Ok(())
 }
 
@@ -214,16 +216,23 @@ fn verify_benchmark_export(
     id: &str,
     control: InitialControl,
     trace: TraceMode,
-    oracle_output: &str,
+    oracle_telemetry: &str,
 ) -> Result<(), String> {
+    let telemetry = artifact
+        .executable_path
+        .with_extension(format!("{id}-{trace:?}-benchmark.jsonl"));
+    let _ = fs::remove_file(&telemetry);
     let mut command = Command::new(&artifact.executable_path);
     command
+        .arg("--chimi-runner")
         .arg(trace_argument(trace))
+        .arg(format!("--telemetry-file={}", telemetry.display()))
         .arg(format!("--execution-id={id}"))
         .arg("--benchmark-repeats=1");
     if matches!(control, InitialControl::Cancel) {
         command.arg("--cancel");
     }
+    command.arg("--");
     let output = command
         .output()
         .map_err(|error| format!("verify {id} {trace:?} benchmark export: {error}"))?;
@@ -233,10 +242,10 @@ fn verify_benchmark_export(
             output.status
         ));
     }
-    let outcome = oracle_output
-        .rfind("{\"outcome\":")
-        .expect("oracle output has a terminal outcome");
-    if output.stdout != oracle_output.as_bytes()[..outcome] {
+    let actual_telemetry = fs::read_to_string(&telemetry)
+        .map_err(|error| format!("read benchmark telemetry: {error}"))?;
+    let _ = fs::remove_file(&telemetry);
+    if actual_telemetry != oracle_telemetry {
         return Err(format!(
             "{id} {trace:?} benchmark did not use the canonical event export path"
         ));
@@ -249,21 +258,46 @@ fn verify_benchmark_export(
     Ok(())
 }
 
+struct PrototypeExecution {
+    process: Output,
+    exported: String,
+}
+
 fn execute(
     artifact: &BytecodePrototypeArtifact,
     id: &str,
     control: InitialControl,
     trace: TraceMode,
-) -> Result<Output, String> {
+) -> Result<PrototypeExecution, String> {
+    let telemetry = artifact
+        .executable_path
+        .with_extension(format!("{id}-{trace:?}-telemetry.jsonl"));
+    let outcome = artifact
+        .executable_path
+        .with_extension(format!("{id}-{trace:?}-outcome.jsonl"));
+    let _ = fs::remove_file(&telemetry);
+    let _ = fs::remove_file(&outcome);
     let mut command = Command::new(&artifact.executable_path);
-    command.arg(trace_argument(trace));
-    command.arg(format!("--execution-id={id}"));
+    command
+        .arg("--chimi-runner")
+        .arg(trace_argument(trace))
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg(format!("--outcome-file={}", outcome.display()))
+        .arg(format!("--execution-id={id}"));
     if matches!(control, InitialControl::Cancel) {
         command.arg("--cancel");
     }
-    command
+    command.arg("--");
+    let process = command
         .output()
-        .map_err(|error| format!("run {id}: {error}"))
+        .map_err(|error| format!("run {id}: {error}"))?;
+    let mut exported =
+        fs::read_to_string(&telemetry).map_err(|error| format!("read telemetry: {error}"))?;
+    exported
+        .push_str(&fs::read_to_string(&outcome).map_err(|error| format!("read outcome: {error}"))?);
+    let _ = fs::remove_file(telemetry);
+    let _ = fs::remove_file(outcome);
+    Ok(PrototypeExecution { process, exported })
 }
 
 fn benchmark_execution(
@@ -274,12 +308,16 @@ fn benchmark_execution(
     repeats: usize,
 ) -> Result<Duration, String> {
     let mut command = Command::new(&artifact.executable_path);
-    command.arg(format!("--execution-id={id}"));
-    command.arg(trace_argument(trace));
-    command.arg(format!("--benchmark-repeats={repeats}"));
+    command
+        .arg("--chimi-runner")
+        .arg(format!("--execution-id={id}"))
+        .arg(trace_argument(trace))
+        .arg("--telemetry-file=/dev/null")
+        .arg(format!("--benchmark-repeats={repeats}"));
     if matches!(control, InitialControl::Cancel) {
         command.arg("--cancel");
     }
+    command.arg("--");
     let output = command
         .stdout(Stdio::null())
         .output()
@@ -334,11 +372,14 @@ fn peak_rss(
     }
     command
         .arg(&artifact.executable_path)
+        .arg("--chimi-runner")
         .arg("--trace=boundaries")
+        .arg("--telemetry-file=/dev/null")
         .arg(format!("--execution-id={id}"));
     if matches!(control, InitialControl::Cancel) {
         command.arg("--cancel");
     }
+    command.arg("--");
     let output = command
         .output()
         .map_err(|error| format!("measure peak RSS for {id}: {error}"))?;

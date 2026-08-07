@@ -181,11 +181,20 @@ pub struct ExecutionReport {
 
 impl ExecutionReport {
     pub fn render_json_lines(&self) -> String {
+        let mut output = self.render_telemetry_json_lines();
+        output.push_str(&self.render_outcome_json_line());
+        output
+    }
+
+    pub fn render_telemetry_json_lines(&self) -> String {
         let mut output = String::new();
         for event in &self.events {
             write!(
                 output,
-                "{{\"event\":\"{}\",\"sequence\":{},\"computation\":",
+                concat!(
+                    "{{\"schema\":\"chimi.runtime.v1\",",
+                    "\"event\":\"{}\",\"sequence\":{},\"computation\":"
+                ),
                 event.kind.name(),
                 event.sequence,
             )
@@ -223,18 +232,29 @@ impl ExecutionReport {
             }
             output.push_str("}}\n");
         }
+        output
+    }
 
+    pub fn render_outcome_json_line(&self) -> String {
+        let mut output = String::new();
         match &self.outcome {
             ExecutionOutcome::Success(value) => {
-                output.push_str("{\"outcome\":\"success\",\"value\":");
+                output.push_str(
+                    "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":",
+                );
                 write_json_value(&mut output, value);
             }
             ExecutionOutcome::ExpectedFailure(error) => {
-                output.push_str("{\"outcome\":\"expected_failure\",\"error\":");
+                output.push_str(concat!(
+                    "{\"schema\":\"chimi.runtime.v1\",",
+                    "\"outcome\":\"expected_failure\",\"error\":"
+                ));
                 write_json_value(&mut output, error);
             }
             ExecutionOutcome::Defect(defect) => {
-                output.push_str("{\"outcome\":\"defect\",\"message\":");
+                output.push_str(
+                    "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"defect\",\"message\":",
+                );
                 write_json_string(&mut output, &defect.message);
                 write!(
                     output,
@@ -245,7 +265,10 @@ impl ExecutionReport {
                 .expect("writing JSON to a string cannot fail");
             }
             ExecutionOutcome::Cancellation(cancellation) => {
-                output.push_str("{\"outcome\":\"cancellation\",\"reason\":");
+                output.push_str(concat!(
+                    "{\"schema\":\"chimi.runtime.v1\",",
+                    "\"outcome\":\"cancellation\",\"reason\":"
+                ));
                 write_json_string(&mut output, &cancellation.reason);
             }
         }

@@ -400,14 +400,14 @@ mod tests {
     #[test]
     fn current_runtime_event_and_outcome_envelopes_decode_as_objects() {
         let records = [
-            r#"{"event":"computation_started","sequence":0,"computation":"main","execution_id":"run-1","span_id":1,"parent_span_id":null,"core_node_id":0,"origin_id":0,"semantic_id":0,"file_id":0,"source_start":0,"source_end":1,"operation":"computation","attributes":{}}"#,
-            r#"{"event":"operation_started","sequence":1,"computation":"main","execution_id":"run-1","span_id":2,"parent_span_id":1,"core_node_id":0,"origin_id":0,"semantic_id":0,"file_id":0,"source_start":0,"source_end":1,"operation":"call","attributes":{}}"#,
-            r#"{"event":"dependency_called","sequence":2,"computation":"main","execution_id":"run-1","span_id":3,"parent_span_id":2,"core_node_id":0,"origin_id":0,"semantic_id":0,"file_id":0,"source_start":0,"source_end":1,"operation":"dependency_call","attributes":{"requirement":"payment","requirement_symbol_id":1,"interface_symbol_id":2,"method":"charge","method_semantic_id":3}}"#,
-            r#"{"event":"operation_completed","sequence":3,"computation":"main","execution_id":"run-1","span_id":2,"parent_span_id":1,"core_node_id":0,"origin_id":0,"semantic_id":0,"file_id":0,"source_start":0,"source_end":1,"operation":"call","attributes":{"outcome":"success"}}"#,
-            r#"{"outcome":"success","value":42}"#,
-            r#"{"outcome":"expected_failure","error":{"type":"PaymentError","variant":"Declined","fields":{}}}"#,
-            r#"{"outcome":"defect","message":"overflow","core_node_id":4,"origin_id":2}"#,
-            r#"{"outcome":"cancellation","reason":"requested before the next semantic operation"}"#,
+            r#"{"schema":"chimi.runtime.v1","event":"computation_started","sequence":0,"computation":"main","execution_id":"run-1","span_id":1,"parent_span_id":null,"core_node_id":0,"origin_id":0,"semantic_id":0,"file_id":0,"source_start":0,"source_end":1,"operation":"computation","attributes":{}}"#,
+            r#"{"schema":"chimi.runtime.v1","event":"operation_started","sequence":1,"computation":"main","execution_id":"run-1","span_id":2,"parent_span_id":1,"core_node_id":0,"origin_id":0,"semantic_id":0,"file_id":0,"source_start":0,"source_end":1,"operation":"call","attributes":{}}"#,
+            r#"{"schema":"chimi.runtime.v1","event":"dependency_called","sequence":2,"computation":"main","execution_id":"run-1","span_id":3,"parent_span_id":2,"core_node_id":0,"origin_id":0,"semantic_id":0,"file_id":0,"source_start":0,"source_end":1,"operation":"dependency_call","attributes":{"requirement":"payment","requirement_symbol_id":1,"interface_symbol_id":2,"method":"charge","method_semantic_id":3}}"#,
+            r#"{"schema":"chimi.runtime.v1","event":"operation_completed","sequence":3,"computation":"main","execution_id":"run-1","span_id":2,"parent_span_id":1,"core_node_id":0,"origin_id":0,"semantic_id":0,"file_id":0,"source_start":0,"source_end":1,"operation":"call","attributes":{"outcome":"success"}}"#,
+            r#"{"schema":"chimi.runtime.v1","outcome":"success","value":42}"#,
+            r#"{"schema":"chimi.runtime.v1","outcome":"expected_failure","error":{"type":"PaymentError","variant":"Declined","fields":{}}}"#,
+            r#"{"schema":"chimi.runtime.v1","outcome":"defect","message":"overflow","core_node_id":4,"origin_id":2}"#,
+            r#"{"schema":"chimi.runtime.v1","outcome":"cancellation","reason":"requested before the next semantic operation"}"#,
         ];
 
         for record in records {
