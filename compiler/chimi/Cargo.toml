@@ -13,6 +13,7 @@ frontend-benchmarks = []
 embedded-bytecode-prototype = []
 native-aot-prototype = ["native-backend"]
 native-backend = [
+  "dep:blake3",
   "dep:cranelift-codegen",
   "dep:cranelift-frontend",
   "dep:cranelift-module",
@@ -21,6 +22,7 @@ native-backend = [
 ]
 
 [dependencies]
+blake3 = { version = "=1.8.6", optional = true }
 cranelift-codegen = { version = "=0.131.3", optional = true }
 cranelift-frontend = { version = "=0.131.3", optional = true }
 cranelift-module = { version = "=0.131.3", optional = true }
