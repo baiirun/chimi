@@ -139,6 +139,14 @@ _Avoid_: Expected error, recoverable business failure
 A callable unit's declared needs from its environment, such as time, logging, persistence, network, configuration, randomness, or queues.
 _Avoid_: Ambient global, hidden dependency, framework injection
 
+**Effect Contract**:
+An inferred or annotated row describing what executing a callable may do, such as synchronous external IO, independently of which dependencies provide the behavior or which failures it may return.
+_Avoid_: Dependency list, service identity, error channel, effect wrapper
+
+**Host Capability**:
+A runner-supplied implementation of an official dependency interface that crosses into operating-system behavior while remaining explicit in the callable's needs.
+_Avoid_: Ambient runtime service, effect name, runner option
+
 **Provision Boundary**:
 An expression boundary where `using` supplies one or more dependency implementations and removes the corresponding entries from an operation's remaining needs.
 _Avoid_: Root-only dependency choice, ambient service lookup, untyped provider map
@@ -166,6 +174,10 @@ _Avoid_: Implicit mutation, mutable-by-default state
 **Visible Effect**:
 An operation whose interaction with state, IO, time, randomness, resources, or the outside world is represented in the program model.
 _Avoid_: Hidden side effect, ambient mutation, invisible IO
+
+**Scope-Owned Resource**:
+A resource whose creating operation guarantees cleanup before success, expected failure, defect, or cancellation leaves the operation, without allowing the raw resource to escape.
+_Avoid_: Caller-disciplined cleanup, escaping handle, hidden lifetime
 
 **Concurrent Cancellation**:
 Built-in concurrency behavior for stopping work intentionally, including timeout-driven cancellation.

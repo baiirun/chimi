@@ -421,3 +421,11 @@ Its contract and capability inventory are in
 effects from dependency needs, defines the minimum functional data-processing
 surface, and separates application output from telemetry before platform I/O,
 memory reclamation, or application implementation begins.
+
+The first post-kernel semantic extension (`prog show ts-8cec2f`) adds an
+inferred effect row independent of failures and dependency needs. `FileSystem`
+and `Console` are caller-selected dependencies; synchronous external behavior
+is the built-in `io` effect; application arguments remain data; and runner
+policy remains outside callable types. `using` removes only needs, failure
+handling removes only failures, and neither erases `io`. The normative contract
+is in `docs/specification/synchronous-effects-and-host-capabilities.md`.

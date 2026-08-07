@@ -129,16 +129,18 @@ prejudging their final module names:
 - functional incremental processing and deterministic keyed aggregation.
 
 Filesystem and console implementations are program dependencies. Whether their
-operations add synchronous effect information to callable types is a separate
-language question tracked by `prog show ts-8cec2f`. Trace policy and execution
-identity remain runner configuration rather than entries in a function's
-`needs` row.
+operations add synchronous effect information to callable types is specified by
+the accepted [synchronous effects and host capabilities](../specification/synchronous-effects-and-host-capabilities.md)
+contract (`prog show ts-8cec2f`). Trace policy and execution identity remain
+runner configuration rather than entries in a function's `needs` or `effects`
+rows.
 
 ## Capability Inventory
 
 | Layer | Current evidence | Missing contract or implementation | Ticket |
 | --- | --- | --- | --- |
 | Language | Functions are values; failures and `needs` compose independently; `using` provisions dependencies at expression boundaries. | Represent synchronous I/O and resource behavior without relabeling dependencies as effects or hiding operations. | `ts-8cec2f` |
+| Compiler | Callable contracts currently carry success, failure, and needs rows through typing and inspection. | Parse, infer, substitute, diagnose, inspect, and retain the independent effect row through executable metadata. | `ts-5b0547` |
 | Language and standard library | `Text`, `Int`, `Bool`, `List`, `Option`, structs, enums, records, case expressions, and pipelines exist in the kernel. | Choose functional line processing, deterministic keyed aggregation, JSON values, and explicit external null handling. | `ts-2ac2de` |
 | Runtime contract | Off, boundary, and full tracing preserve terminal outcomes and canonical event order. | Version the export and separate telemetry, runner outcomes, and application stdout/stderr. | `ts-eaae0e` |
 | Program boundary | `main` is currently a closed zero-input root; native runtime flags consume every process argument. | Supply application arguments and synchronous host I/O while keeping runtime configuration external. | `ts-e2d9a9` |
@@ -202,6 +204,7 @@ than mocks of compiler or runtime internals.
 
 - `ts-1c0afb`: define this contract and capability inventory.
 - `ts-8cec2f`: define synchronous effects and host capability ownership.
+- `ts-5b0547`: implement inferred effect rows through compiler handoffs.
 - `ts-2ac2de`: define the trace-processing data and iteration surface.
 - `ts-eaae0e`: separate application output from telemetry and runner outcomes.
 - `ts-e2d9a9`: implement CLI arguments and synchronous host I/O.
