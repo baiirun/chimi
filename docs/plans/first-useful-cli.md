@@ -52,7 +52,7 @@ Each nonempty input line MUST be valid UTF-8 JSON and MUST decode as one of:
 Blank lines and unknown record shapes MUST be rejected with the one-based input
 line number. The program MUST NOT silently skip data that could make a summary
 look complete. External JSON `null` is represented inside the JSON model as an
-explicit `Json.Null` variant; it MUST NOT introduce nullable Chimi values.
+explicit `Value.Null` variant; it MUST NOT introduce nullable Chimi values.
 
 All runtime event records that carry execution identity MUST agree on one
 `execution_id` and one computation name. Event sequence numbers MUST be
@@ -140,11 +140,11 @@ rows.
 | Layer | Current evidence | Missing contract or implementation | Ticket |
 | --- | --- | --- | --- |
 | Language | Functions are values; failures and `needs` compose independently; `using` provisions dependencies at expression boundaries. | Represent synchronous I/O and resource behavior without relabeling dependencies as effects or hiding operations. | `ts-8cec2f` |
-| Compiler | Callable contracts currently carry success, failure, and needs rows through typing and inspection. | Parse, infer, substitute, diagnose, inspect, and retain the independent effect row through executable metadata. | `ts-5b0547` |
-| Language and standard library | `Text`, `Int`, `Bool`, `List`, `Option`, structs, enums, records, case expressions, and pipelines exist in the kernel. | Choose functional line processing, deterministic keyed aggregation, JSON values, and explicit external null handling. | `ts-2ac2de` |
+| Compiler | Callable contracts carry success, failure, needs, and effect rows through typing, inspection, and executable metadata. | Implement no additional compiler channel for the first CLI. | `ts-5b0547` |
+| Language and standard library | `Text`, `Int`, `Bool`, `List`, `Option`, structs, enums, records, case expressions, pipelines, and the accepted [trace data and processing](../specification/trace-data-and-processing.md) contract exist. | Implement the accepted JSON, immutable map, and bounded line-processing behavior. | `ts-2ac2de` |
 | Runtime contract | Off, boundary, and full tracing preserve terminal outcomes and canonical event order. | Version the export and separate telemetry, runner outcomes, and application stdout/stderr. | `ts-eaae0e` |
 | Program boundary | `main` is currently a closed zero-input root; native runtime flags consume every process argument. | Supply application arguments and synchronous host I/O while keeping runtime configuration external. | `ts-e2d9a9` |
-| Standard library | No official JSON, keyed collection, text-line, or fold surface is implemented. | Implement the smallest module-qualified trace-processing slice. | `ts-41796d` |
+| Standard library | JSON values, `Map<K, V>`, deterministic encoding, and `process_utf8_lines` are specified but not implemented. | Implement the smallest module-qualified trace-processing slice. | `ts-41796d` |
 | Native memory | The current runtime allocates boxed values and environments for process lifetime. | Reclaim line-local state so peak live memory is independent of total input size. | `ts-da83af` |
 | Application | `chimi build` produces one executable and reports linked system dependencies. | Write the maintained Chimi program and validate real trace inputs, failures, performance, and artifact shape. | `ts-65a567` |
 

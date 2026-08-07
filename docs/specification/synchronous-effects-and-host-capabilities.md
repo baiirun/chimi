@@ -168,18 +168,19 @@ dependencies or reinterpret effect names as providers.
 
 ## Synchronous Files and Console
 
-The exact general data-processing API is tracked separately by `prog show
-ts-2ac2de`, but the first filesystem boundary MUST own resource scope. Its
-contract is equivalent to:
+The accepted general data-processing API is specified by
+[trace data and processing](trace-data-and-processing.md) (`prog show
+ts-2ac2de`). The first filesystem boundary MUST own resource scope. Its contract
+is:
 
 ```chimi
 interface FileSystem {
-  fold_utf8_lines: fn<A, F, R, X>(
+  process_utf8_lines: fn<A, F, R, X>(
     Path,
     A,
     fn(A, Text) -> A errors F needs R effects X,
   ) -> A
-    errors F + FileError
+    errors F + FileError + Utf8Error
     needs R
     effects X + { io }
 }
@@ -191,12 +192,10 @@ interface Console {
 }
 ```
 
-The spelling is representative until the data-surface ticket fixes module and
-type names. The semantic relationships are normative: callback failures,
-needs, and effects propagate independently; filesystem failures are added; and
-`io` remains visible.
+Callback failures, needs, and effects propagate independently; filesystem and
+UTF-8 failures are added; and `io` remains visible.
 
-`fold_utf8_lines` opens and closes the file internally. The callback receives
+`process_utf8_lines` opens and closes the file internally. The callback receives
 text, not a raw handle, and therefore cannot retain the resource. The runtime
 MUST close the resource before returning success, propagating an expected
 failure, surfacing a defect, or completing cancellation. A cleanup failure
