@@ -131,6 +131,10 @@ _Avoid_: Operationally hidden inference, needless verbosity
 A represented error case that is part of a function or service contract rather than an out-of-band exception path.
 _Avoid_: Exception path, null sentinel, hidden failure
 
+**Failure Set**:
+A statically known set of expected failure variants. A generic failure-set parameter denotes the same set in an `errors` channel and the corresponding ordinary value union in a value position.
+_Avoid_: Untyped catch, wrapper error enum, separate row and value parameters
+
 **Defect**:
 A broken invariant, impossible state, or programmer/runtime fault that is not modeled as an expected failure value.
 _Avoid_: Expected error, recoverable business failure
