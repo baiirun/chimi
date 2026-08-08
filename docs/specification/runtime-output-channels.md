@@ -81,6 +81,12 @@ the telemetry and outcome paths. Its scoped allocation counters are neither
 application output nor semantic trace events. Omitting it avoids the report
 open, serialization, and write entirely.
 
+The record reports total scoped allocation, peak live bytes, retained bytes,
+collection count, and a `scoped_allocated_bytes_by_kind` breakdown. The
+breakdown accounts for raw byte buffers, values, controls, environments, value
+pointer tables, fields, callables, and persistent map nodes; its values sum to
+the reported scoped total.
+
 Telemetry contains event records only:
 
 ```json

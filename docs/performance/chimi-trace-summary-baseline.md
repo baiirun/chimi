@@ -82,10 +82,42 @@ in a 14,388,951-byte input. The output was byte-identical.
 
 Five follow-up runs recorded 2.64 s p50 and 2.76 s p95, or about 37,879
 records/s at p50. A native integration gate now requires the maintained
-summarizer to stay below 250 kB allocated per record and 250 kB peak live while
+summarizer to stay below 110 kB allocated per record and 250 kB peak live while
 retaining less than 2 kB. Remaining allocation is primarily boxed values,
 controls, match work, and deliberate environment copies at mutation and capture
 boundaries; those are separate measured optimization candidates.
+
+## Boundary-Selective Environment Follow-up
+
+`prog show ts-ebdedf` adds an allocation-by-kind breakdown to the optional
+runtime memory report. A 1,025-record measurement showed that value-pointer
+tables, not boxed controls, accounted for 173,068,560 of 187,731,951 allocated
+bytes. That total represented exactly 52,255 environment clones: about 51 full
+copies of both 207-slot symbol tables per record.
+
+Case evaluation now rejects candidate arms before creating a binding scope and
+borrows the incoming environment for selected arms with no bindings. Selected
+binding arms and sequences copy only locals; `using` copies only requirements.
+Declared top-level function values snapshot provisioned requirements but no
+local bindings, while lexical closures still snapshot their complete
+environment. Function invocation creates an isolated parameter environment,
+starts with captured requirements, and overlays requirements from the caller.
+
+The same 100,000-event plus one-outcome workload retained byte-identical output:
+
+| Metric | Environment sharing | Boundary-selective | Change |
+| --- | ---: | ---: | ---: |
+| Wall time | 2.88 s | 2.27 s | -21.1% |
+| Throughput | 34,723 records/s | 44,031 records/s | 1.27x |
+| Scoped peak live | 185,823 B | 101,119 B | -45.6% |
+| Scoped retained | 1,068 B | 1,069 B | effectively unchanged |
+| Scoped total allocation | 18,323,164,431 B | 10,027,401,279 B | -45.3% |
+| Scoped collections | 100,002 | 100,002 | unchanged |
+
+The allocation kinds sum exactly to the total. Value-pointer tables remain the
+largest category at 8,611,239,744 bytes (85.9%); controls account for
+515,202,080 bytes (5.1%). This keeps compact environment representation as the
+next measured runtime frontier instead of prematurely changing the control ABI.
 
 ## Artifact and Output
 

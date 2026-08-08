@@ -432,8 +432,13 @@ slice (`prog show ts-445d99`) shares read-only environments across ordinary
 Core nodes and copies only at mutation and capture boundaries. On the maintained
 100,001-record workload this cuts scoped allocation by 75.5%, peak live by
 75.2%, and wall time by 55.6% without changing retained state or output.
-Remaining boxed values, controls, match work, and required boundary copies are
-now the measured execution-performance frontier.
+The boundary-selective follow-up (`prog show ts-ebdedf`) attributes allocation
+by runtime object kind, rejects case arms before binding, avoids captures for
+declared-function locals, and copies only the locals or requirements table that
+a scope mutates. It cuts the remaining allocation by 45.3% and peak live by
+45.6% with effectively unchanged retention. Compact environment representation
+is now the measured execution-performance frontier; boxed controls are only 5.1%
+of this workload's scoped allocation.
 
 The first post-kernel semantic extension (`prog show ts-8cec2f`) adds an
 inferred effect row independent of failures and dependency needs. `FileSystem`

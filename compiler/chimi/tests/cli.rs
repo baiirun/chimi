@@ -623,6 +623,50 @@ fn native_json_decode_reports_malformed_input_as_an_expected_failure() {
 }
 
 #[test]
+fn native_function_values_retain_provisioned_requirements() {
+    let scratch = scratch_directory("native-latent-using");
+    let project = scratch.join("project");
+    std::fs::create_dir_all(project.join("app")).unwrap();
+    std::fs::write(
+        project.join("app/main.chimi"),
+        concat!(
+            "interface Source { read: fn() -> Int }\n",
+            "let provider = { read: fn() -> Int { 41 } }\n",
+            "fn read() -> Int needs { source: Source } { source.read() }\n",
+            "fn configured() -> fn() -> Int { read using { source: provider } }\n",
+            "pub fn main() -> Int {\n",
+            "  let operation = configured()\n",
+            "  operation()\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let executable = scratch.join("latent-using");
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", "--root"])
+        .arg(&project)
+        .args(["app/main", "-o"])
+        .arg(&executable)
+        .output()
+        .expect("build latent using program");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let execution = execute_native(&executable, &scratch, "latent-using", "off");
+    assert!(execution.process.status.success());
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":41}\n"
+    );
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
 fn native_chimi_code_classifies_and_aggregates_trace_records() {
     let scratch = scratch_directory("trace-summary");
     let executable = scratch.join("chimi-trace-summary");
@@ -872,9 +916,23 @@ fn native_chimi_code_classifies_and_aggregates_trace_records() {
     );
     let memory_report = std::fs::read_to_string(memory_report).unwrap();
     let total_allocated = json_u64_field(&memory_report, "scoped_total_allocated_bytes");
+    let accounted_allocated: u64 = [
+        "bytes",
+        "values",
+        "controls",
+        "environments",
+        "value_pointers",
+        "fields",
+        "callables",
+        "map_nodes",
+    ]
+    .into_iter()
+    .map(|kind| json_u64_field(&memory_report, kind))
+    .sum();
+    assert_eq!(accounted_allocated, total_allocated);
     let bytes_per_record = total_allocated / (allocation_records + 1);
     assert!(
-        bytes_per_record < 250_000,
+        bytes_per_record < 110_000,
         "trace summary allocated {bytes_per_record} bytes per record"
     );
     assert!(

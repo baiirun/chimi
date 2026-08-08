@@ -62,5 +62,6 @@ executable with:
 ```
 
 The report uses schema `chimi.runtime-memory.v1` and contains scoped total
-allocated bytes, peak-live bytes, retained bytes, and collection count. The
-report is diagnostic evidence; it is not application output or telemetry.
+allocated bytes, allocation bytes by runtime object kind, peak-live bytes,
+retained bytes, and collection count. The report is diagnostic evidence; it is
+not application output or telemetry.

@@ -74,6 +74,18 @@ struct ChimiControl {
   int64_t node;
 };
 
+typedef enum {
+  ALLOCATION_BYTES,
+  ALLOCATION_VALUE,
+  ALLOCATION_CONTROL,
+  ALLOCATION_ENVIRONMENT,
+  ALLOCATION_VALUE_POINTERS,
+  ALLOCATION_FIELDS,
+  ALLOCATION_CALLABLE,
+  ALLOCATION_MAP_NODE,
+  ALLOCATION_KIND_COUNT,
+} AllocationKind;
+
 struct ChimiRuntime {
   const char *execution_id;
   bool full_trace;
@@ -85,22 +97,12 @@ struct ChimiRuntime {
   uint64_t next_sequence;
   uint64_t next_span;
   size_t scoped_total_allocated_bytes;
+  size_t scoped_allocated_bytes_by_kind[ALLOCATION_KIND_COUNT];
   size_t scoped_peak_live_bytes;
   size_t scoped_retained_bytes;
   uint64_t scoped_collections;
   bool *active_bindings;
 };
-
-typedef enum {
-  ALLOCATION_BYTES,
-  ALLOCATION_VALUE,
-  ALLOCATION_CONTROL,
-  ALLOCATION_ENVIRONMENT,
-  ALLOCATION_VALUE_POINTERS,
-  ALLOCATION_FIELDS,
-  ALLOCATION_CALLABLE,
-  ALLOCATION_MAP_NODE,
-} AllocationKind;
 
 typedef struct AllocationHeader AllocationHeader;
 struct AllocationHeader {
@@ -117,6 +119,7 @@ struct AllocationScope {
   size_t live_bytes;
   size_t peak_live_bytes;
   size_t total_allocated_bytes;
+  size_t allocated_bytes_by_kind[ALLOCATION_KIND_COUNT];
   uint64_t collections;
 };
 
@@ -140,6 +143,7 @@ static void *allocate(size_t count, size_t size) {
     current_allocation_scope->allocations = header;
     current_allocation_scope->live_bytes += bytes;
     current_allocation_scope->total_allocated_bytes += bytes;
+    current_allocation_scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
     if (current_allocation_scope->live_bytes > current_allocation_scope->peak_live_bytes)
       current_allocation_scope->peak_live_bytes = current_allocation_scope->live_bytes;
   }
@@ -151,7 +155,12 @@ static AllocationHeader *allocation_header(const void *value) {
 }
 
 static void allocation_kind(void *value, AllocationKind kind) {
-  allocation_header(value)->kind = kind;
+  AllocationHeader *header = allocation_header(value);
+  if (current_allocation_scope && header->kind != kind) {
+    current_allocation_scope->allocated_bytes_by_kind[header->kind] -= header->bytes;
+    current_allocation_scope->allocated_bytes_by_kind[kind] += header->bytes;
+  }
+  header->kind = kind;
 }
 
 static void *reallocate_bytes(void *value, size_t old_bytes, size_t new_bytes) {
@@ -187,6 +196,38 @@ static ChimiEnvironment *new_environment(void) {
 static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
   ChimiEnvironment *environment = new_environment();
   memcpy(environment->locals, source->locals, CHIMI_SYMBOL_COUNT * sizeof(*environment->locals));
+  memcpy(environment->requirements, source->requirements,
+         CHIMI_SYMBOL_COUNT * sizeof(*environment->requirements));
+  return environment;
+}
+// Locals and requirements are independently immutable outside the boundaries
+// that bind them. Copy only the table a boundary mutates; precise marking keeps
+// the other table alive through the shared environment pointer.
+static ChimiEnvironment *clone_local_environment(const ChimiEnvironment *source) {
+  ChimiEnvironment *environment = allocate(1, sizeof(*environment));
+  allocation_kind(environment, ALLOCATION_ENVIRONMENT);
+  environment->locals = allocate(CHIMI_SYMBOL_COUNT, sizeof(*environment->locals));
+  allocation_kind(environment->locals, ALLOCATION_VALUE_POINTERS);
+  memcpy(environment->locals, source->locals, CHIMI_SYMBOL_COUNT * sizeof(*environment->locals));
+  environment->requirements = source->requirements;
+  return environment;
+}
+static ChimiEnvironment *clone_requirement_environment(const ChimiEnvironment *source) {
+  ChimiEnvironment *environment = allocate(1, sizeof(*environment));
+  allocation_kind(environment, ALLOCATION_ENVIRONMENT);
+  environment->locals = source->locals;
+  environment->requirements = allocate(CHIMI_SYMBOL_COUNT, sizeof(*environment->requirements));
+  allocation_kind(environment->requirements, ALLOCATION_VALUE_POINTERS);
+  memcpy(environment->requirements, source->requirements,
+         CHIMI_SYMBOL_COUNT * sizeof(*environment->requirements));
+  return environment;
+}
+static ChimiEnvironment *capture_requirements(const ChimiEnvironment *source) {
+  ChimiEnvironment *environment = allocate(1, sizeof(*environment));
+  allocation_kind(environment, ALLOCATION_ENVIRONMENT);
+  environment->locals = NULL;
+  environment->requirements = allocate(CHIMI_SYMBOL_COUNT, sizeof(*environment->requirements));
+  allocation_kind(environment->requirements, ALLOCATION_VALUE_POINTERS);
   memcpy(environment->requirements, source->requirements,
          CHIMI_SYMBOL_COUNT * sizeof(*environment->requirements));
   return environment;
@@ -301,6 +342,8 @@ static void allocation_scope_end(AllocationScope *scope) {
   scope->parent->allocations = scope->allocations;
   scope->parent->live_bytes += scope->live_bytes;
   scope->parent->total_allocated_bytes += scope->total_allocated_bytes;
+  for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
+    scope->parent->allocated_bytes_by_kind[kind] += scope->allocated_bytes_by_kind[kind];
   scope->parent->collections += scope->collections;
 }
 
@@ -917,6 +960,8 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
   allocation_scope_end(&allocation_scope);
   if (top_scope) {
     runtime->scoped_total_allocated_bytes += allocation_scope.total_allocated_bytes;
+    for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
+      runtime->scoped_allocated_bytes_by_kind[kind] += allocation_scope.allocated_bytes_by_kind[kind];
     if (allocation_scope.peak_live_bytes > runtime->scoped_peak_live_bytes)
       runtime->scoped_peak_live_bytes = allocation_scope.peak_live_bytes;
     runtime->scoped_retained_bytes += allocation_scope.live_bytes;
@@ -959,7 +1004,17 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
   if (callable->kind == CALL_HOST)
     return invoke_host(runtime, callable->host, arguments, argument_count,
                        span, call_node, call_environment);
-  ChimiEnvironment *environment = clone_environment(callable->environment);
+  ChimiEnvironment *environment;
+  if (callable->kind == CALL_DECLARED) {
+    // Declared functions capture provisioned requirements, but never local
+    // bindings. Build a clean local table for parameters while retaining the
+    // requirement snapshot taken when the function became a value.
+    environment = new_environment();
+    memcpy(environment->requirements, callable->environment->requirements,
+           CHIMI_SYMBOL_COUNT * sizeof(*environment->requirements));
+  } else {
+    environment = clone_environment(callable->environment);
+  }
   for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)
     if (call_environment->requirements[symbol] != NULL)
       environment->requirements[symbol] = call_environment->requirements[symbol];
@@ -1125,7 +1180,7 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
       allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_DECLARED;
       callable->symbol = symbol; callable->body = function->body;
       callable->parameters_offset = function->parameters_offset; callable->parameters_length = function->parameters_length;
-      callable->environment = clone_environment(environment); callable->name = "function";
+      callable->environment = capture_requirements(environment); callable->name = "function";
       return success(callable_value(callable));
     }
     case CHIMI_SYMBOL_BINDING: {
@@ -1308,7 +1363,7 @@ NODE_WRAPPER(identity, "identity", { result = RUN(CHIMI_NODES[node_id].a); })
 
 NODE_WRAPPER(provision, "provision", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; bool stopped = false;
-  environment = clone_environment(incoming);
+  environment = clone_requirement_environment(incoming);
   for (uint32_t i = 0; i < node->length; ++i) {
     const ChimiNamedNode *provider = &CHIMI_NAMED_NODES[node->offset + i]; ChimiControl *control = RUN(provider->node);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
@@ -1321,7 +1376,7 @@ NODE_WRAPPER(provision, "provision", {
 
 NODE_WRAPPER(sequence, "sequence", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *last = NULL; bool stopped = false;
-  environment = clone_environment(incoming);
+  environment = clone_local_environment(incoming);
   for (uint32_t i = 0; i < node->length; ++i) {
     const ChimiStep *step = &CHIMI_STEPS[node->offset + i]; ChimiControl *control = RUN(step->node);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
@@ -1349,7 +1404,9 @@ static bool match_plain(uint32_t pattern_id, ChimiValue *value, ChimiEnvironment
   const ChimiPattern *pattern = &CHIMI_PATTERNS[pattern_id];
   switch (pattern->kind) {
     case CHIMI_PATTERN_WILDCARD: return true;
-    case CHIMI_PATTERN_BINDING: environment->locals[pattern->a] = value; return true;
+    case CHIMI_PATTERN_BINDING:
+      if (environment) environment->locals[pattern->a] = value;
+      return true;
     case CHIMI_PATTERN_LITERAL: return literal_matches(pattern, value);
     case CHIMI_PATTERN_CONSTRUCTOR:
       if (value->kind != VALUE_CONSTRUCTED || value->as.constructed.constructor != pattern->a ||
@@ -1369,6 +1426,15 @@ static bool match_value(uint32_t pattern_id, MatchValue value, ChimiEnvironment 
   }
   return value.kind == MATCH_PLAIN && match_plain(pattern_id, value.value, environment);
 }
+static bool pattern_binds(uint32_t pattern_id) {
+  const ChimiPattern *pattern = &CHIMI_PATTERNS[pattern_id];
+  if (pattern->kind == CHIMI_PATTERN_BINDING) return true;
+  if (pattern->kind == CHIMI_PATTERN_OUTCOME) return pattern_binds(pattern->offset);
+  if (pattern->kind != CHIMI_PATTERN_CONSTRUCTOR) return false;
+  for (uint32_t index = 0; index < pattern->length; ++index)
+    if (pattern_binds(CHIMI_IDS[pattern->offset + index])) return true;
+  return false;
+}
 
 NODE_WRAPPER(match, "match", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; MatchValue *values = allocate(node->length, sizeof(*values)); bool stopped = false;
@@ -1386,10 +1452,19 @@ NODE_WRAPPER(match, "match", {
   }
   if (stopped) break;
   for (uint32_t arm_index = 0; arm_index < node->b; ++arm_index) {
-    const ChimiArm *arm = &CHIMI_ARMS[node->a + arm_index]; ChimiEnvironment *arm_environment = clone_environment(environment); bool matched = true;
+    const ChimiArm *arm = &CHIMI_ARMS[node->a + arm_index]; bool matched = true;
     for (uint32_t subject = 0; subject < node->length; ++subject)
-      if (!match_value(CHIMI_IDS[arm->patterns_offset + subject], values[subject], arm_environment)) { matched = false; break; }
+      if (!match_value(CHIMI_IDS[arm->patterns_offset + subject], values[subject], NULL)) { matched = false; break; }
     if (!matched) continue;
+    bool binds = false;
+    for (uint32_t subject = 0; subject < node->length; ++subject)
+      if (pattern_binds(CHIMI_IDS[arm->patterns_offset + subject])) { binds = true; break; }
+    ChimiEnvironment *arm_environment = binds ? clone_local_environment(environment) : environment;
+    if (binds)
+      for (uint32_t subject = 0; subject < node->length; ++subject)
+        if (!match_value(CHIMI_IDS[arm->patterns_offset + subject], values[subject], arm_environment)) {
+          fputs("verified pattern changed while binding\n", stderr); exit(70);
+        }
     if (arm->guard != UINT32_MAX) {
       ChimiControl *guard = run_node(arm->guard, runtime, arm_environment, span);
       if (guard->kind != CONTROL_SUCCESS) { result = guard; stopped = true; break; }
@@ -1439,9 +1514,20 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
   }
   fprintf(output,
           "{\"schema\":\"chimi.runtime-memory.v1\",\"scoped_total_allocated_bytes\":%zu,"
+          "\"scoped_allocated_bytes_by_kind\":{\"bytes\":%zu,\"values\":%zu,"
+          "\"controls\":%zu,\"environments\":%zu,\"value_pointers\":%zu,"
+          "\"fields\":%zu,\"callables\":%zu,\"map_nodes\":%zu},"
           "\"scoped_peak_live_bytes\":%zu,\"scoped_retained_bytes\":%zu,"
           "\"scoped_collections\":%" PRIu64 "}\n",
           runtime->scoped_total_allocated_bytes,
+          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_BYTES],
+          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_VALUE],
+          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_CONTROL],
+          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_ENVIRONMENT],
+          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_VALUE_POINTERS],
+          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_FIELDS],
+          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_CALLABLE],
+          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_MAP_NODE],
           runtime->scoped_peak_live_bytes,
           runtime->scoped_retained_bytes,
           runtime->scoped_collections);
