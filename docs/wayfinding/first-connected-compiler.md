@@ -427,9 +427,13 @@ deterministic execution summary. It exercises arguments, scoped host I/O,
 failure values, functional aggregation, optional tracing, bounded native
 memory, and single-executable distribution. Its contract is in
 `docs/plans/first-useful-cli.md`; measured application evidence is in
-`docs/performance/chimi-trace-summary-baseline.md`. The measured allocation
-rate, rather than retained memory or a missing language channel, is the next
-known execution-performance frontier.
+`docs/performance/chimi-trace-summary-baseline.md`. The first allocation-rate
+slice (`prog show ts-445d99`) shares read-only environments across ordinary
+Core nodes and copies only at mutation and capture boundaries. On the maintained
+100,001-record workload this cuts scoped allocation by 75.5%, peak live by
+75.2%, and wall time by 55.6% without changing retained state or output.
+Remaining boxed values, controls, match work, and required boundary copies are
+now the measured execution-performance frontier.
 
 The first post-kernel semantic extension (`prog show ts-8cec2f`) adds an
 inferred effect row independent of failures and dependency needs. `FileSystem`

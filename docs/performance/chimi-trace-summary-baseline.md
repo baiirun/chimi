@@ -53,6 +53,40 @@ allocation is about 749 kB per event and dominates current throughput. This
 identifies environment cloning and boxed intermediate values as the next
 optimization frontier without weakening the scoped ownership contract.
 
+## Environment-Sharing Follow-up
+
+`prog show ts-445d99` profiles and removes the first allocation multiplier.
+The generated trace-summary program has 207 symbols, so cloning its environment
+requests 3,328 bytes before evaluating a child. Sampling the unoptimized path
+showed memory clearing, copying, allocation, and reclamation as the dominant
+CPU stacks because every Core node cloned both symbol tables.
+
+Ordinary Core evaluation now borrows its incoming environment. Only semantic
+boundaries that bind state create a copy: function invocation, sequence,
+provision, pattern arms, and closure capture. This preserves lexical isolation
+and scoped reclamation without changing the runtime ABI, value layout, Core,
+tracing, or terminal outcomes.
+
+A same-checkout before/after run used 100,000 operation events plus one outcome
+in a 14,388,951-byte input. The output was byte-identical.
+
+| Metric | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Wall time | 6.48 s | 2.88 s | -55.6% |
+| Throughput | 15,432 records/s | 34,723 records/s | 2.25x |
+| Process peak RSS | 2,785,280 B | 2,080,768 B | -25.3% |
+| Scoped peak live | 749,835 B | 185,823 B | -75.2% |
+| Scoped retained | 1,068 B | 1,068 B | unchanged |
+| Scoped total allocation | 74,899,374,095 B | 18,323,164,431 B | -75.5% |
+| Scoped collections | 100,002 | 100,002 | unchanged |
+
+Five follow-up runs recorded 2.64 s p50 and 2.76 s p95, or about 37,879
+records/s at p50. A native integration gate now requires the maintained
+summarizer to stay below 250 kB allocated per record and 250 kB peak live while
+retaining less than 2 kB. Remaining allocation is primarily boxed values,
+controls, match work, and deliberate environment copies at mutation and capture
+boundaries; those are separate measured optimization candidates.
+
 ## Artifact and Output
 
 The successful report was:

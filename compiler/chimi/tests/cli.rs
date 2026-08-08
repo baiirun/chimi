@@ -834,6 +834,58 @@ fn native_chimi_code_classifies_and_aggregates_trace_records() {
         );
     }
 
+    let allocation_records = 1_024_u64;
+    let allocation_input = scratch.join("allocation-input.jsonl");
+    let mut allocation_source = String::new();
+    for sequence in 0..allocation_records {
+        allocation_source.push_str(&format!(
+            concat!(
+                "{{\"schema\":\"chimi.runtime.v1\",",
+                "\"event\":\"operation_completed\",\"sequence\":{},",
+                "\"execution_id\":\"allocation\",\"computation\":\"main\",",
+                "\"operation\":\"call\"}}\n"
+            ),
+            sequence
+        ));
+    }
+    allocation_source
+        .push_str("{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n");
+    std::fs::write(&allocation_input, allocation_source).unwrap();
+    let memory_report = scratch.join("allocation-memory.json");
+    let allocation = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--memory-report-file={}", memory_report.display()))
+        .arg("--")
+        .arg(&allocation_input)
+        .output()
+        .expect("measure trace-summary callback allocation");
+    assert!(allocation.status.success());
+    assert_eq!(
+        String::from_utf8(allocation.stdout).unwrap(),
+        concat!(
+            "{\"dependency_calls\":{},\"events\":1024,",
+            "\"operations\":{\"call\":1024},\"records\":1025,",
+            "\"schema\":\"chimi.trace-summary.v1\",",
+            "\"terminal_outcomes\":{\"success\":1}}\n"
+        )
+    );
+    let memory_report = std::fs::read_to_string(memory_report).unwrap();
+    let total_allocated = json_u64_field(&memory_report, "scoped_total_allocated_bytes");
+    let bytes_per_record = total_allocated / (allocation_records + 1);
+    assert!(
+        bytes_per_record < 250_000,
+        "trace summary allocated {bytes_per_record} bytes per record"
+    );
+    assert!(
+        json_u64_field(&memory_report, "scoped_peak_live_bytes") < 250_000,
+        "trace summary callback exceeded its live-memory budget"
+    );
+    assert!(
+        json_u64_field(&memory_report, "scoped_retained_bytes") < 2_048,
+        "trace summary retained too much callback state"
+    );
+
     let invalid_cases = [
         (
             "malformed",

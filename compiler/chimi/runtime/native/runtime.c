@@ -1150,9 +1150,13 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
   }
 }
 
+/* Core nodes share their incoming environment because ordinary evaluation only reads it.
+   Sequence and provision clone before binding locals or requirements, and match arms clone
+   before binding patterns. Any new node that mutates either table must establish the same
+   isolation boundary instead of writing through this shared pointer. */
 #define NODE_WRAPPER(NAME, OPERATION, ...) \
   ChimiControl *chimi_rt_##NAME(ChimiRuntime *runtime, uint32_t node_id, ChimiEnvironment *incoming, uint64_t parent) { \
-    uint64_t span = begin_node(runtime, node_id, parent, OPERATION); ChimiEnvironment *environment = clone_environment(incoming); \
+    uint64_t span = begin_node(runtime, node_id, parent, OPERATION); ChimiEnvironment *environment = incoming; \
     (void)environment; \
     ChimiControl *result = NULL; do { __VA_ARGS__ } while (0); return finish_node(runtime, node_id, parent, span, OPERATION, result); \
   }
@@ -1304,6 +1308,7 @@ NODE_WRAPPER(identity, "identity", { result = RUN(CHIMI_NODES[node_id].a); })
 
 NODE_WRAPPER(provision, "provision", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; bool stopped = false;
+  environment = clone_environment(incoming);
   for (uint32_t i = 0; i < node->length; ++i) {
     const ChimiNamedNode *provider = &CHIMI_NAMED_NODES[node->offset + i]; ChimiControl *control = RUN(provider->node);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
@@ -1316,6 +1321,7 @@ NODE_WRAPPER(provision, "provision", {
 
 NODE_WRAPPER(sequence, "sequence", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *last = NULL; bool stopped = false;
+  environment = clone_environment(incoming);
   for (uint32_t i = 0; i < node->length; ++i) {
     const ChimiStep *step = &CHIMI_STEPS[node->offset + i]; ChimiControl *control = RUN(step->node);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
