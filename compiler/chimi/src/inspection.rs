@@ -492,7 +492,7 @@ fn inspect_callable(typed: &TypedProject, contract: &CallableContract) -> Callab
         failure_parameters: failures
             .parameters
             .iter()
-            .map(|symbol| typed.resolved.symbol(*symbol).name.clone())
+            .map(|symbol| typed.format_failure_parameter(failures, *symbol))
             .collect(),
         needs: needs
             .entries

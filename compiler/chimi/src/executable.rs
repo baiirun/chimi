@@ -911,7 +911,7 @@ fn type_is_nonpoisoned(
         CanonicalType::Record(fields) => fields
             .iter()
             .all(|field| type_is_nonpoisoned(typed, field.type_id, seen)),
-        CanonicalType::Generic(_) => true,
+        CanonicalType::Generic(_) | CanonicalType::FailureSetValue(_) => true,
     }
 }
 

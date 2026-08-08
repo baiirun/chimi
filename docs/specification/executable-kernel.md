@@ -165,6 +165,11 @@ silently create generics from unresolved uppercase identifiers.
 The compiler infers each generic parameter's kind from use. Ordinary type
 positions constrain value types; `errors` positions constrain failure rows;
 `needs` positions constrain dependency rows. Inconsistent uses are diagnostics.
+A generic used in both an ordinary type position and an `errors` position is a
+failure set: the ordinary position denotes its error-value union and the
+`errors` position denotes the same set as a failure row. This is one generic
+identity with two compile-time projections, not two independently inferred
+parameters.
 
 The first kernel supports declaration-scoped parametric polymorphism. It does
 not require higher-rank types, explicit kind annotations, specialization
@@ -314,6 +319,40 @@ from ordinary enum matching, which remains exhaustive.
 
 Failure rows retain variant identities. Tooling MAY display a whole error enum
 when every variant remains and individual variants after selective handling.
+
+Selective recovery is ordinary higher-order function composition. It requires
+no recovery keyword, wrapper, or propagation operator:
+
+```chimi
+fn recover_declined<E>(operation: fn() -> Receipt errors E) {
+  fn() {
+    case operation() {
+      Success(receipt) -> receipt
+      Failure(Declined(reason)) -> Receipt(id: reason)
+    }
+  }
+}
+
+let configured = operation |> recover_declined
+```
+
+Here `E` is a failure set. The returned thunk exposes the residual row
+`E - PaymentError.Declined`. Instantiating `E` with `PaymentError` therefore
+leaves only `PaymentError.Offline`. An unguarded failure pattern MUST subtract
+every variant it fully covers. A guarded pattern MUST NOT subtract that variant,
+because the guard can reject a matching value. A pattern that cannot occur in
+a known closed failure row is a diagnostic; a pattern against an open row is
+permitted and subtraction is a no-op when an instantiation lacks that variant.
+
+Binding `Failure(error)` projects the failure set into an ordinary value.
+Subsequent ordinary `case error` matching MUST be exhaustive; the live outcome
+case alone permits omitted failure variants to bubble. Residual rows MUST
+remain visible in inferred contracts and structured inspection.
+
+Failure-set projections and row subtraction are compile-time only. Lowering
+MUST use ordinary outcome matching, and MUST NOT introduce a `Recover` Core
+operation, runtime row object, allocation, or tag. Unmatched expected failures
+propagate unchanged, while defects and cancellation bypass recovery arms.
 
 A storable `Result<T, E>` is not built into this kernel. If later introduced,
 it is ordinary data and its qualified constructors remain distinct from live
@@ -559,6 +598,12 @@ The files under `prototypes/golden/` are the acceptance corpus for this
 specification. A future implementation SHOULD convert each expectation comment
 into an automated compiler assertion without making those comments part of the
 language.
+
+Compiler tests MUST also cover a generic recovery thunk, guarded
+non-subtraction, closed impossible patterns, exhaustive matching after failure
+capture, concrete residual specialization, structured inspection, and runtime
+bypass for defects and cancellation. These checks MUST execute through the
+same type, Core, and runtime boundaries used by ordinary programs.
 
 ## Non-Normative Sources
 

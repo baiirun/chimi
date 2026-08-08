@@ -110,6 +110,19 @@ Evidence: [grammar prototype](../../prototypes/grammar/README.md),
 - Matching a fallible expression MAY handle selected failure variants. Any
   unmatched variants MUST continue bubbling automatically. This rule is
   distinct from exhaustive matching over an ordinary enum value.
+- One declared generic MAY denote the same failure set in both ordinary value
+  and `errors` positions. The value projection is the set's error-value union;
+  the row projection is its expected-failure row.
+- An unguarded selective failure pattern MUST subtract its fully covered
+  variants from a closed or open row. A guarded pattern MUST NOT subtract.
+  Tooling MUST preserve and display open residuals such as
+  `E - PaymentError.Declined`.
+- A captured failure value is ordinary data and MUST use exhaustive ordinary
+  matching. Only a live outcome case permits omitted failure variants to
+  bubble.
+- Selective recovery MUST remain ordinary function and thunk composition. It
+  MUST lower through existing outcome matching and MUST NOT introduce recovery
+  syntax, a `Recover` Core node, or a runtime failure-row value.
 - Defects and cancellation MUST remain outside expected-failure rows.
 - Higher-order functions MUST preserve unknown success, failure, and needs
   relationships expressed by their callable parameters.
@@ -246,15 +259,6 @@ The behavior above is accepted, but these source spellings are not yet frozen:
 Specification consolidation MAY retain these spellings as the first normative
 dialect. Changing a spelling MUST NOT reopen its accepted semantic contract
 without a separate decision.
-
-## Remaining Specification and Architecture Work
-
-- How a polymorphic recovery combinator relates a captured failure value to an
-  open failure row for selective policies.
-
-These are not invitations to expand the source language. The normative
-specification and representation-handoff contracts MUST resolve them without
-letting prototype host types answer them accidentally.
 
 ## Explicitly Deferred Beyond the Kernel
 

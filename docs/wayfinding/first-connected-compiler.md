@@ -285,8 +285,16 @@ its final expected failure. No retry syntax, compiler operation, or runtime
 intrinsic exists. This forced the general type system to preserve unresolved
 generic parameters on returned function values and exposed a fixed-point bug
 where module bindings compared raw type identities instead of equivalent
-resolved structure. Generic inspection of an open failure row remains a
-separate language-design question for selective policies.
+resolved structure.
+
+The generic selective-failure slice is tracked by `prog show ep-05cd68`. One
+generic failure-set identity now projects into both ordinary error values and
+`errors` rows. Unguarded outcome patterns retain open-row subtraction such as
+`E - PaymentError.Declined`; guarded arms preserve the row, concrete calls
+specialize the residual, and structured inspection exposes the same equation.
+The representation erases through existing Core outcome matching, so reusable
+recovery remains ordinary pipeable thunk composition rather than syntax or a
+runtime intrinsic.
 
 The first M6 slice connects canonical formatting to the real lossless CST.
 `Compiler::format` returns complete canonical text for syntax-valid snapshots

@@ -192,6 +192,7 @@ pub enum GenericParameterKind {
     Unconstrained,
     Value,
     FailureRow,
+    FailureSet,
     NeedsRow,
     EffectRow,
     Conflicting,
@@ -242,6 +243,7 @@ impl TypeReport {
                 GenericKind::Unconstrained => GenericParameterKind::Unconstrained,
                 GenericKind::Value => GenericParameterKind::Value,
                 GenericKind::FailureRow => GenericParameterKind::FailureRow,
+                GenericKind::FailureSet => GenericParameterKind::FailureSet,
                 GenericKind::NeedsRow => GenericParameterKind::NeedsRow,
                 GenericKind::EffectRow => GenericParameterKind::EffectRow,
                 GenericKind::Conflicting => GenericParameterKind::Conflicting,
@@ -1084,28 +1086,56 @@ mod tests {
     }
 
     #[test]
-    fn one_generic_cannot_be_both_a_value_and_failure_row() {
+    fn one_generic_can_project_to_a_failure_row_and_its_value_union() {
         let text = concat!(
-            "fn invalid<A>(\n",
-            "  operation: fn(Int) -> Int errors A,\n",
-            "  value: A,\n",
-            ") -> Int { 0 }\n",
+            "fn forward<E>(\n",
+            "  operation: fn(Int) -> Int errors E,\n",
+            "  error: E,\n",
+            ") -> Int { Failure(error) }\n",
         );
         let report = Compiler::type_project(vec![module(
-            "contracts/invalid_kind",
-            "invalid_kind.chimi",
+            "contracts/failure_set",
+            "failure_set.chimi",
             text,
         )]);
 
-        assert_eq!(report.diagnostics().len(), 1);
-        assert_eq!(report.diagnostics()[0].stage(), DiagnosticStage::Type);
-        assert_eq!(report.diagnostics()[0].code(), "T4101");
+        assert!(report.is_success(), "{}", report.render_diagnostics());
         assert_eq!(
-            report.generic_kind("contracts/invalid_kind", "invalid", "A"),
-            Some(GenericParameterKind::Conflicting)
+            report
+                .contract("contracts/failure_set", "forward")
+                .as_deref(),
+            Some("fn(fn(Int) -> Int errors E, E) -> Int errors E")
         );
-        let expected = text.find("value: A").unwrap() + "value: ".len();
-        assert_eq!(report.diagnostics()[0].range().start(), expected as u32);
+        assert_eq!(
+            report.generic_kind("contracts/failure_set", "forward", "E"),
+            Some(GenericParameterKind::FailureSet)
+        );
+    }
+
+    #[test]
+    fn failure_set_value_arguments_must_match_the_bound_failure_row() {
+        let report = Compiler::type_project(vec![module(
+            "contracts/failure_set_mismatch",
+            "failure_set_mismatch.chimi",
+            concat!(
+                "enum FirstError { First }\n",
+                "enum SecondError { Second }\n",
+                "fn forward<E>(operation: fn() -> Int errors E, error: E) -> Int {\n",
+                "  operation()\n",
+                "}\n",
+                "fn operation() -> Int { Failure(First()) }\n",
+                "fn mismatch() -> Int { forward(operation, Second()) }\n",
+            ),
+        )]);
+
+        assert_eq!(
+            report
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            ["T4203"]
+        );
     }
 
     #[test]
@@ -1798,6 +1828,15 @@ mod tests {
                 "}\n",
                 "fn bubble(mode: Int) -> Receipt { operation(mode) }\n",
                 "fn explicit_success() -> Int { Success(1) }\n",
+                "fn decline_only() -> Receipt { Failure(Declined(reason: \"declined\")) }\n",
+                "fn capture_precise_failure() -> Text {\n",
+                "  case decline_only() {\n",
+                "    Success(_receipt) -> \"success\"\n",
+                "    Failure(error) -> case error {\n",
+                "      Declined(reason) -> reason\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
                 "fn recover_declined(mode: Int) -> Receipt {\n",
                 "  case operation(mode) {\n",
                 "    Success(receipt) -> receipt\n",
@@ -1832,6 +1871,11 @@ mod tests {
             ("bubble", "fn(Int) -> Receipt errors PaymentError"),
             ("explicit_success", "fn() -> Int"),
             (
+                "decline_only",
+                "fn() -> Receipt errors PaymentError.Declined",
+            ),
+            ("capture_precise_failure", "fn() -> Text"),
+            (
                 "recover_declined",
                 "fn(Int) -> Receipt errors PaymentError.Offline",
             ),
@@ -1848,6 +1892,230 @@ mod tests {
                 "unexpected contract for {function}"
             );
         }
+    }
+
+    #[test]
+    fn generic_recovery_thunks_subtract_handled_failure_variants() {
+        let report = Compiler::type_project(vec![module(
+            "outcomes/generic_recovery",
+            "generic_recovery.chimi",
+            concat!(
+                "struct Receipt { id: Text }\n",
+                "enum PaymentError { Declined(reason: Text), Offline }\n",
+                "fn recover_declined<E>(operation: fn() -> Receipt errors E) {\n",
+                "  fn() {\n",
+                "    case operation() {\n",
+                "      Success(receipt) -> receipt\n",
+                "      Failure(Declined(reason)) -> Receipt(id: reason)\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+                "fn recover_declined_when<E>(operation: fn() -> Receipt errors E) {\n",
+                "  fn() {\n",
+                "    case operation() {\n",
+                "      Success(receipt) -> receipt\n",
+                "      Failure(Declined(reason)) if True -> Receipt(id: reason)\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+                "fn describe_failure<E>(operation: fn() -> Receipt errors E) {\n",
+                "  case operation() {\n",
+                "    Success(_receipt) -> \"success\"\n",
+                "    Failure(error) -> case error {\n",
+                "      Declined(reason) -> reason\n",
+                "      _ -> \"other\"\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+                "fn operation() -> Receipt { Failure(Offline()) }\n",
+                "fn configured() {\n",
+                "  operation |> recover_declined\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report
+                .contract("outcomes/generic_recovery", "recover_declined")
+                .as_deref(),
+            Some(
+                "fn(fn() -> Receipt errors E) -> fn() -> Receipt errors E - PaymentError.Declined"
+            )
+        );
+        assert_eq!(
+            report
+                .contract("outcomes/generic_recovery", "recover_declined_when")
+                .as_deref(),
+            Some("fn(fn() -> Receipt errors E) -> fn() -> Receipt errors E")
+        );
+        assert_eq!(
+            report
+                .contract("outcomes/generic_recovery", "describe_failure")
+                .as_deref(),
+            Some("fn(fn() -> Receipt errors E) -> Text")
+        );
+        assert_eq!(
+            report
+                .contract("outcomes/generic_recovery", "configured")
+                .as_deref(),
+            Some("fn() -> fn() -> Receipt errors PaymentError.Offline")
+        );
+    }
+
+    #[test]
+    fn captured_generic_failure_values_require_exhaustive_ordinary_cases() {
+        let report = Compiler::type_project(vec![module(
+            "outcomes/generic_failure_value",
+            "generic_failure_value.chimi",
+            concat!(
+                "struct Receipt { id: Text }\n",
+                "enum PaymentError { Declined(reason: Text), Offline }\n",
+                "fn describe<E>(operation: fn() -> Receipt errors E) {\n",
+                "  case operation() {\n",
+                "    Success(_receipt) -> \"success\"\n",
+                "    Failure(error) -> case error {\n",
+                "      Declined(reason) -> reason\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+        )]);
+
+        assert_eq!(
+            report
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            ["T4231"]
+        );
+    }
+
+    #[test]
+    fn generic_selective_recovery_erases_to_existing_core_outcome_matching() {
+        let report = Compiler::run_project(
+            vec![module(
+                "outcomes/generic_recovery_runtime",
+                "generic_recovery_runtime.chimi",
+                concat!(
+                    "struct Receipt { id: Text }\n",
+                    "enum PaymentError { Declined(reason: Text), Offline }\n",
+                    "fn recover_declined<E>(operation: fn() -> Receipt errors E) {\n",
+                    "  fn() {\n",
+                    "    case operation() {\n",
+                    "      Success(receipt) -> receipt\n",
+                    "      Failure(Declined(reason)) -> Receipt(id: reason)\n",
+                    "    }\n",
+                    "  }\n",
+                    "}\n",
+                    "fn operation() -> Receipt { Failure(Declined(reason: \"recovered\")) }\n",
+                    "pub fn main() -> Receipt {\n",
+                    "  let configured = operation |> recover_declined\n",
+                    "  configured()\n",
+                    "}\n",
+                ),
+            )],
+            ExecutionConfig::new("generic-selective-recovery").unwrap(),
+        )
+        .expect("generic recovery must execute through ordinary Core matching");
+
+        assert!(matches!(
+            report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Constructed {
+                ref type_name,
+                variant_name: None,
+                ref fields,
+            }) if type_name == "Receipt"
+                && fields[0].name == "id"
+                && fields[0].value == ExecutionValue::Text("recovered".to_owned())
+        ));
+    }
+
+    #[test]
+    fn generic_selective_recovery_does_not_catch_defects_or_cancellation() {
+        let sources = || {
+            vec![module(
+                "outcomes/generic_recovery_control",
+                "generic_recovery_control.chimi",
+                concat!(
+                    "struct Receipt { id: Text }\n",
+                    "enum PaymentError { Declined(reason: Text) }\n",
+                    "fn recover_declined<E>(operation: fn() -> Receipt errors E) {\n",
+                    "  fn() {\n",
+                    "    case operation() {\n",
+                    "      Success(receipt) -> receipt\n",
+                    "      Failure(Declined(reason)) -> Receipt(id: reason)\n",
+                    "    }\n",
+                    "  }\n",
+                    "}\n",
+                    "fn operation() -> Receipt {\n",
+                    "  let _crash = 1 / 0\n",
+                    "  Receipt(id: \"unreachable\")\n",
+                    "}\n",
+                    "pub fn main() -> Receipt {\n",
+                    "  let configured = operation |> recover_declined\n",
+                    "  configured()\n",
+                    "}\n",
+                ),
+            )]
+        };
+
+        let defect = Compiler::run_project(
+            sources(),
+            ExecutionConfig::new("generic-recovery-defect").unwrap(),
+        )
+        .expect("the generic recovery program compiles before its runtime defect");
+        assert!(matches!(
+            defect.outcome,
+            ExecutionOutcome::Defect(ref defect) if defect.message == "integer division by zero"
+        ));
+
+        let cancellation = Compiler::run_project(
+            sources(),
+            ExecutionConfig::new("generic-recovery-cancel")
+                .unwrap()
+                .with_cancellation_requested(),
+        )
+        .expect("the generic recovery program seals before cancellation");
+        assert!(matches!(
+            cancellation.outcome,
+            ExecutionOutcome::Cancellation(_)
+        ));
+    }
+
+    #[test]
+    fn inspection_exposes_generic_failure_row_subtraction() {
+        let source = concat!(
+            "struct Receipt { id: Text }\n",
+            "enum PaymentError { Declined(reason: Text), Offline }\n",
+            "fn recover_declined<E>(operation: fn() -> Receipt errors E) {\n",
+            "  case operation() {\n",
+            "    Success(receipt) -> receipt\n",
+            "    Failure(Declined(reason)) -> Receipt(id: reason)\n",
+            "  }\n",
+            "}\n",
+            "fn operation() -> Receipt { Failure(Offline()) }\n",
+            "fn configured() { recover_declined(operation) }\n",
+        );
+        let offset = source.rfind("recover_declined").unwrap();
+        let report = Compiler::inspect_project(
+            vec![module(
+                "outcomes/generic_recovery_inspection",
+                "generic_recovery_inspection.chimi",
+                source,
+            )],
+            "outcomes/generic_recovery_inspection",
+            offset,
+        )
+        .expect("inspect the generic recovery reference");
+
+        let callable = report.callable().expect("recovery is callable");
+        assert_eq!(
+            callable.display(),
+            "fn(fn() -> Receipt errors E) -> Receipt errors E - PaymentError.Declined"
+        );
+        assert_eq!(callable.failure_parameters(), ["E - PaymentError.Declined"]);
     }
 
     #[test]

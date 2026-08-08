@@ -55,7 +55,7 @@ compiler snapshot:
 | `SemanticId` | A lowered declaration, expression, pattern, or type reference | Stable when that semantic entity is reused |
 | `SymbolId` | A declared module, type, constructor, function, binding, parameter, generic, or requirement | Derived from declaration identity, not spelling alone |
 | `TypeId` | An interned canonical type | Equal types share identity within the snapshot |
-| `FailureRowId` | An interned normalized failure row | Members are variant `SymbolId`s or row parameters |
+| `FailureRowId` | An interned normalized failure row | Members are variant `SymbolId`s or row parameters with excluded variants |
 | `NeedsRowId` | An interned normalized dependency row | Members retain requirement identity, name, and interface `TypeId` |
 | `OriginId` | Source and semantic origin of an executable node | Resolves to `FileId`, span, `SemanticId`, and lowering origin |
 | `CoreNodeId` | One executable semantic operation | Stable within the executable program |
@@ -185,7 +185,8 @@ Every generic binder has one inferred kind:
 
 - value type;
 - failure row;
-- needs row.
+- failure set, when one binder is used as both a value union and a failure row;
+- needs row;
 - effect row.
 
 Constraint generation is driven by its declared uses. A generic used in
@@ -205,6 +206,17 @@ support higher-rank arguments or explicit kind syntax.
   add no failure.
 - A failure-channel case removes handled variants, unions recovery-arm channels,
   and leaves unhandled variants in the result.
+- An open row retains selective handling as `E - Variant`. Substitution applies
+  the exclusion to the concrete row bound to `E`; unioning two occurrences of
+  the same parameter intersects their exclusions because
+  `(E - A) union (E - B) = E - (A intersection B)`.
+- A failure-set generic has one symbol identity. Its row projection is an open
+  `FailureRowId`; its value projection is a canonical compile-time union type.
+  Closed complete single-enum sets may reuse the nominal enum type, while
+  partial, heterogeneous, and open sets retain the failure-set value form.
+- Unguarded patterns subtract only variants whose complete value space is
+  covered. Guards preserve the variant. Closed impossible patterns are
+  diagnosed; open-row patterns remain possible unless already excluded.
 - An ordinary enum case proves exhaustive coverage independently from failure-
   channel bubbling.
 - Defects and cancellation never appear in `FailureRowId`.
@@ -322,6 +334,9 @@ meaning rather than layout.
 - `Failure(error)` becomes an expected-failure transition.
 - Failure-channel cases become handlers over selected variant `SymbolId`s;
   unmatched variants propagate.
+- Generic failure-set value projections and row exclusions are erased during
+  lowering. They MUST NOT create a Core recovery operation, runtime wrapper,
+  allocation, or tag.
 - Requirement calls use stable requirement and method identities rather than
   lexical strings.
 - `using` remains visible as a provision scope so runtime events can record
@@ -503,11 +518,14 @@ The first connected compiler implementation must demonstrate:
    semantic operation.
 8. Clean and future incremental analysis produce equivalent resolved, typed,
    sealed, and core results.
+9. Generic selective recovery preserves one failure-set identity across value
+   and row projections, reports residual rows through inspection, and executes
+   without adding a Core recovery node or runtime row representation.
 
 Tests cross the four module interfaces above and assert observable facts. They
 must not inspect solver worklists, arena allocation order, or traversal passes.
 
-Until items 1–7 are connected, the kernel remains specification-ready but not
+Until items 1–9 are connected, the kernel remains specification-ready but not
 an end-to-end compiler.
 
 ## Notes

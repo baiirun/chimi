@@ -112,6 +112,7 @@ pub(crate) enum GenericKind {
     Unconstrained,
     Value,
     FailureRow,
+    FailureSet,
     NeedsRow,
     EffectRow,
     Conflicting,
@@ -124,6 +125,7 @@ pub(crate) enum CanonicalType {
         arguments: Vec<TypeId>,
     },
     Generic(SymbolId),
+    FailureSetValue(FailureRowId),
     Function(CallableContract),
     PolymorphicFunction {
         parameters: Vec<SymbolId>,
@@ -147,6 +149,13 @@ pub(crate) struct CallableContract {
 pub(crate) struct FailureRow {
     pub(crate) variants: Vec<SymbolId>,
     pub(crate) parameters: Vec<SymbolId>,
+    pub(crate) exclusions: Vec<FailureRowExclusion>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct FailureRowExclusion {
+    pub(crate) parameter: SymbolId,
+    pub(crate) variants: Vec<SymbolId>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -382,6 +391,9 @@ impl TypedProject {
                 result
             }
             CanonicalType::Generic(symbol) => self.resolved.symbol(*symbol).name.clone(),
+            CanonicalType::FailureSetValue(failures) => {
+                self.format_failure_row(&self.failure_rows[failures.raw() as usize])
+            }
             CanonicalType::Function(contract) => self.format_function_contract(contract),
             CanonicalType::PolymorphicFunction { contract, .. } => {
                 self.format_function_contract(contract)
@@ -461,7 +473,7 @@ impl TypedProject {
         let mut members = row
             .parameters
             .iter()
-            .map(|symbol| self.resolved.symbol(*symbol).name.clone())
+            .map(|symbol| self.format_failure_parameter(row, *symbol))
             .collect::<Vec<_>>();
         let mut variants_by_enum: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
         for variant in &row.variants {
@@ -491,6 +503,38 @@ impl TypedProject {
             members.pop().expect("one member")
         } else {
             format!("{{ {} }}", members.join(", "))
+        }
+    }
+
+    pub(crate) fn format_failure_parameter(&self, row: &FailureRow, symbol: SymbolId) -> String {
+        let parameter = self.resolved.symbol(symbol).name.clone();
+        let Some(exclusion) = row
+            .exclusions
+            .iter()
+            .find(|exclusion| exclusion.parameter == symbol)
+        else {
+            return parameter;
+        };
+        let variants = exclusion
+            .variants
+            .iter()
+            .map(|variant| {
+                self.enum_for_variant(*variant).map_or_else(
+                    || self.resolved.symbol(*variant).name.clone(),
+                    |owner| {
+                        format!(
+                            "{}.{}",
+                            self.resolved.symbol(owner).name,
+                            self.resolved.symbol(*variant).name
+                        )
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        if variants.len() == 1 {
+            format!("{parameter} - {}", variants[0])
+        } else {
+            format!("{parameter} - {{ {} }}", variants.join(", "))
         }
     }
 
@@ -661,6 +705,7 @@ impl ProjectTypeChecker {
         checker.intern_failure_row(FailureRow {
             variants: Vec::new(),
             parameters: Vec::new(),
+            exclusions: Vec::new(),
         });
         checker.intern_needs_row(NeedsRow {
             entries: Vec::new(),
@@ -879,6 +924,7 @@ impl ProjectTypeChecker {
                 self.resolved
                     .standard_generic(StandardGeneric::FileFailures),
             ],
+            exclusions: Vec::new(),
         });
         let callback_needs = self.intern_needs_row(NeedsRow {
             entries: Vec::new(),
@@ -907,6 +953,7 @@ impl ProjectTypeChecker {
                 self.resolved
                     .standard_generic(StandardGeneric::FileFailures),
             ],
+            exclusions: Vec::new(),
         });
         let file_effects = self.intern_effect_row(EffectRow {
             effects: vec![Effect::Io],
@@ -1041,6 +1088,7 @@ impl ProjectTypeChecker {
         let failures = self.intern_failure_row(FailureRow {
             variants: Vec::new(),
             parameters: vec![self.resolved.standard_generic(failures)],
+            exclusions: Vec::new(),
         });
         let needs = self.intern_needs_row(NeedsRow {
             entries: Vec::new(),
@@ -1087,6 +1135,7 @@ impl ProjectTypeChecker {
         self.intern_failure_row(FailureRow {
             variants,
             parameters: Vec::new(),
+            exclusions: Vec::new(),
         })
     }
 
@@ -2068,14 +2117,14 @@ impl ProjectTypeChecker {
             };
         }
 
-        let variants =
+        let constructed_failure =
             arguments
                 .first()
                 .zip(facts.first())
-                .map_or_else(Vec::new, |(argument, fact)| {
-                    self.failure_variants_for_expression(module_id, &argument.value, fact.success)
+                .and_then(|(argument, fact)| {
+                    self.failure_row_for_expression(module_id, &argument.value, fact.success)
                 });
-        if variants.is_empty() && arguments.len() == 1 {
+        if constructed_failure.is_none() && arguments.len() == 1 {
             self.type_error_range(
                 module_id,
                 "T4220",
@@ -2083,10 +2132,7 @@ impl ProjectTypeChecker {
                 "Failure expects a value of an enum error type",
             );
         }
-        let constructed_failure = self.intern_failure_row(FailureRow {
-            variants,
-            parameters: Vec::new(),
-        });
+        let constructed_failure = constructed_failure.unwrap_or(FailureRowId::new(0));
         ExpressionFact {
             success: self.fresh_inference_type(),
             failures: self.union_failure_rows(
@@ -2100,12 +2146,12 @@ impl ProjectTypeChecker {
         }
     }
 
-    fn failure_variants_for_expression(
-        &self,
+    fn failure_row_for_expression(
+        &mut self,
         module_id: ModuleId,
         expression: &ModuleExpression,
         type_id: TypeId,
-    ) -> Vec<SymbolId> {
+    ) -> Option<FailureRowId> {
         let constructed = match expression {
             ModuleExpression::Call { callee, .. } => {
                 self.expression_value_symbol(module_id, callee)
@@ -2114,30 +2160,47 @@ impl ProjectTypeChecker {
                 self.expression_value_symbol(module_id, expression)
             }
             ModuleExpression::Group { expression, .. } => {
-                return self.failure_variants_for_expression(module_id, expression, type_id);
+                return self.failure_row_for_expression(module_id, expression, type_id);
             }
             _ => None,
         };
         if let Some(symbol) = constructed
             && self.is_enum_constructor(symbol)
         {
-            return vec![symbol];
+            return Some(self.intern_failure_row(FailureRow {
+                variants: vec![symbol],
+                parameters: Vec::new(),
+                exclusions: Vec::new(),
+            }));
         }
         let type_id = self.resolve_inference_type(type_id);
-        let CanonicalType::Named { symbol, .. } = self.types[type_id.raw() as usize] else {
-            return Vec::new();
-        };
-        if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Enum
-            || matches!(
-                self.resolved.standard_symbol(symbol),
-                Some(StandardSymbol::Type(
-                    StandardType::DecodeError | StandardType::NumberError
-                ))
-            )
-        {
-            self.enum_variant_symbols(symbol)
-        } else {
-            Vec::new()
+        match self.types[type_id.raw() as usize].clone() {
+            CanonicalType::Named { symbol, .. }
+                if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Enum
+                    || matches!(
+                        self.resolved.standard_symbol(symbol),
+                        Some(StandardSymbol::Type(
+                            StandardType::DecodeError | StandardType::NumberError
+                        ))
+                    ) =>
+            {
+                Some(self.intern_failure_row(FailureRow {
+                    variants: self.enum_variant_symbols(symbol),
+                    parameters: Vec::new(),
+                    exclusions: Vec::new(),
+                }))
+            }
+            CanonicalType::Generic(parameter)
+                if self.generic_kinds.get(&parameter) == Some(&GenericKind::FailureSet) =>
+            {
+                Some(self.intern_failure_row(FailureRow {
+                    variants: Vec::new(),
+                    parameters: vec![parameter],
+                    exclusions: Vec::new(),
+                }))
+            }
+            CanonicalType::FailureSetValue(failures) => Some(failures),
+            _ => None,
         }
     }
 
@@ -2362,6 +2425,21 @@ impl ProjectTypeChecker {
     ) -> Option<Vec<TypeId>> {
         let contract = self.contracts.get(&constructor)?.clone();
         let mut substitution = CallSubstitution::default();
+        let expected = self.resolve_inference_type(expected);
+        if let CanonicalType::FailureSetValue(failures) =
+            self.types[expected.raw() as usize].clone()
+        {
+            if !self.failure_row_may_contain(failures, constructor) {
+                return None;
+            }
+            return Some(
+                contract
+                    .inputs
+                    .iter()
+                    .map(|input| self.substitute_call_type(*input, &mut substitution))
+                    .collect(),
+            );
+        }
         let standard_parameters = self
             .resolved
             .standard_callable_parameters(constructor)
@@ -2495,6 +2573,22 @@ impl ProjectTypeChecker {
 
     fn complete_pattern_domain(&mut self, type_id: TypeId) -> Option<Vec<(MatchTag, Vec<TypeId>)>> {
         let type_id = self.resolve_inference_type(type_id);
+        if let CanonicalType::FailureSetValue(failures) = self.types[type_id.raw() as usize].clone()
+        {
+            let row = self.failure_rows[failures.raw() as usize].clone();
+            if !row.parameters.is_empty() {
+                return None;
+            }
+            return Some(
+                row.variants
+                    .into_iter()
+                    .filter_map(|variant| {
+                        self.instantiate_pattern_constructor(variant, type_id)
+                            .map(|fields| (MatchTag::EnumVariant(variant), fields))
+                    })
+                    .collect(),
+            );
+        }
         let CanonicalType::Named { symbol, .. } = self.types[type_id.raw() as usize].clone() else {
             return None;
         };
@@ -2545,6 +2639,7 @@ impl ProjectTypeChecker {
         let failure_type = self.failure_value_type(subject.failures);
         let mut failure_coverage = Vec::<Vec<MatchPattern>>::new();
         let mut fallback_handled_variants = Vec::new();
+        let mut candidate_failure_variants = Vec::new();
         let mut handles_unknown_row = false;
         let mut saw_failure = false;
         for arm in arms {
@@ -2583,6 +2678,7 @@ impl ProjectTypeChecker {
                         subject.failures,
                         &mut arm_bindings,
                     );
+                    candidate_failure_variants.extend(variants.iter().copied());
                     if variants.is_empty() && !catches_unknown {
                         // The owning diagnostic already explains why this pattern cannot
                         // participate in failure-channel coverage.
@@ -2659,7 +2755,10 @@ impl ProjectTypeChecker {
             let subject_variants = self.failure_rows[subject.failures.raw() as usize]
                 .variants
                 .clone();
-            for variant in subject_variants {
+            candidate_failure_variants.extend(subject_variants);
+            candidate_failure_variants.sort_unstable();
+            candidate_failure_variants.dedup();
+            for variant in candidate_failure_variants {
                 let field_count = self
                     .instantiate_pattern_constructor(variant, failure_type)
                     .map_or(0, |fields| fields.len());
@@ -2723,10 +2822,7 @@ impl ProjectTypeChecker {
         if let Some(symbol) = symbol
             && self.is_enum_constructor(symbol)
         {
-            if !self.failure_rows[failures.raw() as usize]
-                .variants
-                .contains(&symbol)
-            {
+            if !self.failure_row_may_contain(failures, symbol) {
                 let range = pattern
                     .path
                     .last()
@@ -2814,7 +2910,14 @@ impl ProjectTypeChecker {
         }
         let contract = self.contracts[&constructor].clone();
         let mut substitution = CallSubstitution::default();
-        if !self.match_call_type(expected, contract.success, &mut substitution) {
+        let expected = self.resolve_inference_type(expected);
+        let matches = match self.types[expected.raw() as usize].clone() {
+            CanonicalType::FailureSetValue(failures) => {
+                self.failure_row_may_contain(failures, constructor)
+            }
+            _ => self.match_call_type(expected, contract.success, &mut substitution),
+        };
+        if !matches {
             self.type_error_range(
                 module_id,
                 "T4222",
@@ -2872,9 +2975,42 @@ impl ProjectTypeChecker {
             })
     }
 
-    fn failure_value_type(&self, failures: FailureRowId) -> Option<TypeId> {
-        let row = &self.failure_rows[failures.raw() as usize];
-        if !row.parameters.is_empty() {
+    fn failure_row_for_type(&mut self, type_id: TypeId) -> Option<FailureRowId> {
+        let type_id = self.resolve_inference_type(type_id);
+        match self.types[type_id.raw() as usize].clone() {
+            CanonicalType::Named { symbol, .. }
+                if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Enum
+                    || matches!(
+                        self.resolved.standard_symbol(symbol),
+                        Some(StandardSymbol::Type(
+                            StandardType::DecodeError | StandardType::NumberError
+                        ))
+                    ) =>
+            {
+                let variants = self.enum_variant_symbols(symbol);
+                Some(self.intern_failure_row(FailureRow {
+                    variants,
+                    parameters: Vec::new(),
+                    exclusions: Vec::new(),
+                }))
+            }
+            CanonicalType::Generic(parameter)
+                if self.generic_kinds.get(&parameter) == Some(&GenericKind::FailureSet) =>
+            {
+                Some(self.intern_failure_row(FailureRow {
+                    variants: Vec::new(),
+                    parameters: vec![parameter],
+                    exclusions: Vec::new(),
+                }))
+            }
+            CanonicalType::FailureSetValue(failures) => Some(failures),
+            _ => None,
+        }
+    }
+
+    fn failure_value_type(&mut self, failures: FailureRowId) -> Option<TypeId> {
+        let row = self.failure_rows[failures.raw() as usize].clone();
+        if row.variants.is_empty() && row.parameters.is_empty() {
             return None;
         }
         let mut owners = row
@@ -2885,8 +3021,16 @@ impl ProjectTypeChecker {
         owners.sort_unstable();
         owners.dedup();
         let [owner] = owners.as_slice() else {
-            return None;
+            return Some(self.intern_type(CanonicalType::FailureSetValue(failures)));
         };
+        if !row.parameters.is_empty() {
+            return Some(self.intern_type(CanonicalType::FailureSetValue(failures)));
+        }
+        let mut owner_variants = self.enum_variant_symbols(*owner);
+        owner_variants.sort_unstable();
+        if row.variants != owner_variants {
+            return Some(self.intern_type(CanonicalType::FailureSetValue(failures)));
+        }
         if matches!(
             self.resolved.standard_symbol(*owner),
             Some(StandardSymbol::Type(_))
@@ -2907,6 +3051,7 @@ impl ProjectTypeChecker {
         self.declaration_types
             .get(&(owner.module_id?, owner.semantic_id?))
             .copied()
+            .or_else(|| Some(self.intern_type(CanonicalType::FailureSetValue(failures))))
     }
 
     fn remove_handled_failures(
@@ -2920,6 +3065,25 @@ impl ProjectTypeChecker {
             .retain(|variant| !handled_variants.contains(variant));
         if handles_unknown_row {
             row.parameters.clear();
+            row.exclusions.clear();
+        } else {
+            for parameter in &row.parameters {
+                if let Some(exclusion) = row
+                    .exclusions
+                    .iter_mut()
+                    .find(|exclusion| exclusion.parameter == *parameter)
+                {
+                    exclusion.variants.extend_from_slice(handled_variants);
+                    exclusion.variants.sort_unstable();
+                    exclusion.variants.dedup();
+                } else if !handled_variants.is_empty() {
+                    row.exclusions.push(FailureRowExclusion {
+                        parameter: *parameter,
+                        variants: handled_variants.to_vec(),
+                    });
+                }
+            }
+            row.exclusions.sort_by_key(|exclusion| exclusion.parameter);
         }
         self.intern_failure_row(row)
     }
@@ -2927,6 +3091,17 @@ impl ProjectTypeChecker {
     fn failure_row_is_empty(&self, failures: FailureRowId) -> bool {
         let row = &self.failure_rows[failures.raw() as usize];
         row.variants.is_empty() && row.parameters.is_empty()
+    }
+
+    fn failure_row_may_contain(&self, failures: FailureRowId, variant: SymbolId) -> bool {
+        let row = &self.failure_rows[failures.raw() as usize];
+        row.variants.contains(&variant)
+            || row.parameters.iter().any(|parameter| {
+                row.exclusions
+                    .iter()
+                    .find(|exclusion| exclusion.parameter == *parameter)
+                    .is_none_or(|exclusion| !exclusion.variants.contains(&variant))
+            })
     }
 
     fn needs_row_is_empty(&self, needs: NeedsRowId) -> bool {
@@ -3292,10 +3467,24 @@ impl ProjectTypeChecker {
             .variants
             .iter()
             .all(|variant| expected.variants.contains(variant))
-            && actual
-                .parameters
-                .iter()
-                .all(|parameter| expected.parameters.contains(parameter))
+            && actual.parameters.iter().all(|parameter| {
+                if !expected.parameters.contains(parameter) {
+                    return false;
+                }
+                let actual_exclusions = actual
+                    .exclusions
+                    .iter()
+                    .find(|exclusion| exclusion.parameter == *parameter)
+                    .map_or(&[][..], |exclusion| exclusion.variants.as_slice());
+                let expected_exclusions = expected
+                    .exclusions
+                    .iter()
+                    .find(|exclusion| exclusion.parameter == *parameter)
+                    .map_or(&[][..], |exclusion| exclusion.variants.as_slice());
+                expected_exclusions
+                    .iter()
+                    .all(|variant| actual_exclusions.contains(variant))
+            })
     }
 
     fn needs_row_is_subset(&self, actual: NeedsRowId, expected: NeedsRowId) -> bool {
@@ -3451,6 +3640,7 @@ impl ProjectTypeChecker {
             return self.intern_failure_row(FailureRow {
                 variants: Vec::new(),
                 parameters: vec![symbol],
+                exclusions: Vec::new(),
             });
         }
         if matches!(
@@ -3462,6 +3652,7 @@ impl ProjectTypeChecker {
             return self.intern_failure_row(FailureRow {
                 variants: self.enum_variant_symbols(symbol),
                 parameters: Vec::new(),
+                exclusions: Vec::new(),
             });
         }
         if self.resolved.symbol(symbol).kind != ProjectSymbolKind::Enum {
@@ -3509,6 +3700,7 @@ impl ProjectTypeChecker {
         self.intern_failure_row(FailureRow {
             variants,
             parameters: Vec::new(),
+            exclusions: Vec::new(),
         })
     }
 
@@ -3783,6 +3975,10 @@ impl ProjectTypeChecker {
                 |parameter| match self.generic_kinds.get(parameter).copied() {
                     Some(GenericKind::Value) => !substitution.values.contains_key(parameter),
                     Some(GenericKind::FailureRow) => !substitution.failures.contains_key(parameter),
+                    Some(GenericKind::FailureSet) => {
+                        !substitution.values.contains_key(parameter)
+                            && !substitution.failures.contains_key(parameter)
+                    }
                     Some(GenericKind::NeedsRow) => !substitution.needs.contains_key(parameter),
                     Some(GenericKind::EffectRow) => !substitution.effects.contains_key(parameter),
                     Some(GenericKind::Unconstrained | GenericKind::Conflicting) | None => {
@@ -3990,6 +4186,21 @@ impl ProjectTypeChecker {
             self.types[expected.raw() as usize].clone(),
         ) {
             (_, CanonicalType::Generic(parameter)) => {
+                if self.generic_kinds.get(&parameter) == Some(&GenericKind::FailureSet) {
+                    if let Some(bound) = substitution.failures.get(&parameter).copied() {
+                        return self
+                            .failure_row_for_type(actual)
+                            .is_some_and(|actual| self.failure_rows_equivalent(actual, bound));
+                    }
+                    if let Some(bound) = substitution.values.get(&parameter).copied() {
+                        return self.unify(actual, bound);
+                    }
+                    substitution.values.insert(parameter, actual);
+                    if let Some(failures) = self.failure_row_for_type(actual) {
+                        substitution.failures.insert(parameter, failures);
+                    }
+                    return true;
+                }
                 if let Some(bound) = substitution.values.get(&parameter).copied() {
                     self.unify(actual, bound)
                 } else {
@@ -4062,6 +4273,7 @@ impl ProjectTypeChecker {
                 let residual = self.intern_failure_row(FailureRow {
                     variants: remaining_variants,
                     parameters: actual.parameters,
+                    exclusions: actual.exclusions,
                 });
                 if let Some(bound) = substitution.failures.get(parameter).copied() {
                     self.failure_rows_equivalent(bound, residual)
@@ -4169,6 +4381,14 @@ impl ProjectTypeChecker {
             CanonicalType::Generic(parameter) => {
                 if let Some(type_id) = substitution.values.get(&parameter).copied() {
                     type_id
+                } else if self.generic_kinds.get(&parameter) == Some(&GenericKind::FailureSet) {
+                    if let Some(failures) = substitution.failures.get(&parameter).copied() {
+                        self.failure_value_type(failures).unwrap_or(TypeId::new(0))
+                    } else {
+                        let type_id = self.fresh_inference_type();
+                        substitution.values.insert(parameter, type_id);
+                        type_id
+                    }
                 } else {
                     let type_id = self.fresh_inference_type();
                     substitution.values.insert(parameter, type_id);
@@ -4210,6 +4430,10 @@ impl ProjectTypeChecker {
                     .collect();
                 self.intern_type(CanonicalType::Record(fields))
             }
+            CanonicalType::FailureSetValue(failures) => {
+                let failures = self.substitute_call_failure_row(failures, substitution);
+                self.failure_value_type(failures).unwrap_or(TypeId::new(0))
+            }
             CanonicalType::InferenceVariable(_) | CanonicalType::Poison => type_id,
         }
     }
@@ -4250,20 +4474,26 @@ impl ProjectTypeChecker {
         let mut rows = vec![self.intern_failure_row(FailureRow {
             variants: row.variants,
             parameters: Vec::new(),
+            exclusions: Vec::new(),
         })];
         for parameter in row.parameters {
-            rows.push(
-                substitution
-                    .failures
-                    .get(&parameter)
-                    .copied()
-                    .unwrap_or_else(|| {
-                        self.intern_failure_row(FailureRow {
-                            variants: Vec::new(),
-                            parameters: vec![parameter],
-                        })
-                    }),
-            );
+            let replacement = substitution
+                .failures
+                .get(&parameter)
+                .copied()
+                .unwrap_or_else(|| {
+                    self.intern_failure_row(FailureRow {
+                        variants: Vec::new(),
+                        parameters: vec![parameter],
+                        exclusions: Vec::new(),
+                    })
+                });
+            let excluded = row
+                .exclusions
+                .iter()
+                .find(|exclusion| exclusion.parameter == parameter)
+                .map_or(&[][..], |exclusion| exclusion.variants.as_slice());
+            rows.push(self.remove_handled_failures(replacement, excluded, false));
         }
         self.union_failure_rows(rows)
     }
@@ -4428,6 +4658,9 @@ impl ProjectTypeChecker {
                         .all(|(left, right)| self.unify(left, right))
             }
             (CanonicalType::Generic(left), CanonicalType::Generic(right)) => left == right,
+            (CanonicalType::FailureSetValue(left), CanonicalType::FailureSetValue(right)) => {
+                self.failure_rows_equivalent(left, right)
+            }
             (CanonicalType::Function(left), CanonicalType::Function(right)) => {
                 left.inputs.len() == right.inputs.len()
                     && left
@@ -4514,6 +4747,9 @@ impl ProjectTypeChecker {
                 left_parameters == right_parameters
                     && self.contracts_equivalent(left_contract, right_contract)
             }
+            (CanonicalType::FailureSetValue(left), CanonicalType::FailureSetValue(right)) => {
+                self.failure_rows_equivalent(*left, *right)
+            }
             (CanonicalType::Record(left), CanonicalType::Record(right)) => {
                 left.len() == right.len()
                     && left.iter().zip(right).all(|(left, right)| {
@@ -4555,18 +4791,50 @@ impl ProjectTypeChecker {
     fn union_failure_rows(&mut self, rows: impl IntoIterator<Item = FailureRowId>) -> FailureRowId {
         let mut variants = Vec::new();
         let mut parameters = Vec::new();
+        let mut exclusions = HashMap::<SymbolId, HashSet<SymbolId>>::new();
         for row in rows {
             let row = &self.failure_rows[row.raw() as usize];
             variants.extend(&row.variants);
-            parameters.extend(&row.parameters);
+            for parameter in &row.parameters {
+                parameters.push(*parameter);
+                let row_exclusions = row
+                    .exclusions
+                    .iter()
+                    .find(|exclusion| exclusion.parameter == *parameter)
+                    .map_or_else(HashSet::new, |exclusion| {
+                        exclusion.variants.iter().copied().collect()
+                    });
+                exclusions
+                    .entry(*parameter)
+                    .and_modify(|current| {
+                        current.retain(|variant| row_exclusions.contains(variant));
+                    })
+                    .or_insert(row_exclusions);
+            }
         }
         variants.sort_unstable();
         variants.dedup();
         parameters.sort_unstable();
         parameters.dedup();
+        let mut exclusions = exclusions
+            .into_iter()
+            .filter_map(|(parameter, variants)| {
+                if variants.is_empty() {
+                    return None;
+                }
+                let mut variants = variants.into_iter().collect::<Vec<_>>();
+                variants.sort_unstable();
+                Some(FailureRowExclusion {
+                    parameter,
+                    variants,
+                })
+            })
+            .collect::<Vec<_>>();
+        exclusions.sort_by_key(|exclusion| exclusion.parameter);
         self.intern_failure_row(FailureRow {
             variants,
             parameters,
+            exclusions,
         })
     }
 
@@ -4631,6 +4899,13 @@ impl ProjectTypeChecker {
         let next = match current {
             GenericKind::Unconstrained => wanted,
             same if same == wanted => same,
+            GenericKind::Value if wanted == GenericKind::FailureRow => GenericKind::FailureSet,
+            GenericKind::FailureRow if wanted == GenericKind::Value => GenericKind::FailureSet,
+            GenericKind::FailureSet
+                if matches!(wanted, GenericKind::Value | GenericKind::FailureRow) =>
+            {
+                GenericKind::FailureSet
+            }
             GenericKind::Conflicting => GenericKind::Conflicting,
             _ => {
                 self.type_error(
@@ -4709,7 +4984,35 @@ impl ProjectTypeChecker {
         id
     }
 
-    fn intern_failure_row(&mut self, value: FailureRow) -> FailureRowId {
+    fn intern_failure_row(&mut self, mut value: FailureRow) -> FailureRowId {
+        value.variants.sort_unstable();
+        value.variants.dedup();
+        value.parameters.sort_unstable();
+        value.parameters.dedup();
+        value
+            .exclusions
+            .retain(|exclusion| value.parameters.contains(&exclusion.parameter));
+        for exclusion in &mut value.exclusions {
+            exclusion.variants.sort_unstable();
+            exclusion.variants.dedup();
+        }
+        value
+            .exclusions
+            .sort_by_key(|exclusion| exclusion.parameter);
+        let mut merged_exclusions = Vec::<FailureRowExclusion>::new();
+        for exclusion in value.exclusions {
+            if let Some(previous) = merged_exclusions
+                .last_mut()
+                .filter(|previous| previous.parameter == exclusion.parameter)
+            {
+                previous.variants.extend(exclusion.variants);
+                previous.variants.sort_unstable();
+                previous.variants.dedup();
+            } else {
+                merged_exclusions.push(exclusion);
+            }
+        }
+        value.exclusions = merged_exclusions;
         if let Some(id) = self.failure_row_intern.get(&value).copied() {
             return id;
         }
