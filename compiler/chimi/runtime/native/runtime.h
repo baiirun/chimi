@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 5
+#define CHIMI_RUNTIME_ABI_VERSION 6
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -129,6 +129,7 @@ typedef struct {
   uint32_t intrinsic;
   uint32_t standard_constructor;
   uint32_t standard_type;
+  uint32_t environment_slot;
 } ChimiSymbol;
 
 typedef struct {
@@ -180,6 +181,8 @@ extern const ChimiNode CHIMI_NODES[];
 extern const uint32_t CHIMI_NODE_COUNT;
 extern const ChimiSymbol CHIMI_SYMBOLS[];
 extern const uint32_t CHIMI_SYMBOL_COUNT;
+extern const uint32_t CHIMI_LOCAL_SLOT_COUNT;
+extern const uint32_t CHIMI_REQUIREMENT_SLOT_COUNT;
 extern const ChimiFunction CHIMI_FUNCTIONS[];
 extern const uint32_t CHIMI_FUNCTION_COUNT;
 extern const ChimiConstructor CHIMI_CONSTRUCTORS[];

@@ -93,6 +93,8 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
     }
     let mut constructors = Vec::new();
     let mut symbols = Vec::new();
+    let mut local_slot_count = 0;
+    let mut requirement_slot_count = 0;
     for symbol in &core.symbols {
         let name = data.string(&symbol.name);
         let function = core
@@ -124,6 +126,11 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         } else {
             u32::MAX
         };
+        let environment_slot = environment_slot(
+            symbol.kind,
+            &mut local_slot_count,
+            &mut requirement_slot_count,
+        );
         symbols.push((
             symbol_kind(symbol.kind),
             name,
@@ -142,6 +149,7 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                 Some(StandardSymbol::Type(kind)) => kind.runtime_id(),
                 _ => u32::MAX,
             },
+            environment_slot,
         ));
     }
 
@@ -326,8 +334,8 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         &symbols,
         |r| {
             format!(
-                "{{{}, {}, {}, {}, {}, {}, {}, {}}}",
-                r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7
+                "{{{}, {}, {}, {}, {}, {}, {}, {}, {}}}",
+                r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8
             )
         },
     );
@@ -335,6 +343,16 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         output,
         "const uint32_t CHIMI_SYMBOL_COUNT = {};",
         symbols.len()
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "const uint32_t CHIMI_LOCAL_SLOT_COUNT = {local_slot_count};"
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "const uint32_t CHIMI_REQUIREMENT_SLOT_COUNT = {requirement_slot_count};"
     )
     .unwrap();
     render_array(
@@ -490,6 +508,22 @@ const fn symbol_kind(kind: CoreSymbolKind) -> u32 {
         CoreSymbolKind::Other => 6,
     }
 }
+fn environment_slot(
+    kind: CoreSymbolKind,
+    local_slot_count: &mut u32,
+    requirement_slot_count: &mut u32,
+) -> u32 {
+    let count = match kind {
+        CoreSymbolKind::Local => local_slot_count,
+        CoreSymbolKind::Requirement => requirement_slot_count,
+        _ => return u32::MAX,
+    };
+    let slot = *count;
+    *count = count
+        .checked_add(1)
+        .expect("environment slot count fits u32");
+    slot
+}
 const fn binary_operator(operator: BinaryOperator) -> u32 {
     match operator {
         BinaryOperator::Add => 0,
@@ -501,5 +535,29 @@ const fn binary_operator(operator: BinaryOperator) -> u32 {
         BinaryOperator::Greater => 6,
         BinaryOperator::GreaterEqual => 7,
         BinaryOperator::Pipe => 8,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CoreSymbolKind, environment_slot};
+
+    #[test]
+    fn environment_slots_are_dense_and_independent_by_symbol_kind() {
+        let mut locals = 0;
+        let mut requirements = 0;
+        let slots = [
+            CoreSymbolKind::Function,
+            CoreSymbolKind::Local,
+            CoreSymbolKind::Requirement,
+            CoreSymbolKind::Local,
+            CoreSymbolKind::Constructor,
+            CoreSymbolKind::Requirement,
+        ]
+        .map(|kind| environment_slot(kind, &mut locals, &mut requirements));
+
+        assert_eq!(slots, [u32::MAX, 0, 0, 1, u32::MAX, 1]);
+        assert_eq!(locals, 2);
+        assert_eq!(requirements, 2);
     }
 }

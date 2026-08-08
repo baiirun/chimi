@@ -82,10 +82,10 @@ in a 14,388,951-byte input. The output was byte-identical.
 
 Five follow-up runs recorded 2.64 s p50 and 2.76 s p95, or about 37,879
 records/s at p50. A native integration gate now requires the maintained
-summarizer to stay below 110 kB allocated per record and 250 kB peak live while
-retaining less than 2 kB. Remaining allocation is primarily boxed values,
-controls, match work, and deliberate environment copies at mutation and capture
-boundaries; those are separate measured optimization candidates.
+summarizer to stay below 45 kB allocated per record and 50 kB peak live while
+retaining less than 2 kB. The follow-ups below attribute the initial frontier by
+runtime object kind and reduce environment copies without weakening the scoped
+ownership contract.
 
 ## Boundary-Selective Environment Follow-up
 
@@ -118,6 +118,32 @@ The allocation kinds sum exactly to the total. Value-pointer tables remain the
 largest category at 8,611,239,744 bytes (85.9%); controls account for
 515,202,080 bytes (5.1%). This keeps compact environment representation as the
 next measured runtime frontier instead of prematurely changing the control ABI.
+
+## Dense Environment Slot Follow-up
+
+`prog show ts-67abf0` moves environment layout into generated ABI-v6 metadata.
+The trace summarizer has 207 symbols, but only 85 are locals and three are
+requirements. Each local or requirement symbol now carries an independent
+dense slot. Runtime lookup remains one indexed load, while local tables shrink
+from 1,656 to 680 bytes and requirement tables shrink to 24 bytes. Symbols that
+cannot appear in an environment receive no slot.
+
+The same 100,001-record workload again retained byte-identical output:
+
+| Metric | Boundary-selective | Dense slots | Change |
+| --- | ---: | ---: | ---: |
+| Wall time | 2.27 s | 1.91 s | -16.0% |
+| Throughput | 44,031 records/s | 52,445 records/s | 1.19x |
+| Scoped peak live | 101,119 B | 37,903 B | -62.5% |
+| Scoped retained | 1,069 B | 1,069 B | unchanged |
+| Scoped total allocation | 10,027,401,279 B | 3,705,770,639 B | -63.0% |
+| Scoped collections | 100,002 | 100,002 | unchanged |
+
+Value-pointer tables fall to 2,289,609,104 bytes, or 61.8% of the new total.
+Controls now account for 515,202,080 bytes (13.9%). Relative to the original
+post-environment-sharing result, the two bounded follow-ups remove 79.8% of
+cumulative allocation without introducing lookup scans or environment overlay
+chains.
 
 ## Artifact and Output
 

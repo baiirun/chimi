@@ -411,9 +411,10 @@ before the final platform link:
 - one Cranelift object per source module containing its compiled Core node
   functions, plus a small entry object;
 - an immutable metadata object containing symbols, values, source origins, and
-  runtime operation operands;
+  runtime operation operands; local and requirement symbols receive separate
+  dense environment slots in this compiler-owned metadata;
 - a static archive containing the compiler-matched Chimi runtime ABI (currently
-  version 5).
+  version 6).
 
 The linked executable embeds the Chimi runtime and needs no separately installed
 Chimi VM or package tree. The versioned `chimi.build.v1` report identifies all

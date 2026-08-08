@@ -633,10 +633,14 @@ fn native_function_values_retain_provisioned_requirements() {
             "interface Source { read: fn() -> Int }\n",
             "let provider = { read: fn() -> Int { 41 } }\n",
             "fn read() -> Int needs { source: Source } { source.read() }\n",
-            "fn configured() -> fn() -> Int { read using { source: provider } }\n",
+            "fn configured() -> fn(Int) -> Int {\n",
+            "  let operation = read using { source: provider }\n",
+            "  let offset = 1\n",
+            "  fn(value: Int) -> Int { operation() + offset + value }\n",
+            "}\n",
             "pub fn main() -> Int {\n",
             "  let operation = configured()\n",
-            "  operation()\n",
+            "  operation(0)\n",
             "}\n",
         ),
     )
@@ -660,7 +664,7 @@ fn native_function_values_retain_provisioned_requirements() {
     assert!(execution.process.status.success());
     assert_eq!(
         execution.outcome,
-        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":41}\n"
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
     );
 
     std::fs::remove_dir_all(scratch).unwrap();
@@ -932,11 +936,11 @@ fn native_chimi_code_classifies_and_aggregates_trace_records() {
     assert_eq!(accounted_allocated, total_allocated);
     let bytes_per_record = total_allocated / (allocation_records + 1);
     assert!(
-        bytes_per_record < 110_000,
+        bytes_per_record < 45_000,
         "trace summary allocated {bytes_per_record} bytes per record"
     );
     assert!(
-        json_u64_field(&memory_report, "scoped_peak_live_bytes") < 250_000,
+        json_u64_field(&memory_report, "scoped_peak_live_bytes") < 50_000,
         "trace summary callback exceeded its live-memory budget"
     );
     assert!(

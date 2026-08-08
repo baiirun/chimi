@@ -25,7 +25,7 @@ const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
 const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
 const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
 const NATIVE_LOWERING_REVISION: &str = "standard-data-intrinsics-v1";
-const RUNTIME_ABI_VERSION: u32 = 5;
+const RUNTIME_ABI_VERSION: u32 = 6;
 static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct NativeArtifact {

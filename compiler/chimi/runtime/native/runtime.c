@@ -1,4 +1,4 @@
-/* Chimi native runtime ABI version 5. */
+/* Chimi native runtime ABI version 6. */
 #include "runtime.h"
 
 #include <inttypes.h>
@@ -184,20 +184,29 @@ static ChimiControl *failure(ChimiValue *value) { return new_control(CONTROL_FAI
 static ChimiControl *defect(const char *message, int64_t node) { return new_control(CONTROL_DEFECT, NULL, message, node); }
 static ChimiControl *cancelled(void) { return new_control(CONTROL_CANCEL, NULL, NULL, -1); }
 
+static ChimiValue **new_value_slots(uint32_t count) {
+  if (count == 0) return NULL;
+  ChimiValue **slots = allocate(count, sizeof(*slots));
+  allocation_kind(slots, ALLOCATION_VALUE_POINTERS);
+  return slots;
+}
+static ChimiValue **clone_value_slots(ChimiValue **source, uint32_t count) {
+  ChimiValue **slots = new_value_slots(count);
+  if (count != 0) memcpy(slots, source, count * sizeof(*slots));
+  return slots;
+}
 static ChimiEnvironment *new_environment(void) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
   allocation_kind(environment, ALLOCATION_ENVIRONMENT);
-  environment->locals = allocate(CHIMI_SYMBOL_COUNT, sizeof(*environment->locals));
-  allocation_kind(environment->locals, ALLOCATION_VALUE_POINTERS);
-  environment->requirements = allocate(CHIMI_SYMBOL_COUNT, sizeof(*environment->requirements));
-  allocation_kind(environment->requirements, ALLOCATION_VALUE_POINTERS);
+  environment->locals = new_value_slots(CHIMI_LOCAL_SLOT_COUNT);
+  environment->requirements = new_value_slots(CHIMI_REQUIREMENT_SLOT_COUNT);
   return environment;
 }
 static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
-  ChimiEnvironment *environment = new_environment();
-  memcpy(environment->locals, source->locals, CHIMI_SYMBOL_COUNT * sizeof(*environment->locals));
-  memcpy(environment->requirements, source->requirements,
-         CHIMI_SYMBOL_COUNT * sizeof(*environment->requirements));
+  ChimiEnvironment *environment = allocate(1, sizeof(*environment));
+  allocation_kind(environment, ALLOCATION_ENVIRONMENT);
+  environment->locals = clone_value_slots(source->locals, CHIMI_LOCAL_SLOT_COUNT);
+  environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
   return environment;
 }
 // Locals and requirements are independently immutable outside the boundaries
@@ -206,9 +215,7 @@ static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
 static ChimiEnvironment *clone_local_environment(const ChimiEnvironment *source) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
   allocation_kind(environment, ALLOCATION_ENVIRONMENT);
-  environment->locals = allocate(CHIMI_SYMBOL_COUNT, sizeof(*environment->locals));
-  allocation_kind(environment->locals, ALLOCATION_VALUE_POINTERS);
-  memcpy(environment->locals, source->locals, CHIMI_SYMBOL_COUNT * sizeof(*environment->locals));
+  environment->locals = clone_value_slots(source->locals, CHIMI_LOCAL_SLOT_COUNT);
   environment->requirements = source->requirements;
   return environment;
 }
@@ -216,21 +223,18 @@ static ChimiEnvironment *clone_requirement_environment(const ChimiEnvironment *s
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
   allocation_kind(environment, ALLOCATION_ENVIRONMENT);
   environment->locals = source->locals;
-  environment->requirements = allocate(CHIMI_SYMBOL_COUNT, sizeof(*environment->requirements));
-  allocation_kind(environment->requirements, ALLOCATION_VALUE_POINTERS);
-  memcpy(environment->requirements, source->requirements,
-         CHIMI_SYMBOL_COUNT * sizeof(*environment->requirements));
+  environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
   return environment;
 }
 static ChimiEnvironment *capture_requirements(const ChimiEnvironment *source) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
   allocation_kind(environment, ALLOCATION_ENVIRONMENT);
   environment->locals = NULL;
-  environment->requirements = allocate(CHIMI_SYMBOL_COUNT, sizeof(*environment->requirements));
-  allocation_kind(environment->requirements, ALLOCATION_VALUE_POINTERS);
-  memcpy(environment->requirements, source->requirements,
-         CHIMI_SYMBOL_COUNT * sizeof(*environment->requirements));
+  environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
   return environment;
+}
+static uint32_t environment_slot(uint32_t symbol) {
+  return CHIMI_SYMBOLS[symbol].environment_slot;
 }
 
 static void mark_value(ChimiValue *value, uint64_t epoch);
@@ -1010,17 +1014,18 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
     // bindings. Build a clean local table for parameters while retaining the
     // requirement snapshot taken when the function became a value.
     environment = new_environment();
-    memcpy(environment->requirements, callable->environment->requirements,
-           CHIMI_SYMBOL_COUNT * sizeof(*environment->requirements));
+    if (CHIMI_REQUIREMENT_SLOT_COUNT != 0)
+      memcpy(environment->requirements, callable->environment->requirements,
+             CHIMI_REQUIREMENT_SLOT_COUNT * sizeof(*environment->requirements));
   } else {
     environment = clone_environment(callable->environment);
   }
-  for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)
-    if (call_environment->requirements[symbol] != NULL)
-      environment->requirements[symbol] = call_environment->requirements[symbol];
+  for (uint32_t slot = 0; slot < CHIMI_REQUIREMENT_SLOT_COUNT; ++slot)
+    if (call_environment->requirements[slot] != NULL)
+      environment->requirements[slot] = call_environment->requirements[slot];
   uint32_t count = callable->parameters_length < argument_count ? callable->parameters_length : argument_count;
   for (uint32_t index = 0; index < count; ++index)
-    environment->locals[CHIMI_IDS[callable->parameters_offset + index]] = arguments[index];
+    environment->locals[environment_slot(CHIMI_IDS[callable->parameters_offset + index])] = arguments[index];
   return run_node(callable->body, runtime, environment, span);
 }
 
@@ -1190,10 +1195,12 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
       runtime->active_bindings[symbol] = false; return control;
     }
     case CHIMI_SYMBOL_REQUIREMENT:
-      if (environment->requirements[symbol]) return success(environment->requirements[symbol]);
+      if (environment->requirements[shape->environment_slot])
+        return success(environment->requirements[shape->environment_slot]);
       return defect("closed core has no provider", -1);
     case CHIMI_SYMBOL_LOCAL:
-      if (environment->locals[symbol]) return success(environment->locals[symbol]);
+      if (environment->locals[shape->environment_slot])
+        return success(environment->locals[shape->environment_slot]);
       return defect("verified local is not bound", -1);
     case CHIMI_SYMBOL_INTRINSIC: {
       ChimiCallable *callable = allocate(1, sizeof(*callable));
@@ -1233,7 +1240,8 @@ NODE_WRAPPER(select, "select", {
   result = value ? success(value) : defect("verified value has no field", node_id);
 })
 NODE_WRAPPER(dependency_method, "dependency_method", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *provider = environment->requirements[node->a];
+  const ChimiNode *node = &CHIMI_NODES[node_id];
+  ChimiValue *provider = environment->requirements[environment_slot(node->a)];
   ChimiCallable *inner = NULL;
   if (!provider) {
     uint32_t standard_type = CHIMI_SYMBOLS[node->b].standard_type;
@@ -1370,7 +1378,8 @@ NODE_WRAPPER(provision, "provision", {
     const char *name = CHIMI_STRINGS[provider->name];
     for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)
       if (CHIMI_SYMBOLS[symbol].kind == CHIMI_SYMBOL_REQUIREMENT &&
-          strcmp(CHIMI_STRINGS[CHIMI_SYMBOLS[symbol].name], name) == 0) environment->requirements[symbol] = control->value;
+          strcmp(CHIMI_STRINGS[CHIMI_SYMBOLS[symbol].name], name) == 0)
+        environment->requirements[CHIMI_SYMBOLS[symbol].environment_slot] = control->value;
   } if (!stopped) result = RUN(node->a);
 })
 
@@ -1380,7 +1389,8 @@ NODE_WRAPPER(sequence, "sequence", {
   for (uint32_t i = 0; i < node->length; ++i) {
     const ChimiStep *step = &CHIMI_STEPS[node->offset + i]; ChimiControl *control = RUN(step->node);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
-    last = control->value; if (step->kind == 0) environment->locals[step->symbol] = last;
+    last = control->value;
+    if (step->kind == 0) environment->locals[environment_slot(step->symbol)] = last;
   } if (!stopped) result = success(last);
 })
 
@@ -1405,7 +1415,7 @@ static bool match_plain(uint32_t pattern_id, ChimiValue *value, ChimiEnvironment
   switch (pattern->kind) {
     case CHIMI_PATTERN_WILDCARD: return true;
     case CHIMI_PATTERN_BINDING:
-      if (environment) environment->locals[pattern->a] = value;
+      if (environment) environment->locals[environment_slot(pattern->a)] = value;
       return true;
     case CHIMI_PATTERN_LITERAL: return literal_matches(pattern, value);
     case CHIMI_PATTERN_CONSTRUCTOR:
@@ -1646,7 +1656,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
         allocation_kind(arguments->as.list.items, ALLOCATION_VALUE_POINTERS);
         for (uint32_t argument = 0; argument < arguments->as.list.length; ++argument)
           arguments->as.list.items[argument] = text_value(argv[index + (int32_t)argument]);
-        environment->locals[CHIMI_IDS[entry_function->parameters_offset]] = arguments;
+        environment->locals[environment_slot(CHIMI_IDS[entry_function->parameters_offset])] = arguments;
       }
       ChimiControl *control = runtime.cancel ? cancelled() : entry(&runtime, environment, 1);
       if (control == NULL) return 70;
@@ -1672,7 +1682,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     allocation_kind(arguments->as.list.items, ALLOCATION_VALUE_POINTERS);
     for (uint32_t argument = 0; argument < arguments->as.list.length; ++argument)
       arguments->as.list.items[argument] = text_value(argv[index + (int32_t)argument]);
-    environment->locals[CHIMI_IDS[entry_function->parameters_offset]] = arguments;
+    environment->locals[environment_slot(CHIMI_IDS[entry_function->parameters_offset])] = arguments;
   }
   ChimiControl *control = runtime.cancel ? cancelled() : entry(&runtime, environment, 1);
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);

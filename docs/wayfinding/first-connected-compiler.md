@@ -437,8 +437,13 @@ by runtime object kind, rejects case arms before binding, avoids captures for
 declared-function locals, and copies only the locals or requirements table that
 a scope mutates. It cuts the remaining allocation by 45.3% and peak live by
 45.6% with effectively unchanged retention. Compact environment representation
-is now the measured execution-performance frontier; boxed controls are only 5.1%
-of this workload's scoped allocation.
+was therefore the next measured execution-performance frontier; boxed controls
+were only 5.1% of that workload's scoped allocation. The dense-slot follow-up
+(`prog show ts-67abf0`) assigns separate compiler-generated slots to the 85
+locals and three requirements instead of indexing two 207-entry tables. ABI-v6
+lookup remains O(1), while the maintained workload cuts the remaining scoped
+allocation by 63.0%, peak live by 62.5%, and wall time by 16.0% with unchanged
+retention and output.
 
 The first post-kernel semantic extension (`prog show ts-8cec2f`) adds an
 inferred effect row independent of failures and dependency needs. `FileSystem`
