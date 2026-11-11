@@ -98,6 +98,7 @@ task notifications.
 | Verification tools import | tooling | 146k | 4.3 (after reset) | list fuzz, heap stress, mutation runner, program parity in repo; runner found 3 surviving scheduler mutants on first use | — |
 | Nested supervisors + structured stop | implement | 323k | 21.3 | 105 fiber tests, 28/28 mutants killed; fixed a pre-existing panic | review found 2 HIGH bugs (leaked replacement supervisor; draining-owner hang) and 3 untested claims |
 | Nested supervisor review (Sonnet) | review | 118k | 6.2 | 2 reachable HIGH bugs reproduced as tests, 3 surviving mutants of claimed guarantees, no noise findings | first Sonnet data point: comparable signal to Opus reviews on this task |
+| Phase 1 perf sweep (Sonnet) | perf | 146k | 30.9 | re-measured at low load after discarding a noisy pass; found a 2-6x semantic-pipeline regression and bisected it to a commit range; 2nd Sonnet data point, good signal | — |
 | Scheduler review fixes | fix | 288k | 89.8 | 9 findings fixed, each test red before fix; 95 tests; 17/17 mutants killed (coordinator verified tests and results file) | — |
 
 ## Is parallel faster than one agent?
