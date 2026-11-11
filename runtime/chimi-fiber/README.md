@@ -30,6 +30,26 @@ cleanup; live-state release is rejected. Trace consumers export batches with
 monotonic sequence. Task cleanup consults an owner index rather than scanning
 every channel in the runtime.
 
+The scheduler also owns supervised processes (`scheduler/process.rs`). Each
+incarnation runs on its own parentless task with a bounded FIFO mailbox of
+opaque message handles; the runtime's release hook frees handles the
+scheduler discards unread. Supervisors are scheduler records, not fibers:
+admission, named routing, rolling restart accounting (charged before the
+replacement starts), escalation, removal, and shutdown order run between fiber
+resumes. Stops and removals are plans that wait for a lingering
+incarnation's `shutdown_within` deadline and then force it. Process requests
+use `ChimiProcessRequest` (`CHIMI_REQUEST_PROCESS_*`,
+`CHIMI_REQUEST_SUPERVISOR_*`), and lifecycle events use the process trace
+family. `docs/architecture/supervised-process-runtime.md` records the design.
+
+The execution clock (`scheduler/clock.rs`) is real or virtual. Virtual time
+moves only in `run_until_idle`, when nothing is runnable and no host
+operation is in flight, and jumps to the earliest timer; a parked root with
+nothing able to wake it is a deadlock defect. `CHIMI_REQUEST_TIMER_NOW` and
+`CHIMI_REQUEST_TIMER_SLEEP_UNTIL` expose it, and `chimi_scheduler_run` takes a
+`ChimiSchedulerConfig` with the clock mode and release hooks.
+`chimi_scheduler_execute` keeps its earlier behavior.
+
 Generated code suspends through `chimi_fiber_request` (or the lower-level
 `chimi_fiber_park`) with an optional linked `ChimiRootFrame`. Scheduler requests
 are handled only after control returns to Rust, so a resumed fiber never

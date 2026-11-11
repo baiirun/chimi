@@ -107,3 +107,241 @@ chimi_fixture_generated_overflow(void *context) {
 
 void chimi_fixture_reset_cleanup(void) { cleanup_count = 0; }
 int chimi_fixture_cleanup_count(void) { return cleanup_count; }
+
+/* ----- Supervised-process fixtures ------------------------------------- */
+
+#include <stddef.h>
+
+#define FIXTURE_MS 1000000LL
+#define FIXTURE_S 1000000000LL
+#define FIXTURE_CRASH 0u
+
+static int64_t fixture_now(void) {
+  ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TIMER_NOW};
+  chimi_fiber_request(&request, 0);
+  return request.value;
+}
+
+/* Returns the final status of a sleep, reissuing it after every wake. */
+static uint32_t fixture_sleep_until(int64_t deadline) {
+  for (;;) {
+    ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_TIMER_SLEEP_UNTIL,
+        .value = deadline,
+    };
+    ChimiFiberCommand command = chimi_fiber_request(&request, 0);
+    if (command == CHIMI_FIBER_CANCEL) return request.status;
+    if (request.status == CHIMI_RESPONSE_PENDING) continue;
+    return request.status;
+  }
+}
+
+static uint32_t fixture_send_named(uint64_t name, uint64_t message) {
+  ChimiProcessRequest request = {
+      .kind = CHIMI_REQUEST_PROCESS_SEND,
+      .address_kind = CHIMI_ADDRESS_NAMED,
+      .address = name,
+      .message = message,
+  };
+  chimi_fiber_request(&request, 0);
+  return request.status;
+}
+
+/* Receives until cancellation. Message FIXTURE_CRASH defects. */
+static ChimiFiberResult fixture_counter(void *context) {
+  (void)context;
+  for (;;) {
+    ChimiProcessRequest request = {.kind = CHIMI_REQUEST_PROCESS_RECEIVE};
+    ChimiFiberCommand command = chimi_fiber_request(&request, 0);
+    if (command == CHIMI_FIBER_CANCEL) {
+      return (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED};
+    }
+    if (request.status == CHIMI_RESPONSE_PENDING) continue;
+    if (request.status != CHIMI_RESPONSE_SUCCEEDED) {
+      return (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED};
+    }
+    if (request.message == FIXTURE_CRASH) {
+      return (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 9};
+    }
+  }
+}
+
+static ChimiProcessSpec fixture_spec(ChimiFiberEntry entry, uint64_t name,
+                                     int64_t shutdown_within) {
+  return (ChimiProcessSpec){
+      .entry = entry,
+      .context = 0,
+      .mailbox_capacity = 8,
+      .shutdown_within = shutdown_within,
+      .name = name,
+  };
+}
+
+/* ES01: counter and peer under restarts(1, 30s). Main sends Crash to the
+   counter, settles, sends Crash again, and waits on the root. */
+ChimiFiberResult chimi_fixture_es01_main(void *context) {
+  (void)context;
+  ChimiSupervisorMember members[2] = {
+      {.kind = CHIMI_MEMBER_PROCESS,
+       .restart = CHIMI_RESTART_ON_DEFECT,
+       .process = fixture_spec(fixture_counter, 1, 5 * FIXTURE_S)},
+      {.kind = CHIMI_MEMBER_PROCESS,
+       .restart = CHIMI_RESTART_ON_DEFECT,
+       .process = fixture_spec(fixture_counter, 2, 5 * FIXTURE_S)},
+  };
+  ChimiSupervisorPolicy policy = {
+      .members = members,
+      .member_count = 2,
+      .capacity = 16,
+      .restart_limit = 1,
+      .restart_within = 30 * FIXTURE_S,
+  };
+  ChimiProcessRequest start = {.kind = CHIMI_REQUEST_SUPERVISOR_START, .policy = &policy};
+  if (chimi_fiber_request(&start, 0) == CHIMI_FIBER_CANCEL ||
+      start.status != CHIMI_RESPONSE_OK) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1};
+  }
+  if (fixture_send_named(1, FIXTURE_CRASH) != CHIMI_RESPONSE_OK) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 2};
+  }
+  fixture_sleep_until(fixture_now() + FIXTURE_MS);
+  if (fixture_send_named(1, FIXTURE_CRASH) != CHIMI_RESPONSE_OK) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 3};
+  }
+  ChimiProcessRequest wait = {
+      .kind = CHIMI_REQUEST_SUPERVISOR_WAIT,
+      .supervisor = start.supervisor,
+  };
+  if (chimi_fiber_request(&wait, 0) == CHIMI_FIBER_CANCEL) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED};
+  }
+  /* A wait that returns is wrong: the escalation terminates the program. */
+  return (ChimiFiberResult){.state = CHIMI_FIBER_SUCCEEDED, .value = 1};
+}
+
+static int sd04_ran_after_forced = 0;
+static int sd04_forced_replies = 0;
+
+/* Cleanup that ignores cancellation: it sleeps again, and after the forced
+   reply it parks once more instead of unwinding. */
+static ChimiFiberResult sd04_stubborn(void *context) {
+  (void)context;
+  for (;;) {
+    ChimiProcessRequest request = {.kind = CHIMI_REQUEST_PROCESS_RECEIVE};
+    ChimiFiberCommand command = chimi_fiber_request(&request, 0);
+    if (command == CHIMI_FIBER_CANCEL || request.status == CHIMI_RESPONSE_CANCELLED) break;
+  }
+  for (;;) {
+    if (fixture_sleep_until(INT64_MAX) == CHIMI_RESPONSE_FORCED) {
+      sd04_forced_replies += 1;
+      chimi_fiber_park(0);
+      sd04_ran_after_forced += 1;
+      return (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED};
+    }
+  }
+}
+
+/* SD04: one stubborn member with shutdown_within 5s. Main settles, stops the
+   root, and returns the instant at which the stop returned. */
+ChimiFiberResult chimi_fixture_sd04_main(void *context) {
+  (void)context;
+  ChimiSupervisorMember member = {
+      .kind = CHIMI_MEMBER_PROCESS,
+      .restart = CHIMI_RESTART_ON_DEFECT,
+      .process = fixture_spec(sd04_stubborn, 0, 5 * FIXTURE_S),
+  };
+  ChimiSupervisorPolicy policy = {
+      .members = &member,
+      .member_count = 1,
+      .capacity = 1,
+      .restart_limit = 0,
+      .restart_within = FIXTURE_S,
+  };
+  ChimiProcessRequest start = {.kind = CHIMI_REQUEST_SUPERVISOR_START, .policy = &policy};
+  chimi_fiber_request(&start, 0);
+  if (start.status != CHIMI_RESPONSE_OK) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1};
+  }
+  fixture_sleep_until(fixture_now() + FIXTURE_MS);
+  ChimiProcessRequest stop = {
+      .kind = CHIMI_REQUEST_SUPERVISOR_STOP,
+      .supervisor = start.supervisor,
+  };
+  if (chimi_fiber_request(&stop, 0) == CHIMI_FIBER_CANCEL ||
+      stop.status != CHIMI_RESPONSE_OK) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 2};
+  }
+  return (ChimiFiberResult){.state = CHIMI_FIBER_SUCCEEDED, .value = fixture_now()};
+}
+
+void chimi_fixture_sd04_reset(void) {
+  sd04_ran_after_forced = 0;
+  sd04_forced_replies = 0;
+}
+int chimi_fixture_sd04_ran_after_forced(void) { return sd04_ran_after_forced; }
+int chimi_fixture_sd04_forced_replies(void) { return sd04_forced_replies; }
+
+/* Main parks with no way to be woken. */
+ChimiFiberResult chimi_fixture_deadlocked_main(void *context) {
+  (void)context;
+  chimi_fiber_park(0);
+  return (ChimiFiberResult){.state = CHIMI_FIBER_SUCCEEDED};
+}
+
+#define LAYOUT(type, field) offsetof(type, field)
+
+/* Sizes and field offsets of the process ABI records, in a fixed order the
+   Rust test mirrors. Returns the number written. */
+size_t chimi_fixture_process_layouts(size_t *out) {
+  size_t values[] = {
+      sizeof(ChimiProcessRequest),
+      LAYOUT(ChimiProcessRequest, status),
+      LAYOUT(ChimiProcessRequest, address_kind),
+      LAYOUT(ChimiProcessRequest, restart),
+      LAYOUT(ChimiProcessRequest, address),
+      LAYOUT(ChimiProcessRequest, supervisor),
+      LAYOUT(ChimiProcessRequest, membership),
+      LAYOUT(ChimiProcessRequest, message),
+      LAYOUT(ChimiProcessRequest, name),
+      LAYOUT(ChimiProcessRequest, owner),
+      LAYOUT(ChimiProcessRequest, policy),
+      LAYOUT(ChimiProcessRequest, spec),
+      sizeof(ChimiProcessSpec),
+      LAYOUT(ChimiProcessSpec, context),
+      LAYOUT(ChimiProcessSpec, mailbox_capacity),
+      LAYOUT(ChimiProcessSpec, shutdown_within),
+      LAYOUT(ChimiProcessSpec, name),
+      sizeof(ChimiSupervisorMember),
+      LAYOUT(ChimiSupervisorMember, restart),
+      LAYOUT(ChimiSupervisorMember, process),
+      LAYOUT(ChimiSupervisorMember, supervisor),
+      sizeof(ChimiSupervisorPolicy),
+      LAYOUT(ChimiSupervisorPolicy, member_count),
+      LAYOUT(ChimiSupervisorPolicy, capacity),
+      LAYOUT(ChimiSupervisorPolicy, restart_limit),
+      LAYOUT(ChimiSupervisorPolicy, restart_within),
+      sizeof(ChimiSchedulerTraceEvent),
+      LAYOUT(ChimiSchedulerTraceEvent, discard_count),
+      LAYOUT(ChimiSchedulerTraceEvent, supervisor),
+      LAYOUT(ChimiSchedulerTraceEvent, membership),
+      LAYOUT(ChimiSchedulerTraceEvent, incarnation),
+      LAYOUT(ChimiSchedulerTraceEvent, name),
+      LAYOUT(ChimiSchedulerTraceEvent, parent_supervisor),
+      LAYOUT(ChimiSchedulerTraceEvent, attempts_in_window),
+      LAYOUT(ChimiSchedulerTraceEvent, time),
+      LAYOUT(ChimiSchedulerTraceEvent, address_kind),
+      LAYOUT(ChimiSchedulerTraceEvent, outcome),
+      sizeof(ChimiSchedulerConfig),
+      LAYOUT(ChimiSchedulerConfig, stack_bytes),
+      LAYOUT(ChimiSchedulerConfig, trace_mode),
+      LAYOUT(ChimiSchedulerConfig, clock_mode),
+      LAYOUT(ChimiSchedulerConfig, trace_sink),
+      LAYOUT(ChimiSchedulerConfig, trace_context),
+      LAYOUT(ChimiSchedulerConfig, release_message),
+      LAYOUT(ChimiSchedulerConfig, release_spec_context),
+      LAYOUT(ChimiSchedulerConfig, release_context),
+  };
+  size_t count = sizeof(values) / sizeof(*values);
+  for (size_t index = 0; index < count; index += 1) out[index] = values[index];
+  return count;
+}

@@ -1,5 +1,25 @@
-//! Deterministic structured lifecycle for finite Chimi tasks.
+//! Deterministic structured lifecycle for finite Chimi tasks, supervised
+//! processes, and the execution clock.
 
+mod clock;
+mod process;
+mod process_abi;
+#[cfg(test)]
+mod process_tests;
+
+pub use self::clock::{ClockMode, Instant, TimerId};
+pub use self::process::{
+    Address, IncarnationId, Member, MembershipId, MessageRelease, NameId, Policy, PolicyError,
+    ProcessError, ProcessEvent, ProcessEventKind, ProcessMetrics, ProcessSpec, Progress, Restart,
+    Restarts, SendFailure, SendOutcome, SendRejected, SpecContextRelease, StartError,
+    SupervisorId, SupervisorState, TerminalCause,
+};
+pub use self::process_abi::{
+    ChimiProcessRequest, ChimiProcessSpec, ChimiSchedulerConfig, ChimiSupervisorMember,
+    ChimiSupervisorPolicy,
+};
+use self::clock::{Clock, TimerQueue, TimerTarget};
+use self::process::ProcessKernel;
 pub use crate::channel::{
     ChannelCapabilities, ChannelError, ChannelEventKind, ChannelId, ChannelMetrics, Completion,
     ReceiveResult, Receiver, SendResult, Sender,
@@ -16,6 +36,8 @@ use std::ptr::NonNull;
 const SCHEDULER_DEFECT_CODE: i64 = -2;
 const CAPABILITY_VIOLATION_DEFECT_CODE: i64 = -3;
 const CHANNEL_CAPABILITY_VIOLATION_DEFECT_CODE: i64 = -4;
+pub const DEADLOCK_DEFECT_CODE: i64 = -5;
+pub const RESTART_LIMIT_DEFECT_CODE: i64 = process::RESTART_LIMIT_DEFECT_CODE;
 
 pub const REQUEST_TASK_START: u32 = 1;
 pub const REQUEST_TASK_RESULT: u32 = 2;
@@ -27,6 +49,17 @@ pub const REQUEST_CHANNEL_CLOSE: u32 = 7;
 pub const REQUEST_CHANNEL_ABORT: u32 = 8;
 pub const REQUEST_CHANNEL_TRANSFER_RECEIVER: u32 = 9;
 pub const REQUEST_CHANNEL_TRANSFER_COMPLETION: u32 = 10;
+pub const REQUEST_TIMER_NOW: u32 = 11;
+pub const REQUEST_TIMER_SLEEP_UNTIL: u32 = 12;
+pub const REQUEST_PROCESS_SELF: u32 = 13;
+pub const REQUEST_PROCESS_SEND: u32 = 14;
+pub const REQUEST_PROCESS_RECEIVE: u32 = 15;
+pub const REQUEST_SUPERVISOR_START: u32 = 16;
+pub const REQUEST_SUPERVISOR_START_PROCESS: u32 = 17;
+pub const REQUEST_SUPERVISOR_ADDRESS: u32 = 18;
+pub const REQUEST_SUPERVISOR_REMOVE_PROCESS: u32 = 19;
+pub const REQUEST_SUPERVISOR_STOP: u32 = 20;
+pub const REQUEST_SUPERVISOR_WAIT: u32 = 21;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -38,6 +71,21 @@ pub const RESPONSE_ERROR: u32 = 7;
 pub const RESPONSE_CLOSED: u32 = 8;
 pub const RESPONSE_ABORTED: u32 = 9;
 pub const RESPONSE_DRAINED: u32 = 10;
+pub const RESPONSE_FULL: u32 = 11;
+pub const RESPONSE_UNAVAILABLE: u32 = 12;
+pub const RESPONSE_CAPACITY_REACHED: u32 = 13;
+pub const RESPONSE_NAME_TAKEN: u32 = 14;
+pub const RESPONSE_STOPPED: u32 = 15;
+pub const RESPONSE_FORCED: u32 = process::RESPONSE_FORCED;
+pub const PROCESS_END_RETURNED: i64 = process::PROCESS_END_RETURNED;
+pub const PROCESS_END_FAILED: i64 = process::PROCESS_END_FAILED;
+
+/// The fields every request record starts with.
+#[repr(C)]
+pub(crate) struct RequestHeader {
+    kind: u32,
+    status: u32,
+}
 
 #[repr(C)]
 pub struct SchedulerRequest {
@@ -62,6 +110,8 @@ pub struct SchedulerOutcome {
 
 pub const SCHEDULER_TRACE_TASK: u32 = 1;
 pub const SCHEDULER_TRACE_CHANNEL: u32 = 2;
+pub const SCHEDULER_TRACE_PROCESS: u32 = process::SCHEDULER_TRACE_PROCESS;
+pub const SCHEDULER_TRACE_CLOCK: u32 = 4;
 
 #[repr(C)]
 pub struct SchedulerTraceEvent {
@@ -76,6 +126,42 @@ pub struct SchedulerTraceEvent {
     pub queue_depth: u64,
     pub waiter_depth: u64,
     pub discard_count: u64,
+    pub supervisor: u64,
+    pub membership: u64,
+    pub incarnation: u64,
+    pub name: u64,
+    pub parent_supervisor: u64,
+    pub attempts_in_window: u64,
+    pub time: i64,
+    pub address_kind: u32,
+    pub outcome: u32,
+}
+
+impl SchedulerTraceEvent {
+    pub(crate) const fn blank(family: u32, kind: u32, sequence: u64) -> Self {
+        Self {
+            family,
+            kind,
+            sequence,
+            task: 0,
+            parent: 0,
+            cause: 0,
+            channel: 0,
+            capacity: 0,
+            queue_depth: 0,
+            waiter_depth: 0,
+            discard_count: 0,
+            supervisor: 0,
+            membership: 0,
+            incarnation: 0,
+            name: 0,
+            parent_supervisor: 0,
+            attempts_in_window: 0,
+            time: 0,
+            address_kind: 0,
+            outcome: 0,
+        }
+    }
 }
 
 pub type SchedulerTraceSink = unsafe extern "C" fn(*mut c_void, *const SchedulerTraceEvent);
@@ -216,6 +302,87 @@ struct Task {
     fiber: Option<OwnedFiber>,
     phase: TaskPhase,
     observed: bool,
+    /// The incarnation this task runs, if it is a process body.
+    process: Option<IncarnationId>,
+    /// The command for the next resume.
+    command: ChimiFiberCommand,
+    /// The request the fiber is parked on; null while running or after a
+    /// bare park.
+    request: *mut c_void,
+    /// Counts parks, so a delayed reply never reaches a later request.
+    park: u64,
+    ran: bool,
+    /// The sleep timer this task is parked on.
+    timer: Option<TimerId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClockEventKind {
+    /// Virtual time jumped to `time`. A boundary event.
+    Advanced,
+    TimerStarted,
+    TimerFired,
+    TimerCancelled,
+    /// One parked task in a detected deadlock. A boundary event.
+    DeadlockWaiter,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClockEvent {
+    pub sequence: u64,
+    pub kind: ClockEventKind,
+    pub task: Option<TaskId>,
+    pub time: Instant,
+    /// For a deadlock waiter: the request kind it is parked on, or 0.
+    pub request_kind: u32,
+}
+
+/// A task parked with nothing able to wake it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParkedTask {
+    pub task: TaskId,
+    pub request_kind: u32,
+}
+
+/// Why `run_until_idle` returned.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Idle {
+    /// Nothing is runnable, no timer is pending, and no non-process task is
+    /// parked. Processes may still wait in receive.
+    Quiescent,
+    /// A host operation is in flight; time does not advance until it ends.
+    AwaitingHost,
+    /// Virtual time: tasks are parked and nothing can ever wake them.
+    Deadlock(Vec<ParkedTask>),
+    /// Real time: tasks are parked with no timer pending.
+    Stalled(Vec<ParkedTask>),
+}
+
+/// Scheduler construction options beyond stack size and trace mode.
+#[derive(Clone, Copy, Debug)]
+pub struct SchedulerOptions {
+    pub stack_bytes: usize,
+    pub trace_mode: TraceMode,
+    pub clock: ClockMode,
+    /// Called once for every accepted message the scheduler discards unread.
+    pub release_message: Option<MessageRelease>,
+    /// Called once for every admitted specification context when no record
+    /// needs it any more.
+    pub release_spec_context: Option<SpecContextRelease>,
+    pub release_context: *mut c_void,
+}
+
+impl SchedulerOptions {
+    pub fn new(stack_bytes: usize, trace_mode: TraceMode, clock: ClockMode) -> Self {
+        Self {
+            stack_bytes,
+            trace_mode,
+            clock,
+            release_message: None,
+            release_spec_context: None,
+            release_context: std::ptr::null_mut(),
+        }
+    }
 }
 
 pub struct Scheduler {
@@ -230,10 +397,44 @@ pub struct Scheduler {
     constructed_events: u64,
     trace_sink: Option<SchedulerTraceSink>,
     trace_context: *mut c_void,
+    clock: Clock,
+    timers: TimerQueue,
+    clock_events: Vec<ClockEvent>,
+    host_operations: usize,
+    kernel: ProcessKernel,
+}
+
+impl Drop for Scheduler {
+    fn drop(&mut self) {
+        if !self.kernel.incarnations.is_empty() || self.has_blocked_plans() {
+            self.tear_down_processes();
+        }
+    }
 }
 
 impl Scheduler {
+    /// A scheduler on the real clock with no release hooks.
     pub fn new(stack_bytes: usize, trace_mode: TraceMode) -> Self {
+        Self::with_options(SchedulerOptions::new(
+            stack_bytes,
+            trace_mode,
+            ClockMode::Real,
+        ))
+    }
+
+    pub fn with_options(options: SchedulerOptions) -> Self {
+        let SchedulerOptions {
+            stack_bytes,
+            trace_mode,
+            clock,
+            release_message,
+            release_spec_context,
+            release_context,
+        } = options;
+        let kernel = ProcessKernel::new(
+            release_message.map(|release| (release, release_context)),
+            release_spec_context.map(|release| (release, release_context)),
+        );
         Self {
             tasks: BTreeMap::new(),
             runnable: VecDeque::new(),
@@ -249,7 +450,193 @@ impl Scheduler {
             constructed_events: 0,
             trace_sink: None,
             trace_context: std::ptr::null_mut(),
+            clock: Clock::new(clock),
+            timers: TimerQueue::default(),
+            clock_events: Vec::new(),
+            host_operations: 0,
+            kernel,
         }
+    }
+
+    pub fn set_trace_sink(&mut self, sink: Option<SchedulerTraceSink>, context: *mut c_void) {
+        self.trace_sink = sink;
+        self.trace_context = context;
+    }
+
+    pub fn clock_mode(&self) -> ClockMode {
+        self.clock.mode()
+    }
+
+    /// The current instant of the execution time source.
+    pub fn now(&self) -> Instant {
+        self.clock.now()
+    }
+
+    /// Marks a host operation in flight. Virtual time does not advance until
+    /// every begun operation has ended.
+    pub fn begin_host_operation(&mut self) {
+        self.host_operations += 1;
+    }
+
+    pub fn end_host_operation(&mut self) {
+        self.host_operations = self
+            .host_operations
+            .checked_sub(1)
+            .expect("end_host_operation without a matching begin");
+    }
+
+    /// Registers a timer that wakes `task` from its park at `deadline`.
+    /// Timers with equal deadlines fire in registration order. The timer is
+    /// removed if the task is cancelled first.
+    pub fn start_wake_timer(
+        &mut self,
+        task: TaskId,
+        deadline: Instant,
+    ) -> Result<TimerId, SchedulerError> {
+        self.require_live_task(task)?;
+        let id = self.timers.insert(deadline, TimerTarget::Wake(task));
+        if let Some(previous) = self.tasks.get_mut(&task).expect("live task").timer.replace(id) {
+            self.cancel_timer(previous);
+        }
+        self.emit_timer(ClockEventKind::TimerStarted, Some(task), deadline);
+        Ok(id)
+    }
+
+    /// Removes a pending timer. Returns false if it already fired or was
+    /// cancelled.
+    pub fn cancel_timer(&mut self, timer: TimerId) -> bool {
+        let Some(target) = self.timers.cancel(timer) else {
+            return false;
+        };
+        let task = match target {
+            TimerTarget::Wake(task) => Some(task),
+            TimerTarget::ShutdownDeadline(_) => None,
+        };
+        let now = self.clock.now();
+        self.emit_timer(ClockEventKind::TimerCancelled, task, now);
+        true
+    }
+
+    /// Drives runnable work, and whenever nothing is runnable and no host
+    /// operation is in flight, waits for the earliest timer: virtual time
+    /// jumps to it, real time sleeps until it. Returns when nothing more can
+    /// happen without the host.
+    pub fn run_until_idle(&mut self) -> Idle {
+        loop {
+            self.drive();
+            if self.host_operations > 0 {
+                return Idle::AwaitingHost;
+            }
+            let Some(deadline) = self.timers.earliest() else {
+                break;
+            };
+            if self.clock.wait_until(deadline) {
+                self.emit_clock(ClockEvent {
+                    sequence: 0,
+                    kind: ClockEventKind::Advanced,
+                    task: None,
+                    time: deadline,
+                    request_kind: 0,
+                });
+            }
+            self.fire_due_timers();
+        }
+        let parked: Vec<_> = self
+            .tasks
+            .iter()
+            .filter(|(_, record)| record.phase == TaskPhase::Parked)
+            .map(|(task, record)| ParkedTask {
+                task: *task,
+                request_kind: if record.request.is_null() {
+                    0
+                } else {
+                    // SAFETY: a recorded request stays valid while parked.
+                    unsafe { (*record.request.cast::<RequestHeader>()).kind }
+                },
+            })
+            .collect();
+        let stuck = parked
+            .iter()
+            .any(|parked| self.tasks[&parked.task].process.is_none());
+        if !stuck {
+            return Idle::Quiescent;
+        }
+        match self.clock.mode() {
+            ClockMode::Virtual => {
+                for waiter in &parked {
+                    let now = self.clock.now();
+                    self.emit_clock(ClockEvent {
+                        sequence: 0,
+                        kind: ClockEventKind::DeadlockWaiter,
+                        task: Some(waiter.task),
+                        time: now,
+                        request_kind: waiter.request_kind,
+                    });
+                }
+                Idle::Deadlock(parked)
+            }
+            ClockMode::Real => Idle::Stalled(parked),
+        }
+    }
+
+    pub fn clock_events(&self) -> &[ClockEvent] {
+        &self.clock_events
+    }
+
+    pub fn drain_clock_events(&mut self) -> Vec<ClockEvent> {
+        std::mem::take(&mut self.clock_events)
+    }
+
+    fn fire_due_timers(&mut self) {
+        let now = self.clock.now();
+        while let Some((id, deadline, target)) = self.timers.pop_due(now) {
+            match target {
+                TimerTarget::Wake(task) => {
+                    self.emit_timer(ClockEventKind::TimerFired, Some(task), deadline);
+                    let record = self.tasks.get_mut(&task);
+                    if let Some(record) = record.filter(|record| record.timer == Some(id)) {
+                        record.timer = None;
+                        let _ = self.wake(task);
+                    }
+                }
+                TimerTarget::ShutdownDeadline(incarnation) => {
+                    self.emit_timer(ClockEventKind::TimerFired, None, deadline);
+                    self.force(incarnation);
+                }
+            }
+        }
+    }
+
+    fn emit_timer(&mut self, kind: ClockEventKind, task: Option<TaskId>, time: Instant) {
+        if self.trace_mode != TraceMode::Full {
+            return;
+        }
+        self.emit_clock(ClockEvent {
+            sequence: 0,
+            kind,
+            task,
+            time,
+            request_kind: 0,
+        });
+    }
+
+    fn emit_clock(&mut self, mut event: ClockEvent) {
+        if self.trace_mode == TraceMode::Off {
+            return;
+        }
+        self.constructed_events += 1;
+        event.sequence = self.constructed_events;
+        self.clock_events.push(event);
+        self.publish_trace(SchedulerTraceEvent {
+            task: event.task.map_or(0, TaskId::get),
+            cause: u64::from(event.request_kind),
+            time: event.time.as_nanos(),
+            ..SchedulerTraceEvent::blank(
+                SCHEDULER_TRACE_CLOCK,
+                event.kind as u32 + 1,
+                event.sequence,
+            )
+        })
     }
 
     pub fn start_root(&mut self, entry: ChimiFiberEntry) -> Result<TaskId, SchedulerError> {
@@ -556,11 +943,19 @@ impl Scheduler {
         entry: ChimiFiberEntry,
         context: *mut c_void,
     ) -> Result<TaskId, SchedulerError> {
+        self.create_task(parent, entry, context, None)
+    }
+
+    /// Creates a runnable task at the tail of the ready queue. An
+    /// incarnation task has no parent and emits no task events.
+    fn create_task(
+        &mut self,
+        parent: Option<TaskId>,
+        entry: ChimiFiberEntry,
+        context: *mut c_void,
+        process: Option<IncarnationId>,
+    ) -> Result<TaskId, SchedulerError> {
         let id = TaskId(self.next_task);
-        self.next_task = self
-            .next_task
-            .checked_add(1)
-            .expect("task identity space exhausted");
         let fiber = OwnedFiber::new(
             entry,
             context,
@@ -573,6 +968,10 @@ impl Scheduler {
                 capture_backtraces: 0,
             },
         )?;
+        self.next_task = self
+            .next_task
+            .checked_add(1)
+            .expect("task identity space exhausted");
         self.tasks.insert(
             id,
             Task {
@@ -582,6 +981,12 @@ impl Scheduler {
                 fiber: Some(fiber),
                 phase: TaskPhase::Runnable,
                 observed: false,
+                process,
+                command: ChimiFiberCommand::Resume,
+                request: std::ptr::null_mut(),
+                park: 0,
+                ran: false,
+                timer: None,
             },
         );
         if let Some(parent) = parent {
@@ -597,18 +1002,32 @@ impl Scheduler {
     }
 
     fn run(&mut self, task: TaskId) {
-        if self.tasks.get(&task).map(|record| record.phase) != Some(TaskPhase::Runnable) {
-            return;
-        }
-        let event = self
+        let Some(record) = self
             .tasks
             .get_mut(&task)
-            .and_then(|record| record.fiber.as_mut())
+            .filter(|record| record.phase == TaskPhase::Runnable)
+        else {
+            return;
+        };
+        let command = std::mem::replace(&mut record.command, ChimiFiberCommand::Resume);
+        record.request = std::ptr::null_mut();
+        record.ran = true;
+        let event = record
+            .fiber
+            .as_mut()
             .expect("runnable task owns a fiber")
-            .resume(ChimiFiberCommand::Resume);
+            .resume(command);
         if event.state == ChimiFiberState::Parked as u32 {
-            self.tasks.get_mut(&task).expect("running task").phase = TaskPhase::Parked;
+            let record = self.tasks.get_mut(&task).expect("running task");
+            record.phase = TaskPhase::Parked;
+            record.request = event.request;
+            record.park += 1;
+            let process = record.process.is_some();
             self.emit(task, TaskEventKind::Parked, None, true);
+            if process && self.is_forced(task) {
+                self.abandon_forced(task);
+                return;
+            }
             if !event.request.is_null() {
                 self.handle_request(task, event.request.cast());
             }
@@ -639,11 +1058,40 @@ impl Scheduler {
     }
 
     fn handle_request(&mut self, owner: TaskId, request: *mut SchedulerRequest) {
-        // SAFETY: `chimi_fiber_request` keeps the request on the parked fiber's
-        // stack until this scheduler resumes that fiber.
+        // SAFETY: every request record starts with `RequestHeader`, and
+        // `chimi_fiber_request` keeps it alive until the fiber resumes.
+        let kind = unsafe { (*request.cast::<RequestHeader>()).kind };
+        if self.tasks[&owner].process.is_some() && self.park_lingers(owner, kind) {
+            return;
+        }
+        if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_WAIT).contains(&kind) {
+            self.handle_process_request(owner, request.cast());
+            return;
+        }
+        // SAFETY: the remaining kinds use `SchedulerRequest`.
         let request = unsafe { &mut *request };
         request.status = RESPONSE_UNSET;
         match request.kind {
+            REQUEST_TIMER_NOW => {
+                request.value = self.clock.now().as_nanos();
+                request.status = RESPONSE_OK;
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_TIMER_SLEEP_UNTIL => {
+                let deadline = Instant::from_nanos(request.value);
+                if self.interrupts_sleep(owner) {
+                    request.status = RESPONSE_CANCELLED;
+                    self.tasks.get_mut(&owner).expect("parked task").command =
+                        ChimiFiberCommand::Cancel;
+                    let _ = self.wake_front(owner);
+                } else if deadline <= self.clock.now() {
+                    request.status = RESPONSE_OK;
+                    let _ = self.wake_front(owner);
+                } else {
+                    request.status = RESPONSE_PENDING;
+                    let _ = self.start_wake_timer(owner, deadline);
+                }
+            }
             REQUEST_TASK_START => {
                 let Some(entry) = request.entry else {
                     request.status = RESPONSE_ERROR;
@@ -820,7 +1268,12 @@ impl Scheduler {
         if matches!(phase, Some(TaskPhase::Draining(_) | TaskPhase::Terminal(_))) {
             return;
         }
-        self.tasks.get_mut(&task).expect("known task").phase = TaskPhase::Draining(outcome);
+        let record = self.tasks.get_mut(&task).expect("known task");
+        record.phase = TaskPhase::Draining(outcome);
+        record.request = std::ptr::null_mut();
+        if let Some(timer) = record.timer.take() {
+            self.cancel_timer(timer);
+        }
 
         let channel_cleanup = self.channels.cleanup_task(task);
         self.apply_channel_transition(channel_cleanup);
@@ -879,6 +1332,9 @@ impl Scheduler {
         );
         self.emit(task, TaskEventKind::CleanupCompleted, cause(outcome), false);
         self.publish_terminal(task, outcome);
+        if self.incarnation_of(task).is_some() {
+            self.incarnation_finished(task, outcome);
+        }
     }
 
     fn publish_terminal(&mut self, task: TaskId, outcome: TaskOutcome) {
@@ -988,27 +1444,25 @@ impl Scheduler {
         if self.trace_mode == TraceMode::Off || full_only && self.trace_mode != TraceMode::Full {
             return;
         }
+        let record = self.tasks.get(&task);
+        if record.is_some_and(|record| record.process.is_some()) {
+            return;
+        }
+        let parent = record.and_then(|record| record.parent);
         self.constructed_events += 1;
         let event = TaskEvent {
             sequence: self.constructed_events,
             task,
-            parent: self.tasks.get(&task).and_then(|record| record.parent),
+            parent,
             kind,
             cause,
         };
         self.events.push(event);
         self.publish_trace(SchedulerTraceEvent {
-            family: SCHEDULER_TRACE_TASK,
-            kind: kind as u32 + 1,
-            sequence: event.sequence,
             task: event.task.get(),
             parent: event.parent.map_or(0, TaskId::get),
             cause: event.cause.map_or(0, TaskId::get),
-            channel: 0,
-            capacity: 0,
-            queue_depth: 0,
-            waiter_depth: 0,
-            discard_count: 0,
+            ..SchedulerTraceEvent::blank(SCHEDULER_TRACE_TASK, kind as u32 + 1, event.sequence)
         });
     }
 
@@ -1036,17 +1490,18 @@ impl Scheduler {
         };
         self.channel_events.push(event);
         self.publish_trace(SchedulerTraceEvent {
-            family: SCHEDULER_TRACE_CHANNEL,
-            kind: event.kind as u32 + 1,
-            sequence: event.sequence,
             task: event.task.map_or(0, TaskId::get),
-            parent: 0,
             cause: event.cause.map_or(0, TaskId::get),
             channel: event.channel.get(),
             capacity: event.capacity as u64,
             queue_depth: event.queue_depth as u64,
             waiter_depth: event.waiter_depth as u64,
             discard_count: event.discard_count as u64,
+            ..SchedulerTraceEvent::blank(
+                SCHEDULER_TRACE_CHANNEL,
+                event.kind as u32 + 1,
+                event.sequence,
+            )
         });
     }
 
