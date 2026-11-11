@@ -123,7 +123,9 @@ Rules:
   to the same incarnation. A named address never equals a direct address, even
   when both currently route to the same incarnation.
 - A failure set of several members is equatable so that a projected
-  `Failure(error)` value can be compared, but it is not ordered: its members
+  `Failure(error)` value can be compared, with another value of the set or
+  with a value of one of its member types, which widens to the set type for
+  the comparison. It is not ordered: its members
   have no declaration order. A failure set of one member is that member's
   type and keeps its properties.
 
@@ -149,8 +151,12 @@ Rules:
 
 - The requirement is part of the inferred callable contract. It propagates
   through calls exactly as failure and needs rows do.
-- Each instantiation MUST satisfy the requirement. A call that instantiates `T`
-  with a type that lacks the property is rejected with `T4305`. The diagnostic
+- Each instantiation MUST satisfy the requirement, whether a call instantiates
+  `T` or a generic function is used as a value of a specific function type
+  (for example, passed as an argument). An instantiation with a type that lacks
+  the property is rejected with `T4305`. A requirement that starts in a
+  standard function, such as `Order.compare` or `Map.empty`, labels the call
+  inside the callee that created it. The diagnostic
   names the parameter, the operator use inside the callee that created the
   requirement, and the component of the argument type that lacks the property.
 - Source code has no spelling for the requirement. Annotations stay optional,
@@ -210,7 +216,7 @@ Structural equality is defined per type:
 | `Float` | they are numerically equal; `-0.0 == 0.0` |
 | `Text` | their UTF-8 byte sequences are identical |
 | struct | they are the same nominal type and every field is equal |
-| enum | they are the same variant and every payload field is equal |
+| enum | they are the same enum type and the same variant, and every payload field is equal |
 | tuple, anonymous record | every element or field is equal |
 | `List<T>` | they have the same length and equal elements at every index |
 | `Option<T>` | both are `None`, or both are `Some` with equal payloads |
@@ -229,7 +235,9 @@ ordinary function with the same result as `==`.
 ## Hashing
 
 Every equatable value has a derived hash. Source code cannot call it in this
-version. It exists so that `Map` and `Set` can use any equatable key.
+version. An implementation whose maps use only the internal total order need
+not compute hashes at all; the rules below then constrain whichever hashing a
+later `Set` or `Map` representation adds. It exists so that `Map` and `Set` can use any equatable key.
 
 Rules:
 
@@ -241,7 +249,9 @@ Rules:
   values, so seeding is unobservable.
 - `Map` and `Set` MAY use hashing, an internal total order over all equatable
   values, or both. The internal order is not the source-level ordered property
-  and MUST NOT be observable through enumeration. The rule in
+  and MUST NOT be observable through enumeration. `Debug.render` is not
+  enumeration: it MAY print entries in the internal order, because it is a
+  diagnostic text form that equal maps must render identically. The rule in
   [immutable maps](trace-data-and-processing.md#immutable-maps) that `Map` does
   not promise enumeration order still holds.
 - Hashing and equality MUST handle any nesting depth that value construction
@@ -871,7 +881,7 @@ MUST NOT blur stages.
 | `S1005` | syntax | `()` in expression or type position, or a one-element tuple `(e,)`. | "`()` is not a value; use `Void`", or "a tuple needs at least two elements" |
 | `S1006` | syntax | A second non-associative operator at the same level, as in `a < b < c`, `a == b == c`, or `a..b..c`. | "comparisons do not chain; write `a < b and b < c`" |
 | `T4300` | type | An operand of `==` or `!=`, or a `Map` key or `Set` element type, is not equatable. | Names the path to the offending component, such as "field `handler` of `Route` is a function" |
-| `T4301` | type | An operand of `<`, `<=`, `>`, `>=`, or an argument of `Order.compare` or `List.sort`, is not ordered. | Names the component and suggests a comparator with `List.sort_by` |
+| `T4301` | type | An operand of `<`, `<=`, `>`, `>=`, or an argument of `Order.compare` or `List.sort`, is not ordered. | Names the component; once `std/list` provides `List.sort_by`, suggests a comparator with it |
 | `T4302` | type | The operands of a binary arithmetic, equality, or comparison operator have different types. | For `Int` and `Float`, suggests `Float.from_int` or `Float.to_int` |
 | `T4303` | type | An arithmetic operator, including unary `-`, is applied to a type other than `Int`, `Float`, or `Decimal`. When an operand is not numeric, `T4303` is reported instead of `T4302`, whichever side it is on. | For `Text` and `+`, suggests `Text.append`. For `Duration`, `Instant`, or `Timestamp`, names the `Duration` or `Clock` function to use, such as `Duration.add` |
 | `T4304` | type | An operand of `and`, `or`, or `not` is not `Bool`. | "Chimi has no truthiness; compare explicitly" |
@@ -924,7 +934,7 @@ outcome.
 | E7 | `Set` of a user enum with payloads deduplicates equal elements | Run: size counts distinct values |
 | E8 | `route_a == route_b` where `Route` has a function field | Fail `T4300`; the message names `handler` |
 | E9 | `rx_a == rx_b` on channel receivers | Fail `T4300` |
-| E10 | `let keyed: Map<fn() -> Int, Int> = Map.empty()` | Fail `T4300` |
+| E10 | `let keyed: Map<fn() -> Int, Int> = Map.empty()`, and a parameter or field declared `Map<fn() -> Int, Int>` | Fail `T4300` at each written type |
 | E11 | `1 == 1.0` | Fail `T4302` |
 | E12 | `a == b == c` | Fail `S1006` |
 | E13 | `same_pair((f, g))` with function values | Fail `T4305`, labelling `left == right` in `same_pair` |

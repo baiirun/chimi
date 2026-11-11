@@ -93,10 +93,11 @@ map containing the returned value. Callback failures, needs, and effects MUST
 propagate independently. The prior map remains a valid value; source syntax
 does not expose in-place mutation or collection identity.
 
-The first implementation MUST support `Text` keys. Other compiler-known scalar
-keys MAY be added only with stable equality and hashing. Caller-defined
-equality, hashing, or ordering and automatic structural keys are deferred until
-the language has a concrete behavior-constraint use case.
+`Map` accepts any equatable key type, using derived structural equality and
+the internal order defined in
+[core data and operators](core-data-and-operators.md#hashing). Caller-defined
+equality, hashing, or ordering remains out of scope; a non-structural order is
+an explicit comparator value.
 
 `Map` MUST NOT promise enumeration order based on insertion or hashing. A
 single update MUST NOT require copying or allocating storage proportional to
