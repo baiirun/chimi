@@ -6228,6 +6228,54 @@ fn a_whole_enum_value_does_not_narrow_to_a_failure_set() {
     assert_eq!(check_codes(&through_parameter), ["T4231"]);
 }
 
+// A failure-type pattern inside another pattern cannot select variants (only a
+// whole subject or a `Failure` payload expands into variant tests), so it is
+// rejected instead of matching every failure. Its rewrite runs on both paths.
+#[test]
+fn a_nested_failure_type_pattern_is_rejected() {
+    let source = |arms: &str| {
+        format!(
+            concat!(
+                "{}",
+                "fn file_label(problem: FileProblem) -> Text {{\n",
+                "  case problem {{\n",
+                "    Missing(path) -> path\n",
+                "    Denied(path) -> path\n",
+                "    TooLong(path, _) -> path\n",
+                "  }}\n",
+                "}}\n",
+                "fn classify(choice: Int) -> Text {{\n",
+                "  case load(choice) {{\n",
+                "    Success(text) -> text\n",
+                "    Failure(error) -> {}\n",
+                "  }}\n",
+                "}}\n",
+                "pub fn main() -> List<Text> {{ [classify(0), classify(2)] }}\n",
+            ),
+            FAILURE_KINDS, arms
+        )
+    };
+    for nested in [
+        "case Some(error) {\n      Some(file: FileProblem) -> file_label(file)\n      _ -> \"other\"\n    }",
+        "case [error] {\n      [file: FileProblem] -> file_label(file)\n      _ -> \"other\"\n    }",
+    ] {
+        assert_eq!(check_codes(&source(nested)), ["T4230"], "{nested}");
+    }
+    let rewritten = source(concat!(
+        "case Some(error) {\n",
+        "      Some(inner) -> case inner {\n",
+        "        file: FileProblem -> file_label(file)\n",
+        "        _ -> \"other\"\n",
+        "      }\n",
+        "      None -> \"none\"\n",
+        "    }",
+    ));
+    assert_eq!(
+        run_both("nested-failure-type-rewrite", &rewritten),
+        "\"outcome\":\"success\",\"value\":[\"a\",\"other\"]"
+    );
+}
+
 // ts-8c488d: an unguarded `Failure(_)` arm handles every variant of the row.
 #[test]
 fn a_wildcard_failure_arm_handles_every_failure() {

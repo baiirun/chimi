@@ -512,7 +512,14 @@ Rules:
   variants, and when every variant is present, that type is the enum itself.
   For a variant or a struct, it is that one member. A restricted value is accepted wherever the enum is expected, so
   `report_trace(error)` above type-checks even if the row omits some
-  `TraceError` variants.
+  `TraceError` variants. The reverse does not hold: a whole-enum value is not
+  accepted where only the restricted members are known. When case arms or list
+  elements mix a restricted value with a whole-enum value, their shared type is
+  the enum, so `Failure` of the result lists every variant.
+- A failure-type pattern selects only as a whole `case` subject pattern (also
+  through `as`) or as the payload of a `Failure` pattern. Nested inside a
+  constructor, list, or `Success` pattern it is `T4230`: bind the value there
+  and select by failure type in its own `case`.
 - Selective recovery subtracts every variant the pattern covers when the arm
   has no guard. A guarded failure-type arm subtracts nothing. These are the
   kernel's existing subtraction rules applied to each covered variant.

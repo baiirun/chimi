@@ -1124,6 +1124,10 @@ struct PatternContext<'a> {
     /// The pattern is (part of) a function clause's parameter pattern, so type
     /// conflicts are between clauses (`T4281`) and generic positions are opaque.
     clause_head: bool,
+    /// The pattern sits inside a constructor, list, or `Success` pattern, where
+    /// a failure-type pattern cannot select variants: only a whole subject or a
+    /// `Failure` payload is expanded into variant tests.
+    nested: bool,
 }
 
 /// The function whose clauses an ordinary `case` was desugared from.
@@ -3621,6 +3625,7 @@ impl ProjectTypeChecker {
         let context = PatternContext {
             generics,
             clause_head: clauses.is_some(),
+            nested: false,
         };
         let mut facts = subjects.to_vec();
         let mut success = None;
@@ -3790,6 +3795,15 @@ impl ProjectTypeChecker {
                 if let CanonicalType::FailureSetValue(failures) =
                     self.types[resolved.raw() as usize].clone()
                 {
+                    if context.nested {
+                        self.type_error_range(
+                            module_id,
+                            "T4230",
+                            *range,
+                            "a failure-type pattern can select variants only as a whole case subject or a `Failure(...)` payload; bind the value here and match it in its own `case`",
+                        );
+                        return MatchPattern::Wildcard;
+                    }
                     self.failure_type_pattern(
                         module_id, pattern, type_use, *range, failures, context, bindings,
                     );
@@ -3906,7 +3920,10 @@ impl ProjectTypeChecker {
                                 module_id,
                                 element_pattern,
                                 element,
-                                context,
+                                PatternContext {
+                                    nested: true,
+                                    ..context
+                                },
                                 bindings,
                             )
                         })
@@ -4003,7 +4020,16 @@ impl ProjectTypeChecker {
                 arguments
                     .get(index)
                     .map_or(MatchPattern::Wildcard, |argument| {
-                        self.normalize_pattern(module_id, argument, *input, context, bindings)
+                        self.normalize_pattern(
+                            module_id,
+                            argument,
+                            *input,
+                            PatternContext {
+                                nested: true,
+                                ..context
+                            },
+                            bindings,
+                        )
                     })
             })
             .collect();
@@ -5366,6 +5392,7 @@ impl ProjectTypeChecker {
         let context = PatternContext {
             generics,
             clause_head: false,
+            nested: false,
         };
         let mut arm_facts = Vec::new();
         let mut success = None;
@@ -5387,7 +5414,10 @@ impl ProjectTypeChecker {
                         module_id,
                         inner,
                         subject.success,
-                        context,
+                        PatternContext {
+                            nested: true,
+                            ..context
+                        },
                         &mut arm_bindings,
                     );
                     let row = vec![normalized];
