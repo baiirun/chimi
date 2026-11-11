@@ -595,6 +595,41 @@ fn boolean_keywords_cannot_name_bindings() {
     }
 }
 
+// Native code evaluates a pure integer expression directly and leaves any
+// expression with division to the runtime. Both forms must agree with the
+// interpreter, including the defects.
+#[test]
+fn pure_integer_arithmetic_matches_the_interpreter() {
+    let outcome = run_both(
+        "integer-direct",
+        "pub fn main() -> Int { -(1 + 2) * 3 - 4 }\n",
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":-13");
+    let outcome = run_both(
+        "integer-division",
+        "pub fn main() -> Int { (8 / 2) - 7 / 2 - -7 / 2 }\n",
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":4");
+}
+
+// A division defect inside an otherwise direct expression is the same on
+// both paths.
+//
+// Overflow parity is not covered yet: the native runtime reports every
+// overflow as "integer arithmetic overflow", while the interpreter names the
+// operation, such as "integer addition overflow".
+#[test]
+fn integer_division_by_zero_matches_the_interpreter() {
+    let outcome = run_both(
+        "integer-divide-by-zero",
+        "pub fn main() -> Int { 1 + 2 / 0 }\n",
+    );
+    assert!(
+        outcome.starts_with("\"outcome\":\"defect\",\"message\":\"integer division by zero\""),
+        "{outcome}"
+    );
+}
+
 // ts-8cf7db: a body whose failure row carries a type nothing pins used to
 // grow its contract on every inference pass until the checker panicked.
 #[test]

@@ -1108,9 +1108,8 @@ fn operation_name(operation: &CoreOperation) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        BinaryOperator, CACHE_SCHEMA, CoreOperation, FIBER_RUNTIME_ABI_VERSION,
-        FIBER_RUNTIME_HEADER, RUNTIME_ABI_VERSION, RUNTIME_HEADER, cache_key, direct_integer_roots,
-        parse_dependency, pure_integer_node_counts, requires_fiber_runtime,
+        FIBER_RUNTIME_ABI_VERSION, FIBER_RUNTIME_HEADER, RUNTIME_ABI_VERSION, RUNTIME_HEADER,
+        cache_key, parse_dependency, requires_fiber_runtime,
     };
     use crate::source::SourceSnapshot;
     use crate::{BackendProgram, Compiler, ProjectSource};
@@ -1127,63 +1126,6 @@ mod tests {
     }
 
     #[test]
-    fn direct_integer_plan_accepts_only_the_bounded_pure_operator_set() {
-        let direct = prepared("pub fn main() -> Int { -(1 + 2) * 3 - 4 }");
-        let direct_counts = pure_integer_node_counts(&direct.core);
-        let mut operators = [false; 4];
-        for node in &direct.core.nodes {
-            match node.operation {
-                CoreOperation::Unary { .. } => {
-                    operators[0] = true;
-                    assert!(direct_counts[node.id.raw() as usize].is_some());
-                }
-                CoreOperation::Binary {
-                    operator: BinaryOperator::Add,
-                    ..
-                } => {
-                    operators[1] = true;
-                    assert!(direct_counts[node.id.raw() as usize].is_some());
-                }
-                CoreOperation::Binary {
-                    operator: BinaryOperator::Subtract,
-                    ..
-                } => {
-                    operators[2] = true;
-                    assert!(direct_counts[node.id.raw() as usize].is_some());
-                }
-                CoreOperation::Binary {
-                    operator: BinaryOperator::Multiply,
-                    ..
-                } => {
-                    operators[3] = true;
-                    assert!(direct_counts[node.id.raw() as usize].is_some());
-                }
-                _ => {}
-            }
-        }
-        assert!(operators.into_iter().all(|covered| covered));
-        assert_eq!(direct_integer_roots(&direct.core).len(), 1);
-
-        let unsupported = prepared("pub fn main() -> Int { (8 / 2) }");
-        let unsupported_counts = pure_integer_node_counts(&unsupported.core);
-        let divide = unsupported
-            .core
-            .nodes
-            .iter()
-            .find(|node| {
-                matches!(
-                    node.operation,
-                    CoreOperation::Binary {
-                        operator: BinaryOperator::Divide,
-                        ..
-                    }
-                )
-            })
-            .unwrap();
-        assert!(unsupported_counts[divide.id.raw() as usize].is_none());
-    }
-
-    #[test]
     fn cache_keys_preserve_input_and_artifact_boundaries() {
         assert_eq!(
             cache_key("module", &[b"alpha", b"beta"]),
@@ -1197,7 +1139,6 @@ mod tests {
             cache_key("module", &[b"ab", b"c"]),
             cache_key("module", &[b"a", b"bc"])
         );
-        assert!(CACHE_SCHEMA.ends_with(".v1"));
     }
 
     #[test]
