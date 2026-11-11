@@ -22,6 +22,12 @@ Run one kind or the complete lab:
     cargo run --release --bin chimi-concurrency-lab -- runtime
     cargo run --release --bin chimi-concurrency-lab -- all
 
+The default `cargo test` runs every kind except `performance`, whose gates
+compare wall-clock latency, throughput ratios, and RSS deltas and trip on a
+loaded machine. Run those gates on an idle machine with:
+
+    cargo test --release -p chimi --test cli -- --ignored concurrency_lab_performance
+
 The lab remains the focused performance and lifecycle harness. Chimi
 source-level `Task` and `Channel` calls now connect to the same scheduler through
 the native AOT runtime. `programs/concurrency-pipeline` is the composite source
