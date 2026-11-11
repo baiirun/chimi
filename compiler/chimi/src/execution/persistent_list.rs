@@ -10,7 +10,7 @@
 //! Window retention: a slice shorter than a quarter of its vector copies its
 //! elements into a fresh vector instead of sharing, so a small window never keeps
 //! a large vector alive. Draining a list of n elements one at a time therefore
-//! copies n/4 + n/16 + ... < n/3 elements in total: each copy of m elements is
+//! copies n/4 + n/16 + ..., about n/3 elements in total: each copy of m elements is
 //! paid for by the 3m or more elements dropped since the vector was built. The
 //! source window is compacted, not just the slice: it adopts a vector of exactly
 //! its own elements, which every later slice of it shares, so matching the same
@@ -25,6 +25,20 @@ const WIDTH: usize = 1 << BITS;
 const MASK: usize = WIDTH - 1;
 /// A slice shorter than `1 / RETAINED_FRACTION` of its vector is copied (see the module docs).
 const RETAINED_FRACTION: usize = 4;
+
+#[cfg(test)]
+thread_local! {
+    /// Element references copied into new nodes on this thread, so tests bound the
+    /// copying work the module docs promise without timing it.
+    static ELEMENT_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn count_element_copies(count: usize) {
+    #[cfg(test)]
+    ELEMENT_COPIES.with(|copies| copies.set(copies.get() + count));
+    #[cfg(not(test))]
+    let _ = count;
+}
 
 enum Node<T> {
     Branch(Vec<Arc<Node<T>>>),
@@ -159,6 +173,7 @@ impl<T> PersistentList<T> {
 
     /// Elements `range` of this window in a fresh vector.
     fn copy_range(&self, range: std::ops::Range<usize>) -> Vector<T> {
+        count_element_copies(range.len());
         Vector::from_shared(
             range
                 .map(|index| {
@@ -275,6 +290,7 @@ impl<T> Vector<T> {
     fn push(&self, value: Arc<T>) -> Self {
         let tail_length = self.length - tail_offset(self.length);
         if tail_length < WIDTH {
+            count_element_copies(tail_length);
             let mut tail = Vec::with_capacity(tail_length + 1);
             tail.extend(self.tail.iter().cloned());
             tail.push(value);
@@ -285,6 +301,7 @@ impl<T> Vector<T> {
                 tail: Arc::new(tail),
             };
         }
+        count_element_copies(WIDTH);
         let leaf = Arc::new(Node::Leaf(self.tail.as_ref().clone()));
         let first_index = self.length - WIDTH;
         let (root, shift) = match &self.root {
@@ -382,6 +399,13 @@ impl<T> Vector<T> {
 mod tests {
     use super::*;
 
+    /// The element references copied on this thread while `operation` runs.
+    fn copies_during<R>(operation: impl FnOnce() -> R) -> (R, usize) {
+        let before = ELEMENT_COPIES.with(std::cell::Cell::get);
+        let result = operation();
+        (result, ELEMENT_COPIES.with(std::cell::Cell::get) - before)
+    }
+
     fn pushed(length: usize) -> PersistentList<usize> {
         (0..length).fold(PersistentList::default(), |list, value| list.push(value))
     }
@@ -461,11 +485,15 @@ mod tests {
     // whole list per append (about 5 * 10^11 element copies at this length).
     #[test]
     fn appending_a_million_elements_is_linear() {
-        let started = std::time::Instant::now();
-        let list = pushed(1_000_000);
-        let elapsed = started.elapsed();
-        assert_eq!(list.len(), 1_000_000);
-        assert!(elapsed.as_secs() < 10, "a million appends took {elapsed:?}");
+        // Each append copies at most the 32-slot tail, once into a new tail and
+        // once into a leaf when the tail fills: under 64 references per append.
+        let length = 1_000_000;
+        let (list, copies) = copies_during(|| pushed(length));
+        assert_eq!(list.len(), length);
+        assert!(
+            copies < 64 * length,
+            "a million appends copied {copies} references"
+        );
     }
 
     fn assert_window(list: &PersistentList<usize>, from: usize, length: usize) {
@@ -551,23 +579,24 @@ mod tests {
     fn a_drained_window_frees_the_dropped_elements() {
         let length = 200_000;
         let (mut rest, weak) = tracked(length);
-        let started = std::time::Instant::now();
-        for expected in 0..length {
-            assert_eq!(rest.first().map(|value| **value), Some(expected));
-            rest = rest.slice(1..rest.len()).unwrap();
-            let remaining = rest.len();
-            if remaining % 1_000 == 0 && remaining > 0 {
-                let alive = alive(&weak, 0..length);
-                assert!(
-                    alive.len() <= 4 * remaining && alive.ends_with(&[length - 1]),
-                    "{} elements alive for a window of {remaining}",
-                    alive.len()
-                );
-                assert_eq!(alive.first(), Some(&(length - alive.len())));
+        let ((), copies) = copies_during(|| {
+            for expected in 0..length {
+                assert_eq!(rest.first().map(|value| **value), Some(expected));
+                rest = rest.slice(1..rest.len()).unwrap();
+                let remaining = rest.len();
+                if remaining % 1_000 == 0 && remaining > 0 {
+                    let alive = alive(&weak, 0..length);
+                    assert!(
+                        alive.len() <= 4 * remaining && alive.ends_with(&[length - 1]),
+                        "{} elements alive for a window of {remaining}",
+                        alive.len()
+                    );
+                    assert_eq!(alive.first(), Some(&(length - alive.len())));
+                }
             }
-        }
-        let elapsed = started.elapsed();
-        assert!(elapsed.as_secs() < 10, "draining took {elapsed:?}");
+        });
+        // The module docs: draining n elements copies about n/3 of them.
+        assert!(copies < length / 2, "draining copied {copies} elements");
         assert!(alive(&weak, 0..length).is_empty());
     }
 
@@ -610,13 +639,16 @@ mod tests {
         let list = pushed(65_536);
         let window = list.slice(49_152..65_536).unwrap();
         drop(list);
-        let started = std::time::Instant::now();
-        for _ in 0..50_000 {
-            let rest = window.clone().slice(1..window.len()).unwrap();
-            assert_eq!(rest.first(), Some(&49_153));
-        }
-        let elapsed = started.elapsed();
-        assert!(elapsed.as_secs() < 5, "50,000 rest views took {elapsed:?}");
+        let ((), copies) = copies_during(|| {
+            for _ in 0..50_000 {
+                let rest = window.clone().slice(1..window.len()).unwrap();
+                assert_eq!(rest.first(), Some(&49_153));
+            }
+        });
+        assert!(
+            copies <= 16_384,
+            "50,000 rest views copied {copies} elements"
+        );
         assert_window(&window, 49_152, 16_384);
     }
 
