@@ -99,6 +99,11 @@ import billing/money.{Money, NegativeAmount}
 Member imports MUST NOT bind functions. Bare module imports and wildcard member
 imports are invalid.
 
+Imports MUST NOT form a cycle. The project loader rejects a cycle while reading
+modules from disk, and the compiler rejects one among sources it is given with
+`E_IMPORT_CYCLE` at the import that closes it, listing the path, as in
+`import cycle: app/main -> lib/other -> app/main`.
+
 Module, type, and value names occupy separate namespaces. Every resolved
 external reference carries a stable module-qualified symbol identity even when
 an explicit member import permits an unqualified source spelling.

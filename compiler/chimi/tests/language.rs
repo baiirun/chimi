@@ -3086,20 +3086,55 @@ fn constants_are_private_by_default_and_never_member_imported() {
     );
 }
 
-// G7: `const a = b` and `const b = a` in two modules is one cycle, reported once.
+// G7 row: `const a = f()` with `fn f() -> Int { a }` is one cycle through the
+// function, reported once with its path.
 #[test]
-fn constants_that_name_each_other_across_modules_are_one_cycle() {
-    let codes = build_codes(&[
+fn a_constant_reached_through_its_own_initializer_call_is_a_cycle() {
+    let messages = build_messages(concat!(
+        "const a = f()\n",
+        "fn f() -> Int { a }\n",
+        "pub fn main() -> Int { a }\n",
+    ));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].starts_with("E5205") && messages[0].contains("a -> f -> a"),
+        "{messages:?}"
+    );
+}
+
+// Modules that import each other are rejected by the compiler API with the path, as
+// the project loader rejects them for the CLI. This is also why two modules cannot
+// name each other's constants.
+#[test]
+fn modules_that_import_each_other_are_an_import_cycle() {
+    let sources = [
         (
             "app/main",
-            "import lib/other as Other\npub const a = Other.b\npub fn main() -> Int { 0 }\n",
+            "import lib/other as Other\npub fn main() -> Int { Other.value() }\npub fn base() -> Int { 1 }\n",
         ),
         (
             "lib/other",
-            "import app/main as Main\npub const b = Main.a\n",
+            "import app/main as Main\npub fn value() -> Int { Main.base() }\n",
         ),
-    ]);
-    assert_eq!(codes, ["E5205"]);
+    ]
+    .into_iter()
+    .map(|(module, source)| {
+        ProjectSource::new(
+            module,
+            SourceSnapshot::from_text(format!("{module}.chimi"), source),
+        )
+        .expect("valid module path")
+    })
+    .collect();
+    let diagnostics = Compiler::verify_project(sources).expect_err("an import cycle fails");
+    let [diagnostic] = diagnostics.as_slice() else {
+        panic!("{diagnostics:?}");
+    };
+    assert_eq!(diagnostic.code(), "E_IMPORT_CYCLE");
+    assert_eq!(
+        diagnostic.message(),
+        "import cycle: app/main -> lib/other -> app/main"
+    );
 }
 
 // G7 conformance rows for rejected constants. Each program is otherwise valid, so the

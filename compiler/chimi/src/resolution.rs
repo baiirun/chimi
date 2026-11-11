@@ -834,39 +834,71 @@ impl ProjectResolver {
         }
     }
 
-    fn dependency_order(&self) -> Vec<ModuleId> {
+    /// Orders modules so each follows the modules it imports, and reports each import
+    /// that closes a cycle with `E_IMPORT_CYCLE`, as the project loader does for a
+    /// project read from disk.
+    fn dependency_order(&mut self) -> Vec<ModuleId> {
         fn visit(
             resolver: &ProjectResolver,
             module_id: ModuleId,
-            visiting: &mut HashSet<ModuleId>,
+            visiting: &mut Vec<ModuleId>,
             visited: &mut HashSet<ModuleId>,
             order: &mut Vec<ModuleId>,
+            cycles: &mut Vec<Diagnostic>,
         ) {
-            if visited.contains(&module_id) || !visiting.insert(module_id) {
+            if visited.contains(&module_id) {
                 return;
             }
+            visiting.push(module_id);
             let module = &resolver.semantic.modules[module_id.raw() as usize];
             let mut dependencies = module
                 .imports
                 .iter()
-                .filter_map(|import| resolver.module_paths.get(&import.path).copied())
+                .filter_map(|import| {
+                    let dependency = resolver.module_paths.get(&import.path).copied()?;
+                    Some((dependency, import.range))
+                })
                 .collect::<Vec<_>>();
-            dependencies.sort_unstable();
-            dependencies.dedup();
-            for dependency in dependencies {
-                visit(resolver, dependency, visiting, visited, order);
+            dependencies.sort_by_key(|(dependency, range)| (*dependency, range.start()));
+            dependencies.dedup_by_key(|(dependency, _)| *dependency);
+            for (dependency, range) in dependencies {
+                if let Some(start) = visiting.iter().position(|open| *open == dependency) {
+                    let path = visiting[start..]
+                        .iter()
+                        .chain([&dependency])
+                        .map(|id| resolver.semantic.modules[id.raw() as usize].path.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" -> ");
+                    cycles.push(name_error(
+                        module,
+                        "E_IMPORT_CYCLE",
+                        range,
+                        format!("import cycle: {path}"),
+                    ));
+                    continue;
+                }
+                visit(resolver, dependency, visiting, visited, order, cycles);
             }
-            visiting.remove(&module_id);
+            visiting.pop();
             visited.insert(module_id);
             order.push(module_id);
         }
 
-        let mut visiting = HashSet::new();
+        let mut visiting = Vec::new();
         let mut visited = HashSet::new();
         let mut order = Vec::with_capacity(self.semantic.modules.len());
+        let mut cycles = Vec::new();
         for module in &self.semantic.modules {
-            visit(self, module.id, &mut visiting, &mut visited, &mut order);
+            visit(
+                self,
+                module.id,
+                &mut visiting,
+                &mut visited,
+                &mut order,
+                &mut cycles,
+            );
         }
+        self.diagnostics.extend(cycles);
         order
     }
 
