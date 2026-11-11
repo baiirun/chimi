@@ -10,7 +10,7 @@ use super::{
     RESPONSE_DEFECTED, RESPONSE_ERROR, RESPONSE_FORCED, RESPONSE_FULL, RESPONSE_NAME_TAKEN,
     RESPONSE_OK, RESPONSE_PENDING, RESPONSE_STOPPED, RESPONSE_SUCCEEDED, RESPONSE_UNAVAILABLE,
     SCHEDULER_DEFECT_CODE, Scheduler, SchedulerOptions, SchedulerOutcome, SchedulerTraceSink,
-    TaskId, TaskOutcome, TaskPhase, TaskResult, TraceMode,
+    ParkedTask, TaskId, TaskOutcome, TaskPhase, TaskResult, TraceMode,
 };
 use super::{MessageRelease, SendFailure, SpecContextRelease};
 use crate::{ChimiFiberCommand, ChimiFiberEntry, ChimiFiberState};
@@ -107,6 +107,27 @@ pub struct ChimiSchedulerConfig {
     pub release_message: Option<MessageRelease>,
     pub release_spec_context: Option<SpecContextRelease>,
     pub release_context: *mut c_void,
+    pub deadlock_report: Option<DeadlockReport>,
+    pub deadlock_context: *mut c_void,
+}
+
+/// One task parked in a detected deadlock and the request kind it waits on
+/// (0 for a bare park).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChimiDeadlockWaiter {
+    pub task: u64,
+    pub request_kind: u32,
+}
+
+pub type DeadlockReport = unsafe extern "C" fn(*mut c_void, *const ChimiDeadlockWaiter, usize);
+
+/// How `Scheduler::run_root` ended.
+pub struct RootRun {
+    pub outcome: SchedulerOutcome,
+    /// Under virtual time, the parked tasks of the deadlock that defected
+    /// the root, each with the request it waits on; empty otherwise.
+    pub deadlock: Vec<ParkedTask>,
 }
 
 fn restart(raw: u32) -> Option<Restart> {
@@ -125,8 +146,8 @@ fn address(kind: u32, raw: u64) -> Option<Address> {
     }
 }
 
-/// Validates a C specification. Taking ownership of its context is the
-/// caller's decision; parsing alone takes nothing.
+/// Validates a C specification. Parsing takes no ownership of the context;
+/// the request handler adopts or releases it.
 fn read_spec(spec: &ChimiProcessSpec) -> Option<ProcessSpec> {
     let shutdown_within = u64::try_from(spec.shutdown_within).ok()?;
     Some(ProcessSpec {
@@ -173,6 +194,39 @@ unsafe fn read_policy(policy: *const ChimiSupervisorPolicy, depth: usize) -> Opt
     let within = Duration::from_nanos(u64::try_from(policy.restart_within).ok()?);
     let restarts = Restarts::new(policy.restart_limit, within).ok()?;
     Policy::new(members, NonZeroU32::new(policy.capacity)?, restarts).ok()
+}
+
+/// Visits the context of every process member of a policy the request
+/// handed over, as far as the policy can be read: the same reads
+/// `read_policy` makes, without validating any value.
+///
+/// # Safety
+/// As for `read_policy`.
+unsafe fn visit_policy_contexts(
+    policy: *const ChimiSupervisorPolicy,
+    depth: usize,
+    visit: &mut impl FnMut(*mut c_void),
+) {
+    if depth > MAX_POLICY_DEPTH {
+        return;
+    }
+    // SAFETY: the caller guarantees a null or readable policy.
+    let Some(policy) = (unsafe { policy.as_ref() }) else {
+        return;
+    };
+    if policy.member_count == 0 || policy.members.is_null() {
+        return;
+    }
+    // SAFETY: a non-empty member array is readable for its count.
+    let members = unsafe { std::slice::from_raw_parts(policy.members, policy.member_count) };
+    for member in members {
+        match member.kind {
+            MEMBER_PROCESS => visit(member.process.context),
+            // SAFETY: nested policies satisfy the same contract.
+            MEMBER_SUPERVISOR => unsafe { visit_policy_contexts(member.supervisor, depth + 1, visit) },
+            _ => {}
+        }
+    }
 }
 
 fn start_status(error: StartError) -> u32 {
@@ -237,9 +291,15 @@ impl Scheduler {
             super::REQUEST_SUPERVISOR_START => {
                 // SAFETY: the generated runtime passes a readable policy.
                 let Some(policy) = (unsafe { read_policy(input.policy, 0) }) else {
+                    // SAFETY: as above; the request handed these contexts over.
+                    unsafe {
+                        visit_policy_contexts(input.policy, 0, &mut |context| {
+                            self.release_spec_context(context)
+                        })
+                    };
                     return self.respond(waiter, RESPONSE_ERROR, |_| {});
                 };
-                match self.start_supervisor(policy) {
+                match self.start_supervisor_for(Some(owner), policy) {
                     Ok(supervisor) => {
                         self.respond(waiter, RESPONSE_OK, |r| r.supervisor = supervisor.get())
                     }
@@ -253,12 +313,15 @@ impl Scheduler {
             super::REQUEST_SUPERVISOR_START_PROCESS => {
                 let supervisor = SupervisorId::from_raw(input.supervisor);
                 // SAFETY: the generated runtime passes a null or readable spec.
-                let spec = unsafe { input.spec.as_ref() }.and_then(read_spec);
+                let raw = unsafe { input.spec.as_ref() };
                 let (Some(spec), Some(restart), Some(_)) = (
-                    spec,
+                    raw.and_then(read_spec),
                     restart(input.restart),
                     self.supervisor_state(supervisor),
                 ) else {
+                    if let Some(raw) = raw {
+                        self.release_spec_context(raw.context);
+                    }
                     return self.respond(waiter, RESPONSE_ERROR, |_| {});
                 };
                 match self.start_process(supervisor, spec, restart) {
@@ -401,29 +464,43 @@ fn defect_outcome(code: i64) -> SchedulerOutcome {
 
 impl Scheduler {
     /// Runs a root task to its outcome on this scheduler's clock. Under
-    /// virtual time a root that can never wake defects with the deadlock
-    /// code. Once the root is terminal, every supervisor still running is
-    /// stopped and its cleanup is driven to completion.
-    pub fn run_root(&mut self, root: TaskId, stalled_code: i64) -> SchedulerOutcome {
+    /// virtual time a root that can never wake defects with
+    /// `deadlock_code`, and the run reports each parked task. Under the
+    /// real clock a host event may still wake it, so a root parked with
+    /// nothing pending returns with state `Parked` and stays suspended; a
+    /// later call continues it. Once the root is terminal, every supervisor
+    /// still running is stopped and its cleanup is driven to completion.
+    pub fn run_root(&mut self, root: TaskId, deadlock_code: i64) -> RootRun {
+        let mut deadlock = Vec::new();
         loop {
+            let root_live = |scheduler: &Self| {
+                matches!(
+                    scheduler.tasks.get(&root).map(|record| record.phase),
+                    Some(TaskPhase::Runnable | TaskPhase::Parked)
+                )
+            };
             match self.run_until_idle() {
                 Idle::AwaitingHost => continue,
-                Idle::Deadlock(_) | Idle::Stalled(_) => {
-                    if matches!(
-                        self.tasks.get(&root).map(|record| record.phase),
-                        Some(TaskPhase::Runnable | TaskPhase::Parked)
-                    ) {
+                Idle::Deadlock(parked) => {
+                    if root_live(self) {
+                        deadlock = parked;
                         self.begin_terminal(
                             root,
                             TaskOutcome::Defected {
                                 origin: root,
-                                code: stalled_code,
+                                code: deadlock_code,
                             },
                             false,
                         );
                     }
                 }
-                Idle::Quiescent => {}
+                Idle::Stalled(_) if root_live(self) => {
+                    return RootRun {
+                        outcome: parked_outcome(),
+                        deadlock,
+                    };
+                }
+                Idle::Stalled(_) | Idle::Quiescent => {}
             }
             let root_done = matches!(
                 self.tasks.get(&root).map(|record| record.phase),
@@ -437,10 +514,20 @@ impl Scheduler {
                 break;
             }
         }
-        match self.result(None, root) {
+        let outcome = match self.result(None, root) {
             Ok(TaskResult::Ready(outcome)) => outcome_of(outcome),
             Ok(TaskResult::Pending) | Err(_) => defect_outcome(SCHEDULER_DEFECT_CODE),
-        }
+        };
+        RootRun { outcome, deadlock }
+    }
+}
+
+fn parked_outcome() -> SchedulerOutcome {
+    SchedulerOutcome {
+        state: ChimiFiberState::Parked as u32,
+        value: 0,
+        origin: 0,
+        defect_code: 0,
     }
 }
 
@@ -486,5 +573,27 @@ pub unsafe extern "C" fn chimi_scheduler_run(
     let Ok(root) = scheduler.start_root_with_context(entry, config.context) else {
         return defect_outcome(SCHEDULER_DEFECT_CODE);
     };
-    scheduler.run_root(root, DEADLOCK_DEFECT_CODE)
+    let run = scheduler.run_root(root, DEADLOCK_DEFECT_CODE);
+    if let Some(report) = config.deadlock_report
+        && !run.deadlock.is_empty()
+    {
+        let waiters: Vec<_> = run
+            .deadlock
+            .iter()
+            .map(|parked| ChimiDeadlockWaiter {
+                task: parked.task.get(),
+                request_kind: parked.request_kind,
+            })
+            .collect();
+        // SAFETY: the caller keeps the callback and its context valid until
+        // this call returns; the array lives for the call.
+        unsafe { report(config.deadlock_context, waiters.as_ptr(), waiters.len()) };
+    }
+    if run.outcome.state == ChimiFiberState::Parked as u32 {
+        // The root waits on the host. Its fibers cannot be destroyed while
+        // parked (destruction unwinds through foreign frames), so the
+        // suspended execution is left in place rather than torn down.
+        std::mem::forget(scheduler);
+    }
+    run.outcome
 }

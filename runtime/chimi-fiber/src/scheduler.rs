@@ -15,8 +15,8 @@ pub use self::process::{
     SupervisorId, SupervisorState, TerminalCause,
 };
 pub use self::process_abi::{
-    ChimiProcessRequest, ChimiProcessSpec, ChimiSchedulerConfig, ChimiSupervisorMember,
-    ChimiSupervisorPolicy,
+    ChimiDeadlockWaiter, ChimiProcessRequest, ChimiProcessSpec, ChimiSchedulerConfig,
+    ChimiSupervisorMember, ChimiSupervisorPolicy, DeadlockReport, RootRun,
 };
 use self::clock::{Clock, TimerQueue, TimerTarget};
 use self::process::ProcessKernel;
@@ -1030,6 +1030,9 @@ impl Scheduler {
             }
             if !event.request.is_null() {
                 self.handle_request(task, event.request.cast());
+            } else if process {
+                let park = self.tasks[&task].park;
+                self.interrupt_blocked_park(task, park, 0);
             }
             return;
         }
@@ -1061,15 +1064,37 @@ impl Scheduler {
         // SAFETY: every request record starts with `RequestHeader`, and
         // `chimi_fiber_request` keeps it alive until the fiber resumes.
         let kind = unsafe { (*request.cast::<RequestHeader>()).kind };
-        if self.tasks[&owner].process.is_some() && self.park_lingers(owner, kind) {
+        let park = self.tasks[&owner].park;
+        let process = self.tasks[&owner].process.is_some();
+        if process && self.park_lingers(owner, kind) {
             return;
         }
         if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_WAIT).contains(&kind) {
             self.handle_process_request(owner, request.cast());
-            return;
+        } else {
+            self.handle_task_request(owner, park, request);
         }
-        // SAFETY: the remaining kinds use `SchedulerRequest`.
-        let request = unsafe { &mut *request };
+        if process {
+            self.interrupt_blocked_park(owner, park, kind);
+        }
+    }
+
+    /// True while `task` still owns the fiber stack that holds the request
+    /// of its park number `park`. A contract violation defects the caller
+    /// and destroys that stack before the reply is written.
+    fn request_is_live(&self, task: TaskId, park: u64) -> bool {
+        self.tasks.get(&task).is_some_and(|record| {
+            record.park == park && record.fiber.is_some() && !record.request.is_null()
+        })
+    }
+
+    /// Serves a task, channel, or timer request. The reply is built in a
+    /// copy and written back only if the caller's stack still exists.
+    fn handle_task_request(&mut self, owner: TaskId, park: u64, record: *mut SchedulerRequest) {
+        // SAFETY: the remaining kinds use `SchedulerRequest`; the record is
+        // read before any operation can destroy the caller's fiber.
+        let mut reply = unsafe { record.read() };
+        let request = &mut reply;
         request.status = RESPONSE_UNSET;
         match request.kind {
             REQUEST_TIMER_NOW => {
@@ -1079,12 +1104,7 @@ impl Scheduler {
             }
             REQUEST_TIMER_SLEEP_UNTIL => {
                 let deadline = Instant::from_nanos(request.value);
-                if self.interrupts_sleep(owner) {
-                    request.status = RESPONSE_CANCELLED;
-                    self.tasks.get_mut(&owner).expect("parked task").command =
-                        ChimiFiberCommand::Cancel;
-                    let _ = self.wake_front(owner);
-                } else if deadline <= self.clock.now() {
+                if deadline <= self.clock.now() {
                     request.status = RESPONSE_OK;
                     let _ = self.wake_front(owner);
                 } else {
@@ -1261,6 +1281,10 @@ impl Scheduler {
                 let _ = self.wake(owner);
             }
         }
+        if self.request_is_live(owner, park) {
+            // SAFETY: the caller is still suspended on this record.
+            unsafe { record.write(reply) };
+        }
     }
 
     fn begin_terminal(&mut self, task: TaskId, mut outcome: TaskOutcome, fiber_is_terminal: bool) {
@@ -1330,6 +1354,8 @@ impl Scheduler {
                 .children
                 .is_empty()
         );
+        // Root supervisors the task started are structured children too.
+        self.stop_owned_supervisors(task);
         self.emit(task, TaskEventKind::CleanupCompleted, cause(outcome), false);
         self.publish_terminal(task, outcome);
         if self.incarnation_of(task).is_some() {
@@ -1374,14 +1400,15 @@ impl Scheduler {
                 }
             }
         } else if outcome.is_defect()
-            && parent.is_some_and(|parent| {
+            && let Some(parent) = parent.filter(|parent| {
                 matches!(
-                    self.tasks.get(&parent).map(|record| record.phase),
+                    self.tasks.get(parent).map(|record| record.phase),
                     Some(TaskPhase::Runnable | TaskPhase::Parked)
                 )
             })
+            && !self.absorbs_child_defect(parent)
         {
-            self.begin_terminal(parent.expect("checked parent"), outcome, false);
+            self.begin_terminal(parent, outcome, false);
         }
     }
 

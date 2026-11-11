@@ -200,10 +200,13 @@ pub enum SendOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProcessEventKind {
+    /// `task` is the scheduler task that runs the incarnation and parents
+    /// its child tasks.
     Started {
         supervisor: SupervisorId,
         membership: MembershipId,
         incarnation: IncarnationId,
+        task: TaskId,
         name: Option<NameId>,
     },
     AdmissionRejected {
@@ -385,6 +388,12 @@ struct Stopping {
     /// The body has been told it is cancelled; its next park (other than a
     /// receive) waits for the deadline.
     told: bool,
+    /// The body was running when shutdown began and has not parked since:
+    /// its next park that would block, of any kind, is cancelled. A receive
+    /// ends this and drains the mailbox instead.
+    pending: bool,
+    /// A child task defected during shutdown; the end is a defect.
+    child_defected: bool,
     forced: bool,
 }
 
@@ -403,6 +412,8 @@ pub(super) struct Incarnation {
 struct Supervision {
     policy: Rc<PolicyRecord>,
     parent: Option<(SupervisorId, MembershipId)>,
+    /// The task that started this root; the root stops when it ends.
+    owner: Option<TaskId>,
     declared: Vec<MembershipId>,
     dynamic: Vec<MembershipId>,
     restart_times: VecDeque<Instant>,
@@ -503,10 +514,47 @@ impl Scheduler {
     /// member already started is stopped again and the first failure is
     /// returned. No body runs before this returns.
     pub fn start_supervisor(&mut self, policy: Policy) -> Result<SupervisorId, StartError> {
+        self.start_supervisor_for(None, policy)
+    }
+
+    /// Starts a root owned by `owner`: it is stopped when that task ends.
+    /// A host-started root (`None`) lives until it is stopped or the
+    /// scheduler shuts processes down.
+    pub(super) fn start_supervisor_for(
+        &mut self,
+        owner: Option<TaskId>,
+        policy: Policy,
+    ) -> Result<SupervisorId, StartError> {
         let policy = self.adopt_policy(policy);
         let supervisor = self.build_supervisor(policy, None)?;
+        self.kernel
+            .supervisors
+            .get_mut(&supervisor)
+            .expect("just built")
+            .owner = owner;
         self.kernel.roots.push(supervisor);
         Ok(supervisor)
+    }
+
+    /// Stops every running root that `task` started, newest first. Called
+    /// once the task's own child tasks have drained.
+    pub(super) fn stop_owned_supervisors(&mut self, task: TaskId) {
+        let owned: Vec<_> = self
+            .kernel
+            .roots
+            .iter()
+            .rev()
+            .copied()
+            .filter(|root| {
+                self.kernel
+                    .supervisors
+                    .get(root)
+                    .is_some_and(|record| record.owner == Some(task))
+            })
+            .collect();
+        for root in owned {
+            let _ = self.stop_for(None, root);
+        }
     }
 
     /// Admits a dynamic process. Fail-fast: a closed supervisor, a full one,
@@ -793,13 +841,16 @@ impl Scheduler {
                 stopping.forced = true;
                 Receipt::Forced
             }
-            Some(stopping) => match record.mailbox.pop_front() {
-                Some(message) => Receipt::Message(message),
-                None => {
-                    stopping.told = true;
-                    Receipt::Cancelled
+            Some(stopping) => {
+                stopping.pending = false;
+                match record.mailbox.pop_front() {
+                    Some(message) => Receipt::Message(message),
+                    None => {
+                        stopping.told = true;
+                        Receipt::Cancelled
+                    }
                 }
-            },
+            }
             None => match record.mailbox.pop_front() {
                 Some(message) => Receipt::Message(message),
                 None => {
@@ -819,9 +870,67 @@ impl Scheduler {
         can_park(kind) && self.stopping(task).is_some_and(|stopping| stopping.told)
     }
 
-    /// Interrupts a sleep in cleanup: the body is told it is cancelled.
-    pub(super) fn interrupts_sleep(&mut self, task: TaskId) -> bool {
-        let Some(incarnation) = self.incarnation_of(task) else {
+    /// Delivers shutdown to a request that left its caller blocked on park
+    /// number `park` (`kind` 0 is a bare park). Before the body is told, a
+    /// blocking sleep, task result, or channel operation is cancelled, and
+    /// so is any blocking park while the cancellation is still pending. A
+    /// request that completed is answered, so a value it took is not lost.
+    /// Supervisor operations from a draining handler are served.
+    pub(super) fn interrupt_blocked_park(&mut self, task: TaskId, park: u64, kind: u32) {
+        let blocked = self
+            .tasks
+            .get(&task)
+            .is_some_and(|record| record.phase == TaskPhase::Parked && record.park == park);
+        let Some(incarnation) = self.incarnation_of(task).filter(|_| blocked) else {
+            return;
+        };
+        let Some(stopping) = self
+            .kernel
+            .incarnations
+            .get_mut(&incarnation)
+            .and_then(|record| record.stopping.as_mut())
+            .filter(|stopping| !stopping.told)
+        else {
+            return;
+        };
+        let interrupts = stopping.pending || interrupted_while_draining(kind);
+        if !interrupts {
+            return;
+        }
+        stopping.told = true;
+        stopping.pending = false;
+        self.disarm_wake_sources(task);
+        let record = self.tasks.get_mut(&task).expect("blocked task");
+        record.command = ChimiFiberCommand::Cancel;
+        set_status(record.request, super::RESPONSE_CANCELLED, true);
+        let _ = self.wake_front(task);
+    }
+
+    /// Removes everything that could still wake a parked task out of band:
+    /// its sleep timer, the child it awaits, its pending channel operation,
+    /// and its receive. Replies to its supervisor requests are already
+    /// matched to the park number.
+    fn disarm_wake_sources(&mut self, task: TaskId) {
+        let record = self.tasks.get_mut(&task).expect("parked task");
+        record.waiting_on = None;
+        if let Some(timer) = record.timer.take() {
+            self.cancel_timer(timer);
+        }
+        let transition = self.channels.cancel_pending(task);
+        self.apply_channel_transition(transition);
+        if let Some(record) = self
+            .incarnation_of(task)
+            .and_then(|incarnation| self.kernel.incarnations.get_mut(&incarnation))
+        {
+            record.receiving = false;
+        }
+    }
+
+    /// True when `parent` is an incarnation under shutdown, which records a
+    /// child's defect in its end instead of being torn down outside the
+    /// shutdown protocol.
+    pub(super) fn absorbs_child_defect(&mut self, parent: TaskId) -> bool {
+        let Some(incarnation) = self.incarnation_of(parent) else {
             return false;
         };
         match self
@@ -831,7 +940,7 @@ impl Scheduler {
             .and_then(|record| record.stopping.as_mut())
         {
             Some(stopping) => {
-                stopping.told = true;
+                stopping.child_defected = true;
                 true
             }
             None => false,
@@ -895,6 +1004,7 @@ impl Scheduler {
             Supervision {
                 policy: Rc::clone(&policy),
                 parent,
+                owner: None,
                 declared: Vec::new(),
                 dynamic: Vec::new(),
                 restart_times: VecDeque::new(),
@@ -986,6 +1096,7 @@ impl Scheduler {
                 self.check_name(&spec)?;
                 let name = spec.name;
                 let incarnation = self.spawn(membership, spec)?;
+                let task = self.kernel.incarnations[&incarnation].task;
                 let entry = self
                     .kernel
                     .memberships
@@ -997,6 +1108,7 @@ impl Scheduler {
                     supervisor,
                     membership,
                     incarnation,
+                    task,
                     name,
                 });
             }
@@ -1098,6 +1210,16 @@ impl Scheduler {
         }
         for plan in self.kernel.blocked.remove(&incarnation).unwrap_or_default() {
             self.execute(plan);
+        }
+    }
+
+    /// Releases a specification context that was handed over in a request
+    /// the scheduler answered without adopting it.
+    pub(super) fn release_spec_context(&self, context: *mut c_void) {
+        if let Some((release, hook_context)) = self.kernel.release_spec {
+            // SAFETY: the hook's owner promised it stays valid for the
+            // scheduler's lifetime; an unadopted context is released once.
+            unsafe { release(hook_context, context) };
         }
     }
 
@@ -1395,10 +1517,11 @@ impl Scheduler {
         false
     }
 
-    /// Unroutes, sets the deadline, and arranges how the body learns of the
-    /// cancellation: a fresh body never runs; a receive is reissued so it
-    /// can drain; any other park is interrupted. A zero deadline forces at
-    /// once.
+    /// Unroutes, sets the deadline, cancels and drains the body's child
+    /// tasks, and arranges how the body learns of the cancellation: a fresh
+    /// body never runs; a receive is reissued so it can drain; any other
+    /// park is interrupted; a running body is cancelled at its next park
+    /// that blocks. A zero deadline forces at once.
     fn begin_shutdown(&mut self, incarnation: IncarnationId) {
         let now = self.clock.now();
         let Some(record) = self.kernel.incarnations.get(&incarnation) else {
@@ -1411,49 +1534,68 @@ impl Scheduler {
         let forced = deadline <= now;
         let task = record.task;
         self.unroute(incarnation);
-        let record = self
-            .kernel
-            .incarnations
-            .get_mut(&incarnation)
-            .expect("live incarnation");
-        let receiving = std::mem::take(&mut record.receiving);
-        let mut stopping = Stopping {
-            deadline,
-            timer: None,
-            told: false,
-            forced,
-        };
-        let timer = self.tasks.get_mut(&task).and_then(|t| t.timer.take());
-        if let Some(timer) = timer {
-            self.cancel_timer(timer);
-        }
-        let task_record = self.tasks.get_mut(&task).expect("incarnation task");
-        match task_record.phase {
-            TaskPhase::Runnable if !task_record.ran || forced => {
-                task_record.command = ChimiFiberCommand::Cancel;
-                set_status(task_record.request, RESPONSE_FORCED, forced);
-                stopping.told = true;
-            }
-            TaskPhase::Runnable => {}
-            TaskPhase::Parked => {
-                if forced {
-                    task_record.command = ChimiFiberCommand::Cancel;
-                    set_status(task_record.request, RESPONSE_FORCED, true);
-                } else if !receiving {
-                    task_record.command = ChimiFiberCommand::Cancel;
-                    set_status(task_record.request, super::RESPONSE_CANCELLED, true);
-                    stopping.told = true;
-                }
-                task_record.phase = TaskPhase::Runnable;
-                self.runnable.push_front(task);
-            }
-            TaskPhase::Draining(_) | TaskPhase::Terminal(_) => {}
-        }
         self.kernel
             .incarnations
             .get_mut(&incarnation)
             .expect("live incarnation")
-            .stopping = Some(stopping);
+            .stopping = Some(Stopping {
+            deadline,
+            timer: None,
+            told: false,
+            pending: false,
+            child_defected: false,
+            forced,
+        });
+        let phase = self.tasks[&task].phase;
+        let receiving = phase == TaskPhase::Parked
+            && self.kernel.incarnations[&incarnation].receiving;
+        if phase == TaskPhase::Parked {
+            self.disarm_wake_sources(task);
+        }
+        self.cancel_children(task);
+        let task_record = self.tasks.get_mut(&task).expect("incarnation task");
+        let (told, pending) = match task_record.phase {
+            TaskPhase::Runnable if !task_record.ran || forced => {
+                task_record.command = ChimiFiberCommand::Cancel;
+                set_status(task_record.request, RESPONSE_FORCED, forced);
+                (true, false)
+            }
+            TaskPhase::Runnable => (false, true),
+            TaskPhase::Parked => {
+                let told = if forced {
+                    task_record.command = ChimiFiberCommand::Cancel;
+                    set_status(task_record.request, RESPONSE_FORCED, true);
+                    false
+                } else if !receiving {
+                    task_record.command = ChimiFiberCommand::Cancel;
+                    set_status(task_record.request, super::RESPONSE_CANCELLED, true);
+                    true
+                } else {
+                    false
+                };
+                task_record.phase = TaskPhase::Runnable;
+                self.runnable.push_front(task);
+                (told, false)
+            }
+            TaskPhase::Draining(_) | TaskPhase::Terminal(_) => (false, false),
+        };
+        let stopping = self
+            .kernel
+            .incarnations
+            .get_mut(&incarnation)
+            .and_then(|record| record.stopping.as_mut())
+            .expect("stopping incarnation");
+        stopping.told = told;
+        stopping.pending = pending;
+    }
+
+    /// Cancels the task's structured children; each drains before this
+    /// returns.
+    fn cancel_children(&mut self, task: TaskId) {
+        let children: Vec<_> = self.tasks[&task].children.iter().copied().collect();
+        for child in children {
+            self.begin_terminal(child, TaskOutcome::Cancelled, false);
+        }
     }
 
     /// The shutdown deadline passed: answer the pending call with a forced
@@ -1470,6 +1612,8 @@ impl Scheduler {
         task_record.command = ChimiFiberCommand::Cancel;
         set_status(task_record.request, RESPONSE_FORCED, true);
         if task_record.phase == TaskPhase::Parked {
+            self.disarm_wake_sources(task);
+            let task_record = self.tasks.get_mut(&task).expect("incarnation task");
             task_record.phase = TaskPhase::Runnable;
             self.runnable.push_front(task);
         }
@@ -1560,8 +1704,10 @@ impl Scheduler {
                 supervisor,
                 membership,
                 incarnation,
+                task,
                 name,
             } => {
+                trace.task = task.get();
                 trace.supervisor = supervisor.0;
                 trace.membership = membership.0;
                 trace.incarnation = incarnation.0;
@@ -1666,7 +1812,8 @@ impl TerminalCause {
 }
 
 /// Classifies an incarnation's end. A forced end wins; a defect during
-/// cleanup stays a defect; any other end during cleanup is `Cancelled`.
+/// cleanup, its own or a child task's, stays a defect; any other end
+/// during cleanup is `Cancelled`.
 fn terminal_cause(outcome: TaskOutcome, stopping: Option<Stopping>) -> TerminalCause {
     let natural = match outcome {
         TaskOutcome::Succeeded(PROCESS_END_RETURNED) => TerminalCause::Returned,
@@ -1678,10 +1825,23 @@ fn terminal_cause(outcome: TaskOutcome, stopping: Option<Stopping>) -> TerminalC
     };
     match stopping {
         Some(stopping) if stopping.forced => TerminalCause::Forced,
-        Some(_) if natural == TerminalCause::Defected => TerminalCause::Defected,
+        Some(stopping) if natural == TerminalCause::Defected || stopping.child_defected => {
+            TerminalCause::Defected
+        }
         Some(_) => TerminalCause::Cancelled,
         None => natural,
     }
+}
+
+/// Parks a draining handler cannot block in: shutdown cancels them.
+fn interrupted_while_draining(kind: u32) -> bool {
+    matches!(
+        kind,
+        0 | super::REQUEST_TASK_RESULT
+            | super::REQUEST_CHANNEL_SEND
+            | super::REQUEST_CHANNEL_RECEIVE
+            | super::REQUEST_TIMER_SLEEP_UNTIL
+    )
 }
 
 /// Request kinds that may leave the caller parked.

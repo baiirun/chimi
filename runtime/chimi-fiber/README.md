@@ -36,8 +36,12 @@ opaque message handles; the runtime's release hook frees handles the
 scheduler discards unread. Supervisors are scheduler records, not fibers:
 admission, named routing, rolling restart accounting (charged before the
 replacement starts), escalation, removal, and shutdown order run between fiber
-resumes. Stops and removals are plans that wait for a lingering
-incarnation's `shutdown_within` deadline and then force it. Process requests
+resumes. Shutdown first cancels and drains the incarnation's child tasks and
+withdraws whatever its current park waits on; the body is then cancelled at
+that park, or at its next park that would block if it was running, while a
+receive drains the mailbox first. Stops and removals are plans that wait for a
+lingering incarnation's `shutdown_within` deadline and then force it. A root
+supervisor started by a task stops when that task ends. Process requests
 use `ChimiProcessRequest` (`CHIMI_REQUEST_PROCESS_*`,
 `CHIMI_REQUEST_SUPERVISOR_*`), and lifecycle events use the process trace
 family. `docs/architecture/supervised-process-runtime.md` records the design.
@@ -45,9 +49,12 @@ family. `docs/architecture/supervised-process-runtime.md` records the design.
 The execution clock (`scheduler/clock.rs`) is real or virtual. Virtual time
 moves only in `run_until_idle`, when nothing is runnable and no host
 operation is in flight, and jumps to the earliest timer; a parked root with
-nothing able to wake it is a deadlock defect. `CHIMI_REQUEST_TIMER_NOW` and
-`CHIMI_REQUEST_TIMER_SLEEP_UNTIL` expose it, and `chimi_scheduler_run` takes a
-`ChimiSchedulerConfig` with the clock mode and release hooks.
+nothing able to wake it is a deadlock defect, reported with each parked task
+through the config's `deadlock_report`. The real clock never reports deadlock:
+`chimi_scheduler_run` returns `CHIMI_FIBER_PARKED` for a root still waiting on
+the host. `CHIMI_REQUEST_TIMER_NOW` and `CHIMI_REQUEST_TIMER_SLEEP_UNTIL`
+expose the clock, and `chimi_scheduler_run` takes a `ChimiSchedulerConfig`
+with the clock mode and release hooks.
 `chimi_scheduler_execute` keeps its earlier behavior.
 
 Generated code suspends through `chimi_fiber_request` (or the lower-level

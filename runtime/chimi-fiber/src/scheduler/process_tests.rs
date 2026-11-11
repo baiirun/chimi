@@ -5,7 +5,7 @@
 //! prototype's kernel decisions, the prototype test name.
 
 use super::process_abi::{
-    ADDRESS_DIRECT, ADDRESS_NAMED, CLOCK_VIRTUAL, MEMBER_PROCESS, RESTART_ON_DEFECT,
+    ADDRESS_DIRECT, ADDRESS_NAMED, CLOCK_VIRTUAL, MEMBER_PROCESS, MEMBER_SUPERVISOR, RESTART_ON_DEFECT,
     chimi_scheduler_run,
 };
 use super::*;
@@ -567,6 +567,7 @@ fn render(time: i64, kind: ProcessEventKind) -> String {
             membership,
             incarnation,
             name,
+            ..
         } => {
             let name = name.map_or(String::new(), |n| format!(" name={}", label(n.get())));
             format!(
@@ -665,6 +666,7 @@ fn render_trace(events: &[SchedulerTraceEvent]) -> Vec<String> {
                     supervisor,
                     membership,
                     incarnation,
+                    task: TaskId::from_raw(event.task),
                     name: NameId::from_raw(event.name),
                 },
                 3 => ProcessEventKind::Terminated {
@@ -1095,7 +1097,7 @@ fn sv05_sd08_a_member_that_stops_its_own_root_is_cancelled_and_wait_returns() {
     let mut lab = Lab::new();
     let main = lab.scheduler.start_root(sv05_main).unwrap();
     assert_eq!(
-        lab.scheduler.run_root(main, DEADLOCK_DEFECT_CODE).state,
+        lab.scheduler.run_root(main, DEADLOCK_DEFECT_CODE).outcome.state,
         ChimiFiberState::Succeeded as u32
     );
     assert_eq!(
@@ -1203,7 +1205,7 @@ unsafe extern "C" fn malformed_policies_main(_context: *mut c_void) -> ChimiFibe
 }
 
 #[test]
-fn sv11_malformed_policies_are_errors_that_take_no_ownership() {
+fn sv11_malformed_policies_are_errors_that_release_every_context_once() {
     let mut lab = Lab::new();
     let main = lab.scheduler.start_root(malformed_policies_main).unwrap();
     lab.scheduler.run_root(main, DEADLOCK_DEFECT_CODE);
@@ -1211,7 +1213,10 @@ fn sv11_malformed_policies_are_errors_that_take_no_ownership() {
     // empty restart window.
     assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_ERROR; 4]);
     assert!(lab.scheduler.process_events().is_empty());
-    assert!(log(|log| log.released_specs.is_empty()));
+    // The scheduler owns each member context from the request that hands
+    // it over: five members across the four policies, each released once.
+    let plain = behavior_context(&PLAIN) as usize;
+    assert_eq!(log(|log| log.released_specs.clone()), [plain; 5]);
 }
 
 #[test]
@@ -1785,6 +1790,26 @@ fn sd02_a_zero_deadline_forces_at_once_and_discards_unread_messages() {
 }
 
 #[test]
+fn sd02_a_zero_deadline_forces_a_sleeping_handler_without_running_its_cleanup() {
+    let mut lab = Lab::new();
+    let root = lab.scheduler.start_supervisor(policy(vec![], 0)).unwrap();
+    let mut spec = spec(None, 8);
+    spec.shutdown_within = Duration::ZERO;
+    let managed = lab
+        .scheduler
+        .start_process(root, spec, Restart::OnDefect)
+        .unwrap();
+    let direct = lab.scheduler.process_address(managed).unwrap();
+    lab.deliver(direct, Msg::Sleep(Duration::from_secs(60)));
+    lab.scheduler.drive();
+    // The handler returns however its sleep ends; only a forced reply makes
+    // that end `forced` rather than `cancelled`.
+    assert_eq!(lab.scheduler.remove_process(root, managed), Ok(Progress::Done));
+    assert_eq!(timed_terminations(&lab), [(0, TerminalCause::Forced)]);
+    assert!(lab.restarts().is_empty());
+}
+
+#[test]
 fn sd03_cleanup_within_its_deadline_drains_everything_and_time_stays_put() {
     let (lab, incarnation, _) = removal_with_queued_messages(Duration::from_secs(5));
     assert_eq!(lab.terminations()[0].1, TerminalCause::Cancelled);
@@ -2059,6 +2084,8 @@ fn virtual_time_advances_only_when_nothing_is_runnable() {
         .scheduler
         .start_root_with_context(recording_sleeper, 10_000_000 as *mut c_void)
         .unwrap();
+    // The sleeper's timer is pending while the reader is runnable.
+    lab.scheduler.drive();
     let reader = lab.scheduler.start_root(busy_reader).unwrap();
     assert_eq!(lab.scheduler.run_until_idle(), Idle::Quiescent);
     assert_eq!(
@@ -2123,10 +2150,18 @@ fn a_virtual_deadlock_names_each_parked_task_and_defects_the_root() {
         lab.scheduler.result(None, sleeping),
         Ok(TaskResult::Ready(_))
     ));
-    let outcome = lab.scheduler.run_root(stuck, DEADLOCK_DEFECT_CODE);
+    let run = lab.scheduler.run_root(stuck, DEADLOCK_DEFECT_CODE);
     assert_eq!(
-        (outcome.state, outcome.defect_code),
+        (run.outcome.state, run.outcome.defect_code),
         (ChimiFiberState::Defected as u32, DEADLOCK_DEFECT_CODE)
+    );
+    assert_eq!(
+        run.deadlock,
+        [ParkedTask {
+            task: stuck,
+            request_kind: 0
+        }],
+        "the root's defect names each parked task and what it waits on"
     );
 }
 
@@ -2189,6 +2224,19 @@ unsafe extern "C" {
     fn chimi_fixture_process_layouts(out: *mut usize) -> usize;
 }
 
+thread_local! {
+    static DEADLOCK: RefCell<Vec<ChimiDeadlockWaiter>> = const { RefCell::new(Vec::new()) };
+}
+
+unsafe extern "C" fn collect_deadlock(
+    _context: *mut c_void,
+    waiters: *const ChimiDeadlockWaiter,
+    count: usize,
+) {
+    let waiters = unsafe { std::slice::from_raw_parts(waiters, count) };
+    DEADLOCK.with(|deadlock| deadlock.borrow_mut().extend_from_slice(waiters));
+}
+
 unsafe extern "C" fn collect_trace(context: *mut c_void, event: *const SchedulerTraceEvent) {
     let events = unsafe { &mut *context.cast::<Vec<SchedulerTraceEvent>>() };
     events.push(unsafe { std::ptr::read(event) });
@@ -2210,6 +2258,8 @@ fn run_c(
         release_message: None,
         release_spec_context: None,
         release_context: ptr::null_mut(),
+        deadlock_report: Some(collect_deadlock),
+        deadlock_context: ptr::null_mut(),
     };
     let outcome = unsafe { chimi_scheduler_run(&config) };
     (outcome, events)
@@ -2285,10 +2335,19 @@ fn sd04_the_c_entry_forces_cleanup_that_parks_again_and_never_resumes_it() {
 #[test]
 fn a_c_root_with_nothing_to_wake_it_defects_with_the_deadlock_code() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    DEADLOCK.with(|deadlock| deadlock.borrow_mut().clear());
     let (outcome, events) = run_c(chimi_fixture_deadlocked_main, 1);
     assert_eq!(
         (outcome.state, outcome.defect_code),
         (ChimiFiberState::Defected as u32, DEADLOCK_DEFECT_CODE)
+    );
+    assert_eq!(
+        DEADLOCK.with(|deadlock| deadlock.borrow().clone()),
+        [ChimiDeadlockWaiter {
+            task: 1,
+            request_kind: 0
+        }],
+        "the deadlock report reaches the C caller without a trace sink"
     );
     assert!(events.iter().any(|event| {
         event.family == SCHEDULER_TRACE_CLOCK
@@ -2348,7 +2407,505 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiSchedulerConfig, release_message),
         offset_of!(ChimiSchedulerConfig, release_spec_context),
         offset_of!(ChimiSchedulerConfig, release_context),
+        offset_of!(ChimiSchedulerConfig, deadlock_report),
+        offset_of!(ChimiSchedulerConfig, deadlock_context),
+        size_of::<ChimiDeadlockWaiter>(),
+        offset_of!(ChimiDeadlockWaiter, request_kind),
     ];
     assert_eq!(&c[..count], &rust[..]);
     assert_eq!(crate::chimi_fiber_abi_version(), 4);
+}
+
+// ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------
+
+fn process_spec(entry: ChimiFiberEntry, context: *mut c_void) -> ProcessSpec {
+    ProcessSpec {
+        entry,
+        context,
+        mailbox_capacity: NonZeroU32::new(4).expect("positive capacity"),
+        shutdown_within: Duration::from_secs(5),
+        name: None,
+    }
+}
+
+/// Terminations with the time they happened at.
+fn timed_terminations(lab: &Lab) -> Vec<(i64, TerminalCause)> {
+    lab.scheduler
+        .process_events()
+        .iter()
+        .filter_map(|event| match event.kind {
+            ProcessEventKind::Terminated { cause, .. } => Some((event.time.as_nanos(), cause)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn incarnation_task(lab: &Lab) -> TaskId {
+    let mut tasks = lab
+        .scheduler
+        .tasks
+        .iter()
+        .filter(|(_, record)| record.process.is_some())
+        .map(|(task, _)| *task);
+    let task = tasks.next().expect("an incarnation task");
+    assert!(tasks.next().is_none(), "exactly one incarnation");
+    task
+}
+
+/// Cleanup that ignores cancellation: it sleeps again until forced and
+/// records the status of every sleep.
+fn stubborn_cleanup() -> ChimiFiberResult {
+    loop {
+        let status = sleep_until(i64::MAX);
+        log(|log| log.outcomes.push(status));
+        if status == RESPONSE_FORCED {
+            return ended(PROCESS_END_RETURNED);
+        }
+    }
+}
+
+unsafe extern "C" fn awaits_a_task_it_does_not_own(_context: *mut c_void) -> ChimiFiberResult {
+    let mut request = blank_request(REQUEST_TASK_RESULT);
+    request.task = 999;
+    scheduler_call(&mut request);
+    ended(0)
+}
+
+unsafe extern "C" fn sends_on_an_unknown_channel(_context: *mut c_void) -> ChimiFiberResult {
+    let mut request = blank_request(REQUEST_CHANNEL_SEND);
+    request.channel = 999;
+    scheduler_call(&mut request);
+    ended(0)
+}
+
+#[test]
+fn a_contract_violation_defects_its_caller_without_writing_into_the_destroyed_stack() {
+    let cases: [(ChimiFiberEntry, i64); 2] = [
+        (awaits_a_task_it_does_not_own, CAPABILITY_VIOLATION_DEFECT_CODE),
+        (sends_on_an_unknown_channel, CHANNEL_CAPABILITY_VIOLATION_DEFECT_CODE),
+    ];
+    for (entry, code) in cases {
+        let mut scheduler = Scheduler::new(STACK, TraceMode::Off);
+        let root = scheduler.start_root(entry).expect("root");
+        scheduler.drive();
+        assert_eq!(
+            scheduler.result(None, root),
+            Ok(TaskResult::Ready(TaskOutcome::Defected { origin: root, code }))
+        );
+    }
+}
+
+/// Starts a child that sleeps 1ms, waits for its result, and on
+/// cancellation runs stubborn cleanup.
+unsafe extern "C" fn awaits_a_sleeping_child(_context: *mut c_void) -> ChimiFiberResult {
+    let mut start = blank_request(REQUEST_TASK_START);
+    start.entry = Some(host_sleeper);
+    start.context = 1_000_000usize as *mut c_void;
+    scheduler_call(&mut start);
+    assert_eq!(start.status, RESPONSE_OK);
+    loop {
+        let mut request = blank_request(REQUEST_TASK_RESULT);
+        request.task = start.task;
+        if scheduler_call(&mut request) == ChimiFiberCommand::Cancel {
+            return stubborn_cleanup();
+        }
+        if request.status != RESPONSE_PENDING {
+            return ended(PROCESS_END_RETURNED);
+        }
+    }
+}
+
+#[test]
+fn shutdown_drains_child_tasks_so_a_finishing_child_cannot_wake_cleanup() {
+    let mut lab = Lab::new();
+    let root = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("root");
+    lab.scheduler
+        .start_process(root, process_spec(awaits_a_sleeping_child, ptr::null_mut()), Restart::Never)
+        .expect("admitted");
+    lab.scheduler.drive();
+    assert_eq!(lab.scheduler.stop_supervisor(root), Ok(Progress::Pending));
+    let child_ended = lab
+        .scheduler
+        .events()
+        .iter()
+        .any(|event| event.kind == TaskEventKind::Terminal);
+    assert!(child_ended, "the child is cancelled when shutdown starts");
+    let _ = lab.scheduler.run_until_idle();
+    assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_FORCED]);
+    assert_eq!(timed_terminations(&lab), [(5_000_000_000, TerminalCause::Forced)]);
+}
+
+/// A child that defects however its sleep ends.
+unsafe extern "C" fn defects_after_sleeping(_context: *mut c_void) -> ChimiFiberResult {
+    sleep_until(1_000_000);
+    defected()
+}
+
+/// Waits for a child that defects; context 1 makes its cleanup stubborn.
+unsafe extern "C" fn awaits_a_defecting_child(context: *mut c_void) -> ChimiFiberResult {
+    let mut start = blank_request(REQUEST_TASK_START);
+    start.entry = Some(defects_after_sleeping);
+    scheduler_call(&mut start);
+    assert_eq!(start.status, RESPONSE_OK);
+    let mut request = blank_request(REQUEST_TASK_RESULT);
+    request.task = start.task;
+    if scheduler_call(&mut request) != ChimiFiberCommand::Cancel {
+        return ended(PROCESS_END_RETURNED);
+    }
+    if context as usize == 1 {
+        return stubborn_cleanup();
+    }
+    ended(PROCESS_END_RETURNED)
+}
+
+#[test]
+fn a_child_defect_during_shutdown_stays_inside_the_shutdown_protocol() {
+    for (stubborn, expected) in [
+        (0_usize, (0, TerminalCause::Defected)),
+        (1, (5_000_000_000, TerminalCause::Forced)),
+    ] {
+        let mut lab = Lab::new();
+        let root = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("root");
+        let spec = process_spec(awaits_a_defecting_child, stubborn as *mut c_void);
+        lab.scheduler
+            .start_process(root, spec, Restart::OnDefect)
+            .expect("admitted");
+        lab.scheduler.drive();
+        let _ = lab.scheduler.stop_supervisor(root);
+        let _ = lab.scheduler.run_until_idle();
+        assert_eq!(timed_terminations(&lab), [expected]);
+        assert!(lab.restarts().is_empty(), "shutdown never restarts");
+        assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
+    }
+}
+
+thread_local! {
+    static CHANNEL: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Receives on a channel it creates; on cancellation runs stubborn cleanup.
+unsafe extern "C" fn receives_on_its_channel(_context: *mut c_void) -> ChimiFiberResult {
+    let mut bounded = blank_request(REQUEST_CHANNEL_BOUNDED);
+    bounded.value = 1;
+    scheduler_call(&mut bounded);
+    assert_eq!(bounded.status, RESPONSE_OK);
+    CHANNEL.with(|channel| channel.set(bounded.channel));
+    loop {
+        let mut request = blank_request(REQUEST_CHANNEL_RECEIVE);
+        request.channel = bounded.channel;
+        request.owner = bounded.owner;
+        request.token = bounded.token;
+        if scheduler_call(&mut request) == ChimiFiberCommand::Cancel {
+            return stubborn_cleanup();
+        }
+        if request.status != RESPONSE_PENDING {
+            return ended(PROCESS_END_RETURNED);
+        }
+    }
+}
+
+/// Sleeps 1ms, then sends 5 on the recorded channel.
+unsafe extern "C" fn sends_later(_context: *mut c_void) -> ChimiFiberResult {
+    sleep_until(1_000_000);
+    let mut request = blank_request(REQUEST_CHANNEL_SEND);
+    request.channel = CHANNEL.with(std::cell::Cell::get);
+    request.value = 5;
+    while scheduler_call(&mut request) == ChimiFiberCommand::Resume
+        && request.status == RESPONSE_PENDING
+    {}
+    ended(i64::from(request.status))
+}
+
+#[test]
+fn shutdown_cancels_a_pending_channel_receive_so_a_later_send_does_not_reach_cleanup() {
+    let mut lab = Lab::new();
+    let root = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("root");
+    lab.scheduler
+        .start_process(root, process_spec(receives_on_its_channel, ptr::null_mut()), Restart::Never)
+        .expect("admitted");
+    lab.scheduler.drive();
+    assert_eq!(lab.scheduler.stop_supervisor(root), Ok(Progress::Pending));
+    let sender = lab.scheduler.start_root(sends_later).expect("sender");
+    let _ = lab.scheduler.run_until_idle();
+    assert_eq!(
+        lab.scheduler.result(None, sender),
+        Ok(TaskResult::Ready(TaskOutcome::Succeeded(i64::from(RESPONSE_OK)))),
+        "the value is queued, not handed to the interrupted receive"
+    );
+    assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_FORCED]);
+    assert_eq!(timed_terminations(&lab), [(5_000_000_000, TerminalCause::Forced)]);
+}
+
+/// Parks bare until the host wakes it, then waits on the supervisor in its
+/// context and records the reply.
+unsafe extern "C" fn parks_then_waits(context: *mut c_void) -> ChimiFiberResult {
+    unsafe { chimi_fiber_park(ptr::null()) };
+    let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_WAIT);
+    request.supervisor = context as u64;
+    process_call(&mut request);
+    log(|log| log.outcomes.push(request.status));
+    ended(PROCESS_END_RETURNED)
+}
+
+#[test]
+fn an_incarnation_runnable_when_shutdown_begins_is_cancelled_at_its_next_park() {
+    let mut lab = Lab::new();
+    let other = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("other");
+    let root = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("root");
+    let spec = process_spec(parks_then_waits, other.get() as usize as *mut c_void);
+    lab.scheduler
+        .start_process(root, spec, Restart::Never)
+        .expect("admitted");
+    lab.scheduler.drive();
+    let task = incarnation_task(&lab);
+    lab.scheduler.wake(task).expect("host wake");
+    assert_eq!(lab.scheduler.stop_supervisor(root), Ok(Progress::Done));
+    assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_CANCELLED]);
+    assert_eq!(timed_terminations(&lab), [(0, TerminalCause::Cancelled)]);
+}
+
+thread_local! {
+    static REMOVE_TARGET: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Removes the recorded membership; if cancelled while waiting, cleanup
+/// sleeps until forced and records the status.
+unsafe extern "C" fn remover(_context: *mut c_void) -> ChimiFiberResult {
+    let (supervisor, membership) = REMOVE_TARGET.with(std::cell::Cell::get);
+    let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_REMOVE_PROCESS);
+    request.supervisor = supervisor;
+    request.membership = membership;
+    if supervisor_call(request).is_some() {
+        return ended(PROCESS_END_RETURNED);
+    }
+    let status = sleep_until(i64::MAX);
+    log(|log| log.outcomes.push(status));
+    ended(PROCESS_END_RETURNED)
+}
+
+#[test]
+fn a_removal_reply_for_an_interrupted_park_never_reaches_a_later_park() {
+    let mut lab = Lab::new();
+    let a = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("a");
+    let b = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("b");
+    let mut stubborn = spec_with(&STUBBORN, None, 4);
+    stubborn.shutdown_within = Duration::from_secs(1);
+    let target = lab
+        .scheduler
+        .start_process(a, stubborn, Restart::Never)
+        .expect("target");
+    REMOVE_TARGET.with(|cell| cell.set((a.get(), target.get())));
+    lab.scheduler
+        .start_process(b, process_spec(remover, ptr::null_mut()), Restart::Never)
+        .expect("remover");
+    lab.scheduler.drive();
+    assert_eq!(lab.scheduler.stop_supervisor(b), Ok(Progress::Pending));
+    let _ = lab.scheduler.run_until_idle();
+    // The removal finishes at 1s, while the remover's cleanup is parked in
+    // a later sleep; that sleep ends only at the remover's own deadline.
+    assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_FORCED]);
+    assert_eq!(
+        timed_terminations(&lab),
+        [
+            (1_000_000_000, TerminalCause::Forced),
+            (5_000_000_000, TerminalCause::Forced)
+        ]
+    );
+}
+
+/// Issues malformed start requests whose contexts are the values 0x11..
+/// and records each status. The context is a running supervisor.
+unsafe extern "C" fn hands_over_contexts_in_bad_requests(context: *mut c_void) -> ChimiFiberResult {
+    let spec = |tag: usize, mailbox_capacity: u32, shutdown_within: i64| ChimiProcessSpec {
+        entry: Some(worker),
+        context: tag as *mut c_void,
+        mailbox_capacity,
+        shutdown_within,
+        name: 0,
+    };
+    let start_process = |supervisor: u64, restart: u32, spec: ChimiProcessSpec| {
+        let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_START_PROCESS);
+        request.supervisor = supervisor;
+        request.restart = restart;
+        request.spec = &spec;
+        supervisor_call(request).expect("not cancelled").status
+    };
+    let supervisor = context as u64;
+    let mut statuses = vec![
+        start_process(supervisor, 0, spec(0x11, 4, 0)),
+        start_process(999, RESTART_ON_DEFECT, spec(0x12, 4, 0)),
+        start_process(supervisor, RESTART_ON_DEFECT, spec(0x13, 0, 0)),
+    ];
+    let process = |spec: ChimiProcessSpec| ChimiSupervisorMember {
+        kind: MEMBER_PROCESS,
+        restart: RESTART_ON_DEFECT,
+        process: spec,
+        supervisor: ptr::null(),
+    };
+    // Parsing fails at the second member, after the first was read.
+    let flat = [process(spec(0x14, 4, 0)), process(spec(0x15, 4, -1))];
+    let inner_members = [process(spec(0x16, 4, 0))];
+    let inner = ChimiSupervisorPolicy {
+        members: inner_members.as_ptr(),
+        member_count: 1,
+        capacity: 1,
+        restart_limit: 1,
+        restart_within: 1,
+    };
+    let nested = [ChimiSupervisorMember {
+        kind: MEMBER_SUPERVISOR,
+        restart: RESTART_ON_DEFECT,
+        process: spec(0, 0, 0),
+        supervisor: &inner,
+    }];
+    // The nested policy parses; the outer restart window does not.
+    let policies = [
+        ChimiSupervisorPolicy {
+            members: flat.as_ptr(),
+            member_count: 2,
+            capacity: 4,
+            restart_limit: 1,
+            restart_within: 1,
+        },
+        ChimiSupervisorPolicy {
+            members: nested.as_ptr(),
+            member_count: 1,
+            capacity: 4,
+            restart_limit: 1,
+            restart_within: 0,
+        },
+    ];
+    for policy in &policies {
+        let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_START);
+        request.policy = policy;
+        statuses.push(supervisor_call(request).expect("not cancelled").status);
+    }
+    log(|log| log.outcomes.extend(statuses));
+    ended(0)
+}
+
+#[test]
+fn every_error_reply_releases_each_context_it_was_handed_once() {
+    let mut lab = Lab::new();
+    let supervisor = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("root");
+    let main = lab
+        .scheduler
+        .start_root_with_context(
+            hands_over_contexts_in_bad_requests,
+            supervisor.get() as usize as *mut c_void,
+        )
+        .expect("main");
+    lab.scheduler.drive();
+    assert!(matches!(lab.scheduler.result(None, main), Ok(TaskResult::Ready(_))));
+    assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_ERROR; 5]);
+    let mut released = log(|log| log.released_specs.clone());
+    released.sort_unstable();
+    assert_eq!(released, [0x11, 0x12, 0x13, 0x14, 0x15, 0x16]);
+    assert!(lab.started().is_empty());
+}
+
+#[test]
+fn a_real_clock_root_with_nothing_pending_waits_for_the_host_instead_of_defecting() {
+    let mut scheduler = Scheduler::new(STACK, TraceMode::Off);
+    let root = scheduler.start_root(parks_forever).expect("root");
+    let first = scheduler.run_root(root, DEADLOCK_DEFECT_CODE).outcome;
+    assert_eq!(first.state, ChimiFiberState::Parked as u32);
+    scheduler.wake(root).expect("a host event");
+    let second = scheduler.run_root(root, DEADLOCK_DEFECT_CODE).outcome;
+    assert_eq!(
+        (second.state, second.value),
+        (ChimiFiberState::Succeeded as u32, 0)
+    );
+}
+
+#[test]
+fn process_started_trace_events_carry_the_task_that_parents_its_child_tasks() {
+    let mut lab = Lab::new();
+    let mut events: Vec<SchedulerTraceEvent> = Vec::new();
+    lab.scheduler.set_trace_sink(
+        Some(collect_trace),
+        (&mut events as *mut Vec<SchedulerTraceEvent>).cast(),
+    );
+    let root = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("root");
+    let managed = lab
+        .scheduler
+        .start_process(root, spec(None, 4), Restart::Never)
+        .expect("admitted");
+    let address = lab.scheduler.process_address(managed).expect("address");
+    lab.deliver(address, Msg::SpawnSleeper);
+    lab.scheduler.drive();
+    lab.scheduler.set_trace_sink(None, ptr::null_mut());
+    let started = events
+        .iter()
+        .find(|event| event.family == SCHEDULER_TRACE_PROCESS && event.kind == 1)
+        .expect("process_started");
+    let child = events
+        .iter()
+        .find(|event| {
+            event.family == SCHEDULER_TRACE_TASK
+                && event.kind == TaskEventKind::Started as u32 + 1
+                && event.parent != 0
+        })
+        .expect("the child task started");
+    assert_ne!(started.task, 0);
+    assert_eq!(started.task, child.parent);
+}
+
+/// Starts a root supervisor with one member, then returns its identity.
+unsafe extern "C" fn starts_a_supervisor_and_returns(_context: *mut c_void) -> ChimiFiberResult {
+    let member = ChimiSupervisorMember {
+        kind: MEMBER_PROCESS,
+        restart: RESTART_ON_DEFECT,
+        process: ChimiProcessSpec {
+            entry: Some(worker),
+            context: behavior_context(&PLAIN),
+            mailbox_capacity: 4,
+            shutdown_within: 5_000_000_000,
+            name: 0,
+        },
+        supervisor: ptr::null(),
+    };
+    let policy = ChimiSupervisorPolicy {
+        members: &member,
+        member_count: 1,
+        capacity: 4,
+        restart_limit: 1,
+        restart_within: 1_000_000_000,
+    };
+    let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_START);
+    request.policy = &policy;
+    let reply = supervisor_call(request).expect("not cancelled");
+    assert_eq!(reply.status, RESPONSE_OK);
+    ended(reply.supervisor as i64)
+}
+
+#[test]
+fn a_root_supervisor_stops_when_the_task_that_started_it_ends() {
+    let mut lab = Lab::new();
+    let main = lab
+        .scheduler
+        .start_root(starts_a_supervisor_and_returns)
+        .expect("main");
+    lab.scheduler.drive();
+    let Ok(TaskResult::Ready(TaskOutcome::Succeeded(raw))) = lab.scheduler.result(None, main) else {
+        panic!("main returned its supervisor");
+    };
+    let supervisor = SupervisorId::from_raw(raw as u64);
+    assert_eq!(lab.scheduler.supervisor_state(supervisor), Some(SupervisorState::Stopped));
+    assert_eq!(timed_terminations(&lab), [(0, TerminalCause::Cancelled)]);
+    let stopped = lab
+        .scheduler
+        .process_events()
+        .iter()
+        .find(|event| matches!(event.kind, ProcessEventKind::Stopped { .. }))
+        .expect("supervisor_stopped")
+        .sequence;
+    let main_terminal = lab
+        .scheduler
+        .events()
+        .iter()
+        .find(|event| event.task == main && event.kind == TaskEventKind::Terminal)
+        .expect("main terminal")
+        .sequence;
+    assert!(stopped < main_terminal, "the supervisor stops before its owner is terminal");
 }

@@ -748,6 +748,12 @@ impl ChannelRegistry {
         transition
     }
 
+    /// Withdraws the task's pending send or receive, leaving the channel as
+    /// if the operation had never been issued. A ready result is dropped.
+    pub fn cancel_pending(&mut self, task: TaskId) -> Transition {
+        self.cancel_operation(task)
+    }
+
     fn refresh_owner_index(&mut self, id: ChannelId, owner: TaskId) {
         let owns_channel = self.channels.get(&id).is_some_and(|channel| {
             channel.receiver_owner == Some(owner) || channel.completion_owner == Some(owner)

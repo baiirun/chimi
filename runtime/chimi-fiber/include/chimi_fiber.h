@@ -272,6 +272,17 @@ typedef void (*ChimiSchedulerTraceSink)(void *context,
 typedef void (*ChimiMessageRelease)(void *context, uint64_t message);
 typedef void (*ChimiSpecContextRelease)(void *context, void *spec_context);
 
+/* One task parked in a detected deadlock and the request kind it waits on
+   (0 for a bare park). */
+typedef struct {
+  uint64_t task;
+  uint32_t request_kind;
+} ChimiDeadlockWaiter;
+
+typedef void (*ChimiDeadlockReport)(void *context,
+                                    const ChimiDeadlockWaiter *waiters,
+                                    size_t count);
+
 enum {
   CHIMI_SCHEDULER_CLOCK_REAL = 0,
   CHIMI_SCHEDULER_CLOCK_VIRTUAL = 1,
@@ -289,6 +300,11 @@ typedef struct {
   ChimiMessageRelease release_message;
   ChimiSpecContextRelease release_spec_context;
   void *release_context;
+  /* Under the virtual clock, called once before chimi_scheduler_run returns
+     when the root defected with CHIMI_SCHEDULER_DEFECT_DEADLOCK, with every
+     parked task and the operation it waits on. May be null. */
+  ChimiDeadlockReport deadlock_report;
+  void *deadlock_context;
 } ChimiSchedulerConfig;
 
 uint32_t chimi_fiber_abi_version(void);
@@ -308,6 +324,11 @@ ChimiSchedulerOutcome chimi_scheduler_execute(ChimiFiberEntry entry, void *conte
                                               uint32_t trace_mode,
                                               ChimiSchedulerTraceSink trace_sink,
                                               void *trace_context);
+/* Runs the root to its outcome, then stops every supervisor still running.
+   Under the real clock a root parked with no timer pending and no host
+   operation in flight is not a deadlock, because a host event may still
+   arrive: the call returns state CHIMI_FIBER_PARKED and leaves the
+   suspended execution in place. */
 ChimiSchedulerOutcome chimi_scheduler_run(const ChimiSchedulerConfig *config);
 
 #endif

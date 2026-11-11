@@ -340,6 +340,10 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       LAYOUT(ChimiSchedulerConfig, release_message),
       LAYOUT(ChimiSchedulerConfig, release_spec_context),
       LAYOUT(ChimiSchedulerConfig, release_context),
+      LAYOUT(ChimiSchedulerConfig, deadlock_report),
+      LAYOUT(ChimiSchedulerConfig, deadlock_context),
+      sizeof(ChimiDeadlockWaiter),
+      LAYOUT(ChimiDeadlockWaiter, request_kind),
   };
   size_t count = sizeof(values) / sizeof(*values);
   for (size_t index = 0; index < count; index += 1) out[index] = values[index];
