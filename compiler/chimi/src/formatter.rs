@@ -108,7 +108,10 @@ fn format_parse(parsed: &ParseResult) -> String {
                 writer.write("}");
                 let continues_requirement =
                     next == Some(TokenKind::LeftBrace) && is_requirement_syntax(token);
+                let continues_header = next_significant_token(&tokens, index + 1)
+                    .is_some_and(|next| opens_header_body(&next));
                 if !continues_requirement
+                    && !continues_header
                     && !matches!(
                         next,
                         Some(TokenKind::Comma | TokenKind::RightParen | TokenKind::Using)
@@ -293,6 +296,38 @@ fn token_has_ancestor(token: &SyntaxToken<'_>, kinds: &[NodeKind]) -> bool {
         node = current.parent();
     }
     false
+}
+
+/// Whether `token` is the `{` that opens a `loop` body or a `case` arm list. Such a
+/// brace must stay on the line of the header it follows: after a record header such
+/// as `loop s = { a: 1 } {`, a line break would end the loop expression.
+fn opens_header_body(token: &SyntaxToken<'_>) -> bool {
+    if token.kind() != TokenKind::LeftBrace {
+        return false;
+    }
+    let parent = token.parent();
+    match parent.kind() {
+        NodeKind::CaseExpression => true,
+        NodeKind::BlockExpression => parent
+            .parent()
+            .is_some_and(|owner| owner.kind() == NodeKind::LoopExpression),
+        _ => false,
+    }
+}
+
+fn next_significant_token<'tree>(
+    tokens: &[SyntaxToken<'tree>],
+    start: usize,
+) -> Option<SyntaxToken<'tree>> {
+    tokens[start..]
+        .iter()
+        .find(|token| {
+            !matches!(
+                token.kind(),
+                TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment
+            )
+        })
+        .cloned()
 }
 
 fn next_significant(tokens: &[SyntaxToken<'_>], start: usize) -> Option<TokenKind> {

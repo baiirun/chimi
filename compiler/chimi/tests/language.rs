@@ -2055,9 +2055,36 @@ fn list_patterns_match_inside_outcome_patterns() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[0,3,-1,-2]");
 }
 
-// The loops below bind their record state with `let` first: the formatter splits
-// `loop state = { a: 1 } {` into a form that no longer parses (pre-existing).
-//
+// The formatter keeps a `loop` or `case` body brace on the line of a record header,
+// so the formatted program still parses and computes the same value.
+#[test]
+fn record_headers_keep_their_body_brace_when_formatted() {
+    let outcome = run_both(
+        "record-loop-header",
+        concat!(
+            "fn three() -> Int { 3 }\n",
+            "fn count() -> Int {\n",
+            "  loop s = { a: 1 } {\n",
+            "    case s.a > 3 {\n",
+            "      True -> break s.a\n",
+            "      False -> { a: s.a + 1 }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "fn sum() -> Int {\n",
+            "  loop s = { k: 2, h: three() } { break s.k + s.h }\n",
+            "}\n",
+            "fn first(n: Int) -> Int {\n",
+            "  case { a: n, b: 2 } {\n",
+            "    r -> r.a * 10 + r.b\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> List<Int> { [count(), sum(), first(1)] }\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[4,5,12]");
+}
+
 // Window retention: draining by `[x, ..rest]` copies a window once it falls below
 // a quarter of its vector. A position-weighted sum checks that every element is
 // read once, in order, across those copies and across 32-element leaves.
