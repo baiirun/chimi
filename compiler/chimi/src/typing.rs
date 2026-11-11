@@ -3410,6 +3410,7 @@ impl ProjectTypeChecker {
                 operator: operator @ (BinaryOperator::Range | BinaryOperator::RangeInclusive),
                 left: left_operand,
                 right: right_operand,
+                range,
                 ..
             } => {
                 let int = self.builtin_type("Int");
@@ -3429,6 +3430,14 @@ impl ProjectTypeChecker {
                         );
                     }
                     facts.push(fact);
+                }
+                // A constant `start..=end` normalizes to `start..end + 1`; at the
+                // largest `Int` that `+ 1` always defects (`T4312`).
+                if *operator == BinaryOperator::RangeInclusive
+                    && self.integer_constant(module_id, left_operand).is_some()
+                    && self.integer_constant(module_id, right_operand) == Some(i64::MAX)
+                {
+                    self.always_defects_warning(module_id, *range);
                 }
                 ExpressionFact {
                     success: self.builtin_type("Range"),

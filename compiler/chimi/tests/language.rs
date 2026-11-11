@@ -8454,3 +8454,26 @@ fn a_variant_hint_offers_the_qualified_path_when_the_type_is_not_imported() {
     let fixed = wrong.replace("Order.Less", "Order.Ordering.Less");
     assert_eq!(check_codes(&fixed), Vec::<String>::new());
 }
+
+// T4312 covers the normalizing `+ 1` of a constant `start..=end`: ending at the
+// largest Int warns, and the range still compiles and defects at run time.
+#[test]
+fn a_constant_inclusive_range_ending_at_the_largest_int_warns_and_defects() {
+    let source = concat!(
+        "import std/range as Range\n",
+        "pub fn main() -> Int {\n",
+        "  Range.length(0..=9223372036854775807)\n",
+        "}\n",
+    );
+    assert!(check_codes(source).is_empty());
+    assert_eq!(warning_codes(source), ["T4312"]);
+    let outcome = run_both("inclusive-range-overflow", source);
+    assert!(outcome.contains("\"outcome\":\"defect\""), "{outcome}");
+    for quiet in [
+        "pub fn main() -> Range { 0..=9223372036854775806 }\n",
+        "pub fn main() -> Range { 0..9223372036854775807 }\n",
+        "fn start() -> Int { 0 }\npub fn main() -> Range { start()..=1 }\n",
+    ] {
+        assert!(warning_codes(quiet).is_empty(), "{quiet}");
+    }
+}
