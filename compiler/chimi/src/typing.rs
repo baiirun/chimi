@@ -1076,6 +1076,9 @@ struct ProjectTypeChecker {
     /// The innermost expression being inferred, where a generic function value
     /// that meets a function type is instantiated.
     expression_site: Option<(ModuleId, TextRange)>,
+    /// Written `Map` key types seen while declarations are lowered, checked
+    /// once every field is known; `None` once they have been checked.
+    written_map_keys: Option<Vec<(ModuleId, TextRange, TypeId)>>,
     /// The callable each generic function value's parameter list comes from,
     /// to name it in a diagnostic about that instantiation.
     polymorphic_owners: HashMap<Vec<SymbolId>, SymbolId>,
@@ -1294,6 +1297,7 @@ impl ProjectTypeChecker {
             generic_requirements: HashMap::new(),
             property_checks: Vec::new(),
             expression_site: None,
+            written_map_keys: Some(Vec::new()),
             polymorphic_owners: HashMap::new(),
             diagnostics,
             warnings: Vec::new(),
@@ -2259,6 +2263,7 @@ impl ProjectTypeChecker {
                 .collect(),
             property_checks: Vec::new(),
             expression_site: None,
+            written_map_keys: Some(Vec::new()),
             polymorphic_owners: HashMap::new(),
             diagnostics: resolved
                 .diagnostics
@@ -2311,6 +2316,9 @@ impl ProjectTypeChecker {
             for declaration in declarations {
                 self.check_declaration(*module_id, &declaration);
             }
+        }
+        for (module_id, range, key) in self.written_map_keys.take().unwrap_or_default() {
+            self.check_written_map_key(module_id, range, key);
         }
         let declaration_count = body_modules
             .iter()
@@ -6295,6 +6303,17 @@ impl ProjectTypeChecker {
                                     name,
                                 );
                             }
+                            if matches!(
+                                self.resolved.standard_symbol(symbol),
+                                Some(StandardSymbol::Type(StandardType::Map))
+                            ) && let Some(key) = lowered.first()
+                            {
+                                if let Some(pending) = &mut self.written_map_keys {
+                                    pending.push((module_id, name.range, *key));
+                                } else {
+                                    self.check_written_map_key(module_id, name.range, *key);
+                                }
+                            }
                             self.intern_type(CanonicalType::Named {
                                 symbol,
                                 arguments: lowered,
@@ -6331,6 +6350,24 @@ impl ProjectTypeChecker {
         self.type_facts
             .insert((module_id, type_use.semantic_id()), result);
         result
+    }
+
+    /// Rejects a written `Map<K, V>` whose `K` is not equatable, at the `Map`
+    /// name. A generic `K` is left to the code that builds the map.
+    fn check_written_map_key(&mut self, module_id: ModuleId, range: TextRange, key: TypeId) {
+        let Some(lack) = self.type_view().derive(key, ValueProperty::Equatable).lack else {
+            return;
+        };
+        let found = self.format_checked_type(key);
+        self.type_error_range(
+            module_id,
+            "T4300",
+            range,
+            format!(
+                "`Map` keys must be equatable, but `{found}` is not equatable: {}",
+                lack.describe()
+            ),
+        );
     }
 
     fn lower_failure_row(

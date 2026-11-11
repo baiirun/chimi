@@ -4439,10 +4439,10 @@ fn comparing_values_without_the_property_names_the_offending_component() {
             "a channel capability",
         ),
         (
-            "import std/map as Map\nimport std/map.{Map}\n\
-             fn keyed() -> Map<fn() -> Int, Int> { Map.empty() }\n",
+            "import std/map.{Map}\n\
+             fn keyed(table: Map<fn() -> Int, Int>) -> Int { 1 }\n",
             "T4300",
-            "`Map.empty` needs `K` to be equatable",
+            "`Map` keys must be equatable, but `fn() -> Int` is not equatable: it is a function",
         ),
         (
             "fn less() -> Bool { { a: 1 } < { a: 2 } }\n",
@@ -4473,6 +4473,42 @@ fn comparing_values_without_the_property_names_the_offending_component() {
             diagnostics[0].1
         );
     }
+}
+
+// E10: a written `Map` type whose key type is not equatable is rejected where it
+// is written, as a parameter, a struct field, or a result, even with no call
+// that builds the map.
+#[test]
+fn a_written_map_type_needs_an_equatable_key() {
+    let source = concat!(
+        "import std/map.{Map}\n",
+        "struct Registry { routes: Map<fn() -> Int, Int> }\n",
+        "fn count(table: Map<fn() -> Int, Int>) -> Int { 1 }\n",
+        "fn nested(table: List<Map<List<fn() -> Int>, Int>>) -> Int { 1 }\n",
+        "fn fine(table: Map<Text, fn() -> Int>) -> Int { 1 }\n",
+        "fn generic<K>(table: Map<K, Int>) -> Int { 1 }\n",
+        "fn early(table: Map<Later, Int>) -> Int { 1 }\n",
+        "struct Later { run: fn() -> Int }\n",
+        "pub fn main() -> Int { 1 }\n",
+    );
+    let diagnostics = coded_messages(source);
+    assert_eq!(diagnostics.len(), 4, "{diagnostics:?}");
+    assert!(
+        diagnostics[3].1.contains("field `run` of `Later`"),
+        "{diagnostics:?}"
+    );
+    for (code, message) in &diagnostics {
+        assert_eq!(code, "T4300", "{message}");
+        assert!(message.contains("`Map` key"), "{message}");
+    }
+    assert!(
+        diagnostics[0].1.contains("`fn() -> Int`"),
+        "{diagnostics:?}"
+    );
+    assert!(
+        diagnostics[2].1.contains("`List<fn() -> Int>`"),
+        "{diagnostics:?}"
+    );
 }
 
 // E11, O16, E12: operands must share a type, and comparisons do not chain.
