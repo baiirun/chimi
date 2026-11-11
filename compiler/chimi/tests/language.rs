@@ -7786,6 +7786,68 @@ fn a_never_function_must_not_produce_a_value() {
     );
 }
 
+// The bottom rule is one-way: a `Never` value fits any expected type, but no
+// value of another type fits where `Never` is expected. Each of these once
+// compiled and let an `Int` be used as `Text`.
+#[test]
+fn no_other_value_passes_as_never() {
+    let rejected = [
+        (
+            "fn coerce() -> Never {\n  let n: Never = 41\n  n\n}\n",
+            "T4203",
+            "41",
+        ),
+        (
+            "fn coerce() -> Never {\n  let f: fn() -> Never = fn() { 41 }\n  f()\n}\n",
+            "T4203",
+            "fn() { 41 }",
+        ),
+        (
+            "fn items() -> List<Never> {\n  [41, 42]\n}\n",
+            "T4203",
+            "{\n  [41, 42]\n}",
+        ),
+        (
+            "fn sink(x: Never) -> Int {\n  7\n}\npub fn main() -> Int {\n  sink(3)\n}\n",
+            "T4203",
+            "sink(3)",
+        ),
+        // A function input is contravariant: a `fn(Never)` would be called with an `Int`.
+        (
+            concat!(
+                "fn sink(x: Never) -> Text {\n  x\n}\n",
+                "fn apply(f: fn(Int) -> Text) -> Text {\n  f(3)\n}\n",
+                "pub fn main() -> Text {\n  apply(sink)\n}\n",
+            ),
+            "T4203",
+            "apply(sink)",
+        ),
+        ("fn coerce() -> Never {\n  41\n}\n", "T4308", "41"),
+    ];
+    for (source, code, label) in rejected {
+        assert_eq!(
+            type_diagnostics(source),
+            [(code.to_owned(), label.to_owned())],
+            "{source}"
+        );
+    }
+    // The sound direction still holds: a `Never` value or result fits an `Int` slot.
+    assert!(
+        check_codes(&format!(
+            concat!(
+                "{}",
+                "fn apply(f: fn() -> Int errors RequestError) -> Int {{\n  f()\n}}\n",
+                "pub fn main() -> List<Int> {{\n",
+                "  let n: Int = reject(\"a\")\n",
+                "  [n, apply(fn() {{ reject(\"b\") }})]\n",
+                "}}\n",
+            ),
+            REJECT
+        ))
+        .is_empty()
+    );
+}
+
 // R3, an all-`Never` case, and a body that only fails: tooling shows an inferred
 // `Never` success type.
 #[test]

@@ -1168,6 +1168,10 @@ struct ProjectTypeChecker {
     broken_loops: HashSet<(ModuleId, SemanticId)>,
     /// Constants whose latest body pass left an inference variable unbound (`T4324`).
     undetermined_constants: HashSet<(ModuleId, SemanticId)>,
+    /// How many function input types the current `unify` or `match_call_type`
+    /// is inside. A function input is contravariant, so there `Never` matches
+    /// only `Never`: a `fn(Never)` must not pass for a `fn(Int)`.
+    function_input_depth: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -1400,6 +1404,7 @@ impl ProjectTypeChecker {
             loop_break_types: HashMap::new(),
             broken_loops: HashSet::new(),
             undetermined_constants: HashSet::new(),
+            function_input_depth: 0,
         };
         checker.intern_type(CanonicalType::Poison);
         checker.intern_failure_row(FailureRow {
@@ -2412,6 +2417,7 @@ impl ProjectTypeChecker {
             loop_break_types: HashMap::new(),
             broken_loops: HashSet::new(),
             undetermined_constants: HashSet::new(),
+            function_input_depth: 0,
         }
     }
 
@@ -2670,7 +2676,6 @@ impl ProjectTypeChecker {
                 self.property_checks.clear();
                 let body_fact =
                     self.infer_expression(module_id, body, &generic_symbols, &mut bindings);
-                self.unify_expression_result(module_id, body, body_fact.success, contract.success);
                 if signature.success.is_some()
                     && self.is_never(contract.success)
                     && !self.is_never(body_fact.success)
@@ -2680,6 +2685,13 @@ impl ProjectTypeChecker {
                         "T4308",
                         value_producing_range(body),
                         "this function is declared `-> Never`, but this expression produces a value",
+                    );
+                } else {
+                    self.unify_expression_result(
+                        module_id,
+                        body,
+                        body_fact.success,
+                        contract.success,
                     );
                 }
                 let requirements_changed = self.settle_property_checks(&generic_symbols);
@@ -6986,7 +6998,12 @@ impl ProjectTypeChecker {
                     .inputs
                     .iter()
                     .zip(&expected.inputs)
-                    .all(|(actual, expected)| self.unify(*actual, *expected))
+                    .all(|(actual, expected)| {
+                        self.function_input_depth += 1;
+                        let unified = self.unify(*actual, *expected);
+                        self.function_input_depth -= 1;
+                        unified
+                    })
                 {
                     return Some("input types differ");
                 }
@@ -8246,7 +8263,7 @@ impl ProjectTypeChecker {
             }
             // A `Never` value fits any slot, as in `unify`; a function literal that
             // only fails reaches here when its type feeds the call substitution.
-            _ if self.is_never(actual) => true,
+            _ if self.function_input_depth == 0 && self.is_never(actual) => true,
             (
                 CanonicalType::Named {
                     symbol: actual_symbol,
@@ -8270,7 +8287,10 @@ impl ProjectTypeChecker {
                         .into_iter()
                         .zip(expected.inputs)
                         .all(|(actual, expected)| {
-                            self.match_call_type(actual, expected, substitution)
+                            self.function_input_depth += 1;
+                            let matched = self.match_call_type(actual, expected, substitution);
+                            self.function_input_depth -= 1;
+                            matched
                         })
                     && self.match_call_type(actual.success, expected.success, substitution)
                     && self.match_call_failure_row(actual.failures, expected.failures, substitution)
@@ -8886,8 +8906,9 @@ impl ProjectTypeChecker {
                 self.inference_bindings.insert(variable, left);
                 true
             }
-            // `Never` has no values, so it is compatible with every type.
-            _ if self.is_never(left) || self.is_never(right) => true,
+            // `Never` has no values, so a `Never` value fits any expected type.
+            // The rule is one-way: nothing else fits where `Never` is expected.
+            _ if self.function_input_depth == 0 && self.is_never(left) => true,
             (
                 CanonicalType::Named {
                     symbol: left_symbol,
@@ -8928,7 +8949,12 @@ impl ProjectTypeChecker {
                         .inputs
                         .into_iter()
                         .zip(right.inputs)
-                        .all(|(left, right)| self.unify(left, right))
+                        .all(|(left, right)| {
+                            self.function_input_depth += 1;
+                            let unified = self.unify(left, right);
+                            self.function_input_depth -= 1;
+                            unified
+                        })
                     && self.unify(left.success, right.success)
                     && self.failure_rows_equivalent(left.failures, right.failures)
                     && self.needs_rows_equivalent(left.needs, right.needs)
