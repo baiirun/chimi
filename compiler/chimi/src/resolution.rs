@@ -1466,6 +1466,8 @@ impl ProjectResolver {
                     semantic_id: base_id,
                     name: base,
                 } = receiver.as_ref()
+                    // A local binding shadows a module alias or type of the same name.
+                    && scope.lookup(&base.text).is_none()
                     && self.resolve_module_select(
                         module_index,
                         *base_id,

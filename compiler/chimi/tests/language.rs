@@ -2233,6 +2233,33 @@ fn a_callee_row_parameter_left_by_a_type_error_is_not_reported_on_main() {
     assert_eq!(codes, ["T4203"]);
 }
 
+// ts-cefed4: a local binding named like an enum shadows it in a selection, both
+// for a member the enum lacks and for one that is also a variant name.
+#[test]
+fn a_local_binding_shadows_an_enum_of_the_same_name_in_a_selection() {
+    let outcome = run_both(
+        "local-shadows-enum",
+        concat!(
+            "enum Status {\n",
+            "  Done\n",
+            "  Pending\n",
+            "}\n",
+            "struct Box {\n",
+            "  Done: Int\n",
+            "  Other: Int\n",
+            "}\n",
+            "fn score(Status: Box) -> Int {\n",
+            "  Status.Done\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let Status = Box(3, 4)\n",
+            "  Status.Done * 10 + Status.Other + score(Box(100, 0))\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":134");
+}
+
 // A constructor value renders as its constructor's name on both paths, as a
 // standard function value renders as its function's name.
 #[test]
