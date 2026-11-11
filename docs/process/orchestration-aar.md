@@ -86,6 +86,7 @@ task notifications.
 | Prototype fixes | fix | 217k | 16.7 | 26 tests, 30/30 mutants caught | — |
 | Cross-spec review | review | 238k | 6.9 | 19 conflicts | — |
 | Spec steward (worktree) | fix | 130k | 8.0 | 19 resolutions, doc examples green | could not self-merge (N9); merge conflict with lane edit (N10) |
+| Scheduler kernel port | implement | 385k | 36.2 | 84 chimi-fiber tests green (verified by coordinator rerun); 20 mutants caught; reported a latent use-after-free in existing code | review pending |
 
 ## Open hypotheses
 
