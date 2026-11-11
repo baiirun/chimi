@@ -16,6 +16,7 @@ const PEER: NameId = NameId(2);
 thread_local! {
     static TOTALS: RefCell<HashMap<IncarnationId, i64>> = RefCell::new(HashMap::new());
     static ORDER: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
+    static RELAYED: RefCell<Vec<Result<(), SendFailure>>> = const { RefCell::new(Vec::new()) };
 }
 
 fn total(incarnation: IncarnationId) -> i64 {
@@ -55,6 +56,26 @@ fn stubborn(context: &mut ProcessContext) -> BodyEnd {
     }
 }
 
+/// Forwards every message to PEER from inside its own fiber and records the
+/// outcome. Cancellation returns.
+fn relay(context: &mut ProcessContext) -> BodyEnd {
+    loop {
+        match context.receive() {
+            Received::Cancelled => return BodyEnd::Returned,
+            Received::Message(message) => {
+                let outcome = context.send(Address::Named(PEER), message);
+                RELAYED.with(|relayed| relayed.borrow_mut().push(outcome));
+            }
+        }
+    }
+}
+
+/// Panics on its first message.
+fn panicking(context: &mut ProcessContext) -> BodyEnd {
+    let _ = context.receive();
+    panic!("deliberate body panic");
+}
+
 fn spec(body: Body, name: Option<NameId>, capacity: u32) -> ProcessSpec {
     ProcessSpec {
         body,
@@ -76,17 +97,28 @@ fn named_counter(name: NameId) -> Member {
     Member::Process(spec(counter, Some(name), 64), Restart::OnDefect)
 }
 
-/// A host heap that builds messages; kept alive for the whole test.
+/// A host heap that builds messages; kept alive for the whole test. Each
+/// message is built in an open region that is collected right after the copy,
+/// so the host's own memory stays flat and chunk checks measure the kernel.
+/// One warmup message creates the region's chunks before any test baseline.
 struct Host(Heap);
 
 impl Host {
     fn new() -> Self {
-        Self(Heap::new(u64::MAX))
+        let host = Self(Heap::new(u64::MAX));
+        let _current = host.0.enter();
+        unsafe { chimi_region_enter() };
+        drop(_current);
+        drop(host.message(0));
+        host
     }
 
     fn message(&self, value: i64) -> Fragment {
         let _current = self.0.enter();
-        Fragment::copy(unsafe { chimi_value_int(value) }).expect("host value")
+        let mut scratch = unsafe { chimi_value_int(value) };
+        let fragment = Fragment::copy(scratch).expect("host value");
+        assert_eq!(unsafe { chimi_region_pass(&mut scratch) }, HeapStatus::Ok);
+        fragment
     }
 }
 
@@ -119,7 +151,6 @@ fn terminations(kernel: &Kernel) -> Vec<(MembershipId, TerminalCause)> {
 }
 
 #[test]
-#[ignore = "pending kernel implementation"]
 fn a_defect_restarts_only_that_member_and_the_peer_keeps_its_state() {
     let host = Host::new();
     let mut kernel = Kernel::new(STACK);
@@ -159,7 +190,6 @@ fn a_defect_restarts_only_that_member_and_the_peer_keeps_its_state() {
 }
 
 #[test]
-#[ignore = "pending kernel implementation"]
 fn exceeding_the_restart_limit_stops_peers_and_escalates_from_the_root() {
     let host = Host::new();
     let mut kernel = Kernel::new(STACK);
@@ -178,7 +208,6 @@ fn exceeding_the_restart_limit_stops_peers_and_escalates_from_the_root() {
 }
 
 #[test]
-#[ignore = "pending kernel implementation"]
 fn defects_further_apart_than_the_window_do_not_accumulate() {
     let host = Host::new();
     let mut kernel = Kernel::new(STACK);
@@ -193,7 +222,6 @@ fn defects_further_apart_than_the_window_do_not_accumulate() {
 }
 
 #[test]
-#[ignore = "pending kernel implementation"]
 fn names_follow_the_replacement_and_direct_addresses_stay_unavailable() {
     let host = Host::new();
     let mut kernel = Kernel::new(STACK);
@@ -214,7 +242,6 @@ fn names_follow_the_replacement_and_direct_addresses_stay_unavailable() {
 }
 
 #[test]
-#[ignore = "pending kernel implementation"]
 fn a_full_mailbox_returns_the_message_and_delivery_is_fifo() {
     let host = Host::new();
     let mut kernel = Kernel::new(STACK);
@@ -237,7 +264,6 @@ fn a_full_mailbox_returns_the_message_and_delivery_is_fifo() {
 }
 
 #[test]
-#[ignore = "pending kernel implementation"]
 fn stop_runs_newest_dynamic_first_then_declared_in_reverse_and_frees_unread_messages() {
     let host = Host::new();
     let chunks_before = chunk_stats();
@@ -263,7 +289,6 @@ fn stop_runs_newest_dynamic_first_then_declared_in_reverse_and_frees_unread_mess
 }
 
 #[test]
-#[ignore = "pending kernel implementation"]
 fn cleanup_that_misses_its_deadline_is_forced() {
     let mut kernel = Kernel::new(STACK);
     let root = kernel
@@ -275,7 +300,6 @@ fn cleanup_that_misses_its_deadline_is_forced() {
 }
 
 #[test]
-#[ignore = "pending kernel implementation"]
 fn admission_fails_fast_and_removal_releases_the_name() {
     let mut kernel = Kernel::new(STACK);
     let root = kernel.start(policy(vec![named_counter(COUNTER)], 0)).expect("started");
@@ -296,7 +320,6 @@ fn admission_fails_fast_and_removal_releases_the_name() {
 }
 
 #[test]
-#[ignore = "pending kernel implementation"]
 fn a_failed_root_start_stops_the_members_it_already_started() {
     let mut kernel = Kernel::new(STACK);
     let clash = policy(vec![named_counter(COUNTER), named_counter(COUNTER)], 0);
@@ -306,7 +329,6 @@ fn a_failed_root_start_stops_the_members_it_already_started() {
 }
 
 #[test]
-#[ignore = "pending kernel implementation"]
 fn a_nested_supervisor_that_exceeds_its_limit_is_restarted_by_its_parent() {
     let host = Host::new();
     let mut kernel = Kernel::new(STACK);
@@ -327,12 +349,12 @@ fn a_nested_supervisor_that_exceeds_its_limit_is_restarted_by_its_parent() {
 }
 
 #[test]
-#[ignore = "pending kernel implementation"]
 fn a_process_handles_a_million_messages_in_flat_memory() {
     let host = Host::new();
     let mut kernel = Kernel::new(STACK);
     kernel.start(policy(vec![named_counter(COUNTER)], 0)).expect("started");
     let mut peak_after_warmup = 0;
+    let mut chunks_after_warmup = ChunkStats::default();
     for batch in 0..15_625 {
         for _ in 0..64 {
             send(&mut kernel, &host, Address::Named(COUNTER), 1);
@@ -340,10 +362,51 @@ fn a_process_handles_a_million_messages_in_flat_memory() {
         kernel.run_until_idle();
         if batch == 100 {
             peak_after_warmup = kernel.heap_stats(Address::Named(COUNTER)).unwrap().peak_live_bytes;
+            chunks_after_warmup = chunk_stats();
         }
     }
+    assert_eq!(chunk_stats(), chunks_after_warmup);
     let stats = kernel.heap_stats(Address::Named(COUNTER)).expect("running");
     assert_eq!(stats.peak_live_bytes, peak_after_warmup);
     let [(_, incarnation)] = started(&kernel)[..] else { panic!() };
     assert_eq!(total(incarnation), 1_000_000);
+}
+
+#[test]
+fn a_send_from_a_body_never_parks_and_reports_a_full_mailbox() {
+    let host = Host::new();
+    let mut kernel = Kernel::new(STACK);
+    let relaying = Member::Process(spec(relay, Some(COUNTER), 8), Restart::Never);
+    let receiving = Member::Process(spec(counter, Some(PEER), 1), Restart::Never);
+    kernel.start(policy(vec![relaying, receiving], 0)).expect("started");
+    kernel.run_until_idle();
+    RELAYED.with(|relayed| relayed.borrow_mut().clear());
+    // Both reach the relay before the receiver runs, so its one slot is taken
+    // by the first and the second relay send must fail rather than park.
+    send(&mut kernel, &host, Address::Named(COUNTER), 6);
+    send(&mut kernel, &host, Address::Named(COUNTER), 9);
+    kernel.run_until_idle();
+
+    let outcomes = RELAYED.with(|relayed| relayed.borrow().clone());
+    assert_eq!(outcomes, vec![Ok(()), Err(SendFailure::Full)]);
+    let [_, (_, receiver)] = started(&kernel)[..] else { panic!("{:?}", kernel.events()) };
+    assert_eq!(total(receiver), 6);
+}
+
+#[test]
+fn a_panicking_body_is_a_contained_defect() {
+    let host = Host::new();
+    let mut kernel = Kernel::new(STACK);
+    let member = Member::Process(spec(panicking, Some(COUNTER), 1), Restart::OnDefect);
+    kernel.start(policy(vec![member, named_counter(PEER)], 1)).expect("started");
+    send(&mut kernel, &host, Address::Named(COUNTER), 1);
+    send(&mut kernel, &host, Address::Named(PEER), 4);
+    kernel.run_until_idle();
+
+    assert_eq!(terminations(&kernel)[..1].iter().map(|(_, c)| *c).collect::<Vec<_>>(), [
+        TerminalCause::Defected
+    ]);
+    assert_eq!(started(&kernel).len(), 3, "panicking member restarted once");
+    let peer = started(&kernel)[1].1;
+    assert_eq!(total(peer), 4);
 }

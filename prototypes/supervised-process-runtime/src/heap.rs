@@ -128,6 +128,10 @@ pub struct Fragment(NonNull<RawFragment>);
 
 impl Fragment {
     /// Copies `root` out of the current heap. See `chimi_fragment_copy`.
+    #[allow(
+        clippy::not_unsafe_ptr_arg_deref,
+        reason = "the prototype passes raw value pointers throughout; the C contract applies"
+    )]
     pub fn copy(root: *const Value) -> Result<Self, HeapStatus> {
         let mut out = std::ptr::null_mut();
         match unsafe { chimi_fragment_copy(root, &mut out) } {
