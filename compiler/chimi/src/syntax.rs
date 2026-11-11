@@ -279,6 +279,8 @@ pub(crate) enum NodeKind {
     CaseArm,
     /// `if <guard>` between a function clause's parameters or contract and its body.
     ClauseGuard,
+    /// `..base` leading a record update `{ ..base, field: value }`.
+    RecordSpread,
     LoopExpression,
     BreakExpression,
     Pattern,
@@ -340,6 +342,7 @@ impl NodeKind {
             Self::CaseExpression => "case_expression",
             Self::CaseArm => "case_arm",
             Self::ClauseGuard => "clause_guard",
+            Self::RecordSpread => "record_spread",
             Self::LoopExpression => "loop_expression",
             Self::BreakExpression => "break_expression",
             Self::Pattern => "pattern",
@@ -2041,6 +2044,9 @@ impl<'source> Parser<'source> {
         self.start(NodeKind::CallSuffix);
         self.expect(TokenKind::LeftParen);
         self.skip_newlines();
+        if self.at(TokenKind::DotDot) {
+            self.reject_positional_update();
+        }
         if !self.at(TokenKind::RightParen) {
             self.parse_argument();
             while self.accept(TokenKind::Comma) {
@@ -2054,6 +2060,68 @@ impl<'source> Parser<'source> {
         self.skip_newlines();
         self.expect(TokenKind::RightParen);
         self.finish();
+    }
+
+    /// Reports `Config(..base, jobs)` as `S1001`. Updates name the fields they change,
+    /// so the message suggests the braced form, labelling each plain-name argument with
+    /// its own name. The `..` is consumed so `base` parses as an ordinary argument.
+    fn reject_positional_update(&mut self) {
+        let start = self.current().range.start();
+        let mut position = self.position + 1;
+        let mut parts = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0_u32;
+        loop {
+            let kind = self.kind_at(position);
+            match kind {
+                TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => {
+                    depth += 1;
+                }
+                TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace
+                    if depth > 0 =>
+                {
+                    depth -= 1;
+                }
+                TokenKind::RightParen | TokenKind::End => break,
+                TokenKind::Comma if depth == 0 => {
+                    parts.push(std::mem::take(&mut current));
+                    position += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            if kind != TokenKind::Newline {
+                if !current.is_empty() {
+                    current.push(' ');
+                }
+                current.push_str(&self.tokens[self.significant[position]].text);
+            }
+            position += 1;
+        }
+        parts.push(current);
+        let mut suggestion = format!("{{ ..{}", parts.first().map_or("", String::as_str));
+        for part in parts.iter().skip(1).filter(|part| !part.is_empty()) {
+            let is_name = part
+                .chars()
+                .all(|character| character.is_alphanumeric() || character == '_');
+            if is_name {
+                suggestion.push_str(&format!(", {part}: {part}"));
+            } else {
+                suggestion.push_str(&format!(", field: {part}"));
+            }
+        }
+        suggestion.push_str(" }");
+        let range = TextRange::new(start as usize, self.current().range.end() as usize);
+        self.diagnostics.push(Diagnostic::error(
+            DiagnosticStage::Syntax,
+            "S1001",
+            self.source.file_id(),
+            range,
+            format!(
+                "a record update names the fields it changes and is not a call; write `{suggestion}`"
+            ),
+        ));
+        self.bump();
     }
 
     fn parse_argument(&mut self) {
@@ -2097,7 +2165,7 @@ impl<'source> Parser<'source> {
             self.error_at_current("empty braces are invalid");
             self.bump();
             self.finish();
-        } else if self.looks_like_record(position) {
+        } else if self.kind_at(position) == TokenKind::DotDot || self.looks_like_record(position) {
             self.parse_record();
         } else {
             self.parse_block();
@@ -2127,20 +2195,41 @@ impl<'source> Parser<'source> {
         }
     }
 
+    /// Parses a record literal or a record update `{ ..base, field: value }`.
+    /// Ensures: a leading `..base` is a `RecordSpread` child; a spread anywhere else is
+    /// `S1001` and is still parsed as a `RecordSpread` so lowering sees the base.
     fn parse_record(&mut self) {
         self.start(NodeKind::RecordExpression);
         self.expect(TokenKind::LeftBrace);
         self.skip_newlines();
-        self.parse_record_field();
+        if self.at(TokenKind::DotDot) {
+            self.parse_record_spread();
+        } else {
+            self.parse_record_field();
+        }
         while self.accept(TokenKind::Comma) {
             self.skip_newlines();
             if self.at(TokenKind::RightBrace) {
                 break;
             }
-            self.parse_record_field();
+            if self.at(TokenKind::DotDot) {
+                self.error_at_current(
+                    "`..base` must come first in a record update and appear once; move it to the start",
+                );
+                self.parse_record_spread();
+            } else {
+                self.parse_record_field();
+            }
         }
         self.skip_newlines();
         self.expect(TokenKind::RightBrace);
+        self.finish();
+    }
+
+    fn parse_record_spread(&mut self) {
+        self.start(NodeKind::RecordSpread);
+        self.bump();
+        self.parse_expression();
         self.finish();
     }
 

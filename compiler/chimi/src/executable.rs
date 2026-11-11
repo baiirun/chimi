@@ -965,6 +965,12 @@ fn collect_reachable_expression(
                 visit(&field.value);
             }
         }
+        ModuleExpression::Update { base, fields, .. } => {
+            visit(base);
+            for field in fields {
+                visit(&field.value);
+            }
+        }
         ModuleExpression::Binary { left, right, .. } => {
             visit(left);
             visit(right);
@@ -1235,6 +1241,12 @@ impl CoreLowerer {
             ModuleExpression::Interpolation { parts, .. } => {
                 self.interpolation(module_id, expression, parts)
             }
+            ModuleExpression::Update {
+                semantic_id,
+                base,
+                fields,
+                ..
+            } => self.update(module_id, *semantic_id, base, fields),
             ModuleExpression::Record { fields, .. } => CoreOperation::Record(
                 fields
                     .iter()
@@ -1593,6 +1605,110 @@ impl CoreLowerer {
             .collect()
     }
 
+    /// Lowers `{ ..base, f: v }` to a sequence that binds the base, then each value in
+    /// source order, and ends with a construction of the base's type whose fields
+    /// read either the bound value or the base's field.
+    fn update(
+        &mut self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        base: &ModuleExpression,
+        fields: &[crate::semantic::RecordValueField],
+    ) -> CoreOperation {
+        let shape = self.typed.record_updates[&(module_id, semantic_id)].clone();
+        let temporary = |lowerer: &Self, origin: SemanticId| {
+            lowerer
+                .typed
+                .resolved
+                .source_symbol(
+                    module_id,
+                    origin,
+                    ProjectSymbolKind::PatternBinding,
+                    crate::resolution::UPDATE_TEMPORARY,
+                )
+                .expect("resolution defines update temporaries")
+        };
+        let base_symbol = temporary(self, semantic_id);
+        let base_type = self.typed.expression_facts[&(module_id, base.semantic_id())].success;
+        let mut steps = vec![CoreStep::Bind {
+            symbol: base_symbol,
+            value: self.expression(module_id, base),
+        }];
+        let mut values = Vec::new();
+        for field in fields {
+            let symbol = temporary(self, field.value.semantic_id());
+            steps.push(CoreStep::Bind {
+                symbol,
+                value: self.expression(module_id, &field.value),
+            });
+            values.push(symbol);
+        }
+        let mut arguments = Vec::new();
+        for (name, type_id, replacement) in &shape.fields {
+            let value = match replacement {
+                Some(index) => self.push_typed_node(
+                    module_id,
+                    semantic_id,
+                    *type_id,
+                    CoreOperation::Reference(values[*index]),
+                ),
+                None => {
+                    let receiver = self.push_typed_node(
+                        module_id,
+                        semantic_id,
+                        base_type,
+                        CoreOperation::Reference(base_symbol),
+                    );
+                    self.push_typed_node(
+                        module_id,
+                        semantic_id,
+                        *type_id,
+                        CoreOperation::Select {
+                            receiver,
+                            member: name.clone(),
+                        },
+                    )
+                }
+            };
+            arguments.push((name.clone(), value));
+        }
+        let construction = match shape.constructor {
+            Some(constructor) => CoreOperation::Construct {
+                constructor,
+                arguments: arguments.into_iter().map(|(_, value)| value).collect(),
+            },
+            None => CoreOperation::Record(
+                arguments
+                    .into_iter()
+                    .map(|(name, value)| CoreField { name, value })
+                    .collect(),
+            ),
+        };
+        let result_type = self.typed.expression_facts[&(module_id, semantic_id)].success;
+        let construction = self.push_typed_node(module_id, semantic_id, result_type, construction);
+        steps.push(CoreStep::Expression(construction));
+        CoreOperation::Sequence(steps)
+    }
+
+    /// A node with the origin of `semantic_id` but its own type, for the parts of a
+    /// lowering that have no source expression of their own.
+    fn push_typed_node(
+        &mut self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        type_id: TypeId,
+        operation: CoreOperation,
+    ) -> CoreNodeId {
+        let id = CoreNodeId::new(self.nodes.len() as u32);
+        self.nodes.push(CoreNode {
+            id,
+            origin: self.origin_ids[&(module_id, semantic_id)],
+            type_id,
+            operation,
+        });
+        id
+    }
+
     fn push_node(
         &mut self,
         module_id: ModuleId,
@@ -1753,6 +1869,12 @@ impl CoreLowerer {
                     }
                 }
                 ModuleExpression::Record { fields, .. } => {
+                    for field in fields {
+                        collect(lowerer, module_id, &field.value, captures);
+                    }
+                }
+                ModuleExpression::Update { base, fields, .. } => {
+                    collect(lowerer, module_id, base, captures);
                     for field in fields {
                         collect(lowerer, module_id, &field.value, captures);
                     }

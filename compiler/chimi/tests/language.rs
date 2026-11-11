@@ -5109,3 +5109,261 @@ fn a_wildcard_failure_arm_handles_every_failure() {
     assert!(codes.is_empty(), "{codes:?}");
     assert_eq!(contract.as_deref(), Some("fn(Int) -> Text"));
 }
+
+// Record update (patterns-and-function-clauses.md, "Record update").
+
+const CONFIG: &str = concat!(
+    "struct Config {\n",
+    "  name: Text\n",
+    "  jobs: Int\n",
+    "  verbose: Bool\n",
+    "}\n",
+);
+
+fn update_codes(update: &str) -> Vec<String> {
+    check_codes(&format!(
+        "{CONFIG}fn change(config: Config) -> Config {{\n  {update}\n}}\npub fn main() -> Int {{ change(Config(\"a\", 1, False)).jobs }}\n"
+    ))
+}
+
+// RU-01, and a record base: the result has the base's type and keeps every
+// unnamed field.
+#[test]
+fn an_update_copies_the_base_and_replaces_named_fields() {
+    let source = format!(
+        "{CONFIG}{}",
+        concat!(
+            "fn with_jobs(config: Config, jobs: Int) -> Config {\n",
+            "  { ..config, jobs: jobs }\n",
+            "}\n",
+            "pub fn main() -> List<Text> {\n",
+            "  let base = Config(\"build\", 2, False)\n",
+            "  let updated = { ..with_jobs(base, 4), verbose: True }\n",
+            "  let point = { x: 1, y: 2 }\n",
+            "  let moved = { ..point, y: 5 }\n",
+            "  [\n",
+            "    Debug.render(updated),\n",
+            "    Debug.render(base),\n",
+            "    Debug.render(moved),\n",
+            "  ]\n",
+            "}\n",
+        )
+    );
+    let source = format!("import std/debug as Debug\n{source}");
+    let outcome = run_both("record-update", &source);
+    assert!(
+        outcome.contains("Config { name: \\\"build\\\", jobs: 4, verbose: True }"),
+        "{outcome}"
+    );
+    assert!(
+        outcome.contains("Config { name: \\\"build\\\", jobs: 2, verbose: False }"),
+        "{outcome}"
+    );
+    assert!(outcome.contains("x: 1, y: 5"), "{outcome}");
+}
+
+// RU-02
+#[test]
+fn an_update_cannot_name_an_unknown_field() {
+    assert_eq!(update_codes("{ ..config, job: 4 }"), ["T4205"]);
+    assert_eq!(
+        check_codes(concat!(
+            "pub fn main() -> Int {\n",
+            "  let point = { x: 1 }\n",
+            "  { ..point, y: 2 }.x\n",
+            "}\n",
+        )),
+        ["T4205"]
+    );
+}
+
+// RU-03
+#[test]
+fn an_update_names_each_field_once() {
+    assert_eq!(update_codes("{ ..config, jobs: 1, jobs: 2 }"), ["T4211"]);
+}
+
+// RU-04
+#[test]
+fn an_update_keeps_each_field_type() {
+    assert_eq!(update_codes("{ ..config, jobs: \"four\" }"), ["T4203"]);
+}
+
+// RU-05
+#[test]
+fn an_update_without_fields_is_the_base() {
+    let source = format!(
+        "{CONFIG}fn change(config: Config) -> Config {{\n  {{ ..config }}\n}}\npub fn main() -> Int {{ change(Config(\"a\", 1, False)).jobs }}\n"
+    );
+    let module = ProjectSource::new(
+        "main",
+        SourceSnapshot::from_text("main.chimi", source.as_str()),
+    )
+    .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let codes = report
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code())
+        .collect::<Vec<_>>();
+    assert_eq!(codes, ["L2022"]);
+    assert_eq!(report.diagnostics()[0].fixes()[0].replacement(), "config");
+}
+
+// RU-06
+#[test]
+fn only_structs_and_records_can_be_updated() {
+    assert_eq!(
+        check_codes(concat!(
+            "pub fn main() -> Option<Int> {\n",
+            "  let value = Some(1)\n",
+            "  { ..value, value: 2 }\n",
+            "}\n",
+        )),
+        ["T4284"]
+    );
+}
+
+// RU-07
+#[test]
+fn an_update_of_another_modules_struct_is_private() {
+    let config = ProjectSource::new(
+        "config",
+        SourceSnapshot::from_text(
+            "config.chimi",
+            concat!(
+                "pub struct Config {\n",
+                "  jobs: Int\n",
+                "}\n",
+                "pub fn default() -> Config { Config(1) }\n",
+            ),
+        ),
+    )
+    .expect("valid module path");
+    let main = ProjectSource::new(
+        "main",
+        SourceSnapshot::from_text(
+            "main.chimi",
+            concat!(
+                "import config as Config\n",
+                "pub fn main() -> Int {\n",
+                "  let changed = { ..Config.default(), jobs: 4 }\n",
+                "  0\n",
+                "}\n",
+            ),
+        ),
+    )
+    .expect("valid module path");
+    let codes = Compiler::type_project(vec![config, main])
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(codes, ["E_PRIVATE_STRUCT_CONSTRUCTOR"]);
+}
+
+// RU-08 and a misplaced spread: both are syntax errors that teach the braced form.
+#[test]
+fn a_positional_or_misplaced_update_is_a_syntax_error() {
+    let messages = coded_messages(&format!(
+        "{CONFIG}fn change(base: Config, jobs: Int) -> Config {{\n  Config(..base, jobs)\n}}\npub fn main() -> Int {{ 0 }}\n"
+    ));
+    assert!(
+        messages
+            .iter()
+            .any(|(code, message)| code == "S1001" && message.contains("`{ ..base, jobs: jobs }`")),
+        "{messages:?}"
+    );
+    let messages = coded_messages(&format!(
+        "{CONFIG}fn change(base: Config) -> Config {{\n  {{ jobs: 1, ..base }}\n}}\npub fn main() -> Int {{ 0 }}\n"
+    ));
+    assert!(
+        messages
+            .iter()
+            .any(|(code, message)| code == "S1001" && message.contains("must come first")),
+        "{messages:?}"
+    );
+}
+
+// RU-09: the base evaluates first, then the values left to right; a failure stops
+// the update.
+#[test]
+fn an_update_evaluates_the_base_then_each_value_in_order() {
+    let program = |base: &str, first: &str, second: &str| {
+        format!(
+            concat!(
+                "{}",
+                "enum Step {{\n",
+                "  Base\n",
+                "  First\n",
+                "  Second\n",
+                "}}\n",
+                "fn base(fails: Bool) -> Config {{\n",
+                "  case fails {{\n",
+                "    True -> Failure(Step.Base)\n",
+                "    False -> Config(\"a\", 1, False)\n",
+                "  }}\n",
+                "}}\n",
+                "fn jobs(fails: Bool) -> Int {{\n",
+                "  case fails {{\n",
+                "    True -> Failure(Step.First)\n",
+                "    False -> 2\n",
+                "  }}\n",
+                "}}\n",
+                "fn verbose(fails: Bool) -> Bool {{\n",
+                "  case fails {{\n",
+                "    True -> Failure(Step.Second)\n",
+                "    False -> True\n",
+                "  }}\n",
+                "}}\n",
+                "pub fn main() -> Int {{\n",
+                "  let updated = {{ ..base({}), verbose: verbose({}), jobs: jobs({}) }}\n",
+                "  updated.jobs\n",
+                "}}\n",
+            ),
+            CONFIG, base, second, first
+        )
+    };
+    let failure = |variant: &str| {
+        format!(
+            "\"outcome\":\"expected_failure\",\"error\":{{\"type\":\"Step\",\"variant\":\"{variant}\",\"fields\":{{}}}}"
+        )
+    };
+    assert_eq!(
+        run_both("update-order-base", &program("True", "True", "True")),
+        failure("Base")
+    );
+    assert_eq!(
+        run_both("update-order-values", &program("False", "True", "True")),
+        failure("Second")
+    );
+    assert_eq!(
+        run_both("update-order-success", &program("False", "False", "False")),
+        "\"outcome\":\"success\",\"value\":2"
+    );
+}
+
+// RU-10: updating one method of a provider value keeps the interface type.
+#[test]
+fn an_update_of_a_provider_keeps_the_interface_type() {
+    let source = concat!(
+        "interface Payment {\n",
+        "  charge: fn(Int) -> Bool\n",
+        "}\n",
+        "fn charge_with(payment: Payment, amount: Int) -> Bool {\n",
+        "  payment.charge(amount)\n",
+        "}\n",
+        "fn declined() -> Bool needs { payment: Payment } {\n",
+        "  let failing = { ..payment, charge: fn(_amount: Int) { False } }\n",
+        "  charge_with(failing, 3)\n",
+        "}\n",
+        "const approving = { charge: fn(_amount: Int) { True } }\n",
+        "pub fn main() -> List<Bool> {\n",
+        "  [declined() using { payment: approving }, approving.charge(1)]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("update-provider", source),
+        "\"outcome\":\"success\",\"value\":[false,true]"
+    );
+}

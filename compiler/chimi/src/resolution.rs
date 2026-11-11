@@ -1570,6 +1570,32 @@ impl ProjectResolver {
                     self.resolve_expression(module_index, &field.value, generics, scope);
                 }
             }
+            ModuleExpression::Update {
+                semantic_id,
+                base,
+                fields,
+                ..
+            } => {
+                self.resolve_expression(module_index, base, generics, scope);
+                for field in fields {
+                    self.resolve_expression(module_index, &field.value, generics, scope);
+                }
+                // Core lowering binds the base and each value to these locals so the
+                // copy reads the base once and keeps source evaluation order.
+                let module_id = self.semantic.modules[module_index].id;
+                for origin in std::iter::once(*semantic_id)
+                    .chain(fields.iter().map(|field| field.value.semantic_id()))
+                {
+                    self.add_symbol(
+                        Some(module_id),
+                        Some(origin),
+                        Namespace::Value,
+                        ProjectSymbolKind::PatternBinding,
+                        UPDATE_TEMPORARY,
+                        false,
+                    );
+                }
+            }
             ModuleExpression::Unary { operand, .. } => {
                 self.resolve_expression(module_index, operand, generics, scope);
             }
@@ -2421,6 +2447,9 @@ impl Scope {
         })
     }
 }
+
+/// The name of the locals a record update lowers through; no source name can spell it.
+pub(crate) const UPDATE_TEMPORARY: &str = "#update";
 
 fn resolve_local(
     local: Option<&Vec<SymbolId>>,

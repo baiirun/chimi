@@ -6,10 +6,15 @@ This is the normative contract for multi-clause functions (`L1`), list
 patterns (`G15`), tuple, literal, and struct patterns, failure-type patterns
 (`G26`), and record update (`G8`). The design ticket is `prog show ts-be39c0`.
 List patterns (`G15`) are implemented, including list coverage, the `T4231`
-witness, `L2021`, and the cost model below (`prog show ts-553107`). Nothing
-else here is implemented yet. Today a module allows one function per name
-(`E_DUPLICATE_SYMBOL`), and other patterns are limited to bindings, `_`,
-literals, and enum variants.
+witness, `L2021`, and the cost model below (`prog show ts-553107`).
+Multi-clause functions (`L1`), struct, alias, typed-binding, and negative
+literal patterns, failure-type patterns (`G26`), and record update (`G8`) are
+implemented (`prog show ts-e43af0`), with these gaps: a failure-type pattern
+may name only a closed enum, not one variant or a struct; full tracing
+identifies the selected clause through the arm body's events, not an
+attribute on the match event; and parameter conflicts that arise only from
+uses in clause bodies are reported as ordinary type mismatches, not `T4281`.
+Tuple patterns are not implemented yet.
 
 The words MUST, MUST NOT, SHOULD, and MAY are normative. Examples use
 positional construction. Examples that call standard-library modules beyond

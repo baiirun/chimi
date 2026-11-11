@@ -678,6 +678,14 @@ pub(crate) enum ModuleExpression {
         fields: Vec<RecordValueField>,
         range: TextRange,
     },
+    /// `{ ..base, field: value }`: a copy of `base` with the named fields replaced.
+    /// The base evaluates first, then the field values in source order.
+    Update {
+        semantic_id: SemanticId,
+        base: Box<Self>,
+        fields: Vec<RecordValueField>,
+        range: TextRange,
+    },
     Unary {
         semantic_id: SemanticId,
         operator: UnaryOperator,
@@ -781,6 +789,7 @@ impl ModuleExpression {
             | Self::Call { semantic_id, .. }
             | Self::List { semantic_id, .. }
             | Self::Record { semantic_id, .. }
+            | Self::Update { semantic_id, .. }
             | Self::Unary { semantic_id, .. }
             | Self::Binary { semantic_id, .. }
             | Self::Group { semantic_id, .. }
@@ -804,6 +813,7 @@ impl ModuleExpression {
             | Self::Call { range, .. }
             | Self::List { range, .. }
             | Self::Record { range, .. }
+            | Self::Update { range, .. }
             | Self::Unary { range, .. }
             | Self::Binary { range, .. }
             | Self::Group { range, .. }
@@ -1583,6 +1593,9 @@ impl ProjectLowerer {
                     .collect(),
                 range: significant_range(node),
             },
+            NodeKind::RecordExpression if direct_child(node, NodeKind::RecordSpread).is_some() => {
+                self.lower_update(node, semantic_id)
+            }
             NodeKind::RecordExpression => ModuleExpression::Record {
                 semantic_id,
                 fields: node
@@ -1710,6 +1723,57 @@ impl ProjectLowerer {
                     .collect(),
                 range: significant_range(node),
             },
+        }
+    }
+
+    /// Lowers `{ ..base, field: value }`. `{ ..base }` names no field and is `L2022`,
+    /// with a fix that replaces it by `base`; it lowers to the base alone.
+    fn lower_update(&mut self, node: &SyntaxNode<'_>, semantic_id: SemanticId) -> ModuleExpression {
+        let range = significant_range(node);
+        let spread = direct_child(node, NodeKind::RecordSpread).expect("an update has a spread");
+        let base_node = direct_expression_child(&spread);
+        let base = match &base_node {
+            Some(base) => self.lower_expression(base),
+            None => ModuleExpression::Empty {
+                semantic_id: self.allocate_semantic_id(),
+                range: significant_range(&spread),
+            },
+        };
+        let fields = node
+            .child_nodes()
+            .into_iter()
+            .filter(|child| child.kind() == NodeKind::RecordField)
+            .filter_map(|field| {
+                Some(RecordValueField {
+                    name: direct_identifier(&field)?,
+                    value: self.lower_expression(&direct_expression_child(&field)?),
+                })
+            })
+            .collect::<Vec<_>>();
+        if fields.is_empty() {
+            let mut diagnostic = Diagnostic::error(
+                DiagnosticStage::Lowering,
+                "L2022",
+                FileId::new(0),
+                range,
+                "an update must name at least one field; `{ ..base }` is `base`",
+            );
+            if let Some(base_node) = &base_node {
+                let text = base_node
+                    .descendant_tokens()
+                    .iter()
+                    .map(|token| token.text())
+                    .collect::<String>();
+                diagnostic = diagnostic.with_fix(range, text.trim());
+            }
+            self.diagnostics.push(diagnostic);
+            return base;
+        }
+        ModuleExpression::Update {
+            semantic_id,
+            base: Box::new(base),
+            fields,
+            range,
         }
     }
 

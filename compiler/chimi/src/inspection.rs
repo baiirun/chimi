@@ -681,6 +681,9 @@ fn expression_children(expression: &ModuleExpression) -> Vec<&ModuleExpression> 
         ModuleExpression::Record { fields, .. } => {
             fields.iter().map(|field| &field.value).collect()
         }
+        ModuleExpression::Update { base, fields, .. } => std::iter::once(base.as_ref())
+            .chain(fields.iter().map(|field| &field.value))
+            .collect(),
         ModuleExpression::Interpolation { parts, .. } => {
             crate::semantic::interpolated_expressions(parts).collect()
         }

@@ -279,6 +279,13 @@ impl CapabilityChecker<'_> {
                 .iter()
                 .map(|field| self.evaluate(module_id, &field.value, environment))
                 .fold(FlowValue::shareable(), FlowValue::combine),
+            ModuleExpression::Update { base, fields, .. } => {
+                let base = self.evaluate(module_id, base, environment);
+                fields
+                    .iter()
+                    .map(|field| self.evaluate(module_id, &field.value, environment))
+                    .fold(base, FlowValue::combine)
+            }
             ModuleExpression::Unary { operand, .. } => {
                 self.evaluate(module_id, operand, environment);
                 self.type_value(module_id, expression)
@@ -838,6 +845,9 @@ fn expression_children(expression: &ModuleExpression) -> Vec<&ModuleExpression> 
         ModuleExpression::Record { fields, .. } => {
             fields.iter().map(|field| &field.value).collect()
         }
+        ModuleExpression::Update { base, fields, .. } => std::iter::once(base.as_ref())
+            .chain(fields.iter().map(|field| &field.value))
+            .collect(),
         ModuleExpression::Interpolation { parts, .. } => {
             crate::semantic::interpolated_expressions(parts).collect()
         }

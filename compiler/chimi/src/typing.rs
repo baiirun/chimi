@@ -325,6 +325,8 @@ pub(crate) struct TypedProject {
     /// semantic id: the variants it covers with their field counts. Core lowering
     /// expands the pattern into one variant test per entry.
     pub(crate) failure_type_patterns: HashMap<(ModuleId, SemanticId), Vec<(SymbolId, usize)>>,
+    /// The result shape of each record update, by the update's semantic id.
+    pub(crate) record_updates: HashMap<(ModuleId, SemanticId), RecordUpdateShape>,
     /// A polymorphic callee's function type with this call's substitution
     /// applied, keyed by the callee expression. Monomorphic callees have none.
     pub(crate) callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
@@ -1060,6 +1062,7 @@ struct ProjectTypeChecker {
     declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
     failure_type_patterns: HashMap<(ModuleId, SemanticId), Vec<(SymbolId, usize)>>,
+    record_updates: HashMap<(ModuleId, SemanticId), RecordUpdateShape>,
     callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
     type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
     expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
@@ -1092,6 +1095,15 @@ struct CallSubstitution {
     values: HashMap<SymbolId, TypeId>,
     failures: HashMap<SymbolId, FailureRowId>,
     needs: HashMap<SymbolId, NeedsRowId>,
+}
+
+/// What a record update builds: the struct constructor, or `None` for a record or
+/// structural interface value, and every field of the base's type in its order,
+/// with its type and the index of the update entry that replaces it, if any.
+#[derive(Clone, Debug)]
+pub(crate) struct RecordUpdateShape {
+    pub(crate) constructor: Option<SymbolId>,
+    pub(crate) fields: Vec<(String, TypeId, Option<usize>)>,
 }
 
 /// What pattern checking needs besides the expected type.
@@ -1265,6 +1277,7 @@ impl ProjectTypeChecker {
             declaration_types: HashMap::new(),
             pattern_binding_types: HashMap::new(),
             failure_type_patterns: HashMap::new(),
+            record_updates: HashMap::new(),
             callee_instantiations: HashMap::new(),
             type_facts: HashMap::new(),
             expression_facts: HashMap::new(),
@@ -2192,6 +2205,12 @@ impl ProjectTypeChecker {
                 .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
                 .map(|(key, value)| (*key, value.clone()))
                 .collect(),
+            record_updates: previous
+                .record_updates
+                .iter()
+                .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
+                .map(|(key, value)| (*key, value.clone()))
+                .collect(),
             callee_instantiations: previous
                 .callee_instantiations
                 .iter()
@@ -2339,6 +2358,7 @@ impl ProjectTypeChecker {
             declaration_types: self.declaration_types,
             pattern_binding_types: self.pattern_binding_types,
             failure_type_patterns: self.failure_type_patterns,
+            record_updates: self.record_updates,
             callee_instantiations: self.callee_instantiations,
             type_facts: self.type_facts,
             expression_facts: self.expression_facts,
@@ -2950,6 +2970,12 @@ impl ProjectTypeChecker {
                     needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
                 }
             }
+            ModuleExpression::Update {
+                semantic_id,
+                base,
+                fields,
+                ..
+            } => self.infer_update(module_id, *semantic_id, base, fields, generics, bindings),
             ModuleExpression::Record { fields, .. } => {
                 let mut facts = Vec::new();
                 let mut structural_fields = Vec::new();
@@ -4632,6 +4658,155 @@ impl ProjectTypeChecker {
                 .collect();
         }
         rows
+    }
+
+    /// Types `{ ..base, field: value }`. The base must be a struct visible here, a
+    /// record, or a structural interface value (`T4284` otherwise); each named field
+    /// must exist (`T4205`), appear once (`T4211`), and keep its declared type
+    /// (`T4203`). The result has the base's type, and its failures and needs are the
+    /// union of the parts.
+    fn infer_update(
+        &mut self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        base: &ModuleExpression,
+        fields: &[crate::semantic::RecordValueField],
+        generics: &HashMap<String, SymbolId>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> ExpressionFact {
+        let base_fact = self.infer_expression(module_id, base, generics, bindings);
+        let mut facts = vec![base_fact];
+        let base_type = self.resolve_inference_type(base_fact.success);
+        let mut shape = self.update_shape(module_id, base, base_type);
+        let mut seen = Vec::<&str>::new();
+        for (index, field) in fields.iter().enumerate() {
+            let fact = self.infer_expression(module_id, &field.value, generics, bindings);
+            facts.push(fact);
+            let Some(shape) = shape.as_mut() else {
+                continue;
+            };
+            if seen.contains(&field.name.text.as_str()) {
+                self.type_error_range(
+                    module_id,
+                    "T4211",
+                    field.name.range,
+                    format!("update field `{}` occurs more than once", field.name.text),
+                );
+                continue;
+            }
+            seen.push(&field.name.text);
+            let Some(slot) = shape
+                .fields
+                .iter_mut()
+                .find(|(name, _, _)| *name == field.name.text)
+            else {
+                let base_name = self.type_display_name(base_type);
+                self.type_error_range(
+                    module_id,
+                    "T4205",
+                    field.name.range,
+                    format!(
+                        "`{base_name}` has no field `{}`; an update cannot add fields",
+                        field.name.text
+                    ),
+                );
+                continue;
+            };
+            slot.2 = Some(index);
+            let declared = slot.1;
+            if !self.unify(fact.success, declared) {
+                let expected = self.type_display_name(declared);
+                let found = self.type_display_name(fact.success);
+                self.type_error_range(
+                    module_id,
+                    "T4203",
+                    expression_range(&field.value),
+                    format!(
+                        "field `{}` has type `{expected}`, not `{found}`; an update keeps the base's type",
+                        field.name.text
+                    ),
+                );
+            }
+        }
+        if let Some(shape) = shape {
+            self.record_updates.insert((module_id, semantic_id), shape);
+        }
+        ExpressionFact {
+            success: base_fact.success,
+            failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
+            needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+        }
+    }
+
+    /// The fields an update of a `base_type` value rebuilds, reporting `T4284` for a
+    /// base that is not a struct, record, or interface, and
+    /// `E_PRIVATE_STRUCT_CONSTRUCTOR` for a struct of another module.
+    fn update_shape(
+        &mut self,
+        module_id: ModuleId,
+        base: &ModuleExpression,
+        base_type: TypeId,
+    ) -> Option<RecordUpdateShape> {
+        let constructor = match self.types[base_type.raw() as usize].clone() {
+            CanonicalType::Record(_) => None,
+            CanonicalType::Poison => return None,
+            CanonicalType::Named { symbol, .. } => {
+                let declaration = self.resolved.symbol(symbol).clone();
+                match declaration.kind {
+                    ProjectSymbolKind::Interface => None,
+                    ProjectSymbolKind::Struct => {
+                        if declaration.module_id != Some(module_id) {
+                            self.diagnostics.push(Diagnostic::error(
+                                DiagnosticStage::Type,
+                                "E_PRIVATE_STRUCT_CONSTRUCTOR",
+                                self.resolved.semantic.modules[module_id.raw() as usize]
+                                    .source
+                                    .file_id(),
+                                expression_range(base),
+                                format!(
+                                    "`{}` has module-private fields, so only its own module can update it; use the module's public functions",
+                                    declaration.name
+                                ),
+                            ));
+                            return None;
+                        }
+                        Some(self.find_symbol(
+                            declaration.module_id?,
+                            declaration.semantic_id,
+                            ProjectSymbolKind::StructConstructor,
+                            &declaration.name,
+                        )?)
+                    }
+                    _ => return self.reject_update_base(module_id, base, base_type),
+                }
+            }
+            _ => return self.reject_update_base(module_id, base, base_type),
+        };
+        let fields = self
+            .type_fields(base_type)?
+            .into_iter()
+            .map(|field| (field.name, field.type_id, None))
+            .collect();
+        Some(RecordUpdateShape {
+            constructor,
+            fields,
+        })
+    }
+
+    fn reject_update_base(
+        &mut self,
+        module_id: ModuleId,
+        base: &ModuleExpression,
+        base_type: TypeId,
+    ) -> Option<RecordUpdateShape> {
+        let name = self.type_display_name(base_type);
+        self.type_error_range(
+            module_id,
+            "T4284",
+            expression_range(base),
+            format!("only a struct or record value can be updated, and this is `{name}`"),
+        );
+        None
     }
 
     /// `T4282`: a clause parameter never holds a live outcome, because callers
