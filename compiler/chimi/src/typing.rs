@@ -4180,6 +4180,23 @@ impl ProjectTypeChecker {
         if left_type == poison || right_type == poison {
             return;
         }
+        // A member value widens to its failure set, so the comparison is at
+        // the set type.
+        let widened = self
+            .failure_set_holding(left_type, right_type)
+            .or_else(|| self.failure_set_holding(right_type, left_type));
+        if let Some(set) = widened {
+            self.property_checks.push(PropertyCheck {
+                module_id,
+                type_id: set,
+                property,
+                site: PropertySite::Operator {
+                    range,
+                    operator: symbol,
+                },
+            });
+            return;
+        }
         if !self.unify(left.success, right.success) {
             let (left_name, right_name) = (
                 self.type_display_name(left_type),
@@ -4214,6 +4231,34 @@ impl ProjectTypeChecker {
                 operator: symbol,
             },
         });
+    }
+
+    /// `set` when it is a closed failure set that holds every variant of the
+    /// enum `member`, so a `member` value widens to it.
+    fn failure_set_holding(&self, set: TypeId, member: TypeId) -> Option<TypeId> {
+        let CanonicalType::FailureSetValue(failures) = &self.types[set.raw() as usize] else {
+            return None;
+        };
+        let CanonicalType::Named { symbol, arguments } = &self.types[member.raw() as usize] else {
+            return None;
+        };
+        let is_enum = self.resolved.symbol(*symbol).kind == ProjectSymbolKind::Enum
+            || matches!(
+                self.resolved.standard_symbol(*symbol),
+                Some(StandardSymbol::Type(kind)) if kind.is_failure_enum()
+            );
+        if !is_enum {
+            return None;
+        }
+        let row = &self.failure_rows[failures.raw() as usize];
+        let variants = self.enum_variant_symbols(*symbol);
+        (row.parameters.is_empty()
+            && arguments.is_empty()
+            && !variants.is_empty()
+            && variants
+                .iter()
+                .all(|variant| row.variants.contains(variant)))
+        .then_some(set)
     }
 
     fn type_view(&self) -> TypeView<'_> {

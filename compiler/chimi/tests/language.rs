@@ -4158,6 +4158,61 @@ fn failure_set_values_of_different_enums_are_never_equal() {
     );
 }
 
+// A member value widens to its failure set for `==`, on either side.
+#[test]
+fn a_failure_set_value_compares_with_a_member_value() {
+    let source = concat!(
+        "enum E {\n  A\n  B(n: Int)\n}\n",
+        "enum F {\n  C\n}\n",
+        "fn fail(x: Int) -> Int {\n",
+        "  case x {\n",
+        "    0 -> Failure(E.A)\n",
+        "    1 -> Failure(E.B(1))\n",
+        "    _ -> Failure(F.C)\n",
+        "  }\n",
+        "}\n",
+        "fn check(x: Int) -> List<Bool> {\n",
+        "  case fail(x) {\n",
+        "    Failure(e) -> [e == E.B(1), F.C == e, e != E.A]\n",
+        "    Success(_) -> []\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<List<Bool>> { [check(0), check(1), check(2)] }\n",
+    );
+    assert_eq!(
+        run_both("failure-set-member-equality", source),
+        concat!(
+            "\"outcome\":\"success\",\"value\":",
+            "[[false,false,false],[true,false,true],[false,true,true]]"
+        )
+    );
+    // Widening goes only to a set that holds the member's whole enum.
+    let outside = concat!(
+        "enum E {\n  A\n}\n",
+        "enum F {\n  C\n}\n",
+        "enum G {\n  D\n}\n",
+        "fn fail(x: Int) -> Int {\n",
+        "  case x {\n",
+        "    0 -> Failure(E.A)\n",
+        "    _ -> Failure(F.C)\n",
+        "  }\n",
+        "}\n",
+        "fn check(x: Int) -> Bool {\n",
+        "  case fail(x) {\n",
+        "    Failure(e) -> e == G.D\n",
+        "    Success(_) -> False\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Bool { check(0) }\n",
+    );
+    assert_eq!(check_codes(outside), ["T4302"]);
+    // A non-enum operand is a plain mismatch.
+    assert_eq!(
+        check_codes(&outside.replace("e == G.D", "e == 1")),
+        ["T4302"]
+    );
+}
+
 // E5: maps compare by entries, whatever their insertion order.
 #[test]
 fn maps_built_in_different_orders_are_equal() {
