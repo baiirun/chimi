@@ -7647,7 +7647,7 @@ fn tuples_render_in_parentheses() {
 // exactly the listed diagnostics.
 #[test]
 fn tuple_and_binding_patterns_report_their_diagnostics() {
-    let cases: [(&str, &[&str]); 12] = [
+    let cases: [(&str, &[&str]); 14] = [
         // T3
         (
             "fn f(pair: (Int, Text)) -> Text {\n  case pair {\n    (0, name) -> name\n  }\n}\n",
@@ -7667,6 +7667,15 @@ fn tuple_and_binding_patterns_report_their_diagnostics() {
         ("fn f() -> Int {\n  let x = (1,)\n  1\n}\n", &["S1005"]),
         ("fn f() -> Int {\n  let x = ()\n  1\n}\n", &["S1005"]),
         ("fn f(x: (Int)) -> Int {\n  1\n}\n", &["S1005"]),
+        // A rejected `()` or `(p,)` pattern adds no tuple-shape follow-on (T4230).
+        (
+            "fn f(x: Void) -> Int {\n  case x {\n    () -> 1\n  }\n}\n",
+            &["S1005"],
+        ),
+        (
+            "fn f(x: Int) -> Int {\n  case x {\n    (y,) -> y\n  }\n}\n",
+            &["S1005"],
+        ),
         // T7: `(e)` is a group, not a tuple.
         ("fn f() -> Int {\n  (1)\n}\n", &[]),
         // TP-02
@@ -7697,6 +7706,22 @@ fn tuple_and_binding_patterns_report_their_diagnostics() {
     ];
     for (source, expected) in cases {
         assert_eq!(check_codes(source), expected, "{source}");
+    }
+}
+
+// T6: `()` is rejected with a message that points to `Void`, in an expression
+// and in a pattern.
+#[test]
+fn unit_parentheses_suggest_void() {
+    for source in [
+        "fn f() -> Int {\n  let x = ()\n  1\n}\n",
+        "fn f(x: Void) -> Int {\n  case x {\n    () -> 1\n  }\n}\n",
+    ] {
+        let diagnostics = coded_messages(source);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        let (code, message) = &diagnostics[0];
+        assert_eq!(code, "S1005");
+        assert!(message.contains("`Void`"), "{message}");
     }
 }
 

@@ -2584,9 +2584,11 @@ impl ProjectLowerer {
                 return self.lower_list_pattern(semantic_id, &children, range);
             }
             TokenKind::LeftParen => {
-                let tuple = tokens.iter().any(|token| token.kind() == TokenKind::Comma);
+                // The parser rejects `()` and `(p,)` with `S1005`; they lower to what
+                // they hold so typing adds no follow-on tuple-shape error.
                 return match children.as_slice() {
-                    [only] if !tuple => self.lower_pattern(only),
+                    [] => Pattern::Wildcard { semantic_id, range },
+                    [only] => self.lower_pattern(only),
                     _ => Pattern::Tuple {
                         semantic_id,
                         elements: children
