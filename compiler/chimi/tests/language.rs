@@ -786,6 +786,135 @@ fn a_standard_failure_row_admits_only_its_own_variants() {
     assert_eq!(check_codes(&program("ConsoleError", invalid)), ["T4203"]);
 }
 
+// ts-4d9023: a function value argument may expose fewer failures and needs than
+// its parameter's function type declares (executable-kernel, "Functions and
+// Callable Contracts"), as a `using` provider may.
+#[test]
+fn a_function_argument_may_fail_with_fewer_variants_than_its_parameter_declares() {
+    let outcome = run_both(
+        "narrower-argument-row",
+        concat!(
+            "enum Oops {\n",
+            "  Bad\n",
+            "  Worse\n",
+            "}\n",
+            "fn run(f: fn() -> Int errors Oops) -> Int {\n",
+            "  case f() {\n",
+            "    Success(v) -> v\n",
+            "    Failure(Bad) -> 100\n",
+            "    Failure(Worse) -> 200\n",
+            "  }\n",
+            "}\n",
+            "fn with_k<F>(k: fn(fn() -> Int errors F) -> Int errors F) -> Int { k(fn() { 4 }) }\n",
+            "fn bad() -> Int { Failure(Oops.Bad) }\n",
+            "pub fn main() -> Int {\n",
+            "  run(fn() { 3 }) + run(bad) + with_k(fn(g) { g() + 1 })\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":108");
+}
+
+// A generic row parameter met by several function arguments is their union.
+#[test]
+fn a_generic_failure_row_bound_by_several_function_arguments_is_their_union() {
+    let outcome = run_both(
+        "union-argument-rows",
+        concat!(
+            "enum Oops {\n",
+            "  Bad\n",
+            "}\n",
+            "fn zero() -> Int { 0 }\n",
+            "fn failing() -> Int { Failure(Oops.Bad) }\n",
+            "fn both<E>(f: fn() -> Int errors E, g: fn() -> Int errors E) -> Int { f() + g() }\n",
+            "pub fn main() -> Int {\n",
+            "  let first = case both(zero, failing) {\n",
+            "    Success(v) -> v\n",
+            "    Failure(Bad) -> 7\n",
+            "  }\n",
+            "  let second = case both(failing, zero) {\n",
+            "    Success(v) -> v\n",
+            "    Failure(Bad) -> 30\n",
+            "  }\n",
+            "  first + second\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":37");
+}
+
+#[test]
+fn a_function_argument_may_need_fewer_dependencies_than_its_parameter_declares() {
+    let outcome = run_both(
+        "narrower-argument-needs",
+        concat!(
+            "interface Scale {\n",
+            "  apply: fn(Int) -> Int\n",
+            "}\n",
+            "interface Offset {\n",
+            "  add: fn(Int) -> Int\n",
+            "}\n",
+            "fn twice(step: fn(Int) -> Int needs { scale: Scale, offset: Offset }, value: Int) -> Int\n",
+            "  needs { scale: Scale, offset: Offset } {\n",
+            "  step(step(value))\n",
+            "}\n",
+            "fn scaled(value: Int) -> Int needs { scale: Scale } { scale.apply(value) }\n",
+            "pub fn main() -> Int {\n",
+            "  twice(scaled, 5) using {\n",
+            "    scale: { apply: fn(value: Int) { value * 3 } },\n",
+            "    offset: { add: fn(value: Int) { value + 1 } },\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":45");
+}
+
+// Soundness: a wider row is still rejected, whether the parameter's row is
+// closed or a generic that another position fixes exactly.
+#[test]
+fn a_function_argument_with_a_wider_row_is_rejected() {
+    let header = concat!(
+        "enum Oops {\n",
+        "  Bad\n",
+        "}\n",
+        "interface Scale {\n",
+        "  apply: fn(Int) -> Int\n",
+        "}\n",
+        "fn failing() -> Int { Failure(Oops.Bad) }\n",
+        "fn safe(g: fn() -> Int) -> Int { g() }\n",
+        "fn scaled() -> Int needs { scale: Scale } { scale.apply(1) }\n",
+    );
+    let codes = |body: &str| check_codes(&format!("{header}{body}"));
+    assert_eq!(
+        codes("fn run(f: fn() -> Int) -> Int { f() }\npub fn main() -> Int { run(failing) }\n"),
+        ["T4203"]
+    );
+    assert_eq!(
+        codes("fn run(f: fn() -> Int) -> Int { f() }\npub fn main() -> Int { run(scaled) }\n"),
+        ["T4203"]
+    );
+    // The handler fixes `E` as the empty row, so `failing` cannot widen it.
+    assert_eq!(
+        codes(concat!(
+            "fn apply<E>(handler: fn(fn() -> Int errors E) -> Int, f: fn() -> Int errors E) -> Int {\n",
+            "  handler(f)\n",
+            "}\n",
+            "pub fn main() -> Int { apply(safe, failing) }\n",
+        )),
+        ["T4203"]
+    );
+    assert_eq!(
+        codes(concat!(
+            "fn apply<E>(f: fn() -> Int errors E, handler: fn(fn() -> Int errors E) -> Int) -> Int {\n",
+            "  handler(f)\n",
+            "}\n",
+            "pub fn main() -> Int { apply(failing, safe) }\n",
+        )),
+        ["T4203"]
+    );
+}
+
 // A grouping parenthesis keeps the space after an operator or keyword; only a
 // call, index, or parameter list attaches to the token before it.
 #[test]

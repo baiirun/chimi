@@ -275,6 +275,17 @@ state the contract expected from a function value. Higher-order contracts MUST
 preserve relationships expressed through their declared generic type, failure-
 row, and needs-row parameters.
 
+A function value passed as a call argument MAY expose fewer failures and fewer
+needs than the parameter's function type declares, as a `using` provider's
+method may: `run(fn() { 3 })` is accepted for `run(f: fn() -> Int errors
+Oops)`. Its inputs and success type still match exactly, and a failure or need
+outside the declared rows is rejected with `T4203`. A failure-row or needs-row
+parameter that only function arguments' rows bind is their union, so
+`both(zero, failing)` with `both<E>(f: fn() -> Int errors E, g: fn() -> Int
+errors E)` binds `E` to `failing`'s row. A row parameter that another position
+fixes exactly, such as the row of a function a callback receives, stays that
+row, and every function argument's row must fit within it.
+
 ## Expressions
 
 Every function body and nested block is an expression. A block contains one or

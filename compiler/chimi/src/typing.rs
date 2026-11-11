@@ -1181,6 +1181,11 @@ struct CallSubstitution {
     values: HashMap<SymbolId, TypeId>,
     failures: HashMap<SymbolId, FailureRowId>,
     needs: HashMap<SymbolId, NeedsRowId>,
+    /// Row parameters bound so far only by the row of a function argument. Such a
+    /// binding is a lower bound: a later function argument widens it to the union,
+    /// and any exact use fixes it.
+    widenable_failures: HashSet<SymbolId>,
+    widenable_needs: HashSet<SymbolId>,
 }
 
 /// What a record update builds: the struct constructor, or `None` for a record or
@@ -7557,7 +7562,19 @@ impl ProjectTypeChecker {
         });
         for (argument, expected) in ordered {
             if let Some(substitution) = &mut substitution {
-                if !self.match_call_type(argument.success, expected, substitution) {
+                if !self.match_call_argument(argument.success, expected, substitution) {
+                    self.type_error_range(
+                        module_id,
+                        "T4203",
+                        range,
+                        "call argument has an incompatible type",
+                    );
+                }
+            } else if self.both_functions(argument.success, expected) {
+                if self
+                    .provider_member_conformance_error(argument.success, expected)
+                    .is_some()
+                {
                     self.type_error_range(
                         module_id,
                         "T4203",
@@ -8081,6 +8098,7 @@ impl ProjectTypeChecker {
         ) {
             (_, CanonicalType::Generic(parameter)) => {
                 if self.generic_kinds.get(&parameter) == Some(&GenericKind::FailureSet) {
+                    substitution.widenable_failures.remove(&parameter);
                     if let Some(bound) = substitution.failures.get(&parameter).copied() {
                         return self
                             .failure_row_for_type(actual)
@@ -8186,6 +8204,152 @@ impl ProjectTypeChecker {
         }
     }
 
+    fn both_functions(&mut self, actual: TypeId, expected: TypeId) -> bool {
+        let actual = self.resolve_inference_type(actual);
+        let expected = self.resolve_inference_type(expected);
+        matches!(
+            (
+                &self.types[actual.raw() as usize],
+                &self.types[expected.raw() as usize],
+            ),
+            (CanonicalType::Function(_), CanonicalType::Function(_))
+        )
+    }
+
+    /// Matches a call argument against its parameter type. A function value may
+    /// expose fewer failures and needs than the parameter's function type declares,
+    /// the rule a `using` provider follows; every nested position matches exactly.
+    fn match_call_argument(
+        &mut self,
+        actual: TypeId,
+        expected: TypeId,
+        substitution: &mut CallSubstitution,
+    ) -> bool {
+        let resolved_actual = self.resolve_inference_type(actual);
+        let resolved_expected = self.resolve_inference_type(expected);
+        let (CanonicalType::Function(actual_contract), CanonicalType::Function(expected_contract)) = (
+            self.types[resolved_actual.raw() as usize].clone(),
+            self.types[resolved_expected.raw() as usize].clone(),
+        ) else {
+            return self.match_call_type(actual, expected, substitution);
+        };
+        actual_contract.inputs.len() == expected_contract.inputs.len()
+            && actual_contract
+                .inputs
+                .into_iter()
+                .zip(expected_contract.inputs)
+                .all(|(actual, expected)| self.match_call_type(actual, expected, substitution))
+            && self.match_call_type(
+                actual_contract.success,
+                expected_contract.success,
+                substitution,
+            )
+            && self.match_call_failure_row_within(
+                actual_contract.failures,
+                expected_contract.failures,
+                substitution,
+            )
+            && self.match_call_needs_row_within(
+                actual_contract.needs,
+                expected_contract.needs,
+                substitution,
+            )
+    }
+
+    /// Whether failure row `actual` fits within `expected`. The failures outside
+    /// `expected`'s variants bind its row parameter as a widenable lower bound.
+    fn match_call_failure_row_within(
+        &mut self,
+        actual: FailureRowId,
+        expected: FailureRowId,
+        substitution: &mut CallSubstitution,
+    ) -> bool {
+        let actual_row = self.failure_rows[actual.raw() as usize].clone();
+        let expected_row = self.failure_rows[expected.raw() as usize].clone();
+        let [parameter] = expected_row.parameters.as_slice() else {
+            return expected_row.parameters.is_empty()
+                && self.failure_row_is_subset(actual, expected);
+        };
+        let variants = actual_row
+            .variants
+            .into_iter()
+            .filter(|variant| !expected_row.variants.contains(variant))
+            .collect::<Vec<_>>();
+        let variant_arguments = actual_row
+            .variant_arguments
+            .into_iter()
+            .filter(|arguments| variants.contains(&arguments.variant))
+            .collect();
+        let residual = self.intern_failure_row(FailureRow {
+            variants,
+            variant_arguments,
+            parameters: actual_row.parameters,
+            exclusions: actual_row.exclusions,
+        });
+        match substitution.failures.get(parameter).copied() {
+            None => {
+                substitution.failures.insert(*parameter, residual);
+                substitution.widenable_failures.insert(*parameter);
+                true
+            }
+            Some(bound) if substitution.widenable_failures.contains(parameter) => {
+                let widened = self.union_failure_rows([bound, residual]);
+                substitution.failures.insert(*parameter, widened);
+                true
+            }
+            Some(bound) => self.failure_row_is_subset(residual, bound),
+        }
+    }
+
+    /// Whether needs row `actual` fits within `expected`, binding `expected`'s row
+    /// parameter as `match_call_failure_row_within` does.
+    fn match_call_needs_row_within(
+        &mut self,
+        actual: NeedsRowId,
+        expected: NeedsRowId,
+        substitution: &mut CallSubstitution,
+    ) -> bool {
+        let actual_row = self.needs_rows[actual.raw() as usize].clone();
+        let expected_row = self.needs_rows[expected.raw() as usize].clone();
+        let mut remaining = Vec::new();
+        for need in actual_row.entries {
+            match expected_row
+                .entries
+                .iter()
+                .find(|expected| expected.lexical_name == need.lexical_name)
+            {
+                Some(expected) => {
+                    if !self.match_call_type(need.interface, expected.interface, substitution) {
+                        return false;
+                    }
+                }
+                None => remaining.push(need),
+            }
+        }
+        let [parameter] = expected_row.parameters.as_slice() else {
+            return expected_row.parameters.is_empty()
+                && remaining.is_empty()
+                && actual_row.parameters.is_empty();
+        };
+        let residual = self.intern_needs_row(NeedsRow {
+            entries: remaining,
+            parameters: actual_row.parameters,
+        });
+        match substitution.needs.get(parameter).copied() {
+            None => {
+                substitution.needs.insert(*parameter, residual);
+                substitution.widenable_needs.insert(*parameter);
+                true
+            }
+            Some(bound) if substitution.widenable_needs.contains(parameter) => {
+                let widened = self.union_needs_rows([bound, residual]);
+                substitution.needs.insert(*parameter, widened);
+                true
+            }
+            Some(bound) => self.needs_row_is_subset(residual, bound),
+        }
+    }
+
     fn match_call_failure_row(
         &mut self,
         actual: FailureRowId,
@@ -8219,7 +8383,12 @@ impl ProjectTypeChecker {
                     exclusions: actual.exclusions,
                 });
                 if let Some(bound) = substitution.failures.get(parameter).copied() {
-                    self.failure_rows_equivalent(bound, residual)
+                    if substitution.widenable_failures.remove(parameter) {
+                        substitution.failures.insert(*parameter, residual);
+                        self.failure_row_is_subset(bound, residual)
+                    } else {
+                        self.failure_rows_equivalent(bound, residual)
+                    }
                 } else {
                     substitution.failures.insert(*parameter, residual);
                     true
@@ -8258,7 +8427,12 @@ impl ProjectTypeChecker {
                     parameters: actual.parameters,
                 });
                 if let Some(bound) = substitution.needs.get(parameter).copied() {
-                    self.needs_rows_equivalent(bound, residual)
+                    if substitution.widenable_needs.remove(parameter) {
+                        substitution.needs.insert(*parameter, residual);
+                        self.needs_row_is_subset(bound, residual)
+                    } else {
+                        self.needs_rows_equivalent(bound, residual)
+                    }
                 } else {
                     substitution.needs.insert(*parameter, residual);
                     true
