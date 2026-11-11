@@ -40,13 +40,6 @@ impl ConstantLimits {
     };
 }
 
-/// The host stack of the thread that evaluates constants. The interpreter recurses on
-/// the host stack, a few frames per Core operation, so this must hold
-/// `ConstantLimits::BUILD.call_depth` nested calls of an ordinary function body even in
-/// an unoptimized compiler, which spends about 55 KiB of stack per call. Only the pages
-/// a deep evaluation touches are committed.
-const EVALUATION_STACK_BYTES: usize = 1 << 30;
-
 /// An operation build-time evaluation may refuse because it is not `pure`.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Operation {
@@ -128,19 +121,8 @@ pub(crate) fn evaluate_constants_with(
     if core.constant_initializers.is_empty() {
         return Ok(Vec::new());
     }
-    std::thread::scope(|scope| {
-        match std::thread::Builder::new()
-            .name("constant-evaluation".to_owned())
-            .stack_size(EVALUATION_STACK_BYTES)
-            .spawn_scoped(scope, || evaluate_on_this_thread(core, limits))
-        {
-            Ok(thread) => thread
-                .join()
-                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-            // A host that cannot reserve the stack, such as one under a small
-            // `ulimit -v`, still evaluates every constant that fits its own stack.
-            Err(_) => evaluate_on_this_thread(core, limits),
-        }
+    super::on_evaluation_stack("constant-evaluation", || {
+        evaluate_on_this_thread(core, limits)
     })
 }
 

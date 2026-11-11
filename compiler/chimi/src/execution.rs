@@ -622,8 +622,37 @@ enum Control {
     },
 }
 
+/// Runs a program on the reference interpreter, on a thread with a large stack.
 pub(crate) fn execute(core: &CoreProgram, config: ExecutionConfig) -> ExecutionReport {
-    Evaluator::new(core, config).execute()
+    on_evaluation_stack("execution", || {
+        Evaluator::new(core, config.clone()).execute()
+    })
+}
+
+/// The host stack of a thread that runs the interpreter. The interpreter recurses on
+/// the host stack, a few frames per Core operation, so this must hold
+/// `ConstantLimits::BUILD.call_depth` nested calls of an ordinary function body even in
+/// an unoptimized compiler, which spends about 55 KiB of stack per call. Only the pages
+/// a deep evaluation touches are committed.
+const EVALUATION_STACK_BYTES: usize = 1 << 30;
+
+/// Runs `evaluate` on a named thread with `EVALUATION_STACK_BYTES` of stack, so a
+/// program's recursion depth does not depend on the caller's thread. A host that
+/// cannot reserve the stack, such as one under a small `ulimit -v`, runs it on the
+/// current thread instead.
+fn on_evaluation_stack<T: Send>(name: &str, evaluate: impl Fn() -> T + Sync) -> T {
+    std::thread::scope(|scope| {
+        match std::thread::Builder::new()
+            .name(name.to_owned())
+            .stack_size(EVALUATION_STACK_BYTES)
+            .spawn_scoped(scope, &evaluate)
+        {
+            Ok(thread) => thread
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            Err(_) => evaluate(),
+        }
+    })
 }
 
 struct Evaluator<'core> {

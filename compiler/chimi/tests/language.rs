@@ -5811,6 +5811,24 @@ fn recursion_through_clauses_refers_to_the_whole_group() {
     );
 }
 
+// ts-65f575: `chimi run` holds as deep a recursion as a native build does.
+#[test]
+fn deep_runtime_recursion_completes_on_both_backends() {
+    let source = concat!(
+        "fn count(n: Int) -> Int {\n",
+        "  case n == 0 {\n",
+        "    True -> 0\n",
+        "    False -> 1 + count(n - 1)\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { count(5000) }\n",
+    );
+    assert_eq!(
+        run_both("deep-recursion", source),
+        "\"outcome\":\"success\",\"value\":5000"
+    );
+}
+
 // Formatting: one clause group reads as one declaration and keeps its order.
 #[test]
 fn the_formatter_keeps_a_clause_group_together_in_source_order() {
