@@ -83,17 +83,20 @@ pub struct Heap(NonNull<RawHeap>);
 impl Heap {
     /// Requires: `owner` is nonzero and unique among live heaps.
     pub fn new(owner: u64) -> Self {
-        todo!("create heap {owner}")
+        assert_ne!(owner, 0, "owner 0 marks detached fragments");
+        let raw = unsafe { chimi_heap_create(owner) };
+        Self(NonNull::new(raw).expect("chimi_heap_create aborts instead of returning null"))
     }
 
     /// Ensures: this heap is current until the guard drops, then the previous
     /// heap is current again.
     pub fn enter(&self) -> HeapGuard<'_> {
-        todo!()
+        let previous = unsafe { chimi_heap_switch(self.raw()) };
+        HeapGuard { previous, _heap: std::marker::PhantomData }
     }
 
     pub fn stats(&self) -> HeapStats {
-        todo!()
+        unsafe { chimi_heap_stats(self.raw()) }
     }
 
     pub(crate) fn raw(&self) -> *mut RawHeap {
@@ -103,7 +106,7 @@ impl Heap {
 
 impl Drop for Heap {
     fn drop(&mut self) {
-        todo!()
+        unsafe { chimi_heap_destroy(self.raw()) }
     }
 }
 
@@ -115,7 +118,7 @@ pub struct HeapGuard<'heap> {
 
 impl Drop for HeapGuard<'_> {
     fn drop(&mut self) {
-        todo!("restore {:p}", self.previous)
+        unsafe { chimi_heap_switch(self.previous) };
     }
 }
 
@@ -126,21 +129,28 @@ pub struct Fragment(NonNull<RawFragment>);
 impl Fragment {
     /// Copies `root` out of the current heap. See `chimi_fragment_copy`.
     pub fn copy(root: *const Value) -> Result<Self, HeapStatus> {
-        todo!("copy {root:p}")
+        let mut out = std::ptr::null_mut();
+        match unsafe { chimi_fragment_copy(root, &mut out) } {
+            HeapStatus::Ok => Ok(Self(NonNull::new(out).expect("Ok status carries a fragment"))),
+            status => Err(status),
+        }
     }
 
     /// Joins the current heap and returns the copied root. See `chimi_fragment_adopt`.
     pub fn adopt(self) -> *mut Value {
-        todo!()
+        let raw = self.0.as_ptr();
+        std::mem::forget(self);
+        unsafe { chimi_fragment_adopt(raw) }
     }
 }
 
 impl Drop for Fragment {
     fn drop(&mut self) {
-        todo!()
+        unsafe { chimi_fragment_free(self.0.as_ptr()) }
     }
 }
 
+/// Chunk accounting for the calling thread. See `chimi_chunk_stats`.
 pub fn chunk_stats() -> ChunkStats {
-    todo!()
+    unsafe { chimi_chunk_stats() }
 }

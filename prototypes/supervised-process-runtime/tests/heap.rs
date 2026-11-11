@@ -3,8 +3,6 @@
 
 use chimi_supervised_process_runtime_prototype::heap::*;
 
-const PENDING: &str = "pending heap implementation";
-
 fn int(value: i64) -> *mut Value {
     unsafe { chimi_value_int(value) }
 }
@@ -14,7 +12,8 @@ fn items(values: &[*mut Value]) -> *mut Value {
 }
 
 /// Builds a state of `size` distinct ints, then runs `passes` passes that each
-/// allocate garbage and keep the state. Returns bytes copied by collection.
+/// allocate garbage and keep the state. Returns bytes copied by collection,
+/// after checking that the state survived the passes intact.
 fn copied_bytes_for_state(size: usize, passes: usize) -> usize {
     let heap = Heap::new(1);
     let _current = heap.enter();
@@ -25,13 +24,14 @@ fn copied_bytes_for_state(size: usize, passes: usize) -> usize {
         assert_eq!(unsafe { chimi_region_pass(&mut state) }, HeapStatus::Ok);
     }
     unsafe { chimi_region_exit() };
+    let survived = unsafe { std::slice::from_raw_parts((*state).as_.items, size) };
+    let sum: i64 = survived.iter().map(|item| unsafe { (**item).as_.integer }).sum();
+    assert_eq!(sum, (size as i64) * (size as i64 - 1) / 2);
     heap.stats().copied_bytes
 }
 
 #[test]
-#[ignore = "pending heap implementation"]
 fn pass_cost_does_not_grow_with_state_that_already_survived() {
-    let _ = PENDING;
     let small = copied_bytes_for_state(10, 10_000);
     let large = copied_bytes_for_state(100_000, 10_000);
     // The large state is copied at most a constant number of times, not per pass.
@@ -39,13 +39,13 @@ fn pass_cost_does_not_grow_with_state_that_already_survived() {
 }
 
 #[test]
-#[ignore = "pending heap implementation"]
 fn a_million_passes_keep_peak_memory_flat() {
     let heap = Heap::new(1);
     let _current = heap.enter();
     unsafe { chimi_region_enter() };
     let mut state = int(0);
     let mut peak_after_warmup = 0;
+    let mut chunks_after_warmup = ChunkStats::default();
     for pass in 0..1_000_000_i64 {
         let next = unsafe { (*state).as_.integer } + 1;
         let _garbage = items(&[int(pass), int(pass)]);
@@ -53,15 +53,17 @@ fn a_million_passes_keep_peak_memory_flat() {
         assert_eq!(unsafe { chimi_region_pass(&mut state) }, HeapStatus::Ok);
         if pass == 1_000 {
             peak_after_warmup = heap.stats().peak_live_bytes;
+            chunks_after_warmup = chunk_stats();
         }
     }
+    // Chunk memory, not only value bytes, stays where warmup left it.
+    assert_eq!(chunk_stats(), chunks_after_warmup);
     unsafe { chimi_region_exit() };
     assert_eq!(unsafe { (*state).as_.integer }, 1_000_000);
     assert_eq!(heap.stats().peak_live_bytes, peak_after_warmup);
 }
 
 #[test]
-#[ignore = "pending heap implementation"]
 fn values_allocated_before_the_loop_survive_its_collections() {
     let heap = Heap::new(1);
     let _current = heap.enter();
@@ -78,7 +80,6 @@ fn values_allocated_before_the_loop_survive_its_collections() {
 }
 
 #[test]
-#[ignore = "pending heap implementation"]
 fn copying_preserves_sharing() {
     let heap = Heap::new(1);
     let _current = heap.enter();
@@ -98,7 +99,6 @@ fn copying_preserves_sharing() {
 }
 
 #[test]
-#[ignore = "pending heap implementation"]
 fn a_pointer_into_another_heap_is_reported_not_followed() {
     let other = Heap::new(2);
     let foreign = {
@@ -116,7 +116,6 @@ fn a_pointer_into_another_heap_is_reported_not_followed() {
 }
 
 #[test]
-#[ignore = "pending heap implementation"]
 fn destroying_heaps_and_unadopted_fragments_frees_every_chunk() {
     let before = chunk_stats();
     {

@@ -52,7 +52,10 @@ typedef struct {
   uint32_t open_regions;
 } ChimiHeapStats;
 
-/* Process-wide chunk accounting, so tests can prove nothing leaks. */
+/* Chunk accounting for the calling thread, so tests can prove nothing leaks.
+ * Per thread because heaps are used by one scheduler thread and the test
+ * harness runs tests on parallel threads. Empty chunks held in the thread's
+ * reuse cache are not live. */
 typedef struct {
   size_t live_chunks;
   size_t live_chunk_bytes;
