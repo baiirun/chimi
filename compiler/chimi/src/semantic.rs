@@ -660,6 +660,8 @@ pub(crate) struct RecordValueField {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UnaryOperator {
     Negate,
+    /// Boolean negation. Core lowering turns it into a `Match`, so it never reaches Core.
+    Not,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -673,6 +675,10 @@ pub(crate) enum BinaryOperator {
     Greater,
     GreaterEqual,
     Pipe,
+    /// Short-circuit conjunction. Core lowering turns it into a `Match`, so it never reaches Core.
+    And,
+    /// Short-circuit disjunction. Core lowering turns it into a `Match`, so it never reaches Core.
+    Or,
 }
 
 #[derive(Clone, Debug)]
@@ -1121,22 +1127,29 @@ impl ProjectLowerer {
                     range: significant_range(node),
                 },
             ),
-            NodeKind::UnaryExpression => direct_expression_child(node).map_or(
-                ModuleExpression::Empty {
-                    semantic_id,
-                    range: significant_range(node),
-                },
-                |operand| ModuleExpression::Unary {
-                    semantic_id,
-                    operator: UnaryOperator::Negate,
-                    operand: Box::new(self.lower_expression(&operand)),
-                    range: significant_range(node),
-                },
-            ),
+            NodeKind::UnaryExpression | NodeKind::NotExpression => direct_expression_child(node)
+                .map_or(
+                    ModuleExpression::Empty {
+                        semantic_id,
+                        range: significant_range(node),
+                    },
+                    |operand| ModuleExpression::Unary {
+                        semantic_id,
+                        operator: if node.kind() == NodeKind::NotExpression {
+                            UnaryOperator::Not
+                        } else {
+                            UnaryOperator::Negate
+                        },
+                        operand: Box::new(self.lower_expression(&operand)),
+                        range: significant_range(node),
+                    },
+                ),
             NodeKind::AdditiveExpression
             | NodeKind::MultiplicativeExpression
             | NodeKind::ComparisonExpression
-            | NodeKind::PipelineExpression => self.lower_binary(node, semantic_id),
+            | NodeKind::PipelineExpression
+            | NodeKind::AndExpression
+            | NodeKind::OrExpression => self.lower_binary(node, semantic_id),
             NodeKind::UsingExpression => self.lower_using(node, semantic_id),
             NodeKind::BlockExpression => ModuleExpression::Block {
                 semantic_id,
@@ -1256,6 +1269,8 @@ impl ProjectLowerer {
                     TokenKind::Greater => BinaryOperator::Greater,
                     TokenKind::GreaterEqual => BinaryOperator::GreaterEqual,
                     TokenKind::Pipe => BinaryOperator::Pipe,
+                    TokenKind::And | TokenKind::AmpersandAmpersand => BinaryOperator::And,
+                    TokenKind::Or | TokenKind::BarBar => BinaryOperator::Or,
                     _ => return None,
                 };
                 Some(operator)
@@ -1555,6 +1570,9 @@ fn is_expression_kind(kind: NodeKind) -> bool {
     matches!(
         kind,
         NodeKind::UsingExpression
+            | NodeKind::OrExpression
+            | NodeKind::AndExpression
+            | NodeKind::NotExpression
             | NodeKind::PipelineExpression
             | NodeKind::ComparisonExpression
             | NodeKind::AdditiveExpression

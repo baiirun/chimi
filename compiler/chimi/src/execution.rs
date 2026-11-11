@@ -848,6 +848,10 @@ impl<'core> Evaluator<'core> {
                     node: Some(node_id),
                 },
             },
+            CoreOperation::Unary {
+                operator: UnaryOperator::Not,
+                ..
+            } => unreachable!("Core lowers `not` to a Bool match"),
             CoreOperation::Binary {
                 operator: BinaryOperator::Pipe,
                 left,
@@ -1695,6 +1699,9 @@ impl<'core> Evaluator<'core> {
             BinaryOperator::Greater => Control::Success(RuntimeValue::Boolean(left > right)),
             BinaryOperator::GreaterEqual => Control::Success(RuntimeValue::Boolean(left >= right)),
             BinaryOperator::Pipe => unreachable!("pipelines are evaluated separately"),
+            BinaryOperator::And | BinaryOperator::Or => {
+                unreachable!("Core lowers `and` and `or` to a Bool match")
+            }
         }
     }
 

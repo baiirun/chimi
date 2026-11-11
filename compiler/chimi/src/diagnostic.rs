@@ -141,6 +141,16 @@ impl Diagnostic {
         &self.fixes
     }
 
+    /// Attaches a source edit that replaces `range` in this diagnostic's file.
+    pub(crate) fn with_fix(mut self, range: TextRange, replacement: impl Into<String>) -> Self {
+        self.fixes.push(DiagnosticEdit {
+            file_id: self.file_id,
+            range,
+            replacement: replacement.into(),
+        });
+        self
+    }
+
     pub(crate) fn with_file_id(mut self, file_id: FileId) -> Self {
         self.file_id = file_id;
         for label in &mut self.labels {

@@ -173,3 +173,269 @@ fn pipeline_into_a_call_that_returns_a_function_does_not_apply_the_result() {
         "{codes:?}"
     );
 }
+
+// B1 (and the operators' truth tables): every combination of operands on both paths.
+#[test]
+fn boolean_operators_follow_their_truth_tables() {
+    let outcome = run_both(
+        "boolean-truth-tables",
+        concat!(
+            "fn bit(value: Bool, weight: Int) -> Int {\n",
+            "  case value {\n",
+            "    True -> weight\n",
+            "    False -> 0\n",
+            "  }\n",
+            "}\n",
+            "fn is_success(status: Int) -> Bool {\n",
+            "  status >= 200 and status < 300\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  bit(True and True, 1) + bit(True and False, 2) + bit(False and True, 4)\n",
+            "  + bit(False or False, 8) + bit(False or True, 16) + bit(True or False, 32)\n",
+            "  + bit(not False, 64) + bit(not True, 128)\n",
+            "  + bit(is_success(250), 256) + bit(is_success(300), 512)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":369");
+}
+
+// B2: `not` binds more loosely than comparison; `(not 3) < 2` would not type-check.
+#[test]
+fn not_applies_to_a_whole_comparison() {
+    let outcome = run_both(
+        "boolean-not-precedence",
+        "pub fn main() -> Bool { not 3 < 2 }\n",
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":true");
+}
+
+// B3: `and` binds more tightly than `or`; `(True or True) and False` would be False.
+#[test]
+fn and_binds_more_tightly_than_or() {
+    let outcome = run_both(
+        "boolean-and-or-precedence",
+        "pub fn main() -> Bool { True or True and False }\n",
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":true");
+}
+
+// B4: a pipeline result combines directly; `xs |> (is_empty or True)` would not type-check.
+#[test]
+fn boolean_operators_bind_more_loosely_than_pipelines() {
+    let outcome = run_both(
+        "boolean-pipeline-precedence",
+        concat!(
+            "fn is_empty(values: List<Int>) -> Bool {\n",
+            "  List.length(values) < 1\n",
+            "}\n",
+            "pub fn main() -> Bool {\n",
+            "  let draining = False\n",
+            "  [1, 2] |> is_empty or not draining\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":true");
+}
+
+// B5 (defect form): the skipped operand would defect if it ran.
+#[test]
+fn skipped_operands_do_not_run() {
+    let outcome = run_both(
+        "boolean-short-circuit-defect",
+        concat!(
+            "fn explode() -> Bool { 1 / 0 > 0 }\n",
+            "pub fn main() -> Bool {\n",
+            "  let zero = 0\n",
+            "  (False and explode()) or not (True or 1 / zero > 0)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":false");
+}
+
+const FAILING_OPERAND: &str = concat!(
+    "enum Problem {\n",
+    "  Broken(code: Int)\n",
+    "}\n",
+    "fn fail_now() -> Bool { Failure(Broken(7)) }\n",
+);
+
+// B6: the right operand is skipped at run time.
+#[test]
+fn or_skips_a_failing_right_operand() {
+    let source = format!(
+        "{FAILING_OPERAND}{}",
+        "pub fn main() -> Bool { True or fail_now() }\n"
+    );
+    let outcome = run_both("boolean-or-skips-failure", &source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":true");
+}
+
+// B6: the static failure row still contains the skipped operand's failure.
+#[test]
+fn skipped_operand_failures_stay_in_the_failure_row() {
+    let callable = |parameter: &str| {
+        format!(
+            "{FAILING_OPERAND}{}{parameter}{}",
+            "fn short() -> Bool { True or fail_now() }\nfn call(operation: ",
+            ") -> Bool { operation() }\npub fn main() -> Bool { call(short) }\n",
+        )
+    };
+    assert_eq!(check_codes(&callable("fn() -> Bool")), ["T4203"]);
+    assert!(check_codes(&callable("fn() -> Bool errors Problem")).is_empty());
+}
+
+// B7: an evaluated failing operand fails the whole expression.
+#[test]
+fn and_propagates_a_failing_right_operand() {
+    let source = format!(
+        "{FAILING_OPERAND}{}",
+        "pub fn main() -> Bool { True and fail_now() }\n"
+    );
+    let outcome = run_both("boolean-and-propagates-failure", &source);
+    assert_eq!(
+        outcome,
+        concat!(
+            "\"outcome\":\"expected_failure\",",
+            "\"error\":{\"type\":\"Problem\",\"variant\":\"Broken\",\"fields\":{\"code\":7}}",
+        )
+    );
+}
+
+// B9: the needs row is the union of both operands, even when the right one is skipped.
+#[test]
+fn skipped_operand_needs_stay_in_the_needs_row() {
+    let callable = |parameter: &str| {
+        format!(
+            concat!(
+                "interface Payment {{\n",
+                "  approve: fn(Int) -> Bool\n",
+                "}}\n",
+                "fn call(operation: {}) -> Bool {{ operation() }}\n",
+                "fn checkout(ready: Bool) -> Bool needs {{ payment: Payment }} {{\n",
+                "  call(fn() {{ ready and payment.approve(5) }})\n",
+                "}}\n",
+                "let approving = {{ approve: fn(_amount) {{ True }} }}\n",
+                "pub fn main() -> Bool {{ checkout(False) using {{ payment: approving }} }}\n",
+            ),
+            parameter
+        )
+    };
+    assert_eq!(check_codes(&callable("fn() -> Bool")), ["T4203"]);
+    assert!(check_codes(&callable("fn() -> Bool needs { payment: Payment }")).is_empty());
+}
+
+// B10
+#[test]
+fn boolean_operands_must_be_bool() {
+    assert_eq!(
+        check_codes("pub fn main() -> Bool { 1 and True }\n"),
+        ["T4304"]
+    );
+    assert_eq!(
+        check_codes("pub fn main() -> Bool { False or \"yes\" }\n"),
+        ["T4304"]
+    );
+    assert_eq!(check_codes("pub fn main() -> Bool { not 0 }\n"), ["T4304"]);
+}
+
+// B11: the symbolic spellings are rejected, and applying the offered edits fixes the program.
+#[test]
+fn symbolic_boolean_operators_are_rejected_with_keyword_edits() {
+    let source = "pub fn main() -> Bool {\n  let a = True\n  a&&!a || a\n}\n";
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let diagnostics = report.diagnostics();
+    let codes = diagnostics.iter().map(|d| d.code()).collect::<Vec<_>>();
+    assert_eq!(codes, ["S1004", "S1004", "S1004"]);
+
+    let mut fixed = source.to_owned();
+    let mut edits = diagnostics
+        .iter()
+        .flat_map(|diagnostic| diagnostic.fixes())
+        .collect::<Vec<_>>();
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.range().start()));
+    for edit in edits {
+        let range = edit.range().start() as usize..edit.range().end() as usize;
+        fixed.replace_range(range, edit.replacement());
+    }
+    assert_eq!(
+        fixed,
+        "pub fn main() -> Bool {\n  let a = True\n  a and not a or a\n}\n"
+    );
+    assert!(check_codes(&fixed).is_empty());
+}
+
+// B11: `!=` is not the symbolic `not`, so it never reports S1004.
+#[test]
+fn bang_before_equal_is_not_reported_as_symbolic_not() {
+    let codes = check_codes("pub fn main() -> Bool { 1 != 2 }\n");
+    assert!(!codes.iter().any(|code| code == "S1004"), "{codes:?}");
+}
+
+// B12: a guard operand that calls a provider makes the guard impure.
+#[test]
+fn guard_operands_must_be_pure() {
+    let codes = check_codes(concat!(
+        "interface Validator {\n",
+        "  valid: fn(Int) -> Bool\n",
+        "}\n",
+        "fn classify(value: Int) -> Int needs { validator: Validator } {\n",
+        "  case value {\n",
+        "    x if x > 0 and validator.valid(x) -> 1\n",
+        "    _ -> 0\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { 0 }\n",
+    ));
+    assert_eq!(codes, ["T4234"]);
+}
+
+// B13: a transfer in the right operand is a possible transfer, so the loop rule applies.
+#[test]
+fn loop_rule_applies_to_a_transfer_in_a_skippable_operand() {
+    let codes = check_codes(concat!(
+        "import std/channel as Channel\n",
+        "import std/channel.{Receiver, Sender}\n",
+        "fn sent(outcome: Void) -> Bool { True }\n",
+        "fn hand_off(outbox: Sender<Receiver<Int>>, captured: Receiver<Int>) -> Int {\n",
+        "  loop count = 0 {\n",
+        "    let finished = count > 2 or sent(Channel.send(outbox, captured))\n",
+        "    case finished {\n",
+        "      True -> break count\n",
+        "      False -> count + 1\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { 1 }\n",
+    ));
+    assert_eq!(codes, ["T4250"]);
+}
+
+// Formatter: canonical keyword spacing, kept parentheses, and line breaks before operators.
+#[test]
+fn boolean_operators_format_canonically() {
+    let source = concat!(
+        "fn f(a: Bool, b: Bool) -> Bool {\n",
+        "  not(a)or b  and not   not b\n",
+        "  or (a and b)\n",
+        "}\n",
+    );
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(
+        !formatted.is_blocked(),
+        "{}",
+        formatted.render_diagnostics()
+    );
+    assert_eq!(
+        formatted.text(),
+        concat!(
+            "fn f(a: Bool, b: Bool) -> Bool {\n",
+            "  not (a) or b and not not b\n",
+            "  or (a and b)\n",
+            "}\n",
+        )
+    );
+}

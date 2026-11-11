@@ -2318,3 +2318,98 @@ fn native_lists_longer_than_one_vector_leaf_round_trip_through_json() {
     );
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+// Guards B5: a skipped `and` operand emits no channel events. Native-only: the
+// reference interpreter has no Channel runtime.
+#[test]
+fn native_skipped_boolean_operand_sends_nothing() {
+    let scratch = scratch_directory("native-boolean-short-circuit");
+    let executable = build_native(
+        &scratch,
+        "boolean-short-circuit",
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Sender}\n",
+            "fn consume(sender: Sender<Int>) -> Bool {\n",
+            "  Channel.send(sender, 1)\n",
+            "  True\n",
+            "}\n",
+            "pub fn main() -> Bool {\n",
+            "  let channel = Channel.bounded(2)\n",
+            "  let skipped = False and consume(channel.sender)\n",
+            "  let taken = True and consume(channel.sender)\n",
+            "  skipped or not taken\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "boolean-short-circuit", "full");
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":false}\n"
+    );
+    let sends = execution
+        .telemetry
+        .matches("\"event\":\"channel_send_accepted\"")
+        .count();
+    assert_eq!(sends, 1, "{}", execution.telemetry);
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Guards B8: an operand that parks on Channel.receive waits like a `case` subject,
+// then the expression completes. Native-only: the interpreter has no Channel runtime.
+#[test]
+fn native_boolean_operand_parks_on_receive_then_succeeds() {
+    let scratch = scratch_directory("native-boolean-parks");
+    let executable = build_native(
+        &scratch,
+        "boolean-parks",
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Receive, Receiver}\n",
+            "import std/task as Task\n",
+            "fn got_one(receiver: Receiver<Int>) -> Bool {\n",
+            "  let next = Channel.receive(receiver)\n",
+            "  case next {\n",
+            "    Receive.Received(value) -> value < 2 and value > 0\n",
+            "    Receive.Drained -> False\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Bool {\n",
+            "  let channel = Channel.bounded(0)\n",
+            "  let sender = channel.sender\n",
+            "  let receiver = channel.receiver\n",
+            "  let completion = channel.completion\n",
+            "  let child = Task.start(fn() -> Int {\n",
+            "    Channel.send(sender, 1)\n",
+            "    7\n",
+            "  })\n",
+            "  let ready = True\n",
+            "  let received = ready and got_one(receiver)\n",
+            "  let child_value = Task.result(child)\n",
+            "  Channel.close(completion)\n",
+            "  received and child_value > 0\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "boolean-parks", "full");
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":true}\n"
+    );
+    assert!(
+        execution
+            .telemetry
+            .contains("\"event\":\"channel_receive_parked\"")
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}

@@ -29,6 +29,9 @@ pub(crate) enum TokenKind {
     Errors,
     Needs,
     Using,
+    And,
+    Or,
+    Not,
     Void,
     True,
     False,
@@ -55,6 +58,12 @@ pub(crate) enum TokenKind {
     Equal,
     Arrow,
     Pipe,
+    /// `&&`, recognized only to report `S1004`; the parser treats it as `and`.
+    AmpersandAmpersand,
+    /// `||`, recognized only to report `S1004`; the parser treats it as `or`.
+    BarBar,
+    /// A `!` not followed by `=`, recognized only to report `S1004`; the parser treats it as `not`.
+    Bang,
     Invalid,
     InvalidText,
     End,
@@ -81,6 +90,9 @@ impl TokenKind {
             Self::Errors => "errors",
             Self::Needs => "needs",
             Self::Using => "using",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Not => "not",
             Self::Void => "void",
             Self::True => "true",
             Self::False => "false",
@@ -107,6 +119,9 @@ impl TokenKind {
             Self::Equal => "equal",
             Self::Arrow => "arrow",
             Self::Pipe => "pipe",
+            Self::AmpersandAmpersand => "ampersand_ampersand",
+            Self::BarBar => "bar_bar",
+            Self::Bang => "bang",
             Self::Invalid => "invalid",
             Self::InvalidText => "invalid_text",
             Self::End => "end",
@@ -134,6 +149,9 @@ impl TokenKind {
             Self::Errors => "`errors`",
             Self::Needs => "`needs`",
             Self::Using => "`using`",
+            Self::And => "`and`",
+            Self::Or => "`or`",
+            Self::Not => "`not`",
             Self::Void => "`Void`",
             Self::True => "`True`",
             Self::False => "`False`",
@@ -160,6 +178,9 @@ impl TokenKind {
             Self::Equal => "`=`",
             Self::Arrow => "`->`",
             Self::Pipe => "`|>`",
+            Self::AmpersandAmpersand => "`&&`",
+            Self::BarBar => "`||`",
+            Self::Bang => "`!`",
             Self::Whitespace
             | Self::Newline
             | Self::Comment
@@ -196,6 +217,9 @@ pub(crate) enum NodeKind {
     RequirementRecord,
     LetBinding,
     UsingExpression,
+    OrExpression,
+    AndExpression,
+    NotExpression,
     PipelineExpression,
     ComparisonExpression,
     AdditiveExpression,
@@ -251,6 +275,9 @@ impl NodeKind {
             Self::RequirementRecord => "requirement_record",
             Self::LetBinding => "let_binding",
             Self::UsingExpression => "using_expression",
+            Self::OrExpression => "or_expression",
+            Self::AndExpression => "and_expression",
+            Self::NotExpression => "not_expression",
             Self::PipelineExpression => "pipeline_expression",
             Self::ComparisonExpression => "comparison_expression",
             Self::AdditiveExpression => "additive_expression",
@@ -765,6 +792,22 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                 offset += 2;
                 emit(TokenKind::Pipe, start, offset, &mut tokens);
             }
+            b'&' if offset + 1 < bytes.len() && bytes[offset + 1] == b'&' => {
+                offset += 2;
+                diagnostics.push(symbolic_logic_diagnostic(source, start, offset, "and"));
+                emit(TokenKind::AmpersandAmpersand, start, offset, &mut tokens);
+            }
+            b'|' if offset + 1 < bytes.len() && bytes[offset + 1] == b'|' => {
+                offset += 2;
+                diagnostics.push(symbolic_logic_diagnostic(source, start, offset, "or"));
+                emit(TokenKind::BarBar, start, offset, &mut tokens);
+            }
+            // `!=` is reserved for inequality, so only a `!` without `=` is the symbolic `not`.
+            b'!' if offset + 1 >= bytes.len() || bytes[offset + 1] != b'=' => {
+                offset += 1;
+                diagnostics.push(symbolic_logic_diagnostic(source, start, offset, "not"));
+                emit(TokenKind::Bang, start, offset, &mut tokens);
+            }
             b'<' if offset + 1 < bytes.len() && bytes[offset + 1] == b'=' => {
                 offset += 2;
                 emit(TokenKind::LessEqual, start, offset, &mut tokens);
@@ -861,6 +904,9 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                     "errors" => TokenKind::Errors,
                     "needs" => TokenKind::Needs,
                     "using" => TokenKind::Using,
+                    "and" => TokenKind::And,
+                    "or" => TokenKind::Or,
+                    "not" => TokenKind::Not,
                     "Void" => TokenKind::Void,
                     "True" => TokenKind::True,
                     "False" => TokenKind::False,
@@ -892,6 +938,35 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
         range: TextRange::empty(text.len()),
     });
     (tokens, diagnostics)
+}
+
+/// Reports `&&`, `||`, or `!` at `start..end` with an edit to the keyword `word`.
+///
+/// The replacement adds the spaces a keyword needs where the symbol touched its
+/// neighbors, so `a&&b` becomes `a and b` and `!ready` becomes `not ready`.
+fn symbolic_logic_diagnostic(
+    source: &SourceSnapshot,
+    start: usize,
+    end: usize,
+    word: &str,
+) -> Diagnostic {
+    let bytes = source.text().as_bytes();
+    let touches = |byte: Option<&u8>| byte.is_some_and(|byte| !byte.is_ascii_whitespace());
+    let prefix = word != "not" && start > 0 && touches(bytes.get(start - 1));
+    let suffix = touches(bytes.get(end));
+    let replacement = format!(
+        "{}{word}{}",
+        if prefix { " " } else { "" },
+        if suffix { " " } else { "" }
+    );
+    Diagnostic::error(
+        DiagnosticStage::Syntax,
+        "S1004",
+        source.file_id(),
+        TextRange::new(start, end),
+        format!("Chimi spells this `{word}`"),
+    )
+    .with_fix(TextRange::new(start, end), replacement)
 }
 
 const fn is_identifier_start(byte: u8) -> bool {
@@ -1333,7 +1408,7 @@ impl<'source> Parser<'source> {
 
     fn parse_using(&mut self) {
         let marker = self.placeholder();
-        self.parse_pipeline();
+        self.parse_or();
         let mut wrapped = false;
         while self.accept_after_newlines(TokenKind::Using) {
             if !wrapped {
@@ -1345,6 +1420,61 @@ impl<'source> Parser<'source> {
         }
         if wrapped {
             self.finish();
+        }
+    }
+
+    fn parse_or(&mut self) {
+        self.parse_left_associative(
+            NodeKind::OrExpression,
+            &[TokenKind::Or, TokenKind::BarBar],
+            Self::parse_and,
+        );
+    }
+
+    fn parse_and(&mut self) {
+        self.parse_left_associative(
+            NodeKind::AndExpression,
+            &[TokenKind::And, TokenKind::AmpersandAmpersand],
+            Self::parse_not,
+        );
+    }
+
+    /// Parses `operand (operator operand)*` as one flat `kind` node.
+    ///
+    /// A line break may come before each operator, as before `+` and `|>`.
+    fn parse_left_associative(
+        &mut self,
+        kind: NodeKind,
+        operators: &[TokenKind],
+        operand: fn(&mut Self),
+    ) {
+        let marker = self.placeholder();
+        operand(self);
+        let mut wrapped = false;
+        while self.after_any_newlines(operators) {
+            if !wrapped {
+                self.complete(marker, kind);
+                wrapped = true;
+            }
+            self.skip_newlines();
+            self.bump();
+            self.skip_newlines();
+            operand(self);
+        }
+        if wrapped {
+            self.finish();
+        }
+    }
+
+    fn parse_not(&mut self) {
+        if self.at(TokenKind::Not) || self.at(TokenKind::Bang) {
+            self.start(NodeKind::NotExpression);
+            self.bump();
+            self.skip_newlines();
+            self.parse_not();
+            self.finish();
+        } else {
+            self.parse_pipeline();
         }
     }
 

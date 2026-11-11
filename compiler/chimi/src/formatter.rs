@@ -129,7 +129,13 @@ fn format_parse(parsed: &ParseResult) -> String {
                 writer.write(token.text());
             }
             TokenKind::LeftParen | TokenKind::LeftBracket => {
-                if !writer.line().ends_with(": ") {
+                // `not (ready)` and `a or (b)` keep the space a call such as `f(x)` drops.
+                if !writer.line().ends_with(": ")
+                    && !matches!(
+                        previous,
+                        Some(TokenKind::Not | TokenKind::And | TokenKind::Or)
+                    )
+                {
                     writer.trim_space();
                 }
                 writer.write(token.text());
@@ -157,10 +163,18 @@ fn format_parse(parsed: &ParseResult) -> String {
             | TokenKind::Less
             | TokenKind::LessEqual
             | TokenKind::Greater
-            | TokenKind::GreaterEqual => {
+            | TokenKind::GreaterEqual
+            | TokenKind::And
+            | TokenKind::Or => {
                 writer.space();
                 writer.write(token.text());
                 writer.write(" ");
+            }
+            TokenKind::Not => {
+                if needs_space(previous, kind, writer.line()) {
+                    writer.space();
+                }
+                writer.write("not ");
             }
             _ => {
                 if needs_space(previous, kind, writer.line()) {
@@ -265,6 +279,9 @@ const fn word_kind(kind: TokenKind) -> bool {
             | TokenKind::Errors
             | TokenKind::Needs
             | TokenKind::Using
+            | TokenKind::And
+            | TokenKind::Or
+            | TokenKind::Not
             | TokenKind::Void
             | TokenKind::True
             | TokenKind::False

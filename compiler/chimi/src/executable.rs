@@ -180,7 +180,7 @@ impl CoreProgram {
                 }
             }
             CoreOperation::Unary { operator, operand } => {
-                let _ = operator;
+                debug_assert_ne!(*operator, UnaryOperator::Not, "`not` lowers to a match");
                 debug_assert!(node_exists(*operand));
             }
             CoreOperation::Binary {
@@ -188,7 +188,10 @@ impl CoreProgram {
                 left,
                 right,
             } => {
-                let _ = operator;
+                debug_assert!(
+                    !matches!(operator, BinaryOperator::And | BinaryOperator::Or),
+                    "`and` and `or` lower to a match"
+                );
                 debug_assert!(node_exists(*left));
                 debug_assert!(node_exists(*right));
             }
@@ -257,6 +260,24 @@ impl CoreProgram {
                 debug_assert!(value.is_none_or(node_exists));
             }
         }
+    }
+}
+
+/// `case subject { True -> when_true  False -> when_false }`, the meaning of `and`,
+/// `or`, and `not`. Only the selected arm runs, which makes the operators short-circuit.
+fn boolean_match(
+    subject: CoreNodeId,
+    when_true: CoreNodeId,
+    when_false: CoreNodeId,
+) -> CoreOperation {
+    let arm = |value: bool, body: CoreNodeId| CoreArm {
+        patterns: vec![CorePattern::Literal(CoreLiteral::Boolean(value))],
+        guard: None,
+        body,
+    };
+    CoreOperation::Match {
+        subjects: vec![subject],
+        arms: vec![arm(true, when_true), arm(false, when_false)],
     }
 }
 
@@ -1098,6 +1119,38 @@ impl CoreLowerer {
                     .collect(),
             ),
             ModuleExpression::Unary {
+                operator: UnaryOperator::Not,
+                operand,
+                ..
+            } => {
+                let subject = self.expression(module_id, operand);
+                let when_true = self.boolean_constant(module_id, expression, false);
+                let when_false = self.boolean_constant(module_id, expression, true);
+                boolean_match(subject, when_true, when_false)
+            }
+            ModuleExpression::Binary {
+                operator: BinaryOperator::And,
+                left,
+                right,
+                ..
+            } => {
+                let subject = self.expression(module_id, left);
+                let when_true = self.expression(module_id, right);
+                let when_false = self.boolean_constant(module_id, expression, false);
+                boolean_match(subject, when_true, when_false)
+            }
+            ModuleExpression::Binary {
+                operator: BinaryOperator::Or,
+                left,
+                right,
+                ..
+            } => {
+                let subject = self.expression(module_id, left);
+                let when_true = self.boolean_constant(module_id, expression, true);
+                let when_false = self.expression(module_id, right);
+                boolean_match(subject, when_true, when_false)
+            }
+            ModuleExpression::Unary {
                 operator, operand, ..
             } => CoreOperation::Unary {
                 operator: *operator,
@@ -1209,6 +1262,21 @@ impl CoreLowerer {
             }
         };
         self.push_node(module_id, expression, operation)
+    }
+
+    /// Pushes a `Bool` constant that carries the origin of the `and`, `or`, or `not`
+    /// expression it was lowered from, so traces attribute it to that source node.
+    fn boolean_constant(
+        &mut self,
+        module_id: ModuleId,
+        operator_expression: &ModuleExpression,
+        value: bool,
+    ) -> CoreNodeId {
+        self.push_node(
+            module_id,
+            operator_expression,
+            CoreOperation::Constant(CoreLiteral::Boolean(value)),
+        )
     }
 
     fn pattern(&self, module_id: ModuleId, pattern: &Pattern) -> CorePattern {

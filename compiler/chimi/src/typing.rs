@@ -2262,6 +2262,42 @@ impl ProjectTypeChecker {
                     needs: fact.needs,
                 }
             }
+            ModuleExpression::Unary {
+                operator: UnaryOperator::Not,
+                operand,
+                ..
+            } => {
+                let fact = self.infer_expression(module_id, operand, generics, bindings);
+                let boolean = self.require_boolean_operand(module_id, "not", operand, fact);
+                ExpressionFact {
+                    success: boolean,
+                    failures: fact.failures,
+                    needs: fact.needs,
+                }
+            }
+            ModuleExpression::Binary {
+                operator: operator @ (BinaryOperator::And | BinaryOperator::Or),
+                left: left_operand,
+                right: right_operand,
+                ..
+            } => {
+                let spelling = if *operator == BinaryOperator::And {
+                    "and"
+                } else {
+                    "or"
+                };
+                let left = self.infer_expression(module_id, left_operand, generics, bindings);
+                let right = self.infer_expression(module_id, right_operand, generics, bindings);
+                let boolean = self.require_boolean_operand(module_id, spelling, left_operand, left);
+                self.require_boolean_operand(module_id, spelling, right_operand, right);
+                // Static contracts do not depend on which branch runs, so both rows are exposed
+                // even though the right operand may be skipped at run time.
+                ExpressionFact {
+                    success: boolean,
+                    failures: self.union_failure_rows([left.failures, right.failures]),
+                    needs: self.union_needs_rows([left.needs, right.needs]),
+                }
+            }
             ModuleExpression::Binary {
                 operator,
                 left,
@@ -2962,6 +2998,30 @@ impl ProjectTypeChecker {
                 .map(|input| self.substitute_call_type(*input, &mut substitution))
                 .collect(),
         )
+    }
+
+    /// Requires an operand of `and`, `or`, or `not` to be `Bool`, reporting `T4304` otherwise.
+    ///
+    /// Returns the `Bool` type, which is the operator's result type either way.
+    fn require_boolean_operand(
+        &mut self,
+        module_id: ModuleId,
+        operator: &str,
+        operand: &ModuleExpression,
+        fact: ExpressionFact,
+    ) -> TypeId {
+        let boolean = self.builtin_type("Bool");
+        if !self.unify(fact.success, boolean) {
+            self.type_error_range(
+                module_id,
+                "T4304",
+                operand.range(),
+                format!(
+                    "`{operator}` needs `Bool` operands; Chimi has no truthiness; compare explicitly"
+                ),
+            );
+        }
+        boolean
     }
 
     fn infer_case_guard(

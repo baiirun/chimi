@@ -197,6 +197,10 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                 operator: UnaryOperator::Negate,
                 operand,
             } => row.1 = operand.raw(),
+            CoreOperation::Unary {
+                operator: UnaryOperator::Not,
+                ..
+            } => unreachable!("Core lowers `not` to a Bool match"),
             CoreOperation::Binary {
                 operator,
                 left,
@@ -550,6 +554,9 @@ const fn binary_operator(operator: BinaryOperator) -> u32 {
         BinaryOperator::Greater => 6,
         BinaryOperator::GreaterEqual => 7,
         BinaryOperator::Pipe => 8,
+        BinaryOperator::And | BinaryOperator::Or => {
+            panic!("Core lowers `and` and `or` to a Bool match")
+        }
     }
 }
 

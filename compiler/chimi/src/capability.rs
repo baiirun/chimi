@@ -4,8 +4,8 @@ use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::ids::{ModuleId, SemanticId, SymbolId, TextRange};
 use crate::resolution::{Namespace, ProjectSymbolKind, ReferenceResolution};
 use crate::semantic::{
-    FunctionSignature, ModuleBlockItem, ModuleDeclaration, ModuleDeclarationKind, ModuleExpression,
-    Pattern,
+    BinaryOperator, FunctionSignature, ModuleBlockItem, ModuleDeclaration, ModuleDeclarationKind,
+    ModuleExpression, Pattern,
 };
 use crate::standard::{StandardFunction, StandardSymbol};
 use crate::typing::{CapabilityClass, PropertyDerivation, TypedProject, ValueProperties};
@@ -275,6 +275,20 @@ impl CapabilityChecker<'_> {
                 .fold(FlowValue::shareable(), FlowValue::combine),
             ModuleExpression::Unary { operand, .. } => {
                 self.evaluate(module_id, operand, environment);
+                self.type_value(module_id, expression)
+            }
+            ModuleExpression::Binary {
+                operator: BinaryOperator::And | BinaryOperator::Or,
+                left,
+                right,
+                ..
+            } => {
+                // The right operand runs only on one branch of the left, like a `case` arm,
+                // so its transfers are possible transfers.
+                self.evaluate(module_id, left, environment);
+                let mut branch = environment.clone();
+                self.evaluate(module_id, right, &mut branch);
+                self.merge_transfers(environment, &[branch]);
                 self.type_value(module_id, expression)
             }
             ModuleExpression::Binary { left, right, .. } => {
