@@ -478,7 +478,10 @@ Rules:
   Wrapping arithmetic for hash functions belongs to the later bit-operations
   work.
 - When both operands are literals or folded constants and the operation
-  overflows or divides by zero, the compiler SHOULD warn with `T4312`. It MUST
+  overflows or divides by zero, the compiler SHOULD warn with `T4312`. A
+  folded constant is an expression built only from literals and operators;
+  a `let` binding is not folded through. The warning covers `Int` operations
+  only; a `Float` operation that always defects is not required to warn. It MUST
   still compile the operation so that it defects at run time. Constant folding
   MUST NOT change observable behavior. `chimi check` reports the warning and
   succeeds.
@@ -513,7 +516,8 @@ Rules:
   `Float` literal in a pattern is rejected with `T4313`. Compare in a guard
   instead.
 - Functions that leave the finite domain return failures. For example,
-  `Float.square_root(x)` fails for negative `x` and `Float.parse("inf")` fails.
+  `Float.parse("inf")` fails, and a later `Float.square_root(x)` MUST fail
+  for negative `x`.
 
 This departs from IEEE 754 defaults. [Open question 1](#open-questions) records
 the choice.
@@ -536,7 +540,8 @@ Float literals:
 
 - a decimal point with at least one digit on each side: `0.5`, `3.0`,
   `1_000.25`;
-- an exponent, with or without a decimal point: `1e9`, `2.5e-3`, `6.02E23`.
+- an exponent, with or without a decimal point, whose sign MAY be `+` or `-`:
+  `1e9`, `2.5e-3`, `1e+5`, `6.02E23`.
 
 Rules:
 
@@ -553,7 +558,9 @@ Rules:
   A literal that is not exactly representable rounds to the nearest `Float`.
 - Negative numbers are unary `-` applied to a literal. Lowering MUST fold `-`
   applied directly to an integer literal before the range check, so
-  `-9223372036854775808` is valid. A grouped operand, as in
+  `-9223372036854775808` is valid. Whitespace between `-` and the literal
+  does not prevent folding. The same rule applies to literal patterns
+  ([patterns spec](patterns-and-function-clauses.md#literal-patterns)). A grouped operand, as in
   `-(9223372036854775808)`, is not folded and is out of range.
 
 ### Conversions and parsing
@@ -575,7 +582,11 @@ built in, next to `Int`.
 | `Float.parse(Text) -> Float` | fails with `Empty`, `Invalid`, or `OutOfRange` |
 
 Parsing accepts the decimal literal grammar without `_`, with an optional
-leading `-`. It rejects whitespace, a leading `+`, `nan`, and `inf`. A parse
+leading `-`. Unlike source literals, parsed text MAY have leading zeros
+(`"007"` is 7), because external input often does. `Float.parse` also accepts
+integer text such as `"7"`. It rejects whitespace, a leading `+`, `nan`, and
+`inf`. Text with no digits, such as `"-"`, fails with `InvalidDigit` from
+`Int.parse` and `Invalid` from `Float.parse`; only `""` is `Empty`. A parse
 failure is an expected failure, because parsing reads external input.
 
 `Float.to_int` takes a value that the caller has already rounded. Rounding is a
@@ -854,14 +865,15 @@ MUST NOT blur stages.
 
 | Code | Stage | Condition | Message and help |
 | --- | --- | --- | --- |
-| `S1003` | syntax | A float literal rounds to an infinity. | "float literal is outside the finite `Float` range" |
+| `S1002` | syntax | An integer literal, after folding a leading `-`, is outside `Int`, in an expression or a pattern. | "integer literal is outside the `Int` range" |
+| `S1003` | syntax | A float literal rounds to an infinity, in an expression or a pattern. | "float literal is outside the finite `Float` range" |
 | `S1004` | syntax | `&&`, `\|\|`, or prefix `!`. | "Chimi spells this `and`" (or `or`, `not`), with a replacement edit |
 | `S1005` | syntax | `()` in expression or type position, or a one-element tuple `(e,)`. | "`()` is not a value; use `Void`", or "a tuple needs at least two elements" |
 | `S1006` | syntax | A second non-associative operator at the same level, as in `a < b < c`, `a == b == c`, or `a..b..c`. | "comparisons do not chain; write `a < b and b < c`" |
 | `T4300` | type | An operand of `==` or `!=`, or a `Map` key or `Set` element type, is not equatable. | Names the path to the offending component, such as "field `handler` of `Route` is a function" |
 | `T4301` | type | An operand of `<`, `<=`, `>`, `>=`, or an argument of `Order.compare` or `List.sort`, is not ordered. | Names the component and suggests a comparator with `List.sort_by` |
 | `T4302` | type | The operands of a binary arithmetic, equality, or comparison operator have different types. | For `Int` and `Float`, suggests `Float.from_int` or `Float.to_int` |
-| `T4303` | type | An arithmetic operator is applied to a type other than `Int`, `Float`, or `Decimal`. | For `Text` and `+`, suggests `Text.append`. For `Duration`, `Instant`, or `Timestamp`, names the `Duration` or `Clock` function to use, such as `Duration.add` |
+| `T4303` | type | An arithmetic operator, including unary `-`, is applied to a type other than `Int`, `Float`, or `Decimal`. When an operand is not numeric, `T4303` is reported instead of `T4302`, whichever side it is on. | For `Text` and `+`, suggests `Text.append`. For `Duration`, `Instant`, or `Timestamp`, names the `Duration` or `Clock` function to use, such as `Duration.add` |
 | `T4304` | type | An operand of `and`, `or`, or `not` is not `Bool`. | "Chimi has no truthiness; compare explicitly" |
 | `T4305` | type | A generic instantiation violates an inferred equatable or ordered requirement. | Labels the callee's operator use, the generic parameter, and the offending component |
 | `T4306` | type | `/` or `%` on `Decimal`. | Suggests `Decimal.divide` with a scale and rounding mode |
