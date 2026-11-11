@@ -27,11 +27,16 @@ impl fmt::Display for DiagnosticStage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Severity {
     Error,
+    /// Reported, but never blocks checking, building, or running.
+    Warning,
 }
 
 impl fmt::Display for Severity {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("error")
+        formatter.write_str(match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+        })
     }
 }
 
@@ -106,6 +111,21 @@ impl Diagnostic {
             message: message.into(),
             labels: Vec::new(),
             fixes: Vec::new(),
+        }
+    }
+
+    /// A warning. Callers keep warnings apart from errors, because every error gate
+    /// tests for an empty diagnostic list.
+    pub(crate) fn warning(
+        stage: DiagnosticStage,
+        code: &'static str,
+        file_id: FileId,
+        range: TextRange,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            severity: Severity::Warning,
+            ..Self::error(stage, code, file_id, range, message)
         }
     }
 

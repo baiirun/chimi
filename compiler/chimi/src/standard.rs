@@ -5,10 +5,20 @@ pub(crate) enum StandardModule {
     Json,
     Map,
     Task,
+    Int,
+    Float,
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 5] = [Self::Channel, Self::Io, Self::Json, Self::Map, Self::Task];
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Channel,
+        Self::Io,
+        Self::Json,
+        Self::Map,
+        Self::Task,
+        Self::Int,
+        Self::Float,
+    ];
 
     pub(crate) const fn path(self) -> &'static str {
         match self {
@@ -17,6 +27,8 @@ impl StandardModule {
             Self::Json => "std/json",
             Self::Map => "std/map",
             Self::Task => "std/task",
+            Self::Int => "std/int",
+            Self::Float => "std/float",
         }
     }
 }
@@ -42,6 +54,9 @@ pub(crate) enum StandardType {
     ChannelReceive,
     ChannelError,
     Task,
+    IntParseError,
+    FloatParseError,
+    FloatConversionError,
 }
 
 impl StandardType {
@@ -81,6 +96,8 @@ impl StandardType {
             Self::ChannelReceive => "Receive",
             Self::ChannelError => "ChannelError",
             Self::Task => "Task",
+            Self::IntParseError | Self::FloatParseError => "ParseError",
+            Self::FloatConversionError => "ConversionError",
         }
     }
 
@@ -122,10 +139,42 @@ pub(crate) enum StandardFunction {
     ChannelClose,
     ChannelAbort,
     ChannelBounded,
+    IntParse,
+    IntToText,
+    IntAddChecked,
+    IntSubtractChecked,
+    IntMultiplyChecked,
+    IntDivideChecked,
+    IntRemainderChecked,
+    IntModulo,
+    FloatFromInt,
+    FloatTruncate,
+    FloatFloor,
+    FloatCeiling,
+    FloatRound,
+    FloatToInt,
+    FloatToText,
+    FloatParse,
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 22] = [
+    pub(crate) const ALL: [Self; 38] = [
+        Self::IntParse,
+        Self::IntToText,
+        Self::IntAddChecked,
+        Self::IntSubtractChecked,
+        Self::IntMultiplyChecked,
+        Self::IntDivideChecked,
+        Self::IntRemainderChecked,
+        Self::IntModulo,
+        Self::FloatFromInt,
+        Self::FloatTruncate,
+        Self::FloatFloor,
+        Self::FloatCeiling,
+        Self::FloatRound,
+        Self::FloatToInt,
+        Self::FloatToText,
+        Self::FloatParse,
         Self::IoPath,
         Self::MapEmpty,
         Self::MapGet,
@@ -170,6 +219,22 @@ impl StandardFunction {
             | Self::ChannelClose
             | Self::ChannelAbort
             | Self::ChannelBounded => Some(StandardModule::Channel),
+            Self::IntParse
+            | Self::IntToText
+            | Self::IntAddChecked
+            | Self::IntSubtractChecked
+            | Self::IntMultiplyChecked
+            | Self::IntDivideChecked
+            | Self::IntRemainderChecked
+            | Self::IntModulo => Some(StandardModule::Int),
+            Self::FloatFromInt
+            | Self::FloatTruncate
+            | Self::FloatFloor
+            | Self::FloatCeiling
+            | Self::FloatRound
+            | Self::FloatToInt
+            | Self::FloatToText
+            | Self::FloatParse => Some(StandardModule::Float),
             Self::ListFirst | Self::ListLength | Self::TextAppend | Self::TextEqual => None,
         }
     }
@@ -202,6 +267,20 @@ impl StandardFunction {
             Self::ChannelClose => "close",
             Self::ChannelAbort => "abort",
             Self::ChannelBounded => "bounded",
+            Self::IntParse | Self::FloatParse => "parse",
+            Self::IntToText | Self::FloatToText => "to_text",
+            Self::IntAddChecked => "add_checked",
+            Self::IntSubtractChecked => "subtract_checked",
+            Self::IntMultiplyChecked => "multiply_checked",
+            Self::IntDivideChecked => "divide_checked",
+            Self::IntRemainderChecked => "remainder_checked",
+            Self::IntModulo => "modulo",
+            Self::FloatFromInt => "from_int",
+            Self::FloatTruncate => "truncate",
+            Self::FloatFloor => "floor",
+            Self::FloatCeiling => "ceiling",
+            Self::FloatRound => "round",
+            Self::FloatToInt => "to_int",
         }
     }
 
@@ -239,10 +318,26 @@ pub(crate) enum StandardConstructor {
     ChannelReceived,
     ChannelDrained,
     ChannelAborted,
+    IntParseEmpty,
+    IntParseInvalidDigit,
+    IntParseOutOfRange,
+    FloatParseEmpty,
+    FloatParseInvalid,
+    FloatParseOutOfRange,
+    FloatNotInteger,
+    FloatOutOfRange,
 }
 
 impl StandardConstructor {
-    pub(crate) const ALL: [Self; 22] = [
+    pub(crate) const ALL: [Self; 30] = [
+        Self::IntParseEmpty,
+        Self::IntParseInvalidDigit,
+        Self::IntParseOutOfRange,
+        Self::FloatParseEmpty,
+        Self::FloatParseInvalid,
+        Self::FloatParseOutOfRange,
+        Self::FloatNotInteger,
+        Self::FloatOutOfRange,
         Self::ConsoleWriteFailed,
         Self::FileClose,
         Self::FileLineTooLong,
@@ -286,11 +381,27 @@ impl StandardConstructor {
             Self::ChannelSendClosed | Self::ChannelSendAborted => StandardType::ChannelSendError,
             Self::ChannelReceived | Self::ChannelDrained => StandardType::ChannelReceive,
             Self::ChannelAborted => StandardType::ChannelError,
+            Self::IntParseEmpty | Self::IntParseInvalidDigit | Self::IntParseOutOfRange => {
+                StandardType::IntParseError
+            }
+            Self::FloatParseEmpty | Self::FloatParseInvalid | Self::FloatParseOutOfRange => {
+                StandardType::FloatParseError
+            }
+            Self::FloatNotInteger | Self::FloatOutOfRange => StandardType::FloatConversionError,
         }
     }
 
     pub(crate) const fn module(self) -> Option<StandardModule> {
+        // Both `std/float` failure types own an `OutOfRange`, so neither is a module
+        // member; only type-qualified access names them.
+        if matches!(self, Self::FloatParseOutOfRange | Self::FloatOutOfRange) {
+            return None;
+        }
         match self.type_kind() {
+            StandardType::IntParseError => Some(StandardModule::Int),
+            StandardType::FloatParseError | StandardType::FloatConversionError => {
+                Some(StandardModule::Float)
+            }
             StandardType::ConsoleError | StandardType::FileError | StandardType::Utf8Error => {
                 Some(StandardModule::Io)
             }
@@ -338,6 +449,13 @@ impl StandardConstructor {
             Self::ChannelSendAborted | Self::ChannelAborted => "Aborted",
             Self::ChannelReceived => "Received",
             Self::ChannelDrained => "Drained",
+            Self::IntParseEmpty | Self::FloatParseEmpty => "Empty",
+            Self::IntParseInvalidDigit => "InvalidDigit",
+            Self::FloatParseInvalid => "Invalid",
+            Self::IntParseOutOfRange | Self::FloatParseOutOfRange | Self::FloatOutOfRange => {
+                "OutOfRange"
+            }
+            Self::FloatNotInteger => "NotInteger",
         }
     }
 
@@ -358,6 +476,14 @@ impl StandardConstructor {
                 &["value"]
             }
             Self::ChannelDrained | Self::ChannelAborted => &[],
+            Self::IntParseEmpty
+            | Self::IntParseInvalidDigit
+            | Self::IntParseOutOfRange
+            | Self::FloatParseEmpty
+            | Self::FloatParseInvalid
+            | Self::FloatParseOutOfRange
+            | Self::FloatNotInteger
+            | Self::FloatOutOfRange => &[],
         }
     }
 

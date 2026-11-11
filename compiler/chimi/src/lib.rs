@@ -15,6 +15,7 @@ mod ids;
 mod inspection;
 mod json;
 pub mod line_index;
+mod numeric;
 pub mod project;
 mod resolution;
 mod semantic;

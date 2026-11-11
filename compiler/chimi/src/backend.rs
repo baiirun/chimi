@@ -187,6 +187,7 @@ impl BackendOperationProfile {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BackendValueProfile {
     pub integer_literals: usize,
+    pub float_literals: usize,
     pub text_literals: usize,
     pub text_literal_bytes: usize,
     pub boolean_literals: usize,
@@ -216,6 +217,7 @@ impl BackendValueProfile {
     fn record_literal(&mut self, literal: &CoreLiteral) {
         match literal {
             CoreLiteral::Integer(_) => self.integer_literals += 1,
+            CoreLiteral::Float(_) => self.float_literals += 1,
             CoreLiteral::Text(value) => {
                 self.text_literals += 1;
                 self.text_literal_bytes += value.len();

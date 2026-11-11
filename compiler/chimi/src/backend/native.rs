@@ -282,7 +282,8 @@ fn build_to_path(
                 .arg("-Wl,--no-whole-archive");
         }
     }
-    link.arg("-o").arg(executable_path);
+    // The runtime calls `fmod`, which glibc keeps in libm.
+    link.arg("-lm").arg("-o").arg(executable_path);
     run(&mut link, "link native backend executable")?;
     let linking = started.elapsed();
     let (cache_hits, cache_misses) = cache.finish();

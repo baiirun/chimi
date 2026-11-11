@@ -45,6 +45,12 @@ pub(crate) enum Literal {
         value: i64,
         range: TextRange,
     },
+    /// A finite `Float`; lowering rejects literals that round to an infinity with `S1003`.
+    Float {
+        semantic_id: SemanticId,
+        value: f64,
+        range: TextRange,
+    },
     Text {
         semantic_id: SemanticId,
         value: String,
@@ -61,6 +67,7 @@ impl Literal {
     pub(crate) const fn semantic_id(&self) -> SemanticId {
         match self {
             Self::Integer { semantic_id, .. }
+            | Self::Float { semantic_id, .. }
             | Self::Text { semantic_id, .. }
             | Self::Boolean { semantic_id, .. } => *semantic_id,
         }
@@ -69,6 +76,7 @@ impl Literal {
     pub(crate) const fn range(&self) -> TextRange {
         match self {
             Self::Integer { range, .. }
+            | Self::Float { range, .. }
             | Self::Text { range, .. }
             | Self::Boolean { range, .. } => *range,
         }
@@ -498,6 +506,8 @@ pub(crate) enum PatternLiteral {
     Integer(i64),
     Text(String),
     Boolean(bool),
+    /// `Float` has no literal patterns; typing rejects this with `T4313`.
+    Float,
 }
 
 #[derive(Clone, Debug)]
@@ -670,6 +680,7 @@ pub(crate) enum BinaryOperator {
     Subtract,
     Multiply,
     Divide,
+    Remainder,
     Less,
     LessEqual,
     Greater,
@@ -743,6 +754,7 @@ pub(crate) fn lower_module(
 pub(crate) fn discover_imports(parsed: &ParseResult) -> Vec<ModuleImport> {
     let mut lowerer = ProjectLowerer {
         next_semantic_id: 0,
+        diagnostics: Vec::new(),
     };
     parsed
         .root()
@@ -755,6 +767,8 @@ pub(crate) fn discover_imports(parsed: &ParseResult) -> Vec<ModuleImport> {
 
 struct ProjectLowerer {
     next_semantic_id: u32,
+    /// Literal diagnostics (`S1002`, `S1003`), with a placeholder file id until the module is done.
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl ProjectLowerer {
@@ -768,6 +782,7 @@ impl ProjectLowerer {
         let root = parsed.root();
         let mut lowerer = Self {
             next_semantic_id: 0,
+            diagnostics: Vec::new(),
         };
         let mut imports = Vec::new();
         let mut declarations = Vec::new();
@@ -794,6 +809,7 @@ impl ProjectLowerer {
             .diagnostics()
             .iter()
             .cloned()
+            .chain(std::mem::take(&mut lowerer.diagnostics))
             .map(|diagnostic| diagnostic.with_file_id(source.file_id()))
             .collect();
         SemanticModule {
@@ -1132,15 +1148,30 @@ impl ProjectLowerer {
                         semantic_id,
                         range: significant_range(node),
                     },
-                    |operand| ModuleExpression::Unary {
-                        semantic_id,
-                        operator: if node.kind() == NodeKind::NotExpression {
-                            UnaryOperator::Not
-                        } else {
-                            UnaryOperator::Negate
-                        },
-                        operand: Box::new(self.lower_expression(&operand)),
-                        range: significant_range(node),
+                    |operand| {
+                        if node.kind() == NodeKind::UnaryExpression
+                            && operand.kind() == NodeKind::Literal
+                            && operand
+                                .child_tokens()
+                                .iter()
+                                .any(|token| token.kind() == TokenKind::Integer)
+                        {
+                            return self.lower_literal(
+                                &operand,
+                                semantic_id,
+                                Some(significant_range(node)),
+                            );
+                        }
+                        ModuleExpression::Unary {
+                            semantic_id,
+                            operator: if node.kind() == NodeKind::NotExpression {
+                                UnaryOperator::Not
+                            } else {
+                                UnaryOperator::Negate
+                            },
+                            operand: Box::new(self.lower_expression(&operand)),
+                            range: significant_range(node),
+                        }
                     },
                 ),
             NodeKind::AdditiveExpression
@@ -1264,6 +1295,7 @@ impl ProjectLowerer {
                     TokenKind::Minus => Some(BinaryOperator::Subtract),
                     TokenKind::Star => Some(BinaryOperator::Multiply),
                     TokenKind::Slash => Some(BinaryOperator::Divide),
+                    TokenKind::Percent => Some(BinaryOperator::Remainder),
                     TokenKind::Less => Some(BinaryOperator::Less),
                     TokenKind::LessEqual => Some(BinaryOperator::LessEqual),
                     TokenKind::Greater => Some(BinaryOperator::Greater),
@@ -1360,10 +1392,26 @@ impl ProjectLowerer {
         node: &SyntaxNode<'_>,
         semantic_id: SemanticId,
     ) -> ModuleExpression {
+        self.lower_literal(node, semantic_id, None)
+    }
+
+    /// Lowers a `Literal` node. `negation` is the range of a unary `-` applied directly
+    /// to it, which folds into an integer literal before the range check (`S1002`), so
+    /// `-9223372036854775808` is valid while `-(9223372036854775808)` is not.
+    fn lower_literal(
+        &mut self,
+        node: &SyntaxNode<'_>,
+        semantic_id: SemanticId,
+        negation: Option<TextRange>,
+    ) -> ModuleExpression {
         let Some(token) = node.child_tokens().into_iter().find(|token| {
             matches!(
                 token.kind(),
-                TokenKind::Integer | TokenKind::Text | TokenKind::True | TokenKind::False
+                TokenKind::Integer
+                    | TokenKind::Float
+                    | TokenKind::Text
+                    | TokenKind::True
+                    | TokenKind::False
             )
         }) else {
             return ModuleExpression::Empty {
@@ -1374,7 +1422,12 @@ impl ProjectLowerer {
         let literal = match token.kind() {
             TokenKind::Integer => Literal::Integer {
                 semantic_id,
-                value: token.text().replace('_', "").parse().unwrap_or_default(),
+                value: self.integer_literal(&token, negation.is_some()),
+                range: negation.unwrap_or(token.range()),
+            },
+            TokenKind::Float => Literal::Float {
+                semantic_id,
+                value: self.float_literal(&token),
                 range: token.range(),
             },
             TokenKind::Text => Literal::Text {
@@ -1390,6 +1443,59 @@ impl ProjectLowerer {
             _ => unreachable!("literal token was filtered above"),
         };
         ModuleExpression::Literal(literal)
+    }
+
+    /// The value of an integer literal token, negated when `negated`; reports `S1002`
+    /// and yields 0 when the value is outside `Int`. Hexadecimal and binary literals
+    /// are magnitudes, never two's complement bit patterns.
+    fn integer_literal(&mut self, token: &SyntaxToken<'_>, negated: bool) -> i64 {
+        let digits = token.text().replace('_', "");
+        let magnitude = if let Some(hex) = digits.strip_prefix("0x") {
+            u64::from_str_radix(hex, 16)
+        } else if let Some(binary) = digits.strip_prefix("0b") {
+            u64::from_str_radix(binary, 2)
+        } else {
+            digits.parse()
+        };
+        let magnitude = match magnitude {
+            Ok(magnitude) => Some(i128::from(magnitude)),
+            Err(error) if *error.kind() == std::num::IntErrorKind::PosOverflow => None,
+            // The lexer already reported the malformed digits.
+            Err(_) => return 0,
+        };
+        let value = magnitude
+            .and_then(|magnitude| i64::try_from(if negated { -magnitude } else { magnitude }).ok());
+        value.unwrap_or_else(|| {
+            self.literal_error(
+                "S1002",
+                token.range(),
+                "integer literal is outside the supported range",
+            );
+            0
+        })
+    }
+
+    /// The value of a float literal token; reports `S1003` and yields 0 when it
+    /// rounds to an infinity.
+    fn float_literal(&mut self, token: &SyntaxToken<'_>) -> f64 {
+        crate::numeric::float_literal_value(token.text()).unwrap_or_else(|| {
+            self.literal_error(
+                "S1003",
+                token.range(),
+                "float literal is outside the finite `Float` range",
+            );
+            0.0
+        })
+    }
+
+    fn literal_error(&mut self, code: &'static str, range: TextRange, message: &str) {
+        self.diagnostics.push(Diagnostic::error(
+            DiagnosticStage::Syntax,
+            code,
+            FileId::new(0),
+            range,
+            message,
+        ));
     }
 
     fn lower_block_item(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleBlockItem> {
@@ -1498,9 +1604,8 @@ impl ProjectLowerer {
             .collect();
         let literal = node.child_tokens().into_iter().find_map(|token| {
             let literal = match token.kind() {
-                TokenKind::Integer => PatternLiteral::Integer(
-                    token.text().replace('_', "").parse().unwrap_or_default(),
-                ),
+                TokenKind::Integer => PatternLiteral::Integer(self.integer_literal(&token, false)),
+                TokenKind::Float => PatternLiteral::Float,
                 TokenKind::Text => PatternLiteral::Text(text_literal_value(token.text())),
                 TokenKind::True | TokenKind::False => {
                     PatternLiteral::Boolean(token.kind() == TokenKind::True)

@@ -286,6 +286,7 @@ fn touch_literal(literal: &CoreLiteral) {
         CoreLiteral::Integer(value) => {
             let _ = value;
         }
+        CoreLiteral::Float(value) => debug_assert!(value.is_finite()),
         CoreLiteral::Text(value) => {
             let _ = value;
         }
@@ -430,6 +431,8 @@ pub(crate) enum CoreOperation {
 #[derive(Clone, Debug)]
 pub(crate) enum CoreLiteral {
     Integer(i64),
+    /// A finite `Float`. Never a pattern: `Float` has no literal patterns.
+    Float(f64),
     Text(String),
     Boolean(bool),
 }
@@ -1051,6 +1054,7 @@ impl CoreLowerer {
         let operation = match expression {
             ModuleExpression::Literal(literal) => CoreOperation::Constant(match literal {
                 Literal::Integer { value, .. } => CoreLiteral::Integer(*value),
+                Literal::Float { value, .. } => CoreLiteral::Float(*value),
                 Literal::Text { value, .. } => CoreLiteral::Text(value.clone()),
                 Literal::Boolean { value, .. } => CoreLiteral::Boolean(*value),
             }),
@@ -1285,6 +1289,7 @@ impl CoreLowerer {
                 PatternLiteral::Integer(value) => CoreLiteral::Integer(*value),
                 PatternLiteral::Text(value) => CoreLiteral::Text(value.clone()),
                 PatternLiteral::Boolean(value) => CoreLiteral::Boolean(*value),
+                PatternLiteral::Float => unreachable!("typing rejects Float literal patterns"),
             });
         }
         let Some(name) = pattern.path.last() else {

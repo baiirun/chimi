@@ -1781,7 +1781,7 @@ fn direct_integer_overflow_returns_the_existing_runtime_defect() {
     assert!(
         execution
             .outcome
-            .contains("\"message\":\"integer arithmetic overflow\"")
+            .contains("\"message\":\"integer overflow in `+`: 9223372036854775807 + 1\"")
     );
 
     std::fs::remove_dir_all(scratch).unwrap();
@@ -1836,6 +1836,34 @@ fn invalid_programs_stop_at_the_owning_stage() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+// N2: `T4312` is a warning, so the check reports it and still succeeds.
+#[test]
+fn check_reports_warnings_without_failing() {
+    let scratch = scratch_directory("check-warning");
+    let path = scratch.join("main.chimi");
+    std::fs::write(&path, "pub fn main() -> Int { 9223372036854775807 + 1 }\n").unwrap();
+    let human = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run check");
+    assert!(human.status.success());
+    let stderr = String::from_utf8(human.stderr).unwrap();
+    assert!(stderr.contains("warning[T4312]"), "{stderr}");
+
+    let json = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("check")
+        .arg("--json")
+        .arg(&path)
+        .output()
+        .expect("run structured check");
+    assert!(json.status.success());
+    let document = String::from_utf8(json.stdout).unwrap();
+    assert!(document.contains("\"code\":\"T4312\""), "{document}");
+    assert!(document.contains("\"severity\":\"warning\""), "{document}");
+    std::fs::remove_dir_all(scratch).unwrap();
 }
 
 #[test]

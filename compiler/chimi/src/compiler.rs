@@ -249,6 +249,12 @@ impl TypeReport {
         &self.typed.diagnostics
     }
 
+    /// Warnings, such as `T4312`. They are never part of `diagnostics` and never
+    /// affect `is_success`.
+    pub fn warnings(&self) -> &[Diagnostic] {
+        &self.typed.warnings
+    }
+
     pub fn contract(&self, module_path: &str, function_name: &str) -> Option<String> {
         self.typed
             .contract(module_path, function_name)
@@ -471,11 +477,13 @@ impl CheckReport {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerificationStats {
     pub reachable_declarations: usize,
     pub origins: usize,
     pub reachable_modules: usize,
+    /// Diagnostics with `Severity::Warning`; they never make verification fail.
+    pub warnings: Vec<Diagnostic>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -536,6 +544,7 @@ impl Compiler {
             reachable_declarations,
             origins,
             reachable_modules,
+            warnings: root.typed.warnings.clone(),
         })
     }
 
@@ -2074,7 +2083,7 @@ mod tests {
         .expect("the generic recovery program compiles before its runtime defect");
         assert!(matches!(
             defect.outcome,
-            ExecutionOutcome::Defect(ref defect) if defect.message == "integer division by zero"
+            ExecutionOutcome::Defect(ref defect) if defect.message.starts_with("integer division by zero")
         ));
 
         let cancellation = Compiler::run_project(
@@ -3656,7 +3665,7 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
         .expect("runtime defects occur after successful compilation");
         assert!(matches!(
             defect.outcome,
-            ExecutionOutcome::Defect(ref defect) if defect.message == "integer division by zero"
+            ExecutionOutcome::Defect(ref defect) if defect.message.starts_with("integer division by zero")
         ));
 
         let cancellation = Compiler::run_project(

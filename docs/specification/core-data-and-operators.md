@@ -10,9 +10,11 @@ the [language completion plan](../plans/language-completion-plan.md), and sets
 the representation expectations for L2 (`Decimal`).
 
 Implementation status (Phase 1, epic `ep-a6f138`): boolean logic is
-implemented (`ts-fd46b6`). The other sections are implementation targets
-tracked by `ts-95bffa` (equality, hashing, ordering), `ts-a28bb7` (numbers),
-and `ts-5be727` (tuples, `Void`, `Never`, ranges); `Decimal` is phase 2. Chimi remains free to break. This is an
+implemented (`ts-fd46b6`). Numbers are implemented (`ts-a28bb7`) except
+`Decimal`, `==` on numbers, and `Float` map keys, which wait for equality.
+The other sections are implementation targets tracked by `ts-95bffa`
+(equality, hashing, ordering) and `ts-5be727` (tuples, `Void`, `Never`,
+ranges); `Decimal` is phase 2. Chimi remains free to break. This is an
 implementation target.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. Examples
@@ -464,18 +466,22 @@ Rules:
   fault. A defect crashes the bounded unit of work with context, as principle 6
   requires.
 - The defect context MUST name the operator and its source location, and
-  SHOULD include both operand values.
+  SHOULD include both operand values. The message names the operator and the
+  operands, as in ``integer overflow in `+`: 9223372036854775807 + 1``; the
+  defect outcome's `origin_id` locates the operation in source.
 - `-2^63 % -1` is 0. It MUST NOT defect, even though the matching division
   overflows.
 - Code that expects overflow uses `std/int` functions that return a value
   instead: `Int.add_checked(a, b) -> Option<Int>`, and the `_checked` forms of
   the other operators. `Int.modulo(a, n)` returns a result with the sign of
-  `n`, for clock arithmetic and bucket indexes. Wrapping arithmetic for hash
-  functions belongs to the later bit-operations work.
+  `n`, for clock arithmetic and bucket indexes; `Int.modulo(a, 0)` defects.
+  Wrapping arithmetic for hash functions belongs to the later bit-operations
+  work.
 - When both operands are literals or folded constants and the operation
   overflows or divides by zero, the compiler SHOULD warn with `T4312`. It MUST
   still compile the operation so that it defects at run time. Constant folding
-  MUST NOT change observable behavior.
+  MUST NOT change observable behavior. `chimi check` reports the warning and
+  succeeds.
 
 ### `Float`
 
@@ -535,7 +541,9 @@ Float literals:
 Rules:
 
 - `_` MAY appear only between two digits.
-- `1.`, `.5`, and octal forms are not literals.
+- `1.`, `.5`, and octal forms are not literals. A decimal literal with a
+  leading zero, such as `017`, is rejected with `S1001` rather than read as
+  either octal or decimal.
 - A `.` that follows a digit starts a fraction only when a digit follows it. So
   `0..10` is a range and `point.x` stays a field access.
 - An integer literal outside `Int` is rejected with `S1002`. Hexadecimal and
@@ -551,7 +559,10 @@ Rules:
 ### Conversions and parsing
 
 There are no implicit numeric conversions. `std/int` and `std/float` MUST
-provide functions equivalent to:
+provide functions equivalent to the following. They are ordinary standard
+modules, so a program writes `import std/int as Int` and
+`import std/float as Float` before it calls them. The `Float` type itself is
+built in, next to `Int`.
 
 | Function | Outcome |
 | --- | --- |
@@ -570,6 +581,18 @@ failure is an expected failure, because parsing reads external input.
 `Float.to_int` takes a value that the caller has already rounded. Rounding is a
 separate, visible step. The same `NotInteger` and `OutOfRange` variants exist
 for `Json.number_to_int` today.
+
+The failure types are `ParseError` in `std/int` (`Empty`, `InvalidDigit`,
+`OutOfRange`), and `ParseError` (`Empty`, `Invalid`, `OutOfRange`) and
+`ConversionError` (`NotInteger`, `OutOfRange`) in `std/float`. The variants
+carry no fields. Because both `std/float` types own an `OutOfRange`, that
+variant is named through its type, as in `Float.ParseError.OutOfRange`.
+
+`Float.to_text` renders positional notation for decimal exponents from -5 to
+15 and scientific notation otherwise, as in `0.00001`, `1e-6`,
+`1000000000000000.0`, and `1e16`. Among the shortest texts that parse back, it
+picks the one closest to the value, and the larger on an exact tie. Outcome
+JSON renders a `Float` with the same text.
 
 ### `Decimal`
 

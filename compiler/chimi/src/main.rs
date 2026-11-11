@@ -300,9 +300,17 @@ fn check(input: Input, output: DiagnosticOutput) -> ExitCode {
         return ExitCode::FAILURE;
     };
     match Compiler::verify_project(project.sources()) {
-        Ok(_) => {
-            if output == DiagnosticOutput::Json {
-                print!("{}", project.render_diagnostics_json(&[]));
+        Ok(verification) => {
+            match output {
+                DiagnosticOutput::Human => {
+                    eprint!("{}", project.render_diagnostics(&verification.warnings));
+                }
+                DiagnosticOutput::Json => {
+                    print!(
+                        "{}",
+                        project.render_diagnostics_json(&verification.warnings)
+                    );
+                }
             }
             ExitCode::SUCCESS
         }

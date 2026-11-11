@@ -6,6 +6,11 @@ use crate::executable::{
 };
 use crate::ids::{CoreNodeId, FileId, OriginId, SemanticId, SymbolId, TextRange};
 use crate::json::{JsonData, decode_json, write_json_data, write_json_string};
+use crate::numeric::{
+    ArithmeticOperator, FloatParseError, FloatToIntError, IntParseError, float_binary,
+    float_to_int, integer_binary, integer_modulo, integer_negate, parse_float, parse_int,
+    render_float,
+};
 use crate::semantic::{BinaryOperator, UnaryOperator};
 use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol, StandardType};
 use persistent_list::PersistentList;
@@ -165,10 +170,24 @@ pub struct ValueField {
     pub value: ExecutionValue,
 }
 
+/// A finite `Float` result, compared by bit pattern so that `-0.0` stays distinct
+/// from `0.0` when outcomes are compared.
+#[derive(Clone, Copy, Debug)]
+pub struct FloatValue(pub f64);
+
+impl PartialEq for FloatValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for FloatValue {}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecutionValue {
     Void,
     Integer(i64),
+    Float(FloatValue),
     Text(String),
     Boolean(bool),
     List(Vec<ExecutionValue>),
@@ -313,6 +332,8 @@ impl ExecutionReport {
 enum RuntimeValue {
     Void,
     Integer(i64),
+    /// Always finite; every operation that would leave the finite domain defects.
+    Float(f64),
     Text(String),
     Boolean(bool),
     List(PersistentList<RuntimeValue>),
@@ -805,14 +826,14 @@ impl<'core> Evaluator<'core> {
                 operator: UnaryOperator::Negate,
                 operand,
             } => match success_or_return!(self.eval_node(operand, span, environment)) {
-                RuntimeValue::Integer(value) => value
-                    .checked_neg()
-                    .map(RuntimeValue::Integer)
-                    .map(Control::Success)
-                    .unwrap_or_else(|| Control::Defect {
-                        message: "integer negation overflow".to_owned(),
+                RuntimeValue::Integer(value) => match integer_negate(value) {
+                    Ok(value) => Control::Success(RuntimeValue::Integer(value)),
+                    Err(message) => Control::Defect {
+                        message,
                         node: Some(node_id),
-                    }),
+                    },
+                },
+                RuntimeValue::Float(value) => Control::Success(RuntimeValue::Float(-value)),
                 _ => Control::Defect {
                     message: "verified unary operand is not an integer".to_owned(),
                     node: Some(node_id),
@@ -1506,6 +1527,130 @@ impl<'core> Evaluator<'core> {
                 };
                 Control::Success(RuntimeValue::Boolean(left == right))
             }
+            StandardFunction::IntParse => {
+                let [RuntimeValue::Text(text)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                match parse_int(text) {
+                    Ok(value) => Control::Success(RuntimeValue::Integer(value)),
+                    Err(error) => Control::Failure(self.standard_value(
+                        match error {
+                            IntParseError::Empty => StandardConstructor::IntParseEmpty,
+                            IntParseError::InvalidDigit => {
+                                StandardConstructor::IntParseInvalidDigit
+                            }
+                            IntParseError::OutOfRange => StandardConstructor::IntParseOutOfRange,
+                        },
+                        Vec::new(),
+                    )),
+                }
+            }
+            StandardFunction::IntToText => {
+                let [RuntimeValue::Integer(value)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(RuntimeValue::Text(value.to_string()))
+            }
+            StandardFunction::IntAddChecked
+            | StandardFunction::IntSubtractChecked
+            | StandardFunction::IntMultiplyChecked
+            | StandardFunction::IntDivideChecked
+            | StandardFunction::IntRemainderChecked => {
+                let [RuntimeValue::Integer(left), RuntimeValue::Integer(right)] =
+                    arguments.as_slice()
+                else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                let operator = match function {
+                    StandardFunction::IntAddChecked => ArithmeticOperator::Add,
+                    StandardFunction::IntSubtractChecked => ArithmeticOperator::Subtract,
+                    StandardFunction::IntMultiplyChecked => ArithmeticOperator::Multiply,
+                    StandardFunction::IntDivideChecked => ArithmeticOperator::Divide,
+                    _ => ArithmeticOperator::Remainder,
+                };
+                Control::Success(match integer_binary(operator, *left, *right) {
+                    Ok(value) => self.standard_value(
+                        StandardConstructor::OptionSome,
+                        vec![RuntimeValue::Integer(value)],
+                    ),
+                    Err(_) => self.standard_value(StandardConstructor::OptionNone, Vec::new()),
+                })
+            }
+            StandardFunction::IntModulo => {
+                let [RuntimeValue::Integer(value), RuntimeValue::Integer(modulus)] =
+                    arguments.as_slice()
+                else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                match integer_modulo(*value, *modulus) {
+                    Ok(value) => Control::Success(RuntimeValue::Integer(value)),
+                    Err(message) => Control::Defect {
+                        message,
+                        node: Some(call_node),
+                    },
+                }
+            }
+            StandardFunction::FloatFromInt => {
+                let [RuntimeValue::Integer(value)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                // `as` rounds to nearest, ties to even.
+                Control::Success(RuntimeValue::Float(*value as f64))
+            }
+            StandardFunction::FloatTruncate
+            | StandardFunction::FloatFloor
+            | StandardFunction::FloatCeiling
+            | StandardFunction::FloatRound => {
+                let [RuntimeValue::Float(value)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(RuntimeValue::Float(match function {
+                    StandardFunction::FloatTruncate => value.trunc(),
+                    StandardFunction::FloatFloor => value.floor(),
+                    StandardFunction::FloatCeiling => value.ceil(),
+                    // Half away from zero, like C `round`.
+                    _ => value.round(),
+                }))
+            }
+            StandardFunction::FloatToInt => {
+                let [RuntimeValue::Float(value)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                match float_to_int(*value) {
+                    Ok(value) => Control::Success(RuntimeValue::Integer(value)),
+                    Err(error) => Control::Failure(self.standard_value(
+                        match error {
+                            FloatToIntError::NotInteger => StandardConstructor::FloatNotInteger,
+                            FloatToIntError::OutOfRange => StandardConstructor::FloatOutOfRange,
+                        },
+                        Vec::new(),
+                    )),
+                }
+            }
+            StandardFunction::FloatToText => {
+                let [RuntimeValue::Float(value)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(RuntimeValue::Text(render_float(*value)))
+            }
+            StandardFunction::FloatParse => {
+                let [RuntimeValue::Text(text)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                match parse_float(text) {
+                    Ok(value) => Control::Success(RuntimeValue::Float(value)),
+                    Err(error) => Control::Failure(self.standard_value(
+                        match error {
+                            FloatParseError::Empty => StandardConstructor::FloatParseEmpty,
+                            FloatParseError::Invalid => StandardConstructor::FloatParseInvalid,
+                            FloatParseError::OutOfRange => {
+                                StandardConstructor::FloatParseOutOfRange
+                            }
+                        },
+                        Vec::new(),
+                    )),
+                }
+            }
             StandardFunction::TaskStart
             | StandardFunction::TaskResult
             | StandardFunction::TaskCancel => Control::Defect {
@@ -1670,33 +1815,47 @@ impl<'core> Evaluator<'core> {
         left: RuntimeValue,
         right: RuntimeValue,
     ) -> Control {
-        let (RuntimeValue::Integer(left), RuntimeValue::Integer(right)) = (left, right) else {
-            return Control::Defect {
-                message: "verified binary operands are not integers".to_owned(),
-                node: Some(node),
-            };
+        let defect = |message| Control::Defect {
+            message,
+            node: Some(node),
         };
-        match operator {
-            BinaryOperator::Add => checked_integer(node, left.checked_add(right), "addition"),
-            BinaryOperator::Subtract => {
-                checked_integer(node, left.checked_sub(right), "subtraction")
+        let ordering = match (left, right) {
+            (RuntimeValue::Integer(left), RuntimeValue::Integer(right)) => {
+                if let Some(arithmetic) = ArithmeticOperator::from_binary(operator) {
+                    return match integer_binary(arithmetic, left, right) {
+                        Ok(value) => Control::Success(RuntimeValue::Integer(value)),
+                        Err(message) => defect(message),
+                    };
+                }
+                left.cmp(&right)
             }
-            BinaryOperator::Multiply => {
-                checked_integer(node, left.checked_mul(right), "multiplication")
+            (RuntimeValue::Float(left), RuntimeValue::Float(right)) => {
+                if let Some(arithmetic) = ArithmeticOperator::from_binary(operator) {
+                    return match float_binary(arithmetic, left, right) {
+                        Ok(value) => Control::Success(RuntimeValue::Float(value)),
+                        Err(message) => defect(message),
+                    };
+                }
+                // Finite values are totally ordered; `-0.0` and `0.0` compare equal.
+                left.partial_cmp(&right).expect("Float values are finite")
             }
-            BinaryOperator::Divide if right == 0 => Control::Defect {
-                message: "integer division by zero".to_owned(),
-                node: Some(node),
-            },
-            BinaryOperator::Divide => checked_integer(node, left.checked_div(right), "division"),
-            BinaryOperator::Less => Control::Success(RuntimeValue::Boolean(left < right)),
-            BinaryOperator::LessEqual => Control::Success(RuntimeValue::Boolean(left <= right)),
-            BinaryOperator::Greater => Control::Success(RuntimeValue::Boolean(left > right)),
-            BinaryOperator::GreaterEqual => Control::Success(RuntimeValue::Boolean(left >= right)),
+            _ => return defect("verified binary operands are not numbers".to_owned()),
+        };
+        let result = match operator {
+            BinaryOperator::Less => ordering.is_lt(),
+            BinaryOperator::LessEqual => ordering.is_le(),
+            BinaryOperator::Greater => ordering.is_gt(),
+            BinaryOperator::GreaterEqual => ordering.is_ge(),
             BinaryOperator::And | BinaryOperator::Or => {
                 unreachable!("Core lowers `and` and `or` to a Bool match")
             }
-        }
+            BinaryOperator::Add
+            | BinaryOperator::Subtract
+            | BinaryOperator::Multiply
+            | BinaryOperator::Divide
+            | BinaryOperator::Remainder => unreachable!("arithmetic returned above"),
+        };
+        Control::Success(RuntimeValue::Boolean(result))
     }
 
     fn eval_match(
@@ -1903,6 +2062,7 @@ fn select_field(value: RuntimeValue, member: &str) -> Option<Control> {
 fn runtime_literal(literal: CoreLiteral) -> RuntimeValue {
     match literal {
         CoreLiteral::Integer(value) => RuntimeValue::Integer(value),
+        CoreLiteral::Float(value) => RuntimeValue::Float(value),
         CoreLiteral::Text(value) => RuntimeValue::Text(value),
         CoreLiteral::Boolean(value) => RuntimeValue::Boolean(value),
     }
@@ -1912,6 +2072,7 @@ fn public_value(value: RuntimeValue) -> ExecutionValue {
     match value {
         RuntimeValue::Void => ExecutionValue::Void,
         RuntimeValue::Integer(value) => ExecutionValue::Integer(value),
+        RuntimeValue::Float(value) => ExecutionValue::Float(FloatValue(value)),
         RuntimeValue::Text(value) => ExecutionValue::Text(value),
         RuntimeValue::Boolean(value) => ExecutionValue::Boolean(value),
         RuntimeValue::List(values) => {
@@ -2020,22 +2181,13 @@ fn semantic_attribute(name: impl Into<String>, value: SemanticId) -> ExecutionAt
     }
 }
 
-fn checked_integer(node: CoreNodeId, value: Option<i64>, operation: &str) -> Control {
-    value
-        .map(RuntimeValue::Integer)
-        .map(Control::Success)
-        .unwrap_or_else(|| Control::Defect {
-            message: format!("integer {operation} overflow"),
-            node: Some(node),
-        })
-}
-
 fn write_json_value(output: &mut String, value: &ExecutionValue) {
     match value {
         ExecutionValue::Void => output.push_str("{\"type\":\"Void\"}"),
         ExecutionValue::Integer(value) => {
             write!(output, "{value}").expect("writing JSON to a string cannot fail")
         }
+        ExecutionValue::Float(value) => output.push_str(&render_float(value.0)),
         ExecutionValue::Text(value) => write_json_string(output, value),
         ExecutionValue::Boolean(value) => output.push_str(if *value { "true" } else { "false" }),
         ExecutionValue::List(values) => {

@@ -3,6 +3,8 @@
 #include "chimi_fiber.h"
 
 #include <inttypes.h>
+#include <math.h>
+#include <stdarg.h>
 #include <errno.h>
 #include <limits.h>
 #include <stddef.h>
@@ -35,7 +37,7 @@ __attribute__((weak)) ChimiSchedulerOutcome chimi_scheduler_execute(
   return (ChimiSchedulerOutcome){.state = CHIMI_FIBER_DEFECTED};
 }
 
-typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
+typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
                VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER, VALUE_TASK,
                VALUE_CHANNEL_SENDER, VALUE_CHANNEL_RECEIVER,
                VALUE_CHANNEL_COMPLETION } ValueKind;
@@ -96,6 +98,7 @@ struct ChimiValue {
   ValueKind kind;
   union {
     int64_t integer;
+    double floating; /* always finite */
     const char *text;
     bool boolean;
     /* A List is the window [start, start + length) of a shared vector, so
@@ -531,6 +534,7 @@ static void mark_value(ChimiValue *value, uint64_t epoch) {
     case VALUE_CHANNEL_COMPLETION: break;
     case VALUE_VOID:
     case VALUE_INTEGER:
+    case VALUE_FLOAT:
     case VALUE_BOOLEAN: break;
   }
 }
@@ -625,6 +629,7 @@ static void json_string(FILE *output, const char *value) {
 }
 
 static void json_value(FILE *output, const ChimiValue *value);
+static void float_text(double value, char *output);
 static void json_fields(FILE *output, const RuntimeField *fields, uint32_t length) {
   fputc('{', output);
   for (uint32_t index = 0; index < length; ++index) {
@@ -639,6 +644,7 @@ static void json_value(FILE *output, const ChimiValue *value) {
   switch (value->kind) {
     case VALUE_VOID: fputs("{\"type\":\"Void\"}", output); break;
     case VALUE_INTEGER: fprintf(output, "%" PRId64, value->as.integer); break;
+    case VALUE_FLOAT: { char text[40]; float_text(value->as.floating, text); fputs(text, output); break; }
     case VALUE_TEXT: json_string(output, value->as.text); break;
     case VALUE_BOOLEAN: fputs(value->as.boolean ? "true" : "false", output); break;
     case VALUE_LIST:
@@ -728,6 +734,165 @@ static char *copy_text(const char *raw) {
 }
 static ChimiValue *text_value(const char *raw) { ChimiValue *v = new_value(VALUE_TEXT); v->as.text = copy_text(raw); return v; }
 static ChimiValue *boolean_value(bool raw) { ChimiValue *v = new_value(VALUE_BOOLEAN); v->as.boolean = raw; return v; }
+static ChimiValue *float_value(double raw) { ChimiValue *v = new_value(VALUE_FLOAT); v->as.floating = raw; return v; }
+
+/* The numeric model. It mirrors compiler/chimi/src/numeric.rs value for value and
+   message for message, because both execution paths must report identical outcomes. */
+
+/* A defect message that outlives the collector: a defect ends its unit of work. */
+static const char *numeric_message(const char *format, ...) {
+  va_list arguments; va_start(arguments, format);
+  char *message = malloc(256);
+  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); exit(70); }
+  vsnprintf(message, 256, format, arguments); va_end(arguments);
+  return message;
+}
+
+/* Canonical Float text: the shortest digits that parse back to the same value,
+   positional for decimal exponents -5..15 and scientific otherwise, always with a
+   `.` or an `e`. `output` holds at least 40 bytes. */
+/* True when `significand` x 10^`exponent` (decimal) parses back to `magnitude`. */
+static bool decimal_round_trips(uint64_t significand, int exponent, double magnitude) {
+  char text[48]; snprintf(text, sizeof(text), "%" PRIu64 "e%d", significand, exponent);
+  return strtod(text, NULL) == magnitude;
+}
+
+/* The shortest significand (and its decimal exponent) that parses back to
+   `magnitude`, chosen like Rust's `{:e}`: at the shortest length, the candidate
+   closest to the value, and the larger one on an exact tie. The correctly rounded
+   candidate can miss the round-trip interval at a power of two, where the interval
+   below the value is half as wide, so its neighbors are tried too. */
+static void shortest_digits(double magnitude, char *digits, int *exponent) {
+  for (int precision = 0; precision <= 16; ++precision) {
+    char scientific[40]; snprintf(scientific, sizeof(scientific), "%.*e", precision, magnitude);
+    uint64_t nearest = 0; const char *cursor = scientific;
+    for (; *cursor != 'e'; ++cursor) if (*cursor != '.') nearest = nearest * 10 + (uint64_t)(*cursor - '0');
+    int point = atoi(cursor + 1), scale = point - precision;
+    uint64_t smallest = 1; for (int digit = 0; digit < precision; ++digit) smallest *= 10;
+    uint64_t chosen = 0; bool found = false;
+    if (decimal_round_trips(nearest, scale, magnitude)) {
+      chosen = nearest; found = true;
+      if (decimal_round_trips(nearest + 1, scale, magnitude)) {
+        /* Both neighbors fit only on a tie: the exact value is `nearest`5000... */
+        char exact[800]; snprintf(exact, sizeof(exact), "%.770e", magnitude);
+        char wanted[24]; snprintf(wanted, sizeof(wanted), "%" PRIu64, nearest);
+        char actual[800]; size_t length = 0;
+        for (const char *c = exact; *c != 'e'; ++c) if (*c != '.') actual[length++] = *c;
+        actual[length] = '\0';
+        size_t prefix = strlen(wanted);
+        bool tie = strncmp(actual, wanted, prefix) == 0 && actual[prefix] == '5' &&
+                   strspn(actual + prefix + 1, "0") == length - prefix - 1;
+        if (tie) chosen = nearest + 1;
+      }
+    } else if (decimal_round_trips(nearest + 1, scale, magnitude)) {
+      chosen = nearest + 1; found = true;
+    } else if (nearest > smallest && decimal_round_trips(nearest - 1, scale, magnitude)) {
+      chosen = nearest - 1; found = true;
+    }
+    if (!found) continue;
+    snprintf(digits, 24, "%" PRIu64, chosen);
+    size_t count = strlen(digits);
+    /* A carry such as 99 + 1 adds a digit; drop the zero it leaves. */
+    *exponent = scale + (int)count - 1;
+    while (count > 1 && digits[count - 1] == '0') digits[--count] = '\0';
+    return;
+  }
+  /* 17 significant digits always round-trip. */
+  char scientific[40]; snprintf(scientific, sizeof(scientific), "%.16e", magnitude);
+  size_t count = 0; const char *cursor = scientific;
+  for (; *cursor != 'e'; ++cursor) if (*cursor != '.') digits[count++] = *cursor;
+  digits[count] = '\0'; *exponent = atoi(cursor + 1);
+  while (count > 1 && digits[count - 1] == '0') digits[--count] = '\0';
+}
+
+static void float_text(double value, char *output) {
+  const char *sign = signbit(value) ? "-" : "";
+  if (value == 0) { snprintf(output, 40, "%s0.0", sign); return; }
+  char digits[24]; int exponent = 0;
+  shortest_digits(fabs(value), digits, &exponent);
+  size_t count = strlen(digits);
+  if (exponent >= -5 && exponent < 16) {
+    if (exponent < 0) {
+      snprintf(output, 40, "%s0.%.*s%s", sign, -exponent - 1, "0000", digits);
+    } else if (count <= (size_t)exponent + 1) {
+      snprintf(output, 40, "%s%s%.*s.0", sign, digits, (int)((size_t)exponent + 1 - count),
+               "000000000000000");
+    } else {
+      snprintf(output, 40, "%s%.*s.%s", sign, exponent + 1, digits, digits + exponent + 1);
+    }
+  } else if (count == 1) {
+    snprintf(output, 40, "%s%se%d", sign, digits, exponent);
+  } else {
+    snprintf(output, 40, "%s%c.%se%d", sign, digits[0], digits + 1, exponent);
+  }
+}
+
+static const char *binary_symbol(uint32_t operator) {
+  switch (operator) {
+    case CHIMI_BINARY_ADD: return "+";
+    case CHIMI_BINARY_SUBTRACT: return "-";
+    case CHIMI_BINARY_MULTIPLY: return "*";
+    case CHIMI_BINARY_DIVIDE: return "/";
+    case CHIMI_BINARY_REMAINDER: return "%";
+    default: return "?";
+  }
+}
+
+static bool is_arithmetic(uint32_t operator) {
+  return operator == CHIMI_BINARY_ADD || operator == CHIMI_BINARY_SUBTRACT ||
+         operator == CHIMI_BINARY_MULTIPLY || operator == CHIMI_BINARY_DIVIDE ||
+         operator == CHIMI_BINARY_REMAINDER;
+}
+
+/* Stores the exact result and returns true, or returns false on overflow or a zero divisor. */
+static bool integer_result(uint32_t operator, int64_t l, int64_t r, int64_t *output) {
+  switch (operator) {
+    case CHIMI_BINARY_ADD: return !__builtin_add_overflow(l, r, output);
+    case CHIMI_BINARY_SUBTRACT: return !__builtin_sub_overflow(l, r, output);
+    case CHIMI_BINARY_MULTIPLY: return !__builtin_mul_overflow(l, r, output);
+    case CHIMI_BINARY_DIVIDE:
+      if (r == 0) return false;
+      if (r == -1) return !__builtin_sub_overflow((int64_t)0, l, output);
+      *output = l / r; return true;
+    case CHIMI_BINARY_REMAINDER:
+      if (r == 0) return false;
+      /* INT64_MIN / -1 overflows, but INT64_MIN % -1 is exactly 0. */
+      *output = r == -1 ? 0 : l % r; return true;
+    default: return false;
+  }
+}
+
+static ChimiControl *integer_arithmetic(uint32_t operator, int64_t l, int64_t r, int64_t node) {
+  const char *symbol = binary_symbol(operator); int64_t output = 0;
+  if (integer_result(operator, l, r, &output)) return success(integer_value(output));
+  const char *format = r == 0 && (operator == CHIMI_BINARY_DIVIDE || operator == CHIMI_BINARY_REMAINDER)
+    ? "integer division by zero in `%s`: %" PRId64 " %s %" PRId64
+    : "integer overflow in `%s`: %" PRId64 " %s %" PRId64;
+  return defect(numeric_message(format, symbol, l, symbol, r), node);
+}
+
+static ChimiControl *float_arithmetic(uint32_t operator, double l, double r, int64_t node) {
+  const char *symbol = binary_symbol(operator); double output = 0;
+  char left_text[40], right_text[40]; float_text(l, left_text); float_text(r, right_text);
+  switch (operator) {
+    case CHIMI_BINARY_ADD: output = l + r; break;
+    case CHIMI_BINARY_SUBTRACT: output = l - r; break;
+    case CHIMI_BINARY_MULTIPLY: output = l * r; break;
+    case CHIMI_BINARY_DIVIDE:
+    case CHIMI_BINARY_REMAINDER:
+      if (r == 0) {
+        return defect(numeric_message("float division by zero in `%s`: %s %s %s",
+                                      symbol, left_text, symbol, right_text), node);
+      }
+      output = operator == CHIMI_BINARY_DIVIDE ? l / r : fmod(l, r);
+      break;
+  }
+  if (!isfinite(output)) {
+    return defect(numeric_message("float `%s` has no finite result: %s %s %s",
+                                  symbol, left_text, symbol, right_text), node);
+  }
+  return success(float_value(output));
+}
 static ChimiValue *callable_value(ChimiCallable *raw) { ChimiValue *v = new_value(VALUE_CALLABLE); v->as.callable = raw; return v; }
 static ChimiValue *map_value(MapNode *raw) { ChimiValue *v = new_value(VALUE_MAP); v->as.map = raw; return v; }
 static ChimiValue *json_number_value(const char *raw) { ChimiValue *v = new_value(VALUE_JSON_NUMBER); v->as.json_number = copy_text(raw); return v; }
@@ -863,6 +1028,7 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
       return transfer_captured_map(transfer, value->as.map, depth + 1);
     case VALUE_VOID:
     case VALUE_INTEGER:
+    case VALUE_FLOAT:
     case VALUE_TEXT:
     case VALUE_BOOLEAN:
     case VALUE_JSON_NUMBER:
@@ -1463,6 +1629,40 @@ static ChimiControl *map_values_node(ChimiRuntime *runtime, MapNode *node,
                          span, call_node, environment);
 }
 
+/* `digits [. digits] [(e|E) [+|-] digits]`, as numeric.rs `is_decimal_number`. */
+static bool is_decimal_number(const char *text) {
+  const char *cursor = text;
+  #define CHIMI_DIGITS() do { const char *start = cursor; \
+    while (*cursor >= '0' && *cursor <= '9') ++cursor; if (cursor == start) return false; } while (0)
+  CHIMI_DIGITS();
+  if (*cursor == '.') { ++cursor; CHIMI_DIGITS(); }
+  if (*cursor == 'e' || *cursor == 'E') {
+    ++cursor; if (*cursor == '+' || *cursor == '-') ++cursor;
+    CHIMI_DIGITS();
+  }
+  #undef CHIMI_DIGITS
+  return *cursor == '\0';
+}
+
+/* `Int.parse`; returns 0 on success or the failure constructor. */
+static uint32_t parse_int_text(const char *text, int64_t *output) {
+  if (*text == '\0') return CHIMI_CONSTRUCTOR_INT_PARSE_EMPTY;
+  const char *digits = *text == '-' ? text + 1 : text;
+  if (*digits == '\0') return CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT;
+  for (const char *cursor = digits; *cursor; ++cursor)
+    if (*cursor < '0' || *cursor > '9') return CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT;
+  errno = 0; *output = strtoll(text, NULL, 10);
+  return errno == ERANGE ? CHIMI_CONSTRUCTOR_INT_PARSE_OUT_OF_RANGE : 0;
+}
+
+/* `Float.parse`; returns 0 on success or the failure constructor. */
+static uint32_t parse_float_text(const char *text, double *output) {
+  if (*text == '\0') return CHIMI_CONSTRUCTOR_FLOAT_PARSE_EMPTY;
+  if (!is_decimal_number(*text == '-' ? text + 1 : text)) return CHIMI_CONSTRUCTOR_FLOAT_PARSE_INVALID;
+  *output = strtod(text, NULL);
+  return isfinite(*output) ? 0 : CHIMI_CONSTRUCTOR_FLOAT_PARSE_OUT_OF_RANGE;
+}
+
 static ChimiControl *intrinsic_shape_defect(uint32_t call_node) {
   return defect("verified standard function has invalid runtime arguments", call_node);
 }
@@ -1589,6 +1789,80 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT ||
           arguments[1]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
       return success(boolean_value(strcmp(arguments[0]->as.text, arguments[1]->as.text) == 0));
+    case CHIMI_INTRINSIC_INT_PARSE: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
+      int64_t value = 0; uint32_t error = parse_int_text(arguments[0]->as.text, &value);
+      return error ? failure(standard_value(error, NULL, 0)) : success(integer_value(value));
+    }
+    case CHIMI_INTRINSIC_INT_TO_TEXT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
+      char text[24]; snprintf(text, sizeof(text), "%" PRId64, arguments[0]->as.integer);
+      return success(text_value(text));
+    }
+    case CHIMI_INTRINSIC_INT_ADD_CHECKED:
+    case CHIMI_INTRINSIC_INT_SUBTRACT_CHECKED:
+    case CHIMI_INTRINSIC_INT_MULTIPLY_CHECKED:
+    case CHIMI_INTRINSIC_INT_DIVIDE_CHECKED:
+    case CHIMI_INTRINSIC_INT_REMAINDER_CHECKED: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_INTEGER ||
+          arguments[1]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
+      static const uint32_t operators[] = {CHIMI_BINARY_ADD, CHIMI_BINARY_SUBTRACT, CHIMI_BINARY_MULTIPLY,
+                                           CHIMI_BINARY_DIVIDE, CHIMI_BINARY_REMAINDER};
+      int64_t value = 0;
+      if (!integer_result(operators[intrinsic - CHIMI_INTRINSIC_INT_ADD_CHECKED],
+                          arguments[0]->as.integer, arguments[1]->as.integer, &value))
+        return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
+      ChimiValue *fields[] = {integer_value(value)};
+      return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
+    }
+    case CHIMI_INTRINSIC_INT_MODULO: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_INTEGER ||
+          arguments[1]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
+      int64_t value = arguments[0]->as.integer, modulus = arguments[1]->as.integer;
+      if (modulus == 0) {
+        return defect(numeric_message("integer division by zero in `Int.modulo`: Int.modulo(%" PRId64
+                                      ", %" PRId64 ")", value, modulus), call_node);
+      }
+      int64_t remainder = modulus == -1 ? 0 : value % modulus;
+      if (remainder != 0 && (remainder < 0) != (modulus < 0)) remainder += modulus;
+      return success(integer_value(remainder));
+    }
+    case CHIMI_INTRINSIC_FLOAT_FROM_INT:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
+      return success(float_value((double)arguments[0]->as.integer));
+    case CHIMI_INTRINSIC_FLOAT_TRUNCATE:
+    case CHIMI_INTRINSIC_FLOAT_FLOOR:
+    case CHIMI_INTRINSIC_FLOAT_CEILING:
+    case CHIMI_INTRINSIC_FLOAT_ROUND: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_FLOAT) return intrinsic_shape_defect(call_node);
+      double value = arguments[0]->as.floating;
+      switch (intrinsic) {
+        case CHIMI_INTRINSIC_FLOAT_TRUNCATE: value = trunc(value); break;
+        case CHIMI_INTRINSIC_FLOAT_FLOOR: value = floor(value); break;
+        case CHIMI_INTRINSIC_FLOAT_CEILING: value = ceil(value); break;
+        default: value = round(value); break; /* half away from zero */
+      }
+      return success(float_value(value));
+    }
+    case CHIMI_INTRINSIC_FLOAT_TO_INT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_FLOAT) return intrinsic_shape_defect(call_node);
+      double value = arguments[0]->as.floating;
+      if (value != trunc(value)) return failure(standard_value(CHIMI_CONSTRUCTOR_FLOAT_NOT_INTEGER, NULL, 0));
+      /* -2^63 is exactly representable; 2^63 is the first value above Int. */
+      if (!(value >= -9223372036854775808.0 && value < 9223372036854775808.0))
+        return failure(standard_value(CHIMI_CONSTRUCTOR_FLOAT_OUT_OF_RANGE, NULL, 0));
+      return success(integer_value((int64_t)value));
+    }
+    case CHIMI_INTRINSIC_FLOAT_TO_TEXT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_FLOAT) return intrinsic_shape_defect(call_node);
+      char text[40]; float_text(arguments[0]->as.floating, text);
+      return success(text_value(text));
+    }
+    case CHIMI_INTRINSIC_FLOAT_PARSE: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
+      double value = 0; uint32_t error = parse_float_text(arguments[0]->as.text, &value);
+      return error ? failure(standard_value(error, NULL, 0)) : success(float_value(value));
+    }
     case CHIMI_INTRINSIC_TASK_START: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_CALLABLE)
         return intrinsic_shape_defect(call_node);
@@ -1807,7 +2081,9 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
 NODE_WRAPPER(constant, "constant", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *value;
   if (node->a == CHIMI_LITERAL_INTEGER) value = integer_value(node->integer);
-  else if (node->a == CHIMI_LITERAL_TEXT) value = text_value(CHIMI_STRINGS[node->b]);
+  else if (node->a == CHIMI_LITERAL_FLOAT) {
+    double raw; memcpy(&raw, &node->integer, sizeof(raw)); value = float_value(raw);
+  } else if (node->a == CHIMI_LITERAL_TEXT) value = text_value(CHIMI_STRINGS[node->b]);
   else value = boolean_value(node->integer != 0); result = success(value);
 })
 NODE_WRAPPER(reference, "reference", { result = eval_reference(runtime, node_id, environment, span); })
@@ -1910,8 +2186,11 @@ NODE_WRAPPER(record, "record", {
 NODE_WRAPPER(unary, "unary", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiControl *control = RUN(node->a);
   if (control->kind != CONTROL_SUCCESS) { result = control; break; }
+  if (control->value->kind == VALUE_FLOAT) { result = success(float_value(-control->value->as.floating)); break; }
   if (control->value->kind != VALUE_INTEGER) { result = defect("verified unary operand is not an integer", node_id); break; }
-  if (control->value->as.integer == INT64_MIN) { result = defect("integer negation overflow", node_id); break; }
+  if (control->value->as.integer == INT64_MIN) {
+    result = defect(numeric_message("integer overflow in unary `-`: -(%" PRId64 ")", INT64_MIN), node_id); break;
+  }
   result = success(integer_value(-control->value->as.integer));
 })
 
@@ -1919,24 +2198,25 @@ NODE_WRAPPER(binary, "binary", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiControl *left = RUN(node->b);
   if (left->kind != CONTROL_SUCCESS) { result = left; break; }
   ChimiControl *right = RUN(node->c); if (right->kind != CONTROL_SUCCESS) { result = right; break; }
-  if (left->value->kind != VALUE_INTEGER || right->value->kind != VALUE_INTEGER) {
-    result = defect("verified binary operands are not integers", node_id); break;
+  int order;
+  if (left->value->kind == VALUE_INTEGER && right->value->kind == VALUE_INTEGER) {
+    int64_t l = left->value->as.integer, r = right->value->as.integer;
+    if (is_arithmetic(node->a)) { result = integer_arithmetic(node->a, l, r, node_id); break; }
+    order = (l > r) - (l < r);
+  } else if (left->value->kind == VALUE_FLOAT && right->value->kind == VALUE_FLOAT) {
+    double l = left->value->as.floating, r = right->value->as.floating;
+    if (is_arithmetic(node->a)) { result = float_arithmetic(node->a, l, r, node_id); break; }
+    order = (l > r) - (l < r); /* finite, so total; -0.0 and 0.0 are equal */
+  } else {
+    result = defect("verified binary operands are not numbers", node_id); break;
   }
-  int64_t l = left->value->as.integer, r = right->value->as.integer, output = 0; bool overflow = false;
   switch (node->a) {
-    case CHIMI_BINARY_ADD: overflow = __builtin_add_overflow(l, r, &output); break;
-    case CHIMI_BINARY_SUBTRACT: overflow = __builtin_sub_overflow(l, r, &output); break;
-    case CHIMI_BINARY_MULTIPLY: overflow = __builtin_mul_overflow(l, r, &output); break;
-    case CHIMI_BINARY_DIVIDE:
-      if (r == 0) { result = defect("integer division by zero", node_id); break; }
-      if (l == INT64_MIN && r == -1) overflow = true; else output = l / r; break;
-    case CHIMI_BINARY_LESS: result = success(boolean_value(l < r)); break;
-    case CHIMI_BINARY_LESS_EQUAL: result = success(boolean_value(l <= r)); break;
-    case CHIMI_BINARY_GREATER: result = success(boolean_value(l > r)); break;
-    case CHIMI_BINARY_GREATER_EQUAL: result = success(boolean_value(l >= r)); break;
+    case CHIMI_BINARY_LESS: result = success(boolean_value(order < 0)); break;
+    case CHIMI_BINARY_LESS_EQUAL: result = success(boolean_value(order <= 0)); break;
+    case CHIMI_BINARY_GREATER: result = success(boolean_value(order > 0)); break;
+    case CHIMI_BINARY_GREATER_EQUAL: result = success(boolean_value(order >= 0)); break;
+    default: result = defect("verified binary operator is unknown", node_id); break;
   }
-  if (result) break;
-  result = overflow ? defect("integer arithmetic overflow", node_id) : success(integer_value(output));
 })
 
 NODE_WRAPPER(identity, "identity", { result = RUN(CHIMI_NODES[node_id].a); })

@@ -54,6 +54,8 @@ pub(crate) fn check(resolved: ResolvedProgram) -> TypedProgram {
 
         let literal_value_type = match &function.body.value {
             Literal::Integer { .. } => INT_TYPE,
+            // The legacy construction form only lowers integer and text literals.
+            Literal::Float { .. } => TEXT_TYPE,
             Literal::Text { value, .. } => {
                 let _ = value;
                 TEXT_TYPE
@@ -278,7 +280,25 @@ pub(crate) struct TypedProject {
     pub(crate) fields: HashMap<SymbolId, Vec<FieldShape>>,
     pub(crate) generic_kinds: HashMap<SymbolId, GenericKind>,
     pub(crate) diagnostics: Vec<Diagnostic>,
+    /// Warnings never block compilation, so they stay out of `diagnostics`.
+    pub(crate) warnings: Vec<Diagnostic>,
     pub(crate) inference_bindings: HashMap<u32, TypeId>,
+}
+
+const fn binary_operator_symbol(operator: BinaryOperator) -> &'static str {
+    match operator {
+        BinaryOperator::Add => "+",
+        BinaryOperator::Subtract => "-",
+        BinaryOperator::Multiply => "*",
+        BinaryOperator::Divide => "/",
+        BinaryOperator::Remainder => "%",
+        BinaryOperator::Less => "<",
+        BinaryOperator::LessEqual => "<=",
+        BinaryOperator::Greater => ">",
+        BinaryOperator::GreaterEqual => ">=",
+        BinaryOperator::And => "and",
+        BinaryOperator::Or => "or",
+    }
 }
 
 pub(crate) fn check_project(resolved: ResolvedProject) -> TypedProject {
@@ -882,6 +902,9 @@ struct ProjectTypeChecker {
     fields: HashMap<SymbolId, Vec<FieldShape>>,
     generic_kinds: HashMap<SymbolId, GenericKind>,
     diagnostics: Vec<Diagnostic>,
+    warnings: Vec<Diagnostic>,
+    /// Values of `Int` expressions folded from literals, for `T4312`.
+    integer_constants: HashMap<(ModuleId, SemanticId), i64>,
     next_inference_variable: u32,
     inference_bindings: HashMap<u32, TypeId>,
     /// The type every `break` of a loop must supply; it is also the loop's success type.
@@ -908,6 +931,9 @@ enum MatchTag {
     Boolean(bool),
     Integer(i64),
     Text(String),
+    /// A literal pattern typing rejected (`T4313`); it matches like an opaque
+    /// literal so the rejection causes no reachability follow-ons.
+    Rejected(SemanticId),
 }
 
 #[derive(Clone, Debug)]
@@ -940,6 +966,8 @@ impl ProjectTypeChecker {
             fields: HashMap::new(),
             generic_kinds: HashMap::new(),
             diagnostics,
+            warnings: Vec::new(),
+            integer_constants: HashMap::new(),
             next_inference_variable: 0,
             inference_bindings: HashMap::new(),
             loop_break_types: HashMap::new(),
@@ -1191,6 +1219,92 @@ impl ProjectTypeChecker {
             ),
         ];
         for (function, inputs, success, failures) in json_contracts {
+            let symbol = self.standard_function_symbol(function);
+            self.contracts.insert(
+                symbol,
+                CallableContract {
+                    inputs,
+                    success,
+                    failures,
+                    needs: pure.1,
+                },
+            );
+        }
+        let float = self.builtin_type("Float");
+        let int_option = self.standard_named_type(StandardType::Option, vec![int]);
+        let int_parse_failure = self.standard_failure_row(&[
+            StandardConstructor::IntParseEmpty,
+            StandardConstructor::IntParseInvalidDigit,
+            StandardConstructor::IntParseOutOfRange,
+        ]);
+        let float_parse_failure = self.standard_failure_row(&[
+            StandardConstructor::FloatParseEmpty,
+            StandardConstructor::FloatParseInvalid,
+            StandardConstructor::FloatParseOutOfRange,
+        ]);
+        let float_to_int_failure = self.standard_failure_row(&[
+            StandardConstructor::FloatNotInteger,
+            StandardConstructor::FloatOutOfRange,
+        ]);
+        let numeric_contracts = [
+            (
+                StandardFunction::IntParse,
+                vec![text],
+                int,
+                int_parse_failure,
+            ),
+            (StandardFunction::IntToText, vec![int], text, pure.0),
+            (
+                StandardFunction::IntAddChecked,
+                vec![int, int],
+                int_option,
+                pure.0,
+            ),
+            (
+                StandardFunction::IntSubtractChecked,
+                vec![int, int],
+                int_option,
+                pure.0,
+            ),
+            (
+                StandardFunction::IntMultiplyChecked,
+                vec![int, int],
+                int_option,
+                pure.0,
+            ),
+            (
+                StandardFunction::IntDivideChecked,
+                vec![int, int],
+                int_option,
+                pure.0,
+            ),
+            (
+                StandardFunction::IntRemainderChecked,
+                vec![int, int],
+                int_option,
+                pure.0,
+            ),
+            (StandardFunction::IntModulo, vec![int, int], int, pure.0),
+            (StandardFunction::FloatFromInt, vec![int], float, pure.0),
+            (StandardFunction::FloatTruncate, vec![float], float, pure.0),
+            (StandardFunction::FloatFloor, vec![float], float, pure.0),
+            (StandardFunction::FloatCeiling, vec![float], float, pure.0),
+            (StandardFunction::FloatRound, vec![float], float, pure.0),
+            (
+                StandardFunction::FloatToInt,
+                vec![float],
+                int,
+                float_to_int_failure,
+            ),
+            (StandardFunction::FloatToText, vec![float], text, pure.0),
+            (
+                StandardFunction::FloatParse,
+                vec![text],
+                float,
+                float_parse_failure,
+            ),
+        ];
+        for (function, inputs, success, failures) in numeric_contracts {
             let symbol = self.standard_function_symbol(function);
             self.contracts.insert(
                 symbol,
@@ -1571,6 +1685,17 @@ impl ProjectTypeChecker {
                 Vec::new(),
                 self.standard_named_type(StandardType::ChannelError, Vec::new()),
             ),
+            StandardConstructor::IntParseEmpty
+            | StandardConstructor::IntParseInvalidDigit
+            | StandardConstructor::IntParseOutOfRange
+            | StandardConstructor::FloatParseEmpty
+            | StandardConstructor::FloatParseInvalid
+            | StandardConstructor::FloatParseOutOfRange
+            | StandardConstructor::FloatNotInteger
+            | StandardConstructor::FloatOutOfRange => (
+                Vec::new(),
+                self.standard_named_type(constructor.type_kind(), Vec::new()),
+            ),
         }
     }
 
@@ -1721,6 +1846,13 @@ impl ProjectTypeChecker {
                         .cloned(),
                 )
                 .collect(),
+            warnings: previous
+                .warnings
+                .iter()
+                .filter(|warning| !affected_files.contains(&warning.file_id()))
+                .cloned()
+                .collect(),
+            integer_constants: HashMap::new(),
             next_inference_variable,
             inference_bindings: previous.inference_bindings.clone(),
             loop_break_types: HashMap::new(),
@@ -1794,6 +1926,7 @@ impl ProjectTypeChecker {
             fields: self.fields,
             generic_kinds: self.generic_kinds,
             diagnostics: self.diagnostics,
+            warnings: self.warnings,
             inference_bindings: self.inference_bindings,
         };
         let capability_report = crate::capability::check(&typed);
@@ -2163,6 +2296,7 @@ impl ProjectTypeChecker {
                         let _ = value;
                         "Int"
                     }
+                    Literal::Float { .. } => "Float",
                     Literal::Text { value, .. } => {
                         let _ = value;
                         "Text"
@@ -2383,10 +2517,24 @@ impl ProjectTypeChecker {
                 ..
             } => {
                 let fact = self.infer_expression(module_id, operand, generics, bindings);
-                let int = self.builtin_type("Int");
-                self.unify_at(module_id, *range, fact.success, int, "unary operand");
+                let float = self.builtin_type("Float");
+                let success = if self.resolve_inference_type(fact.success) == float {
+                    float
+                } else {
+                    let int = self.builtin_type("Int");
+                    self.unify_at(module_id, *range, fact.success, int, "unary operand");
+                    if let Some(value) = self.integer_constant(module_id, operand) {
+                        match crate::numeric::integer_negate(value) {
+                            Ok(negated) => {
+                                self.record_integer_constant(module_id, expression, negated)
+                            }
+                            Err(_) => self.always_defects_warning(module_id, *range),
+                        }
+                    }
+                    int
+                };
                 ExpressionFact {
-                    success: int,
+                    success,
                     failures: fact.failures,
                     needs: fact.needs,
                 }
@@ -2429,23 +2577,26 @@ impl ProjectTypeChecker {
             }
             ModuleExpression::Binary {
                 operator,
-                left,
-                right,
+                left: left_operand,
+                right: right_operand,
                 range,
                 ..
             } => {
-                let left = self.infer_expression(module_id, left, generics, bindings);
-                let right = self.infer_expression(module_id, right, generics, bindings);
+                let left = self.infer_expression(module_id, left_operand, generics, bindings);
+                let right = self.infer_expression(module_id, right_operand, generics, bindings);
                 {
-                    let int = self.builtin_type("Int");
-                    self.unify_at(module_id, *range, left.success, int, "binary left operand");
-                    self.unify_at(
-                        module_id,
-                        *range,
-                        right.success,
-                        int,
-                        "binary right operand",
-                    );
+                    let operand_type =
+                        self.numeric_operand_type(module_id, *operator, *range, left, right);
+                    if let (Some(arithmetic), Some(left), Some(right)) = (
+                        crate::numeric::ArithmeticOperator::from_binary(*operator),
+                        self.integer_constant(module_id, left_operand),
+                        self.integer_constant(module_id, right_operand),
+                    ) {
+                        match crate::numeric::integer_binary(arithmetic, left, right) {
+                            Ok(value) => self.record_integer_constant(module_id, expression, value),
+                            Err(_) => self.always_defects_warning(module_id, *range),
+                        }
+                    }
                     ExpressionFact {
                         success: if matches!(
                             operator,
@@ -2456,7 +2607,7 @@ impl ProjectTypeChecker {
                         ) {
                             self.builtin_type("Bool")
                         } else {
-                            int
+                            operand_type
                         },
                         failures: self.union_failure_rows([left.failures, right.failures]),
                         needs: self.union_needs_rows([left.needs, right.needs]),
@@ -2965,6 +3116,13 @@ impl ProjectTypeChecker {
                 PatternLiteral::Boolean(value) => {
                     (self.builtin_type("Bool"), MatchTag::Boolean(*value))
                 }
+                PatternLiteral::Float => {
+                    self.reject_float_pattern(module_id, pattern.range);
+                    (
+                        self.builtin_type("Float"),
+                        MatchTag::Rejected(pattern.semantic_id),
+                    )
+                }
             };
             if !self.unify(expected, literal_type) {
                 self.type_error_range(
@@ -3124,6 +3282,163 @@ impl ProjectTypeChecker {
     /// Requires an operand of `and`, `or`, or `not` to be `Bool`, reporting `T4304` otherwise.
     ///
     /// Returns the `Bool` type, which is the operator's result type either way.
+    /// Chooses the one numeric type that both operands of an arithmetic or comparison
+    /// operator share; there are no implicit conversions.
+    ///
+    /// Ensures: an operand with a known type decides the other; two open operands
+    /// default to `Int`; mixed known types are `T4302`, and a non-numeric arithmetic
+    /// operand is `T4303`, both returning poison so later stages stay quiet.
+    fn numeric_operand_type(
+        &mut self,
+        module_id: ModuleId,
+        operator: BinaryOperator,
+        range: TextRange,
+        left: ExpressionFact,
+        right: ExpressionFact,
+    ) -> TypeId {
+        let int = self.builtin_type("Int");
+        let float = self.builtin_type("Float");
+        let poison = TypeId::new(0);
+        let left_type = self.resolve_inference_type(left.success);
+        let right_type = self.resolve_inference_type(right.success);
+        let open = |checker: &Self, id: TypeId| {
+            id == poison
+                || matches!(
+                    checker.types[id.raw() as usize],
+                    CanonicalType::InferenceVariable(_)
+                )
+        };
+        let operand_type = if !open(self, left_type) {
+            left_type
+        } else if !open(self, right_type) {
+            right_type
+        } else {
+            int
+        };
+        let symbol = binary_operator_symbol(operator);
+        let comparison = matches!(
+            operator,
+            BinaryOperator::Less
+                | BinaryOperator::LessEqual
+                | BinaryOperator::Greater
+                | BinaryOperator::GreaterEqual
+        );
+        if operand_type != int && operand_type != float {
+            if comparison {
+                // Ordering beyond numbers belongs to the equality and ordering work.
+                self.unify_at(module_id, range, left.success, int, "binary left operand");
+                self.unify_at(module_id, range, right.success, int, "binary right operand");
+                return int;
+            }
+            let found = self.type_display_name(operand_type);
+            let help = if operator == BinaryOperator::Add && found == "Text" {
+                "; join text with `Text.append`"
+            } else {
+                ""
+            };
+            self.type_error_range(
+                module_id,
+                "T4303",
+                range,
+                format!("`{symbol}` needs `Int` or `Float` operands, found `{found}`{help}"),
+            );
+            return poison;
+        }
+        if !open(self, left_type) && !open(self, right_type) && left_type != right_type {
+            let (left_name, right_name) = (
+                self.type_display_name(left_type),
+                self.type_display_name(right_type),
+            );
+            let numeric = [left_type, right_type]
+                .iter()
+                .all(|id| *id == int || *id == float);
+            let help = if numeric {
+                "; convert one side with `Float.from_int` or `Float.to_int`"
+            } else {
+                ""
+            };
+            self.type_error_range(
+                module_id,
+                "T4302",
+                range,
+                format!(
+                    "`{symbol}` needs operands of one type, found `{left_name}` and `{right_name}`{help}"
+                ),
+            );
+            return poison;
+        }
+        self.unify(left.success, operand_type);
+        self.unify(right.success, operand_type);
+        operand_type
+    }
+
+    fn type_display_name(&self, id: TypeId) -> String {
+        match &self.types[self.resolve_inference_type(id).raw() as usize] {
+            CanonicalType::Named { symbol, .. } | CanonicalType::Generic(symbol) => {
+                self.resolved.symbol(*symbol).name.clone()
+            }
+            CanonicalType::Function(_) | CanonicalType::PolymorphicFunction { .. } => {
+                "function".to_owned()
+            }
+            CanonicalType::Record(_) => "record".to_owned(),
+            _ => "this type".to_owned(),
+        }
+    }
+
+    /// The `Int` value of `expression` when it is a literal or a folded constant.
+    fn integer_constant(&self, module_id: ModuleId, expression: &ModuleExpression) -> Option<i64> {
+        match expression {
+            ModuleExpression::Literal(Literal::Integer { value, .. }) => Some(*value),
+            ModuleExpression::Group { expression, .. } => {
+                self.integer_constant(module_id, expression)
+            }
+            _ => self
+                .integer_constants
+                .get(&(module_id, expression.semantic_id()))
+                .copied(),
+        }
+    }
+
+    fn record_integer_constant(
+        &mut self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        value: i64,
+    ) {
+        self.integer_constants
+            .insert((module_id, expression.semantic_id()), value);
+    }
+
+    /// `T4312`: a warning only. The operation still compiles and defects at run time.
+    fn always_defects_warning(&mut self, module_id: ModuleId, range: TextRange) {
+        let file_id = self.resolved.semantic.modules[module_id.raw() as usize]
+            .source
+            .file_id();
+        if self
+            .warnings
+            .iter()
+            .any(|warning| warning.file_id() == file_id && warning.range() == range)
+        {
+            return;
+        }
+        self.warnings.push(Diagnostic::warning(
+            DiagnosticStage::Type,
+            "T4312",
+            file_id,
+            range,
+            "this operation always defects: its constant operands overflow `Int` or divide by zero",
+        ));
+    }
+
+    fn reject_float_pattern(&mut self, module_id: ModuleId, range: TextRange) {
+        self.type_error_range(
+            module_id,
+            "T4313",
+            range,
+            "`Float` has no literal patterns; compare in a guard, as in `x if x < 1.5`",
+        );
+    }
+
     fn require_boolean_operand(
         &mut self,
         module_id: ModuleId,
@@ -3235,7 +3550,10 @@ impl ProjectTypeChecker {
             MatchTag::EnumVariant(constructor) => {
                 self.instantiate_pattern_constructor(*constructor, expected)
             }
-            MatchTag::Boolean(_) | MatchTag::Integer(_) | MatchTag::Text(_) => Some(Vec::new()),
+            MatchTag::Boolean(_)
+            | MatchTag::Integer(_)
+            | MatchTag::Text(_)
+            | MatchTag::Rejected(_) => Some(Vec::new()),
         }
     }
 
@@ -3546,6 +3864,10 @@ impl ProjectTypeChecker {
                 PatternLiteral::Integer(_) => "Int",
                 PatternLiteral::Text(_) => "Text",
                 PatternLiteral::Boolean(_) => "Bool",
+                PatternLiteral::Float => {
+                    self.reject_float_pattern(module_id, pattern.range);
+                    return;
+                }
             });
             if !self.unify(expected, literal_type) {
                 self.type_error_range(

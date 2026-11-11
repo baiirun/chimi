@@ -613,11 +613,8 @@ fn pure_integer_arithmetic_matches_the_interpreter() {
 }
 
 // A division defect inside an otherwise direct expression is the same on
-// both paths.
-//
-// Overflow parity is not covered yet: the native runtime reports every
-// overflow as "integer arithmetic overflow", while the interpreter names the
-// operation, such as "integer addition overflow".
+// both paths. Overflow parity is covered by
+// `integer_overflow_and_division_by_zero_defect_with_the_operator_and_operands`.
 #[test]
 fn integer_division_by_zero_matches_the_interpreter() {
     let outcome = run_both(
@@ -625,7 +622,9 @@ fn integer_division_by_zero_matches_the_interpreter() {
         "pub fn main() -> Int { 1 + 2 / 0 }\n",
     );
     assert!(
-        outcome.starts_with("\"outcome\":\"defect\",\"message\":\"integer division by zero\""),
+        outcome.starts_with(
+            "\"outcome\":\"defect\",\"message\":\"integer division by zero in `/`: 2 / 0\""
+        ),
         "{outcome}"
     );
 }
@@ -1021,5 +1020,591 @@ fn a_fieldless_variant_named_as_a_value_is_that_value() {
             "\"outcome\":\"expected_failure\",",
             "\"error\":{\"type\":\"Problem\",\"variant\":\"Broken\",\"fields\":{}}",
         )
+    );
+}
+
+fn warning_codes(source: &str) -> Vec<String> {
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    Compiler::type_project(vec![module])
+        .warnings()
+        .iter()
+        .map(|diagnostic| diagnostic.code().to_owned())
+        .collect()
+}
+
+fn check_messages(source: &str) -> Vec<String> {
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    Compiler::type_project(vec![module])
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| format!("{} {}", diagnostic.code(), diagnostic.message()))
+        .collect()
+}
+
+fn defect_message(outcome: &str) -> &str {
+    outcome
+        .strip_prefix("\"outcome\":\"defect\",\"message\":\"")
+        .and_then(|rest| rest.split_once('"'))
+        .map(|(message, _)| message)
+        .unwrap_or_else(|| panic!("not a defect: {outcome}"))
+}
+
+// N1
+#[test]
+fn integer_division_truncates_and_the_remainder_follows_the_dividend() {
+    let outcome = run_both(
+        "int-truncation",
+        "pub fn main() -> List<Int> { [-7 / 2, -7 % 2, 7 % -2, 7 % 2, -7 % -2] }\n",
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[-3,-1,1,1,-1]");
+}
+
+// N2-N6 and the remaining `Int` edges: operands arrive through calls, so nothing
+// folds, and both paths must report the same defect with the operator and operands.
+#[test]
+fn integer_overflow_and_division_by_zero_defect_with_the_operator_and_operands() {
+    let min = "-9223372036854775808";
+    let max = "9223372036854775807";
+    for (expression, message) in [
+        (
+            format!("divide({min}, -1)"),
+            format!("integer overflow in `/`: {min} / -1"),
+        ),
+        (
+            "divide(5, 0)".to_owned(),
+            "integer division by zero in `/`: 5 / 0".to_owned(),
+        ),
+        (
+            "remainder(5, 0)".to_owned(),
+            "integer division by zero in `%`: 5 % 0".to_owned(),
+        ),
+        (
+            format!("negate({min})"),
+            format!("integer overflow in unary `-`: -({min})"),
+        ),
+        (
+            format!("add({max}, 1)"),
+            format!("integer overflow in `+`: {max} + 1"),
+        ),
+        (
+            format!("subtract({min}, 1)"),
+            format!("integer overflow in `-`: {min} - 1"),
+        ),
+        (
+            format!("multiply({max}, 2)"),
+            format!("integer overflow in `*`: {max} * 2"),
+        ),
+    ] {
+        let outcome = run_both(
+            "int-edge-defects",
+            &format!(
+                concat!(
+                    "fn add(a: Int, b: Int) -> Int {{ a + b }}\n",
+                    "fn subtract(a: Int, b: Int) -> Int {{ a - b }}\n",
+                    "fn multiply(a: Int, b: Int) -> Int {{ a * b }}\n",
+                    "fn divide(a: Int, b: Int) -> Int {{ a / b }}\n",
+                    "fn remainder(a: Int, b: Int) -> Int {{ a % b }}\n",
+                    "fn negate(a: Int) -> Int {{ -a }}\n",
+                    "pub fn main() -> Int {{ {} }}\n",
+                ),
+                expression
+            ),
+        );
+        assert_eq!(defect_message(&outcome), message, "{expression}");
+    }
+}
+
+// N6: the division overflows, but the remainder is exact.
+#[test]
+fn int_min_remainder_minus_one_is_zero() {
+    let outcome = run_both(
+        "int-min-remainder",
+        concat!(
+            "fn remainder(a: Int, b: Int) -> Int { a % b }\n",
+            "pub fn main() -> List<Int> {\n",
+            "  let min = -9223372036854775808\n",
+            "  [min % -1, remainder(min, -1)]\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[0,0]");
+}
+
+// N2
+#[test]
+fn constant_overflow_warns_and_still_defects_at_run_time() {
+    let source = "pub fn main() -> Int { 9223372036854775807 + 1 }\n";
+    assert!(check_codes(source).is_empty());
+    assert_eq!(warning_codes(source), ["T4312"]);
+    let outcome = run_both("constant-overflow", source);
+    assert_eq!(
+        defect_message(&outcome),
+        "integer overflow in `+`: 9223372036854775807 + 1"
+    );
+}
+
+#[test]
+fn only_constant_operations_that_always_defect_warn() {
+    for source in [
+        "pub fn main() -> Int { 1 / 0 }\n",
+        "pub fn main() -> Int { 1 % (2 - 2) }\n",
+        "pub fn main() -> Int { -(-9223372036854775808) }\n",
+        "pub fn main() -> Int { (9223372036854775807 - 1) * 2 }\n",
+    ] {
+        assert_eq!(warning_codes(source), ["T4312"], "{source}");
+    }
+    for source in [
+        "pub fn main() -> Int { -9223372036854775808 % -1 }\n",
+        "pub fn main() -> Int { 9223372036854775806 + 1 }\n",
+        "fn zero() -> Int { 0 }\npub fn main() -> Int { 1 / zero() }\n",
+    ] {
+        assert!(warning_codes(source).is_empty(), "{source}");
+    }
+}
+
+// N7, N8
+#[test]
+fn integer_literals_are_range_checked_after_folding_unary_minus() {
+    assert!(check_codes("pub fn main() -> Int { -9223372036854775808 }\n").is_empty());
+    for source in [
+        "pub fn main() -> Int { 9223372036854775808 }\n",
+        "pub fn main() -> Int { 0xFFFF_FFFF_FFFF_FFFF }\n",
+        "pub fn main() -> Int { -(9223372036854775808) }\n",
+        "pub fn main() -> Int { case 1 { 99999999999999999999 -> 1\n _ -> 0 } }\n",
+    ] {
+        assert_eq!(check_codes(source), ["S1002"], "{source}");
+    }
+}
+
+// N9
+#[test]
+fn separated_hexadecimal_and_binary_literals_have_their_values() {
+    let outcome = run_both(
+        "integer-literal-forms",
+        concat!(
+            "pub fn main() -> List<Int> {\n",
+            "  [1_000, 0x1F, 0b101, 0xff_FF, -0x8000_0000_0000_0000]\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":[1000,31,5,65535,-9223372036854775808]"
+    );
+}
+
+// N10
+#[test]
+fn malformed_number_literals_are_syntax_errors() {
+    for literal in [
+        "1.", ".5", "1__0", "_1", "1_", "0x", "0b102", "0xG", "017", "1.5_",
+    ] {
+        let codes = check_codes(&format!("pub fn main() -> Int {{ {literal} }}\n"));
+        assert!(
+            codes.iter().any(|code| code.starts_with('S')),
+            "{literal}: {codes:?}"
+        );
+    }
+}
+
+// N12
+#[test]
+fn a_float_literal_that_rounds_to_infinity_is_rejected() {
+    assert_eq!(check_codes("pub fn main() -> Float { 1e309 }\n"), ["S1003"]);
+    assert!(check_codes("pub fn main() -> Float { 1e-400 }\n").is_empty());
+}
+
+#[test]
+fn float_literals_and_arithmetic_render_canonically_on_both_paths() {
+    let outcome = run_both(
+        "float-arithmetic",
+        concat!(
+            "pub fn main() -> List<Float> {\n",
+            "  [0.1 + 0.2, 1_000.25, 2.5e-3, 6.02E23, 1e16, 1e15, 0.00001, 0.000001,\n",
+            "   0.0 - 0.0, -0.0, -7.5 % 2.0, 7.0 / 2.0, -(1.5), 1e300 * 1e-300]\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        concat!(
+            "\"outcome\":\"success\",\"value\":[0.30000000000000004,1000.25,0.0025,6.02e23,",
+            "1e16,1000000000000000.0,0.00001,1e-6,0.0,-0.0,-1.5,3.5,-1.5,1.0]"
+        )
+    );
+}
+
+#[test]
+fn float_comparisons_are_numeric() {
+    let outcome = run_both(
+        "float-comparison",
+        concat!(
+            "pub fn main() -> List<Bool> {\n",
+            "  [0.0 <= -0.0, -0.0 < 0.0, 1.5 > 1.25, -1e300 < 5e-324, 2.0 >= 3.0]\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":[true,false,true,true,false]"
+    );
+}
+
+// N14, N15
+#[test]
+fn float_operations_without_a_finite_result_defect() {
+    for (expression, message) in [
+        (
+            "divide(1.0, 0.0)",
+            "float division by zero in `/`: 1.0 / 0.0",
+        ),
+        (
+            "divide(0.0, -0.0)",
+            "float division by zero in `/`: 0.0 / -0.0",
+        ),
+        (
+            "remainder(1.0, 0.0)",
+            "float division by zero in `%`: 1.0 % 0.0",
+        ),
+        (
+            "square(1e200)",
+            "float `*` has no finite result: 1e200 * 1e200",
+        ),
+        (
+            "add(1.7976931348623157e308, 1e292)",
+            "float `+` has no finite result: 1.7976931348623157e308 + 1e292",
+        ),
+    ] {
+        let outcome = run_both(
+            "float-defects",
+            &format!(
+                concat!(
+                    "fn add(a: Float, b: Float) -> Float {{ a + b }}\n",
+                    "fn divide(a: Float, b: Float) -> Float {{ a / b }}\n",
+                    "fn remainder(a: Float, b: Float) -> Float {{ a % b }}\n",
+                    "fn square(x: Float) -> Float {{ x * x }}\n",
+                    "pub fn main() -> Float {{ {} }}\n",
+                ),
+                expression
+            ),
+        );
+        assert_eq!(defect_message(&outcome), message, "{expression}");
+    }
+}
+
+// N17, E11-adjacent: no mixed arithmetic or comparison.
+#[test]
+fn mixed_int_and_float_operands_are_rejected_with_a_conversion_hint() {
+    for source in [
+        "pub fn main() -> Float { 1 + 2.0 }\n",
+        "pub fn main() -> Float { 2.0 * 3 }\n",
+        "pub fn main() -> Bool { 1 < 1.5 }\n",
+        "fn half(x: Float) -> Float { x / 2 }\npub fn main() -> Float { half(1.0) }\n",
+    ] {
+        let messages = check_messages(source);
+        assert_eq!(messages.len(), 1, "{source}: {messages:?}");
+        assert!(
+            messages[0].starts_with("T4302") && messages[0].contains("Float.from_int"),
+            "{source}: {messages:?}"
+        );
+    }
+}
+
+// N18
+#[test]
+fn arithmetic_on_text_is_rejected_with_a_text_append_hint() {
+    let messages = check_messages("pub fn main() -> Text { \"a\" + \"b\" }\n");
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].starts_with("T4303") && messages[0].contains("Text.append"),
+        "{messages:?}"
+    );
+    assert_eq!(
+        check_codes("pub fn main() -> Bool { True * False }\n"),
+        ["T4303"]
+    );
+}
+
+// N23
+#[test]
+fn float_literal_patterns_are_rejected() {
+    let source = concat!(
+        "fn describe(x: Float) -> Int {\n",
+        "  case x {\n",
+        "    1.5 -> 1\n",
+        "    _ -> 0\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { describe(1.5) }\n",
+    );
+    assert_eq!(check_codes(source), ["T4313"]);
+}
+
+fn std_outcome(name: &str, body: &str) -> String {
+    run_both(
+        name,
+        &format!("import std/int as Int\nimport std/float as Float\n\n{body}\n"),
+    )
+}
+
+fn failure(type_name: &str, variant: &str) -> String {
+    format!(
+        "\"outcome\":\"expected_failure\",\"error\":{{\"type\":\"{type_name}\",\"variant\":\"{variant}\",\"fields\":{{}}}}"
+    )
+}
+
+// N19
+#[test]
+fn int_parse_accepts_decimal_text_and_names_each_failure() {
+    assert_eq!(
+        std_outcome(
+            "int-parse",
+            "pub fn main() -> List<Int> { [Int.parse(\"42\"), Int.parse(\"-9223372036854775808\")] }"
+        ),
+        "\"outcome\":\"success\",\"value\":[42,-9223372036854775808]"
+    );
+    for (text, variant) in [
+        ("", "Empty"),
+        ("4x", "InvalidDigit"),
+        ("+4", "InvalidDigit"),
+        (" 4", "InvalidDigit"),
+        ("99999999999999999999", "OutOfRange"),
+    ] {
+        assert_eq!(
+            std_outcome(
+                "int-parse-failure",
+                &format!("pub fn main() -> Int {{ Int.parse(\"{text}\") }}")
+            ),
+            failure("ParseError", variant),
+            "{text:?}"
+        );
+    }
+}
+
+// N20
+#[test]
+fn float_parse_rejects_text_outside_the_finite_literal_grammar() {
+    assert_eq!(
+        std_outcome(
+            "float-parse",
+            "pub fn main() -> List<Float> { [Float.parse(\"-2.5e-3\"), Float.parse(\"7\")] }"
+        ),
+        "\"outcome\":\"success\",\"value\":[-0.0025,7.0]"
+    );
+    for (text, variant) in [
+        ("", "Empty"),
+        ("nan", "Invalid"),
+        ("inf", "Invalid"),
+        ("1.", "Invalid"),
+        ("+1.0", "Invalid"),
+        ("1e400", "OutOfRange"),
+    ] {
+        assert_eq!(
+            std_outcome(
+                "float-parse-failure",
+                &format!("pub fn main() -> Float {{ Float.parse(\"{text}\") }}")
+            ),
+            failure("ParseError", variant),
+            "{text:?}"
+        );
+    }
+}
+
+// N21
+#[test]
+fn float_to_int_requires_an_already_rounded_value_inside_int() {
+    assert_eq!(
+        std_outcome(
+            "float-to-int",
+            "pub fn main() -> Int { Float.to_int(Float.round(2.5)) }"
+        ),
+        "\"outcome\":\"success\",\"value\":3"
+    );
+    for (value, variant) in [("2.5", "NotInteger"), ("1e20", "OutOfRange")] {
+        assert_eq!(
+            std_outcome(
+                "float-to-int-failure",
+                &format!("pub fn main() -> Int {{ Float.to_int({value}) }}")
+            ),
+            failure("ConversionError", variant),
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn float_rounding_functions_follow_their_direction() {
+    assert_eq!(
+        std_outcome(
+            "float-rounding",
+            concat!(
+                "pub fn main() -> List<Float> {\n",
+                "  [Float.round(2.5), Float.round(-2.5), Float.round(-0.4), Float.truncate(-2.7),\n",
+                "   Float.floor(-2.5), Float.ceiling(-2.5), Float.from_int(9007199254740993)]\n",
+                "}",
+            )
+        ),
+        "\"outcome\":\"success\",\"value\":[3.0,-3.0,-0.0,-2.0,-3.0,-2.0,9007199254740992.0]"
+    );
+}
+
+// N16 (text half)
+#[test]
+fn float_text_is_the_canonical_shortest_form() {
+    assert_eq!(
+        std_outcome(
+            "float-text",
+            concat!(
+                "pub fn main() -> List<Text> {\n",
+                "  [Float.to_text(-0.0), Float.to_text(0.0 - 0.0), Float.to_text(5e-324),\n",
+                "   Float.to_text(1.7976931348623157e308), Float.to_text(100.0), Float.to_text(0.1)]\n",
+                "}",
+            )
+        ),
+        concat!(
+            "\"outcome\":\"success\",\"value\":[\"-0.0\",\"0.0\",\"5e-324\",",
+            "\"1.7976931348623157e308\",\"100.0\",\"0.1\"]"
+        )
+    );
+}
+
+// N22: walks hundreds of values across the exponent range. Each must parse back to
+// itself (`same` uses ordering, since `==` arrives later), and both paths must
+// render every one identically.
+#[test]
+fn float_text_round_trips_through_parse_for_sampled_values() {
+    let outcome = std_outcome(
+        "float-round-trip",
+        concat!(
+            "fn same(a: Float, b: Float) -> Bool { not (a < b) and not (a > b) }\n",
+            "struct Walk { x: Float, steps: Int, rendered: Text, misses: Int }\n",
+            "fn walk(start: Float, factor: Float, steps: Int) -> Text {\n",
+            "  loop state = Walk(start, steps, \"\", 0) {\n",
+            "    case state.steps {\n",
+            "      0 -> break Text.append(state.rendered, Int.to_text(state.misses))\n",
+            "      _ -> {\n",
+            "        let text = Float.to_text(state.x)\n",
+            "        let back = Float.parse(text)\n",
+            "        let miss = case same(back, state.x) {\n",
+            "          True -> 0\n",
+            "          False -> 1\n",
+            "        }\n",
+            "        let rendered = Text.append(Text.append(state.rendered, text), \",\")\n",
+            "        Walk(state.x * factor, state.steps - 1, rendered, state.misses + miss)\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> List<Text> {\n",
+            "  [walk(1.0, -3.7, 500), walk(1.0, -0.27, 500), walk(1.0, 0.5, 1080),\n",
+            "   walk(1.0, 2.0, 1000), walk(1e-300, 1.1, 2000)]\n",
+            "}",
+        ),
+    );
+    let walks = outcome
+        .strip_prefix("\"outcome\":\"success\",\"value\":[")
+        .unwrap_or_else(|| panic!("{outcome}"));
+    assert_eq!(walks.matches(",0\"").count(), 5, "{outcome}");
+}
+
+#[test]
+fn checked_integer_functions_return_none_instead_of_defecting() {
+    let outcome = std_outcome(
+        "int-checked",
+        concat!(
+            "pub fn main() -> List<Option<Int>> {\n",
+            "  [Int.add_checked(9223372036854775807, 1), Int.subtract_checked(1, 2),\n",
+            "   Int.multiply_checked(4611686018427387904, 2), Int.divide_checked(1, 0),\n",
+            "   Int.divide_checked(-9223372036854775808, -1),\n",
+            "   Int.remainder_checked(-9223372036854775808, -1), Int.remainder_checked(1, 0)]\n",
+            "}",
+        ),
+    );
+    let none = "{\"type\":\"Option\",\"variant\":\"None\",\"fields\":{}}";
+    let some = |value: i64| {
+        format!("{{\"type\":\"Option\",\"variant\":\"Some\",\"fields\":{{\"value\":{value}}}}}")
+    };
+    assert_eq!(
+        outcome,
+        format!(
+            "\"outcome\":\"success\",\"value\":[{none},{},{none},{none},{none},{},{none}]",
+            some(-1),
+            some(0)
+        )
+    );
+}
+
+#[test]
+fn int_modulo_takes_the_sign_of_the_modulus() {
+    let outcome = std_outcome(
+        "int-modulo",
+        concat!(
+            "pub fn main() -> List<Int> {\n",
+            "  [Int.modulo(-7, 3), Int.modulo(7, -3), Int.modulo(-6, 3),\n",
+            "   Int.modulo(-9223372036854775808, -1), Int.to_text(-17) |> Int.parse]\n",
+            "}",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[2,-2,0,0,-17]");
+    let outcome = std_outcome(
+        "int-modulo-zero",
+        "pub fn main() -> Int { Int.modulo(5, 0) }",
+    );
+    assert_eq!(
+        defect_message(&outcome),
+        "integer division by zero in `Int.modulo`: Int.modulo(5, 0)"
+    );
+}
+
+// N13
+#[test]
+#[ignore = "needs == (ts-95bffa)"]
+fn float_addition_rounds_so_point_one_plus_point_two_is_not_point_three() {
+    let outcome = run_both(
+        "float-rounding-equality",
+        "pub fn main() -> Bool { 0.1 + 0.2 == 0.3 }\n",
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":false");
+}
+
+// N16 (equality half)
+#[test]
+#[ignore = "needs == (ts-95bffa)"]
+fn negative_zero_equals_zero() {
+    let outcome = run_both(
+        "float-negative-zero-equality",
+        "pub fn main() -> Bool { 0.0 - 0.0 == -0.0 }\n",
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":true");
+}
+
+// E11
+#[test]
+#[ignore = "needs == (ts-95bffa)"]
+fn int_and_float_are_never_equal_operands() {
+    assert_eq!(
+        check_codes("pub fn main() -> Bool { 1 == 1.0 }\n"),
+        ["T4302"]
+    );
+}
+
+// E20
+#[test]
+#[ignore = "needs == (ts-95bffa)"]
+fn a_map_keyed_by_zero_finds_negative_zero() {
+    let outcome = run_both(
+        "float-map-key",
+        concat!(
+            "import std/map as Map\n",
+            "pub fn main() -> Option<Int> {\n",
+            "  Map.empty() |> Map.put(0.0, 1) |> Map.get(-0.0)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":{\"type\":\"Option\",\"variant\":\"Some\",\"fields\":{\"value\":1}}"
     );
 }

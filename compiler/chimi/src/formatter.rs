@@ -124,6 +124,14 @@ fn format_parse(parsed: &ParseResult) -> String {
                 writer.trim_space();
                 writer.write(": ");
             }
+            // Division spaces like the other arithmetic operators; a `/` in an
+            // import path such as `std/json` stays tight.
+            TokenKind::Slash
+                if token_has_ancestor(token, &[NodeKind::MultiplicativeExpression]) =>
+            {
+                writer.space();
+                writer.write("/ ");
+            }
             TokenKind::Dot | TokenKind::Slash => {
                 writer.trim_space();
                 writer.write(token.text());
@@ -168,6 +176,7 @@ fn format_parse(parsed: &ParseResult) -> String {
             | TokenKind::Plus
             | TokenKind::Minus
             | TokenKind::Star
+            | TokenKind::Percent
             | TokenKind::Less
             | TokenKind::LessEqual
             | TokenKind::Greater
@@ -295,6 +304,7 @@ const fn word_kind(kind: TokenKind) -> bool {
             | TokenKind::False
             | TokenKind::Identifier
             | TokenKind::Integer
+            | TokenKind::Float
             | TokenKind::Text
     )
 }
@@ -405,6 +415,22 @@ mod tests {
                 .diagnostics()
                 .iter()
                 .all(|diagnostic| diagnostic.stage() == crate::diagnostic::DiagnosticStage::Syntax)
+        );
+    }
+
+    #[test]
+    fn arithmetic_operators_space_canonically_but_import_paths_stay_tight() {
+        let source = concat!(
+            "import std/float as Float\n",
+            "fn f(a: Int, b: Float) -> Int { 20/2/5 + a%3*-a }\n",
+        );
+        let report = format(source);
+        assert!(!report.is_blocked(), "{}", report.render_diagnostics());
+        assert!(report.text().starts_with("import std/float as Float\n"));
+        assert!(
+            report.text().contains("  20 / 2 / 5 + a % 3 * -a\n"),
+            "{}",
+            report.text()
         );
     }
 

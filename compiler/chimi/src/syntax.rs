@@ -37,6 +37,7 @@ pub(crate) enum TokenKind {
     False,
     Identifier,
     Integer,
+    Float,
     Text,
     LeftBrace,
     RightBrace,
@@ -55,6 +56,7 @@ pub(crate) enum TokenKind {
     Plus,
     Minus,
     Star,
+    Percent,
     Equal,
     Arrow,
     Pipe,
@@ -98,6 +100,7 @@ impl TokenKind {
             Self::False => "false",
             Self::Identifier => "identifier",
             Self::Integer => "integer",
+            Self::Float => "float",
             Self::Text => "text",
             Self::LeftBrace => "left_brace",
             Self::RightBrace => "right_brace",
@@ -116,6 +119,7 @@ impl TokenKind {
             Self::Plus => "plus",
             Self::Minus => "minus",
             Self::Star => "star",
+            Self::Percent => "percent",
             Self::Equal => "equal",
             Self::Arrow => "arrow",
             Self::Pipe => "pipe",
@@ -157,6 +161,7 @@ impl TokenKind {
             Self::False => "`False`",
             Self::Identifier => "identifier",
             Self::Integer => "integer literal",
+            Self::Float => "float literal",
             Self::Text => "text literal",
             Self::LeftBrace => "`{`",
             Self::RightBrace => "`}`",
@@ -175,6 +180,7 @@ impl TokenKind {
             Self::Plus => "`+`",
             Self::Minus => "`-`",
             Self::Star => "`*`",
+            Self::Percent => "`%`",
             Self::Equal => "`=`",
             Self::Arrow => "`->`",
             Self::Pipe => "`|>`",
@@ -817,7 +823,7 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                 emit(TokenKind::GreaterEqual, start, offset, &mut tokens);
             }
             b'{' | b'}' | b'(' | b')' | b'[' | b']' | b':' | b',' | b'.' | b'/' | b'<' | b'>'
-            | b'+' | b'-' | b'*' | b'=' => {
+            | b'+' | b'-' | b'*' | b'%' | b'=' => {
                 let kind = match bytes[offset] {
                     b'{' => TokenKind::LeftBrace,
                     b'}' => TokenKind::RightBrace,
@@ -834,6 +840,7 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                     b'+' => TokenKind::Plus,
                     b'-' => TokenKind::Minus,
                     b'*' => TokenKind::Star,
+                    b'%' => TokenKind::Percent,
                     b'=' => TokenKind::Equal,
                     _ => unreachable!(),
                 };
@@ -841,13 +848,31 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                 emit(kind, start, offset, &mut tokens);
             }
             b'0'..=b'9' => {
-                offset += 1;
-                while offset < bytes.len()
-                    && (bytes[offset].is_ascii_digit() || bytes[offset] == b'_')
-                {
-                    offset += 1;
+                let (kind, end, problem) = lex_number(bytes, start);
+                offset = end;
+                if let Some(problem) = problem {
+                    diagnostics.push(Diagnostic::error(
+                        DiagnosticStage::Syntax,
+                        "S1001",
+                        source.file_id(),
+                        TextRange::new(start, offset),
+                        problem,
+                    ));
                 }
-                emit(TokenKind::Integer, start, offset, &mut tokens);
+                emit(kind, start, offset, &mut tokens);
+            }
+            // `_1` reads as a misplaced digit separator, not an identifier.
+            b'_' if offset + 1 < bytes.len() && bytes[offset + 1].is_ascii_digit() => {
+                let (kind, end, _) = lex_number(bytes, start + 1);
+                offset = end;
+                diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Syntax,
+                    "S1001",
+                    source.file_id(),
+                    TextRange::new(start, offset),
+                    "`_` may appear only between two digits of a number",
+                ));
+                emit(kind, start, offset, &mut tokens);
             }
             b'"' => {
                 offset += 1;
@@ -938,6 +963,78 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
         range: TextRange::empty(text.len()),
     });
     (tokens, diagnostics)
+}
+
+/// Lexes the number literal that starts with the digit at `start`.
+///
+/// Ensures: returns the token kind, the end offset, and a problem message when the
+/// literal is malformed. A `.` starts a fraction only when a digit follows it, so
+/// `0..10` and `point.x` are untouched; `e` starts an exponent only when digits follow.
+fn lex_number(bytes: &[u8], start: usize) -> (TokenKind, usize, Option<&'static str>) {
+    const SEPARATOR: &str = "`_` may appear only between two digits of a number";
+    let mut problem = None;
+    // Consumes digits accepted by `is_digit` and `_` separators; reports a misplaced `_`.
+    let digits =
+        |offset: &mut usize, problem: &mut Option<&'static str>, is_digit: fn(u8) -> bool| {
+            let first = *offset;
+            while *offset < bytes.len() && (is_digit(bytes[*offset]) || bytes[*offset] == b'_') {
+                *offset += 1;
+            }
+            let run = &bytes[first..*offset];
+            if run.first() == Some(&b'_')
+                || run.last() == Some(&b'_')
+                || run.windows(2).any(|pair| pair == b"__")
+            {
+                problem.get_or_insert(SEPARATOR);
+            }
+            run.iter().any(|byte| *byte != b'_')
+        };
+    let mut offset = start;
+    let radix_digit: Option<fn(u8) -> bool> = match bytes.get(start + 1) {
+        Some(b'x') if bytes[start] == b'0' => Some(|byte: u8| byte.is_ascii_hexdigit()),
+        Some(b'b') if bytes[start] == b'0' => Some(|byte: u8| matches!(byte, b'0' | b'1')),
+        _ => None,
+    };
+    if let Some(is_digit) = radix_digit {
+        offset += 2;
+        let has_digits = digits(&mut offset, &mut problem, is_digit);
+        // Letters and digits the radix does not allow still belong to this literal.
+        let valid_end = offset;
+        while offset < bytes.len() && is_identifier_continue(bytes[offset]) {
+            offset += 1;
+        }
+        if !has_digits || offset != valid_end {
+            problem = Some(if bytes[start + 1] == b'x' {
+                "a hexadecimal literal needs digits 0-9 and a-f after `0x`"
+            } else {
+                "a binary literal needs digits 0 and 1 after `0b`"
+            });
+        }
+        return (TokenKind::Integer, offset, problem);
+    }
+    digits(&mut offset, &mut problem, |byte| byte.is_ascii_digit());
+    if bytes[start] == b'0' && offset > start + 1 && bytes[start + 1].is_ascii_digit() {
+        problem
+            .get_or_insert("a decimal literal cannot start with `0`; Chimi has no octal literals");
+    }
+    let mut kind = TokenKind::Integer;
+    if offset + 1 < bytes.len() && bytes[offset] == b'.' && bytes[offset + 1].is_ascii_digit() {
+        offset += 1;
+        digits(&mut offset, &mut problem, |byte| byte.is_ascii_digit());
+        kind = TokenKind::Float;
+    }
+    if offset < bytes.len() && matches!(bytes[offset], b'e' | b'E') {
+        let sign = usize::from(matches!(bytes.get(offset + 1), Some(b'+' | b'-')));
+        if bytes
+            .get(offset + 1 + sign)
+            .is_some_and(|byte| byte.is_ascii_digit())
+        {
+            offset += 1 + sign;
+            digits(&mut offset, &mut problem, |byte| byte.is_ascii_digit());
+            kind = TokenKind::Float;
+        }
+    }
+    (kind, offset, problem)
 }
 
 /// Reports `&&`, `||`, or `!` at `start..end` with an edit to the keyword `word`.
@@ -1583,7 +1680,7 @@ impl<'source> Parser<'source> {
         let marker = self.placeholder();
         self.parse_unary();
         let mut wrapped = false;
-        while self.after_any_newlines(&[TokenKind::Star, TokenKind::Slash]) {
+        while self.after_any_newlines(&[TokenKind::Star, TokenKind::Slash, TokenKind::Percent]) {
             if !wrapped {
                 self.complete(marker, NodeKind::MultiplicativeExpression);
                 wrapped = true;
@@ -1651,7 +1748,11 @@ impl<'source> Parser<'source> {
 
     fn parse_primary(&mut self) {
         match self.kind() {
-            TokenKind::Integer | TokenKind::Text | TokenKind::True | TokenKind::False => {
+            TokenKind::Integer
+            | TokenKind::Float
+            | TokenKind::Text
+            | TokenKind::True
+            | TokenKind::False => {
                 self.start(NodeKind::Literal);
                 self.bump();
                 self.finish();
@@ -1901,7 +2002,11 @@ impl<'source> Parser<'source> {
     fn parse_pattern(&mut self) {
         self.start(NodeKind::Pattern);
         match self.kind() {
-            TokenKind::Integer | TokenKind::Text | TokenKind::True | TokenKind::False => {
+            TokenKind::Integer
+            | TokenKind::Float
+            | TokenKind::Text
+            | TokenKind::True
+            | TokenKind::False => {
                 self.bump();
             }
             TokenKind::Identifier => {
@@ -2218,6 +2323,26 @@ mod tests {
     use crate::diagnostic::DiagnosticStage;
     use crate::source::SourceSnapshot;
     use std::collections::BTreeSet;
+
+    fn token_kinds(text: &str) -> Vec<super::TokenKind> {
+        let (tokens, diagnostics) = super::lex(&SourceSnapshot::from_text("lex.chimi", text));
+        assert!(diagnostics.is_empty(), "{text}: {diagnostics:?}");
+        tokens.into_iter().map(|token| token.kind).collect()
+    }
+
+    // N11: a `.` starts a fraction only when a digit follows it.
+    #[test]
+    fn a_dot_after_digits_starts_a_fraction_only_before_a_digit() {
+        use super::TokenKind::{Dot, End, Float, Identifier, Integer};
+        assert_eq!(token_kinds("0..10"), [Integer, Dot, Dot, Integer, End]);
+        assert_eq!(token_kinds("1.x"), [Integer, Dot, Identifier, End]);
+        assert_eq!(token_kinds("1.5"), [Float, End]);
+        assert_eq!(
+            token_kinds("1e9 2E-3"),
+            [Float, super::TokenKind::Whitespace, Float, End]
+        );
+        assert_eq!(token_kinds("2em"), [Integer, Identifier, End]);
+    }
 
     fn contains_node(node: &SyntaxNode<'_>, kind: NodeKind) -> bool {
         node.kind() == kind

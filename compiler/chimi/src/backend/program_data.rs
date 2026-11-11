@@ -50,6 +50,7 @@ impl ProgramData {
             CorePattern::Binding(symbol) => (1, symbol.raw(), 0, 0, 0),
             CorePattern::Literal(literal) => match literal {
                 CoreLiteral::Integer(value) => (2, 0, 0, 0, *value),
+                CoreLiteral::Float(_) => unreachable!("Float has no literal patterns"),
                 CoreLiteral::Text(value) => {
                     let text = self.string(value);
                     (2, 1, text, 0, 0)
@@ -158,6 +159,11 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                 CoreLiteral::Boolean(value) => {
                     row.1 = 2;
                     row.7 = i64::from(*value);
+                }
+                // The runtime reads the IEEE 754 bits back with `memcpy`.
+                CoreLiteral::Float(value) => {
+                    row.1 = 3;
+                    row.7 = value.to_bits() as i64;
                 }
             },
             CoreOperation::Reference(symbol) => row.1 = symbol.raw(),
@@ -553,6 +559,7 @@ const fn binary_operator(operator: BinaryOperator) -> u32 {
         BinaryOperator::LessEqual => 5,
         BinaryOperator::Greater => 6,
         BinaryOperator::GreaterEqual => 7,
+        BinaryOperator::Remainder => 8,
         BinaryOperator::And | BinaryOperator::Or => {
             panic!("Core lowers `and` and `or` to a Bool match")
         }
