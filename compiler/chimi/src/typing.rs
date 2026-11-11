@@ -3975,11 +3975,19 @@ impl ProjectTypeChecker {
                 && !has_outcome_pattern
                 && !self.failure_row_is_empty(subject_facts[0].failures)
             {
+                let failures = self.formatter().format_failure_row(
+                    &self.failure_rows[subject_facts[0].failures.raw() as usize],
+                );
                 self.type_error_range(
                     module_id,
                     "T4222",
                     range,
-                    "a case over a fallible expression must use Success(...) and Failure(...) patterns",
+                    format!(
+                        "this case's subject may fail with `{failures}`, so its arms must be \
+                         Success(...) and Failure(...) patterns; to match the success value \
+                         and let the failure propagate, bind it first (`let next = ...`) \
+                         and write `case next`"
+                    ),
                 );
             }
             self.infer_ordinary_case(

@@ -8529,3 +8529,33 @@ fn an_inferred_function_parameter_must_be_called_consistently() {
     let source = concat!("fn both(f) -> Int {\n", "  f(1) + f(1, 2)\n", "}\n",);
     assert_eq!(check_codes(source), ["T4202"]);
 }
+
+// T4222 over a fallible subject names what it may fail with and shows the
+// `let`-then-`case` rewrite, which is accepted.
+#[test]
+fn a_plain_case_over_a_fallible_subject_names_the_failures_and_the_rewrite() {
+    let wrong = concat!(
+        "import std/int as Int\n",
+        "fn double(text: Text) -> Int {\n",
+        "  case Int.parse(text) {\n",
+        "    0 -> 0\n",
+        "    n -> n * 2\n",
+        "  }\n",
+        "}\n",
+    );
+    let diagnostics = check_diagnostics(wrong);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let (code, _, message) = &diagnostics[0];
+    assert_eq!(code, "T4222");
+    assert!(
+        message.contains("`ParseError`")
+            && message.contains("let next = ")
+            && message.contains("case next"),
+        "{message}"
+    );
+    let fixed = wrong.replace(
+        "  case Int.parse(text) {\n",
+        "  let next = Int.parse(text)\n  case next {\n",
+    );
+    assert_eq!(check_codes(&fixed), Vec::<String>::new());
+}
