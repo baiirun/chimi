@@ -2404,6 +2404,70 @@ fn a_task_result_through_a_generic_wrapper_runs() {
     }
 }
 
+// ts-adec7a: a function value generic over a failure row takes the row of the
+// slot it fills, from a generic callee bound by another argument and from a
+// monomorphic slot. Before, its row was forced empty and the call gave T4203.
+#[test]
+fn a_row_polymorphic_function_value_takes_the_rows_of_its_slot() {
+    let declarations = concat!(
+        "enum Oops {\n",
+        "  Bad\n",
+        "}\n",
+        "fn run<E>(operation: fn() -> Int errors E) -> Int { operation() }\n",
+        "fn rethrow<E>(operation: fn() -> Int errors E) {\n",
+        "  case operation() {\n",
+        "    Success(value) -> value\n",
+        "    Failure(error) -> Failure(error)\n",
+        "  }\n",
+        "}\n",
+        "fn apply<F>(f: fn(fn() -> Int errors F) -> Int errors F, op: fn() -> Int errors F) -> Int {\n",
+        "  f(op)\n",
+        "}\n",
+        "fn handle(f: fn(fn() -> Int errors Oops) -> Int errors Oops) -> Int {\n",
+        "  case f(fn() { Failure(Oops.Bad) }) {\n",
+        "    Success(value) -> value\n",
+        "    Failure(Bad) -> 9\n",
+        "  }\n",
+        "}\n",
+        "fn failing() -> Int { Failure(Oops.Bad) }\n",
+        "fn five() -> Int { 5 }\n",
+    );
+    let failing = run_both(
+        "row-polymorphic-value-generic-slot",
+        &format!("{declarations}pub fn main() -> Int {{\n  apply(run, failing)\n}}\n"),
+    );
+    assert_eq!(
+        failing,
+        "\"outcome\":\"expected_failure\",\"error\":{\"type\":\"Oops\",\"variant\":\"Bad\",\"fields\":{}}"
+    );
+    let handled = run_both(
+        "row-polymorphic-value-monomorphic-slot",
+        &format!(
+            "{declarations}pub fn main() -> Int {{\n  handle(rethrow) + apply(rethrow, five) + apply(run, five)\n}}\n"
+        ),
+    );
+    assert_eq!(handled, "\"outcome\":\"success\",\"value\":19");
+}
+
+// A row-polymorphic function value that would fail is still rejected where an
+// infallible function is expected.
+#[test]
+fn a_failing_instantiation_of_a_function_value_does_not_fit_an_infallible_slot() {
+    let codes = check_codes(concat!(
+        "enum Oops {\n",
+        "  Bad\n",
+        "}\n",
+        "fn run<E>(operation: fn() -> Int errors E) -> Int { operation() }\n",
+        "fn apply(f: fn(fn() -> Int errors Oops) -> Int) -> Int {\n",
+        "  f(fn() { Failure(Oops.Bad) })\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  apply(run)\n",
+        "}\n",
+    ));
+    assert_eq!(codes, ["T4203"]);
+}
+
 // A constructor value renders as its constructor's name on both paths, as a
 // standard function value renders as its function's name.
 #[test]

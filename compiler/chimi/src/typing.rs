@@ -5330,7 +5330,21 @@ impl ProjectTypeChecker {
                 ),
             );
         }
-        for (argument, expected) in arguments.iter().zip(contract.inputs.iter().copied()) {
+        // A generic function value is matched after the other arguments, so the
+        // callee's row parameters it meets are already bound (`apply(run,
+        // failing)` binds `F` from `failing` before instantiating `run`).
+        let mut ordered = arguments
+            .iter()
+            .zip(contract.inputs.iter().copied())
+            .collect::<Vec<_>>();
+        ordered.sort_by_key(|(argument, _)| {
+            let argument = self.resolve_inference_type(argument.success);
+            matches!(
+                self.types[argument.raw() as usize],
+                CanonicalType::PolymorphicFunction { .. }
+            )
+        });
+        for (argument, expected) in ordered {
             if let Some(substitution) = &mut substitution {
                 if !self.match_call_type(argument.success, expected, substitution) {
                     self.type_error_range(
@@ -5861,7 +5875,17 @@ impl ProjectTypeChecker {
                 },
                 CanonicalType::Function(_),
             ) => {
-                let actual = self.instantiate_function_value(&parameters, contract);
+                // The slot as instantiated so far. A row parameter of the callee
+                // still open in it must not bind the value's rows, or the
+                // callee's own parameter would leak into the caller.
+                let open = self.type_row_parameters(expected);
+                let slot = self.substitute_call_type(expected, &mut substitution.clone());
+                let slot = self
+                    .type_row_parameters(slot)
+                    .iter()
+                    .all(|parameter| !open.contains(parameter))
+                    .then_some(slot);
+                let actual = self.instantiate_function_value(&parameters, contract, slot);
                 self.match_call_type(actual, expected, substitution)
             }
             // An open argument type (an unannotated lambda parameter) takes the
@@ -6267,7 +6291,7 @@ impl ProjectTypeChecker {
                 },
                 CanonicalType::Function(_),
             ) => {
-                let left = self.instantiate_function_value(&parameters, contract);
+                let left = self.instantiate_function_value(&parameters, contract, Some(right));
                 self.unify(left, right)
             }
             (
@@ -6277,7 +6301,7 @@ impl ProjectTypeChecker {
                     contract,
                 },
             ) => {
-                let right = self.instantiate_function_value(&parameters, contract);
+                let right = self.instantiate_function_value(&parameters, contract, Some(left));
                 self.unify(left, right)
             }
             _ => false,
@@ -6288,16 +6312,28 @@ impl ProjectTypeChecker {
     /// it meets a function type, so it can flow into a monomorphic or
     /// differently generic function-typed slot. Value parameters become fresh
     /// inference variables. Rows have no inference variables, so a failure or
-    /// needs row parameter of the value instantiates to the empty row: leaving
-    /// it in place would leak the callee's own row parameter into the caller's
-    /// contract.
+    /// needs row parameter of the value takes the row the `slot` function type
+    /// has in the same position (`run<E>` in a slot `fn(fn() -> Int errors
+    /// Oops) -> Int errors Oops` gets `E = Oops`). A row parameter the slot
+    /// does not determine instantiates to the empty row: leaving it in place
+    /// would leak the callee's own row parameter into the caller's contract.
     fn instantiate_function_value(
         &mut self,
         parameters: &[SymbolId],
         contract: CallableContract,
+        slot: Option<TypeId>,
     ) -> TypeId {
         let mut substitution = CallSubstitution::default();
+        if let Some(slot) = slot {
+            let value = self.intern_type(CanonicalType::Function(contract.clone()));
+            self.bind_value_rows_from_slot(slot, value, parameters, &mut substitution);
+        }
         for parameter in parameters {
+            if substitution.failures.contains_key(parameter)
+                || substitution.needs.contains_key(parameter)
+            {
+                continue;
+            }
             match self.generic_kinds.get(parameter).copied() {
                 Some(GenericKind::Value | GenericKind::FailureSet) => {}
                 Some(GenericKind::FailureRow) => {
@@ -6318,6 +6354,132 @@ impl ProjectTypeChecker {
         }
         let contract = self.substitute_call_contract_preserving(contract, &mut substitution, &[]);
         self.intern_type(CanonicalType::Function(contract))
+    }
+
+    /// Walks `slot` and `value` in parallel and binds each row parameter of
+    /// the value (one of `parameters`) to the residual of the slot's row in
+    /// the same position. Value types are left to the later unification.
+    fn bind_value_rows_from_slot(
+        &mut self,
+        slot: TypeId,
+        value: TypeId,
+        parameters: &[SymbolId],
+        substitution: &mut CallSubstitution,
+    ) {
+        let slot = self.resolve_inference_type(slot);
+        let value = self.resolve_inference_type(value);
+        match (
+            self.types[slot.raw() as usize].clone(),
+            self.types[value.raw() as usize].clone(),
+        ) {
+            (CanonicalType::Function(slot), CanonicalType::Function(value)) => {
+                if slot.inputs.len() != value.inputs.len() {
+                    return;
+                }
+                for (slot, value) in slot.inputs.into_iter().zip(value.inputs) {
+                    self.bind_value_rows_from_slot(slot, value, parameters, substitution);
+                }
+                self.bind_value_rows_from_slot(
+                    slot.success,
+                    value.success,
+                    parameters,
+                    substitution,
+                );
+                let value_failures = &self.failure_rows[value.failures.raw() as usize];
+                if let [parameter] = value_failures.parameters.as_slice()
+                    && parameters.contains(parameter)
+                    && !substitution.failures.contains_key(parameter)
+                {
+                    let mut probe = substitution.clone();
+                    if self.match_call_failure_row(slot.failures, value.failures, &mut probe) {
+                        *substitution = probe;
+                    }
+                }
+                let value_needs = &self.needs_rows[value.needs.raw() as usize];
+                if let [parameter] = value_needs.parameters.as_slice()
+                    && parameters.contains(parameter)
+                    && !substitution.needs.contains_key(parameter)
+                {
+                    let mut probe = substitution.clone();
+                    if self.match_call_needs_row(slot.needs, value.needs, &mut probe) {
+                        *substitution = probe;
+                    }
+                }
+            }
+            (
+                CanonicalType::Named {
+                    symbol: slot_symbol,
+                    arguments: slot_arguments,
+                },
+                CanonicalType::Named {
+                    symbol: value_symbol,
+                    arguments: value_arguments,
+                },
+            ) if slot_symbol == value_symbol && slot_arguments.len() == value_arguments.len() => {
+                for (slot, value) in slot_arguments.into_iter().zip(value_arguments) {
+                    self.bind_value_rows_from_slot(slot, value, parameters, substitution);
+                }
+            }
+            (CanonicalType::Record(slot), CanonicalType::Record(value))
+                if slot.len() == value.len() =>
+            {
+                for (slot, value) in slot.into_iter().zip(value) {
+                    self.bind_value_rows_from_slot(
+                        slot.type_id,
+                        value.type_id,
+                        parameters,
+                        substitution,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The failure and needs row parameters that occur anywhere in `type_id`.
+    fn type_row_parameters(&self, type_id: TypeId) -> Vec<SymbolId> {
+        let mut parameters = Vec::new();
+        self.collect_type_row_parameters(type_id, &mut parameters, &mut HashSet::new());
+        parameters
+    }
+
+    fn collect_type_row_parameters(
+        &self,
+        type_id: TypeId,
+        parameters: &mut Vec<SymbolId>,
+        visiting: &mut HashSet<TypeId>,
+    ) {
+        let type_id = self.resolve_inference_type(type_id);
+        if !visiting.insert(type_id) {
+            return;
+        }
+        match &self.types[type_id.raw() as usize] {
+            CanonicalType::Function(contract)
+            | CanonicalType::PolymorphicFunction { contract, .. } => {
+                parameters.extend(&self.failure_rows[contract.failures.raw() as usize].parameters);
+                parameters.extend(&self.needs_rows[contract.needs.raw() as usize].parameters);
+                for input in &contract.inputs {
+                    self.collect_type_row_parameters(*input, parameters, visiting);
+                }
+                self.collect_type_row_parameters(contract.success, parameters, visiting);
+            }
+            CanonicalType::Named { arguments, .. } => {
+                for argument in arguments {
+                    self.collect_type_row_parameters(*argument, parameters, visiting);
+                }
+            }
+            CanonicalType::Record(fields) => {
+                for field in fields {
+                    self.collect_type_row_parameters(field.type_id, parameters, visiting);
+                }
+            }
+            CanonicalType::FailureSetValue(failures) => {
+                parameters.extend(&self.failure_rows[failures.raw() as usize].parameters);
+            }
+            CanonicalType::Generic(_)
+            | CanonicalType::InferenceVariable(_)
+            | CanonicalType::Poison => {}
+        }
     }
 
     fn failure_rows_equivalent(&self, left: FailureRowId, right: FailureRowId) -> bool {
