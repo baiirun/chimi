@@ -5712,11 +5712,24 @@ impl ProjectTypeChecker {
             return;
         }
         let type_name = owner.name.clone();
+        let struct_symbol = *symbol;
         let declaring = &self.resolved.semantic.modules[owner_module.raw() as usize];
+        // An accessor is a published function named after the field whose one
+        // parameter is the struct.
         let has_accessor = declaring.declarations.iter().any(|declaration| {
             declaration.kind == ModuleDeclarationKind::Function
                 && declaration.public
                 && declaration.name.text == member
+                && self
+                    .declaration_symbol(owner_module, declaration)
+                    .and_then(|function| self.contracts.get(&function))
+                    .is_some_and(|contract| match contract.inputs.as_slice() {
+                        [input] => matches!(
+                            &self.types[self.resolve_inference_type(*input).raw() as usize],
+                            CanonicalType::Named { symbol, .. } if *symbol == struct_symbol
+                        ),
+                        _ => false,
+                    })
         });
         let current = &self.resolved.semantic.modules[module_id.raw() as usize];
         let alias = current

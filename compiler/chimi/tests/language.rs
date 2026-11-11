@@ -2601,7 +2601,8 @@ fn an_unknown_qualified_variant_is_unresolved() {
 
 // Publishing a struct exposes its type, not its fields (ts-9c6abd): the
 // declaring module reads them, another module gets E_PRIVATE_STRUCT_FIELD,
-// pointed at the published accessor when one exists.
+// pointed at the published accessor when one exists. A published function with
+// the field's name that does not take the struct is not an accessor.
 fn money_diagnostics(reader: &str) -> Vec<(String, String)> {
     let money = ProjectSource::new(
         "money",
@@ -2614,6 +2615,8 @@ fn money_diagnostics(reader: &str) -> Vec<(String, String)> {
                 "}\n",
                 "pub fn make(cents: Int) -> Money { Money(cents, \"USD\") }\n",
                 "pub fn cents(money: Money) -> Int { money.cents }\n",
+                // Named like a field but not an accessor: it takes no Money.
+                "pub fn currency(code: Text) -> Text { code }\n",
             ),
         ),
     )
