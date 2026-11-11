@@ -269,6 +269,9 @@ pub(crate) struct TypedProject {
     pub(crate) contracts: HashMap<SymbolId, CallableContract>,
     pub(crate) declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
+    /// A polymorphic callee's function type with this call's substitution
+    /// applied, keyed by the callee expression. Monomorphic callees have none.
+    pub(crate) callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
     pub(crate) expression_value_properties: HashMap<(ModuleId, SemanticId), ValueProperties>,
@@ -873,6 +876,7 @@ struct ProjectTypeChecker {
     contracts: HashMap<SymbolId, CallableContract>,
     declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
+    callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
     type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
     expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
     fields: HashMap<SymbolId, Vec<FieldShape>>,
@@ -930,6 +934,7 @@ impl ProjectTypeChecker {
             contracts: HashMap::new(),
             declaration_types: HashMap::new(),
             pattern_binding_types: HashMap::new(),
+            callee_instantiations: HashMap::new(),
             type_facts: HashMap::new(),
             expression_facts: HashMap::new(),
             fields: HashMap::new(),
@@ -1671,6 +1676,12 @@ impl ProjectTypeChecker {
                 .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
                 .map(|(key, value)| (*key, *value))
                 .collect(),
+            callee_instantiations: previous
+                .callee_instantiations
+                .iter()
+                .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
+                .map(|(key, value)| (*key, *value))
+                .collect(),
             type_facts: previous
                 .type_facts
                 .iter()
@@ -1776,6 +1787,7 @@ impl ProjectTypeChecker {
             contracts: self.contracts,
             declaration_types: self.declaration_types,
             pattern_binding_types: self.pattern_binding_types,
+            callee_instantiations: self.callee_instantiations,
             type_facts: self.type_facts,
             expression_facts: self.expression_facts,
             expression_value_properties: HashMap::new(),
@@ -2274,6 +2286,7 @@ impl ProjectTypeChecker {
                         bindings,
                     )
                 } else {
+                    let callee_id = callee.semantic_id();
                     let callee = match callee_symbol
                         .filter(|_| {
                             matches!(
@@ -2298,7 +2311,14 @@ impl ProjectTypeChecker {
                             .map(|index| argument_facts[index])
                             .collect();
                     }
-                    self.infer_invocation(module_id, *range, callee_symbol, callee, &argument_facts)
+                    self.infer_invocation(
+                        module_id,
+                        *range,
+                        callee_id,
+                        callee_symbol,
+                        callee,
+                        &argument_facts,
+                    )
                 }
             }
             ModuleExpression::List {
@@ -4429,6 +4449,7 @@ impl ProjectTypeChecker {
         &mut self,
         module_id: ModuleId,
         range: TextRange,
+        callee_id: SemanticId,
         callee_symbol: Option<SymbolId>,
         callee: ExpressionFact,
         arguments: &[ExpressionFact],
@@ -4512,6 +4533,16 @@ impl ProjectTypeChecker {
                 }
             }
             let unresolved = self.unresolved_call_parameters(&parameters, substitution);
+            // A copy, so recording the instantiation cannot bind parameters
+            // the call left open.
+            let instantiated = self.substitute_call_contract_preserving(
+                contract.clone(),
+                &mut substitution.clone(),
+                &unresolved,
+            );
+            let instantiated = self.intern_type(CanonicalType::Function(instantiated));
+            self.callee_instantiations
+                .insert((module_id, callee_id), instantiated);
             let success =
                 self.substitute_call_type_preserving(contract.success, substitution, &unresolved);
             (

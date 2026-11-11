@@ -457,12 +457,14 @@ impl Workspace {
 }
 
 /// Renders hover text: the callable contract when the cursor names a function,
-/// otherwise the inferred type, headed by the referenced name.
+/// as instantiated at this call when the function is generic, otherwise the
+/// inferred type, headed by the referenced name.
 ///
 /// Ensures: `None` when the report has neither a contract nor a type.
 fn hover_markdown(report: &InspectionReport) -> Option<String> {
     let description = report
-        .callable()
+        .instantiated_callable()
+        .or_else(|| report.callable())
         .map(CallableInspection::display)
         .or_else(|| report.inferred_type())?;
     let reference = report.reference();
@@ -682,7 +684,8 @@ mod tests {
     }
 
     /// Guards the query invariant: positions follow the analyzed unsaved text,
-    /// and the hover names the callee's contract over the reference's span.
+    /// and the hover shows a generic callee as this call instantiates it, over
+    /// the reference's span.
     #[test]
     fn hover_follows_unsaved_text_and_shows_the_callee_contract() {
         let fixture = Fixture::new("hover");
@@ -692,17 +695,16 @@ mod tests {
         workspace.open(
             app.clone(),
             DocumentVersion(2),
-            "pub fn double(value: Int) -> Int { value }\n\npub fn main() -> Int { double(1) }\n"
-                .into(),
+            "pub fn same<T>(value: T) -> T { value }\n\npub fn main() -> Int { same(1) }\n".into(),
         );
         workspace.analyze(&app);
 
-        let hover = workspace.hover(&app, at(2, 25)).expect("hovers `double`");
+        let hover = workspace.hover(&app, at(2, 25)).expect("hovers `same`");
 
         assert_eq!(hover.range.start, at(2, 23));
-        assert_eq!(hover.range.end, at(2, 29));
+        assert_eq!(hover.range.end, at(2, 27));
         assert!(
-            hover.markdown.contains("fn(Int) -> Int"),
+            hover.markdown.contains("same: fn(Int) -> Int"),
             "{}",
             hover.markdown
         );

@@ -2774,6 +2774,60 @@ mod tests {
         assert_eq!(report.executable_origin(), None);
     }
 
+    /// Guards call-site instantiation: a generic callee also reports the types
+    /// this call fixed, for standard and user functions alike, while
+    /// `callable` keeps the declared contract.
+    #[test]
+    fn inspection_shows_generic_callees_instantiated_at_the_call() {
+        let source = "import std/map as Map\nimport std/map.{Map}\n\n\
+fn same<T>(value: T) -> T { value }\n\n\
+pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\", same(1)) }\n";
+        let inspect_at = |needle: &str| {
+            Compiler::inspect_project(
+                vec![module("main", "main.chimi", source)],
+                "main",
+                source.rfind(needle).unwrap() + 1,
+            )
+            .expect("inspect the call")
+        };
+
+        let put = inspect_at("put(");
+        assert!(put.diagnostics().is_empty(), "{:?}", put.diagnostics());
+        assert_eq!(
+            put.instantiated_callable().unwrap().display(),
+            "fn(Map<Text, Int>, Text, Int) -> Map<Text, Int>"
+        );
+        assert_eq!(
+            put.callable().unwrap().display(),
+            "fn(Map<K, V>, K, V) -> Map<K, V>"
+        );
+        let same = inspect_at("same(1)");
+        assert_eq!(
+            same.instantiated_callable().unwrap().display(),
+            "fn(Int) -> Int"
+        );
+        assert_eq!(same.callable().unwrap().display(), "fn(T) -> T");
+        assert!(inspect_at("counts,").instantiated_callable().is_none());
+    }
+
+    /// Guards that standard generic parameters print as readable names, never
+    /// as the internal identifiers they are registered under.
+    #[test]
+    fn standard_contracts_print_without_internal_generic_names() {
+        let typed = check_project(resolve_project_sources(vec![module(
+            "main",
+            "main.chimi",
+            "pub fn main() -> Int { 0 }\n",
+        )]));
+        let leaked = typed
+            .contracts
+            .values()
+            .map(|contract| typed.format_function_contract(contract))
+            .filter(|display| display.contains('$'))
+            .collect::<Vec<_>>();
+        assert!(leaked.is_empty(), "{leaked:#?}");
+    }
+
     #[test]
     fn malformed_snapshots_remain_inspectable() {
         let source = "pub fn main() {\n  Answer(value 42)\n";
