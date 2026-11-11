@@ -321,6 +321,10 @@ pub(crate) struct TypedProject {
     pub(crate) contracts: HashMap<SymbolId, CallableContract>,
     pub(crate) declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
+    /// Each failure-type pattern (`error: FileError` over a failure-set value) by its
+    /// semantic id: the variants it covers with their field counts. Core lowering
+    /// expands the pattern into one variant test per entry.
+    pub(crate) failure_type_patterns: HashMap<(ModuleId, SemanticId), Vec<(SymbolId, usize)>>,
     /// A polymorphic callee's function type with this call's substitution
     /// applied, keyed by the callee expression. Monomorphic callees have none.
     pub(crate) callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
@@ -1055,6 +1059,7 @@ struct ProjectTypeChecker {
     contracts: HashMap<SymbolId, CallableContract>,
     declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
+    failure_type_patterns: HashMap<(ModuleId, SemanticId), Vec<(SymbolId, usize)>>,
     callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
     type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
     expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
@@ -1259,6 +1264,7 @@ impl ProjectTypeChecker {
             contracts: HashMap::new(),
             declaration_types: HashMap::new(),
             pattern_binding_types: HashMap::new(),
+            failure_type_patterns: HashMap::new(),
             callee_instantiations: HashMap::new(),
             type_facts: HashMap::new(),
             expression_facts: HashMap::new(),
@@ -2180,6 +2186,12 @@ impl ProjectTypeChecker {
                 .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
                 .map(|(key, value)| (*key, *value))
                 .collect(),
+            failure_type_patterns: previous
+                .failure_type_patterns
+                .iter()
+                .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
+                .map(|(key, value)| (*key, value.clone()))
+                .collect(),
             callee_instantiations: previous
                 .callee_instantiations
                 .iter()
@@ -2326,6 +2338,7 @@ impl ProjectTypeChecker {
             contracts: self.contracts,
             declaration_types: self.declaration_types,
             pattern_binding_types: self.pattern_binding_types,
+            failure_type_patterns: self.failure_type_patterns,
             callee_instantiations: self.callee_instantiations,
             type_facts: self.type_facts,
             expression_facts: self.expression_facts,
@@ -3582,8 +3595,13 @@ impl ProjectTypeChecker {
                     )
                 })
                 .collect::<Vec<_>>();
-            let useful =
-                rejected || self.pattern_row_is_useful(&coverage, &normalized, &subject_types);
+            let rows = self.expand_failure_type_rows(module_id, &arm.patterns, normalized);
+            let normalized = rows[0].clone();
+            let useful_rows = rows
+                .into_iter()
+                .filter(|row| rejected || self.pattern_row_is_useful(&coverage, row, &subject_types))
+                .collect::<Vec<_>>();
+            let useful = !useful_rows.is_empty();
             if !useful {
                 let message = if clauses.is_some() {
                     "this clause can never run; earlier clauses match every input it matches"
@@ -3605,7 +3623,7 @@ impl ProjectTypeChecker {
                 self.type_error_range(module_id, "T4233", arm.range, message);
             }
             if unguarded && useful && !rejected && normalized.len() == subjects.len() {
-                coverage.push(normalized);
+                coverage.extend(useful_rows);
             }
             if let Some(guard) = &arm.guard {
                 facts.push(self.infer_case_guard(module_id, guard, generics, &mut arm_bindings));
@@ -3688,6 +3706,15 @@ impl ProjectTypeChecker {
                 range,
                 ..
             } => {
+                let resolved = self.resolve_inference_type(expected);
+                if let CanonicalType::FailureSetValue(failures) =
+                    self.types[resolved.raw() as usize].clone()
+                {
+                    self.failure_type_pattern(
+                        module_id, pattern, type_use, *range, failures, context, bindings,
+                    );
+                    return MatchPattern::Wildcard;
+                }
                 let annotated = self.lower_value_type(module_id, type_use, context.generics);
                 if !self.unify(expected, annotated) {
                     self.typed_binding_mismatch(module_id, *range, expected, annotated, context);
@@ -4401,6 +4428,212 @@ impl ProjectTypeChecker {
         boolean
     }
 
+    /// Checks `name: Type` against a failure-set value. `Type` must name a closed
+    /// enum; the pattern covers that enum's variants present in `failures` and binds
+    /// the failure set restricted to them. A closed row without any is `T4224`; an
+    /// open row may hold any of them. Returns the covered variants and records them
+    /// for Core lowering.
+    #[allow(clippy::too_many_arguments)]
+    fn failure_type_pattern(
+        &mut self,
+        module_id: ModuleId,
+        pattern: &Pattern,
+        type_use: &TypeUse,
+        range: TextRange,
+        failures: FailureRowId,
+        context: PatternContext<'_>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> Vec<SymbolId> {
+        let annotated = self.lower_value_type(module_id, type_use, context.generics);
+        let annotated = self.resolve_inference_type(annotated);
+        let owner = match self.types[annotated.raw() as usize].clone() {
+            CanonicalType::Named { symbol, .. }
+                if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Enum
+                    || matches!(
+                        self.resolved.standard_symbol(symbol),
+                        Some(StandardSymbol::Type(kind)) if kind.is_failure_enum()
+                    ) =>
+            {
+                symbol
+            }
+            CanonicalType::Poison => return Vec::new(),
+            _ => {
+                let name = self.type_display_name(annotated);
+                self.type_error_range(
+                    module_id,
+                    "T4230",
+                    range,
+                    format!(
+                        "a failure-type pattern selects the variants of a closed enum, and `{name}` is not one"
+                    ),
+                );
+                return Vec::new();
+            }
+        };
+        let variants = self
+            .enum_variant_symbols(owner)
+            .into_iter()
+            .filter(|variant| self.failure_row_may_contain(failures, *variant))
+            .collect::<Vec<_>>();
+        if variants.is_empty() {
+            let name = self.type_display_name(annotated);
+            self.type_error_range(
+                module_id,
+                "T4224",
+                range,
+                format!("no `{name}` failure is present in the subject's failure channel"),
+            );
+            return Vec::new();
+        }
+        let covered = variants
+            .iter()
+            .map(|variant| {
+                let fields = self
+                    .contracts
+                    .get(variant)
+                    .map_or(0, |contract| contract.inputs.len());
+                (*variant, fields)
+            })
+            .collect();
+        self.failure_type_patterns
+            .insert((module_id, pattern.semantic_id()), covered);
+        let bound = self
+            .restricted_failure_type(failures, &variants)
+            .unwrap_or(TypeId::new(0));
+        self.bind_pattern_name(module_id, pattern, bound, bindings);
+        variants
+    }
+
+    /// The type of a value from `failures` known to be one of `variants`: the enum
+    /// itself when they are all of its variants, otherwise a narrowed failure set.
+    fn restricted_failure_type(
+        &mut self,
+        failures: FailureRowId,
+        variants: &[SymbolId],
+    ) -> Option<TypeId> {
+        let row = self.failure_rows[failures.raw() as usize].clone();
+        let mut variants = variants.to_vec();
+        variants.sort_unstable();
+        variants.dedup();
+        let restricted = self.intern_failure_row(FailureRow {
+            variant_arguments: row
+                .variant_arguments
+                .into_iter()
+                .filter(|arguments| variants.contains(&arguments.variant))
+                .collect(),
+            variants,
+            parameters: Vec::new(),
+            exclusions: Vec::new(),
+        });
+        self.failure_value_type(restricted)
+    }
+
+    fn bind_pattern_name(
+        &mut self,
+        module_id: ModuleId,
+        pattern: &Pattern,
+        type_id: TypeId,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) {
+        if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
+            self.pattern_binding_types
+                .insert((module_id, pattern.semantic_id()), type_id);
+            bindings.insert(
+                binding,
+                ValueBinding {
+                    type_id,
+                    need: None,
+                },
+            );
+        }
+    }
+
+    /// The coverage rows a `Failure(...)` payload pattern contributes: one row per
+    /// variant for a failure-type pattern (through any alias), otherwise its
+    /// ordinary normalization.
+    fn failure_coverage_rows(
+        &mut self,
+        module_id: ModuleId,
+        pattern: &Pattern,
+        failure_type: TypeId,
+        context: PatternContext<'_>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> Vec<Vec<MatchPattern>> {
+        match pattern {
+            Pattern::Alias { pattern: inner, .. } => {
+                self.failure_coverage_rows(module_id, inner, failure_type, context, bindings)
+            }
+            Pattern::Typed { .. } => self
+                .failure_type_patterns
+                .get(&(module_id, pattern.semantic_id()))
+                .map(|covered| {
+                    covered
+                        .iter()
+                        .map(|(variant, fields)| {
+                            vec![MatchPattern::Constructor {
+                                tag: MatchTag::EnumVariant(*variant),
+                                fields: vec![MatchPattern::Wildcard; *fields],
+                            }]
+                        })
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![vec![MatchPattern::Wildcard]]),
+            _ => vec![vec![self.normalize_pattern(
+                module_id,
+                pattern,
+                failure_type,
+                context,
+                bindings,
+            )]],
+        }
+    }
+
+    /// Expands each failure-type pattern of an ordinary arm (`file_error: FileError`
+    /// over a failure-set subject) into one row per variant it covers, so coverage
+    /// sees the variants. Other arms keep their single row.
+    fn expand_failure_type_rows(
+        &self,
+        module_id: ModuleId,
+        patterns: &[Pattern],
+        normalized: Vec<MatchPattern>,
+    ) -> Vec<Vec<MatchPattern>> {
+        let mut rows = vec![Vec::new()];
+        for (index, column) in normalized.into_iter().enumerate() {
+            let mut pattern = patterns.get(index);
+            while let Some(Pattern::Alias { pattern: inner, .. }) = pattern {
+                pattern = Some(inner);
+            }
+            let alternatives = pattern
+                .and_then(|pattern| {
+                    self.failure_type_patterns
+                        .get(&(module_id, pattern.semantic_id()))
+                })
+                .map_or_else(
+                    || vec![column.clone()],
+                    |covered| {
+                        covered
+                            .iter()
+                            .map(|(variant, fields)| MatchPattern::Constructor {
+                                tag: MatchTag::EnumVariant(*variant),
+                                fields: vec![MatchPattern::Wildcard; *fields],
+                            })
+                            .collect()
+                    },
+                );
+            rows = rows
+                .into_iter()
+                .flat_map(|row| {
+                    alternatives.iter().map(move |alternative| {
+                        let mut row = row.clone();
+                        row.push(alternative.clone());
+                        row
+                    })
+                })
+                .collect();
+        }
+        rows
+    }
+
     /// `T4282`: a clause parameter never holds a live outcome, because callers
     /// evaluate arguments first and a failing argument has already left the caller.
     fn reject_outcome_parameter(&mut self, module_id: ModuleId, pattern: &Pattern) {
@@ -4826,26 +5059,33 @@ impl ProjectTypeChecker {
                         // The owning diagnostic already explains why this pattern cannot
                         // participate in failure-channel coverage.
                     } else if let Some(failure_type) = failure_type {
-                        let normalized = self.normalize_pattern(
+                        // Coverage normalization binds again; the bindings
+                        // `handled_failure_pattern` made, with narrowed alias and
+                        // failure-type bindings, are the ones the arm keeps.
+                        let mut scratch = arm_bindings.clone();
+                        let rows = self.failure_coverage_rows(
                             module_id,
                             inner,
                             failure_type,
                             context,
-                            &mut arm_bindings,
+                            &mut scratch,
                         );
-                        let row = vec![normalized];
-                        let useful =
-                            self.pattern_row_is_useful(&failure_coverage, &row, &[failure_type]);
-                        if !useful && (!variants.is_empty() || catches_unknown) {
+                        let useful_rows = rows
+                            .into_iter()
+                            .filter(|row| {
+                                self.pattern_row_is_useful(&failure_coverage, row, &[failure_type])
+                            })
+                            .collect::<Vec<_>>();
+                        if useful_rows.is_empty() {
                             self.type_error_range(
                                 module_id,
                                 "T4232",
                                 arm.range,
                                 "outcome case arm is unreachable",
                             );
-                        } else if arm.guard.is_none() && useful {
+                        } else if arm.guard.is_none() {
                             handles_unknown_row |= catches_unknown;
-                            failure_coverage.push(row);
+                            failure_coverage.extend(useful_rows);
                         }
                     } else if arm.guard.is_none() {
                         fallback_handled_variants.append(&mut variants);
@@ -4958,6 +5198,39 @@ impl ProjectTypeChecker {
         context: PatternContext<'_>,
         bindings: &mut HashMap<SymbolId, ValueBinding>,
     ) -> (Vec<SymbolId>, bool) {
+        match pattern {
+            Pattern::Wildcard { .. } => {
+                return (
+                    self.failure_rows[failures.raw() as usize].variants.clone(),
+                    true,
+                );
+            }
+            Pattern::Typed {
+                type_use, range, ..
+            } => {
+                let variants = self.failure_type_pattern(
+                    module_id, pattern, type_use, *range, failures, context, bindings,
+                );
+                return (variants, false);
+            }
+            Pattern::Alias { pattern: inner, .. } => {
+                let (variants, catches_unknown) =
+                    self.handled_failure_pattern(module_id, inner, failures, context, bindings);
+                let bound = if catches_unknown {
+                    self.failure_value_type(failures)
+                } else {
+                    self.restricted_failure_type(failures, &variants)
+                };
+                self.bind_pattern_name(
+                    module_id,
+                    pattern,
+                    bound.unwrap_or(TypeId::new(0)),
+                    bindings,
+                );
+                return (variants, catches_unknown);
+            }
+            _ => {}
+        }
         let symbol = self.resolved_pattern_symbol(module_id, pattern);
         if let Some(symbol) = symbol
             && self.is_enum_constructor(symbol)
@@ -5338,6 +5611,18 @@ impl ProjectTypeChecker {
             row.exclusions.sort_by_key(|exclusion| exclusion.parameter);
         }
         self.intern_failure_row(row)
+    }
+
+    /// Whether every member of the closed row `failures` is a variant of `owner`, so
+    /// a value narrowed to them is accepted where the enum is expected.
+    fn failure_row_within_enum(&self, failures: FailureRowId, owner: SymbolId) -> bool {
+        let row = &self.failure_rows[failures.raw() as usize];
+        row.parameters.is_empty()
+            && !row.variants.is_empty()
+            && row
+                .variants
+                .iter()
+                .all(|variant| self.enum_owner_for_variant(*variant) == Some(owner))
     }
 
     fn failure_row_is_empty(&self, failures: FailureRowId) -> bool {
@@ -7173,6 +7458,10 @@ impl ProjectTypeChecker {
             (CanonicalType::Generic(left), CanonicalType::Generic(right)) => left == right,
             (CanonicalType::FailureSetValue(left), CanonicalType::FailureSetValue(right)) => {
                 self.failure_rows_equivalent(left, right)
+            }
+            (CanonicalType::FailureSetValue(row), CanonicalType::Named { symbol, .. })
+            | (CanonicalType::Named { symbol, .. }, CanonicalType::FailureSetValue(row)) => {
+                self.failure_row_within_enum(row, symbol)
             }
             (CanonicalType::Function(left), CanonicalType::Function(right)) => {
                 left.inputs.len() == right.inputs.len()

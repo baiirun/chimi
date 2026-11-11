@@ -4817,3 +4817,295 @@ fn a_typed_binding_of_another_type_is_rejected() {
     assert_eq!(messages[0].0, "T4283");
     assert!(messages[0].1.contains("run time"), "{messages:?}");
 }
+
+// Failure-type patterns (patterns-and-function-clauses.md, "Typed bindings and
+// failure-type patterns").
+
+const FAILURE_KINDS: &str = concat!(
+    "enum FileProblem {\n",
+    "  Missing(path: Text)\n",
+    "  Denied(path: Text)\n",
+    "  TooLong(path: Text, limit: Int)\n",
+    "}\n",
+    "enum ParseProblem {\n",
+    "  Empty\n",
+    "  Garbled(line: Int)\n",
+    "}\n",
+    "fn load(choice: Int) -> Text {\n",
+    "  case choice {\n",
+    "    0 -> Failure(FileProblem.Missing(\"a\"))\n",
+    "    1 -> Failure(FileProblem.TooLong(\"b\", 9))\n",
+    "    2 -> Failure(ParseProblem.Garbled(3))\n",
+    "    3 -> Failure(ParseProblem.Empty)\n",
+    "    _ -> \"loaded\"\n",
+    "  }\n",
+    "}\n",
+);
+
+fn type_contract(source: &str, function: &str) -> (Vec<String>, Option<String>) {
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let codes = report
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code().to_owned())
+        .collect();
+    (codes, report.contract("main", function))
+}
+
+// FP-01: the trace summarizer's `main` with one arm per failure type keeps the
+// residual row of the original, which lists every variant.
+#[test]
+fn the_trace_summarizer_main_with_failure_type_arms_keeps_its_contract() {
+    let original = include_str!("../../../programs/chimi-trace-summary/app/main.chimi");
+    let start = original
+        .find("      Failure(BlankLine(line)) -> report_trace(BlankLine(line))\n")
+        .expect("the per-variant arms");
+    let end = original.find("    count, _ -> {").expect("the usage arm");
+    let arms = concat!(
+        "      Failure(error: TraceError) -> report_trace(error)\n",
+        "      Failure(LineTooLong(_, _) as error) -> {\n",
+        "        console.write_error(\"trace summary input record is too large\")\n",
+        "        Failure(error)\n",
+        "      }\n",
+        "      Failure(error: FileError) -> {\n",
+        "        console.write_error(\"trace summary file IO failed\")\n",
+        "        Failure(error)\n",
+        "      }\n",
+        "      Failure(error: Utf8Error) -> {\n",
+        "        console.write_error(\"trace summary input is not UTF-8\")\n",
+        "        Failure(error)\n",
+        "      }\n",
+        "    }\n",
+    );
+    let rewritten = format!(
+        "import std/io.{{FileError}}\nimport std/io.{{Utf8Error}}\n{}{arms}{}",
+        &original[..start],
+        &original[end..]
+    );
+    let contract = |source: &str| {
+        let module = ProjectSource::new(
+            "app/main",
+            SourceSnapshot::from_text("app/main.chimi", source),
+        )
+        .expect("valid module path");
+        let report = Compiler::type_project(vec![module]);
+        assert!(report.is_success(), "{:?}", report.diagnostics());
+        report
+            .contract("app/main", "main")
+            .expect("main has a contract")
+    };
+    assert_eq!(contract(&rewritten), contract(original));
+}
+
+// FP-02
+#[test]
+fn a_failure_type_absent_from_a_closed_row_is_rejected() {
+    let (codes, _) = type_contract(
+        &format!(
+            "{FAILURE_KINDS}{}",
+            concat!(
+                "fn only_parse() -> Text {\n",
+                "  Failure(ParseProblem.Empty)\n",
+                "}\n",
+                "pub fn main() -> Text {\n",
+                "  case only_parse() {\n",
+                "    Success(text) -> text\n",
+                "    Failure(error: FileProblem) -> \"file\"\n",
+                "    Failure(_) -> \"other\"\n",
+                "  }\n",
+                "}\n",
+            )
+        ),
+        "main",
+    );
+    assert_eq!(codes, ["T4224"]);
+}
+
+// FP-03 and FP-04: a generic recovery subtracts the failure type from the open row,
+// and only when the arm has no guard.
+#[test]
+fn a_generic_recovery_subtracts_the_failure_type_from_its_row() {
+    let recover = |guard: &str| {
+        format!(
+            concat!(
+                "{}",
+                "fn recover<T, E>(operation: fn() -> T errors E, fallback: T) -> T {{\n",
+                "  case operation() {{\n",
+                "    Success(value) -> value\n",
+                "    Failure(_error: FileProblem){} -> fallback\n",
+                "  }}\n",
+                "}}\n",
+                "fn read() -> Text {{\n",
+                "  recover(fn() {{ load(0) }}, \"fallback\")\n",
+                "}}\n",
+                "pub fn main() -> Text {{ read() }}\n",
+            ),
+            FAILURE_KINDS, guard
+        )
+    };
+    let (codes, contract) = type_contract(&recover(""), "read");
+    assert!(codes.is_empty(), "{codes:?}");
+    assert_eq!(
+        contract.as_deref(),
+        Some("fn() -> Text errors ParseProblem")
+    );
+    let (codes, contract) = type_contract(&recover(" if True"), "read");
+    assert!(codes.is_empty(), "{codes:?}");
+    assert_eq!(
+        contract.as_deref(),
+        Some("fn() -> Text errors { FileProblem.Missing, FileProblem.TooLong, ParseProblem }")
+    );
+}
+
+// FP-05, and the runtime selection: an earlier variant arm wins, the failure-type
+// arm takes the remaining variants, and an alias re-raises exactly its variant.
+#[test]
+fn failure_type_arms_select_variants_in_order_on_both_paths() {
+    let source = format!(
+        "{FAILURE_KINDS}{}",
+        concat!(
+            "fn classify(choice: Int) -> Text {\n",
+            "  case load(choice) {\n",
+            "    Success(text) -> text\n",
+            "    Failure(FileProblem.TooLong(_, _) as error) -> \"too long\"\n",
+            "    Failure(error: FileProblem) -> \"file\"\n",
+            "    Failure(_: ParseProblem) -> \"parse\"\n",
+            "  }\n",
+            "}\n",
+            "fn reraise(choice: Int) -> Text {\n",
+            "  case load(choice) {\n",
+            "    Success(text) -> text\n",
+            "    Failure(FileProblem.TooLong(_, _) as error) -> Failure(error)\n",
+            "    Failure(_) -> \"handled\"\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> List<Text> {\n",
+            "  [classify(0), classify(1), classify(2), classify(3), classify(4), reraise(0), reraise(1)]\n",
+            "}\n",
+        )
+    );
+    let (codes, contract) = type_contract(&source, "reraise");
+    assert!(codes.is_empty(), "{codes:?}");
+    assert_eq!(
+        contract.as_deref(),
+        Some("fn(Int) -> Text errors FileProblem.TooLong")
+    );
+    assert_eq!(
+        run_both("failure-type-arms", &source),
+        concat!(
+            "\"outcome\":\"expected_failure\",",
+            "\"error\":{\"type\":\"FileProblem\",\"variant\":\"TooLong\",",
+            "\"fields\":{\"path\":\"b\",\"limit\":9}}",
+        )
+    );
+    let succeeding = source.replace(", reraise(1)]", "]");
+    assert_eq!(
+        run_both("failure-type-arms-success", &succeeding),
+        "\"outcome\":\"success\",\"value\":[\"file\",\"too long\",\"parse\",\"parse\",\"loaded\",\"handled\"]"
+    );
+}
+
+// FP-06
+#[test]
+fn a_variant_arm_after_its_failure_type_arm_never_runs() {
+    let (codes, _) = type_contract(
+        &format!(
+            "{FAILURE_KINDS}{}",
+            concat!(
+                "pub fn main() -> Text {\n",
+                "  case load(0) {\n",
+                "    Success(text) -> text\n",
+                "    Failure(error: FileProblem) -> \"file\"\n",
+                "    Failure(FileProblem.TooLong(_, _)) -> \"too long\"\n",
+                "    Failure(_) -> \"other\"\n",
+                "  }\n",
+                "}\n",
+            )
+        ),
+        "main",
+    );
+    assert_eq!(codes, ["T4232"]);
+}
+
+// FP-07
+#[test]
+fn a_case_over_a_bound_failure_set_may_select_by_failure_type() {
+    let source = |arms: &str| {
+        format!(
+            concat!(
+                "{}",
+                "fn describe(choice: Int) -> Text {{\n",
+                "  case load(choice) {{\n",
+                "    Success(text) -> text\n",
+                "    Failure(error) -> case error {{\n",
+                "{}",
+                "    }}\n",
+                "  }}\n",
+                "}}\n",
+                "pub fn main() -> List<Text> {{ [describe(1), describe(2)] }}\n",
+            ),
+            FAILURE_KINDS, arms
+        )
+    };
+    let both = source(concat!(
+        "      file_error: FileProblem -> \"file\"\n",
+        "      parse_error: ParseProblem -> \"parse\"\n",
+    ));
+    assert_eq!(
+        run_both("failure-type-nested-case", &both),
+        "\"outcome\":\"success\",\"value\":[\"file\",\"parse\"]"
+    );
+    let (codes, _) = type_contract(
+        &source("      file_error: FileProblem -> \"file\"\n"),
+        "describe",
+    );
+    assert_eq!(codes, ["T4231"]);
+}
+
+// FP-09: a defect is not a failure, so no failure-type arm sees it.
+#[test]
+fn a_defect_bypasses_failure_type_arms() {
+    let source = format!(
+        "{FAILURE_KINDS}{}",
+        concat!(
+            "fn explode(divisor: Int) -> Text {\n",
+            "  case 10 / divisor {\n",
+            "    0 -> load(0)\n",
+            "    _ -> \"never\"\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Text {\n",
+            "  case explode(0) {\n",
+            "    Success(text) -> text\n",
+            "    Failure(_: FileProblem) -> \"file\"\n",
+            "  }\n",
+            "}\n",
+        )
+    );
+    let outcome = run_both("failure-type-defect", &source);
+    assert!(outcome.starts_with("\"outcome\":\"defect\""), "{outcome}");
+}
+
+// ts-8c488d: an unguarded `Failure(_)` arm handles every variant of the row.
+#[test]
+fn a_wildcard_failure_arm_handles_every_failure() {
+    let (codes, contract) = type_contract(
+        &format!(
+            "{FAILURE_KINDS}{}",
+            concat!(
+                "fn safe(choice: Int) -> Text {\n",
+                "  case load(choice) {\n",
+                "    Success(text) -> text\n",
+                "    Failure(_) -> \"failed\"\n",
+                "  }\n",
+                "}\n",
+                "pub fn main() -> Text { safe(0) }\n",
+            )
+        ),
+        "safe",
+    );
+    assert!(codes.is_empty(), "{codes:?}");
+    assert_eq!(contract.as_deref(), Some("fn(Int) -> Text"));
+}

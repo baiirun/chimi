@@ -1376,17 +1376,19 @@ impl CoreLowerer {
                     .collect(),
                 arms: arms
                     .iter()
-                    .map(|arm| CoreArm {
-                        patterns: arm
-                            .patterns
-                            .iter()
-                            .map(|pattern| self.pattern(module_id, pattern))
-                            .collect(),
-                        guard: arm
+                    .flat_map(|arm| {
+                        let guard = arm
                             .guard
                             .as_ref()
-                            .map(|guard| self.expression(module_id, guard)),
-                        body: self.expression(module_id, &arm.body),
+                            .map(|guard| self.expression(module_id, guard));
+                        let body = self.expression(module_id, &arm.body);
+                        self.arm_alternatives(module_id, &arm.patterns)
+                            .into_iter()
+                            .map(move |patterns| CoreArm {
+                                patterns,
+                                guard,
+                                body,
+                            })
                     })
                     .collect(),
             },
@@ -1489,6 +1491,98 @@ impl CoreLowerer {
                     }
                 }
             }
+        }
+    }
+
+    /// The Core pattern rows one source arm becomes. A failure-type pattern covers
+    /// several variants, so its arm becomes one arm per variant, tried in order and
+    /// sharing the source arm's guard and body nodes. Every other arm is one row.
+    fn arm_alternatives(&self, module_id: ModuleId, patterns: &[Pattern]) -> Vec<Vec<CorePattern>> {
+        let mut rows = vec![Vec::new()];
+        for pattern in patterns {
+            let alternatives = self.pattern_alternatives(module_id, pattern);
+            rows = rows
+                .into_iter()
+                .flat_map(|row| {
+                    alternatives.iter().map(move |alternative| {
+                        let mut row = row.clone();
+                        row.push(alternative.clone());
+                        row
+                    })
+                })
+                .collect();
+        }
+        rows
+    }
+
+    /// The alternatives `pattern` expands to: a variant test per variant of a
+    /// failure-type pattern, reached directly, through `as`, or inside an outcome
+    /// pattern; otherwise the pattern itself.
+    fn pattern_alternatives(&self, module_id: ModuleId, pattern: &Pattern) -> Vec<CorePattern> {
+        match pattern {
+            Pattern::Typed {
+                semantic_id, name, ..
+            } => match self
+                .typed
+                .failure_type_patterns
+                .get(&(module_id, *semantic_id))
+            {
+                Some(covered) => covered
+                    .iter()
+                    .map(|(variant, fields)| {
+                        let test = CorePattern::Constructor {
+                            symbol: *variant,
+                            fields: vec![CorePattern::Wildcard; *fields],
+                        };
+                        match name {
+                            Some(_) => CorePattern::Alias {
+                                pattern: Box::new(test),
+                                binding: self
+                                    .local_symbol(
+                                        module_id,
+                                        *semantic_id,
+                                        ProjectSymbolKind::PatternBinding,
+                                    )
+                                    .expect("verified typed binding resolves"),
+                            },
+                            None => test,
+                        }
+                    })
+                    .collect(),
+                None => vec![self.pattern(module_id, pattern)],
+            },
+            Pattern::Alias {
+                semantic_id,
+                pattern: inner,
+                ..
+            } => {
+                let binding = self
+                    .local_symbol(module_id, *semantic_id, ProjectSymbolKind::PatternBinding)
+                    .expect("verified alias binding resolves");
+                self.pattern_alternatives(module_id, inner)
+                    .into_iter()
+                    .map(|alternative| CorePattern::Alias {
+                        pattern: Box::new(alternative),
+                        binding,
+                    })
+                    .collect()
+            }
+            Pattern::Constructor { arguments, .. } => match self.pattern(module_id, pattern) {
+                CorePattern::Outcome { success, .. } => {
+                    let [value] = arguments.as_slice() else {
+                        unreachable!("verified outcome patterns have one argument")
+                    };
+                    self.pattern_alternatives(module_id, value)
+                        .into_iter()
+                        .map(|value| CorePattern::Outcome {
+                            success,
+                            value: Box::new(value),
+                        })
+                        .collect()
+                }
+                lowered => vec![lowered],
+            },
+            _ => vec![self.pattern(module_id, pattern)],
         }
     }
 

@@ -627,6 +627,14 @@ impl CapabilityChecker<'_> {
     ) {
         if let Pattern::Binding {
             semantic_id, name, ..
+        }
+        | Pattern::Typed {
+            semantic_id,
+            name: Some(name),
+            ..
+        }
+        | Pattern::Alias {
+            semantic_id, name, ..
         } = pattern
             && let Some(symbol) = self.typed.resolved.source_symbol(
                 module_id,
