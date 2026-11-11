@@ -403,10 +403,11 @@ update uses, so `..` means "the rest of this value" everywhere.
 
 #### List coverage
 
-Coverage treats a list as a value with one constructor per length. For a
-matrix whose longest fixed requirement is `L` elements, counting both exact
-patterns and the fixed elements around a rest, the domain is the lengths
-`0` through `L - 1` plus "at least `L`". Each row is expanded into those
+Coverage treats a list as a value with one constructor per length. Let `E` be
+the length of the longest exact pattern in the column, and `P` and `S` the
+longest prefix and the longest suffix around a rest, each taken over all rows.
+With `L = max(E + 1, P + S)`, the domain is the lengths `0` through `L - 1`
+plus "at least `L`", whose rows have `P + S` element fields. Each row is expanded into those
 classes before the usual specialization. Some consequences:
 
 - `[]` and `[_, ..]` together cover every list.
@@ -538,7 +539,8 @@ exactly that variant.
 
 A pattern is irrefutable when it matches every value of its type: `_`, a
 binding, a typed binding over an ordinary type, a tuple or struct pattern whose
-parts are all irrefutable, and an alias of an irrefutable pattern.
+parts are all irrefutable, a list pattern that is only a rest (`[..rest]` or
+`[..]`), and an alias of an irrefutable pattern.
 
 These positions require an irrefutable pattern:
 
