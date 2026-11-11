@@ -152,7 +152,7 @@ pub(crate) enum ProjectSymbolKind {
     EnumConstructor,
     Interface,
     Function,
-    ModuleBinding,
+    Constant,
     GenericParameter,
     Parameter,
     Requirement,
@@ -173,7 +173,7 @@ impl ProjectSymbolKind {
             Self::EnumConstructor => "enum constructor",
             Self::Interface => "interface",
             Self::Function => "function",
-            Self::ModuleBinding => "module binding",
+            Self::Constant => "constant",
             Self::GenericParameter => "generic parameter",
             Self::Parameter => "parameter",
             Self::Requirement => "requirement",
@@ -860,7 +860,7 @@ impl ProjectResolver {
             ModuleDeclarationKind::Enum => (Namespace::Type, ProjectSymbolKind::Enum),
             ModuleDeclarationKind::Interface => (Namespace::Type, ProjectSymbolKind::Interface),
             ModuleDeclarationKind::Function => (Namespace::Value, ProjectSymbolKind::Function),
-            ModuleDeclarationKind::Binding => (Namespace::Value, ProjectSymbolKind::ModuleBinding),
+            ModuleDeclarationKind::Constant => (Namespace::Value, ProjectSymbolKind::Constant),
         };
         let id = self.add_symbol(
             Some(module_id),
@@ -1109,15 +1109,29 @@ impl ProjectResolver {
         }
         for id in values {
             let symbol = &self.symbols[id.raw() as usize];
-            if symbol.kind == ProjectSymbolKind::Function {
+            if matches!(
+                symbol.kind,
+                ProjectSymbolKind::Function | ProjectSymbolKind::Constant
+            ) {
                 bound = true;
                 let module = &self.semantic.modules[module_index];
+                let (code, message) = if symbol.kind == ProjectSymbolKind::Function {
+                    (
+                        "E_UNQUALIFIED_FUNCTION_IMPORT",
+                        "functions remain module-qualified; call",
+                    )
+                } else {
+                    (
+                        "E_UNQUALIFIED_CONSTANT_IMPORT",
+                        "member imports cannot bind values; write",
+                    )
+                };
                 self.diagnostics.push(name_error(
                     module,
-                    "E_UNQUALIFIED_FUNCTION_IMPORT",
+                    code,
                     member.range,
                     format!(
-                        "functions remain module-qualified; call {}.{}",
+                        "{message} {}.{}",
                         module_name(&self.semantic.modules[target_index].path),
                         member.text
                     ),
@@ -1238,6 +1252,9 @@ impl ProjectResolver {
             for field in &variant.fields {
                 self.resolve_type(module_index, &field.type_use, &generics);
             }
+        }
+        if let Some(annotation) = &declaration.annotation {
+            self.resolve_type(module_index, annotation, &generics);
         }
         let mut scope = Scope::default();
         if let Some(signature) = &declaration.function {

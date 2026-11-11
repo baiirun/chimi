@@ -35,4 +35,4 @@ fn configure_submit(
   map_success(submit, confirm)
 }
 
-let configured_submit = configure_submit(Checkout.submit)
+const configured_submit = configure_submit(Checkout.submit)

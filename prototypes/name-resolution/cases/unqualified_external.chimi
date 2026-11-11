@@ -3,4 +3,4 @@
 
 import modules/money as Money
 
-let invalid = from_cents(1)
+const invalid = from_cents(1)

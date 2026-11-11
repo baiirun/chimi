@@ -20,7 +20,7 @@ fn read() -> Int needs { source: Source } {
   source.read()
 }
 
-let source = {
+const source = {
   read: fn() -> Int { 40 },
 }
 

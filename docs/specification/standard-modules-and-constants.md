@@ -4,9 +4,11 @@
 
 Normative contract for `prog show ts-5e95b8`. It covers gaps G1, G7, G9, G10,
 and G20 from the [standard library map](../plans/standard-library-map.md) and
-resolves the module-constants decision `prog show ts-f47931`. Nothing here is
-implemented yet. Source spelling is provisional, as in the other
-specifications.
+resolves the module-constants decision `prog show ts-f47931`. Module
+constants (G7) are implemented, except result caching, the build report, and
+`process name` (which the language does not have yet). The standard tree (G1)
+and C bindings (G20) are not implemented. Source spelling is provisional, as
+in the other specifications.
 
 The words MUST, MUST NOT, SHOULD, and MAY are normative. Examples use
 positional construction and calls (`ts-835fc0`).
@@ -452,7 +454,11 @@ other constants, as long as the evaluation obeys the rules.
   These limits are provisional and are recorded in the build report.
 - A constant whose evaluation reaches itself, directly or through functions
   and other constants, is a cycle (`E5205`). The diagnostic lists every
-  constant and function on the path.
+  constant and function on the path. Constants that only name each other, as
+  in `const a = b` and `const b = a`, never get a type, so type checking
+  reports the cycle (still `E5205`) instead of evaluation.
+- Each broken constant reports one diagnostic. A constant that fails only
+  because a constant it uses failed reports nothing more.
 - Results are cached by the hash of the constant's transitive Core and the
   compiler version. Standard constants are cached once per compiler.
 
@@ -470,12 +476,18 @@ other constants, as long as the evaluation obeys the rules.
 ### Native program data
 
 - The native backend MUST emit each constant as statically initialized data in
-  `program_data.c`: text in read-only data, lists and maps as static arrays,
-  and nominal values as static records with their constructor ids.
+  `program_data.c`: the table `CHIMI_CONSTANT_VALUES`, whose entries are
+  scalars, text as ids into the read-only string table, lists and maps as
+  static arrays of entry ids, and nominal values with their constructor ids.
+  Children precede their parent.
+- The runtime MAY decode the table into runtime values before the entry runs.
+  Decoding cannot fail, emits no events, and costs time linear in the stored
+  data, so it is not an initialization phase in the sense above.
 - Static values are immortal. Reclamation scopes and any future collector MUST
-  NOT free them, and a value built at run time MAY point to them.
-- A function value in a constant stores the declared function's symbol and its
-  captured constant values.
+  NOT free them, and a value built at run time MAY point to them. Decoded
+  values are allocated outside every reclamation scope for this reason.
+- A function value in a constant stores the declared function's symbol, or
+  for a closure its `Closure` node and its captured constant values.
 - `CHIMI_SYMBOL_BINDING` and the interpreter's `CoreSymbolKind::Binding`, which
   re-evaluate an expression on each reference, are replaced by a constant
   symbol kind that loads the stored value.
@@ -511,6 +523,12 @@ bindings need nothing more. A binding still fails when its initializer breaks
 an initializer rule: a type that is not fully determined needs an annotation
 (`T4324`), and a value that is not constant-representable (`T4323`) or that
 calls a non-`pure` operation (`E5201`) moves into a function.
+
+The common `T4324` case is a fake provider such as
+`const fake = { read: fn(path) { 40 } }`. A module-level `let` let a later
+`using` decide the type of `path`; a constant is not generic, so only its own
+initializer and annotation decide it, and the parameter needs an annotation:
+`fn(path: Text) { 40 }`.
 
 ## Text interpolation (G9)
 

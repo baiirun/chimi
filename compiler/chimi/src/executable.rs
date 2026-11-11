@@ -38,7 +38,11 @@ pub(crate) struct CoreProgram {
     type_count: usize,
     pub(crate) symbols: Vec<CoreSymbol>,
     pub(crate) functions: Vec<CoreFunction>,
-    pub(crate) bindings: Vec<CoreBinding>,
+    /// Every constant's initializer, kept so diagnostics and tools can point at it.
+    /// Nothing evaluates an initializer after the build.
+    pub(crate) constant_initializers: Vec<CoreConstantInitializer>,
+    /// Every constant's build-time value, one per initializer, in initializer order.
+    pub(crate) constants: Vec<CoreConstant>,
     pub(crate) nodes: Vec<CoreNode>,
     pub(crate) origins: Vec<Origin>,
 }
@@ -81,9 +85,9 @@ impl CoreProgram {
             );
             debug_assert!((function.body.raw() as usize) < self.nodes.len());
         }
-        for binding in &self.bindings {
-            debug_assert!((binding.symbol.raw() as usize) < self.symbols.len());
-            debug_assert!((binding.value.raw() as usize) < self.nodes.len());
+        for initializer in &self.constant_initializers {
+            debug_assert!((initializer.symbol.raw() as usize) < self.symbols.len());
+            debug_assert!((initializer.value.raw() as usize) < self.nodes.len());
         }
         for (index, origin) in self.origins.iter().enumerate() {
             debug_assert_eq!(origin.origin_id.raw() as usize, index);
@@ -126,7 +130,7 @@ impl CoreProgram {
         }
         (
             self.functions.len(),
-            self.bindings.len(),
+            self.constant_initializers.len(),
             self.nodes.len(),
             self.origins.len(),
             constants,
@@ -337,7 +341,8 @@ pub(crate) struct CoreSymbol {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoreSymbolKind {
     Function,
-    Binding,
+    /// A module constant; a reference loads its build-time value.
+    Constant,
     Requirement,
     Local,
     Constructor,
@@ -361,9 +366,53 @@ pub(crate) struct CoreFunction {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct CoreBinding {
+pub(crate) struct CoreConstantInitializer {
     pub(crate) symbol: SymbolId,
     pub(crate) value: CoreNodeId,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CoreConstant {
+    pub(crate) symbol: SymbolId,
+    pub(crate) value: ConstantValue,
+}
+
+/// A value computed at build time and stored in the executable.
+///
+/// Invariant: it holds no runtime capability and no provider, so every backend can
+/// store it as immutable data and every task can read it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ConstantValue {
+    Void,
+    Integer(i64),
+    /// Always finite.
+    Float(f64),
+    Text(String),
+    Boolean(bool),
+    List(Vec<ConstantValue>),
+    Record(Vec<(String, ConstantValue)>),
+    /// A struct or enum value; field names come from the constructor's shape.
+    Constructed {
+        constructor: SymbolId,
+        fields: Vec<ConstantValue>,
+    },
+    /// Entries in ascending byte order of their keys.
+    Map(Vec<(String, ConstantValue)>),
+    JsonNumber(String),
+    Function(ConstantFunction),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ConstantFunction {
+    Declared(SymbolId),
+    Intrinsic(SymbolId),
+    Constructor(SymbolId),
+    /// `node` is the `CoreOperation::Closure` that made it; `captures` binds exactly
+    /// that node's capture symbols.
+    Closure {
+        node: CoreNodeId,
+        captures: Vec<(SymbolId, ConstantValue)>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -687,8 +736,16 @@ fn collect_reachable_program(
         }
     }
 
+    // Every constant is a root: the build evaluates each one, referenced or not, so a
+    // broken constant fails the build wherever it is.
+    let constants = typed
+        .resolved
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.kind == ProjectSymbolKind::Constant)
+        .map(|symbol| symbol.id);
     let mut state = ReachabilityState {
-        queue: VecDeque::from([entry]),
+        queue: std::iter::once(entry).chain(constants).collect(),
         ..ReachabilityState::default()
     };
     while let Some(symbol_id) = state.queue.pop_front() {
@@ -799,7 +856,7 @@ fn collect_reachable_expression(
                 ReferenceResolution::Resolved(symbol) => {
                     if matches!(
                         typed.resolved.symbol(symbol).kind,
-                        ProjectSymbolKind::Function | ProjectSymbolKind::ModuleBinding
+                        ProjectSymbolKind::Function | ProjectSymbolKind::Constant
                     ) {
                         state.queue.push_back(symbol);
                     }
@@ -981,7 +1038,11 @@ fn type_is_nonpoisoned(
     }
 }
 
-pub(crate) fn lower(root: VerifiedRoot) -> CoreProgram {
+/// Lowers the verified program to Core and evaluates every constant.
+///
+/// Ensures: on success, `constants` holds one value per constant initializer.
+/// A constant whose evaluation breaks a build-time rule yields its `E52xx` diagnostic.
+pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> {
     let computation = root.typed.resolved.symbol(root.entry).name.clone();
     let symbols = lower_core_symbols(&root.typed);
     let origin_ids = root
@@ -995,7 +1056,7 @@ pub(crate) fn lower(root: VerifiedRoot) -> CoreProgram {
         nodes: Vec::new(),
     };
     let mut functions = Vec::new();
-    let mut bindings = Vec::new();
+    let mut constant_initializers = Vec::new();
     for symbol_id in root.reachable_declarations {
         let symbol = lowerer.typed.resolved.symbol(symbol_id);
         let module_id = symbol
@@ -1043,10 +1104,12 @@ pub(crate) fn lower(root: VerifiedRoot) -> CoreProgram {
                     body,
                 });
             }
-            ModuleDeclarationKind::Binding => bindings.push(CoreBinding {
-                symbol: symbol_id,
-                value: body,
-            }),
+            ModuleDeclarationKind::Constant => {
+                constant_initializers.push(CoreConstantInitializer {
+                    symbol: symbol_id,
+                    value: body,
+                })
+            }
             ModuleDeclarationKind::Struct
             | ModuleDeclarationKind::Enum
             | ModuleDeclarationKind::Interface => {
@@ -1060,12 +1123,15 @@ pub(crate) fn lower(root: VerifiedRoot) -> CoreProgram {
         type_count: root.typed.types.len(),
         symbols,
         functions,
-        bindings,
+        constant_initializers,
+        constants: Vec::new(),
         nodes: lowerer.nodes,
         origins: root.origins,
     };
+    let mut core = core;
+    core.constants = crate::execution::evaluate_constants(&core)?;
     core.assert_well_formed();
-    core
+    Ok(core)
 }
 
 struct CoreLowerer {
@@ -1640,7 +1706,7 @@ fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
         .map(|symbol| {
             let kind = match symbol.kind {
                 ProjectSymbolKind::Function => CoreSymbolKind::Function,
-                ProjectSymbolKind::ModuleBinding => CoreSymbolKind::Binding,
+                ProjectSymbolKind::Constant => CoreSymbolKind::Constant,
                 ProjectSymbolKind::Requirement => CoreSymbolKind::Requirement,
                 ProjectSymbolKind::Parameter
                 | ProjectSymbolKind::LocalBinding

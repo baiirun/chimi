@@ -3,4 +3,4 @@
 
 import modules/money.{NegativeAmount}
 
-let error = NegativeAmount(-1)
+const error = NegativeAmount(-1)

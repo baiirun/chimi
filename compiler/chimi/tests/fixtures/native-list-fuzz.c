@@ -34,6 +34,8 @@ const ChimiNamedNode CHIMI_NAMED_NODES[] = {{0}};
 const ChimiStep CHIMI_STEPS[] = {{0}};
 const ChimiArm CHIMI_ARMS[] = {{0}};
 const ChimiPattern CHIMI_PATTERNS[] = {{0}};
+const ChimiConstantValue CHIMI_CONSTANT_VALUES[] = {{0}};
+const uint32_t CHIMI_CONSTANT_VALUE_COUNT = 0;
 ChimiNodeFn CHIMI_NODE_FUNCTIONS[] = {NULL};
 
 enum { VERSIONS = 64, MAX_LENGTH = 200000, COLLECT_EVERY = 997, SPOT_CHECK_EVERY = 50 };

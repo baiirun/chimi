@@ -22,6 +22,7 @@ pub(crate) enum TokenKind {
     Pub,
     Fn,
     Let,
+    Const,
     Case,
     Loop,
     Break,
@@ -87,6 +88,7 @@ impl TokenKind {
             Self::Pub => "pub",
             Self::Fn => "fn",
             Self::Let => "let",
+            Self::Const => "const",
             Self::Case => "case",
             Self::Loop => "loop",
             Self::Break => "break",
@@ -149,6 +151,7 @@ impl TokenKind {
             Self::Pub => "`pub`",
             Self::Fn => "`fn`",
             Self::Let => "`let`",
+            Self::Const => "`const`",
             Self::Case => "`case`",
             Self::Loop => "`loop`",
             Self::Break => "`break`",
@@ -226,6 +229,7 @@ pub(crate) enum NodeKind {
     RequirementClause,
     RequirementRecord,
     LetBinding,
+    ConstDeclaration,
     UsingExpression,
     OrExpression,
     AndExpression,
@@ -284,6 +288,7 @@ impl NodeKind {
             Self::RequirementClause => "requirement_clause",
             Self::RequirementRecord => "requirement_record",
             Self::LetBinding => "let_binding",
+            Self::ConstDeclaration => "const_declaration",
             Self::UsingExpression => "using_expression",
             Self::OrExpression => "or_expression",
             Self::AndExpression => "and_expression",
@@ -930,6 +935,7 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                     "pub" => TokenKind::Pub,
                     "fn" => TokenKind::Fn,
                     "let" => TokenKind::Let,
+                    "const" => TokenKind::Const,
                     "case" => TokenKind::Case,
                     "loop" => TokenKind::Loop,
                     "break" => TokenKind::Break,
@@ -1133,10 +1139,11 @@ impl<'source> Parser<'source> {
                     self.parse_declaration()
                 }
                 TokenKind::Fn if self.fn_starts_declaration() => self.parse_declaration(),
+                TokenKind::Const => self.parse_const_declaration(),
                 TokenKind::Let => self.parse_let_binding(),
                 _ => {
                     self.error_at_current(
-                        "expected an import, a declaration, or a `let` binding at file scope",
+                        "expected an import, a declaration, or a `const` at file scope",
                     );
                     self.parse_expression();
                 }
@@ -1214,7 +1221,10 @@ impl<'source> Parser<'source> {
             }
             Some((NodeKind::EnumDeclaration, TokenKind::Enum)) => self.parse_enum(),
             Some((NodeKind::FunctionDeclaration, TokenKind::Fn)) => self.parse_function(),
-            _ => self.error_and_bump("expected `struct`, `enum`, `interface`, or `fn` after `pub`"),
+            Some((NodeKind::ConstDeclaration, TokenKind::Const)) => self.parse_const_declaration(),
+            _ => self.error_and_bump(
+                "expected `struct`, `enum`, `interface`, `fn`, or `const` after `pub`",
+            ),
         }
     }
 
@@ -1231,6 +1241,7 @@ impl<'source> Parser<'source> {
             TokenKind::Enum => Some((NodeKind::EnumDeclaration, TokenKind::Enum)),
             TokenKind::Interface => Some((NodeKind::InterfaceDeclaration, TokenKind::Interface)),
             TokenKind::Fn => Some((NodeKind::FunctionDeclaration, TokenKind::Fn)),
+            TokenKind::Const => Some((NodeKind::ConstDeclaration, TokenKind::Const)),
             _ => None,
         }
     }
@@ -1513,6 +1524,22 @@ impl<'source> Parser<'source> {
         self.finish();
     }
 
+    /// Parses `[pub] const <name> [: <type>] = <expression>`.
+    /// Ensures: one `ConstDeclaration` node. Inside a block the node is still built,
+    /// so later stages see the initializer, and `S1103` reports the misplaced keyword.
+    fn parse_const_declaration(&mut self) {
+        self.start(NodeKind::ConstDeclaration);
+        self.parse_visibility();
+        self.expect(TokenKind::Const);
+        self.expect(TokenKind::Identifier);
+        if self.accept(TokenKind::Colon) {
+            self.parse_type();
+        }
+        self.expect(TokenKind::Equal);
+        self.parse_expression();
+        self.finish();
+    }
+
     fn parse_let_binding(&mut self) {
         self.start(NodeKind::LetBinding);
         self.expect(TokenKind::Let);
@@ -1638,6 +1665,7 @@ impl<'source> Parser<'source> {
                 | TokenKind::Interface
                 | TokenKind::Fn
                 | TokenKind::Let
+                | TokenKind::Const
         )
     }
 
@@ -1921,6 +1949,16 @@ impl<'source> Parser<'source> {
             self.start(NodeKind::BlockItem);
             if self.at(TokenKind::Let) {
                 self.parse_let_binding();
+            } else if self.at(TokenKind::Const) {
+                let range = self.current().range;
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Syntax,
+                    "S1103",
+                    self.source.file_id(),
+                    range,
+                    "`const` declares a module constant and is valid only at module level; use `let` inside a block",
+                ));
+                self.parse_const_declaration();
             } else {
                 self.parse_expression();
             }
@@ -2142,6 +2180,7 @@ impl<'source> Parser<'source> {
                 | TokenKind::Interface
                 | TokenKind::Fn
                 | TokenKind::Let
+                | TokenKind::Const
         )
     }
 
@@ -2667,8 +2706,8 @@ mod tests {
     #[test]
     fn expression_tree_preserves_precedence_and_composition_boundaries() {
         let source = concat!(
-            "let configured = operation |> retry using { clock: system_clock }\n",
-            "let calculated = 1 + 2 * 3\n",
+            "const configured = operation |> retry using { clock: system_clock }\n",
+            "const calculated = 1 + 2 * 3\n",
         );
         let snapshot = SourceSnapshot::from_text("precedence.chimi", source);
         let result = parse(&snapshot);

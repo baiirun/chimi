@@ -550,7 +550,7 @@ fn generate_module(module: usize, declarations: usize) -> String {
     for item in 0..declarations {
         let suffix = format!("{module:04}_{item:04}");
         source.push_str(&format!(
-            "struct Value_{suffix} {{\n  amount: Int\n}}\n\npub fn increment_{suffix}(value: Int) -> Int {{\n  value + 1\n}}\n\nlet configuration_{suffix} = {{\n  retry_limit: 3,\n  tracing: True,\n}}\n\nlet transformed_{suffix} = 1\n|> increment_{suffix}\n\n"
+            "struct Value_{suffix} {{\n  amount: Int\n}}\n\npub fn increment_{suffix}(value: Int) -> Int {{\n  value + 1\n}}\n\nconst configuration_{suffix} = {{\n  retry_limit: 3,\n  tracing: True,\n}}\n\nconst transformed_{suffix} = 1\n|> increment_{suffix}\n\n"
         ));
     }
     source

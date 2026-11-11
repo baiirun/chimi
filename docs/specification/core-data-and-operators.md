@@ -180,9 +180,9 @@ enum Status {
   Paid(amount: Money)
 }
 
-let settled = Paid(Money(500)) == Paid(Money(500))      // True
-let changed = Paid(Money(500)) != Status.Pending         // True
-let pair_match = (1, "one") == (1, "one")                // True
+const settled = Paid(Money(500)) == Paid(Money(500))      // True
+const changed = Paid(Money(500)) != Status.Pending         // True
+const pair_match = (1, "one") == (1, "one")                // True
 ```
 
 Rules:
@@ -278,9 +278,9 @@ struct Version {
   patch: Int,
 }
 
-let newer = Version(1, 10, 0) > Version(1, 9, 7)        // True
-let earlier = (2, "b") < (2, "c")                        // True
-let shorter = [1, 2] < [1, 2, 0]                         // True
+const newer = Version(1, 10, 0) > Version(1, 9, 7)        // True
+const earlier = (2, "b") < (2, "c")                        // True
+const shorter = [1, 2] < [1, 2, 0]                         // True
 ```
 
 Rules:
@@ -333,9 +333,9 @@ fn by_age_then_name(left: User, right: User) -> Ordering {
   }
 }
 
-let youngest_first = List.sort_by(users, by_age_then_name)
-let oldest_first = List.sort_by(users, Order.reverse(by_age_then_name))
-let by_name = List.sort_by(users, Order.by(fn(user) { user.name }))
+const youngest_first = List.sort_by(users, by_age_then_name)
+const oldest_first = List.sort_by(users, Order.reverse(by_age_then_name))
+const by_name = List.sort_by(users, Order.by(fn(user) { user.name }))
 ```
 
 `std/order` MUST provide functions equivalent to:
@@ -615,10 +615,10 @@ is numeric rather than representational.
 import std/decimal as Decimal
 import std/decimal.{Decimal, Rounding}
 
-let price = Decimal.of(1999, 2)                 // 19.99
-let total = price * Decimal.of(3, 0)            // 59.97
-let share = Decimal.divide(total, Decimal.of(4, 0), 2, Rounding.HalfEven)
-let same = Decimal.of(150, 2) == Decimal.of(15, 1)   // True
+const price = Decimal.of(1999, 2)                 // 19.99
+const total = price * Decimal.of(3, 0)            // 59.97
+const share = Decimal.divide(total, Decimal.of(4, 0), 2, Rounding.HalfEven)
+const same = Decimal.of(150, 2) == Decimal.of(15, 1)   // True
 ```
 
 Representation expectations:

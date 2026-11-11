@@ -1,9 +1,9 @@
 // PROTOTYPE
 // EXPECT-SYNTAX: failure
 
-let configuration = {
+const configuration = {
   retry_limit: ,
   tracing: True,
 }
 
-let after = 1
+const after = 1

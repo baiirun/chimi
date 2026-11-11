@@ -419,7 +419,8 @@ pub(crate) enum ModuleDeclarationKind {
     Enum,
     Interface,
     Function,
-    Binding,
+    /// A module constant, `[pub] const name [: Type] = initializer`, evaluated at build time.
+    Constant,
 }
 
 #[derive(Clone, Debug)]
@@ -433,6 +434,8 @@ pub(crate) struct ModuleDeclaration {
     pub(crate) variants: Vec<VariantDeclaration>,
     pub(crate) function: Option<FunctionSignature>,
     pub(crate) body: Option<ModuleExpression>,
+    /// The declared type of a constant; `None` for every other declaration.
+    pub(crate) annotation: Option<TypeUse>,
 }
 
 #[derive(Clone, Debug)]
@@ -895,8 +898,31 @@ impl ProjectLowerer {
                         declarations.push(declaration);
                     }
                 }
+                NodeKind::ConstDeclaration => {
+                    if let Some(declaration) = lowerer.lower_constant(&node) {
+                        declarations.push(declaration);
+                    }
+                }
+                // Module-level `let` was replaced by `const` (`L2101`). It still lowers as
+                // a constant so references to it resolve and report nothing further.
                 NodeKind::LetBinding => {
-                    if let Some(declaration) = lowerer.lower_module_binding(&node) {
+                    if let Some(keyword) = node
+                        .child_tokens()
+                        .into_iter()
+                        .find(|token| token.kind() == TokenKind::Let)
+                    {
+                        lowerer.diagnostics.push(
+                            Diagnostic::error(
+                                DiagnosticStage::Lowering,
+                                "L2101",
+                                FileId::new(0),
+                                keyword.range(),
+                                "a module-level value is a constant; declare it with `const`",
+                            )
+                            .with_fix(keyword.range(), "const"),
+                        );
+                    }
+                    if let Some(declaration) = lowerer.lower_constant(&node) {
                         declarations.push(declaration);
                     }
                 }
@@ -1006,22 +1032,30 @@ impl ProjectLowerer {
             variants,
             function,
             body,
+            annotation: None,
         })
     }
 
-    fn lower_module_binding(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleDeclaration> {
+    /// Lowers a `ConstDeclaration`, or a module-level `LetBinding` already reported as `L2101`.
+    fn lower_constant(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleDeclaration> {
         let name = direct_identifier(node)?;
+        let annotation =
+            direct_child(node, NodeKind::Type).map(|type_node| self.lower_type(&type_node));
         let body = direct_expression_child(node).map(|value| self.lower_expression(&value));
         Some(ModuleDeclaration {
             semantic_id: self.allocate_semantic_id(),
-            kind: ModuleDeclarationKind::Binding,
-            public: false,
+            kind: ModuleDeclarationKind::Constant,
+            public: node
+                .child_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::Pub),
             name,
             generic_parameters: Vec::new(),
             fields: Vec::new(),
             variants: Vec::new(),
             function: None,
             body,
+            annotation,
         })
     }
 
@@ -1598,7 +1632,11 @@ impl ProjectLowerer {
 
     fn lower_block_item(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleBlockItem> {
         let child = node.child_nodes().into_iter().next()?;
-        if child.kind() == NodeKind::LetBinding {
+        // A block `const` was already reported as `S1103`; it binds like `let`.
+        if matches!(
+            child.kind(),
+            NodeKind::LetBinding | NodeKind::ConstDeclaration
+        ) {
             let name = direct_identifier(&child)?;
             let value = direct_expression_child(&child)
                 .map(|value| self.lower_expression(&value))

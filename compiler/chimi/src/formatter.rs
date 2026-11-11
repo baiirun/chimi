@@ -289,6 +289,7 @@ const fn word_kind(kind: TokenKind) -> bool {
             | TokenKind::Pub
             | TokenKind::Fn
             | TokenKind::Let
+            | TokenKind::Const
             | TokenKind::Case
             | TokenKind::Loop
             | TokenKind::Break
@@ -449,8 +450,8 @@ mod tests {
     fn type_arguments_unary_minus_and_comparisons_use_distinct_spacing() {
         let source = concat!(
             "struct Box { values: List<Int> }\n",
-            "let negative=-100\n",
-            "let compared=negative<0\n",
+            "const negative=-100\n",
+            "const compared=negative<0\n",
         );
         let report = format(source);
 

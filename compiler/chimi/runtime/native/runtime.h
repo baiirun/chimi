@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 10
+#define CHIMI_RUNTIME_ABI_VERSION 11
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -12,7 +12,7 @@ typedef ChimiControl *(*ChimiNodeFn)(ChimiRuntime *, ChimiEnvironment *, uint64_
 
 enum {
   CHIMI_SYMBOL_FUNCTION,
-  CHIMI_SYMBOL_BINDING,
+  CHIMI_SYMBOL_CONSTANT,
   CHIMI_SYMBOL_REQUIREMENT,
   CHIMI_SYMBOL_LOCAL,
   CHIMI_SYMBOL_CONSTRUCTOR,
@@ -176,13 +176,45 @@ typedef struct {
   uint32_t kind;
   uint32_t name;
   uint32_t function;
-  uint32_t binding;
+  uint32_t constant; /* index of the constant's value in CHIMI_CONSTANT_VALUES */
   uint32_t constructor;
   uint32_t intrinsic;
   uint32_t standard_constructor;
   uint32_t standard_type;
   uint32_t environment_slot;
 } ChimiSymbol;
+
+/* One value of a module constant, computed by the compiler. Children precede their
+   parent, so the runtime decodes the table front to back.
+   TEXT and JSON_NUMBER: `a` is a string id. LIST and CONSTRUCTED: `length` value ids at
+   `offset` in CHIMI_IDS, and `a` is the constructor symbol. RECORD and MAP: `length`
+   (string id, value id) pairs at `offset`. DECLARED, INTRINSIC, and CONSTRUCTOR: `a` is
+   the symbol. CLOSURE: `a` is the closure node and `length` (symbol, value id) capture
+   pairs sit at `offset`. INTEGER, BOOLEAN, and FLOAT (IEEE bits) use `integer`. */
+enum {
+  CHIMI_CONSTANT_VOID,
+  CHIMI_CONSTANT_INTEGER,
+  CHIMI_CONSTANT_FLOAT,
+  CHIMI_CONSTANT_TEXT,
+  CHIMI_CONSTANT_BOOLEAN,
+  CHIMI_CONSTANT_LIST,
+  CHIMI_CONSTANT_RECORD,
+  CHIMI_CONSTANT_CONSTRUCTED,
+  CHIMI_CONSTANT_MAP,
+  CHIMI_CONSTANT_JSON_NUMBER,
+  CHIMI_CONSTANT_DECLARED,
+  CHIMI_CONSTANT_INTRINSIC,
+  CHIMI_CONSTANT_CONSTRUCTOR,
+  CHIMI_CONSTANT_CLOSURE,
+};
+
+typedef struct {
+  uint32_t kind;
+  uint32_t a;
+  uint32_t offset;
+  uint32_t length;
+  int64_t integer;
+} ChimiConstantValue;
 
 typedef struct {
   uint32_t symbol;
@@ -243,6 +275,8 @@ extern const ChimiNamedNode CHIMI_NAMED_NODES[];
 extern const ChimiStep CHIMI_STEPS[];
 extern const ChimiArm CHIMI_ARMS[];
 extern const ChimiPattern CHIMI_PATTERNS[];
+extern const ChimiConstantValue CHIMI_CONSTANT_VALUES[];
+extern const uint32_t CHIMI_CONSTANT_VALUE_COUNT;
 extern ChimiNodeFn CHIMI_NODE_FUNCTIONS[];
 
 int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv);

@@ -73,12 +73,12 @@ fn submit(cart: Cart)
   }
 }
 
-let fake_inventory = {
-  reserve: fn(_items) { Reservation("reservation-1") },
+const fake_inventory = {
+  reserve: fn(_items: List<Item>) { Reservation("reservation-1") },
 }
 
-let fake_payment = {
-  charge: fn(_total) { Receipt("receipt-1") },
+const fake_payment = {
+  charge: fn(_total: Money) { Receipt("receipt-1") },
 }
 
 pub fn main() {

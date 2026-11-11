@@ -16,6 +16,8 @@ use crate::standard::{
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+mod constants;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TypeFact {
     Known(TypeId),
@@ -919,6 +921,8 @@ struct ProjectTypeChecker {
     /// The type every `break` of a loop must supply; it is also the loop's success type.
     /// A loop no break targets keeps an unconstrained variable, so it fits any context.
     loop_break_types: HashMap<(ModuleId, SemanticId), TypeId>,
+    /// Constants whose latest body pass left an inference variable unbound (`T4324`).
+    undetermined_constants: HashSet<(ModuleId, SemanticId)>,
 }
 
 #[derive(Clone, Debug)]
@@ -1098,6 +1102,7 @@ impl ProjectTypeChecker {
             next_inference_variable: 0,
             inference_bindings: HashMap::new(),
             loop_break_types: HashMap::new(),
+            undetermined_constants: HashSet::new(),
         };
         checker.intern_type(CanonicalType::Poison);
         checker.intern_failure_row(FailureRow {
@@ -1983,6 +1988,7 @@ impl ProjectTypeChecker {
             next_inference_variable,
             inference_bindings: previous.inference_bindings.clone(),
             loop_break_types: HashMap::new(),
+            undetermined_constants: HashSet::new(),
         }
     }
 
@@ -2076,6 +2082,9 @@ impl ProjectTypeChecker {
             warnings: self.warnings,
             inference_bindings: self.inference_bindings,
         };
+        let constant_diagnostics =
+            constants::check(&typed, body_modules, &self.undetermined_constants);
+        typed.diagnostics.extend(constant_diagnostics);
         let capability_report = crate::capability::check(&typed);
         typed.expression_value_properties = capability_report.expression_properties;
         typed.diagnostics.extend(capability_report.diagnostics);
@@ -2196,7 +2205,13 @@ impl ProjectTypeChecker {
                 self.declaration_types
                     .insert((module_id, declaration.semantic_id), function_type);
             }
-            ModuleDeclarationKind::Binding => {}
+            ModuleDeclarationKind::Constant => {
+                if let Some(annotation) = &declaration.annotation {
+                    let declared = self.lower_value_type(module_id, annotation, &generic_symbols);
+                    self.declaration_types
+                        .insert((module_id, declaration.semantic_id), declared);
+                }
+            }
         }
     }
 
@@ -2236,21 +2251,36 @@ impl ProjectTypeChecker {
                 self.contracts.insert(function_symbol, inferred);
                 self.contracts[&function_symbol] != previous
             }
-            ModuleDeclarationKind::Binding => {
+            ModuleDeclarationKind::Constant => {
                 let mut bindings = HashMap::new();
                 let fact = self.infer_expression(module_id, body, &generic_symbols, &mut bindings);
-                if let Some(symbol) = self.declaration_symbol(module_id, declaration) {
-                    let key = (module_id, declaration.semantic_id);
-                    let changed = self
-                        .declaration_types
-                        .get(&key)
-                        .is_none_or(|previous| !self.types_equivalent(*previous, fact.success));
-                    self.declaration_types.insert(key, fact.success);
-                    self.contracts.remove(&symbol);
-                    changed
+                let Some(symbol) = self.declaration_symbol(module_id, declaration) else {
+                    return false;
+                };
+                let key = (module_id, declaration.semantic_id);
+                let success = if let Some(annotation) = &declaration.annotation {
+                    let declared = self.lower_value_type(module_id, annotation, &generic_symbols);
+                    self.unify_expression_result(module_id, body, fact.success, declared);
+                    declared
                 } else {
-                    false
+                    fact.success
+                };
+                // A constant is not generic: only its own initializer and annotation may
+                // determine its type, so a use elsewhere must not bind what is left open.
+                let success = self.resolve_inference_type(success);
+                if self.type_is_determined(success) {
+                    self.undetermined_constants.remove(&key);
+                } else {
+                    self.undetermined_constants.insert(key);
                 }
+                let success = self.close_inferred_type(success);
+                let changed = self
+                    .declaration_types
+                    .get(&key)
+                    .is_none_or(|previous| !self.types_equivalent(*previous, success));
+                self.declaration_types.insert(key, success);
+                self.contracts.remove(&symbol);
+                changed
             }
             ModuleDeclarationKind::Struct
             | ModuleDeclarationKind::Enum
@@ -6740,7 +6770,7 @@ impl ProjectTypeChecker {
             ModuleDeclarationKind::Enum => ProjectSymbolKind::Enum,
             ModuleDeclarationKind::Interface => ProjectSymbolKind::Interface,
             ModuleDeclarationKind::Function => ProjectSymbolKind::Function,
-            ModuleDeclarationKind::Binding => ProjectSymbolKind::ModuleBinding,
+            ModuleDeclarationKind::Constant => ProjectSymbolKind::Constant,
         };
         self.find_symbol(
             module_id,

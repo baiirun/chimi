@@ -5,4 +5,4 @@
 // EXPECT-MESSAGE: Void is a completion type and cannot be constructed as a value
 // EXPECT-SPAN: Void
 
-let completion = Void
+const completion = Void

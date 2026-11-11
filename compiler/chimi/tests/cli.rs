@@ -1228,7 +1228,7 @@ fn native_function_values_retain_provisioned_requirements() {
         project.join("app/main.chimi"),
         concat!(
             "interface Source { read: fn() -> Int }\n",
-            "let provider = { read: fn() -> Int { 41 } }\n",
+            "const provider = { read: fn() -> Int { 41 } }\n",
             "fn read() -> Int needs { source: Source } { source.read() }\n",
             "fn configured() -> fn(Int) -> Int {\n",
             "  let operation = read using { source: provider }\n",

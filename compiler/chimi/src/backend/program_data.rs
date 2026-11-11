@@ -1,7 +1,8 @@
 //! Immutable runtime metadata encoding shared by native emission and comparison tools.
 
 use crate::executable::{
-    CoreLiteral, CoreOperation, CorePattern, CoreProgram, CoreStep, CoreSymbolKind,
+    ConstantFunction, ConstantValue, CoreLiteral, CoreOperation, CorePattern, CoreProgram,
+    CoreStep, CoreSymbolKind,
 };
 use crate::semantic::{BinaryOperator, UnaryOperator};
 use crate::standard::{StandardFunction, StandardSymbol};
@@ -17,6 +18,7 @@ struct ProgramData {
     steps: Vec<(u32, u32, u32)>,
     arms: Vec<(u32, u32, u32, u32)>,
     patterns: Vec<(u32, u32, u32, u32, i64)>,
+    constant_values: Vec<(u32, u32, u32, u32, i64)>,
 }
 
 impl ProgramData {
@@ -42,6 +44,73 @@ impl ProgramData {
         }
         (offset, self.named_nodes.len() as u32 - offset)
     }
+    /// Appends `value` after its children and returns its index, so the runtime can
+    /// decode `CHIMI_CONSTANT_VALUES` front to back.
+    fn constant_value(&mut self, value: &ConstantValue) -> u32 {
+        let pairs = |data: &mut Self, entries: &[(String, ConstantValue)]| {
+            let ids = entries
+                .iter()
+                .flat_map(|(name, value)| [data.string(name), data.constant_value(value)])
+                .collect::<Vec<_>>();
+            (data.ids(ids).0, entries.len() as u32)
+        };
+        let row = match value {
+            ConstantValue::Void => (0, 0, 0, 0, 0),
+            ConstantValue::Integer(value) => (1, 0, 0, 0, *value),
+            // The runtime reads the IEEE 754 bits back with `memcpy`.
+            ConstantValue::Float(value) => (2, 0, 0, 0, value.to_bits() as i64),
+            ConstantValue::Text(value) => (3, self.string(value), 0, 0, 0),
+            ConstantValue::Boolean(value) => (4, 0, 0, 0, i64::from(*value)),
+            ConstantValue::List(values) => {
+                let ids = values
+                    .iter()
+                    .map(|value| self.constant_value(value))
+                    .collect::<Vec<_>>();
+                let (offset, length) = self.ids(ids);
+                (5, 0, offset, length, 0)
+            }
+            ConstantValue::Record(fields) => {
+                let (offset, length) = pairs(self, fields);
+                (6, 0, offset, length, 0)
+            }
+            ConstantValue::Constructed {
+                constructor,
+                fields,
+            } => {
+                let ids = fields
+                    .iter()
+                    .map(|value| self.constant_value(value))
+                    .collect::<Vec<_>>();
+                let (offset, length) = self.ids(ids);
+                (7, constructor.raw(), offset, length, 0)
+            }
+            ConstantValue::Map(entries) => {
+                let (offset, length) = pairs(self, entries);
+                (8, 0, offset, length, 0)
+            }
+            ConstantValue::JsonNumber(text) => (9, self.string(text), 0, 0, 0),
+            ConstantValue::Function(ConstantFunction::Declared(symbol)) => {
+                (10, symbol.raw(), 0, 0, 0)
+            }
+            ConstantValue::Function(ConstantFunction::Intrinsic(symbol)) => {
+                (11, symbol.raw(), 0, 0, 0)
+            }
+            ConstantValue::Function(ConstantFunction::Constructor(symbol)) => {
+                (12, symbol.raw(), 0, 0, 0)
+            }
+            ConstantValue::Function(ConstantFunction::Closure { node, captures }) => {
+                let ids = captures
+                    .iter()
+                    .flat_map(|(symbol, value)| [symbol.raw(), self.constant_value(value)])
+                    .collect::<Vec<_>>();
+                let (offset, _) = self.ids(ids);
+                (13, node.raw(), offset, captures.len() as u32, 0)
+            }
+        };
+        self.constant_values.push(row);
+        self.constant_values.len() as u32 - 1
+    }
+
     fn pattern(&mut self, pattern: &CorePattern) -> u32 {
         let index = self.patterns.len() as u32;
         self.patterns.push((0, 0, 0, 0, 0));
@@ -114,11 +183,11 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
             .iter()
             .position(|item| item.symbol == symbol.id)
             .map_or(u32::MAX, |i| i as u32);
-        let binding = core
-            .bindings
+        let constant = core
+            .constants
             .iter()
             .find(|item| item.symbol == symbol.id)
-            .map_or(u32::MAX, |item| item.value.raw());
+            .map_or(u32::MAX, |item| data.constant_value(&item.value));
         let constructor = if let Some(shape) = &symbol.constructor {
             let type_name = data.string(&shape.type_name);
             let variant_name = shape
@@ -147,7 +216,7 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
             symbol_kind(symbol.kind),
             name,
             function,
-            binding,
+            constant,
             constructor,
             match symbol.standard {
                 Some(StandardSymbol::Function(function)) => function.runtime_id(),
@@ -421,6 +490,18 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         &data.patterns,
         |r| format!("{{{}, {}, {}, {}, {}}}", r.0, r.1, r.2, r.3, r.4),
     );
+    render_array(
+        &mut output,
+        "const ChimiConstantValue CHIMI_CONSTANT_VALUES[]",
+        &data.constant_values,
+        |r| format!("{{{}, {}, {}, {}, {}}}", r.0, r.1, r.2, r.3, r.4),
+    );
+    writeln!(
+        output,
+        "const uint32_t CHIMI_CONSTANT_VALUE_COUNT = {};",
+        data.constant_values.len()
+    )
+    .unwrap();
     if bytecode {
         render_array(
             &mut output,
@@ -547,7 +628,7 @@ fn c_string(value: &str) -> String {
 const fn symbol_kind(kind: CoreSymbolKind) -> u32 {
     match kind {
         CoreSymbolKind::Function => 0,
-        CoreSymbolKind::Binding => 1,
+        CoreSymbolKind::Constant => 1,
         CoreSymbolKind::Requirement => 2,
         CoreSymbolKind::Local => 3,
         CoreSymbolKind::Constructor => 4,

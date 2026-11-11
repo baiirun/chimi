@@ -489,7 +489,7 @@ pub struct VerificationStats {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CoreStats {
     pub functions: usize,
-    pub bindings: usize,
+    pub module_constants: usize,
     pub nodes: usize,
     pub origins: usize,
     pub constants: usize,
@@ -540,19 +540,23 @@ impl Compiler {
         let root = seal_entry(check_project(resolve_project_sources(sources)))?;
         debug_assert!(root.typed.contracts.contains_key(&root.entry));
         let (reachable_declarations, origins, reachable_modules) = root.verification_stats();
+        let warnings = root.typed.warnings.clone();
+        // Constants are evaluated as part of the build, so checking evaluates them too:
+        // a constant that cannot be built is a compile error, not a build-time surprise.
+        lower(root)?;
         Ok(VerificationStats {
             reachable_declarations,
             origins,
             reachable_modules,
-            warnings: root.typed.warnings.clone(),
+            warnings,
         })
     }
 
     pub fn lower_project(sources: Vec<ProjectSource>) -> Result<CoreStats, Vec<Diagnostic>> {
-        let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?);
+        let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?)?;
         let (
             functions,
-            bindings,
+            module_constants,
             nodes,
             origins,
             constants,
@@ -563,7 +567,7 @@ impl Compiler {
         ) = core.stats();
         Ok(CoreStats {
             functions,
-            bindings,
+            module_constants,
             nodes,
             origins,
             constants,
@@ -575,7 +579,7 @@ impl Compiler {
     }
 
     pub fn prepare_backend(sources: Vec<ProjectSource>) -> Result<BackendProgram, Vec<Diagnostic>> {
-        let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?);
+        let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?)?;
         Ok(BackendProgram::new(core))
     }
 
@@ -583,7 +587,7 @@ impl Compiler {
         sources: Vec<ProjectSource>,
         config: ExecutionConfig,
     ) -> Result<ExecutionReport, Vec<Diagnostic>> {
-        let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?);
+        let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?)?;
         Ok(execute(&core, config))
     }
 
@@ -1375,7 +1379,7 @@ mod tests {
                 concat!(
                     "import lib/partial as Partial\n",
                     "fn operation() -> Int { 1 }\n",
-                    "let configured = operation |> (Partial.with())\n",
+                    "const configured = operation |> (Partial.with())\n",
                     "pub fn main() -> Int { configured() }\n",
                 ),
             ),
@@ -1517,7 +1521,7 @@ mod tests {
                 "struct Money { id: Text, cents: Int }\n",
                 "struct Box<A> { value: A }\n",
                 "enum Maybe<A> { Some(value: A), None }\n",
-                "let provider = { value: 7, label: \"seven\" }\n",
+                "const provider = { value: 7, label: \"seven\" }\n",
                 "fn make_money() -> Money { Money(\"m-1\", 2500) }\n",
                 "fn boxed_int() -> Box<Int> { Box(1) }\n",
                 "fn boxed_text() -> Box<Text> { Box(\"text\") }\n",
@@ -1704,8 +1708,8 @@ mod tests {
             concat!(
                 "interface Clock { now: fn() -> Int }\n",
                 "interface Mailer { send: fn(Int) -> Text }\n",
-                "let clock = { now: fn() -> Int { 1 }, extra: \"allowed\" }\n",
-                "let mailer = { send: fn(value: Int) -> Text { \"sent\" } }\n",
+                "const clock = { now: fn() -> Int { 1 }, extra: \"allowed\" }\n",
+                "const mailer = { send: fn(value: Int) -> Text { \"sent\" } }\n",
                 "fn timestamp() -> Int needs { clock: Clock } { clock.now() }\n",
                 "fn notify() -> Text needs { clock: Clock, mailer: Mailer } {\n",
                 "  mailer.send(clock.now())\n",
@@ -1747,8 +1751,8 @@ mod tests {
             "invalid_provision.chimi",
             concat!(
                 "interface Clock { now: fn() -> Int }\n",
-                "let wrong = { now: fn(value: Int) -> Int { value } }\n",
-                "let clock = { now: fn() -> Int { 1 } }\n",
+                "const wrong = { now: fn(value: Int) -> Int { value } }\n",
+                "const clock = { now: fn() -> Int { 1 } }\n",
                 "fn timestamp() -> Int needs { clock: Clock } { clock.now() }\n",
                 "fn mismatch() -> Int {\n",
                 "  timestamp() using { clock: wrong }\n",
@@ -1762,10 +1766,10 @@ mod tests {
                 "interface Source { read: fn() -> Int }\n",
                 "interface FlexibleClock { now: fn() -> Int needs { source: Source } }\n",
                 "interface ValueSource<A> { get: fn() -> A }\n",
-                "let narrow = { now: fn() -> Int { 1 } }\n",
-                "let wide = { now: fn() -> Int needs { source: Source } { 1 } }\n",
-                "let missing = { other: fn() -> Int { 1 } }\n",
-                "let int_source = { get: fn() -> Int { 1 } }\n",
+                "const narrow = { now: fn() -> Int { 1 } }\n",
+                "const wide = { now: fn() -> Int needs { source: Source } { 1 } }\n",
+                "const missing = { other: fn() -> Int { 1 } }\n",
+                "const int_source = { get: fn() -> Int { 1 } }\n",
                 "fn flexible() -> Int needs { clock: FlexibleClock } { 1 }\n",
                 "fn strict() -> Int needs { clock: Clock } { 1 }\n",
                 "fn generic() -> Int needs { source: ValueSource<Int> } { 1 }\n",
@@ -2338,8 +2342,8 @@ mod tests {
     fn runtime_roots_require_unexplained_needs_without_provider_cascades() {
         let declarations = concat!(
             "interface Clock { now: fn() -> Int }\n",
-            "let clock = { now: fn() -> Int { 1 } }\n",
-            "let wrong = { now: fn(value: Int) -> Int { value } }\n",
+            "const clock = { now: fn() -> Int { 1 } }\n",
+            "const wrong = { now: fn(value: Int) -> Int { value } }\n",
             "fn timestamp() -> Int needs { clock: Clock } { clock.now() }\n",
         );
 
@@ -2579,7 +2583,7 @@ mod tests {
                     "    _ -> value\n",
                     "  }\n",
                     "}\n",
-                    "let provider = { read: fn() -> Int { 41 } }\n",
+                    "const provider = { read: fn() -> Int { 41 } }\n",
                     "pub fn main() -> Answer {\n",
                     "  let increment = fn(value: Int) -> Int { value + 1 }\n",
                     "  let configured_read = read using { source: provider }\n",
@@ -3168,17 +3172,74 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
         std::fs::remove_file(input).unwrap();
     }
 
+    // G7 E5203: each constant's evaluation stops at its operation budget, and a value
+    // larger than the size budget is not stored. Small budgets stand in for the build's.
+    #[test]
+    fn constant_evaluation_enforces_its_operation_and_size_budgets() {
+        let source = concat!(
+            "fn count(limit: Int) -> Int {\n",
+            "  loop value = 0 {\n",
+            "    case value < limit {\n",
+            "      True -> value + 1\n",
+            "      False -> break value\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "const small = count(2)\n",
+            "const counted = count(1_000)\n",
+            "const label = \"a label longer than the tiny size budget\"\n",
+            "pub fn main() -> Int { small + counted }\n",
+        );
+        let mut core = crate::executable::lower(
+            crate::executable::seal_entry(crate::typing::check_project(resolve_project_sources(
+                vec![module("main", "main.chimi", source)],
+            )))
+            .expect("program verifies"),
+        )
+        .expect("the build's budgets admit every constant");
+        // Re-evaluate from scratch under the small budgets.
+        core.constants.clear();
+        let codes = |limits| match crate::execution::evaluate_constants_with(&core, limits) {
+            Ok(_) => Vec::new(),
+            Err(diagnostics) => diagnostics
+                .iter()
+                .map(|diagnostic| (diagnostic.code(), diagnostic.message().to_owned()))
+                .collect::<Vec<_>>(),
+        };
+        let operations = codes(crate::execution::ConstantLimits {
+            operations: 500,
+            value_bytes: 1024,
+        });
+        assert_eq!(operations.len(), 1, "{operations:?}");
+        assert_eq!(operations[0].0, "E5203");
+        assert!(operations[0].1.contains("`counted`"), "{operations:?}");
+        let size = codes(crate::execution::ConstantLimits {
+            operations: 1_000_000,
+            value_bytes: 32,
+        });
+        assert_eq!(size.len(), 1, "{size:?}");
+        assert_eq!(size[0].0, "E5203");
+        assert!(size[0].1.contains("`label`"), "{size:?}");
+    }
+
     #[test]
     fn module_binding_closure_inference_converges() {
         let report = Compiler::type_project(vec![module(
             "typing/closure_binding",
             "closure_binding.chimi",
             concat!(
-                "let provider = { apply: fn(_value) { 1 } }\n",
+                "const provider = { apply: fn(_value) { 1 } }\n",
                 "pub fn main() -> Int { 1 }\n",
             ),
         )]);
-        assert!(report.diagnostics().is_empty());
+        // The open parameter type settles as undetermined instead of growing a fresh
+        // inference variable every pass, so the fixed point converges with one T4324.
+        let codes = report
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| diagnostic.code())
+            .collect::<Vec<_>>();
+        assert_eq!(codes, ["T4324"]);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // PROTOTYPE
 // EXPECT-SYNTAX: failure
 
-let transformed = value
+const transformed = value
 |>
 
-let after = 1
+const after = 1

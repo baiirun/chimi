@@ -4,4 +4,4 @@
 import billing/money as Money
 import ledger/money as Money
 
-let value = Money.amount()
+const value = Money.amount()

@@ -6,4 +6,4 @@
 
 import modules/money as Money
 
-let invalid = Money.Money(-100)
+const invalid = Money.Money(-100)

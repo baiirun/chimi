@@ -1,3 +1,4 @@
+mod constants;
 mod persistent_list;
 
 use crate::executable::{
@@ -13,9 +14,12 @@ use crate::numeric::{
 };
 use crate::semantic::{BinaryOperator, UnaryOperator};
 use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol, StandardType};
+pub(crate) use constants::evaluate_constants;
+#[cfg(test)]
+pub(crate) use constants::{ConstantLimits, evaluate_constants_with};
 use persistent_list::PersistentList;
 use std::cmp::Ordering as Comparison;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::io::Read;
 use std::sync::Arc;
@@ -592,7 +596,11 @@ struct Evaluator<'core> {
     events: Vec<ExecutionEvent>,
     next_sequence: u64,
     next_span: u64,
-    active_bindings: HashSet<SymbolId>,
+    /// Every constant's value. At run time it holds them all from the start; during
+    /// build-time evaluation it fills as constants are evaluated.
+    constants: HashMap<SymbolId, RuntimeValue>,
+    /// Present only while the compiler evaluates constants.
+    constant_evaluation: Option<constants::ConstantEvaluation>,
     application_stdout: String,
     application_stderr: String,
 }
@@ -605,7 +613,17 @@ impl<'core> Evaluator<'core> {
             events: Vec::new(),
             next_sequence: 0,
             next_span: 2,
-            active_bindings: HashSet::new(),
+            constants: core
+                .constants
+                .iter()
+                .map(|constant| {
+                    (
+                        constant.symbol,
+                        constants::runtime_value(core, &constant.value),
+                    )
+                })
+                .collect(),
+            constant_evaluation: None,
             application_stdout: String::new(),
             application_stderr: String::new(),
         }
@@ -675,6 +693,9 @@ impl<'core> Evaluator<'core> {
     ) -> Control {
         if self.config.cancellation_requested {
             return Control::Cancellation;
+        }
+        if let Some(stop) = self.count_constant_operation(node_id) {
+            return stop;
         }
         let node = self.core.nodes[node_id.raw() as usize].clone();
         let span = if self.config.trace_mode == TraceMode::Off {
@@ -968,24 +989,10 @@ impl<'core> Evaluator<'core> {
                     requirements: environment.requirements,
                 }))
             }
-            CoreSymbolKind::Binding => {
-                if !self.active_bindings.insert(symbol) {
-                    return Control::Defect {
-                        message: format!("module binding {} is cyclic", core_symbol.name),
-                        node: None,
-                    };
-                }
-                let binding = self
-                    .core
-                    .bindings
-                    .iter()
-                    .find(|binding| binding.symbol == symbol)
-                    .expect("reachable binding exists")
-                    .clone();
-                let result = self.eval_node(binding.value, span, environment);
-                self.active_bindings.remove(&symbol);
-                result
-            }
+            CoreSymbolKind::Constant => match self.constants.get(&symbol) {
+                Some(value) => Control::Success(value.clone()),
+                None => self.evaluate_constant_reference(symbol, span),
+            },
             CoreSymbolKind::Requirement => environment
                 .requirements
                 .get(&core_symbol.name)
@@ -1090,7 +1097,10 @@ impl<'core> Evaluator<'core> {
                 for (parameter, argument) in function.parameters.iter().zip(arguments) {
                     environment.locals.insert(*parameter, argument);
                 }
-                self.eval_node(function.body, span, environment)
+                self.enter_constant_call(symbol);
+                let control = self.eval_node(function.body, span, environment);
+                self.leave_constant_call();
+                control
             }
             RuntimeCallable::Closure {
                 parameters,
@@ -1167,6 +1177,11 @@ impl<'core> Evaluator<'core> {
         call_node: CoreNodeId,
         environment: Environment,
     ) -> Control {
+        if let Some(stop) =
+            self.reject_constant_operation(constants::Operation::Host(function), call_node)
+        {
+            return stop;
+        }
         match function {
             HostFunction::WriteLine | HostFunction::WriteError => {
                 let [RuntimeValue::Text(line)] = arguments.as_slice() else {
@@ -1333,6 +1348,11 @@ impl<'core> Evaluator<'core> {
         call_node: CoreNodeId,
         environment: Environment,
     ) -> Control {
+        if let Some(stop) =
+            self.reject_constant_operation(constants::Operation::Standard(function), call_node)
+        {
+            return stop;
+        }
         match function {
             StandardFunction::IoPath => {
                 let [RuntimeValue::Text(path)] = arguments.as_slice() else {

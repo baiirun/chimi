@@ -362,7 +362,7 @@ fn skipped_operand_needs_stay_in_the_needs_row() {
                 "fn checkout(ready: Bool) -> Bool needs {{ payment: Payment }} {{\n",
                 "  call(fn() {{ ready and payment.approve(5) }})\n",
                 "}}\n",
-                "let approving = {{ approve: fn(_amount) {{ True }} }}\n",
+                "const approving = {{ approve: fn(_amount: Int) {{ True }} }}\n",
                 "pub fn main() -> Bool {{ checkout(False) using {{ payment: approving }} }}\n",
             ),
             parameter
@@ -715,10 +715,10 @@ fn line_breaks_separate_interface_fields_with_failure_rows() {
             "fn grow(value: Int) -> Int needs { files: Files } {\n",
             "  value + files.size(\"x\")\n",
             "}\n",
-            "let fake = {\n",
-            "  read: fn(_path) { 40 },\n",
-            "  write: fn(_path, value) { value },\n",
-            "  size: fn(_path) { 2 },\n",
+            "const fake = {\n",
+            "  read: fn(_path: Text) { 40 },\n",
+            "  write: fn(_path: Text, value: Int) { value },\n",
+            "  size: fn(_path: Text) { 2 },\n",
             "}\n",
             "pub fn main() -> Int {\n",
             "  twice(grow, copy(\"a\", \"b\")) using { files: fake }\n",
@@ -741,8 +741,8 @@ fn a_fake_of_a_standard_capability_states_its_standard_failure_row() {
             "fn load(path: Text) -> Int needs { files: Files } {\n",
             "  files.read(path)\n",
             "}\n",
-            "let missing = {\n",
-            "  read: fn(path) { Failure(FileError.Read(path, \"missing\")) },\n",
+            "const missing = {\n",
+            "  read: fn(path: Text) -> Int { Failure(FileError.Read(path, \"missing\")) },\n",
             "}\n",
             "pub fn main() -> Int {\n",
             "  load(\"a.txt\") using { files: missing }\n",
@@ -904,7 +904,7 @@ fn pipeline_stages_run_under_an_enclosing_using() {
             "}\n",
             "fn scaled(value: Int) -> Int needs { scale: Scale } { scale.apply(value) }\n",
             "fn add(value: Int, extra: Int) -> Int { value + extra }\n",
-            "let triple = { apply: fn(value) { value * 3 } }\n",
+            "const triple = { apply: fn(value) { value * 3 } }\n",
             "pub fn main() -> Int {\n",
             "  2 |> scaled |> add(1) using { scale: triple }\n",
             "}\n",
@@ -2508,6 +2508,162 @@ fn a_constructor_value_result_renders_its_name() {
             "}\n",
             "pub fn main() -> fn(Int) -> Shape {\n",
             "  Circle\n",
+/// Runs a multi-module project rooted at a scratch directory on both execution paths.
+/// `modules` pairs a module path such as `app/main` with its source; the first is the entry.
+fn run_both_project(name: &str, modules: &[(&str, &str)]) -> String {
+    let scratch = scratch_directory(name);
+    let root = scratch.join("project");
+    for (module, source) in modules {
+        let path = root.join(format!("{module}.chimi"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, source).unwrap();
+        assert_formatter_round_trips(source);
+    }
+    let entry = modules[0].0;
+    let interpreted = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("run")
+        .arg("--root")
+        .arg(&root)
+        .arg(entry)
+        .output()
+        .expect("run the reference interpreter");
+    let interpreted = String::from_utf8_lossy(&interpreted.stdout)
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .to_owned();
+    let executable = scratch.join("program");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg("--root")
+        .arg(&root)
+        .arg(entry)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("build the native executable");
+    assert!(
+        build.status.success(),
+        "native build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let outcome_path = scratch.join("outcome.jsonl");
+    Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--outcome-file={}", outcome_path.display()))
+        .arg("--")
+        .output()
+        .expect("execute the native program");
+    let native = std::fs::read_to_string(outcome_path)
+        .expect("native outcome file")
+        .trim_end()
+        .to_owned();
+    assert_eq!(interpreted, native, "execution paths disagree for {name}");
+    std::fs::remove_dir_all(scratch).unwrap();
+    interpreted
+        .strip_prefix("{\"schema\":\"chimi.runtime.v1\",")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .unwrap_or_else(|| panic!("unexpected outcome line: {interpreted}"))
+        .to_owned()
+}
+
+/// Diagnostic codes from checking a project, including build-time constant evaluation.
+fn build_codes(modules: &[(&str, &str)]) -> Vec<String> {
+    let sources = modules
+        .iter()
+        .map(|(module, source)| {
+            ProjectSource::new(
+                *module,
+                SourceSnapshot::from_text(format!("{module}.chimi"), *source),
+            )
+            .expect("valid module path")
+        })
+        .collect();
+    match Compiler::verify_project(sources) {
+        Ok(_) => Vec::new(),
+        Err(diagnostics) => diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code().to_owned())
+            .collect(),
+    }
+}
+
+fn build_messages(source: &str) -> Vec<String> {
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    match Compiler::verify_project(vec![module]) {
+        Ok(_) => Vec::new(),
+        Err(diagnostics) => diagnostics
+            .iter()
+            .map(|diagnostic| format!("{}: {}", diagnostic.code(), diagnostic.message()))
+            .collect(),
+    }
+}
+
+// G7: every constant-representable kind survives build-time evaluation and loads to
+// the same value on both backends, including closures that capture computed values.
+#[test]
+fn constants_of_every_representable_kind_load_the_built_value() {
+    let outcome = run_both(
+        "constant-kinds",
+        concat!(
+            "import std/map as Map\n",
+            "import std/json as Json\n",
+            "struct Money {\n",
+            "  cents: Int\n",
+            "}\n",
+            "enum Status {\n",
+            "  Pending\n",
+            "  Paid(amount: Money)\n",
+            "}\n",
+            "const base = 40\n",
+            "pub const answer: Int = base + 2\n",
+            "const ratio = 0.5\n",
+            "const greeting = Text.append(\"hello \", \"world\")\n",
+            "const ready = answer > base and True\n",
+            "const prices = [Money(1), Money(base)]\n",
+            "const status = Paid(Money(answer))\n",
+            "const missing: Option<Int> = None\n",
+            "const present = Some(answer)\n",
+            "const table = Map.put(Map.put(Map.empty(), \"b\", 2), \"a\", 1)\n",
+            "const number = Json.int(7)\n",
+            "const add_answer = make_adder(answer)\n",
+            "const double = { apply: fn(value: Int) { value * 2 } }\n",
+            "const join = Text.append\n",
+            "fn make_adder(amount: Int) -> fn(Int) -> Int {\n",
+            "  fn(value: Int) { value + amount }\n",
+            "}\n",
+            "fn total(values: List<Money>) -> Int {\n",
+            "  case values {\n",
+            "    [] -> 0\n",
+            "    [first, ..rest] -> first.cents + total(rest)\n",
+            "  }\n",
+            "}\n",
+            "fn paid(value: Status) -> Int {\n",
+            "  case value {\n",
+            "    Pending -> 0\n",
+            "    Paid(amount) -> amount.cents\n",
+            "  }\n",
+            "}\n",
+            "fn or_zero(value: Option<Int>) -> Int {\n",
+            "  case value {\n",
+            "    Some(inner) -> inner\n",
+            "    None -> 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() {\n",
+            "  let looked = or_zero(Map.get(table, \"a\")) + or_zero(Map.get(table, \"b\"))\n",
+            "  let result = {\n",
+            "    a: add_answer(total(prices)) + double.apply(paid(status)) + or_zero(missing),\n",
+            "    b: join(greeting, \"!\"),\n",
+            "    c: ready,\n",
+            "    d: ratio,\n",
+            "    e: or_zero(present) + looked,\n",
+            "    f: number,\n",
+            "  }\n",
+            "  result\n",
             "}\n",
         ),
     );
@@ -2659,4 +2815,247 @@ fn struct_fields_are_private_to_their_declaring_module() {
             "field currency of Money is module-private".to_owned()
         )]
     );
+        concat!(
+            "\"outcome\":\"success\",\"value\":{\"a\":167,\"b\":\"hello world!\",",
+            "\"c\":true,\"d\":0.5,\"e\":45,\"f\":{\"type\":\"Value\",\"variant\":\"Number\",",
+            "\"fields\":{\"value\":\"7\"}}}"
+        )
+    );
+}
+
+// G7: a public constant is a value of its module, used qualified from another module.
+#[test]
+fn a_public_constant_is_used_qualified_from_another_module() {
+    let outcome = run_both_project(
+        "constant-across-modules",
+        &[
+            (
+                "app/main",
+                concat!(
+                    "import lib/duration as Duration\n",
+                    "pub fn main() -> Int {\n",
+                    "  Duration.zero.nanoseconds + Duration.seconds(2).nanoseconds\n",
+                    "}\n",
+                ),
+            ),
+            (
+                "lib/duration",
+                concat!(
+                    "pub struct Duration {\n",
+                    "  nanoseconds: Int\n",
+                    "}\n",
+                    "pub const zero = Duration(0)\n",
+                    "const scale = 1_000_000_000\n",
+                    "pub fn seconds(count: Int) -> Duration {\n",
+                    "  Duration(count * scale)\n",
+                    "}\n",
+                ),
+            ),
+        ],
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":2000000000");
+}
+
+// G7 visibility: a private constant stays in its module, and a member import cannot
+// bind a constant any more than it can bind a function.
+#[test]
+fn constants_are_private_by_default_and_never_member_imported() {
+    let library = concat!("pub const zero = 0\n", "const secret = 1\n",);
+    let codes = |main: &str| build_codes(&[("app/main", main), ("lib/values", library)]);
+    assert_eq!(
+        codes("import lib/values as Values\npub fn main() -> Int { Values.secret }\n"),
+        ["E_PRIVATE_SYMBOL"]
+    );
+    assert_eq!(
+        codes("import lib/values.{zero}\npub fn main() -> Int { 0 }\n"),
+        ["E_UNQUALIFIED_CONSTANT_IMPORT"]
+    );
+    assert!(
+        codes("import lib/values as Values\npub fn main() -> Int { Values.zero }\n").is_empty()
+    );
+}
+
+// G7: `const a = b` and `const b = a` in two modules is one cycle, reported once.
+#[test]
+fn constants_that_name_each_other_across_modules_are_one_cycle() {
+    let codes = build_codes(&[
+        (
+            "app/main",
+            "import lib/other as Other\npub const a = Other.b\npub fn main() -> Int { 0 }\n",
+        ),
+        (
+            "lib/other",
+            "import app/main as Main\npub const b = Main.a\n",
+        ),
+    ]);
+    assert_eq!(codes, ["E5205"]);
+}
+
+// G7 conformance rows for rejected constants. Each program is otherwise valid, so the
+// listed code is the whole verdict, and constants nothing references still count.
+#[test]
+fn constants_that_break_a_build_time_rule_fail_the_build() {
+    let cases: &[(&str, &str, &[&str])] = &[
+        ("module let", "let limit = 32\n", &["L2101"]),
+        (
+            "const in a block",
+            "fn f() -> Int {\n  const limit = 32\n  limit\n}\n",
+            &["S1103"],
+        ),
+        (
+            "failing initializer",
+            "import std/int as Int\nconst parsed = Int.parse(\"5\")\n",
+            &["T4321"],
+        ),
+        (
+            "initializer with needs",
+            concat!(
+                "interface Clock {\n  now: fn() -> Int\n}\n",
+                "fn read() -> Int needs { clock: Clock } { clock.now() }\n",
+                "const now = read()\n",
+            ),
+            &["T4322"],
+        ),
+        (
+            "capability",
+            "import std/channel as Channel\nconst jobs = Channel.bounded(8)\n",
+            &["T4323"],
+        ),
+        ("undetermined", "const nothing = None\n", &["T4324"]),
+        (
+            "runtime operation in a block",
+            concat!(
+                "import std/channel as Channel\n",
+                "import std/channel.{Sender}\n",
+                "fn keep(sender: Sender<Int>) -> Int { 5 }\n",
+                "const total = {\n  let pair = Channel.bounded(1)\n  keep(pair.sender)\n}\n",
+            ),
+            &["E5201"],
+        ),
+        (
+            "defect",
+            concat!(
+                "fn first_or_defect(values: List<Int>) -> Int {\n",
+                "  case values {\n    [first, ..] -> first\n    [] -> 1 / 0\n  }\n}\n",
+                "const first = first_or_defect([])\n",
+            ),
+            &["E5202"],
+        ),
+        ("cycle", "const a = b\nconst b = a + 1\n", &["E5205"]),
+        (
+            "only a dependency reports",
+            "const broken = 1 / 0\nconst uses = broken + 1\n",
+            &["E5202"],
+        ),
+    ];
+    for (name, declarations, expected) in cases {
+        let source = format!("{declarations}pub fn main() -> Int {{ 0 }}\n");
+        assert_eq!(build_codes(&[("main", &source)]), *expected, "{name}");
+    }
+}
+
+#[test]
+fn constant_diagnostics_name_what_broke_the_rule() {
+    let messages = build_messages(concat!(
+        "import std/channel as Channel\n",
+        "import std/channel.{Sender}\n",
+        "fn keep(sender: Sender<Int>) -> Int { 5 }\n",
+        "fn make() -> Int {\n  let pair = Channel.bounded(1)\n  keep(pair.sender)\n}\n",
+        "const total = make()\n",
+        "pub fn main() -> Int { 0 }\n",
+    ));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].contains("`std/channel.bounded`") && messages[0].contains("total -> make"),
+        "{messages:?}"
+    );
+    let messages = build_messages(concat!(
+        "import std/channel as Channel\n",
+        "const jobs = Channel.bounded(8)\n",
+        "pub fn main() -> Int { 0 }\n",
+    ));
+    assert!(messages[0].contains("`Sender`"), "{messages:?}");
+    let messages = build_messages("const a = b\nconst b = a\npub fn main() -> Int { 0 }\n");
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].contains("a -> b -> a"), "{messages:?}");
+}
+
+#[test]
+fn a_module_let_carries_the_edit_to_const() {
+    let module = ProjectSource::new(
+        "main",
+        SourceSnapshot::from_text(
+            "main.chimi",
+            "let limit = 32\npub fn main() -> Int { limit }\n",
+        ),
+    )
+    .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let [diagnostic] = report.diagnostics() else {
+        panic!("{:?}", report.diagnostics());
+    };
+    assert_eq!(diagnostic.code(), "L2101");
+    let [fix] = diagnostic.fixes() else {
+        panic!("L2101 carries one edit");
+    };
+    assert_eq!(fix.replacement(), "const");
+    assert_eq!((fix.range().start(), fix.range().end()), (0, 3));
+}
+
+// G7 "At run time": the initializer ran at build time, so referencing a constant
+// produces only the reference's own events, on both backends' full traces.
+#[test]
+fn referencing_a_constant_runs_none_of_its_initializer() {
+    let source = concat!(
+        "const config = { limit: 41, step: fn(value: Int) { value + 1 } }\n",
+        "pub fn main() -> Int {\n",
+        "  config.step(config.limit)\n",
+        "}\n",
+    );
+    let scratch = scratch_directory("constant-trace");
+    let path = scratch.join("main.chimi");
+    std::fs::write(&path, source).unwrap();
+    let interpreted = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .expect("run the reference interpreter");
+    let interpreted = String::from_utf8_lossy(&interpreted.stdout).into_owned();
+    let executable = scratch.join("program");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("build the native executable");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let telemetry = scratch.join("telemetry.jsonl");
+    Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=full")
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg("--")
+        .output()
+        .expect("execute the native program");
+    let native = std::fs::read_to_string(telemetry).unwrap();
+    for (backend, trace) in [("interpreter", &interpreted), ("native", &native)] {
+        assert!(
+            trace.contains("\"operation\":\"reference\""),
+            "{backend}: {trace}"
+        );
+        for initializer_operation in ["record", "closure"] {
+            assert!(
+                !trace.contains(&format!("\"operation\":\"{initializer_operation}\"")),
+                "{backend} ran the initializer's {initializer_operation}: {trace}"
+            );
+        }
+    }
+    assert!(interpreted.ends_with("\"outcome\":\"success\",\"value\":42}\n"));
+    std::fs::remove_dir_all(scratch).unwrap();
 }

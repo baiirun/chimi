@@ -20,5 +20,5 @@ fn describe(state: CheckoutState) -> Text {
   }
 }
 
-let state = Ready(2)
-let description = describe(state)
+const state = Ready(2)
+const description = describe(state)

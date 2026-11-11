@@ -48,7 +48,7 @@ pub struct BackendProfile {
     pub types: usize,
     pub symbols: usize,
     pub functions: usize,
-    pub bindings: usize,
+    pub module_constants: usize,
     pub nodes: usize,
     pub origins: usize,
     pub operations: BackendOperationProfile,
@@ -61,7 +61,7 @@ impl BackendProfile {
             types: core.type_count(),
             symbols: core.symbols.len(),
             functions: core.functions.len(),
-            bindings: core.bindings.len(),
+            module_constants: core.constants.len(),
             nodes: core.nodes.len(),
             origins: core.origins.len(),
             ..Self::default()

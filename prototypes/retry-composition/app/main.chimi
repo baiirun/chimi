@@ -14,11 +14,11 @@ fn operation() -> Int needs { source: Source } {
   source.read()
 }
 
-let source = {
+const source = {
   read: fn() -> Int { Failure(Temporary()) },
 }
 
-let retried = operation
+const retried = operation
   |> Retry.with(Retry.once())
 
 pub fn main() -> Int {

@@ -1,4 +1,4 @@
-/* Chimi native runtime ABI version 8. */
+/* Chimi native runtime ABI version 11. */
 #include "runtime.h"
 #include "chimi_fiber.h"
 
@@ -163,7 +163,6 @@ struct ChimiRuntime {
   size_t scoped_peak_live_bytes;
   size_t scoped_retained_bytes;
   uint64_t scoped_collections;
-  bool *active_bindings;
 };
 
 typedef struct AllocationHeader AllocationHeader;
@@ -2065,6 +2064,90 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
   return defect("unknown standard intrinsic", call_node);
 }
 
+/* Module constants, decoded from CHIMI_CONSTANT_VALUES before the entry runs. They are
+   allocated outside every allocation scope, so no collection frees them, and values are
+   immutable, so every task shares them. Decoding cannot fail and emits no events. */
+static ChimiValue **constant_values;
+
+static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
+  const uint32_t *ids = &CHIMI_IDS[raw->offset];
+  switch (raw->kind) {
+    case CHIMI_CONSTANT_VOID: return void_value();
+    case CHIMI_CONSTANT_INTEGER: return integer_value(raw->integer);
+    case CHIMI_CONSTANT_FLOAT: {
+      uint64_t bits = (uint64_t)raw->integer; double value; memcpy(&value, &bits, sizeof(value));
+      return float_value(value);
+    }
+    case CHIMI_CONSTANT_TEXT: return text_value(CHIMI_STRINGS[raw->a]);
+    case CHIMI_CONSTANT_BOOLEAN: return boolean_value(raw->integer != 0);
+    case CHIMI_CONSTANT_JSON_NUMBER: return json_number_value(CHIMI_STRINGS[raw->a]);
+    case CHIMI_CONSTANT_LIST: {
+      ChimiValue **items = allocate(raw->length, sizeof(*items));
+      for (uint32_t i = 0; i < raw->length; ++i) items[i] = constant_values[ids[i]];
+      return list_from_values(items, raw->length);
+    }
+    case CHIMI_CONSTANT_RECORD: {
+      ChimiValue *value = new_value(VALUE_RECORD);
+      value->as.record.length = raw->length;
+      value->as.record.fields = allocate(raw->length, sizeof(*value->as.record.fields));
+      allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
+      for (uint32_t i = 0; i < raw->length; ++i)
+        value->as.record.fields[i] = (RuntimeField){CHIMI_STRINGS[ids[2 * i]], constant_values[ids[2 * i + 1]]};
+      return value;
+    }
+    case CHIMI_CONSTANT_CONSTRUCTED: {
+      ChimiValue **fields = allocate(raw->length, sizeof(*fields));
+      for (uint32_t i = 0; i < raw->length; ++i) fields[i] = constant_values[ids[i]];
+      return construct_value(raw->a, fields)->value;
+    }
+    case CHIMI_CONSTANT_MAP: {
+      MapNode *map = NULL;
+      for (uint32_t i = 0; i < raw->length; ++i)
+        map = map_put_node(map, CHIMI_STRINGS[ids[2 * i]], constant_values[ids[2 * i + 1]]);
+      return map_value(map);
+    }
+    default: break;
+  }
+  ChimiCallable *callable = allocate(1, sizeof(*callable));
+  allocation_kind(callable, ALLOCATION_CALLABLE);
+  const ChimiSymbol *shape = &CHIMI_SYMBOLS[raw->a];
+  switch (raw->kind) {
+    case CHIMI_CONSTANT_DECLARED: {
+      const ChimiFunction *function = find_function(raw->a);
+      callable->kind = CALL_DECLARED; callable->symbol = raw->a; callable->body = function->body;
+      callable->parameters_offset = function->parameters_offset;
+      callable->parameters_length = function->parameters_length;
+      callable->environment = capture_requirements(new_environment()); callable->name = "function";
+      break;
+    }
+    case CHIMI_CONSTANT_INTRINSIC:
+      callable->kind = CALL_INTRINSIC; callable->intrinsic = shape->intrinsic;
+      callable->name = CHIMI_STRINGS[shape->name];
+      break;
+    case CHIMI_CONSTANT_CONSTRUCTOR:
+      callable->kind = CALL_CONSTRUCTOR; callable->symbol = raw->a; callable->name = CHIMI_STRINGS[shape->name];
+      break;
+    case CHIMI_CONSTANT_CLOSURE: {
+      const ChimiNode *node = &CHIMI_NODES[raw->a];
+      ChimiEnvironment *environment = new_environment();
+      for (uint32_t i = 0; i < raw->length; ++i)
+        environment->locals[environment_slot(ids[2 * i])] = constant_values[ids[2 * i + 1]];
+      callable->kind = CALL_CLOSURE; callable->body = node->a;
+      callable->parameters_offset = node->offset; callable->parameters_length = node->length;
+      callable->environment = environment; callable->name = "closure";
+      break;
+    }
+    default: abort();
+  }
+  return callable_value(callable);
+}
+
+static void decode_constants(void) {
+  constant_values = allocate(CHIMI_CONSTANT_VALUE_COUNT, sizeof(*constant_values));
+  for (uint32_t i = 0; i < CHIMI_CONSTANT_VALUE_COUNT; ++i)
+    constant_values[i] = decode_constant(&CHIMI_CONSTANT_VALUES[i]);
+}
+
 static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
                                     ChimiEnvironment *environment, uint64_t span) {
   uint32_t symbol = CHIMI_NODES[node_id].a; const ChimiSymbol *shape = &CHIMI_SYMBOLS[symbol];
@@ -2078,12 +2161,8 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
       callable->environment = capture_requirements(environment); callable->name = "function";
       return success(callable_value(callable));
     }
-    case CHIMI_SYMBOL_BINDING: {
-      if (runtime->active_bindings[symbol]) return defect("module binding is cyclic", -1);
-      runtime->active_bindings[symbol] = true;
-      ChimiControl *control = run_node(shape->binding, runtime, environment, span);
-      runtime->active_bindings[symbol] = false; return control;
-    }
+    case CHIMI_SYMBOL_CONSTANT:
+      return success(constant_values[shape->constant]);
     case CHIMI_SYMBOL_REQUIREMENT:
       if (environment->requirements[shape->environment_slot])
         return success(environment->requirements[shape->environment_slot]);
@@ -2611,7 +2690,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   const char *telemetry_path = NULL;
   const char *outcome_path = NULL;
   const char *memory_report_path = NULL;
-  runtime.active_bindings = allocate(CHIMI_SYMBOL_COUNT, sizeof(*runtime.active_bindings));
+  decode_constants();
   int32_t index = 1;
   if (index < argc && strcmp(argv[index], "--chimi-runner") == 0) {
     ++index;

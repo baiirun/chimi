@@ -51,7 +51,7 @@ fn process<R>(
   )
 }
 
-let process_job = process(ReceiptJobs.handle)
+const process_job = process(ReceiptJobs.handle)
 
 pub fn main() {
   process_job(job) using {
