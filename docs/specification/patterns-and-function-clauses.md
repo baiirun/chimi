@@ -339,7 +339,7 @@ fn sum(numbers: List<Int>) -> Int {
 | List | `[]`, `[a, b]`, `[first, ..rest]`, `[.., last]` | lists of the stated lengths, then elements by position |
 | Alias | `[first, ..] as whole` | what the inner pattern matches; also binds the whole value |
 
-Patterns nest without limit: `Some([("id", Json.Number(id)), ..])` is valid.
+Patterns nest without limit: `Some([("id", Value.Number(id)), ..])` is valid.
 
 General rules:
 
@@ -761,7 +761,7 @@ specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2022`:
 | LP-06 | `[first, ..rest]` against a one-element list | Runtime: `rest` is `[]` |
 | LP-07 | `[.., last]` against a 1,000,000-element list | Runtime: one indexed read; no list storage allocated |
 | LP-08 | `sum` over 10,000,000 elements with the `loop` example | Runtime: constant stack; `rest` views allocate O(1) each, amortized over window copies |
-| LP-09 | `Some([("id", Json.Number(id)), ..])` | Compiles; nested match binds `id` |
+| LP-09 | `Some([("id", Value.Number(id)), ..])` | Run: the nested match binds `id` |
 | LP-10 | `[_, ..rest]` matched 20,000 times against one list that holds exactly a quarter of its vector | Runtime: the list's elements are copied once, not once per match |
 | TP-01 | `let (name, port) = parse_address(raw)` | Compiles |
 | TP-02 | `let Some(value) = lookup(key)` | `T4231`; witness `None` |

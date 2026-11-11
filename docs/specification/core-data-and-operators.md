@@ -490,6 +490,7 @@ Rules:
   Wrapping arithmetic for hash functions belongs to the later bit-operations
   work.
 - When both operands are literals or folded constants and the operation
+  (including the normalizing `+ 1` of a constant `start..=end`)
   overflows or divides by zero, the compiler SHOULD warn with `T4312`. A
   folded constant is an expression built only from literals and operators;
   a `let` binding is not folded through. The warning covers `Int` operations
@@ -717,7 +718,9 @@ Rules:
   comma is allowed after the last element.
 - A tuple type is `(T1, T2, ...)` with at least two elements.
 - `(e)` is a grouped expression, not a tuple. `(e,)` and `()` are rejected with
-  `S1005`. The `()` diagnostic suggests `Void`.
+  `S1005`. The `()` diagnostic suggests `Void`. In a type position, `(T)` is
+  also `S1005` ("a tuple type needs at least two elements"), because types
+  have no grouping parentheses.
 - Tuples are structural. Two tuple types are the same when they have the same
   arity and the same element types in order.
 - Tuples have no element access syntax such as `pair.0`. Elements are read with
@@ -791,8 +794,11 @@ These expressions have type `Never`:
 
 Rules:
 
-- `Never` is compatible with every expected type. When the arms of a `case`
-  join, a `Never` arm adds nothing to the result type.
+- An expression of type `Never` is accepted wherever any type is expected. The
+  rule is one-way: no value of another type is accepted where `Never` is
+  expected, so `let x: Never = 1`, passing `1` to a `Never` parameter, and a
+  non-empty list literal as `List<Never>` are type errors (`T4203`). When the
+  arms of a `case` join, a `Never` arm adds nothing to the result type.
 - A function that declares `-> Never` MUST have a body of type `Never`. A body
   that can produce a value is rejected with `T4308`.
 - A function that ends only by failing has success type `Never` and keeps its
@@ -894,7 +900,7 @@ MUST NOT blur stages.
 | `T4304` | type | An operand of `and`, `or`, or `not` is not `Bool`. | "Chimi has no truthiness; compare explicitly" |
 | `T4305` | type | A generic instantiation violates an inferred equatable or ordered requirement. | Labels the callee's operator use, the generic parameter, and the offending component |
 | `T4306` | type | `/` or `%` on `Decimal`. | Suggests `Decimal.divide` with a scale and rounding mode |
-| `T4308` | type | A function declared `-> Never` has a body that can produce a value. | Labels the value-producing expression |
+| `T4308` | type | A function declared `-> Never` has a body that can produce a value. | Labels the innermost value-producing expression, such as the `case` arm or the `break` |
 | `T4311` | type | A range bound is not `Int`. | |
 | `T4312` | type, warning | Constant operands overflow or divide by zero. | "this operation always defects" |
 | `T4313` | type | A `Float` literal pattern. | Suggests a guard |
