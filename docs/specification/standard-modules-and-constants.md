@@ -29,6 +29,7 @@ positional construction and calls (`ts-835fc0`).
 
 ## Example
 
+<!-- chimi: pending ts-975ca3 -->
 ```chimi
 // std/duration.chimi
 pub struct Duration {
@@ -42,6 +43,7 @@ pub fn seconds(count: Int) -> Duration {
 }
 ```
 
+<!-- chimi: pending ts-975ca3 ep-a6f138 -->
 ```chimi
 // app/worker.chimi
 import std/duration as Duration
@@ -107,6 +109,7 @@ module qualifier.
 A standard module implements runtime-backed behavior with two declaration
 forms. Each is an ordinary declaration with the `native` modifier and no body:
 
+<!-- chimi: pending ep-a6f138 ts-facbbe -->
 ```chimi
 // std/map.chimi
 pub native type Map<K, V>
@@ -218,6 +221,7 @@ program.
 A `host` operation MUST be private (`N3106`). Its module exposes it only
 through a private constant that holds a provider record:
 
+<!-- chimi: pending ts-975ca3 ts-5b02a8 ep-a6f138 -->
 ```chimi
 // std/io.chimi
 pub interface Console {
@@ -372,6 +376,7 @@ runs once, when the program is built.
 
 ### Syntax and visibility
 
+<!-- chimi: fragment -->
 ```chimi
 pub const max_attempts = 5
 pub const default_backoff: Backoff = Backoff(Duration.seconds(1), 2, Duration.seconds(30))
@@ -466,6 +471,7 @@ other constants, as long as the evaluation obeys the rules.
 - A named address is constant-representable. A constant MAY hold one, or a
   struct or list of them:
 
+  <!-- chimi: fragment -->
   ```chimi
   pub process name primary_cache: CacheMessage
   pub process name backup_cache: CacheMessage
@@ -493,6 +499,7 @@ does, and a one-time codemod applies that edit across `prototypes/` and
 
 A text literal MAY contain interpolations written `${expression}`:
 
+<!-- chimi: check -->
 ```chimi
 fn blame_argument(line: Int) -> Text {
   "-L ${line},${line}"
@@ -553,6 +560,7 @@ equally clear but less widespread.
 
 `std/debug` declares two pure native operations:
 
+<!-- chimi: pending ep-a6f138 -->
 ```chimi
 pub native fn render<T>(value: T) -> Text
 pub native fn render_indented<T>(value: T) -> Text

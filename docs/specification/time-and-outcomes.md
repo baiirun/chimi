@@ -67,6 +67,7 @@ A worker takes jobs from a channel, retries transient failures with backoff,
 bounds each job by a timeout, and sends a heartbeat every ten seconds while it
 is idle:
 
+<!-- chimi: pending ts-80cbfb ts-975ca3 -->
 ```chimi
 import std/cause as Cause
 import std/channel as Channel
@@ -109,7 +110,7 @@ fn retryable(error: JobError | Timeout) -> Bool {
   }
 }
 
-let backoff = Retry.policy(
+const backoff = Retry.policy(
   Schedule.exponential(5, Duration.milliseconds(100), Duration.seconds(5)),
   retryable,
 )
@@ -239,6 +240,7 @@ an optional `-`, then one or more `<decimal><unit>` parts with units in
 strictly descending order and each unit at most once. The literal `0` is also
 accepted.
 
+<!-- chimi: check -->
 ```chimi
 enum ParseError {
   Invalid(text: Text)
@@ -307,6 +309,7 @@ Calendar fields, time zones, and parsing belong to `std/time`.
 
 `Clock` is a structural interface in `std/clock`:
 
+<!-- chimi: fragment -->
 ```chimi
 interface Clock {
   now: fn() -> Instant
@@ -415,6 +418,7 @@ Task.deadline:
     needs R + { clock: Clock }
 ```
 
+<!-- chimi: fragment -->
 ```chimi
 enum Timeout {
   TimedOut(limit: Duration)
@@ -588,6 +592,7 @@ of these:
 Source writes a failure-set type with `|`, in a value position or after
 `errors`:
 
+<!-- chimi: fragment -->
 ```chimi
 fn retryable(error: HttpError | Timeout) -> Bool
 
@@ -624,6 +629,7 @@ projection valid wherever an ordinary type is valid, including type arguments
 of other generic types. This fixes the `T4203` failure the standard library
 map records for `capture`:
 
+<!-- chimi: pending ts-facbbe ts-80cbfb -->
 ```chimi
 pub enum Result<T, E> {
   Ok(value: T)
@@ -758,6 +764,7 @@ cancellations. A cause has:
 - at most one `caused_by` cause;
 - suppressed causes, each tagged with a reason.
 
+<!-- chimi: check -->
 ```chimi
 enum Suppression {
   Cleanup
@@ -782,6 +789,7 @@ When a `Failure(...)` expression is evaluated in the body of an arm that
 matched a live `Failure` pattern, the new failure's `caused_by` MUST be the
 matched failure's cause:
 
+<!-- chimi: fragment -->
 ```chimi
 case payment.charge(total) {
   Success(receipt) -> receipt
@@ -918,6 +926,7 @@ type error rather than a silent rethrow.
 
 `Retry.run` is ordinary Chimi:
 
+<!-- chimi: fragment -->
 ```chimi
 pub fn run<T, E, R>(operation: fn() -> T errors E needs R, policy: Policy<E>) {
   loop attempt = 1 {
@@ -949,6 +958,7 @@ pub fn run<T, E, R>(operation: fn() -> T errors E needs R, policy: Policy<E>) {
 
 Timeouts compose per attempt or over the whole retry:
 
+<!-- chimi: fragment -->
 ```chimi
 let post = fn() { client.post(url, body) }
 let attempt = fn() { post |> Task.timeout(Duration.seconds(2)) }

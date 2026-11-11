@@ -61,6 +61,7 @@ module identity. Source files MUST NOT contain module headers.
 
 A module import chooses its source binding explicitly:
 
+<!-- chimi: fragment -->
 ```chimi
 import billing/money as BillingMoney
 ```
@@ -68,12 +69,14 @@ import billing/money as BillingMoney
 The compiler MUST NOT derive `BillingMoney` from the path. External functions
 remain qualified through this binding:
 
+<!-- chimi: fragment -->
 ```chimi
 BillingMoney.from_cents(500)
 ```
 
 An explicit member import MAY bind public types and enum constructors:
 
+<!-- chimi: fragment -->
 ```chimi
 import billing/money.{Money, NegativeAmount}
 ```
@@ -96,6 +99,7 @@ Publishing an enum exposes its variants as constructors.
 
 `struct` declares a nominal product:
 
+<!-- chimi: check -->
 ```chimi
 struct Money {
   cents: Int
@@ -115,6 +119,7 @@ per-field visibility modifiers.
 
 `enum` declares a nominal closed sum:
 
+<!-- chimi: check -->
 ```chimi
 enum PaymentError {
   Declined(reason: Text)
@@ -131,6 +136,7 @@ declared payload arity and match payload fields by the same position.
 
 An anonymous record is a transparent structural product:
 
+<!-- chimi: fragment -->
 ```chimi
 {
   charge: fn(total) { Receipt("test") },
@@ -155,6 +161,7 @@ Aliases and newtype-like declarations are not part of the first kernel.
 Generic function and data declarations bind their parameters explicitly after
 the declaration name:
 
+<!-- chimi: check -->
 ```chimi
 struct Box<T> {
   value: T
@@ -195,6 +202,7 @@ data inputs -> success type errors expected-failure-row needs dependency-row
 
 For example:
 
+<!-- chimi: fragment -->
 ```chimi
 fn submit(cart: Cart) -> Order needs {
     payment: Payment,
@@ -226,6 +234,7 @@ row, and needs-row parameters.
 Every function body and nested block is an expression. A block contains one or
 more ordered items, and its final expression produces the block's value:
 
+<!-- chimi: fragment -->
 ```chimi
 let value = {
   let intermediate = compute()
@@ -247,6 +256,7 @@ their observable semantics.
 
 ### Pipelines
 
+<!-- chimi: fragment -->
 ```chimi
 value |> transform
 value |> combine(other, more)
@@ -254,6 +264,7 @@ value |> combine(other, more)
 
 are exactly:
 
+<!-- chimi: fragment -->
 ```chimi
 transform(value)
 combine(value, other, more)
@@ -267,6 +278,7 @@ fall back from one reading to the other: `value |> make(config)` is always
 `make(value, config)`, even when `make(config)` would return a function. To
 apply a function that a call returns, parenthesize the call:
 
+<!-- chimi: fragment -->
 ```chimi
 value |> (make(config))
 ```
@@ -274,6 +286,7 @@ value |> (make(config))
 Chimi has no partial application, and `|>` does not create one. APIs that take
 a subject put it first, so a value flows through a chain of ordinary calls:
 
+<!-- chimi: fragment -->
 ```chimi
 orders
 |> List.filter(is_open)
@@ -296,6 +309,7 @@ that is usually a type error. Parenthesize the pipeline instead:
 
 `case` is the kernel's only branching expression:
 
+<!-- chimi: fragment -->
 ```chimi
 case state, request {
   Suspended(reason), _ -> Denied(reason)
@@ -319,6 +333,7 @@ failure row. Chimi has no exception throwing for expected failures.
 
 An ordinary expression implicitly constructs a successful computation outcome:
 
+<!-- chimi: fragment -->
 ```chimi
 Receipt("receipt-1")
 ```
@@ -328,6 +343,7 @@ required to wrap ordinary successful values.
 
 `Failure(error)` constructs a failed computation outcome:
 
+<!-- chimi: fragment -->
 ```chimi
 Failure(PaymentError.Declined("expired"))
 ```
@@ -339,6 +355,7 @@ An unhandled failure stops the remaining local sequence and joins the caller's
 inferred failure row without propagation syntax. A fallible expression can be
 matched directly:
 
+<!-- chimi: fragment -->
 ```chimi
 case payment.charge(total) {
   Success(receipt) -> receipt
@@ -356,6 +373,7 @@ when every variant remains and individual variants after selective handling.
 Selective recovery is ordinary higher-order function composition. It requires
 no recovery keyword, wrapper, or propagation operator:
 
+<!-- chimi: fragment -->
 ```chimi
 fn recover_declined<E>(operation: fn() -> Receipt errors E) {
   fn() {
@@ -399,6 +417,7 @@ callable failure rows.
 `needs` declares environmental dependencies separately from data inputs,
 success, and failure:
 
+<!-- chimi: fragment -->
 ```chimi
 fn checkout(cart: Cart) needs {
   payment: Payment,
@@ -414,6 +433,7 @@ diagnostic.
 
 An `interface` is a structural record of function contracts:
 
+<!-- chimi: fragment -->
 ```chimi
 interface Payment {
   charge: fn(Money) -> Receipt errors PaymentError
@@ -429,6 +449,7 @@ the required data inputs or success type.
 
 Postfix `using` supplies named providers at any expression boundary:
 
+<!-- chimi: fragment -->
 ```chimi
 let checkout = submit(cart) using {
   payment: fake_payment,
@@ -446,6 +467,7 @@ missing-dependency diagnostic for that same need.
 
 A runnable program exports a conventional `main` root:
 
+<!-- chimi: fragment -->
 ```chimi
 pub fn main() {
   Checkout.submit(cart) using {

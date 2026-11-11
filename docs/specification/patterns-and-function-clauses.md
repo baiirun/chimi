@@ -44,6 +44,7 @@ A multi-clause function is two or more adjacent `fn` declarations with the
 same name. Each declaration is a clause. Its parameter list holds patterns
 instead of only names:
 
+<!-- chimi: pending ts-e43af0 -->
 ```chimi
 enum Shape {
   Circle(radius: Int)
@@ -61,6 +62,7 @@ fn area(Rectangle(width, height)) {
 The compiler reads the group as one function whose body is a `case` over all
 parameters, with one arm per clause in source order:
 
+<!-- chimi: fragment -->
 ```chimi
 pub fn area(shape) -> Int {
   case shape {
@@ -78,6 +80,7 @@ The desugared parameter names are compiler-generated and are not visible to
 source. With two or more parameters, the clause patterns become the arm's
 comma-separated patterns, exactly as in a multi-subject `case`:
 
+<!-- chimi: fragment -->
 ```chimi
 pub fn route(Get, ["health"]) -> Response needs { db: Database } {
   case db.ping() {
@@ -96,6 +99,7 @@ fn route(_, _) {
 A clause MAY have a guard. The guard follows the parameter list and any
 contract, and it comes immediately before the body:
 
+<!-- chimi: pending ts-e43af0 -->
 ```chimi
 enum CountError {
   Negative(count: Int)
@@ -153,6 +157,7 @@ Generic parameters, needs names, and the success annotation are in scope in
 every clause. A typed binding in a later clause MAY name a generic parameter
 from the first clause:
 
+<!-- chimi: pending ts-e43af0 ts-553107 -->
 ```chimi
 fn last<T>([]) -> Option<T> {
   None()
@@ -238,6 +243,7 @@ passing a thunk to a recovery function.
 A multi-clause function is one function value. Naming it anywhere refers to
 the whole group:
 
+<!-- chimi: fragment -->
 ```chimi
 let labels = List.map(counts, describe)
 let label = count |> describe
@@ -252,6 +258,7 @@ The pipeline rule applies to multi-clause functions unchanged:
 Anonymous functions have one clause. Their parameters MAY be irrefutable
 patterns:
 
+<!-- chimi: fragment -->
 ```chimi
 let total = List.fold(prices, 0, fn(sum, (_, price)) { sum + price })
 ```
@@ -270,6 +277,7 @@ Clauses do not change [repetition](repetition.md):
 - A clause function MAY compute the next loop state. A step that can also
   finish returns an enum, and the loop body matches it:
 
+<!-- chimi: fragment -->
 ```chimi
 enum Step {
   Next(state: Search)
@@ -292,6 +300,7 @@ loop search = start {
 The `loop` state binding accepts an irrefutable pattern. The body's value is
 matched against the same pattern before the next pass:
 
+<!-- chimi: pending ts-5be727 ts-553107 -->
 ```chimi
 fn sum(numbers: List<Int>) -> Int {
   loop (remaining, total) = (numbers, 0) {
@@ -440,6 +449,7 @@ Its meaning depends on the type of the value it matches:
 A failure-type pattern replaces one arm per variant. The trace summarizer's
 `main` currently lists every IO variant. With failure-type patterns it reads:
 
+<!-- chimi: fragment -->
 ```chimi
 import std/io.{FileError}
 import std/io.{LineTooLong}
@@ -482,6 +492,7 @@ Rules:
 - After `Failure(error)` binds a whole failure set, `case error` MAY use
   failure-type patterns. That `case` MUST still be exhaustive:
 
+<!-- chimi: fragment -->
 ```chimi
 case error {
   file_error: FileError -> describe_file_error(file_error)
@@ -524,6 +535,7 @@ A refutable pattern in one of these positions is `T4231`, with a witness and a
 message that suggests `case` or, for a function, more clauses. `Success(...)`
 and `Failure(...)` in any of these positions are `T4282`.
 
+<!-- chimi: fragment -->
 ```chimi
 let (name, port) = parse_address(raw)
 ```
@@ -532,6 +544,7 @@ let (name, port) = parse_address(raw)
 
 Chimi has no range patterns. Integer ranges are matched with guards:
 
+<!-- chimi: pending ts-e43af0 -->
 ```chimi
 fn grade(score) if score >= 90 {
   "A"
@@ -553,6 +566,7 @@ anyway, and they would add a second meaning to the `Range` value syntax.
 
 A record update copies a value and replaces the named fields:
 
+<!-- chimi: fragment -->
 ```chimi
 fn with_jobs(config: Config, jobs: Int) -> Config {
   { ..config, jobs: jobs }
@@ -562,6 +576,7 @@ fn with_jobs(config: Config, jobs: Int) -> Config {
 The braces hold `..base` first, then one or more `field: value` entries. The
 result has the base's type. The trace summarizer's `Summary` update becomes:
 
+<!-- chimi: fragment -->
 ```chimi
 { ..state, records: state.records + 1, line: state.line + 1 }
 ```
@@ -609,12 +624,14 @@ construction, and patterns never use labels inside parentheses.
 
 Nested updates are ordinary nesting:
 
+<!-- chimi: fragment -->
 ```chimi
 { ..state, stats: { ..state.stats, retries: state.stats.retries + 1 } }
 ```
 
 Updating one method of a test fake uses the same form:
 
+<!-- chimi: fragment -->
 ```chimi
 let failing = { ..fake_payment, charge: fn(_) { Failure(PaymentError.Offline) } }
 ```
