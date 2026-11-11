@@ -68,6 +68,9 @@ fn format_parse(parsed: &ParseResult) -> String {
     // Set after a clause that the next clause of the same function follows, so no
     // blank line separates them; cleared by the next significant token.
     let mut joining_clauses = false;
+    // Open `${` interpolations. A text literal cannot span lines, so every token
+    // inside one stays on the current line: braces and `|>` are written inline.
+    let mut interpolation_depth = 0_usize;
 
     for (index, token) in tokens.iter().enumerate() {
         let kind = token.kind();
@@ -75,6 +78,48 @@ fn format_parse(parsed: &ParseResult) -> String {
             continue;
         }
         let next = next_significant(&tokens, index + 1);
+        match kind {
+            TokenKind::InterpolationOpen => interpolation_depth += 1,
+            TokenKind::InterpolationClose => {
+                interpolation_depth = interpolation_depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+        if interpolation_depth > 0 {
+            match kind {
+                TokenKind::LeftBrace => {
+                    if !matches!(
+                        previous,
+                        Some(
+                            TokenKind::InterpolationOpen
+                                | TokenKind::LeftParen
+                                | TokenKind::LeftBracket
+                        )
+                    ) {
+                        writer.space();
+                    }
+                    writer.write("{ ");
+                    previous = Some(kind);
+                    saw_newline = false;
+                    continue;
+                }
+                TokenKind::RightBrace => {
+                    writer.trim_space();
+                    writer.write(" }");
+                    previous = Some(kind);
+                    saw_newline = false;
+                    continue;
+                }
+                TokenKind::Pipe => {
+                    writer.space();
+                    writer.write("|> ");
+                    previous = Some(kind);
+                    saw_newline = false;
+                    continue;
+                }
+                _ => {}
+            }
+        }
         match kind {
             TokenKind::Newline => {
                 if saw_newline && !joining_clauses {

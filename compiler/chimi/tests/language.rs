@@ -3524,6 +3524,39 @@ fn interpolations_format_tightly_and_keep_their_text() {
     );
 }
 
+// A text literal cannot span lines, so the formatter keeps record, closure, block,
+// and pipeline expressions inside `${}` on one line; the formatted program parses,
+// formats to itself, and computes the same text.
+#[test]
+fn braced_expressions_inside_interpolations_format_on_one_line() {
+    let source = concat!(
+        "import std/debug as Debug\n",
+        "fn twice(n: Int) -> Int { n * 2 }\n",
+        "pub fn main() -> Text {\n",
+        "  let record = \"v: ${Debug.render({ a: 1 })}\"\n",
+        "  let closure = \"x${(fn() { 7 })()}y\"\n",
+        "  let field = \"${ { a: 1 }.a }\"\n",
+        "  let piped = \"${3 |> twice}\"\n",
+        "  let nested = \"${\"in ${ {b: 2}.b } side\"}\"\n",
+        "  \"${record}|${closure}|${field}|${piped}|${nested}\"\n",
+        "}\n",
+    );
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(
+        formatted.text().contains(concat!(
+            "  let field = \"${{ a: 1 }.a}\"\n",
+            "  let piped = \"${3 |> twice}\"\n",
+            "  let nested = \"${\"in ${{ b: 2 }.b} side\"}\"\n",
+        )),
+        "{}",
+        formatted.text()
+    );
+    assert_eq!(
+        run_both("interpolation-braces", source),
+        r#""outcome":"success","value":"v: { a: 1 }|x7y|1|6|in 2 side""#
+    );
+}
+
 // Lexical model: text literal escapes denote their characters in plain literals,
 // interpolated chunks, and text patterns, on both backends.
 #[test]
