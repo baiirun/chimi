@@ -3211,10 +3211,15 @@ impl ProjectTypeChecker {
                         generics,
                         bindings,
                     );
+                    let mut argument_ranges = arguments
+                        .iter()
+                        .map(|argument| expression_range(&argument.value))
+                        .collect::<Vec<_>>();
                     if let Some(order) = labelled_order {
-                        argument_facts = order
+                        argument_facts = order.iter().map(|index| argument_facts[*index]).collect();
+                        argument_ranges = order
                             .into_iter()
-                            .map(|index| argument_facts[index])
+                            .map(|index| argument_ranges[index])
                             .collect();
                     }
                     self.infer_invocation(
@@ -3224,6 +3229,7 @@ impl ProjectTypeChecker {
                         callee_symbol,
                         callee,
                         &argument_facts,
+                        &argument_ranges,
                     )
                 }
             }
@@ -3817,13 +3823,13 @@ impl ProjectTypeChecker {
             );
         }
         let body_fact = self.infer_expression(module_id, body, generics, &mut pass_bindings);
-        self.unify_at(
-            module_id,
-            expression_range(body),
-            body_fact.success,
-            initial_fact.success,
-            "loop body (the next state)",
-        );
+        if !self.unify(body_fact.success, initial_fact.success) {
+            let (site, found) =
+                self.mismatched_tail(module_id, body, body_fact.success, initial_fact.success);
+            let message =
+                self.mismatch_message("the loop body's next state", found, initial_fact.success);
+            self.type_error_range(module_id, "T4203", site, message);
+        }
         // A loop that no `break` leaves never produces a value.
         let success = if self.broken_loops.contains_key(&(module_id, loop_id)) {
             break_type
@@ -4263,6 +4269,38 @@ impl ProjectTypeChecker {
                 .copied()
                 .unwrap_or(*range),
             other => expression_range(other),
+        }
+    }
+
+    /// Where `body` produced a value of the wrong type, and that type: a block's
+    /// last expression, or the first `case` arm that is neither `Never` nor
+    /// `expected`, searched through nested blocks and cases.
+    fn mismatched_tail(
+        &self,
+        module_id: ModuleId,
+        body: &ModuleExpression,
+        found: TypeId,
+        expected: TypeId,
+    ) -> (TextRange, TypeId) {
+        match body {
+            ModuleExpression::Block { items, .. } => match items.last() {
+                Some(ModuleBlockItem::Expression(value)) => {
+                    self.mismatched_tail(module_id, value, found, expected)
+                }
+                _ => (expression_range(body), found),
+            },
+            ModuleExpression::Case { arms, .. } => {
+                let expected_resolved = self.resolve_inference_type(expected);
+                arms.iter()
+                    .find_map(|arm| {
+                        let arm_type = *self.arm_types.get(&(module_id, arm.body.semantic_id()))?;
+                        (!self.is_never(arm_type)
+                            && self.resolve_inference_type(arm_type) != expected_resolved)
+                            .then(|| self.mismatched_tail(module_id, &arm.body, arm_type, expected))
+                    })
+                    .unwrap_or((expression_range(body), found))
+            }
+            _ => (expression_range(body), found),
         }
     }
 
@@ -7774,6 +7812,7 @@ impl ProjectTypeChecker {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn infer_invocation(
         &mut self,
         module_id: ModuleId,
@@ -7782,6 +7821,7 @@ impl ProjectTypeChecker {
         callee_symbol: Option<SymbolId>,
         callee: ExpressionFact,
         arguments: &[ExpressionFact],
+        argument_ranges: &[TextRange],
     ) -> ExpressionFact {
         let callee_type = self.resolve_inference_type(callee.success);
         let (contract, parameters, mut substitution) = match self
@@ -7828,9 +7868,10 @@ impl ProjectTypeChecker {
         // failing)` binds `F` from `failing` before instantiating `run`).
         let mut ordered = arguments
             .iter()
+            .zip(argument_ranges.iter().copied())
             .zip(contract.inputs.iter().copied())
             .collect::<Vec<_>>();
-        ordered.sort_by_key(|(argument, _)| {
+        ordered.sort_by_key(|((argument, _), _)| {
             let argument = self.resolve_inference_type(argument.success);
             matches!(
                 self.types[argument.raw() as usize],
@@ -7840,29 +7881,26 @@ impl ProjectTypeChecker {
         let constructs_struct = callee_symbol.is_some_and(|symbol| {
             self.resolved.symbol(symbol).kind == ProjectSymbolKind::StructConstructor
         });
-        for (argument, expected) in ordered {
+        for ((argument, argument_range), expected) in ordered {
             if let Some(substitution) = &mut substitution {
                 if !self.match_call_argument(argument.success, expected, substitution) {
-                    self.type_error_range(
-                        module_id,
-                        "T4203",
-                        range,
-                        "call argument has an incompatible type",
-                    );
+                    // Show the parameter with what the call has bound so far, without
+                    // binding anything new for the arguments still to match.
+                    let expected = self.substitute_call_type(expected, &mut substitution.clone());
+                    let message =
+                        self.mismatch_message("call argument", argument.success, expected);
+                    self.type_error_range(module_id, "T4203", argument_range, message);
                 }
             } else if constructs_struct || self.both_functions(argument.success, expected) {
                 if !self.value_fits(argument.success, expected) {
-                    self.type_error_range(
-                        module_id,
-                        "T4203",
-                        range,
-                        "call argument has an incompatible type",
-                    );
+                    let message =
+                        self.mismatch_message("call argument", argument.success, expected);
+                    self.type_error_range(module_id, "T4203", argument_range, message);
                 }
             } else {
                 self.unify_at(
                     module_id,
-                    range,
+                    argument_range,
                     argument.success,
                     expected,
                     "call argument",
@@ -8995,13 +9033,55 @@ impl ProjectTypeChecker {
         if self.unify(actual, expected) {
             return true;
         }
-        self.type_error_range(
-            module_id,
-            "T4203",
-            range,
-            format!("{context} has an incompatible type"),
-        );
+        let message = self.mismatch_message(context, actual, expected);
+        self.type_error_range(module_id, "T4203", range, message);
         false
+    }
+
+    /// `"{subject} has type `A`, expected `E`"`. Two function types that agree on
+    /// their inputs and result differ only in a row, and the message says which.
+    fn mismatch_message(&self, subject: &str, actual: TypeId, expected: TypeId) -> String {
+        let formatter = self.formatter();
+        let found = formatter.format_type(actual);
+        let wanted = formatter.format_type(expected);
+        let mut message = format!("{subject} has type `{found}`, expected `{wanted}`");
+        let contract =
+            |id: TypeId| match &self.types[self.resolve_inference_type(id).raw() as usize] {
+                CanonicalType::Function(contract)
+                | CanonicalType::PolymorphicFunction { contract, .. } => Some(contract.clone()),
+                _ => None,
+            };
+        if let (Some(actual), Some(expected)) = (contract(actual), contract(expected)) {
+            let shape = |contract: &CallableContract| {
+                (
+                    contract
+                        .inputs
+                        .iter()
+                        .map(|input| formatter.format_type(*input))
+                        .collect::<Vec<_>>(),
+                    formatter.format_type(contract.success),
+                )
+            };
+            if shape(&actual) == shape(&expected) {
+                let failures = |contract: &CallableContract| {
+                    formatter
+                        .format_failure_row(&self.failure_rows[contract.failures.raw() as usize])
+                };
+                let needs = |contract: &CallableContract| {
+                    formatter.format_needs_row(&self.needs_rows[contract.needs.raw() as usize])
+                };
+                if failures(&actual) != failures(&expected) {
+                    message.push_str(
+                        "; they differ only in what they may fail with (the failure row)",
+                    );
+                } else if needs(&actual) != needs(&expected) {
+                    message.push_str(
+                        "; they differ only in the capabilities they need (the needs row)",
+                    );
+                }
+            }
+        }
+        message
     }
 
     /// The last inference variable on `id`'s binding chain, if `id` is one.

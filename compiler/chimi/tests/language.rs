@@ -7966,7 +7966,7 @@ fn no_other_value_passes_as_never() {
         (
             "fn sink(x: Never) -> Int {\n  7\n}\npub fn main() -> Int {\n  sink(3)\n}\n",
             "T4203",
-            "sink(3)",
+            "3",
         ),
         // A function input is contravariant: a `fn(Never)` would be called with an `Int`.
         (
@@ -7976,7 +7976,7 @@ fn no_other_value_passes_as_never() {
                 "pub fn main() -> Text {\n  apply(sink)\n}\n",
             ),
             "T4203",
-            "apply(sink)",
+            "sink",
         ),
         ("fn coerce() -> Never {\n  41\n}\n", "T4308", "41"),
     ];
@@ -8297,4 +8297,114 @@ fn bound_generic_failure_keeps_its_instance_type() {
         run_both("failure-generic-bound", source),
         "\"outcome\":\"success\",\"value\":9"
     );
+}
+
+/// Each diagnostic as (code, the source text it points at, message).
+fn check_diagnostics(source: &str) -> Vec<(String, String, String)> {
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    Compiler::type_project(vec![module])
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| {
+            let range = diagnostic.range();
+            (
+                diagnostic.code().to_owned(),
+                source[range.start() as usize..range.end() as usize].to_owned(),
+                diagnostic.message().to_owned(),
+            )
+        })
+        .collect()
+}
+
+// T4203 names both types and points at the argument, not the whole call.
+#[test]
+fn a_mistyped_call_argument_names_both_types_at_the_argument() {
+    let source = concat!(
+        "fn add(left: Int, right: Int) -> Int {\n",
+        "  left + right\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  add(1, \"two\")\n",
+        "}\n",
+    );
+    let diagnostics = check_diagnostics(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let (code, site, message) = &diagnostics[0];
+    assert_eq!((code.as_str(), site.as_str()), ("T4203", "\"two\""));
+    assert!(
+        message.contains("`Text`") && message.contains("expected `Int`"),
+        "{message}"
+    );
+}
+
+// A function argument that fails where the parameter may not: the message says
+// the difference is the failure row.
+#[test]
+fn a_fallible_function_argument_is_reported_as_a_failure_row_difference() {
+    let source = concat!(
+        "enum Problem {\n",
+        "  TooBig\n",
+        "}\n",
+        "fn classify(n: Int) -> Text {\n",
+        "  case n > 100 {\n",
+        "    True -> Failure(Problem.TooBig)\n",
+        "    False -> \"small\"\n",
+        "  }\n",
+        "}\n",
+        "fn label(n: Int, f: fn(Int) -> Text) -> Text {\n",
+        "  f(n)\n",
+        "}\n",
+        "pub fn main() -> Text {\n",
+        "  label(3, classify)\n",
+        "}\n",
+    );
+    let diagnostics = check_diagnostics(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let (code, site, message) = &diagnostics[0];
+    assert_eq!((code.as_str(), site.as_str()), ("T4203", "classify"));
+    assert!(
+        message.contains("`fn(Int) -> Text errors Problem`")
+            && message.contains("expected `fn(Int) -> Text`")
+            && message.contains("failure row"),
+        "{message}"
+    );
+}
+
+// The forgotten-update error names the state type and the found type, at the
+// expression that produced the wrong next state.
+#[test]
+fn a_mistyped_loop_next_state_is_reported_at_the_producing_expression() {
+    let source = concat!(
+        "pub fn main() -> Int {\n",
+        "  loop i = 0 {\n",
+        "    case i == 3 {\n",
+        "      True -> break i\n",
+        "      False -> {\n",
+        "        let next = i + 1\n",
+        "        \"next\"\n",
+        "      }\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+    );
+    let diagnostics = check_diagnostics(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let (code, site, message) = &diagnostics[0];
+    assert_eq!((code.as_str(), site.as_str()), ("T4203", "\"next\""));
+    assert!(
+        message.contains("`Text`") && message.contains("expected `Int`"),
+        "{message}"
+    );
+}
+
+// T4325 names the type it found.
+#[test]
+fn a_non_text_interpolation_names_the_found_type() {
+    let source = "pub fn main() -> Text {\n  \"${[1, 2]}\"\n}\n";
+    let diagnostics = check_diagnostics(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let (code, _, message) = &diagnostics[0];
+    assert_eq!(code, "T4325");
+    assert!(message.contains("found `List<Int>`"), "{message}");
 }

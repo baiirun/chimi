@@ -1319,7 +1319,7 @@ mod tests {
         );
         assert_eq!(
             report.diagnostics()[1].range().start(),
-            text.find("takes(\"not an int\")").unwrap() as u32
+            text.find("\"not an int\"").unwrap() as u32
         );
     }
 
@@ -1482,7 +1482,7 @@ mod tests {
         assert_eq!(report.diagnostics()[0].code(), "T4203");
         assert_eq!(
             report.diagnostics()[0].range().start(),
-            text.find("choose(1, \"text\")").unwrap() as u32
+            text.find("\"text\"").unwrap() as u32
         );
     }
 

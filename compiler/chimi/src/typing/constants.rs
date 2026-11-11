@@ -35,13 +35,16 @@ impl ProjectTypeChecker {
                 .any(|name| resolved == self.builtin_type(name)),
         };
         if !allowed {
+            let found = self.formatter().format_type(resolved);
             self.type_error_range(
                 module_id,
                 "T4325",
                 part.range(),
-                "an interpolated value must be Text, Int, or Float; write \
-                 `${Debug.render(value)}` for debugging output, or call a function that \
-                 chooses the user-facing text",
+                format!(
+                    "an interpolated value must be Text, Int, or Float, found `{found}`; write \
+                     `${{Debug.render(value)}}` for debugging output, or call a function that \
+                     chooses the user-facing text"
+                ),
             );
         }
     }
