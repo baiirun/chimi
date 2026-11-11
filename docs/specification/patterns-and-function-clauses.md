@@ -14,7 +14,9 @@ may name only a closed enum, not one variant or a struct; full tracing
 identifies the selected clause through the arm body's events, not an
 attribute on the match event; and parameter conflicts that arise only from
 uses in clause bodies are reported as ordinary type mismatches, not `T4281`.
-Tuple patterns are not implemented yet.
+Tuple patterns, and patterns in `let` and `loop` state positions, are not
+implemented yet (`prog show ts-5be727`); `let` and `loop` accept only a plain
+binding today.
 
 The words MUST, MUST NOT, SHOULD, and MAY are normative. Examples use
 positional construction. Examples that call standard-library modules beyond
@@ -205,7 +207,7 @@ the matrix rows, and the parameter types form its columns.
   `T4231`. The message names the function and SHOULD show one missing argument
   shape as a witness, such as `describe(_)` or `route(Post, [_, _, ..])`.
 - A clause that no argument can reach is `T4232`, with a secondary label on the
-  earlier clause that covers it.
+  earliest clause that, together with the clauses before it, covers it.
 - A clause whose patterns are all catch-alls and that has no guard MUST be
   last (`T4233`).
 - A guard MUST be pure (`T4234`). A guarded clause does not count toward
@@ -680,7 +682,8 @@ reference. That reuse MUST NOT be observable.
   patterns matched, in clause order.
 - A multi-clause function is one callable. Calling it is one call in tracing.
   Full tracing MUST record the selected clause's source identity on the match
-  operation. It MUST NOT emit one call or span per clause.
+  operation (not yet implemented; see Status). It MUST NOT emit one call or
+  span per clause.
 - Lowering expresses clauses, failure-type patterns, and updates through
   existing Core matching and construction, plus list length, index, and view
   operations. They add no runtime tag or row object.
@@ -732,9 +735,9 @@ specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2022`:
 | PC-08 | Clauses with one and two parameters | `T4280` |
 | PC-09 | `fn f(0)` and `fn f("zero")` | `T4281` |
 | PC-10 | `pub` on the second clause | `L2020`; fix removes it |
-| PC-11 | Clauses separated by a struct declaration | `E_SEPARATED_FUNCTION_CLAUSES` |
+| PC-11 | Clauses separated by a struct declaration | `E_SEPARATED_FUNCTION_CLAUSES` only; the separated groups are not checked for coverage |
 | PC-12 | `route` with `needs` on the first clause, `db` used in two clauses | Compiles; one needs entry |
-| PC-13 | `fn f<T>(0)` where the parameter is `T` | `T4230` |
+| PC-13 | `fn f<T>(0)` where the parameter is `T`, in either clause order | `T4230` on the literal pattern, not `T4281` |
 | PC-14 | `fn f(Failure(e))` | `T4282` |
 | PC-15 | `List.map(counts, describe)` and `count \|> describe` | Compiles; one function value |
 | PC-16 | `break` in a clause body called from a loop | `E_BREAK_OUTSIDE_LOOP` |
