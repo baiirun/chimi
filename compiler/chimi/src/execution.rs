@@ -558,7 +558,10 @@ enum RuntimeCallable {
     Closure {
         parameters: Vec<SymbolId>,
         body: CoreNodeId,
-        environment: Environment,
+        /// Shared, so copying a closure value never copies what it captured. Values
+        /// are copied freely, and a closure that captures an earlier closure would
+        /// otherwise copy a tree that doubles with every capture level.
+        environment: Arc<Environment>,
         name: String,
     },
     Dependency {
@@ -941,7 +944,7 @@ impl<'core> Evaluator<'core> {
             } => Control::Success(RuntimeValue::Callable(RuntimeCallable::Closure {
                 parameters,
                 body,
-                environment,
+                environment: Arc::new(environment),
                 name: "closure".to_owned(),
             })),
             CoreOperation::Match { subjects, arms } => {
@@ -1126,9 +1129,10 @@ impl<'core> Evaluator<'core> {
             RuntimeCallable::Closure {
                 parameters,
                 body,
-                mut environment,
+                environment,
                 name: _,
             } => {
+                let mut environment = Arc::unwrap_or_clone(environment);
                 environment
                     .requirements
                     .extend(call_environment.requirements);

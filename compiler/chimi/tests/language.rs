@@ -2113,6 +2113,43 @@ fn draining_sum_program(doublings: u32) -> String {
     )
 }
 
+// Guards: each pass builds closures that capture the previous pass's closure
+// through several locals. The interpreter copied captured environments by value,
+// so the copy doubled with every pass: 8 passes took 33 s. 40 passes now finish
+// in well under a second.
+#[test]
+fn closures_capturing_earlier_closures_stay_cheap_to_copy() {
+    let started = std::time::Instant::now();
+    let outcome = run_both(
+        "closure-chain",
+        concat!(
+            "fn run(n: Int) -> Int {\n",
+            "  let start = { left: n, f: fn(x: Int) { x } }\n",
+            "  loop state = start {\n",
+            "    case state.left {\n",
+            "      0 -> break state.f(0)\n",
+            "      _ -> {\n",
+            "        let g = state.f\n",
+            "        let first = { k: 2, h: g }\n",
+            "        let inner = loop s = first {\n",
+            "          case s.k {\n",
+            "            0 -> break s\n",
+            "            _ -> { k: s.k - 1, h: fn(y: Int) { y + s.k } }\n",
+            "          }\n",
+            "        }\n",
+            "        { left: state.left - 1, f: inner.h }\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int { run(40) }\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":1");
+    let elapsed = started.elapsed();
+    assert!(elapsed.as_secs() < 60, "40 passes took {elapsed:?}");
+}
+
 // LP-07 on both paths. The reference interpreter records a full trace of every
 // operation, so this runs at 2^14 elements; `tests/cli.rs` checks the
 // 1,000,000-element row natively, where allocation is measurable.

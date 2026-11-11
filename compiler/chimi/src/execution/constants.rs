@@ -586,13 +586,13 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
                 RuntimeCallable::Closure {
                     parameters: parameters.clone(),
                     body: *body,
-                    environment: Environment {
+                    environment: std::sync::Arc::new(Environment {
                         locals: captures
                             .iter()
                             .map(|(symbol, value)| (*symbol, runtime_value(core, value)))
                             .collect(),
                         requirements: HashMap::new(),
-                    },
+                    }),
                     name: "closure".to_owned(),
                 }
             }
