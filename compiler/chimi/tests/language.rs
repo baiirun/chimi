@@ -6412,6 +6412,42 @@ fn only_structs_and_records_can_be_updated() {
     );
 }
 
+// A function-typed field mismatch names both function types in full.
+#[test]
+fn an_update_type_error_spells_out_function_types() {
+    let messages = check_messages(concat!(
+        "struct Hooks {\n",
+        "  run: fn() -> Int\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  let hooks = Hooks(fn() { 1 })\n",
+        "  let changed = { ..hooks, run: fn() { \"x\" } }\n",
+        "  changed.run()\n",
+        "}\n",
+    ));
+    assert_eq!(
+        messages,
+        [
+            "T4203 field `run` has type `fn() -> Int`, not `fn() -> Text`; an update keeps the base's type"
+        ]
+    );
+}
+
+// A base whose type is not solved yet (an unannotated clause parameter) gets
+// advice to annotate it, not a description of the missing type.
+#[test]
+fn an_update_of_an_unsolved_base_asks_for_an_annotation() {
+    let messages = check_messages(&format!(
+        "{CONFIG}fn bump(0, config) -> Config {{\n  config\n}}\nfn bump(n, config) {{\n  {{ ..config, jobs: n }}\n}}\npub fn main() -> Int {{ bump(4, Config(\"a\", 1, False)).jobs }}\n"
+    ));
+    assert_eq!(
+        messages,
+        [
+            "T4284 only a struct or record value can be updated, and this value's type is not known yet; annotate the parameter or `let` binding it comes from with its struct type"
+        ]
+    );
+}
+
 // RU-07
 #[test]
 fn an_update_of_another_modules_struct_is_private() {

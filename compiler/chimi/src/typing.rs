@@ -314,191 +314,18 @@ impl ValueProperties {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct TypedProject {
-    pub(crate) resolved: Arc<ResolvedProject>,
-    pub(crate) types: Vec<CanonicalType>,
-    pub(crate) failure_rows: Vec<FailureRow>,
-    pub(crate) needs_rows: Vec<NeedsRow>,
-    pub(crate) contracts: HashMap<SymbolId, CallableContract>,
-    pub(crate) declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
-    pub(crate) pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
-    /// Each failure-type pattern (`error: FileError` over a failure-set value) by its
-    /// semantic id: the variants it covers with their field counts. Core lowering
-    /// expands the pattern into one variant test per entry.
-    pub(crate) failure_type_patterns: HashMap<(ModuleId, SemanticId), Vec<(SymbolId, usize)>>,
-    /// The result shape of each record update, by the update's semantic id.
-    pub(crate) record_updates: HashMap<(ModuleId, SemanticId), RecordUpdateShape>,
-    /// A polymorphic callee's function type with this call's substitution
-    /// applied, keyed by the callee expression. Monomorphic callees have none.
-    pub(crate) callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
-    pub(crate) type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
-    pub(crate) expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
-    pub(crate) expression_value_properties: HashMap<(ModuleId, SemanticId), ValueProperties>,
-    pub(crate) fields: HashMap<SymbolId, Vec<FieldShape>>,
-    pub(crate) generic_kinds: HashMap<SymbolId, GenericKind>,
-    pub(crate) generic_requirements: HashMap<SymbolId, GenericRequirement>,
-    pub(crate) diagnostics: Vec<Diagnostic>,
-    /// Warnings never block compilation, so they stay out of `diagnostics`.
-    pub(crate) warnings: Vec<Diagnostic>,
-    pub(crate) inference_bindings: HashMap<u32, TypeId>,
+/// Formats canonical types for contracts, inspection, and diagnostics. It
+/// borrows the type tables, so the checker can format while it still owns them.
+pub(crate) struct TypeFormatter<'a> {
+    resolved: &'a ResolvedProject,
+    types: &'a [CanonicalType],
+    failure_rows: &'a [FailureRow],
+    needs_rows: &'a [NeedsRow],
+    generic_requirements: &'a HashMap<SymbolId, GenericRequirement>,
+    inference_bindings: &'a HashMap<u32, TypeId>,
 }
 
-const fn binary_operator_symbol(operator: BinaryOperator) -> &'static str {
-    match operator {
-        BinaryOperator::Add => "+",
-        BinaryOperator::Subtract => "-",
-        BinaryOperator::Multiply => "*",
-        BinaryOperator::Divide => "/",
-        BinaryOperator::Remainder => "%",
-        BinaryOperator::Less => "<",
-        BinaryOperator::LessEqual => "<=",
-        BinaryOperator::Greater => ">",
-        BinaryOperator::GreaterEqual => ">=",
-        BinaryOperator::Equal => "==",
-        BinaryOperator::NotEqual => "!=",
-        BinaryOperator::And => "and",
-        BinaryOperator::Or => "or",
-    }
-}
-
-/// The property a comparison operator needs of its operands, if `operator` is one.
-const fn comparison_property(operator: BinaryOperator) -> Option<ValueProperty> {
-    match operator {
-        BinaryOperator::Equal | BinaryOperator::NotEqual => Some(ValueProperty::Equatable),
-        BinaryOperator::Less
-        | BinaryOperator::LessEqual
-        | BinaryOperator::Greater
-        | BinaryOperator::GreaterEqual => Some(ValueProperty::Ordered),
-        _ => None,
-    }
-}
-
-pub(crate) fn check_project(resolved: ResolvedProject) -> TypedProject {
-    ProjectTypeChecker::new(resolved).check()
-}
-
-pub(crate) fn check_project_incremental(
-    resolved: ResolvedProject,
-    previous: &TypedProject,
-    affected_modules: &HashSet<ModuleId>,
-) -> TypedProject {
-    ProjectTypeChecker::from_previous(resolved, previous, affected_modules)
-        .check_modules(affected_modules, affected_modules)
-}
-
-impl TypedProject {
-    fn validate_closed_roots(&mut self) {
-        let roots = self
-            .resolved
-            .semantic
-            .modules
-            .iter()
-            .flat_map(|module| {
-                module
-                    .declarations
-                    .iter()
-                    .filter(|declaration| {
-                        declaration.kind == ModuleDeclarationKind::Function
-                            && declaration.public
-                            && declaration.name.text == "main"
-                    })
-                    .filter_map(|declaration| {
-                        self.resolved
-                            .symbols
-                            .iter()
-                            .find(|symbol| {
-                                symbol.module_id == Some(module.id)
-                                    && symbol.semantic_id == Some(declaration.semantic_id)
-                                    && symbol.kind == ProjectSymbolKind::Function
-                            })
-                            .map(|symbol| {
-                                (module.source.file_id(), declaration.name.range, symbol.id)
-                            })
-                    })
-            })
-            .collect::<Vec<_>>();
-
-        for (file_id, range, symbol) in roots {
-            let Some(contract) = self.contracts.get(&symbol).cloned() else {
-                continue;
-            };
-            let row = self.needs_rows[contract.needs.raw() as usize].clone();
-            let unresolved = row
-                .entries
-                .into_iter()
-                .filter(|need| !need.explained && !self.native_host_need(need.interface))
-                .collect::<Vec<_>>();
-            for need in unresolved {
-                self.diagnostics.push(Diagnostic::error(
-                    DiagnosticStage::ExecutionSetup,
-                    "E5002",
-                    file_id,
-                    range,
-                    format!(
-                        "main needs {}: {}",
-                        need.lexical_name,
-                        self.format_type(need.interface)
-                    ),
-                ));
-            }
-            let root = self.resolved.symbol(symbol);
-            let (root_module, root_declaration) = (root.module_id, root.semantic_id);
-            // A callee's row parameter reaches `main` only when a type error kept
-            // it from binding; that error is the report. Execution setup still
-            // rejects any parameter left on the contract (E5005).
-            let declared = row.parameters.into_iter().filter(|parameter| {
-                let parameter = self.resolved.symbol(*parameter);
-                parameter.module_id == root_module && parameter.semantic_id == root_declaration
-            });
-            for parameter in declared.collect::<Vec<_>>() {
-                self.diagnostics.push(Diagnostic::error(
-                    DiagnosticStage::ExecutionSetup,
-                    "E5002",
-                    file_id,
-                    range,
-                    format!(
-                        "main has unresolved dependency row {}",
-                        self.resolved.symbol(parameter).name
-                    ),
-                ));
-            }
-        }
-    }
-
-    fn native_host_need(&self, interface: TypeId) -> bool {
-        matches!(
-            &self.types[interface.raw() as usize],
-            CanonicalType::Named { symbol, arguments }
-                if arguments.is_empty()
-                    && matches!(
-                        self.resolved.standard_symbol(*symbol),
-                        Some(StandardSymbol::Type(
-                            StandardType::Console | StandardType::FileSystem
-                        ))
-                    )
-        )
-    }
-
-    pub(crate) fn contract(
-        &self,
-        module_path: &str,
-        function_name: &str,
-    ) -> Option<&CallableContract> {
-        let module = self
-            .resolved
-            .semantic
-            .modules
-            .iter()
-            .find(|module| module.path == module_path)?;
-        let symbol = self.resolved.symbols.iter().find(|symbol| {
-            symbol.module_id == Some(module.id)
-                && symbol.kind == ProjectSymbolKind::Function
-                && symbol.name == function_name
-        })?;
-        self.contracts.get(&symbol.id)
-    }
-
+impl TypeFormatter<'_> {
     pub(crate) fn format_function_contract(&self, contract: &CallableContract) -> String {
         let inputs = contract
             .inputs
@@ -563,62 +390,6 @@ impl TypedProject {
         }
     }
 
-    /// Whether `id` is equatable or ordered. A generic parameter has the
-    /// property when it carries it as an inferred requirement; otherwise the
-    /// answer depends on the instantiation.
-    pub(crate) fn derived_property(
-        &self,
-        id: TypeId,
-        property: ValueProperty,
-    ) -> PropertyDerivation {
-        let derivation = TypeView {
-            resolved: &self.resolved,
-            types: &self.types,
-            fields: &self.fields,
-            failure_rows: &self.failure_rows,
-            inference_bindings: &self.inference_bindings,
-        }
-        .derive(id, property);
-        if derivation.lack.is_some() {
-            return PropertyDerivation::Never;
-        }
-        let required = derivation.generics.iter().all(|generic| {
-            self.generic_requirements
-                .get(generic)
-                .is_some_and(|requirement| requirement.property >= property)
-        });
-        if derivation.unknown || !required {
-            PropertyDerivation::ValueDependent
-        } else {
-            PropertyDerivation::Always
-        }
-    }
-
-    pub(crate) fn generic_kind(
-        &self,
-        module_path: &str,
-        declaration_name: &str,
-        generic_name: &str,
-    ) -> Option<GenericKind> {
-        let module = self
-            .resolved
-            .semantic
-            .modules
-            .iter()
-            .find(|module| module.path == module_path)?;
-        let declaration = module
-            .declarations
-            .iter()
-            .find(|declaration| declaration.name.text == declaration_name)?;
-        let symbol = self.resolved.symbols.iter().find(|symbol| {
-            symbol.module_id == Some(module.id)
-                && symbol.semantic_id == Some(declaration.semantic_id)
-                && symbol.kind == ProjectSymbolKind::GenericParameter
-                && symbol.name == generic_name
-        })?;
-        self.generic_kinds.get(&symbol.id).copied()
-    }
-
     pub(crate) fn format_type(&self, id: TypeId) -> String {
         let id = self.resolve_type_id(id);
         match &self.types[id.raw() as usize] {
@@ -656,180 +427,6 @@ impl TypedProject {
             CanonicalType::InferenceVariable(_) => "_".to_owned(),
             CanonicalType::Poison => "<invalid>".to_owned(),
         }
-    }
-
-    pub(crate) fn callable_contract_for_type(&self, id: TypeId) -> Option<&CallableContract> {
-        match &self.types[self.resolve_type_id(id).raw() as usize] {
-            CanonicalType::Function(contract)
-            | CanonicalType::PolymorphicFunction { contract, .. } => Some(contract),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn value_properties(&self, id: TypeId) -> ValueProperties {
-        self.value_properties_with(id, &HashMap::new(), &mut HashSet::new())
-    }
-
-    fn value_properties_with(
-        &self,
-        id: TypeId,
-        generics: &HashMap<SymbolId, TypeId>,
-        visiting: &mut HashSet<TypeId>,
-    ) -> ValueProperties {
-        let id = self.resolve_type_id(id);
-        if !visiting.insert(id) {
-            return ValueProperties::SHAREABLE;
-        }
-        let properties = match &self.types[id.raw() as usize] {
-            CanonicalType::Named { symbol, arguments } => {
-                self.named_value_properties(*symbol, arguments, generics, visiting)
-            }
-            CanonicalType::Generic(symbol) => generics
-                .get(symbol)
-                .map_or(ValueProperties::VALUE_DEPENDENT, |bound| {
-                    self.value_properties_with(*bound, generics, visiting)
-                }),
-            CanonicalType::FailureSetValue(failures) => {
-                let row = &self.failure_rows[failures.raw() as usize];
-                let parameter_properties = if row.parameters.is_empty() {
-                    ValueProperties::SHAREABLE
-                } else {
-                    ValueProperties::VALUE_DEPENDENT
-                };
-                row.variants
-                    .iter()
-                    .fold(parameter_properties, |result, variant| {
-                        let fields = self.fields.get(variant).into_iter().flatten();
-                        fields.fold(result, |result, field| {
-                            result.combine(self.value_properties_with(
-                                field.type_id,
-                                generics,
-                                visiting,
-                            ))
-                        })
-                    })
-            }
-            CanonicalType::Function(_) | CanonicalType::PolymorphicFunction { .. } => {
-                ValueProperties::VALUE_DEPENDENT
-            }
-            CanonicalType::Record(fields) => {
-                fields
-                    .iter()
-                    .fold(ValueProperties::SHAREABLE, |result, field| {
-                        result.combine(self.value_properties_with(
-                            field.type_id,
-                            generics,
-                            visiting,
-                        ))
-                    })
-            }
-            CanonicalType::InferenceVariable(_) => ValueProperties::VALUE_DEPENDENT,
-            CanonicalType::Poison => ValueProperties::INVALID,
-        };
-        visiting.remove(&id);
-        properties
-    }
-
-    fn named_value_properties(
-        &self,
-        symbol: SymbolId,
-        arguments: &[TypeId],
-        outer_generics: &HashMap<SymbolId, TypeId>,
-        visiting: &mut HashSet<TypeId>,
-    ) -> ValueProperties {
-        match self.resolved.standard_symbol(symbol) {
-            Some(StandardSymbol::Type(StandardType::Task)) => {
-                return ValueProperties::PARENT_LOCAL;
-            }
-            Some(StandardSymbol::Type(
-                StandardType::ChannelReceiver | StandardType::ChannelCompletion,
-            )) => {
-                return ValueProperties::EXCLUSIVE;
-            }
-            Some(StandardSymbol::Type(StandardType::ChannelSender)) => {
-                return ValueProperties::SHAREABLE;
-            }
-            _ => {}
-        }
-
-        let symbol_kind = self.resolved.symbol(symbol).kind;
-        if symbol_kind == ProjectSymbolKind::Interface
-            || matches!(
-                self.resolved.standard_symbol(symbol),
-                Some(StandardSymbol::Type(
-                    StandardType::Console | StandardType::FileSystem
-                ))
-            )
-        {
-            return ValueProperties::VALUE_DEPENDENT;
-        }
-
-        let mut generics = outer_generics.clone();
-        for (parameter, argument) in self
-            .type_generic_parameters(symbol)
-            .into_iter()
-            .zip(arguments)
-        {
-            generics.insert(parameter, *argument);
-        }
-
-        let mut fields = self
-            .fields
-            .get(&symbol)
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        if symbol_kind == ProjectSymbolKind::Enum {
-            for variant in self.enum_variants(symbol) {
-                fields.extend(self.fields.get(&variant).into_iter().flatten());
-            }
-        }
-        if !fields.is_empty() {
-            return fields
-                .into_iter()
-                .fold(ValueProperties::SHAREABLE, |result, field| {
-                    result.combine(self.value_properties_with(field.type_id, &generics, visiting))
-                });
-        }
-
-        if matches!(
-            self.resolved.symbol(symbol).name.as_str(),
-            "List" | "Map" | "Option"
-        ) {
-            return arguments
-                .iter()
-                .fold(ValueProperties::SHAREABLE, |result, argument| {
-                    result.combine(self.value_properties_with(*argument, &generics, visiting))
-                });
-        }
-        ValueProperties::SHAREABLE
-    }
-
-    fn type_generic_parameters(&self, owner: SymbolId) -> Vec<SymbolId> {
-        let owner = self.resolved.symbol(owner);
-        let (Some(module_id), Some(semantic_id)) = (owner.module_id, owner.semantic_id) else {
-            return Vec::new();
-        };
-        let Some(declaration) = self.resolved.semantic.modules[module_id.raw() as usize]
-            .declarations
-            .iter()
-            .find(|declaration| declaration.semantic_id == semantic_id)
-        else {
-            return Vec::new();
-        };
-        declaration
-            .generic_parameters
-            .iter()
-            .filter_map(|parameter| {
-                self.resolved.symbols.iter().find(|symbol| {
-                    symbol.module_id == Some(module_id)
-                        && symbol.semantic_id == Some(semantic_id)
-                        && symbol.kind == ProjectSymbolKind::GenericParameter
-                        && symbol.name == parameter.text
-                })
-            })
-            .map(|symbol| symbol.id)
-            .collect()
     }
 
     fn resolve_type_id(&self, mut id: TypeId) -> TypeId {
@@ -1049,6 +646,461 @@ impl TypedProject {
             .collect::<Vec<_>>();
         variants.sort_unstable();
         variants
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct TypedProject {
+    pub(crate) resolved: Arc<ResolvedProject>,
+    pub(crate) types: Vec<CanonicalType>,
+    pub(crate) failure_rows: Vec<FailureRow>,
+    pub(crate) needs_rows: Vec<NeedsRow>,
+    pub(crate) contracts: HashMap<SymbolId, CallableContract>,
+    pub(crate) declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
+    pub(crate) pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
+    /// Each failure-type pattern (`error: FileError` over a failure-set value) by its
+    /// semantic id: the variants it covers with their field counts. Core lowering
+    /// expands the pattern into one variant test per entry.
+    pub(crate) failure_type_patterns: HashMap<(ModuleId, SemanticId), Vec<(SymbolId, usize)>>,
+    /// The result shape of each record update, by the update's semantic id.
+    pub(crate) record_updates: HashMap<(ModuleId, SemanticId), RecordUpdateShape>,
+    /// A polymorphic callee's function type with this call's substitution
+    /// applied, keyed by the callee expression. Monomorphic callees have none.
+    pub(crate) callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
+    pub(crate) type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
+    pub(crate) expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
+    pub(crate) expression_value_properties: HashMap<(ModuleId, SemanticId), ValueProperties>,
+    pub(crate) fields: HashMap<SymbolId, Vec<FieldShape>>,
+    pub(crate) generic_kinds: HashMap<SymbolId, GenericKind>,
+    pub(crate) generic_requirements: HashMap<SymbolId, GenericRequirement>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    /// Warnings never block compilation, so they stay out of `diagnostics`.
+    pub(crate) warnings: Vec<Diagnostic>,
+    pub(crate) inference_bindings: HashMap<u32, TypeId>,
+}
+
+const fn binary_operator_symbol(operator: BinaryOperator) -> &'static str {
+    match operator {
+        BinaryOperator::Add => "+",
+        BinaryOperator::Subtract => "-",
+        BinaryOperator::Multiply => "*",
+        BinaryOperator::Divide => "/",
+        BinaryOperator::Remainder => "%",
+        BinaryOperator::Less => "<",
+        BinaryOperator::LessEqual => "<=",
+        BinaryOperator::Greater => ">",
+        BinaryOperator::GreaterEqual => ">=",
+        BinaryOperator::Equal => "==",
+        BinaryOperator::NotEqual => "!=",
+        BinaryOperator::And => "and",
+        BinaryOperator::Or => "or",
+    }
+}
+
+/// The property a comparison operator needs of its operands, if `operator` is one.
+const fn comparison_property(operator: BinaryOperator) -> Option<ValueProperty> {
+    match operator {
+        BinaryOperator::Equal | BinaryOperator::NotEqual => Some(ValueProperty::Equatable),
+        BinaryOperator::Less
+        | BinaryOperator::LessEqual
+        | BinaryOperator::Greater
+        | BinaryOperator::GreaterEqual => Some(ValueProperty::Ordered),
+        _ => None,
+    }
+}
+
+pub(crate) fn check_project(resolved: ResolvedProject) -> TypedProject {
+    ProjectTypeChecker::new(resolved).check()
+}
+
+pub(crate) fn check_project_incremental(
+    resolved: ResolvedProject,
+    previous: &TypedProject,
+    affected_modules: &HashSet<ModuleId>,
+) -> TypedProject {
+    ProjectTypeChecker::from_previous(resolved, previous, affected_modules)
+        .check_modules(affected_modules, affected_modules)
+}
+
+impl TypedProject {
+    fn formatter(&self) -> TypeFormatter<'_> {
+        TypeFormatter {
+            resolved: &self.resolved,
+            types: &self.types,
+            failure_rows: &self.failure_rows,
+            needs_rows: &self.needs_rows,
+            generic_requirements: &self.generic_requirements,
+            inference_bindings: &self.inference_bindings,
+        }
+    }
+
+    pub(crate) fn format_function_contract(&self, contract: &CallableContract) -> String {
+        self.formatter().format_function_contract(contract)
+    }
+
+    pub(crate) fn format_type(&self, id: TypeId) -> String {
+        self.formatter().format_type(id)
+    }
+
+    fn resolve_type_id(&self, id: TypeId) -> TypeId {
+        self.formatter().resolve_type_id(id)
+    }
+
+    fn format_failure_row(&self, row: &FailureRow) -> String {
+        self.formatter().format_failure_row(row)
+    }
+
+    pub(crate) fn format_failure_parameter(&self, row: &FailureRow, symbol: SymbolId) -> String {
+        self.formatter().format_failure_parameter(row, symbol)
+    }
+
+    fn format_needs_row(&self, row: &NeedsRow) -> String {
+        self.formatter().format_needs_row(row)
+    }
+
+    fn enum_variants(&self, owner: SymbolId) -> Vec<SymbolId> {
+        self.formatter().enum_variants(owner)
+    }
+
+    fn validate_closed_roots(&mut self) {
+        let roots = self
+            .resolved
+            .semantic
+            .modules
+            .iter()
+            .flat_map(|module| {
+                module
+                    .declarations
+                    .iter()
+                    .filter(|declaration| {
+                        declaration.kind == ModuleDeclarationKind::Function
+                            && declaration.public
+                            && declaration.name.text == "main"
+                    })
+                    .filter_map(|declaration| {
+                        self.resolved
+                            .symbols
+                            .iter()
+                            .find(|symbol| {
+                                symbol.module_id == Some(module.id)
+                                    && symbol.semantic_id == Some(declaration.semantic_id)
+                                    && symbol.kind == ProjectSymbolKind::Function
+                            })
+                            .map(|symbol| {
+                                (module.source.file_id(), declaration.name.range, symbol.id)
+                            })
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        for (file_id, range, symbol) in roots {
+            let Some(contract) = self.contracts.get(&symbol).cloned() else {
+                continue;
+            };
+            let row = self.needs_rows[contract.needs.raw() as usize].clone();
+            let unresolved = row
+                .entries
+                .into_iter()
+                .filter(|need| !need.explained && !self.native_host_need(need.interface))
+                .collect::<Vec<_>>();
+            for need in unresolved {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::ExecutionSetup,
+                    "E5002",
+                    file_id,
+                    range,
+                    format!(
+                        "main needs {}: {}",
+                        need.lexical_name,
+                        self.format_type(need.interface)
+                    ),
+                ));
+            }
+            let root = self.resolved.symbol(symbol);
+            let (root_module, root_declaration) = (root.module_id, root.semantic_id);
+            // A callee's row parameter reaches `main` only when a type error kept
+            // it from binding; that error is the report. Execution setup still
+            // rejects any parameter left on the contract (E5005).
+            let declared = row.parameters.into_iter().filter(|parameter| {
+                let parameter = self.resolved.symbol(*parameter);
+                parameter.module_id == root_module && parameter.semantic_id == root_declaration
+            });
+            for parameter in declared.collect::<Vec<_>>() {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::ExecutionSetup,
+                    "E5002",
+                    file_id,
+                    range,
+                    format!(
+                        "main has unresolved dependency row {}",
+                        self.resolved.symbol(parameter).name
+                    ),
+                ));
+            }
+        }
+    }
+
+    fn native_host_need(&self, interface: TypeId) -> bool {
+        matches!(
+            &self.types[interface.raw() as usize],
+            CanonicalType::Named { symbol, arguments }
+                if arguments.is_empty()
+                    && matches!(
+                        self.resolved.standard_symbol(*symbol),
+                        Some(StandardSymbol::Type(
+                            StandardType::Console | StandardType::FileSystem
+                        ))
+                    )
+        )
+    }
+
+    pub(crate) fn contract(
+        &self,
+        module_path: &str,
+        function_name: &str,
+    ) -> Option<&CallableContract> {
+        let module = self
+            .resolved
+            .semantic
+            .modules
+            .iter()
+            .find(|module| module.path == module_path)?;
+        let symbol = self.resolved.symbols.iter().find(|symbol| {
+            symbol.module_id == Some(module.id)
+                && symbol.kind == ProjectSymbolKind::Function
+                && symbol.name == function_name
+        })?;
+        self.contracts.get(&symbol.id)
+    }
+
+    /// Whether `id` is equatable or ordered. A generic parameter has the
+    /// property when it carries it as an inferred requirement; otherwise the
+    /// answer depends on the instantiation.
+    pub(crate) fn derived_property(
+        &self,
+        id: TypeId,
+        property: ValueProperty,
+    ) -> PropertyDerivation {
+        let derivation = TypeView {
+            resolved: &self.resolved,
+            types: &self.types,
+            fields: &self.fields,
+            failure_rows: &self.failure_rows,
+            inference_bindings: &self.inference_bindings,
+        }
+        .derive(id, property);
+        if derivation.lack.is_some() {
+            return PropertyDerivation::Never;
+        }
+        let required = derivation.generics.iter().all(|generic| {
+            self.generic_requirements
+                .get(generic)
+                .is_some_and(|requirement| requirement.property >= property)
+        });
+        if derivation.unknown || !required {
+            PropertyDerivation::ValueDependent
+        } else {
+            PropertyDerivation::Always
+        }
+    }
+
+    pub(crate) fn generic_kind(
+        &self,
+        module_path: &str,
+        declaration_name: &str,
+        generic_name: &str,
+    ) -> Option<GenericKind> {
+        let module = self
+            .resolved
+            .semantic
+            .modules
+            .iter()
+            .find(|module| module.path == module_path)?;
+        let declaration = module
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name.text == declaration_name)?;
+        let symbol = self.resolved.symbols.iter().find(|symbol| {
+            symbol.module_id == Some(module.id)
+                && symbol.semantic_id == Some(declaration.semantic_id)
+                && symbol.kind == ProjectSymbolKind::GenericParameter
+                && symbol.name == generic_name
+        })?;
+        self.generic_kinds.get(&symbol.id).copied()
+    }
+
+    pub(crate) fn callable_contract_for_type(&self, id: TypeId) -> Option<&CallableContract> {
+        match &self.types[self.resolve_type_id(id).raw() as usize] {
+            CanonicalType::Function(contract)
+            | CanonicalType::PolymorphicFunction { contract, .. } => Some(contract),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn value_properties(&self, id: TypeId) -> ValueProperties {
+        self.value_properties_with(id, &HashMap::new(), &mut HashSet::new())
+    }
+
+    fn value_properties_with(
+        &self,
+        id: TypeId,
+        generics: &HashMap<SymbolId, TypeId>,
+        visiting: &mut HashSet<TypeId>,
+    ) -> ValueProperties {
+        let id = self.resolve_type_id(id);
+        if !visiting.insert(id) {
+            return ValueProperties::SHAREABLE;
+        }
+        let properties = match &self.types[id.raw() as usize] {
+            CanonicalType::Named { symbol, arguments } => {
+                self.named_value_properties(*symbol, arguments, generics, visiting)
+            }
+            CanonicalType::Generic(symbol) => generics
+                .get(symbol)
+                .map_or(ValueProperties::VALUE_DEPENDENT, |bound| {
+                    self.value_properties_with(*bound, generics, visiting)
+                }),
+            CanonicalType::FailureSetValue(failures) => {
+                let row = &self.failure_rows[failures.raw() as usize];
+                let parameter_properties = if row.parameters.is_empty() {
+                    ValueProperties::SHAREABLE
+                } else {
+                    ValueProperties::VALUE_DEPENDENT
+                };
+                row.variants
+                    .iter()
+                    .fold(parameter_properties, |result, variant| {
+                        let fields = self.fields.get(variant).into_iter().flatten();
+                        fields.fold(result, |result, field| {
+                            result.combine(self.value_properties_with(
+                                field.type_id,
+                                generics,
+                                visiting,
+                            ))
+                        })
+                    })
+            }
+            CanonicalType::Function(_) | CanonicalType::PolymorphicFunction { .. } => {
+                ValueProperties::VALUE_DEPENDENT
+            }
+            CanonicalType::Record(fields) => {
+                fields
+                    .iter()
+                    .fold(ValueProperties::SHAREABLE, |result, field| {
+                        result.combine(self.value_properties_with(
+                            field.type_id,
+                            generics,
+                            visiting,
+                        ))
+                    })
+            }
+            CanonicalType::InferenceVariable(_) => ValueProperties::VALUE_DEPENDENT,
+            CanonicalType::Poison => ValueProperties::INVALID,
+        };
+        visiting.remove(&id);
+        properties
+    }
+
+    fn named_value_properties(
+        &self,
+        symbol: SymbolId,
+        arguments: &[TypeId],
+        outer_generics: &HashMap<SymbolId, TypeId>,
+        visiting: &mut HashSet<TypeId>,
+    ) -> ValueProperties {
+        match self.resolved.standard_symbol(symbol) {
+            Some(StandardSymbol::Type(StandardType::Task)) => {
+                return ValueProperties::PARENT_LOCAL;
+            }
+            Some(StandardSymbol::Type(
+                StandardType::ChannelReceiver | StandardType::ChannelCompletion,
+            )) => {
+                return ValueProperties::EXCLUSIVE;
+            }
+            Some(StandardSymbol::Type(StandardType::ChannelSender)) => {
+                return ValueProperties::SHAREABLE;
+            }
+            _ => {}
+        }
+
+        let symbol_kind = self.resolved.symbol(symbol).kind;
+        if symbol_kind == ProjectSymbolKind::Interface
+            || matches!(
+                self.resolved.standard_symbol(symbol),
+                Some(StandardSymbol::Type(
+                    StandardType::Console | StandardType::FileSystem
+                ))
+            )
+        {
+            return ValueProperties::VALUE_DEPENDENT;
+        }
+
+        let mut generics = outer_generics.clone();
+        for (parameter, argument) in self
+            .type_generic_parameters(symbol)
+            .into_iter()
+            .zip(arguments)
+        {
+            generics.insert(parameter, *argument);
+        }
+
+        let mut fields = self
+            .fields
+            .get(&symbol)
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if symbol_kind == ProjectSymbolKind::Enum {
+            for variant in self.enum_variants(symbol) {
+                fields.extend(self.fields.get(&variant).into_iter().flatten());
+            }
+        }
+        if !fields.is_empty() {
+            return fields
+                .into_iter()
+                .fold(ValueProperties::SHAREABLE, |result, field| {
+                    result.combine(self.value_properties_with(field.type_id, &generics, visiting))
+                });
+        }
+
+        if matches!(
+            self.resolved.symbol(symbol).name.as_str(),
+            "List" | "Map" | "Option"
+        ) {
+            return arguments
+                .iter()
+                .fold(ValueProperties::SHAREABLE, |result, argument| {
+                    result.combine(self.value_properties_with(*argument, &generics, visiting))
+                });
+        }
+        ValueProperties::SHAREABLE
+    }
+
+    fn type_generic_parameters(&self, owner: SymbolId) -> Vec<SymbolId> {
+        let owner = self.resolved.symbol(owner);
+        let (Some(module_id), Some(semantic_id)) = (owner.module_id, owner.semantic_id) else {
+            return Vec::new();
+        };
+        let Some(declaration) = self.resolved.semantic.modules[module_id.raw() as usize]
+            .declarations
+            .iter()
+            .find(|declaration| declaration.semantic_id == semantic_id)
+        else {
+            return Vec::new();
+        };
+        declaration
+            .generic_parameters
+            .iter()
+            .filter_map(|parameter| {
+                self.resolved.symbols.iter().find(|symbol| {
+                    symbol.module_id == Some(module_id)
+                        && symbol.semantic_id == Some(semantic_id)
+                        && symbol.kind == ProjectSymbolKind::GenericParameter
+                        && symbol.name == parameter.text
+                })
+            })
+            .map(|symbol| symbol.id)
+            .collect()
     }
 }
 
@@ -4545,7 +4597,7 @@ impl ProjectTypeChecker {
                 self.resolved.symbol(*symbol).name.clone()
             }
             CanonicalType::Function(_) | CanonicalType::PolymorphicFunction { .. } => {
-                "function".to_owned()
+                self.formatter().format_type(id)
             }
             CanonicalType::Record(_) => "record".to_owned(),
             CanonicalType::FailureSetValue(failures) => self.format_failure_set(*failures),
@@ -4592,6 +4644,17 @@ impl ProjectTypeChecker {
             "Never".to_owned()
         } else {
             members.join(" | ")
+        }
+    }
+
+    fn formatter(&self) -> TypeFormatter<'_> {
+        TypeFormatter {
+            resolved: &self.resolved,
+            types: &self.types,
+            failure_rows: &self.failure_rows,
+            needs_rows: &self.needs_rows,
+            generic_requirements: &self.generic_requirements,
+            inference_bindings: &self.inference_bindings,
         }
     }
 
@@ -5018,13 +5081,16 @@ impl ProjectTypeChecker {
         base: &ModuleExpression,
         base_type: TypeId,
     ) -> Option<RecordUpdateShape> {
-        let name = self.type_display_name(base_type);
-        self.type_error_range(
-            module_id,
-            "T4284",
-            expression_range(base),
-            format!("only a struct or record value can be updated, and this is `{name}`"),
-        );
+        let message = if matches!(
+            self.types[self.resolve_inference_type(base_type).raw() as usize],
+            CanonicalType::InferenceVariable(_)
+        ) {
+            "only a struct or record value can be updated, and this value's type is not known yet; annotate the parameter or `let` binding it comes from with its struct type".to_owned()
+        } else {
+            let name = self.type_display_name(base_type);
+            format!("only a struct or record value can be updated, and this is `{name}`")
+        };
+        self.type_error_range(module_id, "T4284", expression_range(base), message);
         None
     }
 
