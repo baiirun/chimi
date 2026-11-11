@@ -2306,6 +2306,29 @@ fn a_lambda_argument_to_a_generic_callee_checks_in_an_inferred_body() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":9");
 }
 
+// ts-dbf382: reading a generic struct field gives the receiver's type argument.
+#[test]
+fn a_generic_struct_field_has_the_instantiated_type() {
+    let source = |argument: &str| {
+        format!(
+            concat!(
+                "struct Box<T> {{\n",
+                "  value: T\n",
+                "}}\n",
+                "fn unbox<T>(boxed: Box<T>) -> T {{ boxed.value }}\n",
+                "pub fn main() -> Int {{\n",
+                "  let nested = Box(Box({}))\n",
+                "  nested.value.value + unbox(Box(1))\n",
+                "}}\n",
+            ),
+            argument
+        )
+    };
+    let outcome = run_both("generic-struct-field", &source("3"));
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":4");
+    assert_eq!(check_codes(&source("\"x\"")), ["T4303"]);
+}
+
 // A constructor value renders as its constructor's name on both paths, as a
 // standard function value renders as its function's name.
 #[test]

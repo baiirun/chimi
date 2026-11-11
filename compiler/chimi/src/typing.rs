@@ -2527,7 +2527,7 @@ impl ProjectTypeChecker {
                     let receiver = self.infer_expression(module_id, receiver, generics, bindings);
                     self.reject_private_field(module_id, expression, receiver.success, member);
                     let success = self
-                        .field_type(receiver.success, &member.text)
+                        .instantiated_field_type(receiver.success, &member.text)
                         .unwrap_or_else(|| {
                             if self.resolve_inference_type(receiver.success) != TypeId::new(0) {
                                 self.type_error_range(
@@ -5604,6 +5604,42 @@ impl ProjectTypeChecker {
                 .map(|field| field.type_id),
             _ => None,
         }
+    }
+
+    /// The type of `member` read from a value of type `receiver`, with the
+    /// declaration's generic parameters replaced by the receiver's arguments
+    /// (`value: T` read from a `Box<Int>` is `Int`).
+    fn instantiated_field_type(&mut self, receiver: TypeId, member: &str) -> Option<TypeId> {
+        let declared = self.field_type(receiver, member)?;
+        let receiver = self.resolve_inference_type(receiver);
+        let CanonicalType::Named { symbol, arguments } =
+            self.types[receiver.raw() as usize].clone()
+        else {
+            return Some(declared);
+        };
+        let owner = self.resolved.symbol(symbol);
+        let (Some(module_id), Some(semantic_id)) = (owner.module_id, owner.semantic_id) else {
+            return Some(declared);
+        };
+        let Some(declaration) = self.resolved.semantic.modules[module_id.raw() as usize]
+            .declarations
+            .iter()
+            .find(|declaration| declaration.semantic_id == semantic_id)
+            .cloned()
+        else {
+            return Some(declared);
+        };
+        if declaration.generic_parameters.len() != arguments.len() {
+            return Some(declared);
+        }
+        let generics = self.generic_symbols(module_id, &declaration);
+        let mut substitution = CallSubstitution::default();
+        for (name, argument) in declaration.generic_parameters.iter().zip(arguments) {
+            if let Some(parameter) = generics.get(&name.text) {
+                substitution.values.insert(*parameter, argument);
+            }
+        }
+        Some(self.substitute_call_type(declared, &mut substitution))
     }
 
     fn match_call_type(
