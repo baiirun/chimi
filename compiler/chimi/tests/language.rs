@@ -598,3 +598,33 @@ fn a_standard_failure_row_admits_only_its_own_variants() {
     assert!(check_codes(&program("Utf8Error", invalid)).is_empty());
     assert_eq!(check_codes(&program("ConsoleError", invalid)), ["T4203"]);
 }
+
+// A grouping parenthesis keeps the space after an operator or keyword; only a
+// call, index, or parameter list attaches to the token before it.
+#[test]
+fn formatting_keeps_the_space_before_a_grouping_parenthesis() {
+    let source = concat!(
+        "fn double(value: Int) -> Int { value * 2 }\n",
+        "pub fn main() -> Int {\n",
+        "  let x = (1 + 2)\n",
+        "  case (x > (2)) {\n",
+        "    True -> double (x) * (x)\n",
+        "    False -> 0\n",
+        "  }\n",
+        "}\n",
+    );
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(
+        !formatted.is_blocked(),
+        "{}",
+        formatted.render_diagnostics()
+    );
+    let text = formatted.text();
+    assert!(text.contains("let x = (1 + 2)\n"), "{text}");
+    assert!(text.contains("case (x > (2)) {\n"), "{text}");
+    assert!(text.contains("True -> double(x) * (x)\n"), "{text}");
+    let original = run_both("grouping-before-format", source);
+    let reformatted = run_both("grouping-after-format", text);
+    assert_eq!(original, "\"outcome\":\"success\",\"value\":18");
+    assert_eq!(reformatted, original);
+}

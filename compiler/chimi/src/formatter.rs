@@ -129,14 +129,22 @@ fn format_parse(parsed: &ParseResult) -> String {
                 writer.write(token.text());
             }
             TokenKind::LeftParen | TokenKind::LeftBracket => {
-                // `not (ready)` and `a or (b)` keep the space a call such as `f(x)` drops.
-                if !writer.line().ends_with(": ")
-                    && !matches!(
-                        previous,
-                        Some(TokenKind::Not | TokenKind::And | TokenKind::Or)
+                // Only a call, index, or parameter list attaches to what precedes
+                // it (`f(x)`, `items[0]`, `fn(x)`). A grouping or list literal
+                // after an operator or keyword keeps its space: `x = (1)`,
+                // `not (ready)`, `case (a) {`.
+                if matches!(
+                    previous,
+                    Some(
+                        TokenKind::Identifier
+                            | TokenKind::RightParen
+                            | TokenKind::RightBracket
+                            | TokenKind::Fn
                     )
-                {
+                ) {
                     writer.trim_space();
+                } else if previous.is_some_and(word_kind) {
+                    writer.space();
                 }
                 writer.write(token.text());
             }
