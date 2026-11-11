@@ -120,14 +120,17 @@ fn format_parse(parsed: &ParseResult) -> String {
                 _ => {}
             }
         }
-        // A record type is written on one line, like the type it sits in.
-        if is_record_type_syntax(token) {
+        // A record type is written on one line, like the type it sits in, and so
+        // is a short record or record update.
+        if is_record_type_syntax(token) || in_short_record(token) {
             match kind {
                 TokenKind::Newline => {
                     writer.space();
                     previous = Some(kind);
                     continue;
                 }
+                // A trailing comma separates nothing on one line.
+                TokenKind::Comma if next == Some(TokenKind::RightBrace) => continue,
                 TokenKind::LeftBrace => {
                     if !matches!(
                         previous,
@@ -390,6 +393,48 @@ fn is_record_type_syntax(token: &SyntaxToken<'_>) -> bool {
     token_has_ancestor(token, &[NodeKind::RecordType])
 }
 
+/// The widest record or record update the formatter writes on one line, measured
+/// from its `{` to its `}` with one space between tokens.
+const SHORT_RECORD_WIDTH: usize = 60;
+
+/// Whether `token` lies in a record literal or update written on one line: one at
+/// most `SHORT_RECORD_WIDTH` wide that holds no comment, pipeline, or brace other
+/// than another record's or a record type's.
+fn in_short_record(token: &SyntaxToken<'_>) -> bool {
+    let mut node = Some(token.parent());
+    while let Some(current) = node {
+        if current.kind() == NodeKind::RecordExpression && is_short_record(&current) {
+            return true;
+        }
+        node = current.parent();
+    }
+    false
+}
+
+fn is_short_record(record: &crate::syntax::SyntaxNode<'_>) -> bool {
+    let mut width = 0_usize;
+    for token in record.descendant_tokens() {
+        match token.kind() {
+            TokenKind::Whitespace | TokenKind::Newline => continue,
+            TokenKind::Comment | TokenKind::Pipe => return false,
+            TokenKind::LeftBrace | TokenKind::RightBrace
+                if !matches!(
+                    token.parent().kind(),
+                    NodeKind::RecordExpression | NodeKind::RecordType
+                ) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        width += token.text().len() + 1;
+        if width > SHORT_RECORD_WIDTH + 1 {
+            return false;
+        }
+    }
+    true
+}
+
 fn is_type_syntax(token: &SyntaxToken<'_>) -> bool {
     token_has_ancestor(
         token,
@@ -644,6 +689,50 @@ mod tests {
         assert!(report.text().contains("}\n  {"), "{}", report.text());
         let reparsed = format(report.text());
         assert!(!reparsed.is_blocked(), "{}", reparsed.render_diagnostics());
+    }
+
+    #[test]
+    fn a_short_record_or_update_stays_on_one_line() {
+        let source = concat!(
+            "fn f(base: Config) -> Int {\n",
+            "  let updated = {\n    ..base,\n    name: \"b\",\n    jobs: 2,\n  }\n",
+            "  let point = {x:1, y: { z: 2 }}\n",
+            "  g(Holder({ y: 20 }), [{ a: 1 }])\n",
+            "  { ..updated, jobs: 3 }.jobs\n",
+            "}\n",
+        );
+        let report = format(source);
+        assert!(!report.is_blocked(), "{}", report.render_diagnostics());
+        let text = report.text();
+        assert!(
+            text.contains("  let updated = { ..base, name: \"b\", jobs: 2 }\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  let point = { x: 1, y: { z: 2 } }\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  g(Holder({ y: 20 }), [{ a: 1 }])\n"),
+            "{text}"
+        );
+        assert!(text.contains("  { ..updated, jobs: 3 }.jobs\n"), "{text}");
+        assert_eq!(format(text).text(), text);
+    }
+
+    #[test]
+    fn a_record_that_is_long_or_holds_a_block_keeps_its_braces_on_their_own_lines() {
+        let long = format!("const c = {{ first: \"{}\", second: 2 }}\n", "x".repeat(70));
+        let report = format(&long);
+        assert!(report.text().contains("{\n  first: "), "{}", report.text());
+        let provider = "const fake = { read: fn(path: Text) { 40 } }\n";
+        let report = format(provider);
+        assert!(
+            report.text().starts_with("const fake = {\n"),
+            "{}",
+            report.text()
+        );
+        assert_eq!(format(report.text()).text(), report.text());
     }
 
     #[test]
