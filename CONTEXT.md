@@ -143,10 +143,6 @@ _Avoid_: Expected error, recoverable business failure
 A callable unit's declared needs from its environment, such as time, logging, persistence, network, configuration, randomness, or queues.
 _Avoid_: Ambient global, hidden dependency, framework injection
 
-**Effect Contract**:
-An inferred or annotated row describing what executing a callable may do, such as synchronous external IO, independently of which dependencies provide the behavior or which failures it may return.
-_Avoid_: Dependency list, service identity, error channel, effect wrapper
-
 **Host Capability**:
 A runner-supplied implementation of an official dependency interface that crosses into operating-system behavior while remaining explicit in the callable's needs.
 _Avoid_: Ambient runtime service, effect name, runner option
@@ -267,12 +263,32 @@ _Avoid_: Public-only annotation requirement, visibility-dependent type checking
 An inferred or annotated callable boundary whose types, failures, requirements, and operational behavior can be viewed through tools and documentation.
 _Avoid_: Hidden inferred API, unreadable public surface
 
+**Execution Property**:
+A tool-visible fact such as whether resolved work may park or crosses a host boundary, kept outside the callable's source-level type channels.
+_Avoid_: Effect row, purity claim, caller-handled channel
+
+**Transferable Value**:
+A value that may move between tasks without leaving an unsafe alias behind.
+_Avoid_: Automatically shared value, unchecked sendability, imported marker trait
+
+**Shareable Value**:
+A transferable value that may be referenced by multiple tasks concurrently; ordinary immutable data derives this structurally.
+_Avoid_: Shared mutable alias, runtime-only convention, imported marker trait
+
+**Parent-Local Capability**:
+A handle whose authority belongs to its current task and cannot escape that task's structured lifetime, such as a finite child Task handle.
+_Avoid_: Detached handle, process reference, globally transferable task
+
+**Exclusive Capability**:
+A transferable runtime authority with one owning task at a time, such as a channel receiver or producer-completion handle.
+_Avoid_: Shareable endpoint, ambient ownership, unchecked alias
+
 **Visible Requirement**:
 An inferred or annotated environmental need that remains inspectable and understandable instead of becoming hidden dependency injection.
 _Avoid_: Invisible dependency injection, ambient requirement, hidden effect
 
 **Compiler-Derived Documentation**:
-Documentation generated from the compiler's understanding of types, failures, requirements, variants, effects, and public module surfaces.
+Documentation generated from the compiler's understanding of types, failures, requirements, variants, tool-visible execution properties, and public module surfaces.
 _Avoid_: Comment-only API docs, stale generated docs, hidden inferred contract
 
 **Local-First Package Ecosystem**:
@@ -303,9 +319,41 @@ _Avoid_: Plugin-first design, macro escape hatch, extensibility before semantics
 A concurrency model where spawned work belongs to a scope with defined cancellation, timeout, failure, and cleanup behavior.
 _Avoid_: Orphaned task, invisible background work, ad hoc lifecycle
 
+**Thunk**:
+An unexecuted zero-argument function value that describes work which can be called in the current task or started as a concurrent child task.
+_Avoid_: Effect wrapper, execution plan object, already-running task
+
+**Scoped Task**:
+One independently scheduled runtime execution of a thunk that is automatically owned by its parent task and whose result can be obtained through an ordinary potentially parking call. It cannot detach merely because its handle is discarded.
+_Avoid_: Thunk, detached work, long-lived supervised process
+
+**Runtime Fiber**:
+An internal stackful execution context that may back a scoped task and preserve its direct-style call stack while parked. It is not a source-level concept, and task semantics must not depend on it.
+_Avoid_: Task API, operating-system thread, public fiber primitive
+
+**Bounded Channel**:
+A typed MPSC communication path with finite declared capacity and distinct sender, receiver, and producer-completion capabilities backed by one runtime queue. Graceful close drains accepted values into an explicit `Drained` result, while abort discards unread values; both are channel state rather than values sent through it.
+_Avoid_: Unbounded queue, `None` sentinel, implicit drop policy, process identity
+
+**Concurrency Conformance Lab**:
+A suite of small, independently diagnosable scenarios that validates static concurrency contracts, deterministic runtime semantics, operational primitives, host adapters, observability, and performance before one composite smoke program.
+_Avoid_: Mega-prototype, application-shaped specification, one test for every layer
+
 **Supervised Process**:
-A long-lived unit of work with explicit failure, restart, shutdown, and observability behavior, distinct from a scoped task.
+A long-lived isolated state owner whose running incarnation owns a mailbox and has explicit restart, shutdown, and observability behavior. A defect ends that incarnation and its local state; supervision may create a replacement.
 _Avoid_: Orphaned daemon, untracked loop, request-local task
+
+**Process Reference**:
+A typed address for one running process incarnation. It never retargets to a replacement after that incarnation terminates.
+_Avoid_: Registered process name, durable address, restart-transparent handle
+
+**Registered Process Name**:
+An optional typed routing identity that a replacement process may reclaim after a restart. It provides discovery across incarnations, not mailbox persistence or delivery guarantees.
+_Avoid_: Process reference, durable queue, automatic redelivery
+
+**Process State Recovery**:
+Explicit reconstruction of a new process incarnation from state held outside the failed incarnation, such as longer-lived memory, persistent storage, or an event log.
+_Avoid_: Automatic supervisor checkpoint, crash-time cleanup, implicit durability
 
 **Backpressure**:
 Visible capacity or demand behavior that prevents producers from overwhelming consumers, queues, streams, sockets, workers, or fanout paths.

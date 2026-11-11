@@ -102,9 +102,14 @@ struct Money {
 }
 ```
 
-Fields have declared types. Construction MUST provide exactly the required
-field names with compatible values. Struct representation is all-or-nothing;
-the kernel has no per-field visibility modifiers.
+Fields have declared types. Construction is positional: `Money(2500)` MUST
+supply exactly one value per field, in declaration order, each compatible with
+its field's type. Call and construction arguments carry no labels; a labelled
+argument such as `Money(cents: 2500)` is a type error. Field order is therefore
+part of a struct's public shape: reordering fields is a breaking change for
+every construction site. Field names remain the identity for field access
+(`value.cents`). Struct representation is all-or-nothing; the kernel has no
+per-field visibility modifiers.
 
 ### Enums
 
@@ -117,8 +122,10 @@ enum PaymentError {
 }
 ```
 
-Each variant is a constructor. Variant patterns MUST use the declared payload
-arity and field shape.
+Each variant is a constructor. Construction is positional in the variant's
+declared field order, as for structs: `PaymentError.Declined("card")`. Payload
+field order is part of the enum's public shape. Variant patterns MUST use the
+declared payload arity and match payload fields by the same position.
 
 ### Anonymous records
 
@@ -126,7 +133,7 @@ An anonymous record is a transparent structural product:
 
 ```chimi
 {
-  charge: fn(total) { Receipt(id: "test") },
+  charge: fn(total) { Receipt("test") },
 }
 ```
 
@@ -256,7 +263,7 @@ call. An API intended for configured pipeline use explicitly returns a unary
 function:
 
 ```chimi
-operation |> Retry.with(policy: policy, delay: delay)
+operation |> Retry.with(policy, delay)
 ```
 
 ### Case expressions
@@ -287,7 +294,7 @@ failure row. Chimi has no exception throwing for expected failures.
 An ordinary expression implicitly constructs a successful computation outcome:
 
 ```chimi
-Receipt(id: "receipt-1")
+Receipt("receipt-1")
 ```
 
 `Success(value)` is the optional explicit equivalent. Programmers are never
@@ -296,7 +303,7 @@ required to wrap ordinary successful values.
 `Failure(error)` constructs a failed computation outcome:
 
 ```chimi
-Failure(PaymentError.Declined(reason: "expired"))
+Failure(PaymentError.Declined("expired"))
 ```
 
 It places the error value in the expected-failure channel. It does not perform
@@ -328,7 +335,7 @@ fn recover_declined<E>(operation: fn() -> Receipt errors E) {
   fn() {
     case operation() {
       Success(receipt) -> receipt
-      Failure(Declined(reason)) -> Receipt(id: reason)
+      Failure(Declined(reason)) -> Receipt(reason)
     }
   }
 }

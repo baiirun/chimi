@@ -232,7 +232,10 @@ The following source forms and models are deliberately absent:
 - mutable map literals, assignment-based counting, or in-place update syntax;
 - treating anonymous records and maps as the same value shape;
 - implicit JSON-to-struct decoding, reflection, derives, or schema annotations;
-- general `Iterator`, lazy `Sequence`, `yield`, generator, or `for` syntax;
+- general `Iterator`, lazy `Sequence`, `yield`, generator, or `for` syntax.
+  Unbounded repetition in Chimi source uses `loop`
+  ([repetition](repetition.md)); the line processor remains a
+  producer-owned callback because no public line stream exists;
 - a public raw line stream or file handle;
 - caller-supplied hash/equality functions or a new trait constraint solely for
   this map use;

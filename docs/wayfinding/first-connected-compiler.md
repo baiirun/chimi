@@ -445,10 +445,16 @@ lookup remains O(1), while the maintained workload cuts the remaining scoped
 allocation by 63.0%, peak live by 62.5%, and wall time by 16.0% with unchanged
 retention and output.
 
-The first post-kernel semantic extension (`prog show ts-8cec2f`) adds an
-inferred effect row independent of failures and dependency needs. `FileSystem`
-and `Console` are caller-selected dependencies; synchronous external behavior
-is the built-in `io` effect; application arguments remain data; and runner
-policy remains outside callable types. `using` removes only needs, failure
-handling removes only failures, and neither erases `io`. The normative contract
-is in `docs/specification/synchronous-effects-and-host-capabilities.md`.
+The first post-kernel semantic extension (`prog show ts-8cec2f`) originally
+prototyped an inferred effect row. The later concurrency decision supersedes
+that public contract: `FileSystem` and `Console` remain caller-selected
+dependencies, application arguments remain data, and runner policy remains
+outside callable types, but Chimi exposes no `effects` row. Resolved Core may
+derive compiler-private execution properties only when a backend or tool uses
+them. The current normative contract is in
+`docs/specification/host-capabilities-and-execution-properties.md`.
+
+Continue with [Define Chimi's First Concurrency Kernel](first-concurrency-kernel.md)
+(`prog show ep-167ecf`). Its Concurrency Conformance Lab separates static
+contracts, deterministic runtime behavior, operational primitives, host
+integration, and performance evidence before one composite smoke program.

@@ -2,10 +2,12 @@
 
 ## Status
 
-This is the first normative post-kernel extension. It specifies only the
-synchronous I/O behavior required by `chimi-trace-summary`. Chimi remains free
-to break, but implementations of this milestone MUST preserve these semantic
-distinctions unless a later decision explicitly supersedes them.
+Superseded by [ADR-0004](../adr/0004-keep-execution-properties-out-of-callable-types.md)
+and the normative
+[host capabilities and execution properties](host-capabilities-and-execution-properties.md)
+contract. This file preserves the earlier effect-row design as historical
+prototype evidence; its source syntax, typing rules, diagnostics, and compiler
+handoffs are no longer Chimi requirements.
 
 ## Purpose
 

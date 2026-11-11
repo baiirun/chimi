@@ -122,7 +122,7 @@ struct Answer {
 }
 
 pub fn main() {
-  Answer(value: 42)
+  Answer(42)
 }
 ```
 

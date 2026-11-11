@@ -141,10 +141,10 @@ internal compiler defect.
 - `SemanticId -> TypeId` for every value-producing expression and pattern;
 - `SemanticId -> CallableContract` for every callable expression;
 - generic parameter kinds, constraints, instantiations, and substitutions;
-- normalized expected-failure, needs, and effect rows;
+- normalized expected-failure and needs rows;
 - resolved member selection after receiver typing;
 - struct construction and field-shape checks;
-- case coverage, reachability, guard purity, and bound-pattern types;
+- case coverage, reachability, guard typing, and bound-pattern types;
 - provider conformance and provision results;
 - diagnostic-suppression facts such as an already-explained provider mismatch;
 - type-stage diagnostics and explicit poisoned facts for invalid nodes.
@@ -157,9 +157,12 @@ CallableContract {
   success: TypeId
   failures: FailureRowId
   needs: NeedsRowId
-  effects: EffectRowId
 }
 ```
+
+The superseded ADR-0003 effect-row fields have been removed from this handoff.
+Compiler-private execution properties may be added only with a named consumer
+and do not become part of `CallableContract` identity.
 
 Failure rows identify enum variants by `SymbolId`; they MUST NOT normalize by
 textual name. A complete enum row MAY retain a compact whole-enum form as long
@@ -186,8 +189,7 @@ Every generic binder has one inferred kind:
 - value type;
 - failure row;
 - failure set, when one binder is used as both a value union and a failure row;
-- needs row;
-- effect row.
+- needs row.
 
 Constraint generation is driven by its declared uses. A generic used in
 incompatible kinds is a diagnostic. Function application instantiates declared
@@ -269,7 +271,8 @@ Successful sealing proves:
 - every ordinary closed match is exhaustive and has no invalid patterns;
 - every provider conforms;
 - the root needs row is empty;
-- the root effect row is concrete and retained for target and runtime policy;
+- any compiler-private execution properties required by the selected target
+  are conservatively derived from resolved operations;
 - no blocking syntax, lowering, name, or type diagnostic is reachable;
 - every reachable semantic operation has a valid `OriginId`.
 

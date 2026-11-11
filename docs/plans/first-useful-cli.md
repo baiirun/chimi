@@ -128,19 +128,19 @@ prejudging their final module names:
 - JSON decode and encode;
 - functional incremental processing and deterministic keyed aggregation.
 
-Filesystem and console implementations are program dependencies. Whether their
-operations add synchronous effect information to callable types is specified by
-the accepted [synchronous effects and host capabilities](../specification/synchronous-effects-and-host-capabilities.md)
-contract (`prog show ts-8cec2f`). Trace policy and execution identity remain
-runner configuration rather than entries in a function's `needs` or `effects`
-rows.
+Filesystem and console implementations are program dependencies. The original
+milestone prototyped synchronous effect information in callable types, but that
+contract is superseded by
+[host capabilities and execution properties](../specification/host-capabilities-and-execution-properties.md):
+callables expose no effect row. Trace policy and execution identity remain
+runner configuration rather than entries in a function's `needs` row.
 
 ## Capability Inventory
 
 | Layer | Current evidence | Missing contract or implementation | Ticket |
 | --- | --- | --- | --- |
 | Language | Functions are values; failures and `needs` compose independently; `using` provisions dependencies at expression boundaries. | Represent synchronous I/O and resource behavior without relabeling dependencies as effects or hiding operations. | `ts-8cec2f` |
-| Compiler | Callable contracts carry success, failure, needs, and effect rows through typing, inspection, and executable metadata. | Implement no additional compiler channel for the first CLI. | `ts-5b0547` |
+| Compiler | Callable contracts, generic kinds, inspection output, executable Core, and native metadata contain no effect row. | Derive compiler-private execution properties only when a concrete consumer requires them. | `ts-4bdb73` |
 | Language and standard library | `Text`, `Int`, `Bool`, `List`, `Option`, structs, enums, records, case expressions, pipelines, and the accepted [trace data and processing](../specification/trace-data-and-processing.md) contract exist. | Implement the accepted JSON, immutable map, and bounded line-processing behavior. | `ts-2ac2de` |
 | Runtime contract | The versioned [`chimi.runtime.v1`](../specification/runtime-output-channels.md) export separates telemetry, terminal outcomes, application streams, and an optional memory report. | Preserve the contract while validating the maintained CLI. | `ts-65a567` |
 | Program boundary | `main()` and `main(List<Text>)` seal; the native runner supplies arguments after its reserved boundary and installs the standard `FileSystem` and `Console` providers. | Keep the boundary stable while adding programs. | complete |
@@ -203,8 +203,8 @@ than mocks of compiler or runtime internals.
 ## Work Map
 
 - `ts-1c0afb`: define this contract and capability inventory.
-- `ts-8cec2f`: define synchronous effects and host capability ownership.
-- `ts-5b0547`: implement inferred effect rows through compiler handoffs.
+- `ts-8cec2f`: historical prototype for synchronous effects and host capability ownership; its public effect-row decision is superseded by ADR-0004.
+- `ts-5b0547`: historical implementation of the effect-row compiler handoff later removed by `ts-4bdb73`.
 - `ts-2ac2de`: define the trace-processing data and iteration surface.
 - `ts-eaae0e`: separate application output from telemetry and runner outcomes.
 - `ts-e2d9a9`: implement CLI arguments and synchronous host I/O.
