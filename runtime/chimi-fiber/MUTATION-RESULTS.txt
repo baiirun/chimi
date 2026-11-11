@@ -1,3 +1,7 @@
+# Generated; do not edit. Reproduce from the repository root with:
+#   scripts/mutation/mutate.py --revision 59cbbac29f27d862aae643168c0fcfc3d09aa278 scripts/mutation/fiber_mutations.py
+# Commit: 59cbbac29f27d862aae643168c0fcfc3d09aa278
+# Each mutant must turn at least one test red (KILLED).
 # mutation run at 59cbbac29f27d862aae643168c0fcfc3d09aa278
 # fiber_mutations.py: 36 mutants against runtime/chimi-fiber
 BASELINE ok (5s)
