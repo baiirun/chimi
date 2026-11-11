@@ -1,4 +1,5 @@
 mod constants;
+mod debug;
 mod persistent_list;
 
 use crate::executable::{
@@ -1652,6 +1653,16 @@ impl<'core> Evaluator<'core> {
                         Vec::new(),
                     )),
                 }
+            }
+            StandardFunction::DebugRender | StandardFunction::DebugRenderIndented => {
+                let [value] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(RuntimeValue::Text(debug::render(
+                    self.core,
+                    value,
+                    function == StandardFunction::DebugRenderIndented,
+                )))
             }
             StandardFunction::FloatToText => {
                 let [RuntimeValue::Float(value)] = arguments.as_slice() else {

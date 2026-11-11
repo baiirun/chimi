@@ -7,10 +7,11 @@ pub(crate) enum StandardModule {
     Task,
     Int,
     Float,
+    Debug,
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Channel,
         Self::Io,
         Self::Json,
@@ -18,6 +19,7 @@ impl StandardModule {
         Self::Task,
         Self::Int,
         Self::Float,
+        Self::Debug,
     ];
 
     pub(crate) const fn path(self) -> &'static str {
@@ -29,6 +31,7 @@ impl StandardModule {
             Self::Task => "std/task",
             Self::Int => "std/int",
             Self::Float => "std/float",
+            Self::Debug => "std/debug",
         }
     }
 }
@@ -155,10 +158,16 @@ pub(crate) enum StandardFunction {
     FloatToInt,
     FloatToText,
     FloatParse,
+    /// `std/debug.render`: any value as one line of text in the debug format.
+    DebugRender,
+    /// `std/debug.render_indented`: the debug format with one part per line.
+    DebugRenderIndented,
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 38] = [
+    pub(crate) const ALL: [Self; 40] = [
+        Self::DebugRender,
+        Self::DebugRenderIndented,
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -235,6 +244,7 @@ impl StandardFunction {
             | Self::FloatToInt
             | Self::FloatToText
             | Self::FloatParse => Some(StandardModule::Float),
+            Self::DebugRender | Self::DebugRenderIndented => Some(StandardModule::Debug),
             Self::ListFirst | Self::ListLength | Self::TextAppend | Self::TextEqual => None,
         }
     }
@@ -281,6 +291,8 @@ impl StandardFunction {
             Self::FloatCeiling => "ceiling",
             Self::FloatRound => "round",
             Self::FloatToInt => "to_int",
+            Self::DebugRender => "render",
+            Self::DebugRenderIndented => "render_indented",
         }
     }
 
@@ -541,10 +553,14 @@ pub(crate) enum StandardGeneric {
     TaskFailures,
     TaskNeeds,
     ChannelValue,
+    DebugRenderValue,
+    DebugRenderIndentedValue,
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 25] = [
+    pub(crate) const ALL: [Self; 27] = [
+        Self::DebugRenderValue,
+        Self::DebugRenderIndentedValue,
         Self::FileState,
         Self::FileFailures,
         Self::FileNeeds,
@@ -601,6 +617,7 @@ impl StandardGeneric {
             Self::TaskFailures => "E",
             Self::TaskNeeds => "R",
             Self::ChannelValue => "T",
+            Self::DebugRenderValue | Self::DebugRenderIndentedValue => "T",
         }
     }
 

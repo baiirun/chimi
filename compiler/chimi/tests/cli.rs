@@ -2711,3 +2711,38 @@ fn native_draining_loop_allocates_a_constant_amount_per_rest_view() {
     assert!(elapsed.as_secs() < 60, "draining took {elapsed:?}");
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+// G10: a capability renders as its type's simple name and never shows its contents.
+// Channels exist only on the native runtime, so this row is native-only.
+#[test]
+fn native_debug_render_names_capabilities_without_their_contents() {
+    let scratch = scratch_directory("debug-render-capabilities");
+    let executable = build_native(
+        &scratch,
+        "debug-capabilities",
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/debug as Debug\n",
+            "pub fn main() -> Text {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  Channel.send(channel.sender, 1)\n",
+            "  Channel.close(channel.completion)\n",
+            "  Debug.render(channel)\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "debug-capabilities", "off");
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert_eq!(
+        execution.outcome,
+        concat!(
+            "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":",
+            "\"{ completion: <Completion>, receiver: <Receiver>, sender: <Sender> }\"}\n"
+        )
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}

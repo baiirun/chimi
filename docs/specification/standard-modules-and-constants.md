@@ -7,7 +7,9 @@ and G20 from the [standard library map](../plans/standard-library-map.md) and
 resolves the module-constants decision `prog show ts-f47931`. Module
 constants (G7) are implemented, except result caching, the build report, and
 `process name` (which the language does not have yet). Text interpolation (G9)
-is implemented on the existing intrinsics (migration step 2). The standard tree (G1)
+is implemented on the existing intrinsics (migration step 2). Debug rendering
+(G10) is implemented as hand-built intrinsics ahead of step 4, as step 5
+allows; the runner's bounded rendering and registry render overrides are not. The standard tree (G1)
 and C bindings (G20) are not implemented. Source spelling is provisional, as
 in the other specifications.
 
@@ -612,7 +614,22 @@ pub native fn render_indented<T>(value: T) -> Text
 
 Both accept any value, never fail, and need nothing. `render` produces one
 line. `render_indented` puts each field, element, and entry on its own line
-with two-space indentation, for assertion diffs.
+with two-space indentation, for assertion diffs. Each part ends with `,`, as
+the formatter writes multi-line literals:
+
+<!-- chimi: fragment -->
+```chimi
+{
+  items: [
+    Money {
+      cents: 1,
+    },
+  ],
+  status: Status.Declined(
+    "x",
+  ),
+}
+```
 
 ### Format
 
@@ -621,8 +638,8 @@ Each kind of value renders like the declaration or literal that describes it:
 | Value | Rendering |
 | --- | --- |
 | `Int` | `-42` |
-| `Text` | `"say \"hi\"\n"`, quoted with Chimi escapes |
-| `Float` | `-0.5`, `1.0e20`; the canonical shortest form, so `-0.0` and `0.0` both render as `0.0` |
+| `Text` | `"say \"hi\"\n"`, quoted with Chimi escapes: `\"`, `\\`, `\n`, `\r`, `\t`, `\$` before `{`, and `\u{1b}` for other control characters |
+| `Float` | `-0.5`, `1e20`; the `Float.to_text` form, except that `-0.0` and `0.0` both render as `0.0` |
 | `Decimal` | `1.5`; the canonical normalized form, so `1.50` and `1.5` both render as `1.5` |
 | `Bool` | `True`, `False` |
 | `Void` | `Void` |
@@ -673,7 +690,11 @@ Rules:
 
 Rendering needs type, constructor, and field names at run time. The native
 program data MUST contain those names for every nominal type reachable from
-`main`. The cost is a few bytes per name, and defect context needs the names
+`main`. Today's program data already holds them: each constructor's type,
+variant, and field names, and each symbol's name for declared functions.
+Until `std/io` moves to source (step 7), a `Path` is text at run time and
+renders as quoted text, and a `Json.Value` variant renders with its type's
+simple name, as in `Value.Number(Json.Number(1))`. The cost is a few bytes per name, and defect context needs the names
 even in programs that never call `Debug.render`.
 
 ## Diagnostics

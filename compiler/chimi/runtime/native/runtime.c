@@ -1706,6 +1706,203 @@ static uint32_t parse_float_text(const char *text, double *output) {
   return isfinite(*output) ? 0 : CHIMI_CONSTRUCTOR_FLOAT_PARSE_OUT_OF_RANGE;
 }
 
+/* The debug format of `std/debug` (G10). It MUST match the interpreter's renderer in
+   execution/debug.rs byte for byte; the language tests compare both. Captures and
+   capability contents are never shown. */
+typedef struct { TextBuffer *buffer; bool indented; uint32_t depth; } DebugRenderer;
+
+static void debug_text(TextBuffer *buffer, const char *value) { buffer_bytes(buffer, value, strlen(value)); }
+
+static void debug_quote(TextBuffer *buffer, const char *text) {
+  buffer_char(buffer, '"');
+  for (const unsigned char *cursor = (const unsigned char *)text; *cursor; ++cursor) {
+    switch (*cursor) {
+      case '"': debug_text(buffer, "\\\""); break;
+      case '\\': debug_text(buffer, "\\\\"); break;
+      case '\n': debug_text(buffer, "\\n"); break;
+      case '\r': debug_text(buffer, "\\r"); break;
+      case '\t': debug_text(buffer, "\\t"); break;
+      case '$':
+        if (cursor[1] == '{') debug_text(buffer, "\\$"); else buffer_char(buffer, '$');
+        break;
+      default:
+        if (*cursor < 0x20 || *cursor == 0x7f) {
+          char escaped[16]; snprintf(escaped, sizeof(escaped), "\\u{%x}", *cursor);
+          debug_text(buffer, escaped);
+        } else {
+          buffer_char(buffer, (char)*cursor);
+        }
+    }
+  }
+  buffer_char(buffer, '"');
+}
+
+/* An integral JSON number within 2^53 as an integer, any other as the shortest Float. */
+static void debug_json_number(TextBuffer *buffer, const char *text) {
+  char *end = NULL; errno = 0;
+  long long integer = strtoll(text, &end, 10);
+  char output[48];
+  if (errno == 0 && end != text && *end == '\0') {
+    snprintf(output, sizeof(output), "%lld", integer); debug_text(buffer, output); return;
+  }
+  errno = 0; double value = strtod(text, &end);
+  if (end == text || *end != '\0' || !isfinite(value)) { debug_text(buffer, text); return; }
+  if (value == trunc(value) && fabs(value) < 9007199254740992.0) {
+    snprintf(output, sizeof(output), "%lld", (long long)value); debug_text(buffer, output); return;
+  }
+  float_text(value == 0.0 ? 0.0 : value, output); debug_text(buffer, output);
+}
+
+static void debug_value(DebugRenderer *renderer, const ChimiValue *value);
+
+static void debug_line(DebugRenderer *renderer) {
+  buffer_char(renderer->buffer, '\n');
+  for (uint32_t i = 0; i < renderer->depth; ++i) debug_text(renderer->buffer, "  ");
+}
+
+/* Between parts: `, ` on one line, or a line break and indentation. Before the first
+   part on one line, a space when `spaced`. */
+static void debug_separator(DebugRenderer *renderer, uint32_t index, bool spaced) {
+  if (renderer->indented) debug_line(renderer);
+  else if (index > 0) debug_text(renderer->buffer, ", ");
+  else if (spaced) buffer_char(renderer->buffer, ' ');
+}
+static void debug_part_end(DebugRenderer *renderer) {
+  if (renderer->indented) buffer_char(renderer->buffer, ',');
+}
+static void debug_close(DebugRenderer *renderer, const char *close, bool spaced) {
+  if (renderer->indented) debug_line(renderer);
+  else if (spaced) buffer_char(renderer->buffer, ' ');
+  debug_text(renderer->buffer, close);
+}
+
+/* Named parts in the given order, as `name: value`; `labels` false drops the names. */
+static void debug_fields(DebugRenderer *renderer, const char *open, const char *close, bool spaced,
+                         const RuntimeField *fields, const uint32_t *order, uint32_t length,
+                         bool labels) {
+  debug_text(renderer->buffer, open);
+  if (length == 0) { debug_text(renderer->buffer, close); return; }
+  ++renderer->depth;
+  for (uint32_t i = 0; i < length; ++i) {
+    const RuntimeField *field = &fields[order ? order[i] : i];
+    debug_separator(renderer, i, spaced);
+    if (labels) { debug_text(renderer->buffer, field->name); debug_text(renderer->buffer, ": "); }
+    debug_value(renderer, field->value);
+    debug_part_end(renderer);
+  }
+  --renderer->depth;
+  debug_close(renderer, close, spaced);
+}
+
+static void debug_map(DebugRenderer *renderer, const MapNode *node, uint32_t *index) {
+  if (!node) return;
+  debug_map(renderer, node->left, index);
+  debug_separator(renderer, (*index)++, true);
+  debug_quote(renderer->buffer, node->key);
+  debug_text(renderer->buffer, ": ");
+  debug_value(renderer, node->value);
+  debug_part_end(renderer);
+  debug_map(renderer, node->right, index);
+}
+
+static void debug_value(DebugRenderer *renderer, const ChimiValue *value) {
+  TextBuffer *buffer = renderer->buffer;
+  char scalar[48];
+  switch (value->kind) {
+    case VALUE_VOID: debug_text(buffer, "Void"); return;
+    case VALUE_INTEGER:
+      snprintf(scalar, sizeof(scalar), "%" PRId64, value->as.integer); debug_text(buffer, scalar); return;
+    case VALUE_FLOAT:
+      float_text(value->as.floating == 0.0 ? 0.0 : value->as.floating, scalar);
+      debug_text(buffer, scalar); return;
+    case VALUE_TEXT: debug_quote(buffer, value->as.text); return;
+    case VALUE_BOOLEAN: debug_text(buffer, value->as.boolean ? "True" : "False"); return;
+    case VALUE_LIST: {
+      debug_text(buffer, "[");
+      uint32_t length = value->as.list.length;
+      if (length == 0) { debug_text(buffer, "]"); return; }
+      ++renderer->depth;
+      for (uint32_t i = 0; i < length; ++i) {
+        debug_separator(renderer, i, false);
+        debug_value(renderer, list_get(value, i));
+        debug_part_end(renderer);
+      }
+      --renderer->depth;
+      debug_close(renderer, "]", false);
+      return;
+    }
+    case VALUE_RECORD: {
+      uint32_t length = value->as.record.length;
+      uint32_t *order = allocate(length, sizeof(*order));
+      for (uint32_t i = 0; i < length; ++i) {
+        uint32_t j = i;
+        while (j > 0 && strcmp(value->as.record.fields[order[j - 1]].name,
+                               value->as.record.fields[i].name) > 0) {
+          order[j] = order[j - 1]; --j;
+        }
+        order[j] = i;
+      }
+      debug_fields(renderer, "{", "}", true, value->as.record.fields, order, length, true);
+      return;
+    }
+    case VALUE_CONSTRUCTED: {
+      uint32_t standard = CHIMI_SYMBOLS[value->as.constructed.constructor].standard_constructor;
+      bool prelude = standard == CHIMI_CONSTRUCTOR_OPTION_SOME || standard == CHIMI_CONSTRUCTOR_OPTION_NONE;
+      const char *variant = value->as.constructed.variant_name;
+      uint32_t length = value->as.constructed.length;
+      if (!prelude) debug_text(buffer, value->as.constructed.type_name);
+      if (!variant) {
+        debug_fields(renderer, " {", "}", true, value->as.constructed.fields, NULL, length, true);
+        return;
+      }
+      if (!prelude) buffer_char(buffer, '.');
+      debug_text(buffer, variant);
+      if (length > 0)
+        debug_fields(renderer, "(", ")", false, value->as.constructed.fields, NULL, length, length > 1);
+      return;
+    }
+    case VALUE_MAP: {
+      debug_text(buffer, "Map {");
+      if (!value->as.map) { debug_text(buffer, "}"); return; }
+      uint32_t index = 0;
+      ++renderer->depth;
+      debug_map(renderer, value->as.map, &index);
+      --renderer->depth;
+      debug_close(renderer, "}", true);
+      return;
+    }
+    case VALUE_JSON_NUMBER:
+      debug_text(buffer, "Json.Number(");
+      debug_json_number(buffer, value->as.json_number);
+      debug_text(buffer, ")");
+      return;
+    case VALUE_CALLABLE: {
+      const ChimiCallable *callable = value->as.callable;
+      const char *name = NULL;
+      switch (callable->kind) {
+        case CALL_DECLARED: name = CHIMI_STRINGS[CHIMI_SYMBOLS[callable->symbol].name]; break;
+        case CALL_DEPENDENCY: case CALL_INTRINSIC: case CALL_CONSTRUCTOR: name = callable->name; break;
+        case CALL_CLOSURE: case CALL_HOST: break;
+      }
+      debug_text(buffer, "<fn");
+      if (name) { buffer_char(buffer, ' '); debug_text(buffer, name); }
+      debug_text(buffer, ">");
+      return;
+    }
+    case VALUE_TASK: debug_text(buffer, "<Task>"); return;
+    case VALUE_CHANNEL_SENDER: debug_text(buffer, "<Sender>"); return;
+    case VALUE_CHANNEL_RECEIVER: debug_text(buffer, "<Receiver>"); return;
+    case VALUE_CHANNEL_COMPLETION: debug_text(buffer, "<Completion>"); return;
+  }
+}
+
+static ChimiValue *debug_render(const ChimiValue *value, bool indented) {
+  TextBuffer buffer = {0};
+  DebugRenderer renderer = {&buffer, indented, 0};
+  debug_value(&renderer, value);
+  return text_value(buffer.data);
+}
+
 static ChimiControl *intrinsic_shape_defect(uint32_t call_node) {
   return defect("verified standard function has invalid runtime arguments", call_node);
 }
@@ -1896,6 +2093,10 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
         return failure(standard_value(CHIMI_CONSTRUCTOR_FLOAT_OUT_OF_RANGE, NULL, 0));
       return success(integer_value((int64_t)value));
     }
+    case CHIMI_INTRINSIC_DEBUG_RENDER:
+    case CHIMI_INTRINSIC_DEBUG_RENDER_INDENTED:
+      if (argument_count != 1) return intrinsic_shape_defect(call_node);
+      return success(debug_render(arguments[0], intrinsic == CHIMI_INTRINSIC_DEBUG_RENDER_INDENTED));
     case CHIMI_INTRINSIC_FLOAT_TO_TEXT: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_FLOAT) return intrinsic_shape_defect(call_node);
       char text[40]; float_text(arguments[0]->as.floating, text);

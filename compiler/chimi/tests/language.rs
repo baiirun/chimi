@@ -3168,3 +3168,176 @@ fn interpolations_format_tightly_and_keep_their_text() {
         "pub fn main() -> Text {\n  \"a ${1 + 2} b ${Text.append(\"x\", \"y\")}\"\n}\n"
     );
 }
+
+fn json_text(text: &str) -> String {
+    let mut quoted = String::from("\"");
+    for character in text.chars() {
+        match character {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\n' => quoted.push_str("\\n"),
+            other => quoted.push(other),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+// G10 Format table: every value kind that exists today renders like the declaration
+// or literal that describes it, identically on both backends. Each row pairs the
+// rendered expression with the text the table promises.
+#[test]
+fn debug_render_follows_the_format_table_on_both_backends() {
+    let rows: &[(&str, &str)] = &[
+        ("-42", "-42"),
+        ("-0.5", "-0.5"),
+        ("0.0 - 0.0", "0.0"),
+        ("1e20", "1e20"),
+        ("True", "True"),
+        ("False", "False"),
+        // A text holding real quotes, which no literal can write yet.
+        (
+            "Json.encode(Json.text(\"say \\${hi}\"))",
+            r#""\"say \${hi}\"""#,
+        ),
+        ("Money(2500)", "Money { cents: 2500 }"),
+        ("GatewayUnavailable", "PaymentError.GatewayUnavailable"),
+        ("Declined(\"card\")", r#"PaymentError.Declined("card")"#),
+        (
+            "Open(Path(\"a.txt\"), \"denied\")",
+            r#"FileError.Open(path: Path { text: "a.txt" }, message: "denied")"#,
+        ),
+        ("Some(3)", "Some(3)"),
+        ("nothing()", "None"),
+        ("{ name: \"a\", cents: 1 }", r#"{ cents: 1, name: "a" }"#),
+        ("[1, 2, 3]", "[1, 2, 3]"),
+        ("no_items()", "[]"),
+        (
+            "Map.put(Map.put(Map.empty(), \"b\", 2), \"a\", 1)",
+            r#"Map { "a": 1, "b": 2 }"#,
+        ),
+        ("Json.int(1)", "Value.Number(Json.Number(1))"),
+        (
+            "{ charge: checkout, other: fn(x: Int) { x } }",
+            "{ charge: <fn checkout>, other: <fn> }",
+        ),
+        ("Text.append", "<fn append>"),
+        ("stored", "[Money { cents: 1 }, Money { cents: 2 }]"),
+    ];
+    let mut source = String::from(concat!(
+        "import std/debug as Debug\n",
+        "import std/map as Map\n",
+        "import std/json as Json\n",
+        "struct Money {\n  cents: Int\n}\n",
+        "struct Path {\n  text: Text\n}\n",
+        "enum PaymentError {\n  GatewayUnavailable\n  Declined(reason: Text)\n}\n",
+        "enum FileError {\n  Open(path: Path, message: Text)\n}\n",
+        "const stored = [Money(1), Money(2)]\n",
+        "fn checkout(amount: Int) -> Int { amount }\n",
+        "fn nothing() -> Option<Int> { None }\n",
+        "fn no_items() -> List<Int> { [] }\n",
+        "pub fn main() -> List<Text> {\n  [\n",
+    ));
+    for (expression, _) in rows {
+        source.push_str(&format!("    Debug.render({expression}),\n"));
+    }
+    source.push_str("  ]\n}\n");
+    let expected = rows
+        .iter()
+        .map(|(_, rendered)| json_text(rendered))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        run_both("debug-render", &source),
+        format!("\"outcome\":\"success\",\"value\":[{expected}]")
+    );
+}
+
+// G10: `render_indented` puts each field, element, and entry on its own line.
+#[test]
+fn debug_render_indented_puts_each_part_on_its_own_line() {
+    let outcome = run_both(
+        "debug-render-indented",
+        concat!(
+            "import std/debug as Debug\n",
+            "import std/map as Map\n",
+            "struct Money {\n  cents: Int\n}\n",
+            "enum Status {\n  Declined(reason: Text)\n}\n",
+            "fn no_items() -> List<Int> { [] }\n",
+            "pub fn main() -> Text {\n",
+            "  Debug.render_indented({\n",
+            "    items: [Money(1), Money(2)],\n",
+            "    empty: no_items(),\n",
+            "    status: Declined(\"x\"),\n",
+            "    table: Map.put(Map.empty(), \"k\", 1),\n",
+            "  })\n",
+            "}\n",
+        ),
+    );
+    let expected = concat!(
+        "{\n",
+        "  empty: [],\n",
+        "  items: [\n",
+        "    Money {\n",
+        "      cents: 1,\n",
+        "    },\n",
+        "    Money {\n",
+        "      cents: 2,\n",
+        "    },\n",
+        "  ],\n",
+        "  status: Status.Declined(\n",
+        "    \"x\",\n",
+        "  ),\n",
+        "  table: Map {\n",
+        "    \"k\": 1,\n",
+        "  },\n",
+        "}",
+    );
+    assert_eq!(
+        outcome,
+        format!("\"outcome\":\"success\",\"value\":{}", json_text(expected))
+    );
+}
+
+// G10: equal values render equally, so rendering cannot tell `1.0` from `1` in JSON
+// or `-0.0` from `0.0`, and interpolating a rendering gives the G10 example's text.
+#[test]
+fn equal_values_render_to_the_same_text() {
+    let outcome = run_both(
+        "debug-render-equal",
+        concat!(
+            "import std/debug as Debug\n",
+            "import std/json as Json\n",
+            "struct Duration {\n  nanoseconds: Int\n}\n",
+            "const job_timeout = Duration(30_000_000_000)\n",
+            "fn number(text: Text) -> Text {\n",
+            "  case Json.decode(text) {\n",
+            "    Success(value) -> Debug.render(value)\n",
+            "    Failure(_) -> \"invalid\"\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> List<Text> {\n",
+            "  [\n",
+            "    number(\"1.0\"),\n",
+            "    number(\"1\"),\n",
+            "    number(\"2.50\"),\n",
+            "    Debug.render(-0.0),\n",
+            "    \"payments returned ${503} after ${Debug.render(job_timeout)}\",\n",
+            "  ]\n",
+            "}\n",
+        ),
+    );
+    let expected = [
+        "Value.Number(Json.Number(1))",
+        "Value.Number(Json.Number(1))",
+        "Value.Number(Json.Number(2.5))",
+        "0.0",
+        "payments returned 503 after Duration { nanoseconds: 30000000000 }",
+    ]
+    .map(json_text)
+    .join(",");
+    assert_eq!(
+        outcome,
+        format!("\"outcome\":\"success\",\"value\":[{expected}]")
+    );
+}
