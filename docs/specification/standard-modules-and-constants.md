@@ -6,7 +6,8 @@ Normative contract for `prog show ts-5e95b8`. It covers gaps G1, G7, G9, G10,
 and G20 from the [standard library map](../plans/standard-library-map.md) and
 resolves the module-constants decision `prog show ts-f47931`. Module
 constants (G7) are implemented, except result caching, the build report, and
-`process name` (which the language does not have yet). The standard tree (G1)
+`process name` (which the language does not have yet). Text interpolation (G9)
+is implemented on the existing intrinsics (migration step 2). The standard tree (G1)
 and C bindings (G20) are not implemented. Source spelling is provisional, as
 in the other specifications.
 
@@ -31,7 +32,7 @@ positional construction and calls (`ts-835fc0`).
 
 ## Example
 
-<!-- chimi: pending ts-975ca3 -->
+<!-- chimi: check -->
 ```chimi
 // std/duration.chimi
 pub struct Duration {
@@ -536,7 +537,7 @@ initializer and annotation decide it, and the parameter needs an annotation:
 
 A text literal MAY contain interpolations written `${expression}`:
 
-<!-- chimi: check -->
+<!-- chimi: run "-L 7,7 / git blame a.txt exited 128: fatal" -->
 ```chimi
 fn blame_argument(line: Int) -> Text {
   "-L ${line},${line}"
@@ -544,6 +545,10 @@ fn blame_argument(line: Int) -> Text {
 
 fn failure_message(path: Text, code: Int, stderr: Text) -> Text {
   "git blame ${path} exited ${code}: ${stderr}"
+}
+
+pub fn main() -> Text {
+  "${blame_argument(7)} / ${failure_message("a.txt", 128, "fatal")}"
 }
 ```
 
@@ -566,10 +571,11 @@ equally clear but less widespread.
 
 ### Typing
 
-- An interpolated expression MUST have type `Text` or `Int` (`T4325`). `Text`
-  is inserted unchanged. `Int` is inserted in canonical decimal form, the same
-  text as `Int.to_text`. A float type joins the list when G5 defines its
-  canonical form.
+- An interpolated expression MUST have type `Text`, `Int`, or `Float`
+  (`T4325`). `Text` is inserted unchanged. `Int` is inserted in canonical
+  decimal form, the same text as `Int.to_text`, and `Float` in its canonical
+  form, the same text as `Float.to_text` (G5 defined it, so `Float` joined the
+  list). An expression whose type is still open is taken to be `Text`.
 - Every other type is an error. The diagnostic suggests
   `${Debug.render(value)}` for debugging output, or a named function for
   user-facing text. Interpolation never chooses a user-facing rendering for a
@@ -586,8 +592,9 @@ equally clear but less widespread.
   text-end token.
 - Lowering turns an interpolated literal into one call of the language-known
   pure operation `std/text.concat` on a list of parts. An `Int` part is first
-  passed to `std/int.to_text`. The program does not need to import either
-  module.
+  passed to `std/int.to_text`, and a `Float` part to `std/float.to_text`. The
+  program does not need to import any of these modules. Until migration step 4
+  the call is a left-to-right chain of the existing `Text.append` intrinsic.
 - Width, padding, and number formatting are functions, not a format
   mini-language: `Text.pad_start`, `Text.join`, and later the numeric modules.
 

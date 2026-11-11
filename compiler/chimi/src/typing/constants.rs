@@ -14,6 +14,38 @@ use crate::standard::{StandardSymbol, StandardType};
 use std::collections::{HashMap, HashSet};
 
 impl ProjectTypeChecker {
+    /// `T4325`: an interpolated value must be `Text`, `Int`, or `Float`. A part whose type
+    /// is still open becomes `Text`, the type interpolation inserts unchanged.
+    pub(super) fn check_interpolated_type(
+        &mut self,
+        module_id: ModuleId,
+        part: &crate::semantic::ModuleExpression,
+        type_id: TypeId,
+    ) {
+        let resolved = self.resolve_inference_type(type_id);
+        let allowed = match &self.types[resolved.raw() as usize] {
+            CanonicalType::InferenceVariable(_) => {
+                let text = self.builtin_type("Text");
+                self.unify_expression_result(module_id, part, resolved, text);
+                true
+            }
+            CanonicalType::Poison => true,
+            _ => ["Text", "Int", "Float"]
+                .into_iter()
+                .any(|name| resolved == self.builtin_type(name)),
+        };
+        if !allowed {
+            self.type_error_range(
+                module_id,
+                "T4325",
+                part.range(),
+                "an interpolated value must be Text, Int, or Float; write \
+                 `${Debug.render(value)}` for debugging output, or call a function that \
+                 chooses the user-facing text",
+            );
+        }
+    }
+
     /// Whether `id` has no unbound inference variable and no generic parameter left.
     /// `Poison` counts as determined: whatever produced it already reported an error.
     pub(super) fn type_is_determined(&self, id: TypeId) -> bool {

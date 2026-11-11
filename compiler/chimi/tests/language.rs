@@ -3059,3 +3059,112 @@ fn referencing_a_constant_runs_none_of_its_initializer() {
     assert!(interpreted.ends_with("\"outcome\":\"success\",\"value\":42}\n"));
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+// G9 conformance: interpolation inserts Text unchanged and Int and Float in their
+// canonical text, left to right; `\$` writes `$`, and `{` alone is never interpolation.
+#[test]
+fn interpolation_inserts_text_and_numbers_in_canonical_form() {
+    let outcome = run_both(
+        "interpolation",
+        concat!(
+            "fn blame_argument(line: Int) -> Text {\n",
+            "  \"-L ${line},${line}\"\n",
+            "}\n",
+            "fn join(left: Text, right: Text) -> Text { Text.append(left, right) }\n",
+            "pub fn main() -> Text {\n",
+            "  let name = \"pay\"\n",
+            "  let pieces = [\n",
+            "    blame_argument(7),\n",
+            "    \"|${name}|${-42}|${0.1 + 0.2}|${1e20}|\",\n",
+            "    \"cost: \\${amount}\",\n",
+            "    \"{\\\"a\\\": 1}\",\n",
+            "    \"${join(\"a\", \"${name}\")}${1 + 2}\",\n",
+            "  ]\n",
+            "  join_all(pieces)\n",
+            "}\n",
+            "fn join_all(pieces: List<Text>) -> Text {\n",
+            "  case pieces {\n",
+            "    [] -> \"\"\n",
+            "    [first, ..rest] -> \"${first};${join_all(rest)}\"\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        concat!(
+            "\"outcome\":\"success\",\"value\":",
+            "\"-L 7,7;|pay|-42|0.30000000000000004|1e20|;cost: ${amount};",
+            "{\\\\\\\"a\\\\\\\": 1};apay3;\""
+        )
+    );
+}
+
+// G9: an interpolated expression is an ordinary subexpression, so its failures join
+// the enclosing function's failure row.
+#[test]
+fn an_interpolated_failure_joins_the_enclosing_row() {
+    let outcome = run_both(
+        "interpolation-failure",
+        concat!(
+            "enum LoadError {\n",
+            "  Missing(path: Text)\n",
+            "}\n",
+            "fn load(path: Text) -> Text {\n",
+            "  Failure(Missing(path))\n",
+            "}\n",
+            "pub fn main() -> Text {\n",
+            "  \"loaded ${load(\"a.txt\")}\"\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        concat!(
+            "\"outcome\":\"expected_failure\",\"error\":{\"type\":\"LoadError\",",
+            "\"variant\":\"Missing\",\"fields\":{\"path\":\"a.txt\"}}"
+        )
+    );
+}
+
+#[test]
+fn interpolation_rejects_empty_unclosed_and_non_text_parts() {
+    let codes = |body: &str| {
+        check_codes(&format!(
+            "enum State {{\n  Ready\n}}\npub fn main() -> Text {{\n  let state = Ready\n  {body}\n}}\n"
+        ))
+    };
+    assert_eq!(codes("\"${}\""), ["S1101"]);
+    assert!(codes("\"${state\"").contains(&"S1101".to_owned()));
+    assert_eq!(codes("\"state: ${state}\""), ["T4325"]);
+    assert_eq!(codes("\"flags: ${[1]}\""), ["T4325"]);
+    assert!(codes("\"ok: ${\"${1}\"}\"").is_empty());
+}
+
+#[test]
+fn interpolation_suggests_debug_rendering_for_other_types() {
+    let source = "pub fn main() -> Text {\n  \"${True}\"\n}\n";
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let [diagnostic] = report.diagnostics() else {
+        panic!("{:?}", report.diagnostics());
+    };
+    assert_eq!(diagnostic.code(), "T4325");
+    assert!(diagnostic.message().contains("Debug.render"));
+}
+
+#[test]
+fn interpolations_format_tightly_and_keep_their_text() {
+    let source = "pub fn main() -> Text {\n  \"a ${ 1+2 } b ${Text.append(\"x\",\"y\")}\"\n}\n";
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(
+        !formatted.is_blocked(),
+        "{}",
+        formatted.render_diagnostics()
+    );
+    assert_eq!(
+        formatted.text(),
+        "pub fn main() -> Text {\n  \"a ${1 + 2} b ${Text.append(\"x\", \"y\")}\"\n}\n"
+    );
+}

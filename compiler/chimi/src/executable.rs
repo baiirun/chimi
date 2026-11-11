@@ -7,7 +7,7 @@ use crate::semantic::{
     BinaryOperator, Literal, ModuleBlockItem, ModuleDeclarationKind, ModuleExpression, Pattern,
     PatternLiteral, UnaryOperator,
 };
-use crate::standard::StandardSymbol;
+use crate::standard::{StandardFunction, StandardSymbol};
 use crate::typing::{CanonicalType, TypeFact, TypedProgram, TypedProject};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -909,6 +909,11 @@ fn collect_reachable_expression(
         | ModuleExpression::Unary {
             operand: receiver, ..
         } => visit(receiver),
+        ModuleExpression::Interpolation { parts, .. } => {
+            for part in crate::semantic::interpolated_expressions(parts) {
+                visit(part);
+            }
+        }
         ModuleExpression::Call {
             callee, arguments, ..
         } => {
@@ -1204,6 +1209,9 @@ impl CoreLowerer {
                     .map(|element| self.expression(module_id, element))
                     .collect(),
             ),
+            ModuleExpression::Interpolation { parts, .. } => {
+                self.interpolation(module_id, expression, parts)
+            }
             ModuleExpression::Record { fields, .. } => CoreOperation::Record(
                 fields
                     .iter()
@@ -1590,6 +1598,11 @@ impl CoreLowerer {
                         collect(lowerer, module_id, element, captures);
                     }
                 }
+                ModuleExpression::Interpolation { parts, .. } => {
+                    for part in crate::semantic::interpolated_expressions(parts) {
+                        collect(lowerer, module_id, part, captures);
+                    }
+                }
                 ModuleExpression::Record { fields, .. } => {
                     for field in fields {
                         collect(lowerer, module_id, &field.value, captures);
@@ -1653,6 +1666,94 @@ impl CoreLowerer {
 
     /// A fieldless constructor named as a value is that value, so it constructs
     /// here. Any other constructor reference evaluates to a callable value.
+    /// Lowers an interpolated literal to `Text.append` calls over its parts, left to
+    /// right, after converting an `Int` part with `Int.to_text` and a `Float` part with
+    /// `Float.to_text`. Every node it adds carries the literal's origin.
+    fn interpolation(
+        &mut self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        parts: &[crate::semantic::InterpolationPart],
+    ) -> CoreOperation {
+        let mut pieces = Vec::new();
+        for part in parts {
+            let piece = match part {
+                crate::semantic::InterpolationPart::Text(text) => self.push_node(
+                    module_id,
+                    expression,
+                    CoreOperation::Constant(CoreLiteral::Text(text.clone())),
+                ),
+                crate::semantic::InterpolationPart::Expression(value) => {
+                    let node = self.expression(module_id, value);
+                    let fact = self.typed.expression_facts[&(module_id, value.semantic_id())];
+                    let conversion = match resolved_type(&self.typed, fact.success) {
+                        CanonicalType::Named { symbol, .. } => {
+                            match self.typed.resolved.symbol(*symbol).name.as_str() {
+                                "Int" => Some(StandardFunction::IntToText),
+                                "Float" => Some(StandardFunction::FloatToText),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    match conversion {
+                        Some(function) => {
+                            let callee = self.standard_function(function);
+                            let callee = self.push_node(
+                                module_id,
+                                expression,
+                                CoreOperation::Reference(callee),
+                            );
+                            self.push_node(
+                                module_id,
+                                expression,
+                                CoreOperation::Call {
+                                    callee,
+                                    arguments: vec![node],
+                                },
+                            )
+                        }
+                        None => node,
+                    }
+                }
+            };
+            pieces.push(piece);
+        }
+        let mut pieces = pieces.into_iter();
+        let mut text = pieces.next().expect("an interpolation has a part");
+        let Some(mut next) = pieces.next() else {
+            return CoreOperation::Identity(text);
+        };
+        let append = self.standard_function(StandardFunction::TextAppend);
+        loop {
+            let callee = self.push_node(module_id, expression, CoreOperation::Reference(append));
+            let operation = CoreOperation::Call {
+                callee,
+                arguments: vec![text, next],
+            };
+            match pieces.next() {
+                Some(after) => {
+                    text = self.push_node(module_id, expression, operation);
+                    next = after;
+                }
+                None => return operation,
+            }
+        }
+    }
+
+    fn standard_function(&self, function: StandardFunction) -> SymbolId {
+        self.typed
+            .resolved
+            .symbols
+            .iter()
+            .find(|symbol| {
+                self.typed.resolved.standard_symbol(symbol.id)
+                    == Some(StandardSymbol::Function(function))
+            })
+            .map(|symbol| symbol.id)
+            .expect("every standard function is indexed")
+    }
+
     fn reference(&self, symbol: SymbolId) -> CoreOperation {
         if is_core_constructor(&self.typed, symbol) {
             let shape = lower_core_constructor(&self.typed, symbol);

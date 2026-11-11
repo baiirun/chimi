@@ -2664,6 +2664,20 @@ impl ProjectTypeChecker {
                     needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
                 }
             }
+            ModuleExpression::Interpolation { parts, .. } => {
+                let facts = crate::semantic::interpolated_expressions(parts)
+                    .map(|part| {
+                        let fact = self.infer_expression(module_id, part, generics, bindings);
+                        self.check_interpolated_type(module_id, part, fact.success);
+                        fact
+                    })
+                    .collect::<Vec<_>>();
+                ExpressionFact {
+                    success: self.builtin_type("Text"),
+                    failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
+                    needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+                }
+            }
             ModuleExpression::Record { fields, .. } => {
                 let mut facts = Vec::new();
                 let mut structural_fields = Vec::new();

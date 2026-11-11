@@ -1518,6 +1518,11 @@ impl ProjectResolver {
                     self.resolve_expression(module_index, element, generics, scope);
                 }
             }
+            ModuleExpression::Interpolation { parts, .. } => {
+                for part in crate::semantic::interpolated_expressions(parts) {
+                    self.resolve_expression(module_index, part, generics, scope);
+                }
+            }
             ModuleExpression::Record { fields, .. } => {
                 for field in fields {
                     self.resolve_expression(module_index, &field.value, generics, scope);

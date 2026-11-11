@@ -599,6 +599,9 @@ fn expression_children(expression: &ModuleExpression) -> Vec<&ModuleExpression> 
         ModuleExpression::Record { fields, .. } => {
             fields.iter().map(|field| &field.value).collect()
         }
+        ModuleExpression::Interpolation { parts, .. } => {
+            crate::semantic::interpolated_expressions(parts).collect()
+        }
         ModuleExpression::Binary { left, right, .. } => vec![left, right],
         ModuleExpression::Using {
             expression,

@@ -708,6 +708,29 @@ pub(crate) enum ModuleExpression {
         semantic_id: SemanticId,
         range: TextRange,
     },
+    /// `"cost: ${amount}"`: text chunks and interpolated expressions in source order.
+    /// Always holds at least one expression part; chunks hold decoded text.
+    Interpolation {
+        semantic_id: SemanticId,
+        parts: Vec<InterpolationPart>,
+        range: TextRange,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum InterpolationPart {
+    Text(String),
+    Expression(ModuleExpression),
+}
+
+/// The interpolated expressions of `parts`, left to right, which is their evaluation order.
+pub(crate) fn interpolated_expressions(
+    parts: &[InterpolationPart],
+) -> impl Iterator<Item = &ModuleExpression> {
+    parts.iter().filter_map(|part| match part {
+        InterpolationPart::Expression(expression) => Some(expression),
+        InterpolationPart::Text(_) => None,
+    })
 }
 
 impl ModuleExpression {
@@ -729,7 +752,8 @@ impl ModuleExpression {
             | Self::Case { semantic_id, .. }
             | Self::Loop { semantic_id, .. }
             | Self::Break { semantic_id, .. }
-            | Self::Empty { semantic_id, .. } => *semantic_id,
+            | Self::Empty { semantic_id, .. }
+            | Self::Interpolation { semantic_id, .. } => *semantic_id,
         }
     }
 
@@ -751,7 +775,8 @@ impl ModuleExpression {
             | Self::Case { range, .. }
             | Self::Loop { range, .. }
             | Self::Break { range, .. }
-            | Self::Empty { range, .. } => *range,
+            | Self::Empty { range, .. }
+            | Self::Interpolation { range, .. } => *range,
         }
     }
 }
@@ -1232,6 +1257,7 @@ impl ProjectLowerer {
         let semantic_id = self.allocate_semantic_id();
         match node.kind() {
             NodeKind::Literal => self.lower_module_literal(node, semantic_id),
+            NodeKind::InterpolatedText => self.lower_interpolation(node, semantic_id),
             NodeKind::NameReference => direct_identifier(node).map_or(
                 ModuleExpression::Empty {
                     semantic_id,
@@ -1630,6 +1656,56 @@ impl ProjectLowerer {
         ));
     }
 
+    /// Lowers an `InterpolatedText` node into its decoded chunks and expressions.
+    fn lower_interpolation(
+        &mut self,
+        node: &SyntaxNode<'_>,
+        semantic_id: SemanticId,
+    ) -> ModuleExpression {
+        // Chunk tokens and expression nodes interleave; source order restores the sequence.
+        let mut pieces = Vec::new();
+        for token in node.child_tokens() {
+            let text = token.text();
+            let chunk = match token.kind() {
+                TokenKind::TextStart => &text[1..],
+                TokenKind::TextMiddle => text,
+                TokenKind::TextEnd => &text[..text.len() - 1],
+                _ => continue,
+            };
+            if !chunk.is_empty() {
+                pieces.push((token.range().start(), Err(decode_text(chunk))));
+            }
+        }
+        for child in node.child_nodes() {
+            if is_expression_kind(child.kind()) {
+                pieces.push((child.range().start(), Ok(child)));
+            }
+        }
+        pieces.sort_by_key(|(start, _)| *start);
+        let parts = pieces
+            .into_iter()
+            .map(|(_, piece)| match piece {
+                Ok(child) => InterpolationPart::Expression(self.lower_expression(&child)),
+                Err(text) => InterpolationPart::Text(text),
+            })
+            .collect::<Vec<_>>();
+        if !parts
+            .iter()
+            .any(|part| matches!(part, InterpolationPart::Expression(_)))
+        {
+            // Only `${}` parts, already reported as `S1101`.
+            return ModuleExpression::Empty {
+                semantic_id,
+                range: significant_range(node),
+            };
+        }
+        ModuleExpression::Interpolation {
+            semantic_id,
+            parts,
+            range: significant_range(node),
+        }
+    }
+
     fn lower_block_item(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleBlockItem> {
         let child = node.child_nodes().into_iter().next()?;
         // A block `const` was already reported as `S1103`; it binds like `let`.
@@ -1854,7 +1930,30 @@ impl ProjectLowerer {
 }
 
 fn text_literal_value(source: &str) -> String {
-    source[1..source.len() - 1].to_owned()
+    decode_text(&source[1..source.len() - 1])
+}
+
+/// The text a literal chunk denotes. Only `\$` is decoded, to `$`, so a literal can
+/// write `${` without interpolating; every other escape is kept as written, as before
+/// interpolation existed.
+fn decode_text(chunk: &str) -> String {
+    let mut decoded = String::with_capacity(chunk.len());
+    let mut characters = chunk.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            decoded.push(character);
+            continue;
+        }
+        match characters.next() {
+            Some('$') => decoded.push('$'),
+            Some(escaped) => {
+                decoded.push('\\');
+                decoded.push(escaped);
+            }
+            None => decoded.push('\\'),
+        }
+    }
+    decoded
 }
 
 fn direct_child<'tree>(node: &SyntaxNode<'tree>, kind: NodeKind) -> Option<SyntaxNode<'tree>> {
@@ -1909,6 +2008,7 @@ fn is_expression_kind(kind: NodeKind) -> bool {
             | NodeKind::UnaryExpression
             | NodeKind::PostfixExpression
             | NodeKind::Literal
+            | NodeKind::InterpolatedText
             | NodeKind::NameReference
             | NodeKind::GroupedExpression
             | NodeKind::ListExpression

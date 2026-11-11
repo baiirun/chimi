@@ -40,6 +40,16 @@ pub(crate) enum TokenKind {
     Integer,
     Float,
     Text,
+    /// `"` and the text before an interpolated literal's first `${`.
+    TextStart,
+    /// The text between an interpolation's `}` and the next `${`.
+    TextMiddle,
+    /// The text after an interpolated literal's last `}`, with the closing `"`.
+    TextEnd,
+    /// `${`, which opens an interpolation inside a text literal.
+    InterpolationOpen,
+    /// The `}` that closes an interpolation.
+    InterpolationClose,
     LeftBrace,
     RightBrace,
     LeftParen,
@@ -106,6 +116,11 @@ impl TokenKind {
             Self::Integer => "integer",
             Self::Float => "float",
             Self::Text => "text",
+            Self::TextStart => "text_start",
+            Self::TextMiddle => "text_middle",
+            Self::TextEnd => "text_end",
+            Self::InterpolationOpen => "interpolation_open",
+            Self::InterpolationClose => "interpolation_close",
             Self::LeftBrace => "left_brace",
             Self::RightBrace => "right_brace",
             Self::LeftParen => "left_paren",
@@ -168,7 +183,10 @@ impl TokenKind {
             Self::Identifier => "identifier",
             Self::Integer => "integer literal",
             Self::Float => "float literal",
-            Self::Text => "text literal",
+            Self::Text | Self::TextStart => "text literal",
+            Self::TextMiddle | Self::TextEnd => "the rest of the text literal",
+            Self::InterpolationOpen => "`${`",
+            Self::InterpolationClose => "`}` closing the interpolation",
             Self::LeftBrace => "`{`",
             Self::RightBrace => "`}`",
             Self::LeftParen => "`(`",
@@ -230,6 +248,9 @@ pub(crate) enum NodeKind {
     RequirementRecord,
     LetBinding,
     ConstDeclaration,
+    /// A text literal with `${...}` interpolations: text chunk tokens around
+    /// `InterpolationOpen` expression `InterpolationClose` groups.
+    InterpolatedText,
     UsingExpression,
     OrExpression,
     AndExpression,
@@ -289,6 +310,7 @@ impl NodeKind {
             Self::RequirementRecord => "requirement_record",
             Self::LetBinding => "let_binding",
             Self::ConstDeclaration => "const_declaration",
+            Self::InterpolatedText => "interpolated_text",
             Self::UsingExpression => "using_expression",
             Self::OrExpression => "or_expression",
             Self::AndExpression => "and_expression",
@@ -762,6 +784,9 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
     let mut tokens = Vec::with_capacity(text.len() / 3);
     let mut diagnostics = Vec::new();
     let mut offset = 0;
+    // One entry per open interpolation: the `{` nesting inside it, so only the `}` at
+    // depth zero closes it.
+    let mut interpolations: Vec<u32> = Vec::new();
 
     let emit = |kind: TokenKind, start: usize, end: usize, tokens: &mut Vec<LexedToken>| {
         tokens.push(LexedToken {
@@ -780,6 +805,16 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                     offset += 1;
                 }
                 emit(TokenKind::Whitespace, start, offset, &mut tokens);
+            }
+            b'\n' | b'\r' if !interpolations.is_empty() => {
+                interpolations.clear();
+                diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Syntax,
+                    "S1101",
+                    source.file_id(),
+                    TextRange::empty(start),
+                    "an interpolation must close with `}` on the same line",
+                ));
             }
             b'\n' => {
                 offset += 1;
@@ -835,8 +870,28 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                 offset += 2;
                 emit(TokenKind::GreaterEqual, start, offset, &mut tokens);
             }
+            b'}' if interpolations.last() == Some(&0) => {
+                interpolations.pop();
+                offset += 1;
+                emit(TokenKind::InterpolationClose, start, offset, &mut tokens);
+                offset = lex_text_chunk(
+                    source,
+                    offset,
+                    false,
+                    &mut tokens,
+                    &mut diagnostics,
+                    &mut interpolations,
+                );
+            }
             b'{' | b'}' | b'(' | b')' | b'[' | b']' | b':' | b',' | b'.' | b'/' | b'<' | b'>'
             | b'+' | b'-' | b'*' | b'%' | b'=' => {
+                if let Some(depth) = interpolations.last_mut() {
+                    match bytes[offset] {
+                        b'{' => *depth += 1,
+                        b'}' => *depth -= 1,
+                        _ => {}
+                    }
+                }
                 let kind = match bytes[offset] {
                     b'{' => TokenKind::LeftBrace,
                     b'}' => TokenKind::RightBrace,
@@ -888,38 +943,14 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                 emit(kind, start, offset, &mut tokens);
             }
             b'"' => {
-                offset += 1;
-                let mut closed = false;
-                while offset < bytes.len() {
-                    if bytes[offset] == b'\\' && offset + 1 < bytes.len() {
-                        offset += 2;
-                    } else if bytes[offset] == b'"' {
-                        offset += 1;
-                        closed = true;
-                        break;
-                    } else if matches!(bytes[offset], b'\n' | b'\r') {
-                        break;
-                    } else {
-                        offset += text[offset..]
-                            .chars()
-                            .next()
-                            .expect("offset is before source end")
-                            .len_utf8();
-                    }
-                }
-                let kind = if closed {
-                    TokenKind::Text
-                } else {
-                    diagnostics.push(Diagnostic::error(
-                        DiagnosticStage::Syntax,
-                        "S1001",
-                        source.file_id(),
-                        TextRange::new(start, offset),
-                        "unterminated text literal",
-                    ));
-                    TokenKind::InvalidText
-                };
-                emit(kind, start, offset, &mut tokens);
+                offset = lex_text_chunk(
+                    source,
+                    offset,
+                    true,
+                    &mut tokens,
+                    &mut diagnostics,
+                    &mut interpolations,
+                );
             }
             byte if is_identifier_start(byte) => {
                 offset += 1;
@@ -971,12 +1002,91 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
         }
     }
 
+    if !interpolations.is_empty() {
+        diagnostics.push(Diagnostic::error(
+            DiagnosticStage::Syntax,
+            "S1101",
+            source.file_id(),
+            TextRange::empty(text.len()),
+            "an interpolation must close with `}` on the same line",
+        ));
+    }
     tokens.push(LexedToken {
         kind: TokenKind::End,
         text: Arc::from(""),
         range: TextRange::empty(text.len()),
     });
     (tokens, diagnostics)
+}
+
+/// Lexes one chunk of a text literal starting at `start`: the opening `"` and what
+/// follows when `opening`, otherwise the text right after an interpolation's `}`.
+///
+/// Ensures: emits `Text` for a literal with no interpolation; otherwise a chunk token
+/// (`TextStart`, `TextMiddle`, or `TextEnd`), followed by `InterpolationOpen` and a new
+/// `interpolations` entry when the chunk ends at `${`. An escape such as `\$` never
+/// opens an interpolation. Returns the offset after the emitted tokens.
+fn lex_text_chunk(
+    source: &SourceSnapshot,
+    start: usize,
+    opening: bool,
+    tokens: &mut Vec<LexedToken>,
+    diagnostics: &mut Vec<Diagnostic>,
+    interpolations: &mut Vec<u32>,
+) -> usize {
+    let text = source.text();
+    let bytes = text.as_bytes();
+    let mut emit = |kind: TokenKind, from: usize, to: usize| {
+        tokens.push(LexedToken {
+            kind,
+            text: Arc::from(&text[from..to]),
+            range: TextRange::new(from, to),
+        });
+    };
+    let mut offset = if opening { start + 1 } else { start };
+    while offset < bytes.len() {
+        match bytes[offset] {
+            b'\\' if offset + 1 < bytes.len() => offset += 2,
+            b'"' => {
+                offset += 1;
+                let kind = if opening {
+                    TokenKind::Text
+                } else {
+                    TokenKind::TextEnd
+                };
+                emit(kind, start, offset);
+                return offset;
+            }
+            b'$' if bytes.get(offset + 1) == Some(&b'{') => {
+                let kind = if opening {
+                    TokenKind::TextStart
+                } else {
+                    TokenKind::TextMiddle
+                };
+                emit(kind, start, offset);
+                emit(TokenKind::InterpolationOpen, offset, offset + 2);
+                interpolations.push(0);
+                return offset + 2;
+            }
+            b'\n' | b'\r' => break,
+            _ => {
+                offset += text[offset..]
+                    .chars()
+                    .next()
+                    .expect("offset is before source end")
+                    .len_utf8();
+            }
+        }
+    }
+    diagnostics.push(Diagnostic::error(
+        DiagnosticStage::Syntax,
+        "S1001",
+        source.file_id(),
+        TextRange::new(start, offset),
+        "unterminated text literal",
+    ));
+    emit(TokenKind::InvalidText, start, offset);
+    offset
 }
 
 /// Lexes the number literal that starts with the digit at `start`.
@@ -1782,6 +1892,38 @@ impl<'source> Parser<'source> {
         }
     }
 
+    /// Parses `"text ${expression} text"` from its `TextStart` token.
+    /// Ensures: one `InterpolatedText` node; `${}` reports `S1101` and the node still
+    /// closes, and a chunk the lexer could not finish ends the node at that point.
+    fn parse_interpolated_text(&mut self) {
+        self.start(NodeKind::InterpolatedText);
+        self.bump();
+        loop {
+            self.expect(TokenKind::InterpolationOpen);
+            if self.at(TokenKind::InterpolationClose) {
+                let range = self.current().range;
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Syntax,
+                    "S1101",
+                    self.source.file_id(),
+                    range,
+                    "an interpolation needs an expression between `${` and `}`",
+                ));
+            } else {
+                self.parse_expression();
+            }
+            if !self.expect(TokenKind::InterpolationClose) {
+                break;
+            }
+            if self.accept(TokenKind::TextMiddle) {
+                continue;
+            }
+            self.expect(TokenKind::TextEnd);
+            break;
+        }
+        self.finish();
+    }
+
     fn parse_primary(&mut self) {
         match self.kind() {
             TokenKind::Integer
@@ -1798,6 +1940,7 @@ impl<'source> Parser<'source> {
                 self.bump();
                 self.finish();
             }
+            TokenKind::TextStart => self.parse_interpolated_text(),
             TokenKind::LeftParen => {
                 self.start(NodeKind::GroupedExpression);
                 self.bump();
@@ -2894,6 +3037,11 @@ mod tests {
             "💥",
             "@",
             "\"unterminated",
+            "\"a ${",
+            "${",
+            "} b\"",
+            "\\$",
+            "const",
         ];
 
         let mut state = 0x5eed_f00d_cafe_babe_u64;

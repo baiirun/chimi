@@ -269,6 +269,12 @@ impl CapabilityChecker<'_> {
                 .iter()
                 .map(|element| self.evaluate(module_id, element, environment))
                 .fold(FlowValue::shareable(), FlowValue::combine),
+            ModuleExpression::Interpolation { parts, .. } => {
+                for part in crate::semantic::interpolated_expressions(parts) {
+                    self.evaluate(module_id, part, environment);
+                }
+                FlowValue::shareable()
+            }
             ModuleExpression::Record { fields, .. } => fields
                 .iter()
                 .map(|field| self.evaluate(module_id, &field.value, environment))
@@ -823,6 +829,9 @@ fn expression_children(expression: &ModuleExpression) -> Vec<&ModuleExpression> 
         } => elements.iter().collect(),
         ModuleExpression::Record { fields, .. } => {
             fields.iter().map(|field| &field.value).collect()
+        }
+        ModuleExpression::Interpolation { parts, .. } => {
+            crate::semantic::interpolated_expressions(parts).collect()
         }
         ModuleExpression::Binary { left, right, .. } => vec![left, right],
         ModuleExpression::Using {

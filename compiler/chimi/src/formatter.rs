@@ -156,7 +156,7 @@ fn format_parse(parsed: &ParseResult) -> String {
                 }
                 writer.write(token.text());
             }
-            TokenKind::RightParen | TokenKind::RightBracket => {
+            TokenKind::RightParen | TokenKind::RightBracket | TokenKind::InterpolationClose => {
                 writer.trim_space();
                 writer.write(token.text());
             }
@@ -307,6 +307,8 @@ const fn word_kind(kind: TokenKind) -> bool {
             | TokenKind::Integer
             | TokenKind::Float
             | TokenKind::Text
+            | TokenKind::TextStart
+            | TokenKind::TextEnd
     )
 }
 
