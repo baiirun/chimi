@@ -2742,7 +2742,11 @@ fn native_draining_loop_allocates_a_constant_amount_per_rest_view() {
             "{{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":{elements}}}\n"
         )
     );
-    let per_element = json_u64_field(&memory_report, "scoped_total_allocated_bytes") / elements;
+    // Unscoped bytes count too: a copy per view must fail this bound wherever the
+    // runtime places the copy, including outside every reclaiming scope.
+    let allocated = json_u64_field(&memory_report, "scoped_total_allocated_bytes")
+        + json_u64_field(&memory_report, "unscoped_allocated_bytes");
+    let per_element = allocated / elements;
     assert!(
         per_element < 2048,
         "{per_element} bytes per pass: {memory_report}"

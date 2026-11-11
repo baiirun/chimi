@@ -188,6 +188,8 @@ struct AllocationScope {
 };
 
 static AllocationScope *current_allocation_scope;
+/* Bytes allocated outside every scope. Nothing reclaims them before exit. */
+static size_t unscoped_allocated_bytes;
 /* The scope allocation_scope_collect is marking. Marking stops at allocations outside
    it: they were made before the scope began and values never change, so they cannot
    reach the scope's allocations, and traversing them would make every collection cost
@@ -216,6 +218,8 @@ static void *allocate(size_t count, size_t size) {
     current_allocation_scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
     if (current_allocation_scope->live_bytes > current_allocation_scope->peak_live_bytes)
       current_allocation_scope->peak_live_bytes = current_allocation_scope->live_bytes;
+  } else {
+    unscoped_allocated_bytes += bytes;
   }
   return header + 1;
 }
@@ -2979,7 +2983,7 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           "\"controls\":%zu,\"environments\":%zu,\"value_pointers\":%zu,"
           "\"fields\":%zu,\"callables\":%zu,\"map_nodes\":%zu,\"list_nodes\":%zu},"
           "\"scoped_peak_live_bytes\":%zu,\"scoped_retained_bytes\":%zu,"
-          "\"scoped_collections\":%" PRIu64 "}\n",
+          "\"scoped_collections\":%" PRIu64 ",\"unscoped_allocated_bytes\":%zu}\n",
           runtime->scoped_total_allocated_bytes,
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_BYTES],
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_VALUE],
@@ -2992,7 +2996,8 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_LIST_NODE],
           runtime->scoped_peak_live_bytes,
           runtime->scoped_retained_bytes,
-          runtime->scoped_collections);
+          runtime->scoped_collections,
+          unscoped_allocated_bytes);
   return close_output(output);
 }
 

@@ -85,7 +85,9 @@ The record reports total scoped allocation, peak live bytes, retained bytes,
 collection count, and a `scoped_allocated_bytes_by_kind` breakdown. The
 breakdown accounts for raw byte buffers, values, controls, environments, value
 pointer tables, fields, callables, and persistent map nodes; its values sum to
-the reported scoped total.
+the reported scoped total. `unscoped_allocated_bytes` separately reports the
+bytes allocated outside every reclaiming scope, which nothing frees before the
+process exits.
 
 Telemetry contains event records only:
 
