@@ -1,3 +1,4 @@
+use crate::compiler::ValuePropertyStatus;
 use crate::diagnostic::Diagnostic;
 use crate::ids::{ModuleId, SemanticId, SymbolId, TextRange};
 use crate::json::write_json_string;
@@ -7,7 +8,7 @@ use crate::semantic::{
     is_generated_name,
 };
 use crate::syntax::ParseResult;
-use crate::typing::{CallableContract, TypedProject};
+use crate::typing::{CallableContract, PropertyDerivation, TypedProject, ValueProperty};
 use std::fmt::{self, Write};
 use std::path::PathBuf;
 
@@ -183,6 +184,7 @@ pub struct InspectionReport {
     token: Option<InspectedToken>,
     reference: Option<ReferenceInspection>,
     inferred_type: Option<String>,
+    value_properties: Option<ValuePropertyInspection>,
     callable: Option<CallableInspection>,
     instantiated_callable: Option<CallableInspection>,
     executable_origin: Option<u32>,
@@ -246,6 +248,12 @@ impl InspectionReport {
         self.inferred_type.as_deref()
     }
 
+    /// Whether the inspected value's type is equatable and ordered, derived
+    /// as `==` and `<` check it.
+    pub const fn value_properties(&self) -> Option<ValuePropertyInspection> {
+        self.value_properties
+    }
+
     pub const fn callable(&self) -> Option<&CallableInspection> {
         self.callable.as_ref()
     }
@@ -306,6 +314,18 @@ impl InspectionReport {
         write_json_reference(&mut output, self.reference.as_ref());
         output.push_str(",\"inferred_type\":");
         write_json_optional_string(&mut output, self.inferred_type.as_deref());
+        output.push_str(",\"value_properties\":");
+        if let Some(properties) = self.value_properties {
+            write!(
+                output,
+                "{{\"equatable\":\"{}\",\"ordered\":\"{}\"}}",
+                status_name(properties.equatable),
+                status_name(properties.ordered)
+            )
+            .expect("writing JSON to a string cannot fail");
+        } else {
+            output.push_str("null");
+        }
         output.push_str(",\"callable\":");
         write_json_callable(&mut output, self.callable.as_ref());
         output.push_str(",\"executable_origin\":");
@@ -394,10 +414,14 @@ pub(crate) fn inspect(
     let pattern_binding_type = expression
         .and_then(|expression| pattern_binding_at(expression, offset))
         .and_then(|semantic_id| typed.pattern_binding_types.get(&(module.id, semantic_id)));
-    let inferred_type = pattern_binding_type
+    let inspected_type = pattern_binding_type
         .copied()
-        .or_else(|| expression_fact.map(|fact| fact.success))
-        .map(|type_id| typed.format_type(type_id));
+        .or_else(|| expression_fact.map(|fact| fact.success));
+    let inferred_type = inspected_type.map(|type_id| typed.format_type(type_id));
+    let value_properties = inspected_type.map(|type_id| ValuePropertyInspection {
+        equatable: property_status(typed.derived_property(type_id, ValueProperty::Equatable)),
+        ordered: property_status(typed.derived_property(type_id, ValueProperty::Ordered)),
+    });
     let target_symbol = reference.and_then(reference_target);
     let instantiated_callable = semantic_id
         .and_then(|semantic_id| typed.callee_instantiations.get(&(module.id, semantic_id)))
@@ -437,6 +461,7 @@ pub(crate) fn inspect(
         token,
         reference: reference.map(|reference| inspect_reference(typed, reference)),
         inferred_type,
+        value_properties,
         callable: callable_contract.map(|contract| inspect_callable(typed, contract)),
         instantiated_callable,
         executable_origin: None,
@@ -445,6 +470,29 @@ pub(crate) fn inspect(
         semantic_id,
         module_id: module.id,
     })
+}
+
+/// The equatable and ordered properties of an inspected value's type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValuePropertyInspection {
+    pub equatable: ValuePropertyStatus,
+    pub ordered: ValuePropertyStatus,
+}
+
+const fn property_status(derivation: PropertyDerivation) -> ValuePropertyStatus {
+    match derivation {
+        PropertyDerivation::Always => ValuePropertyStatus::Always,
+        PropertyDerivation::Never => ValuePropertyStatus::Never,
+        PropertyDerivation::ValueDependent => ValuePropertyStatus::ValueDependent,
+    }
+}
+
+const fn status_name(status: ValuePropertyStatus) -> &'static str {
+    match status {
+        ValuePropertyStatus::Always => "always",
+        ValuePropertyStatus::Never => "never",
+        ValuePropertyStatus::ValueDependent => "value_dependent",
+    }
 }
 
 fn inspect_syntax(

@@ -28,10 +28,10 @@ pub use backend::{BackendOperationProfile, BackendProfile, BackendProgram, Backe
 pub use compiler::{
     CheckReport, Compiler, CompilerSession, GenericParameterKind, IncrementalStatistics,
     IncrementalTypeReport, ModuleDiagnostics, NameReport, ProjectPathError, ProjectSource,
-    ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport,
+    ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport, ValuePropertyStatus,
 };
 pub use formatter::FormatReport;
 pub use inspection::{
     CallableInspection, ClausePosition, InspectedToken, InspectionError, InspectionReport,
-    NeedInspection, ReferenceInspection, SymbolInspection, SyntaxFrame,
+    NeedInspection, ReferenceInspection, SymbolInspection, SyntaxFrame, ValuePropertyInspection,
 };

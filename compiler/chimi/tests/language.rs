@@ -2281,6 +2281,58 @@ fn list_patterns_format_canonically() {
     );
 }
 
+// Value properties: inspection shows whether the value at the cursor is
+// equatable and ordered, in the report and in its JSON.
+#[test]
+fn inspection_shows_equatable_and_ordered_properties() {
+    use chimi::ValuePropertyStatus::{Always, Never, ValueDependent};
+    let source = concat!(
+        "import std/map.{Map}\n",
+        "fn one() -> Int { 1 }\n",
+        "fn f<T>(table: Map<Text, Int>, values: List<Int>, function: fn() -> Int, item: T) -> Int {\n",
+        "  let number = 1\n",
+        "  let t = table\n",
+        "  let r = values\n",
+        "  let g = function\n",
+        "  let i = item\n",
+        "  number\n",
+        "}\n",
+        "pub fn main() -> Int { 1 }\n",
+    );
+    for (name, equatable, ordered) in [
+        ("number\n}", Always, Always),
+        ("= table", Always, Never),
+        ("= values", Always, Always),
+        ("= function", Never, Never),
+        ("= item", ValueDependent, ValueDependent),
+    ] {
+        let offset = source.find(name).unwrap() + name.find(char::is_alphabetic).unwrap();
+        let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+            .expect("valid module path");
+        let inspection = Compiler::inspect_project(vec![module], "main", offset).unwrap();
+        let properties = inspection
+            .value_properties()
+            .unwrap_or_else(|| panic!("{name}: no value properties"));
+        assert_eq!(
+            (properties.equatable, properties.ordered),
+            (equatable, ordered),
+            "{name}"
+        );
+        let json = inspection.render_json();
+        let expected = |status| match status {
+            Always => "always",
+            Never => "never",
+            ValueDependent => "value_dependent",
+        };
+        let fragment = format!(
+            "\"value_properties\":{{\"equatable\":\"{}\",\"ordered\":\"{}\"}}",
+            expected(equatable),
+            expected(ordered)
+        );
+        assert!(json.contains(&fragment), "{name}: {json}");
+    }
+}
+
 #[test]
 fn hovering_a_list_pattern_binding_reports_its_type() {
     let source = concat!(
