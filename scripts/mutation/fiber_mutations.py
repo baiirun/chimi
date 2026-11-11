@@ -58,7 +58,7 @@ MUTATIONS = [
     dict(
         name='unroute member by member',
         file='src/scheduler/process.rs',
-        edits=[('                Some(Current::Process(incarnation)) => self.unroute(incarnation),', '                Some(Current::Process(_)) => {}')],
+        edits=[('                Some(Instance::Process(incarnation)) => self.unroute(incarnation),', '                Some(Instance::Process(_)) => {}')],
         targets=["lib"],
         filter='sd06',
     ),
@@ -79,7 +79,7 @@ MUTATIONS = [
     dict(
         name='remove does not wait',
         file='src/scheduler/process.rs',
-        edits=[('            Current::Process(incarnation) => Plan::from([Step::Await(incarnation), finish]),', '            Current::Process(_) => Plan::from([finish]),')],
+        edits=[('            Some(Instance::Process(incarnation)) => Plan::from([Step::Await(incarnation), finish]),', '            Some(Instance::Process(_)) => Plan::from([finish]),')],
         targets=["lib"],
         filter='rr01',
     ),
@@ -93,7 +93,7 @@ MUTATIONS = [
     dict(
         name='sleep timer kept on cancel',
         file='src/scheduler.rs',
-        edits=[('        if let Some(timer) = record.timer.take() {\n            self.cancel_timer(timer);\n        }\n\n        let channel_cleanup', '        let _ = record.timer;\n\n        let channel_cleanup')],
+        edits=[('        if let Some(timer) = record.timer.take() {\n            self.cancel_timer(timer);\n        }\n        self.unroute_task(task);\n', '        let _ = record.timer;\n        self.unroute_task(task);\n')],
         targets=["lib"],
         filter='cancelling_a_sleeper',
     ),
@@ -135,7 +135,7 @@ MUTATIONS = [
     dict(
         name='rollback skipped',
         file='src/scheduler/process.rs',
-        edits=[('                let rolled_back = self.execute(Plan::from([Step::StopMembers(supervisor)]));\n                debug_assert_eq!(rolled_back, Progress::Done);', '')],
+        edits=[('                let rolled_back = self.execute(Plan::from([\n                    Step::StopMembers(supervisor),\n                    Step::Emit(ProcessEventKind::Stopped { supervisor }),\n                ]));\n                debug_assert_eq!(rolled_back, Progress::Done);', '')],
         targets=["lib"],
         filter='rt06',
     ),
@@ -144,7 +144,7 @@ MUTATIONS = [
         file='src/scheduler/process.rs',
         edits=[('        if members >= supervision.policy.capacity.get() as usize {', '        if members >= supervision.policy.capacity.get() as usize && matches!(member.kind, MemberKind::Process(_)) {')],
         targets=["lib"],
-        filter='sv10_a_dynamic_nested',
+        filter='sv10',
     ),
     dict(
         name='removal leaves the nested subtree running',
