@@ -6552,6 +6552,34 @@ fn a_nested_failure_type_pattern_is_rejected() {
     );
 }
 
+// A failure-type pattern can name only a closed enum today; naming one variant
+// as a type teaches the variant pattern instead of a bare resolution error.
+#[test]
+fn a_variant_named_as_a_failure_type_teaches_the_variant_pattern() {
+    let messages = check_messages(&format!(
+        "{FAILURE_KINDS}{}",
+        concat!(
+            "pub fn main() -> Text {\n",
+            "  case load(0) {\n",
+            "    Success(text) -> text\n",
+            "    Failure(error: FileProblem.TooLong) -> \"long\"\n",
+            "    Failure(_) -> \"other\"\n",
+            "  }\n",
+            "}\n",
+        )
+    ));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].starts_with("E_UNRESOLVED_TYPE "),
+        "{messages:?}"
+    );
+    assert!(
+        messages[0].contains("only a closed enum such as `FileProblem`")
+            && messages[0].contains("`Failure(FileProblem.TooLong(_, _) as error)`"),
+        "{messages:?}"
+    );
+}
+
 // ts-8c488d: an unguarded `Failure(_)` arm handles every variant of the row.
 #[test]
 fn a_wildcard_failure_arm_handles_every_failure() {

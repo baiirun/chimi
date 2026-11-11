@@ -1404,13 +1404,24 @@ impl ProjectResolver {
                 resolution,
             });
             if resolution == ReferenceResolution::Unresolved {
+                let message = if let Some(fields) =
+                    self.enum_variant_field_count(module_index, path)
+                {
+                    let payload = if fields == 0 {
+                        String::new()
+                    } else {
+                        format!("({})", vec!["_"; fields].join(", "))
+                    };
+                    format!(
+                        "`{display}` is an enum variant, not a type; a typed binding or failure-type pattern can name only a closed enum such as `{}`. To select one variant, match it directly, as in `Failure({display}{payload} as error)`",
+                        path[0].text
+                    )
+                } else {
+                    format!("cannot resolve type {display}")
+                };
                 let module = &self.semantic.modules[module_index];
-                self.diagnostics.push(name_error(
-                    module,
-                    "E_UNRESOLVED_TYPE",
-                    name.range,
-                    format!("cannot resolve type {display}"),
-                ));
+                self.diagnostics
+                    .push(name_error(module, "E_UNRESOLVED_TYPE", name.range, message));
             } else if resolution == ReferenceResolution::Ambiguous {
                 let module = &self.semantic.modules[module_index];
                 self.diagnostics.push(name_error(
@@ -1432,6 +1443,36 @@ impl ProjectResolver {
         for argument in arguments {
             self.resolve_type(module_index, argument, generics);
         }
+    }
+
+    /// The field count of `Enum.Variant` when `path` names a variant of an enum
+    /// visible here by its bare name.
+    fn enum_variant_field_count(&self, module_index: usize, path: &[Name]) -> Option<usize> {
+        let [owner, variant] = path else {
+            return None;
+        };
+        let module = &self.modules[module_index];
+        let ReferenceResolution::Resolved(owner) = resolve_local(
+            module.types.get(&owner.text),
+            module.imported_types.get(&owner.text),
+            None,
+        ) else {
+            return None;
+        };
+        let owner = &self.symbols[owner.raw() as usize];
+        if owner.kind != ProjectSymbolKind::Enum {
+            return None;
+        }
+        let owner_module = owner.module_id?;
+        let owner_semantic_id = owner.semantic_id?;
+        self.semantic.modules[owner_module.raw() as usize]
+            .declarations
+            .iter()
+            .find(|declaration| declaration.semantic_id == owner_semantic_id)?
+            .variants
+            .iter()
+            .find(|candidate| candidate.name.text == variant.text)
+            .map(|candidate| candidate.fields.len())
     }
 
     fn resolve_qualified_type(&self, module_index: usize, path: &[Name]) -> ReferenceResolution {
