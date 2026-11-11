@@ -187,6 +187,15 @@ impl<T> PersistentList<T> {
         self.vector.get(self.start + index).map(Arc::as_ref)
     }
 
+    /// A weak handle naming this list value: its clones share it, and no other live
+    /// list has the same address. Holding it keeps the address from being reused.
+    pub(super) fn identity(&self) -> std::sync::Weak<dyn std::any::Any>
+    where
+        T: 'static,
+    {
+        Arc::downgrade(&self.compacted) as std::sync::Weak<dyn std::any::Any>
+    }
+
     pub(super) fn iter(&self) -> impl Iterator<Item = &T> {
         (0..self.length).map(|index| self.get(index).expect("index is inside the window"))
     }

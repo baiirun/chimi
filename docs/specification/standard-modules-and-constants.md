@@ -5,8 +5,9 @@
 Normative contract for `prog show ts-5e95b8`. It covers gaps G1, G7, G9, G10,
 and G20 from the [standard library map](../plans/standard-library-map.md) and
 resolves the module-constants decision `prog show ts-f47931`. Module
-constants (G7) are implemented, except result caching, the build report, and
-`process name` (which the language does not have yet). Text interpolation (G9)
+constants (G7) are implemented, except result caching, the build report beyond
+the evaluation budgets (which `chimi.build.v1` records as `constant_limits`),
+and `process name` (which the language does not have yet). Text interpolation (G9)
 is implemented on the existing intrinsics (migration step 2). Debug rendering
 (G10) is implemented as hand-built intrinsics ahead of step 4, as step 5
 allows; the runner's bounded rendering and registry render overrides are not. The standard tree (G1)
@@ -425,8 +426,8 @@ An initializer is any expression that satisfies all of these rules:
    every reachable part is `Int`, `Float`, `Decimal`, `Text`, `Bool`, `Void`,
    a `Range`, a struct, enum, record, tuple, list, set, or map of such parts, a
    named process address, a std type that the registry marks
-   constant-representable, or a function value whose captures are themselves
-   constant-representable. A task handle, channel
+   constant-representable, or a function value whose captures and `using`
+   providers are themselves constant-representable. A task handle, channel
    endpoint, direct process address, or other runtime capability is not
    constant-representable. The diagnostic names the field or capture that
    prevents it.
@@ -453,8 +454,19 @@ other constants, as long as the evaluation obeys the rules.
 - A defect during evaluation is a compile error (`E5202`). It reports the
   defect message, the constant, and the span of the operation that failed.
 - Evaluation of one constant MUST stop after 50 million executed Core
-  operations or a 16 MiB serialized value, whichever comes first (`E5203`).
-  These limits are provisional and are recorded in the build report.
+  operations, at a call that would make more than 10 000 function and closure
+  calls active at once, or at a value larger than 16 MiB serialized, whichever
+  comes first (`E5203`). A constant that another constant's evaluation reaches
+  starts its own budgets. These limits are provisional and are recorded in the
+  build report.
+- The serialized size of a value is what the native table stores for it: one
+  24-byte `CHIMI_CONSTANT_VALUES` row, 4 bytes of `CHIMI_IDS` per part it refers
+  to (8 for a named or keyed part), the bytes of its text, and its parts. A part
+  that a value refers to twice is charged twice, because the table and the
+  interpreter's loaded copy hold a copy per reference. Evaluation measures every
+  value it copies out of a binding, so a value that doubles each step stops near
+  the budget instead of being built first; the final value is measured again,
+  and a constant whose value is too large is not stored.
 - A constant whose evaluation reaches itself, directly or through functions
   and other constants, is a cycle (`E5205`). The diagnostic lists every
   constant and function on the path. Constants that only name each other, as
@@ -490,7 +502,9 @@ other constants, as long as the evaluation obeys the rules.
   NOT free them, and a value built at run time MAY point to them. Decoded
   values are allocated outside every reclamation scope for this reason.
 - A function value in a constant stores the declared function's symbol, or
-  for a closure its `Closure` node and its captured constant values.
+  for a closure its `Closure` node and its captured constant values. A function
+  configured with `using` also stores each provider as a requirement name and a
+  constant value, which a call sees as if the `using` boundary enclosed it.
 - `CHIMI_SYMBOL_BINDING` and the interpreter's `CoreSymbolKind::Binding`, which
   re-evaluate an expression on each reference, are replaced by a constant
   symbol kind that loads the stored value.
@@ -728,7 +742,7 @@ chosen to avoid codes in use (`S1001`–`S1002`, `L2001`, `N3001`–`N3002`,
 | `T4325` | type | An interpolated expression whose type is not `Text`, `Int`, or `Float` |
 | `E5201` | execution setup | Constant evaluation reached a `runtime` or `host` operation; names the operation and call chain |
 | `E5202` | execution setup | A defect during constant evaluation |
-| `E5203` | execution setup | Constant evaluation exceeded its operation or size budget |
+| `E5203` | execution setup | Constant evaluation exceeded its operation, call depth, or size budget |
 | `E5204` | execution setup | The interpreter reached a C binding operation |
 | `E5205` | execution setup | A cycle among constants; lists the path |
 
@@ -757,6 +771,11 @@ chosen to avoid codes in use (`S1001`–`S1002`, `L2001`, `N3001`–`N3002`,
 | `const first = first_or_defect([])`, where the function defects on an empty list | `E5202` with the defect span |
 | `const a = f()` with `fn f() -> Int { a }` | `E5205` listing `a -> f -> a` (two modules cannot name each other's constants, because their imports would form an import cycle, which the project loader rejects first) |
 | `const nothing = None` | `T4324` |
+| `const counted = count(9_999)`, where `count` recurses once per step down to `0` | compiles; loads `9999` under both backends |
+| `const counted = count(10_000)` with the same `count` | `E5203` naming 10000 calls |
+| `const spun = spin(0)` with `fn spin(n: Int) -> Int { spin(n + 1) }` | `E5203` |
+| A loop that builds `Node(value, value)` or `Text.append(value, value)` from its previous value 40 times | `E5203` within seconds |
+| `const configured = timestamp using { clock: fake }`, where `fake` is a constant provider | compiles; calls through `fake` under both backends |
 | `const caches = [primary_cache, backup_cache]` over `process name` declarations | compiles; sends through `caches` route by name |
 | `Process.register(spec, caches_first)` where `caches_first` is a constant | `T4262` |
 | A constant referenced from two processes and a restarted incarnation | same value in each; no initialization events in the trace |

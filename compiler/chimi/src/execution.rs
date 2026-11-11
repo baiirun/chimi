@@ -16,9 +16,9 @@ use crate::numeric::{
 };
 use crate::semantic::{BinaryOperator, UnaryOperator};
 use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol, StandardType};
-pub(crate) use constants::evaluate_constants;
 #[cfg(test)]
-pub(crate) use constants::{ConstantLimits, evaluate_constants_with};
+pub(crate) use constants::evaluate_constants_with;
+pub(crate) use constants::{ConstantLimits, evaluate_constants};
 use persistent_list::PersistentList;
 use std::cmp::Ordering as Comparison;
 use std::collections::HashMap;
@@ -744,7 +744,11 @@ impl<'core> Evaluator<'core> {
                 Vec::new(),
             );
         }
-        let control = self.eval_operation(node_id, span, environment, node.operation);
+        let copies = self.constant_evaluation.is_some() && constants::copies_value(&node.operation);
+        let mut control = self.eval_operation(node_id, span, environment, node.operation);
+        if copies && let Some(stop) = self.measure_constant_value(&control) {
+            control = stop;
+        }
         if self.config.trace_mode == TraceMode::Full {
             self.emit(
                 EventKind::OperationCompleted,
@@ -1121,9 +1125,11 @@ impl<'core> Evaluator<'core> {
                 for (parameter, argument) in function.parameters.iter().zip(arguments) {
                     environment.locals.insert(*parameter, argument);
                 }
-                self.enter_constant_call(symbol);
+                if let Some(stop) = self.enter_constant_call(Some(symbol)) {
+                    return stop;
+                }
                 let control = self.eval_node(function.body, span, environment);
-                self.leave_constant_call();
+                self.leave_constant_call(Some(symbol));
                 control
             }
             RuntimeCallable::Closure {
@@ -1139,7 +1145,12 @@ impl<'core> Evaluator<'core> {
                 for (parameter, argument) in parameters.iter().zip(arguments) {
                     environment.locals.insert(*parameter, argument);
                 }
-                self.eval_node(body, span, environment)
+                if let Some(stop) = self.enter_constant_call(None) {
+                    return stop;
+                }
+                let control = self.eval_node(body, span, environment);
+                self.leave_constant_call(None);
+                control
             }
             RuntimeCallable::Dependency {
                 callable,

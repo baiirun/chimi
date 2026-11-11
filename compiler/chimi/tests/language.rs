@@ -3357,6 +3357,124 @@ fn a_constant_defect_points_at_the_failing_operation() {
     );
 }
 
+
+fn counting_constant(depth: u32) -> String {
+    format!(
+        concat!(
+            "fn count(n: Int) -> Int {{\n",
+            "  case n {{\n    0 -> 0\n    _ -> 1 + count(n - 1)\n  }}\n",
+            "}}\n",
+            "const counted = count({})\n",
+            "pub fn main() -> Int {{ counted }}\n",
+        ),
+        depth
+    )
+}
+
+// G7 E5203 call depth: `count(9_999)` nests exactly the 10 000 calls a constant may
+// nest, so it builds and loads its value on both backends; one more call is E5203.
+#[test]
+fn a_constant_may_nest_calls_up_to_the_call_depth_budget() {
+    let outcome = run_both("constant-call-depth", &counting_constant(9_999));
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":9999");
+    let messages = build_messages(&counting_constant(10_000));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].starts_with("E5203") && messages[0].contains("10000 calls"),
+        "{messages:?}"
+    );
+}
+
+// G7 E5203: recursion that never ends stops at the call depth budget instead of
+// overflowing the compiler's stack.
+#[test]
+fn unbounded_recursion_in_a_constant_is_e5203() {
+    let codes = build_codes(&[(
+        "main",
+        concat!(
+            "fn spin(n: Int) -> Int { spin(n + 1) }\n",
+            "const spun = spin(0)\n",
+            "pub fn main() -> Int { 0 }\n",
+        ),
+    )]);
+    assert_eq!(codes, ["E5203"]);
+}
+
+// G7 E5203 size: a value that doubles each step by holding two copies of itself, or a
+// text appended to itself, would reach terabytes; evaluation stops near the 16 MiB
+// budget rather than building and measuring the whole value.
+#[test]
+fn a_constant_that_doubles_each_step_stops_at_the_size_budget() {
+    let tree = concat!(
+        "enum Tree {\n  Leaf\n  Node(left: Tree, right: Tree)\n}\n",
+        "fn grow(limit: Int) -> Tree {\n",
+        "  loop state = { n: 0, value: Leaf } {\n",
+        "    case state.n < limit {\n",
+        "      True -> { n: state.n + 1, value: Node(state.value, state.value) }\n",
+        "      False -> break state.value\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+        "const big = grow(40)\n",
+        "pub fn main() -> Int { 0 }\n",
+    );
+    let text = concat!(
+        "fn grow(limit: Int) -> Text {\n",
+        "  loop state = { n: 0, value: \"a\" } {\n",
+        "    case state.n < limit {\n",
+        "      True -> { n: state.n + 1, value: Text.append(state.value, state.value) }\n",
+        "      False -> break state.value\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+        "const big = grow(40)\n",
+        "pub fn main() -> Int { 0 }\n",
+    );
+    for source in [tree, text] {
+        // Bounded, so a regression fails instead of exhausting memory.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sender.send(build_messages(source)));
+        let messages = receiver
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("evaluation stops within a minute");
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(
+            messages[0].starts_with("E5203") && messages[0].contains("16 MiB"),
+            "{messages:?}"
+        );
+    }
+}
+
+// G7 rule 3 and Migration: a function configured with `using` over constant
+// providers is a constant, whether it is a declared function or a closure, and calls
+// through the stored providers on both backends.
+#[test]
+fn a_function_configured_with_constant_providers_is_a_constant() {
+    let outcome = run_both(
+        "constant-configured-function",
+        concat!(
+            "interface Clock {\n  now: fn() -> Int\n}\n",
+            "const fake = { now: fn() -> Int { 41 } }\n",
+            "fn timestamp() -> Int needs { clock: Clock } { clock.now() }\n",
+            "const configured = timestamp using { clock: fake }\n",
+            "const later = (fn() -> Int needs { clock: Clock } { clock.now() + 1 }) using {\n",
+            "  clock: fake,\n",
+            "}\n",
+            "const both = [configured, later]\n",
+            "fn call_all(functions: List<fn() -> Int>) -> Int {\n",
+            "  case functions {\n",
+            "    [first, ..rest] -> first() + call_all(rest)\n",
+            "    [] -> 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  configured() * 1000 + later() + call_all(both)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":41125");
+}
+
 #[test]
 fn a_module_let_carries_the_edit_to_const() {
     let module = ProjectSource::new(

@@ -179,6 +179,14 @@ fn build_links_a_runnable_executable_and_reports_its_artifacts() {
     let report = String::from_utf8(output.stdout).unwrap();
     assert!(report.starts_with("{\"schema\":\"chimi.build.v1\""));
     assert!(report.contains("\"backend\":\"native-aot\""));
+    // G7: the build report records the constant evaluation budgets the spec states.
+    assert!(
+        report.contains(concat!(
+            "\"constant_limits\":{\"operations\":50000000,",
+            "\"call_depth\":10000,\"value_bytes\":16777216}"
+        )),
+        "{report}"
+    );
     assert!(report.contains("\"application_objects\":["));
     assert!(report.contains("\"metadata_object\":"));
     assert!(report.contains("\"runtime_archive\":"));

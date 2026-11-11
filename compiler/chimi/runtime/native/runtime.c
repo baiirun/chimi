@@ -3263,6 +3263,19 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
    immutable, so every task shares them. Decoding cannot fail and emits no events. */
 static ChimiValue **constant_values;
 
+/* Binds each (requirement name, value id) pair to every requirement of that name, as a
+   provision does. */
+static void bind_constant_requirements(ChimiEnvironment *environment, const uint32_t *pairs,
+                                       int64_t count) {
+  for (int64_t i = 0; i < count; ++i) {
+    const char *name = CHIMI_STRINGS[pairs[2 * i]];
+    for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)
+      if (CHIMI_SYMBOLS[symbol].kind == CHIMI_SYMBOL_REQUIREMENT &&
+          strcmp(CHIMI_STRINGS[CHIMI_SYMBOLS[symbol].name], name) == 0)
+        environment->requirements[CHIMI_SYMBOLS[symbol].environment_slot] = constant_values[pairs[2 * i + 1]];
+  }
+}
+
 static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
   const uint32_t *ids = &CHIMI_IDS[raw->offset];
   switch (raw->kind) {
@@ -3312,6 +3325,7 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
       callable->parameters_offset = function->parameters_offset;
       callable->parameters_length = function->parameters_length;
       callable->environment = capture_requirements(new_environment()); callable->name = "function";
+      bind_constant_requirements(callable->environment, ids, raw->integer);
       break;
     }
     case CHIMI_CONSTANT_INTRINSIC:
@@ -3327,6 +3341,7 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
       allocation_kind(environment, ALLOCATION_ENVIRONMENT);
       for (uint32_t i = 0; i < raw->length; ++i)
         environment->locals[environment_slot(ids[2 * i])] = constant_values[ids[2 * i + 1]];
+      bind_constant_requirements(environment, &ids[2 * raw->length], raw->integer);
       callable->kind = CALL_CLOSURE; callable->body = node->a;
       callable->parameters_offset = node->offset; callable->parameters_length = node->length;
       callable->environment = environment; callable->name = "closure";

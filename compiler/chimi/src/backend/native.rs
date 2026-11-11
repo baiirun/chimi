@@ -26,7 +26,7 @@ const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
 const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
 const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
 const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v3";
-const RUNTIME_ABI_VERSION: u32 = 13;
+const RUNTIME_ABI_VERSION: u32 = 14;
 const FIBER_RUNTIME_ABI_VERSION: u32 = chimi_fiber::ABI_VERSION;
 static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -66,6 +66,11 @@ impl NativeBuildReport {
         write_json_string(&mut output, CODEGEN_IDENTITY);
         output.push_str(",\"runtime_abi\":");
         output.push_str(&RUNTIME_ABI_VERSION.to_string());
+        let limits = crate::execution::ConstantLimits::BUILD;
+        output.push_str(&format!(
+            ",\"constant_limits\":{{\"operations\":{},\"call_depth\":{},\"value_bytes\":{}}}",
+            limits.operations, limits.call_depth, limits.value_bytes
+        ));
         output.push_str(",\"target\":{\"os\":");
         write_json_string(&mut output, std::env::consts::OS);
         output.push_str(",\"arch\":");

@@ -2,35 +2,50 @@
 //!
 //! Every constant runs once, here, with no scheduler, no providers, and no trace.
 //! The rules the type checker cannot see are enforced as the initializer runs: only
-//! `pure` operations (`E5201`), no defect (`E5202`), bounded work and size (`E5203`),
-//! and no cycle through constants (`E5205`). Each broken constant yields exactly one
-//! diagnostic; a constant that only failed because another one did reports nothing.
+//! `pure` operations (`E5201`), no defect (`E5202`), bounded work, call depth, and
+//! size (`E5203`), and no cycle through constants (`E5205`). Each broken constant
+//! yields exactly one diagnostic; a constant that only failed because another one did
+//! reports nothing.
 
 use super::{
     Control, Environment, Evaluator, ExecutionConfig, HostFunction, RuntimeCallable, RuntimeField,
-    RuntimeMap, RuntimeValue, TraceMode,
+    RuntimeMap, RuntimeMapNode, RuntimeValue, TraceMode,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::executable::{
-    ConstantFunction, ConstantValue, CoreConstant, CoreOperation, CoreProgram, CoreSymbolKind,
+    ConstantFunction, ConstantRequirements, ConstantValue, CoreConstant, CoreOperation,
+    CoreProgram, CoreSymbolKind,
 };
 use crate::ids::{CoreNodeId, SymbolId};
 use crate::standard::{StandardFunction, StandardModule, StandardSymbol};
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Weak};
 
 /// The provisional budgets of one constant's evaluation (`E5203`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ConstantLimits {
     pub(crate) operations: u64,
+    /// The most function and closure calls that may be active at once.
+    pub(crate) call_depth: usize,
+    /// The largest value the evaluation may build, in stored bytes (see `Measure`).
     pub(crate) value_bytes: usize,
 }
 
 impl ConstantLimits {
     pub(crate) const BUILD: Self = Self {
         operations: 50_000_000,
+        call_depth: 10_000,
         value_bytes: 16 * 1024 * 1024,
     };
 }
+
+/// The host stack of the thread that evaluates constants. The interpreter recurses on
+/// the host stack, a few frames per Core operation, so this must hold
+/// `ConstantLimits::BUILD.call_depth` nested calls of an ordinary function body even in
+/// an unoptimized compiler, which spends about 55 KiB of stack per call. Only the pages
+/// a deep evaluation touches are committed.
+const EVALUATION_STACK_BYTES: usize = 1 << 30;
 
 /// An operation build-time evaluation may refuse because it is not `pure`.
 #[derive(Clone, Copy, Debug)]
@@ -77,6 +92,8 @@ enum Stop {
         chain: Vec<Frame>,
     },
     Operations,
+    Depth,
+    Size,
     Cycle(Vec<Frame>),
     /// A constant this one depends on already reported its own diagnostic.
     Reported,
@@ -85,7 +102,11 @@ enum Stop {
 pub(super) struct ConstantEvaluation {
     limits: ConstantLimits,
     operations: u64,
+    /// Function and closure calls active in the current constant.
+    calls: usize,
     frames: Vec<Frame>,
+    closures: HashMap<CoreNodeId, CoreNodeId>,
+    shared: SharedSizes,
     stop: Option<Stop>,
     failed: HashSet<SymbolId>,
     diagnostics: Vec<Diagnostic>,
@@ -94,7 +115,7 @@ pub(super) struct ConstantEvaluation {
 /// Evaluates every constant initializer in `core`.
 ///
 /// Ensures: on success, one value per initializer in initializer order, each free of
-/// capabilities and providers; on failure, one diagnostic per constant that broke a
+/// capabilities and of providers other than constant ones; on failure, one diagnostic per constant that broke a
 /// build-time rule itself. Must not emit trace events or touch the host.
 pub(crate) fn evaluate_constants(core: &CoreProgram) -> Result<Vec<CoreConstant>, Vec<Diagnostic>> {
     evaluate_constants_with(core, ConstantLimits::BUILD)
@@ -107,6 +128,26 @@ pub(crate) fn evaluate_constants_with(
     if core.constant_initializers.is_empty() {
         return Ok(Vec::new());
     }
+    std::thread::scope(|scope| {
+        match std::thread::Builder::new()
+            .name("constant-evaluation".to_owned())
+            .stack_size(EVALUATION_STACK_BYTES)
+            .spawn_scoped(scope, || evaluate_on_this_thread(core, limits))
+        {
+            Ok(thread) => thread
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            // A host that cannot reserve the stack, such as one under a small
+            // `ulimit -v`, still evaluates every constant that fits its own stack.
+            Err(_) => evaluate_on_this_thread(core, limits),
+        }
+    })
+}
+
+fn evaluate_on_this_thread(
+    core: &CoreProgram,
+    limits: ConstantLimits,
+) -> Result<Vec<CoreConstant>, Vec<Diagnostic>> {
     let mut config =
         ExecutionConfig::new("constant-evaluation").expect("fixed execution id is valid");
     config.trace_mode = TraceMode::Off;
@@ -114,7 +155,10 @@ pub(crate) fn evaluate_constants_with(
     evaluator.constant_evaluation = Some(ConstantEvaluation {
         limits,
         operations: 0,
+        calls: 0,
         frames: Vec::new(),
+        closures: closure_nodes(core),
+        shared: SharedSizes::default(),
         stop: None,
         failed: HashSet::new(),
         diagnostics: Vec::new(),
@@ -129,28 +173,33 @@ pub(crate) fn evaluate_constants_with(
         .take()
         .expect("constant evaluation state is present");
     let mut diagnostics = state.diagnostics;
-    let closures = closure_nodes(core);
+    let (closures, mut shared) = (state.closures, state.shared);
     let mut constants = Vec::new();
     for initializer in &core.constant_initializers {
         let Some(value) = evaluator.constants.get(&initializer.symbol) else {
             continue;
         };
-        let mut bytes = 0;
-        match constant_value(core, &closures, value, &mut bytes) {
-            Ok(value) if bytes <= limits.value_bytes => constants.push(CoreConstant {
-                symbol: initializer.symbol,
-                value,
-            }),
-            Ok(_) => diagnostics.push(diagnostic_at(
+        let size = Measure {
+            core,
+            closures: &closures,
+            shared: &mut shared,
+            limit: limits.value_bytes,
+        }
+        .value(value);
+        if size.is_none() {
+            diagnostics.push(diagnostic_at(
                 core,
                 initializer.value,
                 "E5203",
-                format!(
-                    "constant `{}` is larger than the {} MiB a constant may store",
-                    core.symbol(initializer.symbol).name,
-                    limits.value_bytes / (1024 * 1024)
-                ),
-            )),
+                too_large(&core.symbol(initializer.symbol).name, limits),
+            ));
+            continue;
+        }
+        match constant_value(core, &closures, value) {
+            Ok(value) => constants.push(CoreConstant {
+                symbol: initializer.symbol,
+                value,
+            }),
             Err(part) => diagnostics.push(diagnostic_at(
                 core,
                 initializer.value,
@@ -198,11 +247,13 @@ impl Evaluator<'_> {
         }
         state.stop = None;
         let saved_operations = std::mem::take(&mut state.operations);
+        let saved_calls = std::mem::take(&mut state.calls);
         state.frames.push(Frame::Constant(symbol));
         let control = self.eval_node(initializer, 1, Environment::default());
         let state = self.constant_state();
         state.frames.pop();
         state.operations = saved_operations;
+        state.calls = saved_calls;
         match control {
             Control::Success(value) => {
                 self.constants.insert(symbol, value.clone());
@@ -272,16 +323,54 @@ impl Evaluator<'_> {
         Some(reported_defect())
     }
 
-    pub(super) fn enter_constant_call(&mut self, function: SymbolId) {
-        if let Some(state) = self.constant_evaluation.as_mut() {
+    /// Starts a call of the declared function `function`, or of a closure when `None`,
+    /// unless the current constant already has its budget of active calls.
+    ///
+    /// Ensures: on `None`, a matching `leave_constant_call` must follow the call.
+    pub(super) fn enter_constant_call(&mut self, function: Option<SymbolId>) -> Option<Control> {
+        let state = self.constant_evaluation.as_mut()?;
+        if state.calls >= state.limits.call_depth {
+            state.stop = Some(Stop::Depth);
+            return Some(reported_defect());
+        }
+        state.calls += 1;
+        if let Some(function) = function {
             state.frames.push(Frame::Function(function));
+        }
+        None
+    }
+
+    pub(super) fn leave_constant_call(&mut self, function: Option<SymbolId>) {
+        if let Some(state) = self.constant_evaluation.as_mut() {
+            state.calls -= 1;
+            if function.is_some() {
+                state.frames.pop();
+            }
         }
     }
 
-    pub(super) fn leave_constant_call(&mut self) {
-        if let Some(state) = self.constant_evaluation.as_mut() {
-            state.frames.pop();
+    /// Stops the current constant when `control` carries a value larger than the size
+    /// budget, so a value that doubles each step stops near the budget instead of
+    /// after it has been built and converted.
+    pub(super) fn measure_constant_value(&mut self, control: &Control) -> Option<Control> {
+        let Control::Success(value) = control else {
+            return None;
+        };
+        let core = self.core;
+        let state = self.constant_evaluation.as_mut()?;
+        let fits = Measure {
+            core,
+            closures: &state.closures,
+            shared: &mut state.shared,
+            limit: state.limits.value_bytes,
         }
+        .value(value)
+        .is_some();
+        if fits {
+            return None;
+        }
+        state.stop = Some(Stop::Size);
+        Some(reported_defect())
     }
 
     fn constant_state(&mut self) -> &mut ConstantEvaluation {
@@ -337,6 +426,28 @@ impl Evaluator<'_> {
                         .map_or(0, |state| state.limits.operations)
                 ),
             ),
+            Some(Stop::Depth) => diagnostic_at(
+                core,
+                initializer,
+                "E5203",
+                format!(
+                    "constant `{name}` nested more than {} calls",
+                    self.constant_evaluation
+                        .as_ref()
+                        .map_or(0, |state| state.limits.call_depth)
+                ),
+            ),
+            Some(Stop::Size) => diagnostic_at(
+                core,
+                initializer,
+                "E5203",
+                too_large(
+                    name,
+                    self.constant_evaluation
+                        .as_ref()
+                        .map_or(ConstantLimits::BUILD, |state| state.limits),
+                ),
+            ),
             Some(Stop::Cycle(frames)) => diagnostic_at(
                 core,
                 initializer,
@@ -365,6 +476,30 @@ impl Evaluator<'_> {
             },
         })
     }
+}
+
+fn too_large(name: &str, limits: ConstantLimits) -> String {
+    format!(
+        "constant `{name}` builds a value larger than the {} MiB a constant may store",
+        limits.value_bytes / (1024 * 1024)
+    )
+}
+
+/// Whether the result of `operation` is measured against the size budget while a
+/// constant evaluates: the operations that copy a value out of the environment.
+///
+/// A value can only outgrow the budget step after step by holding copies of an
+/// earlier value, and every copy starts at one of these. One expression without them
+/// grows a value by at most the sum of the copies it combines, so the overshoot is
+/// bounded by the source, and the final measurement still decides what is stored.
+/// Measuring here also costs no more than the interpreter's own copy, which is linear
+/// in the parts it does not share, while measuring every construction would make a
+/// recursive builder such as `Link(chain(n - 1))` quadratic.
+pub(super) fn copies_value(operation: &CoreOperation) -> bool {
+    matches!(
+        operation,
+        CoreOperation::Reference(_) | CoreOperation::Closure { .. }
+    )
 }
 
 fn reported_defect() -> Control {
@@ -401,36 +536,193 @@ fn closure_nodes(core: &CoreProgram) -> HashMap<CoreNodeId, CoreNodeId> {
         .collect()
 }
 
-/// Converts an evaluated value to stored data, adding its approximate stored size to
-/// `bytes`. `Err` names a part that cannot outlive the evaluation.
+/// Stored sizes of the parts that interpreter values share instead of copying: lists,
+/// map nodes, and closure environments, keyed by address. Measuring a value that grew
+/// by one step then costs the new parts, not the whole value.
+///
+/// Each entry holds a weak handle to its part, which keeps the allocation, and so the
+/// address, from being reused while the entry lives.
+#[derive(Default)]
+struct SharedSizes {
+    known: HashMap<usize, (Weak<dyn Any>, usize)>,
+    /// Entry count at which parts no value holds any more are dropped.
+    sweep_at: usize,
+}
+
+impl SharedSizes {
+    fn get(&self, address: usize) -> Option<usize> {
+        self.known.get(&address).map(|(_, size)| *size)
+    }
+
+    fn insert(&mut self, address: usize, part: Weak<dyn Any>, size: usize) {
+        if self.known.len() >= self.sweep_at {
+            self.known.retain(|_, (part, _)| part.strong_count() > 0);
+            self.sweep_at = (2 * self.known.len()).max(4096);
+        }
+        self.known.insert(address, (part, size));
+    }
+}
+
+/// Bytes of one `CHIMI_CONSTANT_VALUES` row (`ChimiConstantValue` in `runtime.h`).
+const ROW_BYTES: usize = 24;
+/// Bytes of one entry of `CHIMI_IDS`.
+const ID_BYTES: usize = 4;
+
+/// Measures the stored size of an evaluated value without building it.
+///
+/// A value is charged what the native table stores for it: one row, one id per part it
+/// refers to (two for a named or keyed part: name or key, and value), the bytes of its
+/// text, and its parts. A part reached twice is charged twice, because the stored form,
+/// the interpreter's loaded copy, and the native table all hold a copy per reference.
+struct Measure<'a> {
+    core: &'a CoreProgram,
+    closures: &'a HashMap<CoreNodeId, CoreNodeId>,
+    shared: &'a mut SharedSizes,
+    limit: usize,
+}
+
+impl Measure<'_> {
+    /// The stored size of `value`, or `None` as soon as it exceeds `limit`.
+    fn value(&mut self, value: &RuntimeValue) -> Option<usize> {
+        match value {
+            RuntimeValue::Void
+            | RuntimeValue::Integer(_)
+            | RuntimeValue::Float(_)
+            | RuntimeValue::Boolean(_) => Some(ROW_BYTES),
+            RuntimeValue::Text(text) | RuntimeValue::JsonNumber(text) => {
+                self.sum(ROW_BYTES, text.len())
+            }
+            RuntimeValue::List(values) => {
+                let identity = values.identity();
+                let address = Weak::as_ptr(&identity) as *const () as usize;
+                if let Some(size) = self.shared.get(address) {
+                    return Some(size);
+                }
+                let mut size = ROW_BYTES;
+                for value in values.iter() {
+                    let part = self.value(value)?;
+                    size = self.sum(size, ID_BYTES + part)?;
+                }
+                self.shared.insert(address, identity, size);
+                Some(size)
+            }
+            RuntimeValue::Record(fields) => self.fields(fields, 2 * ID_BYTES),
+            RuntimeValue::Constructed { fields, .. } => self.fields(fields, ID_BYTES),
+            RuntimeValue::Map(map) => {
+                let entries = self.map_node(map.root.as_ref())?;
+                self.sum(ROW_BYTES, entries)
+            }
+            RuntimeValue::Callable(RuntimeCallable::Declared { requirements, .. }) => {
+                let providers = self.requirements(requirements)?;
+                self.sum(ROW_BYTES, providers)
+            }
+            RuntimeValue::Callable(RuntimeCallable::Closure {
+                body, environment, ..
+            }) => {
+                let address = Arc::as_ptr(environment) as usize;
+                if let Some(size) = self.shared.get(address) {
+                    return Some(size);
+                }
+                let mut size = ROW_BYTES;
+                for capture in closure_captures(self.core, self.closures, *body).1 {
+                    if let Some(value) = environment.locals.get(capture) {
+                        let part = self.value(value)?;
+                        size = self.sum(size, 2 * ID_BYTES + part)?;
+                    }
+                }
+                let providers = self.requirements(&environment.requirements)?;
+                size = self.sum(size, providers)?;
+                let part = Arc::downgrade(environment) as Weak<dyn Any>;
+                self.shared.insert(address, part, size);
+                Some(size)
+            }
+            RuntimeValue::Callable(_) => Some(ROW_BYTES),
+        }
+    }
+
+    fn fields(&mut self, fields: &[RuntimeField], ids: usize) -> Option<usize> {
+        let mut size = ROW_BYTES;
+        for field in fields {
+            let part = self.value(&field.value)?;
+            size = self.sum(size, ids + part)?;
+        }
+        Some(size)
+    }
+
+    /// The entries of the map subtree at `node`, without the map's own row.
+    fn map_node(&mut self, node: Option<&Arc<RuntimeMapNode>>) -> Option<usize> {
+        let Some(node) = node else {
+            return Some(0);
+        };
+        let address = Arc::as_ptr(node) as usize;
+        if let Some(size) = self.shared.get(address) {
+            return Some(size);
+        }
+        let mut size = 2 * ID_BYTES;
+        for part in [&node.key, &node.value] {
+            let part = self.value(part)?;
+            size = self.sum(size, part)?;
+        }
+        for child in [node.left.as_ref(), node.right.as_ref()] {
+            let part = self.map_node(child)?;
+            size = self.sum(size, part)?;
+        }
+        let part = Arc::downgrade(node) as Weak<dyn Any>;
+        self.shared.insert(address, part, size);
+        Some(size)
+    }
+
+    fn requirements(&mut self, requirements: &HashMap<String, RuntimeValue>) -> Option<usize> {
+        let mut size = 0;
+        for value in requirements.values() {
+            let part = self.value(value)?;
+            size = self.sum(size, 2 * ID_BYTES + part)?;
+        }
+        Some(size)
+    }
+
+    fn sum(&self, left: usize, right: usize) -> Option<usize> {
+        left.checked_add(right).filter(|size| *size <= self.limit)
+    }
+}
+
+/// The `Closure` node that made the closure whose body is `body`, and its captures.
+fn closure_captures<'core>(
+    core: &'core CoreProgram,
+    closures: &HashMap<CoreNodeId, CoreNodeId>,
+    body: CoreNodeId,
+) -> (CoreNodeId, &'core [SymbolId]) {
+    let node = closures[&body];
+    let CoreOperation::Closure { captures, .. } = &core.nodes[node.raw() as usize].operation else {
+        unreachable!("closure node map holds closure nodes");
+    };
+    (node, captures)
+}
+
+/// Converts an evaluated value to stored data. `Err` names a part that cannot
+/// outlive the evaluation.
+///
+/// Requires: `Measure` found the value within the size budget, so this costs at most
+/// time linear in the budget.
 fn constant_value(
     core: &CoreProgram,
     closures: &HashMap<CoreNodeId, CoreNodeId>,
     value: &RuntimeValue,
-    bytes: &mut usize,
 ) -> Result<ConstantValue, String> {
-    *bytes += 16;
-    let convert =
-        |value: &RuntimeValue, bytes: &mut usize| constant_value(core, closures, value, bytes);
+    let convert = |value: &RuntimeValue| constant_value(core, closures, value);
     Ok(match value {
         RuntimeValue::Void => ConstantValue::Void,
         RuntimeValue::Integer(value) => ConstantValue::Integer(*value),
         RuntimeValue::Float(value) => ConstantValue::Float(*value),
-        RuntimeValue::Text(value) => {
-            *bytes += value.len();
-            ConstantValue::Text(value.clone())
-        }
+        RuntimeValue::Text(value) => ConstantValue::Text(value.clone()),
         RuntimeValue::Boolean(value) => ConstantValue::Boolean(*value),
-        RuntimeValue::List(values) => ConstantValue::List(
-            values
-                .iter()
-                .map(|value| convert(value, bytes))
-                .collect::<Result<_, _>>()?,
-        ),
+        RuntimeValue::List(values) => {
+            ConstantValue::List(values.iter().map(convert).collect::<Result<_, _>>()?)
+        }
         RuntimeValue::Record(fields) => ConstantValue::Record(
             fields
                 .iter()
-                .map(|field| Ok((field.name.clone(), convert(&field.value, bytes)?)))
+                .map(|field| Ok((field.name.clone(), convert(&field.value)?)))
                 .collect::<Result<_, String>>()?,
         ),
         RuntimeValue::Constructed {
@@ -441,43 +733,42 @@ fn constant_value(
             constructor: *constructor,
             fields: fields
                 .iter()
-                .map(|field| convert(&field.value, bytes))
+                .map(|field| convert(&field.value))
                 .collect::<Result<_, _>>()?,
         },
         RuntimeValue::Map(map) => ConstantValue::Map(
             map.entries()
                 .into_iter()
-                .map(|(key, value)| Ok((convert(&key, bytes)?, convert(&value, bytes)?)))
+                .map(|(key, value)| Ok((convert(&key)?, convert(&value)?)))
                 .collect::<Result<_, String>>()?,
         ),
-        RuntimeValue::JsonNumber(text) => {
-            *bytes += text.len();
-            ConstantValue::JsonNumber(text.clone())
-        }
+        RuntimeValue::JsonNumber(text) => ConstantValue::JsonNumber(text.clone()),
         RuntimeValue::Callable(callable) => ConstantValue::Function(match callable {
             RuntimeCallable::Declared {
                 symbol,
                 requirements,
-            } if requirements.is_empty() => ConstantFunction::Declared(*symbol),
+            } => ConstantFunction::Declared {
+                symbol: *symbol,
+                requirements: constant_requirements(core, closures, requirements)?,
+            },
             RuntimeCallable::Closure {
                 body, environment, ..
-            } if environment.requirements.is_empty() => {
-                let node = closures[body];
-                let CoreOperation::Closure { captures, .. } =
-                    &core.nodes[node.raw() as usize].operation
-                else {
-                    unreachable!("closure node map holds closure nodes");
-                };
+            } => {
+                let (node, captures) = closure_captures(core, closures, *body);
                 let captures = captures
                     .iter()
                     .filter_map(|capture| {
                         environment
                             .locals
                             .get(capture)
-                            .map(|value| Ok((*capture, convert(value, bytes)?)))
+                            .map(|value| Ok((*capture, convert(value)?)))
                     })
                     .collect::<Result<_, String>>()?;
-                ConstantFunction::Closure { node, captures }
+                ConstantFunction::Closure {
+                    node,
+                    captures,
+                    requirements: constant_requirements(core, closures, &environment.requirements)?,
+                }
             }
             RuntimeCallable::Intrinsic(function) => ConstantFunction::Intrinsic(
                 core.symbols
@@ -490,12 +781,24 @@ fn constant_value(
                     .ok_or_else(|| format!("the operation `{}`", function.name()))?,
             ),
             RuntimeCallable::Constructor { symbol, .. } => ConstantFunction::Constructor(*symbol),
-            RuntimeCallable::Declared { .. }
-            | RuntimeCallable::Closure { .. }
-            | RuntimeCallable::Dependency { .. }
-            | RuntimeCallable::Host(_) => return Err("a function bound to a provider".to_owned()),
+            RuntimeCallable::Dependency { .. } => return Err("a provider method".to_owned()),
+            RuntimeCallable::Host(_) => return Err("a host operation".to_owned()),
         }),
     })
+}
+
+/// Bound providers in ascending name order, so the stored data is reproducible.
+fn constant_requirements(
+    core: &CoreProgram,
+    closures: &HashMap<CoreNodeId, CoreNodeId>,
+    requirements: &HashMap<String, RuntimeValue>,
+) -> Result<ConstantRequirements, String> {
+    let mut requirements = requirements.iter().collect::<Vec<_>>();
+    requirements.sort_by(|left, right| left.0.cmp(right.0));
+    requirements
+        .into_iter()
+        .map(|(name, value)| Ok((name.clone(), constant_value(core, closures, value)?)))
+        .collect()
 }
 
 /// The interpreter value of a stored constant.
@@ -564,9 +867,12 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
         )),
         ConstantValue::JsonNumber(text) => RuntimeValue::JsonNumber(text.clone()),
         ConstantValue::Function(function) => RuntimeValue::Callable(match function {
-            ConstantFunction::Declared(symbol) => RuntimeCallable::Declared {
+            ConstantFunction::Declared {
+                symbol,
+                requirements,
+            } => RuntimeCallable::Declared {
                 symbol: *symbol,
-                requirements: HashMap::new(),
+                requirements: runtime_requirements(core, requirements),
             },
             ConstantFunction::Intrinsic(symbol) => match core.symbol(*symbol).standard {
                 Some(StandardSymbol::Function(function)) => RuntimeCallable::Intrinsic(function),
@@ -576,7 +882,11 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
                 symbol: *symbol,
                 name: core.symbol(*symbol).name.clone(),
             },
-            ConstantFunction::Closure { node, captures } => {
+            ConstantFunction::Closure {
+                node,
+                captures,
+                requirements,
+            } => {
                 let CoreOperation::Closure {
                     parameters, body, ..
                 } = &core.nodes[node.raw() as usize].operation
@@ -591,11 +901,21 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
                             .iter()
                             .map(|(symbol, value)| (*symbol, runtime_value(core, value)))
                             .collect(),
-                        requirements: HashMap::new(),
+                        requirements: runtime_requirements(core, requirements),
                     }),
                     name: "closure".to_owned(),
                 }
             }
         }),
     }
+}
+
+fn runtime_requirements(
+    core: &CoreProgram,
+    requirements: &ConstantRequirements,
+) -> HashMap<String, RuntimeValue> {
+    requirements
+        .iter()
+        .map(|(name, value)| (name.clone(), runtime_value(core, value)))
+        .collect()
 }

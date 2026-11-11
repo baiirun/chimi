@@ -3213,6 +3213,7 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
         };
         let operations = codes(crate::execution::ConstantLimits {
             operations: 500,
+            call_depth: 10_000,
             value_bytes: 1024,
         });
         assert_eq!(operations.len(), 1, "{operations:?}");
@@ -3220,11 +3221,50 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
         assert!(operations[0].1.contains("`counted`"), "{operations:?}");
         let size = codes(crate::execution::ConstantLimits {
             operations: 1_000_000,
+            call_depth: 10_000,
             value_bytes: 32,
         });
         assert_eq!(size.len(), 1, "{size:?}");
         assert_eq!(size[0].0, "E5203");
         assert!(size[0].1.contains("`label`"), "{size:?}");
+    }
+
+    // G7 E5203: the size budget charges a shared part once per reference, because the
+    // stored value and the native table hold a copy for each one. Under a budget that
+    // fits `inner` but not two copies of it, `pair` fails while `inner` and `again`,
+    // which refers to `inner` once, are stored.
+    #[test]
+    fn constant_size_budget_charges_a_shared_part_per_reference() {
+        let source = concat!(
+            "const inner = [1, 2, 3, 4, 5, 6, 7, 8]\n",
+            "const again = [inner]\n",
+            "const pair = [inner, inner]\n",
+            "pub fn main() -> Int { 0 }\n",
+        );
+        let mut core = crate::executable::lower(
+            crate::executable::seal_entry(crate::typing::check_project(resolve_project_sources(
+                vec![module("main", "main.chimi", source)],
+            )))
+            .expect("program verifies"),
+        )
+        .expect("the build's budgets admit every constant");
+        core.constants.clear();
+        let limits = crate::execution::ConstantLimits {
+            operations: 1_000_000,
+            call_depth: 10_000,
+            value_bytes: 400,
+        };
+        let diagnostics = match crate::execution::evaluate_constants_with(&core, limits) {
+            Ok(_) => Vec::new(),
+            Err(diagnostics) => diagnostics,
+        };
+        let failed = diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.code(), diagnostic.message().to_owned()))
+            .collect::<Vec<_>>();
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].0, "E5203");
+        assert!(failed[0].1.contains("`pair`"), "{failed:?}");
     }
 
     #[test]

@@ -93,8 +93,13 @@ impl ProgramData {
                 (8, 0, offset, entries.len() as u32, 0)
             }
             ConstantValue::JsonNumber(text) => (9, self.string(text), 0, 0, 0),
-            ConstantValue::Function(ConstantFunction::Declared(symbol)) => {
-                (10, symbol.raw(), 0, 0, 0)
+            ConstantValue::Function(ConstantFunction::Declared {
+                symbol,
+                requirements,
+            }) => {
+                let ids = self.constant_requirements(requirements);
+                let (offset, _) = self.ids(ids);
+                (10, symbol.raw(), offset, 0, requirements.len() as i64)
             }
             ConstantValue::Function(ConstantFunction::Intrinsic(symbol)) => {
                 (11, symbol.raw(), 0, 0, 0)
@@ -102,17 +107,36 @@ impl ProgramData {
             ConstantValue::Function(ConstantFunction::Constructor(symbol)) => {
                 (12, symbol.raw(), 0, 0, 0)
             }
-            ConstantValue::Function(ConstantFunction::Closure { node, captures }) => {
-                let ids = captures
+            ConstantValue::Function(ConstantFunction::Closure {
+                node,
+                captures,
+                requirements,
+            }) => {
+                let mut ids = captures
                     .iter()
                     .flat_map(|(symbol, value)| [symbol.raw(), self.constant_value(value)])
                     .collect::<Vec<_>>();
+                ids.extend(self.constant_requirements(requirements));
                 let (offset, _) = self.ids(ids);
-                (13, node.raw(), offset, captures.len() as u32, 0)
+                (
+                    13,
+                    node.raw(),
+                    offset,
+                    captures.len() as u32,
+                    requirements.len() as i64,
+                )
             }
         };
         self.constant_values.push(row);
         self.constant_values.len() as u32 - 1
+    }
+
+    /// `(name string id, value id)` pairs of a function value's bound providers.
+    fn constant_requirements(&mut self, requirements: &[(String, ConstantValue)]) -> Vec<u32> {
+        requirements
+            .iter()
+            .flat_map(|(name, value)| [self.string(name), self.constant_value(value)])
+            .collect()
     }
 
     fn pattern(&mut self, pattern: &CorePattern) -> u32 {

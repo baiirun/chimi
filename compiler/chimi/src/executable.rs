@@ -389,8 +389,9 @@ pub(crate) struct CoreConstant {
 
 /// A value computed at build time and stored in the executable.
 ///
-/// Invariant: it holds no runtime capability and no provider, so every backend can
-/// store it as immutable data and every task can read it.
+/// Invariant: it holds no runtime capability and no host provider (a provider is
+/// itself a constant value), so every backend can store it as immutable data and
+/// every task can read it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ConstantValue {
     Void,
@@ -415,7 +416,12 @@ pub(crate) enum ConstantValue {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ConstantFunction {
-    Declared(SymbolId),
+    /// `requirements` holds the providers a `using` boundary bound to the function,
+    /// as when `const configured = timestamp using { clock: fake }`.
+    Declared {
+        symbol: SymbolId,
+        requirements: ConstantRequirements,
+    },
     Intrinsic(SymbolId),
     Constructor(SymbolId),
     /// `node` is the `CoreOperation::Closure` that made it; `captures` binds exactly
@@ -423,8 +429,13 @@ pub(crate) enum ConstantFunction {
     Closure {
         node: CoreNodeId,
         captures: Vec<(SymbolId, ConstantValue)>,
+        requirements: ConstantRequirements,
     },
 }
+
+/// Providers bound to a function value, by requirement name in ascending byte order,
+/// so the stored data does not depend on hash order.
+pub(crate) type ConstantRequirements = Vec<(String, ConstantValue)>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CoreNode {

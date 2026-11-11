@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 13
+#define CHIMI_RUNTIME_ABI_VERSION 14
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -202,7 +202,9 @@ typedef struct {
    `offset` in CHIMI_IDS, and `a` is the constructor symbol. RECORD and MAP: `length`
    (string id, value id) pairs at `offset`. DECLARED, INTRINSIC, and CONSTRUCTOR: `a` is
    the symbol. CLOSURE: `a` is the closure node and `length` (symbol, value id) capture
-   pairs sit at `offset`. INTEGER, BOOLEAN, and FLOAT (IEEE bits) use `integer`. */
+   pairs sit at `offset`. DECLARED and CLOSURE: `integer` (requirement name string id,
+   value id) provider pairs follow the captures at `offset`. INTEGER, BOOLEAN, and FLOAT
+   (IEEE bits) use `integer`. */
 enum {
   CHIMI_CONSTANT_VOID,
   CHIMI_CONSTANT_INTEGER,
