@@ -77,6 +77,32 @@ target/chimi-trace-summary \
 
 Place runner options before `--`. Place application arguments after `--`.
 
+## How It Works
+
+`app/main.chimi` folds the input into one immutable `Summary`, one line at a
+time, through `FileSystem.process_utf8_lines`. Each step either returns the
+next `Summary` or a `TraceError` that names the line. The program is the Phase 1
+forcing program, so it exercises these language features:
+
+| Feature | Where |
+| --- | --- |
+| Module constants (`const`) | schema names, the usage text, and `empty_summary` |
+| Multi-clause functions with literal patterns and guards | `finish` and `is_terminal_outcome` |
+| Record update (`{ ..state, field: value }`) | every change to `Summary` |
+| Pipelines with first-argument insertion | `add_fields`, `counts_json`, `render`, `summarize` |
+| `==` and `<=` in case guards | `same_identity`, `check_schema`, `next_sequence` |
+| Text interpolation | the `requirement.method` dependency key |
+| Tuples and `Map.from` | the output object in `render` |
+| List patterns | the single `[path]` argument in `main` |
+| Failure-type and alias patterns | the `TraceError`, `LineTooLong`, `FileError`, and `Utf8Error` arms in `main` |
+
+The functions that run once per input line (`add_line`, `add_record`,
+`add_event`, and `same_identity`) use `case` rather than function clauses. On
+the native backend a multi-clause function with two or more parameters
+allocates more per call than the same `case`. On this path that extra
+allocation would break the per-record allocation budget in
+`compiler/chimi/tests/cli.rs`.
+
 ## Contributing
 
 Run the compiler and end-to-end gates.

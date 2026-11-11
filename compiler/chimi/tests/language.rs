@@ -6512,34 +6512,58 @@ fn type_contract(source: &str, function: &str) -> (Vec<String>, Option<String>) 
     (codes, report.contract("main", function))
 }
 
-// FP-01: the trace summarizer's `main` with one arm per failure type keeps the
-// residual row of the original, which lists every variant.
+// FP-01: the trace summarizer's `main`, which selects failures with one arm per
+// failure type, has the same contract as that `main` with one arm per variant.
 #[test]
 fn the_trace_summarizer_main_with_failure_type_arms_keeps_its_contract() {
     let original = include_str!("../../../programs/chimi-trace-summary/app/main.chimi");
     let start = original
-        .find("      Failure(BlankLine(line)) -> report_trace(BlankLine(line))\n")
-        .expect("the per-variant arms");
-    let end = original.find("    count, _ -> {").expect("the usage arm");
-    let arms = concat!(
-        "      Failure(error: TraceError) -> report_trace(error)\n",
-        "      Failure(LineTooLong(_, _) as error) -> {\n",
-        "        console.write_error(\"trace summary input record is too large\")\n",
-        "        Failure(error)\n",
-        "      }\n",
-        "      Failure(error: FileError) -> {\n",
-        "        console.write_error(\"trace summary file IO failed\")\n",
-        "        Failure(error)\n",
-        "      }\n",
-        "      Failure(error: Utf8Error) -> {\n",
-        "        console.write_error(\"trace summary input is not UTF-8\")\n",
-        "        Failure(error)\n",
-        "      }\n",
-        "    }\n",
-    );
+        .find("      Failure(error: TraceError) -> report_trace(error)\n")
+        .expect("the failure-type arms");
+    let end = original.find("    _ -> {\n").expect("the usage arm");
+    let mut arms = String::new();
+    for variant in [
+        "InvalidArgumentCount(actual)",
+        "BlankLine(line)",
+        "InvalidJson(line)",
+        "InvalidSchema(line)",
+        "InvalidRecord(line)",
+        "InvalidEvent(line)",
+        "InvalidSequence(line)",
+        "MixedExecution(line)",
+        "MixedComputation(line)",
+        "RecordAfterOutcome(line)",
+        "MissingOutcome(line)",
+    ] {
+        arms.push_str(&format!(
+            "      Failure({variant}) -> report_trace({variant})\n"
+        ));
+    }
+    for (variant, message) in [
+        ("Open(path, message)", "trace summary file IO failed"),
+        ("Read(path, message)", "trace summary file IO failed"),
+        ("Close(path, message)", "trace summary file IO failed"),
+        (
+            "LineTooLong(path, limit)",
+            "trace summary input record is too large",
+        ),
+        (
+            "InvalidUtf8(path, line)",
+            "trace summary input is not UTF-8",
+        ),
+    ] {
+        arms.push_str(&format!(
+            "      Failure({variant}) -> {{\n        console.write_error(\"{message}\")\n        Failure({variant})\n      }}\n"
+        ));
+    }
+    arms.push_str("    }\n");
     let rewritten = format!(
-        "import std/io.{{FileError}}\nimport std/io.{{Utf8Error}}\n{}{arms}{}",
+        concat!(
+            "import std/io.{{Close}}\nimport std/io.{{InvalidUtf8}}\n",
+            "import std/io.{{Open}}\nimport std/io.{{Read}}\n{}{}{}"
+        ),
         &original[..start],
+        arms,
         &original[end..]
     );
     let contract = |source: &str| {

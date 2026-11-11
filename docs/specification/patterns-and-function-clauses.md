@@ -480,7 +480,7 @@ Its meaning depends on the type of the value it matches:
   all payloads ignored. A variant or struct pattern matches that one member.
 
 A failure-type pattern replaces one arm per variant. The trace summarizer's
-`main` currently lists every IO variant. With failure-type patterns it reads:
+`main` once listed every IO variant. With failure-type patterns it reads:
 
 <!-- chimi: fragment -->
 ```chimi
@@ -770,7 +770,7 @@ specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2022`:
 | TP-05 | `Money(cents: 2500)` as a pattern | `S1001`; message says patterns are positional |
 | TP-06 | `-1` literal pattern | Compiles; matches negative one |
 | TP-07 | `"é"` against a decomposed `"é"` | Runtime: no match |
-| FP-01 | The trace summarizer `main` with failure-type arms | Compiles; residual row matches the original |
+| FP-01 | The trace summarizer `main` with failure-type arms | Compiles; residual row matches the same `main` with one arm per variant |
 | FP-02 | `Failure(error: FileError)` against a row without `FileError` | `T4224` |
 | FP-03 | Generic recovery thunk with `Failure(error: FileError)` | Compiles; residual row `E - FileError` |
 | FP-04 | The same arm with a guard | Compiles; nothing subtracted |
