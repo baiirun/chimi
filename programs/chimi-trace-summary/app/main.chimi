@@ -121,7 +121,9 @@ fn add_event(state: Summary, event: Text, fields: Map<Text, Value>) -> Summary {
       _ -> Failure(InvalidRecord(state.line))
     }
     "operation_completed" -> case Map.get(fields, "operation") {
-      Some(Value.Text(operation)) -> { ..state, operations: increment(state.operations, operation) }
+      Some(Value.Text(operation)) -> {
+        ..state, operations: increment(state.operations, operation)
+      }
       _ -> Failure(InvalidRecord(state.line))
     }
     "computation_started" -> state
@@ -187,7 +189,9 @@ fn add_record(state: Summary, line: Text) -> Summary {
 fn add_line(state: Summary, line: Text) -> Summary {
   case state.terminal_seen {
     True -> Failure(RecordAfterOutcome(state.line))
-    False -> { ..add_record(state, line), line: state.line + 1, records: state.records + 1 }
+    False -> {
+      ..add_record(state, line), line: state.line + 1, records: state.records + 1
+    }
   }
 }
 
@@ -217,26 +221,24 @@ fn finish(state) {
   Failure(MissingOutcome(state.line))
 }
 
-fn summarize(path: Text) -> Text
-  needs { files: FileSystem }
-{
+fn summarize(path: Text) -> Text needs {
+  files: FileSystem
+} {
   files.process_utf8_lines(IO.path(path), empty_summary, add_line)
   |> finish
 }
 
-fn report_trace(error: TraceError) -> Void
-  needs { console: Console }
-{
+fn report_trace(error: TraceError) -> Void needs {
+  console: Console
+} {
   console.write_error("trace summary failed")
   Failure(error)
 }
 
-pub fn main(arguments: List<Text>) -> Void
-  needs {
-    files: FileSystem,
-    console: Console,
-  }
-{
+pub fn main(arguments: List<Text>) -> Void needs {
+  files: FileSystem,
+  console: Console,
+} {
   case arguments {
     [path] -> case summarize(path) {
       Success(report) -> console.write_line(report)

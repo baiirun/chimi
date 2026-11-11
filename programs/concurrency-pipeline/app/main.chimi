@@ -45,9 +45,7 @@ pub fn main() -> Int {
   let result_receiver = results.receiver
   let result_completion = results.completion
   let run = fn() -> Int {
-    worker(job_receiver, result_sender, result_completion) using {
-      transformer: transformer,
-    }
+    worker(job_receiver, result_sender, result_completion) using { transformer: transformer }
   }
   Channel.send(job_sender, 1)
   let child = Task.start(run)

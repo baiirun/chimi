@@ -77,6 +77,17 @@ fn format_parse(parsed: &ParseResult) -> String {
         if matches!(kind, TokenKind::End | TokenKind::Whitespace) || token.is_missing() {
             continue;
         }
+        match kind {
+            TokenKind::LeftParen
+            | TokenKind::LeftBracket
+            | TokenKind::LeftBrace
+            | TokenKind::InterpolationOpen => writer.open_group(kind),
+            TokenKind::RightParen
+            | TokenKind::RightBracket
+            | TokenKind::RightBrace
+            | TokenKind::InterpolationClose => writer.close_group(),
+            _ => {}
+        }
         let next = next_significant(&tokens, index + 1);
         match kind {
             TokenKind::InterpolationOpen => interpolation_depth += 1,
@@ -146,7 +157,7 @@ fn format_parse(parsed: &ParseResult) -> String {
         }
         // A record type is written on one line, like the type it sits in, and so
         // is a short record or record update.
-        if is_record_type_syntax(token) || in_short_record(token) {
+        if is_record_type_syntax(token) || in_short_record(token) || in_short_lambda(token) {
             match kind {
                 TokenKind::Newline => {
                     writer.space();
@@ -199,7 +210,12 @@ fn format_parse(parsed: &ParseResult) -> String {
                 writer.flush();
             }
             TokenKind::LeftBrace => {
-                writer.space();
+                if !matches!(
+                    previous,
+                    Some(TokenKind::LeftParen | TokenKind::LeftBracket)
+                ) {
+                    writer.space();
+                }
                 writer.write("{");
                 writer.flush();
                 writer.indent += 1;
@@ -435,6 +451,37 @@ fn in_short_record(token: &SyntaxToken<'_>) -> bool {
     false
 }
 
+/// Whether `token` lies in a function expression written on one line in the
+/// source, such as `fn(value: Int) -> Int { value + 10 }`: one without a line
+/// break, comment, or pipeline, at most `SHORT_RECORD_WIDTH` wide. The formatter
+/// keeps it on one line instead of expanding its body.
+fn in_short_lambda(token: &SyntaxToken<'_>) -> bool {
+    let mut node = Some(token.parent());
+    while let Some(current) = node {
+        if current.kind() == NodeKind::FunctionExpression && is_short_lambda(&current) {
+            return true;
+        }
+        node = current.parent();
+    }
+    false
+}
+
+fn is_short_lambda(function: &crate::syntax::SyntaxNode<'_>) -> bool {
+    let mut width = 0_usize;
+    for token in function.descendant_tokens() {
+        match token.kind() {
+            TokenKind::Whitespace => continue,
+            TokenKind::Newline | TokenKind::Comment | TokenKind::Pipe => return false,
+            _ => {}
+        }
+        width += token.text().len() + 1;
+        if width > SHORT_RECORD_WIDTH + 1 {
+            return false;
+        }
+    }
+    true
+}
+
 fn is_short_record(record: &crate::syntax::SyntaxNode<'_>) -> bool {
     let mut width = 0_usize;
     for token in record.descendant_tokens() {
@@ -445,7 +492,7 @@ fn is_short_record(record: &crate::syntax::SyntaxNode<'_>) -> bool {
                 if !matches!(
                     token.parent().kind(),
                     NodeKind::RecordExpression | NodeKind::RecordType
-                ) =>
+                ) && !in_short_lambda(&token) =>
             {
                 return false;
             }
@@ -579,15 +626,49 @@ const fn word_kind(kind: TokenKind) -> bool {
     )
 }
 
+struct OpenGroup {
+    id: usize,
+    kind: TokenKind,
+    /// Whether a line break inside this `(` or `[` indented its contents; the
+    /// matching close then starts its own line one level out.
+    indented: bool,
+}
+
 #[derive(Default)]
 struct Writer {
     output: String,
     line: String,
     indent: usize,
     brace_depth: usize,
+    /// Every open bracket, innermost last. A line that ends inside a `(` or `[`
+    /// (its last token was written while that bracket was innermost) indents
+    /// the rest of the bracket's contents one level; braces indent themselves.
+    groups: Vec<OpenGroup>,
+    next_group: usize,
+    /// The innermost open bracket when the current line was last written to.
+    line_group: Option<usize>,
 }
 
 impl Writer {
+    fn open_group(&mut self, kind: TokenKind) {
+        self.groups.push(OpenGroup {
+            id: self.next_group,
+            kind,
+            indented: false,
+        });
+        self.next_group += 1;
+    }
+
+    /// Closes the innermost bracket. An indented `(` or `[` puts its close on a
+    /// line of its own, one level out.
+    fn close_group(&mut self) {
+        if self.groups.last().is_some_and(|group| group.indented) {
+            self.flush();
+            self.indent = self.indent.saturating_sub(1);
+        }
+        self.groups.pop();
+    }
+
     fn finish(mut self) -> String {
         self.flush();
         while self.output.ends_with("\n\n") {
@@ -609,6 +690,7 @@ impl Writer {
 
     fn write(&mut self, text: &str) {
         self.line.push_str(text);
+        self.line_group = self.groups.last().map(|group| group.id);
     }
 
     fn trim_space(&mut self) {
@@ -631,6 +713,15 @@ impl Writer {
         self.output.push_str(value);
         self.output.push('\n');
         self.line.clear();
+        let line_group = self.line_group.take();
+        if let Some(group) = self.groups.last_mut()
+            && Some(group.id) == line_group
+            && matches!(group.kind, TokenKind::LeftParen | TokenKind::LeftBracket)
+            && !group.indented
+        {
+            group.indented = true;
+            self.indent += 1;
+        }
     }
 
     fn blank_line(&mut self) {
@@ -749,7 +840,8 @@ mod tests {
         let long = format!("const c = {{ first: \"{}\", second: 2 }}\n", "x".repeat(70));
         let report = format(&long);
         assert!(report.text().contains("{\n  first: "), "{}", report.text());
-        let provider = "const fake = { read: fn(path: Text) { 40 } }\n";
+        // A one-line function stays inline; one whose body spans lines is a block.
+        let provider = "const fake = { read: fn(path: Text) {\n  40\n} }\n";
         let report = format(provider);
         assert!(
             report.text().starts_with("const fake = {\n"),
@@ -776,6 +868,103 @@ mod tests {
             report.text()
         );
         assert_eq!(format(report.text()).text(), report.text());
+    }
+
+    #[test]
+    fn contents_of_a_multi_line_call_or_list_indent_one_level() {
+        let source = concat!(
+            "fn f(\n",
+            "a: Int,\n",
+            "b: Int,\n",
+            ") -> Int {\n",
+            "  g(1,\n",
+            "  2)\n",
+            "  h([\n",
+            "  (1, 2),\n",
+            "  (3, 4),\n",
+            "  ])\n",
+            "}\n",
+        );
+        let report = format(source);
+        assert!(!report.is_blocked(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report.text(),
+            concat!(
+                "fn f(\n",
+                "  a: Int,\n",
+                "  b: Int,\n",
+                ") -> Int {\n",
+                "  g(1,\n",
+                "    2\n",
+                "  )\n",
+                "  h([\n",
+                "    (1, 2),\n",
+                "    (3, 4),\n",
+                "  ])\n",
+                "}\n",
+            )
+        );
+        assert_eq!(format(report.text()).text(), report.text());
+    }
+
+    #[test]
+    fn a_one_line_function_argument_stays_on_one_line() {
+        let source = concat!(
+            "fn f(items: List<Int>) -> List<Int> {\n",
+            "  let add = { apply: fn(value: Int) -> Int { value + 10 } }\n",
+            "  List.map(items, fn(item: Int) -> Int { item * 2 })\n",
+            "}\n",
+        );
+        let report = format(source);
+        assert!(!report.is_blocked(), "{}", report.render_diagnostics());
+        assert_eq!(report.text(), source);
+    }
+
+    #[test]
+    fn a_block_argument_opens_right_after_the_parenthesis() {
+        let long = "x".repeat(70);
+        let source = format!("fn f() -> Text {{\n  render({{ first: \"{long}\" }})\n}}\n");
+        let report = format(&source);
+        assert!(!report.is_blocked(), "{}", report.render_diagnostics());
+        assert!(report.text().contains("  render({\n"), "{}", report.text());
+    }
+
+    /// The repository's programs are the formatter's showcase: each must already
+    /// be in canonical form.
+    #[test]
+    fn every_repository_program_is_canonically_formatted() {
+        fn chimi_files(directory: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    chimi_files(&path, found);
+                } else if path
+                    .extension()
+                    .is_some_and(|extension| extension == "chimi")
+                {
+                    found.push(path);
+                }
+            }
+        }
+        let programs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../programs");
+        let mut files = Vec::new();
+        chimi_files(&programs, &mut files);
+        assert!(
+            !files.is_empty(),
+            "no programs under {}",
+            programs.display()
+        );
+        for path in files {
+            let source = std::fs::read_to_string(&path).unwrap();
+            let report = format(&source);
+            assert!(!report.is_blocked(), "{}", report.render_diagnostics());
+            assert_eq!(
+                report.text(),
+                source,
+                "{} is not canonically formatted",
+                path.display()
+            );
+        }
     }
 
     #[test]
