@@ -2258,3 +2258,62 @@ fn an_unknown_qualified_variant_is_unresolved() {
     ));
     assert_eq!(codes, ["E_UNRESOLVED_MEMBER"]);
 }
+
+// Publishing a struct exposes its type, not its fields (ts-9c6abd): the
+// declaring module reads them, another module gets E_PRIVATE_STRUCT_FIELD,
+// pointed at the published accessor when one exists.
+fn money_diagnostics(reader: &str) -> Vec<(String, String)> {
+    let money = ProjectSource::new(
+        "money",
+        SourceSnapshot::from_text(
+            "money.chimi",
+            concat!(
+                "pub struct Money {\n",
+                "  cents: Int\n",
+                "  currency: Text\n",
+                "}\n",
+                "pub fn make(cents: Int) -> Money { Money(cents, \"USD\") }\n",
+                "pub fn cents(money: Money) -> Int { money.cents }\n",
+            ),
+        ),
+    )
+    .expect("valid module path");
+    let main = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", reader))
+        .expect("valid module path");
+    Compiler::type_project(vec![money, main])
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic.code().to_owned(),
+                diagnostic.message().to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn struct_fields_are_private_to_their_declaring_module() {
+    let reader = |body: &str| {
+        format!(
+            "import money as Money\nimport money.{{Money}}\n\
+             fn size(_text: Text) -> Int {{ 1 }}\n\
+             pub fn main() -> Int {{ {body} }}\n"
+        )
+    };
+    assert_eq!(money_diagnostics(&reader("Money.cents(Money.make(5))")), []);
+    assert_eq!(
+        money_diagnostics(&reader("Money.make(5).cents")),
+        [(
+            "E_PRIVATE_STRUCT_FIELD".to_owned(),
+            "field cents of Money is module-private; use Money.cents(Money.make(5))".to_owned()
+        )]
+    );
+    assert_eq!(
+        money_diagnostics(&reader("size(Money.make(5).currency)")),
+        [(
+            "E_PRIVATE_STRUCT_FIELD".to_owned(),
+            "field currency of Money is module-private".to_owned()
+        )]
+    );
+}

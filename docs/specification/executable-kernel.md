@@ -98,6 +98,9 @@ an explicit member import permits an unqualified source spelling.
 Declarations are private unless prefixed with `pub`. Publishing a struct
 exposes its nominal type but does not expose its fields or implicit constructor.
 External construction and field access therefore use public module functions.
+Calling the implicit constructor from another module is
+`E_PRIVATE_STRUCT_CONSTRUCTOR`, and reading a field there is
+`E_PRIVATE_STRUCT_FIELD`.
 Publishing an enum exposes its variants as constructors.
 
 ## Data Types

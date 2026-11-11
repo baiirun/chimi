@@ -2509,6 +2509,7 @@ impl ProjectTypeChecker {
                     }
                 } else {
                     let receiver = self.infer_expression(module_id, receiver, generics, bindings);
+                    self.reject_private_field(module_id, expression, receiver.success, member);
                     let success = self
                         .field_type(receiver.success, &member.text)
                         .unwrap_or_else(|| {
@@ -5504,6 +5505,72 @@ impl ProjectTypeChecker {
             .collect::<Vec<_>>();
         parameters.sort_unstable();
         parameters
+    }
+
+    /// Publishing a struct exposes its nominal type, not its fields, so a
+    /// field of a source struct is readable only in its declaring module.
+    /// When that module publishes a function named after the field and the
+    /// reader imports it under an alias, the message names the accessor call.
+    fn reject_private_field(
+        &mut self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        receiver_type: TypeId,
+        member: &crate::semantic::Name,
+    ) {
+        let member_range = member.range;
+        let member = member.text.as_str();
+        let receiver_type = self.resolve_inference_type(receiver_type);
+        let CanonicalType::Named { symbol, .. } = &self.types[receiver_type.raw() as usize] else {
+            return;
+        };
+        let owner = self.resolved.symbol(*symbol);
+        let Some(owner_module) = owner.module_id else {
+            return;
+        };
+        if owner.kind != ProjectSymbolKind::Struct
+            || owner_module == module_id
+            || self.field_type(receiver_type, member).is_none()
+        {
+            return;
+        }
+        let type_name = owner.name.clone();
+        let declaring = &self.resolved.semantic.modules[owner_module.raw() as usize];
+        let has_accessor = declaring.declarations.iter().any(|declaration| {
+            declaration.kind == ModuleDeclarationKind::Function
+                && declaration.public
+                && declaration.name.text == member
+        });
+        let current = &self.resolved.semantic.modules[module_id.raw() as usize];
+        let alias = current
+            .imports
+            .iter()
+            .find_map(|import| match &import.binding {
+                crate::semantic::ImportBinding::Alias(alias) if import.path == declaring.path => {
+                    Some(alias.text.clone())
+                }
+                _ => None,
+            });
+        let message = match alias.filter(|_| has_accessor) {
+            Some(alias) => {
+                let start = expression_range(expression).start() as usize;
+                let receiver_text = current.source.text()[start..member_range.start() as usize]
+                    .trim_end()
+                    .trim_end_matches('.')
+                    .trim_end();
+                format!(
+                    "field {member} of {type_name} is module-private; \
+                     use {alias}.{member}({receiver_text})"
+                )
+            }
+            None => format!("field {member} of {type_name} is module-private"),
+        };
+        self.type_error_range(
+            module_id,
+            "E_PRIVATE_STRUCT_FIELD",
+            expression_range(expression),
+            message,
+        );
     }
 
     fn field_type(&self, receiver: TypeId, member: &str) -> Option<TypeId> {

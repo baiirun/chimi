@@ -2198,11 +2198,9 @@ fn check_errors(root: &Path, entry: &str) -> Vec<(String, String, String)> {
 // - missing_dependency, interface_shape_mismatch: `Checkout`, `cart`,
 //   `Stripe`, `Warehouse`, and `Receipt` are undefined, so name resolution
 //   fails first.
-// - private_struct_field_access: the compiler accepts `money.cents` from
-//   another module, although the kernel spec makes struct fields private.
 #[test]
 fn negative_golden_fixtures_are_rejected_with_their_diagnostic() {
-    let cases: [(&str, &str, &str, &str); 4] = [
+    let cases: [(&str, &str, &str, &str); 5] = [
         (
             "non_exhaustive_case",
             "type",
@@ -2226,6 +2224,12 @@ fn negative_golden_fixtures_are_rejected_with_their_diagnostic() {
             "name",
             "E_PRIVATE_STRUCT_CONSTRUCTOR",
             "Money.Money(-100)",
+        ),
+        (
+            "private_struct_field_access",
+            "type",
+            "E_PRIVATE_STRUCT_FIELD",
+            "money.cents",
         ),
     ];
     for (fixture, stage, code, span) in cases {
