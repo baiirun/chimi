@@ -1,0 +1,13 @@
+[package]
+name = "chimi-supervised-process-runtime-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+chimi-fiber = { path = "../../runtime/chimi-fiber" }
+
+[build-dependencies]
+cc = "=1.4.0"
+
+[workspace]
