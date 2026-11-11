@@ -5811,6 +5811,73 @@ fn recursion_through_clauses_refers_to_the_whole_group() {
     );
 }
 
+// ts-8acfe5: an anonymous record type is written `{ name: Type, ... }` in
+// parameter, return, field, and function types; it is the type of a record
+// value with exactly those fields, in any order.
+#[test]
+fn record_types_are_written_in_parameters_returns_and_fields() {
+    let source = concat!(
+        "struct Holder {\n",
+        "  point: { x: Int, y: Int }\n",
+        "}\n",
+        "fn sum(point: { y: Int, x: Int }) -> Int { point.x + point.y }\n",
+        "fn origin() -> { x: Int, y: Int } { { x: 1, y: 2 } }\n",
+        "fn apply(f: fn({ x: Int, y: Int }) -> Int, point: { x: Int, y: Int }) -> Int {\n",
+        "  f(point)\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  let holder = Holder({ y: 20, x: 10 })\n",
+        "  sum(origin()) + apply(sum, holder.point)\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("record-types", source),
+        "\"outcome\":\"success\",\"value\":33"
+    );
+}
+
+#[test]
+fn a_record_type_admits_only_records_with_its_fields() {
+    let call = |argument: &str| {
+        check_codes(&format!(
+            "fn sum(point: {{ x: Int, y: Int }}) -> Int {{ point.x + point.y }}\npub fn main() -> Int {{ sum({argument}) }}\n"
+        ))
+    };
+    assert!(call("{ x: 1, y: 2 }").is_empty());
+    assert_eq!(call("{ x: 1 }"), ["T4203"]);
+    assert_eq!(call("{ x: 1, y: 2, z: 3 }"), ["T4203"]);
+    assert_eq!(call("{ x: 1, y: \"two\" }"), ["T4203"]);
+    assert_eq!(
+        check_codes(
+            "fn f(point: { x: Int, x: Int }) -> Int { point.x }\npub fn main() -> Int { 0 }\n"
+        ),
+        ["T4211"]
+    );
+    assert_eq!(
+        check_codes("fn f(point: { x: Missing }) -> Int { 0 }\npub fn main() -> Int { 0 }\n"),
+        ["E_UNRESOLVED_TYPE"]
+    );
+}
+
+// Tuple types `(A, B)` and record types `{ name: Type }` nest inside each other.
+#[test]
+fn tuple_and_record_types_nest_in_type_positions() {
+    let source = concat!(
+        "fn split(pair: ({ x: Int }, Int)) -> { both: (Int, Int) } {\n",
+        "  let (point, n) = pair\n",
+        "  { both: (point.x, n) }\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  let (a, b) = split(({ x: 30 }, 4)).both\n",
+        "  a + b\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("tuple-record-types", source),
+        "\"outcome\":\"success\",\"value\":34"
+    );
+}
+
 // ts-65f575: `chimi run` holds as deep a recursion as a native build does.
 #[test]
 fn deep_runtime_recursion_completes_on_both_backends() {

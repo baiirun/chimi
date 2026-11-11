@@ -465,6 +465,11 @@ pub(crate) enum TypeUse {
         semantic_id: SemanticId,
         elements: Vec<TypeUse>,
     },
+    /// An anonymous record type, fields in source order.
+    Record {
+        semantic_id: SemanticId,
+        fields: Vec<TypedField>,
+    },
 }
 
 impl TypeUse {
@@ -472,7 +477,8 @@ impl TypeUse {
         match self {
             Self::Named { semantic_id, .. }
             | Self::Function { semantic_id, .. }
-            | Self::Tuple { semantic_id, .. } => *semantic_id,
+            | Self::Tuple { semantic_id, .. }
+            | Self::Record { semantic_id, .. } => *semantic_id,
         }
     }
 }
@@ -1492,6 +1498,18 @@ impl ProjectLowerer {
                     .filter(|child| child.kind() == NodeKind::Type)
                     .map(|child| self.lower_type(&child))
                     .collect(),
+            };
+        }
+        if let Some(record) = direct_child(node, NodeKind::RecordType) {
+            let fields = record
+                .child_nodes()
+                .into_iter()
+                .filter(|child| child.kind() == NodeKind::NamedTypeField)
+                .filter_map(|field| self.lower_typed_field(&field))
+                .collect();
+            return TypeUse::Record {
+                semantic_id,
+                fields,
             };
         }
         if let Some(function) = direct_child(node, NodeKind::FunctionType) {

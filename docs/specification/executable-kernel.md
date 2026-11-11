@@ -179,6 +179,13 @@ An anonymous record is a transparent structural product:
 Records MUST contain at least one field. Records provide open local data and
 structural interface implementations; they do not create nominal identity.
 
+A record type is written `{ name: Type, ... }` wherever a type is written,
+including parameters, returns, fields, type arguments, and function types:
+`fn sum(point: { x: Int, y: Int }) -> Int`. It denotes the records with exactly
+those field names and field types, so field order does not matter. A record type
+MUST have at least one field, and a field name MUST occur once (`T4211`). The
+formatter writes a record type on one line.
+
 ### Absence and completion
 
 Chimi has no `Nil`, `null`, or nullable value. Optional data uses `Option<T>`.

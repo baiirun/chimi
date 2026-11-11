@@ -7045,6 +7045,30 @@ impl ProjectTypeChecker {
                     .collect();
                 self.intern_type(CanonicalType::Tuple(elements))
             }
+            TypeUse::Record { fields, .. } => {
+                let mut structural_fields = Vec::<StructuralField>::new();
+                for field in fields {
+                    let type_id = self.lower_value_type(module_id, &field.type_use, generics);
+                    if structural_fields
+                        .iter()
+                        .any(|existing| existing.name == field.name.text)
+                    {
+                        self.type_error_range(
+                            module_id,
+                            "T4211",
+                            field.name.range,
+                            format!("record field `{}` occurs more than once", field.name.text),
+                        );
+                    } else {
+                        structural_fields.push(StructuralField {
+                            name: field.name.text.clone(),
+                            type_id,
+                        });
+                    }
+                }
+                structural_fields.sort_by(|left, right| left.name.cmp(&right.name));
+                self.intern_type(CanonicalType::Record(structural_fields))
+            }
         };
         self.type_facts
             .insert((module_id, type_use.semantic_id()), result);

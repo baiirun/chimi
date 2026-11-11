@@ -1356,6 +1356,12 @@ impl ProjectResolver {
             }
             return;
         }
+        if let TypeUse::Record { fields, .. } = type_use {
+            for field in fields {
+                self.resolve_type(module_index, &field.type_use, generics);
+            }
+            return;
+        }
         let TypeUse::Named {
             semantic_id,
             path,

@@ -255,6 +255,7 @@ pub(crate) enum NodeKind {
     FunctionType,
     /// `(T1, T2, ...)` inside a `Type`.
     TupleType,
+    RecordType,
     TypeArguments,
     RequirementClause,
     RequirementRecord,
@@ -326,6 +327,7 @@ impl NodeKind {
             Self::Type => "type",
             Self::FunctionType => "function_type",
             Self::TupleType => "tuple_type",
+            Self::RecordType => "record_type",
             Self::TypeArguments => "type_arguments",
             Self::RequirementClause => "requirement_clause",
             Self::RequirementRecord => "requirement_record",
@@ -1711,6 +1713,8 @@ impl<'source> Parser<'source> {
             self.parse_function_type();
         } else if self.at(TokenKind::LeftParen) {
             self.parse_tuple_type();
+        } else if self.at(TokenKind::LeftBrace) {
+            self.parse_record_type();
         } else if self.accept(TokenKind::Identifier) || self.accept(TokenKind::Void) {
             while self.accept(TokenKind::Dot) {
                 self.expect(TokenKind::Identifier);
@@ -1745,6 +1749,28 @@ impl<'source> Parser<'source> {
         }
         self.skip_newlines();
         self.expect(TokenKind::RightParen);
+        self.finish();
+    }
+
+    /// Parses an anonymous record type `{ name: Type, ... }`.
+    /// Ensures: one `RecordType` node with a `NamedTypeField` per field; fields are
+    /// separated by commas or line breaks, and `{}` reports `S1001` like an empty
+    /// record value.
+    fn parse_record_type(&mut self) {
+        self.start(NodeKind::RecordType);
+        self.bump();
+        self.skip_newlines();
+        if self.at(TokenKind::RightBrace) {
+            self.error_at_current("a record type must have at least one field");
+        }
+        while self.at(TokenKind::Identifier) {
+            self.parse_named_type_field();
+            let separated = self.accept(TokenKind::Comma);
+            if !self.skip_newlines() && !separated {
+                break;
+            }
+        }
+        self.expect(TokenKind::RightBrace);
         self.finish();
     }
 

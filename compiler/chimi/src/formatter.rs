@@ -120,6 +120,36 @@ fn format_parse(parsed: &ParseResult) -> String {
                 _ => {}
             }
         }
+        // A record type is written on one line, like the type it sits in.
+        if is_record_type_syntax(token) {
+            match kind {
+                TokenKind::Newline => {
+                    writer.space();
+                    previous = Some(kind);
+                    continue;
+                }
+                TokenKind::LeftBrace => {
+                    if !matches!(
+                        previous,
+                        Some(TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::Less)
+                    ) {
+                        writer.space();
+                    }
+                    writer.write("{ ");
+                    previous = Some(kind);
+                    saw_newline = false;
+                    continue;
+                }
+                TokenKind::RightBrace => {
+                    writer.trim_space();
+                    writer.write(" }");
+                    previous = Some(kind);
+                    saw_newline = false;
+                    continue;
+                }
+                _ => {}
+            }
+        }
         match kind {
             TokenKind::Newline => {
                 if saw_newline && !joining_clauses {
@@ -356,12 +386,17 @@ fn is_requirement_syntax(token: &SyntaxToken<'_>) -> bool {
     )
 }
 
+fn is_record_type_syntax(token: &SyntaxToken<'_>) -> bool {
+    token_has_ancestor(token, &[NodeKind::RecordType])
+}
+
 fn is_type_syntax(token: &SyntaxToken<'_>) -> bool {
     token_has_ancestor(
         token,
         &[
             NodeKind::Type,
             NodeKind::FunctionType,
+            NodeKind::RecordType,
             NodeKind::TypeArguments,
             NodeKind::GenericParameters,
             NodeKind::GenericParameter,
@@ -609,6 +644,25 @@ mod tests {
         assert!(report.text().contains("}\n  {"), "{}", report.text());
         let reparsed = format(report.text());
         assert!(!reparsed.is_blocked(), "{}", reparsed.render_diagnostics());
+    }
+
+    #[test]
+    fn a_record_type_stays_on_the_line_of_its_declaration() {
+        let source = concat!(
+            "fn sum(point: {\n  x: Int,\n  y: Int\n}, items: List<{ a: Int }>) -> { total: Int } {\n",
+            "  { total: point.x + point.y }\n",
+            "}\n",
+        );
+        let report = format(source);
+        assert!(!report.is_blocked(), "{}", report.render_diagnostics());
+        assert!(
+            report.text().starts_with(
+                "fn sum(point: { x: Int, y: Int }, items: List<{ a: Int }>) -> { total: Int } {\n"
+            ),
+            "{}",
+            report.text()
+        );
+        assert_eq!(format(report.text()).text(), report.text());
     }
 
     #[test]
