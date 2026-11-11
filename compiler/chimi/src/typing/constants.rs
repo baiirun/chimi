@@ -7,10 +7,11 @@
 
 use super::{CanonicalType, ProjectTypeChecker, TypedProject};
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
-use crate::ids::{ModuleId, SemanticId, SymbolId, TypeId};
-use crate::resolution::{ProjectSymbolKind, ReferenceResolution};
+use crate::ids::{FileId, ModuleId, SemanticId, SymbolId, TypeId};
+use crate::resolution::{ProjectReference, ProjectSymbolKind, ReferenceResolution};
 use crate::semantic::ModuleDeclarationKind;
 use crate::standard::{StandardSymbol, StandardType};
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 
 impl ProjectTypeChecker {
@@ -91,7 +92,9 @@ pub(super) fn check(
     undetermined: &HashSet<(ModuleId, SemanticId)>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let references = constant_references(typed);
+    // Only a constant without a usable type can be on an unreported cycle, so the
+    // project-wide reference graph is built for the first such constant, not on every check.
+    let references = OnceCell::new();
     for module in &typed.resolved.semantic.modules {
         if !modules.contains(&module.id) {
             continue;
@@ -163,7 +166,12 @@ pub(super) fn check(
                             .get(&(module.id, declaration.semantic_id))
                             .is_none_or(|type_id| contains_poison(typed, *type_id))
                 })
-                .and_then(|symbol| reference_cycle(&references, symbol))
+                .and_then(|symbol| {
+                    reference_cycle(
+                        references.get_or_init(|| constant_references(typed)),
+                        symbol,
+                    )
+                })
             {
                 // Constants that only name each other have no type to infer, so the cycle
                 // is found here instead of by evaluation. The cycle's first constant reports it.
@@ -198,10 +206,30 @@ pub(super) fn check(
 }
 
 /// The constants each constant's initializer names directly.
+///
+/// Ensures: linear in the number of references plus, per constant, a binary search
+/// and the references inside its initializer.
 fn constant_references(typed: &TypedProject) -> HashMap<SymbolId, Vec<SymbolId>> {
+    let mut by_file = HashMap::<FileId, Vec<&ProjectReference>>::new();
+    for reference in &typed.resolved.references {
+        let ReferenceResolution::Resolved(target) = reference.resolution else {
+            continue;
+        };
+        if typed.resolved.symbol(target).kind == ProjectSymbolKind::Constant {
+            by_file
+                .entry(reference.file_id)
+                .or_default()
+                .push(reference);
+        }
+    }
+    for file_references in by_file.values_mut() {
+        file_references.sort_by_key(|reference| reference.range.start());
+    }
     let mut references = HashMap::<SymbolId, Vec<SymbolId>>::new();
     for module in &typed.resolved.semantic.modules {
-        let file_id = module.source.file_id();
+        let file_references = by_file
+            .get(&module.source.file_id())
+            .map_or(&[][..], Vec::as_slice);
         for declaration in &module.declarations {
             let (ModuleDeclarationKind::Constant, Some(body)) =
                 (declaration.kind, &declaration.body)
@@ -217,21 +245,14 @@ fn constant_references(typed: &TypedProject) -> HashMap<SymbolId, Vec<SymbolId>>
                 continue;
             };
             let range = body.range();
-            let targets = typed
-                .resolved
-                .references
+            let first = file_references
+                .partition_point(|reference| reference.range.start() < range.start());
+            let targets = file_references[first..]
                 .iter()
-                .filter(|reference| {
-                    reference.file_id == file_id
-                        && reference.range.start() >= range.start()
-                        && reference.range.end() <= range.end()
-                })
+                .take_while(|reference| reference.range.start() < range.end())
+                .filter(|reference| reference.range.end() <= range.end())
                 .filter_map(|reference| match reference.resolution {
-                    ReferenceResolution::Resolved(target)
-                        if typed.resolved.symbol(target).kind == ProjectSymbolKind::Constant =>
-                    {
-                        Some(target)
-                    }
+                    ReferenceResolution::Resolved(target) => Some(target),
                     _ => None,
                 })
                 .collect();

@@ -255,6 +255,11 @@ per source byte, baseline 24.85).
 
 ### 1. Compiler semantic pipeline is 2x to 6x slower (M7 cases)
 
+**Resolved** (`ts-23b5b9`): the cause was an O(constants × references) scan
+in `typing/constants.rs`, not constant evaluation. See
+[the follow-up](phase-1-regression-followup.md) for the profile, the fix, and
+before/after numbers.
+
 The clean type pipeline is +114%, the local edit +470% and the fanout edit
 +229%. Resolution alone and the no-op reanalysis are unchanged, so the added
 time is in typing or lowering, not in resolution, parsing, or snapshot reuse.
@@ -291,6 +296,9 @@ $BENCH --warmups 3 --samples 15 --semantics-only --semantic-case local --bench
 Run the same at `e88cf9e` and compare `p50_ns`.
 
 ### 2. Cold `chimi build` is 2.6x slower (two-module fixture)
+
+**Measured** (`ts-1db9f0`): the `runtime.c` compile is 663 ms of a 791 ms cold
+build (140 ms at `27ad088`). See [the follow-up](phase-1-regression-followup.md).
 
 768 ms against 293.9 ms p50. Warm builds and the edit rebuild are unchanged
 (+6% and +1%). Cold builds compile the C runtime archive (and the fiber archive
