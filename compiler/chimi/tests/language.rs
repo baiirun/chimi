@@ -3226,6 +3226,35 @@ fn constant_diagnostics_name_what_broke_the_rule() {
     assert!(messages[0].contains("a -> b -> a"), "{messages:?}");
 }
 
+// G7: a build-time defect reports the span of the operation that failed, inside the
+// called function, and names the constant being built.
+#[test]
+fn a_constant_defect_points_at_the_failing_operation() {
+    let source = concat!(
+        "fn first_or_defect(values: List<Int>) -> Int {\n",
+        "  case values {\n    [first, ..] -> first\n    [] -> 1 / 0\n  }\n}\n",
+        "const first = first_or_defect([])\n",
+        "pub fn main() -> Int { 0 }\n",
+    );
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    let diagnostics = Compiler::verify_project(vec![module]).expect_err("the constant defects");
+    let [diagnostic] = diagnostics.as_slice() else {
+        panic!("{diagnostics:?}");
+    };
+    assert_eq!(diagnostic.code(), "E5202");
+    let range = diagnostic.range();
+    assert_eq!(
+        &source[range.start() as usize..range.end() as usize],
+        "1 / 0"
+    );
+    assert!(
+        diagnostic.message().contains("constant `first`"),
+        "{}",
+        diagnostic.message()
+    );
+}
+
 #[test]
 fn a_module_let_carries_the_edit_to_const() {
     let module = ProjectSource::new(
@@ -3385,6 +3414,59 @@ fn interpolation_rejects_empty_unclosed_and_non_text_parts() {
     assert_eq!(codes("\"state: ${state}\""), ["T4325"]);
     assert_eq!(codes("\"flags: ${[1]}\""), ["T4325"]);
     assert!(codes("\"ok: ${\"${1}\"}\"").is_empty());
+    // An interpolation must close on its own line, even inside a delimited expression.
+    assert!(codes("\"sum: ${Text.append(\"a\",\n\"b\")}\"").contains(&"S1101".to_owned()));
+}
+
+// G9: interpolated parts evaluate left to right, so the first failing part decides
+// the failure.
+#[test]
+fn interpolated_parts_evaluate_left_to_right() {
+    let outcome = run_both(
+        "interpolation-order",
+        concat!(
+            "enum Problem {\n",
+            "  First\n",
+            "  Second\n",
+            "}\n",
+            "fn a() -> Text { Failure(First) }\n",
+            "fn b() -> Text { Failure(Second) }\n",
+            "pub fn main() -> Text {\n",
+            "  \"${a()} ${b()}\"\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        concat!(
+            "\"outcome\":\"expected_failure\",",
+            "\"error\":{\"type\":\"Problem\",\"variant\":\"First\",\"fields\":{}}"
+        )
+    );
+}
+
+// G9: an interpolated provider call adds its need to the enclosing function's row,
+// so a lambda that interpolates one must declare the need.
+#[test]
+fn interpolated_needs_join_the_enclosing_row() {
+    let callable = |parameter: &str| {
+        format!(
+            concat!(
+                "interface Names {{\n",
+                "  lookup: fn(Int) -> Text\n",
+                "}}\n",
+                "fn call(operation: {}) -> Text {{ operation() }}\n",
+                "fn greet() -> Text needs {{ names: Names }} {{\n",
+                "  call(fn() {{ \"hello ${{names.lookup(5)}}\" }})\n",
+                "}}\n",
+                "const naming = {{ lookup: fn(_id: Int) {{ \"a\" }} }}\n",
+                "pub fn main() -> Text {{ greet() using {{ names: naming }} }}\n",
+            ),
+            parameter
+        )
+    };
+    assert_eq!(check_codes(&callable("fn() -> Text")), ["T4203"]);
+    assert!(check_codes(&callable("fn() -> Text needs { names: Names }")).is_empty());
 }
 
 #[test]
