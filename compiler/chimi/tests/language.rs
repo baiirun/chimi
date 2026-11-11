@@ -1435,12 +1435,18 @@ fn int_parse_accepts_decimal_text_and_names_each_failure() {
     assert_eq!(
         std_outcome(
             "int-parse",
-            "pub fn main() -> List<Int> { [Int.parse(\"42\"), Int.parse(\"-9223372036854775808\")] }"
+            concat!(
+                "pub fn main() -> List<Int> {\n",
+                "  [Int.parse(\"42\"), Int.parse(\"-9223372036854775808\"),\n",
+                "   Int.parse(\"007\"), Int.parse(\"-0017\")]\n",
+                "}",
+            )
         ),
-        "\"outcome\":\"success\",\"value\":[42,-9223372036854775808]"
+        "\"outcome\":\"success\",\"value\":[42,-9223372036854775808,7,-17]"
     );
     for (text, variant) in [
         ("", "Empty"),
+        ("-", "InvalidDigit"),
         ("4x", "InvalidDigit"),
         ("+4", "InvalidDigit"),
         (" 4", "InvalidDigit"),
@@ -1463,12 +1469,18 @@ fn float_parse_rejects_text_outside_the_finite_literal_grammar() {
     assert_eq!(
         std_outcome(
             "float-parse",
-            "pub fn main() -> List<Float> { [Float.parse(\"-2.5e-3\"), Float.parse(\"7\")] }"
+            concat!(
+                "pub fn main() -> List<Float> {\n",
+                "  [Float.parse(\"-2.5e-3\"), Float.parse(\"7\"), Float.parse(\"007\"),\n",
+                "   Float.parse(\"0017.25\"), Float.parse(\"-0017\")]\n",
+                "}",
+            )
         ),
-        "\"outcome\":\"success\",\"value\":[-0.0025,7.0]"
+        "\"outcome\":\"success\",\"value\":[-0.0025,7.0,7.0,17.25,-17.0]"
     );
     for (text, variant) in [
         ("", "Empty"),
+        ("-", "Invalid"),
         ("nan", "Invalid"),
         ("inf", "Invalid"),
         ("1.", "Invalid"),
