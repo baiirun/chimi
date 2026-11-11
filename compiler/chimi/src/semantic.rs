@@ -3,7 +3,7 @@ use crate::ids::{FileId, ModuleId, SemanticId, TextRange};
 use crate::source::SourceSnapshot;
 use crate::syntax::{
     self, DeclarationSyntax, FileSyntax, FunctionDeclarationSyntax, NodeKind, ParseResult,
-    StructDeclarationSyntax, SyntaxNode, SyntaxToken, TokenKind, TypedSyntaxNode,
+    StructDeclarationSyntax, SyntaxNode, SyntaxToken, TextEscape, TokenKind, TypedSyntaxNode,
 };
 use std::sync::Arc;
 
@@ -2386,26 +2386,31 @@ fn text_literal_value(source: &str) -> String {
     decode_text(&source[1..source.len() - 1])
 }
 
-/// The text a literal chunk denotes. Only `\$` is decoded, to `$`, so a literal can
-/// write `${` without interpolating; every other escape is kept as written, as before
-/// interpolation existed.
+/// The text a literal chunk denotes, with each escape decoded. The lexer has already
+/// reported a malformed escape with `S1001`, so one is kept as written.
 fn decode_text(chunk: &str) -> String {
     let mut decoded = String::with_capacity(chunk.len());
-    let mut characters = chunk.chars();
-    while let Some(character) = characters.next() {
-        if character != '\\' {
-            decoded.push(character);
-            continue;
-        }
-        match characters.next() {
-            Some('$') => decoded.push('$'),
-            Some(escaped) => {
-                decoded.push('\\');
-                decoded.push(escaped);
+    let mut rest = chunk;
+    while let Some(backslash) = rest.find('\\') {
+        decoded.push_str(&rest[..backslash]);
+        let after = &rest[backslash + 1..];
+        rest = match syntax::text_escape(after) {
+            TextEscape::Valid { character, length } => {
+                decoded.push(character);
+                &after[length..]
             }
-            None => decoded.push('\\'),
-        }
+            TextEscape::Invalid { length, .. } => {
+                decoded.push('\\');
+                decoded.push_str(&after[..length]);
+                &after[length..]
+            }
+            TextEscape::Truncated => {
+                decoded.push('\\');
+                after
+            }
+        };
     }
+    decoded.push_str(rest);
     decoded
 }
 

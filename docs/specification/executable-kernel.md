@@ -46,7 +46,15 @@ management, deployment, or interoperability.
 - `//` begins a line comment. Comments and all whitespace are source trivia and
   MUST remain losslessly represented in the CST.
 - Decimal integer literals MAY contain `_` separators. Text literals use double
-  quotes and backslash escaping.
+  quotes and backslash escaping and cannot span lines.
+- A text literal accepts exactly these escapes: `\"` (quote), `\\` (backslash),
+  `\n` (line feed), `\r` (carriage return), `\t` (tab), `\$` (dollar sign, so
+  `\${` is literal text rather than an interpolation), and `\u{X}`, where `X`
+  is one to six hex digits naming a Unicode scalar value (`\u{e9}` is `é`). Any
+  other escape, a `\u` escape without its braces or digits, and a `\u` escape
+  naming a surrogate or a value above `10FFFF` are rejected with `S1001` at the
+  escape. A backslash cannot escape a line break. `Debug.render` writes text
+  with these escapes, so its output for a text is a literal for the same text.
 - Line breaks are syntactically significant between declarations, block items,
   data members, and case arms. They are soft inside delimited lists and around
   continued function contracts.

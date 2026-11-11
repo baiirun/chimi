@@ -1066,7 +1066,21 @@ fn lex_text_chunk(
     let mut offset = if opening { start + 1 } else { start };
     while offset < bytes.len() {
         match bytes[offset] {
-            b'\\' if offset + 1 < bytes.len() => offset += 2,
+            b'\\' => match text_escape(&text[offset + 1..]) {
+                // A backslash at a line end leaves the literal unterminated.
+                TextEscape::Truncated => offset += 1,
+                TextEscape::Valid { length, .. } => offset += 1 + length,
+                TextEscape::Invalid { length, problem } => {
+                    diagnostics.push(Diagnostic::error(
+                        DiagnosticStage::Syntax,
+                        "S1001",
+                        source.file_id(),
+                        TextRange::new(offset, offset + 1 + length),
+                        problem,
+                    ));
+                    offset += 1 + length;
+                }
+            },
             b'"' => {
                 offset += 1;
                 let kind = if opening {
@@ -1107,6 +1121,85 @@ fn lex_text_chunk(
     ));
     emit(TokenKind::InvalidText, start, offset);
     offset
+}
+
+/// One escape sequence in a text literal, read from the text after its backslash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextEscape {
+    /// `length` bytes after the backslash denote `character`.
+    Valid { character: char, length: usize },
+    /// `length` bytes after the backslash are a malformed escape.
+    Invalid {
+        length: usize,
+        problem: &'static str,
+    },
+    /// The backslash ends the line or the source.
+    Truncated,
+}
+
+/// Reads the escape whose backslash precedes `rest`.
+///
+/// The escapes are `\"`, `\\`, `\n`, `\r`, `\t`, `\$`, and `\u{X}` with one to six
+/// hex digits naming a Unicode scalar value. A malformed escape never extends past
+/// the line or a closing quote, so the literal still ends where it appears to.
+pub(crate) fn text_escape(rest: &str) -> TextEscape {
+    let Some(first) = rest.chars().next() else {
+        return TextEscape::Truncated;
+    };
+    let character = match first {
+        '"' => '"',
+        '\\' => '\\',
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        '$' => '$',
+        '\n' | '\r' => return TextEscape::Truncated,
+        'u' => return unicode_escape(rest),
+        other => {
+            return TextEscape::Invalid {
+                length: other.len_utf8(),
+                problem: "unknown escape; text literals accept `\\\"`, `\\\\`, `\\n`, `\\r`, `\\t`, `\\$`, and `\\u{...}`",
+            };
+        }
+    };
+    TextEscape::Valid {
+        character,
+        length: 1,
+    }
+}
+
+/// Reads `u{X}` at the start of `rest`.
+fn unicode_escape(rest: &str) -> TextEscape {
+    const MALFORMED: &str = "a Unicode escape is `\\u{` followed by one to six hex digits and `}`";
+    let bytes = rest.as_bytes();
+    if bytes.get(1) != Some(&b'{') {
+        return TextEscape::Invalid {
+            length: 1,
+            problem: MALFORMED,
+        };
+    }
+    let digits_end = 2 + bytes[2..]
+        .iter()
+        .take_while(|byte| byte.is_ascii_hexdigit())
+        .count();
+    let digits = &rest[2..digits_end];
+    if bytes.get(digits_end) != Some(&b'}') || digits.is_empty() || digits.len() > 6 {
+        return TextEscape::Invalid {
+            length: digits_end,
+            problem: MALFORMED,
+        };
+    }
+    let length = digits_end + 1;
+    match u32::from_str_radix(digits, 16)
+        .ok()
+        .and_then(char::from_u32)
+    {
+        Some(character) => TextEscape::Valid { character, length },
+        None => TextEscape::Invalid {
+            length,
+            problem: "a Unicode escape must name a Unicode scalar value: not a surrogate and at most 10FFFF",
+        },
+    }
 }
 
 /// Lexes the number literal that starts with the digit at `start`.

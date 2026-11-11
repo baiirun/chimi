@@ -3306,7 +3306,7 @@ fn interpolation_inserts_text_and_numbers_in_canonical_form() {
         concat!(
             "\"outcome\":\"success\",\"value\":",
             "\"-L 7,7;|pay|-42|0.30000000000000004|1e20|;cost: ${amount};",
-            "{\\\\\\\"a\\\\\\\": 1};apay3;\""
+            "{\\\"a\\\": 1};apay3;\""
         )
     );
 }
@@ -3380,6 +3380,50 @@ fn interpolations_format_tightly_and_keep_their_text() {
     );
 }
 
+// Lexical model: text literal escapes denote their characters in plain literals,
+// interpolated chunks, and text patterns, on both backends.
+#[test]
+fn text_literal_escapes_denote_their_characters() {
+    let source = concat!(
+        "fn kind(text: Text) -> Int {\n",
+        "  case text {\n",
+        "    \"a\\\"b\" -> 1\n",
+        "    _ -> 2\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<Text> {\n",
+        "  let quote = \"a\\\"b\"\n",
+        "  [\n",
+        "    \"q\\\" s\\\\ n\\n r\\r t\\t d\\$ u\\u{e9}\\u{1F600}\",\n",
+        "    \"${kind(quote)}\\t\\\"${quote}\\\"\\n\",\n",
+        "  ]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("text-escapes", source),
+        r#""outcome":"success","value":["q\" s\\ n\n r\r t\t d$ ué😀","1\t\"a\"b\"\n"]"#
+    );
+}
+
+#[test]
+fn malformed_text_escapes_are_syntax_errors() {
+    let codes =
+        |literal: &str| check_codes(&format!("pub fn main() -> Text {{\n  {literal}\n}}\n"));
+    for literal in [
+        r#""\q""#,
+        r#""\u{}""#,
+        r#""\u{1234567}""#,
+        r#""\u{d800}""#,
+        r#""\u{110000}""#,
+        r#""\u41""#,
+        r#""\u{41""#,
+    ] {
+        assert_eq!(codes(literal), ["S1001"], "{literal}");
+    }
+    // A backslash before the line break cannot escape it: the literal is unterminated.
+    assert!(codes("\"a\\\n\"").contains(&"S1001".to_owned()));
+}
+
 fn json_text(text: &str) -> String {
     let mut quoted = String::from("\"");
     for character in text.chars() {
@@ -3406,10 +3450,10 @@ fn debug_render_follows_the_format_table_on_both_backends() {
         ("1e20", "1e20"),
         ("True", "True"),
         ("False", "False"),
-        // A text holding real quotes, which no literal can write yet.
+        // Text renders as the literal that writes it, so each escape round trips.
         (
-            "Json.encode(Json.text(\"say \\${hi}\"))",
-            r#""\"say \${hi}\"""#,
+            r#""say \"hi\" \\ \n\r\t\u{1b} $x \${hi} é""#,
+            r#""say \"hi\" \\ \n\r\t\u{1b} $x \${hi} é""#,
         ),
         ("Money(2500)", "Money { cents: 2500 }"),
         ("GatewayUnavailable", "PaymentError.GatewayUnavailable"),
