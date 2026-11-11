@@ -4013,7 +4013,16 @@ impl ProjectTypeChecker {
                         &mut arm_bindings,
                     );
                     candidate_failure_variants.extend(variants.iter().copied());
-                    if variants.is_empty() && !catches_unknown {
+                    let row = &self.failure_rows[subject.failures.raw() as usize];
+                    let cannot_fail = row.variants.is_empty() && row.parameters.is_empty();
+                    if catches_unknown && cannot_fail {
+                        self.type_error_range(
+                            module_id,
+                            "T4232",
+                            arm.range,
+                            "outcome case arm is unreachable: the subject cannot fail",
+                        );
+                    } else if variants.is_empty() && !catches_unknown {
                         // The owning diagnostic already explains why this pattern cannot
                         // participate in failure-channel coverage.
                     } else if let Some(failure_type) = failure_type {

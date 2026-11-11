@@ -2468,6 +2468,33 @@ fn a_failing_instantiation_of_a_function_value_does_not_fit_an_infallible_slot()
     assert_eq!(codes, ["T4203"]);
 }
 
+// ts-0ee7c8: a `Failure(...)` arm that catches every failure is unreachable when
+// the subject's failure row is closed and empty; one over a fallible subject
+// is not.
+#[test]
+fn a_failure_arm_over_an_infallible_subject_is_unreachable() {
+    let source = |body: &str| {
+        format!(
+            concat!(
+                "enum Oops {{\n",
+                "  Bad\n",
+                "}}\n",
+                "fn five() -> Int {{ 5 }}\n",
+                "fn failing() -> Int {{ Failure(Bad) }}\n",
+                "pub fn main() -> Int {{\n",
+                "  case {}() {{\n",
+                "    Success(value) -> value\n",
+                "    Failure(_error) -> 0\n",
+                "  }}\n",
+                "}}\n",
+            ),
+            body
+        )
+    };
+    assert_eq!(check_codes(&source("five")), ["T4232"]);
+    assert!(check_codes(&source("failing")).is_empty());
+}
+
 // A constructor value renders as its constructor's name on both paths, as a
 // standard function value renders as its function's name.
 #[test]
