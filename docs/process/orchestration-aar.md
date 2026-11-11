@@ -22,6 +22,20 @@ append-only.
 - Pushes happen after `scripts/check-head.sh` verifies a clean export of the
   commit.
 
+## Dimensions tracked
+
+Problems are recorded only when observed, against these dimensions:
+
+| Dimension | Measure | Evidence so far |
+| --- | --- | --- |
+| Correctness | defects found after an agent reported green; mutants surviving | crash after `stop`, false doc claim, 2 surviving mutants in the heap, 19 spec conflicts |
+| Safety | memory-safety findings; destructive git or data loss events | none in code; one shared-checkout merge needed manual save and reapply |
+| Efficiency | tokens per landed feature; coordination vs construction share | ~1.2M tokens of spec and reconciliation before most Phase 1 features |
+| Fidelity to user intent | user reversals; decisions made on the user's behalf and not reviewed | proposals for struct settings and labels reversed; ~30 coordinator decisions in the ledger |
+| User attention | questions per phase; confusion moments; reply length | "wdym", "kinda confused", "did you answer my q" (twice) |
+| Durability | unpushed commits; uncommitted work at risk; context loss recovered | ~40 commits unpushed (remote diverged); one context summary survived via memory files |
+| Throughput | features landed per hour; serialized lanes | Phase 1 serialized through one lane until worktrees were allowed |
+
 ## What is working
 
 | # | Practice | Evidence | Rationale |
@@ -47,6 +61,7 @@ append-only.
 | N8 | Decisions recorded in four places | `prog` logs, specs, `docs/decisions.md`, coordinator memory | No single owner for decision records | Ledger is the single list; `prog` logs should point to it |
 | N9 | Worktree agents cannot integrate their own work | The spec steward's sandbox refused every git command aimed at the main checkout, so it could not fast-forward `main`; its auto-created worktree also started from a stale base (`419d1e5` plus pre-squash PR copies), not `main` | Worktree isolation is enforced by the harness, and the worktree base follows the remote default branch, not local `main` | Coordinator integrates worktree branches; briefs tell worktree agents to reset to local `main` first |
 | N10 | Integrating into a dirty shared checkout collides with in-flight edits | Fast-forwarding the steward's spec changes refused because the compiler lane had an uncommitted 6-line edit in the same spec; the coordinator saved, merged, and reapplied it by hand, resolving one conflict | Agents leave work uncommitted between checkpoints in a tree others integrate into | Ask lanes to commit small and often; coordinator merges only when touched files are clean, otherwise saves and reapplies the in-flight diff |
+| N11 | Staging during another agent's merge joins that merge | The coordinator's `git add` of the AAR during the lane's `origin/main` merge staged it into the pending merge commit; caught and unstaged before the commit. Other agents' commits fail while `MERGE_HEAD` exists | A shared index: any writer's `git add` lands in whatever commit is next, including someone else's merge | Agents check for `MERGE_HEAD` before staging; mergers stage only merge files and verify `git diff --cached` before committing |
 
 ## Run log
 
