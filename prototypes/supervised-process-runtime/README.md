@@ -28,5 +28,9 @@ restart and shutdown, and an exact lifecycle trace?
 ## Run
 
 ```sh
-cargo test --manifest-path prototypes/supervised-process-runtime/Cargo.toml -- --include-ignored
+cargo test --release --manifest-path prototypes/supervised-process-runtime/Cargo.toml
+cargo run --release --manifest-path prototypes/supervised-process-runtime/Cargo.toml --example measure
 ```
+
+Results and the decision they support are in
+[the architecture record](../../docs/architecture/supervised-process-runtime.md).
