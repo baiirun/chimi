@@ -118,6 +118,23 @@ Assessment at 2026-11-11, after about 20 completed agents:
 - Working conclusion: parallelize implementation and review; keep cross-cutting
   design in one owner; size concurrency to the remaining usage window.
 
+## Milestone: Phase 1 complete (2026-11-11)
+
+- All eight Phase 1 features, fix batches A-K, the runtime heap port, and the
+  scheduler-side process kernel are on `origin/main` (65172a6). The forcing
+  program (trace-summary rewritten idiomatically) produces identical outputs.
+- Integration: 11 worktree branches merged through `scripts/integrate-branch.sh`;
+  4 needed conflict resolution, 2 of them delegated to a rebase agent; the script
+  stopped 4 times correctly (two flaky timing gates, one renumbering-only parity
+  difference, one fast-forward race) and never let a red commit reach origin.
+- Three usage-limit stops; every agent resumed by message with no lost work.
+- Hypothesis check (worktrees + single integrator raise throughput without new
+  conflict classes): throughput rose (2-3 features in flight), but a new class
+  appeared: semantic clashes between independently correct branches (tuples vs
+  inferred contracts, tuple types vs record types, Never vs call matching). Each
+  was found only because rebases ran the full suite; rebase agents pinned each
+  with a test.
+
 ## Open hypotheses
 
 - Publishing cross-cutting conventions before a fan-out will cut spec conflicts
