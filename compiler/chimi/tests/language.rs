@@ -8408,3 +8408,49 @@ fn a_non_text_interpolation_names_the_found_type() {
     assert_eq!(code, "T4325");
     assert!(message.contains("found `List<Int>`"), "{message}");
 }
+
+// A variant written through a module alias (`Order.Less`) is one name error that
+// names the owning type; the case arms after it get no coverage follow-ons.
+#[test]
+fn a_variant_through_a_module_alias_names_its_type_without_coverage_follow_ons() {
+    let source = concat!(
+        "import std/order as Order\n",
+        "import std/order.{Ordering}\n",
+        "fn pick(left: Int, right: Int) -> Int {\n",
+        "  case Order.compare(left, right) {\n",
+        "    Order.Less -> left\n",
+        "    _ -> right\n",
+        "  }\n",
+        "}\n",
+    );
+    let diagnostics = check_diagnostics(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let (code, site, message) = &diagnostics[0];
+    assert_eq!(
+        (code.as_str(), site.as_str()),
+        ("E_UNRESOLVED_CONSTRUCTOR", "Less")
+    );
+    assert!(message.contains("`Ordering.Less`"), "{message}");
+}
+
+// Without the type in scope, the hint offers the qualified path, which resolves.
+#[test]
+fn a_variant_hint_offers_the_qualified_path_when_the_type_is_not_imported() {
+    let wrong = concat!(
+        "import std/order as Order\n",
+        "fn pick(left: Int, right: Int) -> Int {\n",
+        "  case Order.compare(left, right) {\n",
+        "    Order.Less -> left\n",
+        "    _ -> right\n",
+        "  }\n",
+        "}\n",
+    );
+    let diagnostics = check_diagnostics(wrong);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(
+        diagnostics[0].2.contains("`Order.Ordering.Less`"),
+        "{diagnostics:?}"
+    );
+    let fixed = wrong.replace("Order.Less", "Order.Ordering.Less");
+    assert_eq!(check_codes(&fixed), Vec::<String>::new());
+}

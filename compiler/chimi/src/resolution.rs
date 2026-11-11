@@ -1998,12 +1998,19 @@ impl ProjectResolver {
             resolution,
         );
         if resolution == ReferenceResolution::Unresolved {
+            let hint = match path {
+                [owner, member] => self.module_variant_hint(module_index, owner, member),
+                _ => None,
+            };
             let module = &self.semantic.modules[module_index];
             self.diagnostics.push(name_error(
                 module,
                 "E_UNRESOLVED_CONSTRUCTOR",
                 name.range,
-                format!("cannot resolve constructor {}", name.text),
+                match hint {
+                    Some(hint) => format!("cannot resolve constructor {}; {hint}", name.text),
+                    None => format!("cannot resolve constructor {}", name.text),
+                },
             ));
         } else if resolution == ReferenceResolution::Ambiguous {
             let module = &self.semantic.modules[module_index];
@@ -2014,6 +2021,58 @@ impl ProjectResolver {
                 format!("multiple constructors are named {}", name.text),
             ));
         }
+    }
+
+    /// For `Alias.Variant` where `Alias` is a module alias and a type that module
+    /// exports has a variant `Variant` (`Order.Less`, meaning `Ordering.Less`): how
+    /// to write it. `None` when `Alias` is not a module alias or no type matches.
+    fn module_variant_hint(
+        &self,
+        module_index: usize,
+        alias: &Name,
+        variant: &Name,
+    ) -> Option<String> {
+        let exported_types = match self.modules[module_index].aliases.get(&alias.text)? {
+            AliasBinding::Standard(target) => self.standard_modules[target]
+                .types
+                .values()
+                .copied()
+                .collect::<Vec<_>>(),
+            AliasBinding::Module(target) => self
+                .symbols
+                .iter()
+                .filter(|symbol| {
+                    symbol.module_id == Some(*target) && symbol.kind == ProjectSymbolKind::Enum
+                })
+                .map(|symbol| symbol.id)
+                .collect(),
+            AliasBinding::Ambiguous => return None,
+        };
+        let mut owners = exported_types
+            .into_iter()
+            .filter(|owner| {
+                self.type_members
+                    .contains_key(&(*owner, variant.text.clone()))
+            })
+            .map(|owner| self.symbols[owner.raw() as usize].name.clone())
+            .collect::<Vec<_>>();
+        owners.sort();
+        let owner = owners.first()?;
+        let module = &self.modules[module_index];
+        let owner_in_scope =
+            module.types.contains_key(owner) || module.imported_types.contains_key(owner);
+        Some(if owner_in_scope {
+            format!(
+                "`{}` is a module, not a type; the variant is `{owner}.{}`",
+                alias.text, variant.text
+            )
+        } else {
+            format!(
+                "`{}` is a module, not a type; write `{}.{owner}.{}`, or import `{owner}` \
+                 from the module and write `{owner}.{}`",
+                alias.text, alias.text, variant.text, variant.text
+            )
+        })
     }
 
     /// Resolves `Alias.Type.Variant`, a variant of a type that the module aliased as

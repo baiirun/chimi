@@ -4038,9 +4038,15 @@ impl ProjectTypeChecker {
                     .iter()
                     .zip(subjects)
                     .any(|(pattern, subject)| self.inspects_generic(pattern, subject.success));
+            // And so is an arm naming a constructor that did not resolve: name
+            // resolution reported it, and what it would cover is unknown.
             let rejected = arm.patterns.iter().any(Pattern::has_rejected_rest)
                 || outcome_parameters.contains(&true)
-                || inspects_generic;
+                || inspects_generic
+                || arm
+                    .patterns
+                    .iter()
+                    .any(|pattern| self.has_unresolved_constructor(module_id, pattern));
             rejected_arm |= rejected;
             if arm.patterns.len() != subjects.len() {
                 self.type_error_range(
@@ -4270,6 +4276,24 @@ impl ProjectTypeChecker {
                 .unwrap_or(*range),
             other => expression_range(other),
         }
+    }
+
+    /// Whether `pattern` or a pattern inside it names a constructor that name
+    /// resolution could not resolve.
+    fn has_unresolved_constructor(&self, module_id: ModuleId, pattern: &Pattern) -> bool {
+        matches!(pattern, Pattern::Constructor { .. })
+            && matches!(
+                self.resolved.reference_resolution(
+                    module_id,
+                    pattern.semantic_id(),
+                    Namespace::Value
+                ),
+                Some(ReferenceResolution::Unresolved | ReferenceResolution::Ambiguous)
+            )
+            || pattern
+                .children()
+                .into_iter()
+                .any(|child| self.has_unresolved_constructor(module_id, child))
     }
 
     /// Where `body` produced a value of the wrong type, and that type: a block's
