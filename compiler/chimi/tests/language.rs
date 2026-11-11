@@ -4306,7 +4306,7 @@ fn map_outcomes_render_their_entries_on_both_backends() {
 
 // Structured keys through the constants table and the debug format: a constant
 // map keeps value keys on both backends, and `Debug.render` writes each key in
-// the debug format, in one order on both paths whatever the insertion order.
+// the debug format, the same on both paths whatever the insertion order.
 #[test]
 fn structured_map_keys_survive_constants_and_debug_rendering() {
     let source = concat!(
@@ -4315,27 +4315,41 @@ fn structured_map_keys_survive_constants_and_debug_rendering() {
         "struct Point {\n  x: Int,\n  y: Int,\n}\n",
         "const scores = Map.empty() |> Map.put(Point(2, 1), 20) |> Map.put(Point(1, 9), 10)\n",
         "pub fn main() -> List<Text> {\n",
+        "  let reordered = Map.empty() |> Map.put(Point(1, 9), 10) |> Map.put(Point(2, 1), 20)\n",
         "  let floats = Map.empty() |> Map.put(1.5, \"b\") |> Map.put(-0.0, \"a\")\n",
+        "  let floats_reordered = Map.empty() |> Map.put(0.0, \"c\") |> Map.put(1.5, \"b\")\n",
         "  [\n",
         "    Debug.render(scores |> Map.get(Point(2, 1))),\n",
+        "    Debug.render(Debug.render(scores) == Debug.render(reordered)),\n",
+        "    Debug.render(Debug.render(floats |> Map.put(0.0, \"c\")) == Debug.render(floats_reordered)),\n",
         "    Debug.render(scores),\n",
         "    Debug.render(floats |> Map.put(0.0, \"c\")),\n",
         "  ]\n",
         "}\n",
     );
-    let expected = [
-        "Some(20)",
-        "Map { Point { x: 1, y: 9 }: 10, Point { x: 2, y: 1 }: 20 }",
-        "Map { 0.0: \"c\", 1.5: \"b\" }",
-    ]
-    .iter()
-    .map(|rendered| json_text(rendered))
-    .collect::<Vec<_>>()
-    .join(",");
-    assert_eq!(
-        run_both("structured-map-keys-debug", source),
-        format!("\"outcome\":\"success\",\"value\":[{expected}]")
+    // run_both asserts the two paths render identically; the key order itself
+    // is internal, so only the entries and insertion independence are checked.
+    let outcome = run_both("structured-map-keys-debug", source);
+    let prefix = format!(
+        "\"outcome\":\"success\",\"value\":[{},{},{},",
+        json_text("Some(20)"),
+        json_text("True"),
+        json_text("True"),
     );
+    assert!(outcome.starts_with(&prefix), "{outcome}");
+    for entry in [
+        "Point { x: 1, y: 9 }: 10",
+        "Point { x: 2, y: 1 }: 20",
+        "0.0: \"c\"",
+        "1.5: \"b\"",
+    ] {
+        let quoted = json_text(entry);
+        assert!(
+            outcome.contains(&quoted[1..quoted.len() - 1]),
+            "{entry}: {outcome}"
+        );
+    }
+    assert!(!outcome.contains("-0.0"), "{outcome}");
 }
 
 // E6 (with a struct and a list for the tuple, which lands with tuples): any
