@@ -4493,6 +4493,9 @@ impl ProjectTypeChecker {
                     | StandardType::IntParseError
                     | StandardType::FloatParseError
                     | StandardType::FloatConversionError
+                    | StandardType::ConsoleError
+                    | StandardType::FileError
+                    | StandardType::Utf8Error
             ))
         );
         if symbol_kind != ProjectSymbolKind::Enum && !standard_enum {

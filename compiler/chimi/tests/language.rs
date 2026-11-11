@@ -1561,6 +1561,57 @@ fn std_number_failure_types_are_named_through_their_module() {
     );
 }
 
+// std/io failure types are closed enums for coverage: a case that names every
+// variant is exhaustive, and one that omits a variant names it as the witness.
+#[test]
+fn std_io_failure_types_are_closed_for_coverage() {
+    let module = |file_arms: &str| {
+        format!(
+            concat!(
+                "import std/io as Io\n",
+                "fn file(error: Io.FileError) -> Text {{\n",
+                "  case error {{\n{file_arms}  }}\n",
+                "}}\n",
+                "fn utf8(error: Io.Utf8Error) -> Text {{\n",
+                "  case error {{\n",
+                "    Io.Utf8Error.InvalidUtf8(_, _) -> \"invalid\"\n",
+                "  }}\n",
+                "}}\n",
+                "fn console(error: Io.ConsoleError) -> Text {{\n",
+                "  case error {{\n",
+                "    Io.ConsoleError.WriteFailed(_, _) -> \"write\"\n",
+                "  }}\n",
+                "}}\n",
+                "pub fn main() -> Int {{ 0 }}\n",
+            ),
+            file_arms = file_arms
+        )
+    };
+    let every_file_variant = concat!(
+        "    Io.FileError.Open(_, _) -> \"open\"\n",
+        "    Io.FileError.Read(_, _) -> \"read\"\n",
+        "    Io.FileError.Close(_, _) -> \"close\"\n",
+        "    Io.FileError.LineTooLong(_, _) -> \"long\"\n",
+    );
+    assert!(check_codes(&module(every_file_variant)).is_empty());
+    let source =
+        module(&every_file_variant.replace("    Io.FileError.Close(_, _) -> \"close\"\n", ""));
+    let module = ProjectSource::new(
+        "main",
+        SourceSnapshot::from_text("main.chimi", source.as_str()),
+    )
+    .expect("valid module path");
+    let diagnostics = Compiler::type_project(vec![module])
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| format!("{} {}", diagnostic.code(), diagnostic.message()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        diagnostics,
+        ["T4231 case is not exhaustive; `Close(_, _)` is not matched"]
+    );
+}
+
 // N21
 #[test]
 fn float_to_int_requires_an_already_rounded_value_inside_int() {
