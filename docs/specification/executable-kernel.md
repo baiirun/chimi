@@ -60,7 +60,9 @@ Each source file defines one module. Its workspace-relative path is its stable
 module identity. Source files MUST NOT contain module headers.
 
 A module's items are imports, `struct`, `enum`, `interface`, and `fn`
-declarations, and `let` bindings. An expression at file scope is not a module
+declarations, and `const` and `pub const` declarations. A module-level `let`
+is rejected with `L2101`, whose edit replaces `let` with `const`; see
+[standard modules and constants](standard-modules-and-constants.md). An expression at file scope is not a module
 item and MUST be rejected with `S1001`; the parser still consumes it so the CST
 stays lossless.
 
@@ -137,6 +139,11 @@ declared field order, as for structs: `PaymentError.Declined("card")`. Payload
 field order is part of the enum's public shape. Variant patterns MUST use the
 declared payload arity and match payload fields by the same position.
 
+A variant without payload is written bare, with no parentheses, in both
+expressions and patterns: `PaymentError.GatewayUnavailable`, `None`,
+`Supervisor.Restart.OnDefect`. The bare name is the value itself, not a
+function that builds it.
+
 ### Anonymous records
 
 An anonymous record is a transparent structural product:
@@ -155,9 +162,10 @@ structural interface implementations; they do not create nominal identity.
 
 Chimi has no `Nil`, `null`, or nullable value. Optional data uses `Option<T>`.
 
-`Void` is the success type of an operation that completes without data. It has
-no source literal or public constructor. An empty block is invalid and MUST NOT
-stand in for completion.
+`Void` is the success type of an operation that completes without data. It is
+also that type's only value, written `Void`, as
+[core data](core-data-and-operators.md#void) specifies. An empty block is
+invalid and MUST NOT stand in for completion.
 
 Aliases and newtype-like declarations are not part of the first kernel.
 
@@ -327,8 +335,8 @@ Ordinary matching over closed values MUST be exhaustive. `_` and an unguarded
 binding pattern are catch-alls. An unguarded catch-all MUST be last. A guarded
 catch-all does not prove exhaustiveness. Unreachable arms are diagnostics.
 
-`if` is valid only on a case-arm guard. A guard MUST be pure: it cannot expose
-dependency needs or other observable execution. Chimi has no standalone `if`
+`if` is valid only on a case-arm guard. A guard MUST be pure: its failure row
+and its needs row MUST both be empty. Chimi has no standalone `if`
 expression in the first kernel.
 
 ## Expected Failures
@@ -410,9 +418,10 @@ MUST use ordinary outcome matching, and MUST NOT introduce a `Recover` Core
 operation, runtime row object, allocation, or tag. Unmatched expected failures
 propagate unchanged, while defects and cancellation bypass recovery arms.
 
-A storable `Result<T, E>` is not built into this kernel. If later introduced,
-it is ordinary data and its qualified constructors remain distinct from live
-computation outcomes.
+A storable `Result<T, E>` is ordinary data in `std/result`, specified in
+[time and outcomes](time-and-outcomes.md#storable-outcomes-and-failure-set-types).
+Its `Ok` and `Err` constructors remain distinct from the live outcome
+constructors `Success` and `Failure`.
 
 Defects and cancellation are not expected failures and MUST NOT appear in
 callable failure rows.
@@ -482,8 +491,12 @@ pub fn main() {
 }
 ```
 
-After provision, `main` MUST have an empty needs row. Chimi source does not call
-`Runtime.run`.
+After provision, every need that remains on `main` MUST be one that the
+runner's typed provider plan closes, such as `clock: Clock` or a `Console`
+need. Any other need MUST be provided with `using`. The runner MUST NOT supply
+undeclared dependencies; see
+[host capability ownership](synchronous-effects-and-host-capabilities.md#host-capability-ownership). Chimi source
+does not call `Runtime.run`.
 
 The toolchain or embedding host invokes `main`. It supplies operational
 execution configuration—such as tracing export, execution identity,

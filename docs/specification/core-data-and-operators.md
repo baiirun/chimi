@@ -90,7 +90,8 @@ at different leaves:
 | `Map<K, V>` | when `K` and `V` are | no |
 | `Set<T>` | when `T` is | no |
 | `Json.Value` | yes | no (it contains `Map`) |
-| `Process.Address<M>` | yes, by process identity | no |
+| `Process.Address<M>` | yes, by routing identity | no |
+| failure set `A \| B` | when every member is | no |
 | function value | no | no |
 | interface value or provider record | no (its fields are functions) | no |
 | `Task<T, F>`, `Channel.Sender<T>`, `Channel.Receiver<T>`, `Channel.Completion<T>` | no | no |
@@ -115,8 +116,14 @@ Rules:
 - Capabilities are not equatable. Comparing two receivers would expose runtime
   identity that the capability model keeps private. `Process.Address` is a
   routing identity that programs store in registries, so it is equatable by
-  identity, and two addresses are equal exactly when they route to the same
-  process incarnation.
+  identity. A named address equals another named address with the same
+  `process name` declaration. A direct address equals another direct address
+  to the same incarnation. A named address never equals a direct address, even
+  when both currently route to the same incarnation.
+- A failure set of several members is equatable so that a projected
+  `Failure(error)` value can be compared, but it is not ordered: its members
+  have no declaration order. A failure set of one member is that member's
+  type and keeps its properties.
 
 ### Generic code
 
@@ -489,8 +496,9 @@ Rules:
 - An operation that would produce NaN or an infinity MUST defect with a
   context that names the operator. Gradual underflow and rounding to zero are
   not defects.
-- `-0.0` is a value. It compares equal to `0.0`, hashes equally, and renders as
-  `-0.0`.
+- `-0.0` is a value. It compares equal to `0.0` and hashes equally.
+  `Float.to_text` keeps the sign and returns `"-0.0"`. Debug rendering
+  normalizes it to `0.0`, because equal values MUST render the same.
 - Equality and order on `Float` are numeric. Because NaN cannot exist, they
   are a total order and an equivalence relation, and a `Float` can be a `Map`
   key, a `Set` element, or a struct field compared with `==`.
@@ -587,7 +595,9 @@ Representation expectations:
 - `Decimal.of(coefficient, scale)` builds `coefficient × 10^-scale`. It
   defects when `scale` is outside the supported range.
 - Equality, hashing, and order are numeric: `1.50 == 1.5`. The scale is kept
-  for rendering, so `Decimal.to_text(Decimal.of(150, 2))` is `"1.50"`.
+  for `Decimal.to_text`, so `Decimal.to_text(Decimal.of(150, 2))` is
+  `"1.50"`. Debug rendering drops trailing zeros, because equal values MUST
+  render the same, so the same value renders as `1.5`.
 - `+`, `-`, unary `-`, `*`, and the comparison operators apply to two
   `Decimal` operands. The result of `+` and `-` has the larger scale. The
   result of `*` has the sum of the scales.
@@ -740,6 +750,8 @@ Rules:
 - A function that ends only by failing has success type `Never` and keeps its
   failure row. `Never` says nothing about failures, defects, or cancellation.
 - An inferred success type MAY be `Never`, and tooling displays it.
+- In a failure row, `Never` is the empty failure set. `errors Never` means the
+  same as no `errors` row, and `A | Never` is `A`.
 - `Never` MAY appear in any type position. A parameter of type `Never` makes a
   function that cannot be called, and a `List<Never>` can only be empty.
 - `Never` lives in the type namespace. The constructor
@@ -826,7 +838,7 @@ MUST NOT blur stages.
 | `T4300` | type | An operand of `==` or `!=`, or a `Map` key or `Set` element type, is not equatable. | Names the path to the offending component, such as "field `handler` of `Route` is a function" |
 | `T4301` | type | An operand of `<`, `<=`, `>`, `>=`, or an argument of `Order.compare` or `List.sort`, is not ordered. | Names the component and suggests a comparator with `List.sort_by` |
 | `T4302` | type | The operands of a binary arithmetic, equality, or comparison operator have different types. | For `Int` and `Float`, suggests `Float.from_int` or `Float.to_int` |
-| `T4303` | type | An arithmetic operator is applied to a type other than `Int`, `Float`, or `Decimal`. | For `Text` and `+`, suggests `Text.append` |
+| `T4303` | type | An arithmetic operator is applied to a type other than `Int`, `Float`, or `Decimal`. | For `Text` and `+`, suggests `Text.append`. For `Duration`, `Instant`, or `Timestamp`, names the `Duration` or `Clock` function to use, such as `Duration.add` |
 | `T4304` | type | An operand of `and`, `or`, or `not` is not `Bool`. | "Chimi has no truthiness; compare explicitly" |
 | `T4305` | type | A generic instantiation violates an inferred equatable or ordered requirement. | Labels the callee's operator use, the generic parameter, and the offending component |
 | `T4306` | type | `/` or `%` on `Decimal`. | Suggests `Decimal.divide` with a scale and rounding mode |
@@ -877,7 +889,7 @@ outcome.
 | E7 | `Set` of a user enum with payloads deduplicates equal elements | Run: size counts distinct values |
 | E8 | `route_a == route_b` where `Route` has a function field | Fail `T4300`; the message names `handler` |
 | E9 | `rx_a == rx_b` on channel receivers | Fail `T4300` |
-| E10 | `Map.empty<fn() -> Int, Int>()` | Fail `T4300` |
+| E10 | `let keyed: Map<fn() -> Int, Int> = Map.empty()` | Fail `T4300` |
 | E11 | `1 == 1.0` | Fail `T4302` |
 | E12 | `a == b == c` | Fail `S1006` |
 | E13 | `same_pair((f, g))` with function values | Fail `T4305`, labelling `left == right` in `same_pair` |
@@ -998,9 +1010,11 @@ Non-normative. The stages follow the pipeline in the
   `UnaryOperator` with `Not`. Add `Literal::Float` and `Literal::Void`. Fold
   unary minus on an integer literal before the `S1002` range check.
 - **`compiler/chimi/src/resolution.rs`**: add the built-in types `Float`,
-  `Never`, and `Range` next to `Bool`, `Int`, and `Text`, and the built-in
-  modules `Float` and `Range`. Add `std/order`, `std/decimal`, and the set
-  module to `standard.rs`.
+  `Never`, and `Range` next to `Bool`, `Int`, and `Text`. The `Float` and
+  `Range` functions, `std/order`, `std/decimal`, and `std/set` are embedded
+  standard modules that a program imports, as
+  [standard modules](standard-modules-and-constants.md#the-prelude) requires.
+  They are not built-in module qualifiers or `standard.rs` entries.
 - **`compiler/chimi/src/typing.rs`**
 	- Replace the `Int`-only typing of `Less` to `GreaterEqual` with an
 	  operator table keyed by operand type.

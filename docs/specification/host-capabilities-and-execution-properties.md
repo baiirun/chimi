@@ -97,7 +97,7 @@ interface FileSystem {
     A,
     fn(A, Text) -> A errors F needs R,
   ) -> A
-    errors F + FileError + Utf8Error
+    errors F | FileError | Utf8Error
     needs R
 }
 

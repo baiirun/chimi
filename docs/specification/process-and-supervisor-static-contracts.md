@@ -27,6 +27,7 @@ Decisions logged on the ticket:
 
 <!-- chimi: pending ts-6ccbc9 ts-f31a20 -->
 ```chimi
+import std/duration as Duration
 import std/process as Process
 import std/process.{Inbox}
 import std/supervisor as Supervisor
@@ -42,14 +43,14 @@ fn counter_loop(inbox: Inbox<CounterMessage>) -> Void {
   }
 }
 
-let counting = Process.spec(counter_loop, 64, Duration.seconds(5))
+const counting = Process.spec(counter_loop, 64, Duration.seconds(5))
   |> Process.register(counter)
   |> Supervisor.process(Supervisor.Restart.OnDefect)
 
-let caching = Process.spec(cache_loop, 256, Duration.seconds(5))
+const caching = Process.spec(cache_loop, 256, Duration.seconds(5))
   |> Supervisor.process(Supervisor.Restart.Never)
 
-let workers = Supervisor.policy(
+const workers = Supervisor.policy(
   [counting, caching],
   16,
   Supervisor.restarts(2, Duration.seconds(30)),
@@ -169,12 +170,15 @@ Supervisor.wait:     fn(Running) -> Void
 | `T4260` | A `Process.spec` body that is not shareable: it captures an exclusive or task-local value, or needs a provider that is not shareable. The diagnostic names the capture or provider. |
 | `T4261` | A `process name` or `Process.spec` body whose message type is not transferable. |
 | `T4262` | `Process.register(spec, x)` where `x` is not a direct reference to a `process name` declaration, for example a local variable or `Supervisor.address(...)`. |
-| `T4263` | A literal mailbox capacity below 1, a literal policy capacity below 1, a literal restart limit below 0, or a members list literal longer than a literal policy capacity. |
+| `T4263` | A literal mailbox capacity below 1, a literal policy capacity below 1, a literal restart limit below 0, a literal negative `shutdown_within` duration, a literal restart window of zero or less, or a members list literal longer than a literal policy capacity. |
 | `T4264` | One `Supervisor.policy` call whose members list literal registers the same `process name` twice. |
 | `T4241` | Using a managed handle after `remove_process` or `remove_supervisor` consumed it, or a message after `Process.send` transferred an exclusive value. |
 | `T4240`, `T4243` | Capturing an inbox into `Task.start`, or sending an inbox through `Channel.send` or `Process.send`. |
 | `T4250` | A loop pass that removes a managed handle bound outside the loop. |
 | type mismatch | Sending a message whose type differs from the address's `M`; registering a name whose message type differs from the body's `M`; putting a `Process.Spec` directly in the members list instead of `Supervisor.process(...)`. |
+
+A literal duration is `Duration.zero` or a `Duration` constructor such as
+`Duration.seconds` applied to an integer literal.
 
 ## Runtime checks
 
@@ -213,6 +217,8 @@ capability and supervisor identity, never as expected failures:
 | `process name` with a message containing a `Task` handle | `T4261` |
 | `Process.register(spec, local_copy_of_counter)` | `T4262` |
 | `Process.spec(body, 0, Duration.seconds(5))` | `T4263` |
+| `Process.spec(body, 1, Duration.seconds(-1))` | `T4263` |
+| `Supervisor.restarts(1, Duration.zero)` | `T4263` |
 | Two members register `counter` in one policy literal | `T4264` |
 | `Process.send(counter, CacheMessage.Clear)` | type mismatch |
 | `Supervisor.address(managed)` after `remove_process(root, managed)` | `T4241` |

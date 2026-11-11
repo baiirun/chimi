@@ -119,7 +119,7 @@ fn process(job: Job) -> Void needs { payments: Payments, clock: Clock } {
   let charge = fn() { payments.charge(job.payload) }
   let attempt = fn() { charge |> Task.timeout(Duration.seconds(2)) }
   let retried = fn() { attempt |> Retry.run(backoff) }
-  retried |> Cause.context(Text.append("charging job ", Int.to_text(job.id)))
+  retried |> Cause.context("charging job ${job.id}")
 }
 
 fn worker(
@@ -211,7 +211,9 @@ such as `Duration.milliseconds(1500)`.
 - `Duration.divide` truncates toward zero. A zero divisor MUST defect.
 - `Duration.negate` and `Duration.absolute` of the minimum value MUST defect.
 - The arithmetic operators `+ - * /` and unary `-` MUST NOT accept `Duration`,
-  `Instant`, or `Timestamp` (`T4344`). Chimi has no operator overloading, and
+  `Instant`, or `Timestamp`. The rejection is the general arithmetic-operand
+  error `T4303`, with a help message that names the `Duration` or `Clock`
+  function to use, such as `Duration.add`. Chimi has no operator overloading, and
   `Duration * Int` would be the only mixed-type operator.
 
 Comparison uses the derived structural ordering. This spec's examples assume
@@ -587,16 +589,18 @@ of these:
 - an enum type, which stands for all its variants;
 - one variant, `StartError.NameTaken`;
 - a nominal struct used as a failure value;
-- a generic failure-set parameter.
+- a generic failure-set parameter;
+- `Never`, the empty failure set, which adds no member.
 
 Source writes a failure-set type with `|`, in a value position or after
 `errors`:
 
 <!-- chimi: fragment -->
 ```chimi
-fn retryable(error: HttpError | Timeout) -> Bool
-
-fn start() -> Running errors StartError.CapacityReached | StartError.NameTaken
+interface Starter {
+  retryable: fn(HttpError | Timeout) -> Bool
+  start: fn() -> Running errors StartError.CapacityReached | StartError.NameTaken
+}
 ```
 
 Rules:
@@ -604,7 +608,7 @@ Rules:
 - `|` is the one spelling for failure-set union in both positions. The `+`
   spelling in the host-capabilities contract is superseded. The formatter
   MUST rewrite `+` in a failure row to `|`.
-- A member that is not one of the four kinds above, such as `Int | Text`, is
+- A member that is not one of the five kinds above, such as `Int | Text`, is
   rejected (`T4340`).
 - Members are normalized: duplicates collapse, and a variant that is listed
   with its whole enum collapses into the enum. The order of members does not
@@ -699,9 +703,12 @@ kernel requires.
   failure with its original failure context.
 - `Ok` and `Err` are ordinary constructors, distinct from the live outcome
   constructors `Success` and `Failure`, as the kernel requires.
-- `Result<T, E>` derives equality, hashing, ordering, transferability, and
-  shareability from `T` and `E`. Failure context does not take part (see
-  below).
+- `Result<T, E>` derives equality, hashing, transferability, and shareability
+  from `T` and `E`. It is ordered only when `T` is ordered and `E` is a single
+  ordered type, such as one enum. A failure set of several members is
+  equatable but not ordered, as
+  [core data](core-data-and-operators.md#equatable-and-ordered) states.
+  Failure context does not take part (see below).
 
 The names follow Rust (`Result`, `Ok`, `Err`) and Swift
 (`Result(catching:)`, `result.get()`). `raise` and `throw` were rejected,
@@ -950,9 +957,9 @@ pub fn run<T, E, R>(operation: fn() -> T errors E needs R, policy: Policy<E>) {
 - Exhaustion re-raises the final failure with its own cause.
 - Each attempt is a sibling span under the loop's span, so traces show every
   attempt and every backoff sleep.
-- The guard calls `policy.retryable`, an ordinary function. Guards must be
-  pure in the kernel. A predicate with needs or parking is rejected at the
-  guard, as any impure guard is.
+- The guard calls `policy.retryable`, an ordinary function. A guard MUST have
+  an empty failure row and an empty needs row, so a predicate with failures or
+  needs is rejected at the guard, as any impure guard is.
 - An operation that can run more than once SHOULD be idempotent or carry an
   idempotency key. Retry cannot check that, so its documentation says so.
 
@@ -987,9 +994,8 @@ contracts already name:
 
 | Code | Stage | Rejected program |
 | --- | --- | --- |
-| `T4340` | type | A failure-set type with a member that is not an enum, a variant, a nominal struct, or a failure-set generic, such as `Int \| Text`. |
+| `T4340` | type | A failure-set type with a member that is not an enum, a variant, a nominal struct, a failure-set generic, or `Never`, such as `Int \| Text`. |
 | `T4341` | type | Two different enum types meet in inference without a failure-set context. The diagnostic suggests `A \| B`. |
-| `T4344` | type | An arithmetic operator applied to `Duration`, `Instant`, or `Timestamp`. The diagnostic names the `Duration` or `Clock` function to use. |
 | `T4345` | type | An empty list literal passed to `Select.first` or `Task.race`. |
 | `T4346` | type | A failure-set value flows into a set that lacks some of its members, such as a retry predicate that does not cover the operation's failures. The diagnostic lists the missing variants. |
 | `T4347` | type | A literal attempt count below 1 in a `Schedule` constructor. |
@@ -1014,7 +1020,7 @@ deadlock under virtual time.
 | Duration range | Constructors at the boundary succeed. One more unit defects. `negate` of the minimum value defects. |
 | Duration order | Derived `==` and ordering agree with `to_nanoseconds` for negative, zero, and positive values. |
 | Text round trip | `parse(to_text(d)) == d` for a generated set that includes the minimum, maximum, sub-microsecond, and mixed-unit values. `1.5ns` and `1s1h` are `Invalid`. |
-| Operators | `Duration.seconds(1) + Duration.seconds(2)` reports `T4344`. |
+| Operators | `Duration.seconds(1) + Duration.seconds(2)` reports `T4303` with help that names `Duration.add`. |
 | Clock need | A function that calls `Clock.sleep` shows `clock: Clock` in its inferred needs. The runner closes it at the root. |
 | Virtual time | Two sleepers of 5 s and 2 s wake in deadline order after zero wall time. `Clock.since` reports exactly 5 s. The run repeats identically. |
 | Virtual deadlock | A task parked on a receive with no other work defects the root with a deadlock cause naming that receive. |
@@ -1055,7 +1061,7 @@ deadlock under virtual time.
 - **Typing (`typing.rs`).** Represent failure-set types as normalized variant
   sets with subset subtyping. Allow the value projection of failure-set
   generics as type arguments. Infer variance of data type parameters. Apply
-  the join rules, and emit `T4341`, `T4346`, `T4344`, `T4345`, `T4347`,
+  the join rules, give `T4303` its `Duration` help message, and emit `T4341`, `T4346`, `T4345`, `T4347`,
   `T4348`, `T4349`, and `T4350`. Check constant `Duration.parse` arguments with
   the same parser the runtime uses, so the two cannot disagree. Extend exhaustiveness to failure-set values.
 - **Capability checking (`capability.rs`).** Classify `Select.Event` as
@@ -1120,15 +1126,11 @@ deadlock under virtual time.
 
 These follow from this contract and are left to the owners of those files:
 
-- [Host capabilities](host-capabilities-and-execution-properties.md): write
-  `errors F | FileError | Utf8Error`, and describe the close-failure rule
-  through the `Displaced` and `Cleanup` suppression reasons.
-- [Process and supervisor static contracts](process-and-supervisor-static-contracts.md):
-  extend `T4263` to literal negative `shutdown_within` and non-positive
-  restart windows.
-- [Executable kernel](executable-kernel.md): replace "a storable `Result` is
-  not built into this kernel" with a link to this contract, and record the
-  value projection into type arguments.
+- [Host capabilities](host-capabilities-and-execution-properties.md): describe
+  the close-failure rule through the `Displaced` and `Cleanup` suppression
+  reasons.
+- [Executable kernel](executable-kernel.md): record the value projection into
+  type arguments.
 
 ## Open questions
 

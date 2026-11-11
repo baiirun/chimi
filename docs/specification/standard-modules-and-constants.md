@@ -96,7 +96,8 @@ Every module sees a fixed set of names without an import:
 - the core types `Int`, `Text`, `Bool`, `List`, and `Void`, which have literal
   or keyword forms and remain compiler built-ins;
 - the `Option` type and its `Some` and `None` constructors, declared as an
-  ordinary enum in `std/option`;
+  ordinary enum in `std/option`. The declaration lists `None` before
+  `Some`, so derived ordering puts `None` first;
 - the outcome constructors `Success` and `Failure`, which are language forms.
 
 The prelude MUST NOT bind any function or module qualifier. The built-in
@@ -162,6 +163,19 @@ Rules for `native type`:
   parent-local) comes from the operation registry. Inspection and generated
   documentation MUST show it. For example, `Map<K, V>` is shareable when `K`
   and `V` are, and `std/channel.Receiver<T>` is exclusive.
+
+The registry MAY mark a std type that the runtime knows, either a `native
+type` or a runtime-known declaration, with two more properties:
+
+- **Constant-representable.** The type's values are inert and shareable: they
+  hold no runtime resource and act on nothing until a runtime operation
+  receives them. A constant MAY hold such a value. `Duration`,
+  `Process.Spec`, `Supervisor.Member`, `Supervisor.Policy`, and
+  `Supervisor.Restarts` carry this mark. A task handle, channel endpoint, or
+  direct process address never does.
+- **Render override.** Debug rendering uses a registry-named function instead
+  of the generic format. `Duration` renders as its canonical text, such as
+  `30s`.
 
 Everything else in a standard module is ordinary Chimi: structs, enums,
 interfaces, constants, and functions. Error enums such as `FileError` and data
@@ -403,9 +417,11 @@ An initializer is any expression that satisfies all of these rules:
 2. Its needs row is empty (`T4322`). A constant cannot depend on a provider,
    because no `using` boundary encloses it.
 3. Its type is **constant-representable** (`T4323`): a shareable value whose
-   every reachable part is `Int`, `Text`, `Bool`, a struct, enum, record, list,
-   or map of such parts, a named process address, or a function value whose
-   captures are themselves constant-representable. A task handle, channel
+   every reachable part is `Int`, `Float`, `Decimal`, `Text`, `Bool`, `Void`,
+   a `Range`, a struct, enum, record, tuple, list, set, or map of such parts, a
+   named process address, a std type that the registry marks
+   constant-representable, or a function value whose captures are themselves
+   constant-representable. A task handle, channel
    endpoint, direct process address, or other runtime capability is not
    constant-representable. The diagnostic names the field or capture that
    prevents it.
@@ -488,10 +504,13 @@ other constants, as long as the evaluation obeys the rules.
 ### Migration of existing module bindings
 
 Every module-level `let` in the corpus today holds a pure value: a provider
-record of functions, a configured function, or data. Each becomes `const`
-without other changes. The formatter does not rewrite it. The `L2101` edit
-does, and a one-time codemod applies that edit across `prototypes/` and
-`programs/`.
+record of functions, a configured function, or data. The `L2101` edit
+replaces `let` with `const`, and a one-time codemod applies that edit across
+`prototypes/` and `programs/`. The formatter does not rewrite it. Most
+bindings need nothing more. A binding still fails when its initializer breaks
+an initializer rule: a type that is not fully determined needs an annotation
+(`T4324`), and a value that is not constant-representable (`T4323`) or that
+calls a non-`pure` operation (`E5201`) moves into a function.
 
 ## Text interpolation (G9)
 
@@ -578,6 +597,8 @@ Each kind of value renders like the declaration or literal that describes it:
 | --- | --- |
 | `Int` | `-42` |
 | `Text` | `"say \"hi\"\n"`, quoted with Chimi escapes |
+| `Float` | `-0.5`, `1.0e20`; the canonical shortest form, so `-0.0` and `0.0` both render as `0.0` |
+| `Decimal` | `1.5`; the canonical normalized form, so `1.50` and `1.5` both render as `1.5` |
 | `Bool` | `True`, `False` |
 | `Void` | `Void` |
 | Struct | `Money { cents: 2500 }`, fields in declaration order |
@@ -587,11 +608,13 @@ Each kind of value renders like the declaration or literal that describes it:
 | Prelude variants | `Some(3)`, `None`, without the type name |
 | Anonymous record | `{ cents: 1, name: "a" }`, fields sorted by name |
 | List | `[1, 2, 3]` |
-| Map | `Map { "a": 1, "b": 2 }`, entries in derived key order |
+| Map | `Map { "a": 1, "b": 2 }`, entries in an internal canonical order that is not stable across releases |
+| `Json.Number` | `Json.Number(1)`; the canonical normalized number, so `1.0` and `1` both render as `1` |
 | Declared function | `<fn checkout>` |
 | Anonymous function | `<fn>` |
 | Named process address | `<Address counter>` |
 | Direct process address | `<Address direct>` |
+| Std type with a registry render override | `30s` for a `Duration` |
 | Other `native type` | `<Receiver>`, the type's simple name |
 
 Rules:

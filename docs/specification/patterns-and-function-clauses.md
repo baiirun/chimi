@@ -101,6 +101,9 @@ contract, and it comes immediately before the body:
 
 <!-- chimi: pending ts-e43af0 -->
 ```chimi
+import std/int as Int
+import std/text as Text
+
 enum CountError {
   Negative(count: Int)
 }
@@ -157,10 +160,10 @@ Generic parameters, needs names, and the success annotation are in scope in
 every clause. A typed binding in a later clause MAY name a generic parameter
 from the first clause:
 
-<!-- chimi: pending ts-e43af0 ts-553107 -->
+<!-- chimi: pending ts-e43af0 ts-553107 ts-dc28b2 -->
 ```chimi
 fn last<T>([]) -> Option<T> {
-  None()
+  None
 }
 fn last([.., item: T]) {
   Some(item)
@@ -442,9 +445,11 @@ Its meaning depends on the type of the value it matches:
   parameter's type is not known in advance, so the annotation instead joins the
   cross-clause unification, and a conflict is `T4281`.
 - If that value is a failure-set value, such as the payload of a `Failure`
-  pattern or a value bound from one, `Type` MUST name a closed enum. The
-  pattern matches every variant of that enum present in the failure set. It is
-  shorthand for one arm per variant, with all payloads ignored.
+  pattern or a value bound from one, `Type` MUST name a failure-set member: a
+  closed enum, one variant such as `StartError.NameTaken`, or a nominal struct
+  used as a failure value. An enum pattern matches every variant of that enum
+  present in the failure set. It is shorthand for one arm per variant, with
+  all payloads ignored. A variant or struct pattern matches that one member.
 
 A failure-type pattern replaces one arm per variant. The trace summarizer's
 `main` currently lists every IO variant. With failure-type patterns it reads:
@@ -478,17 +483,18 @@ The `LineTooLong` arm comes first because first-match order applies. The
 
 Rules:
 
-- The bound name's type is the failure set restricted to the enum's variants
-  that are present. When every variant is present, that type is the enum
-  itself. A restricted value is accepted wherever the enum is expected, so
+- The bound name's type is the failure set restricted to the members the
+  pattern names that are present. For an enum, that is the enum's present
+  variants, and when every variant is present, that type is the enum itself.
+  For a variant or a struct, it is that one member. A restricted value is accepted wherever the enum is expected, so
   `report_trace(error)` above type-checks even if the row omits some
   `TraceError` variants.
 - Selective recovery subtracts every variant the pattern covers when the arm
   has no guard. A guarded failure-type arm subtracts nothing. These are the
   kernel's existing subtraction rules applied to each covered variant.
-- A failure-type pattern whose enum has no variant in a known closed row is
+- A failure-type pattern whose type has no member in a known closed row is
   `T4224`. Against an open row, the pattern is permitted. Subtraction is a no-op
-  for an instantiation that lacks the enum.
+  for an instantiation that lacks the type.
 - After `Failure(error)` binds a whole failure set, `case error` MAY use
   failure-type patterns. That `case` MUST still be exhaustive:
 
@@ -500,7 +506,7 @@ case error {
 }
 ```
 
-- Failure-type patterns are compile-time sets of variant tags. Lowering MUST
+- Failure-type patterns are compile-time sets of variant and struct tags. Lowering MUST
   expand them into ordinary variant tests. They MUST NOT introduce a runtime
   type test, type tag, or new Core operation.
 
@@ -667,7 +673,7 @@ Existing codes reused with clause-specific messages:
 | `T4233` | Type | An unguarded catch-all clause is not last |
 | `T4234` | Type | A clause guard is not a pure `Bool` |
 | `T4230` | Type | A pattern does not fit the value's type, including patterns against a generic parameter and wrong field, tuple, or payload counts |
-| `T4224` | Type | A failure-type pattern names an enum absent from a closed failure row |
+| `T4224` | Type | A failure-type pattern names an enum, variant, or struct absent from a closed failure row |
 | `T4205`, `T4211`, `T4203` | Type | An update names an unknown field, repeats a field, or gives a value of the wrong type |
 | `E_DUPLICATE_LOCAL` | Name | A pattern binds one name twice |
 | `E_PRIVATE_STRUCT_CONSTRUCTOR` | Name | A struct pattern or update is outside the struct's module |

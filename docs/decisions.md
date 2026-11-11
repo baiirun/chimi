@@ -12,6 +12,25 @@ from the philosophy and earlier decisions; any of these can be overruled.
 
 | Date | Decision | By | Detail |
 | --- | --- | --- | --- |
+| 2026-11-11 | Module items are `const` / `pub const`, not module `let` (`L2101`); the std registry may mark inert shareable std types (`Duration`, `Process.Spec`, `Supervisor.Member`, `Supervisor.Policy`, `Supervisor.Restarts`) constant-representable. | Coordinator (cross-spec review) | `executable-kernel.md`; `standard-modules-and-constants.md` |
+| 2026-11-11 | The std registry may give a runtime-known std type a debug-render override; `Duration` renders as its canonical text (`30s`). | Coordinator (cross-spec review) | `standard-modules-and-constants.md` Debug rendering |
+| 2026-11-11 | Nullary constructors are written bare (`None`, `Status.Pending`, `Supervisor.Restart.OnDefect`), never `None()`, in expressions and patterns. | Coordinator (cross-spec review) | `executable-kernel.md` Enums; `ts-dc28b2` |
+| 2026-11-11 | Debug rendering normalizes `Float`, `Decimal`, and `Json.Number` so equal values render the same; `Map` entries use an internal canonical order that is not stable. | Coordinator (cross-spec review) | `standard-modules-and-constants.md` Debug rendering |
+| 2026-11-11 | A root may keep needs that the runner's provider plan closes (such as `clock`, `Console`); every other need must be provided with `using`. | Coordinator (cross-spec review) | `executable-kernel.md` Program entry |
+| 2026-11-11 | The kernel defers to core data for the `Void` value and to `std/result` for storable `Result<T, E>`. | Coordinator (cross-spec review) | `executable-kernel.md` |
+| 2026-11-11 | `Process.Address` equality: named equals named with the same declaration, direct equals direct to the same incarnation, named never equals direct. | Coordinator (cross-spec review) | `core-data-and-operators.md` |
+| 2026-11-11 | `Float`, `Range`, `std/order`, `std/decimal`, and `std/set` functions are embedded std modules that need imports, not built-in qualifiers. | Coordinator (cross-spec review) | `core-data-and-operators.md` Implementation notes |
+| 2026-11-11 | `Duration + Duration` reports `T4303` with a `Duration`-specific help message; `T4344` is retired. | Coordinator (cross-spec review) | `time-and-outcomes.md`; `core-data-and-operators.md` |
+| 2026-11-11 | A guard is pure when its failure row and needs row are empty; there is no separate parking rule for guards. | Coordinator (cross-spec review) | `executable-kernel.md` Case expressions; `time-and-outcomes.md` |
+| 2026-11-11 | Failure sets of several members are equatable, not ordered; `Result<T, E>` is ordered only when `E` is a single ordered type. | Coordinator (cross-spec review) | `core-data-and-operators.md`; `time-and-outcomes.md` |
+| 2026-11-11 | Failure-set syntax examples use function types, not implemented headers with `errors`. | Coordinator (cross-spec review) | `time-and-outcomes.md` Failure-set types |
+| 2026-11-11 | `Never` is the empty failure set and is accepted as a failure-set member. | Coordinator (cross-spec review) | `core-data-and-operators.md` `Never`; `time-and-outcomes.md` |
+| 2026-11-11 | `Float`, `Decimal`, tuples, `Range`, `Void`, and `Set` are constant-representable. | Coordinator (cross-spec review) | `standard-modules-and-constants.md` Allowed initializers |
+| 2026-11-11 | Failure-type patterns may name a struct or a single variant, not only an enum. | Coordinator (cross-spec review) | `patterns-and-function-clauses.md` |
+| 2026-11-11 | `std/option` declares `None` before `Some`, so derived ordering puts `None` first. | Coordinator (cross-spec review) | `standard-modules-and-constants.md` Prelude |
+| 2026-11-11 | Conformance row E10 uses an annotated `let` instead of call-site type arguments. | Coordinator (cross-spec review) | `core-data-and-operators.md` |
+| 2026-11-11 | Failure rows use `\|` in host capabilities too; `T4263` covers literal negative `shutdown_within` and non-positive restart windows; start failures are spelled `Supervisor.StartError.*`. | Coordinator (cross-spec review) | `host-capabilities-and-execution-properties.md`; `process-and-supervisor-static-contracts.md`; `supervisor-policy-and-lifecycle.md` |
+| 2026-11-11 | Pending spec examples carry the imports they use (`Duration`, `Process`, `Supervisor`, `Int`, `Text`); the time example uses interpolation. | Coordinator (cross-spec review) | process specs; `patterns-and-function-clauses.md`; `time-and-outcomes.md` |
 | 2026-11-11 | `\|>` inserts its left operand as the first argument: `x \|> f(a)` is `f(x, a)`. No pipeable twin APIs. | User | `executable-kernel.md` Pipelines; `ts-5414e7` |
 | 2026-11-11 | Literal `Duration.parse("...")` is checked at compile time (`T4349`); a valid literal suggests the constructor. | User | `time-and-outcomes.md` |
 | 2026-11-11 | Multi-clause functions are core: adjacent `fn` clauses with the same name, first clause is the header, exhaustive across clauses, no overloading by type or arity. | User (core); Coordinator-approved spec | `patterns-and-function-clauses.md`; `ts-be39c0` |

@@ -23,19 +23,20 @@ Related contracts:
 
 <!-- chimi: pending ts-6ccbc9 ts-f31a20 -->
 ```chimi
+import std/duration as Duration
 import std/process as Process
 import std/supervisor as Supervisor
 
 pub process name counter: CounterMessage
 
-let counting = Process.spec(counter_loop, 64, Duration.seconds(5))
+const counting = Process.spec(counter_loop, 64, Duration.seconds(5))
   |> Process.register(counter)
   |> Supervisor.process(Supervisor.Restart.OnDefect)
 
-let caching = Process.spec(cache_loop, 256, Duration.seconds(5))
+const caching = Process.spec(cache_loop, 256, Duration.seconds(5))
   |> Supervisor.process(Supervisor.Restart.OnDefect)
 
-let workers = Supervisor.policy(
+const workers = Supervisor.policy(
   [counting, caching],
   16,
   Supervisor.restarts(2, Duration.seconds(30)),
@@ -81,9 +82,9 @@ Exact types, failure rows, and compile-time rejections are in
 
 | Operation | Parks? | Outcome |
 | --- | --- | --- |
-| `Supervisor.start(policy)` | Until initial members have started | `Supervisor.Running`, or the first start failure (for example `Supervisor.NameTaken`) after starting members are stopped |
-| `Supervisor.start_process(running, spec, restart)` | Until the process has started | `ManagedProcess<M>`, or `Supervisor.CapacityReached` / `Supervisor.NameTaken` |
-| `Supervisor.start_supervisor(running, policy, restart)` | Until its initial members have started | `ManagedSupervisor`, or `Supervisor.CapacityReached` / `Supervisor.NameTaken` |
+| `Supervisor.start(policy)` | Until initial members have started | `Supervisor.Running`, or the first start failure (for example `Supervisor.StartError.NameTaken`) after starting members are stopped |
+| `Supervisor.start_process(running, spec, restart)` | Until the process has started | `ManagedProcess<M>`, or `Supervisor.StartError.CapacityReached`, `Supervisor.StartError.NameTaken`, or `Supervisor.StartError.Stopped` |
+| `Supervisor.start_supervisor(running, policy, restart)` | Until its initial members have started | `ManagedSupervisor`, or `Supervisor.StartError.CapacityReached`, `Supervisor.StartError.NameTaken`, or `Supervisor.StartError.Stopped` |
 | `Supervisor.address(managed)` | No | A direct address to the current incarnation |
 | `Supervisor.remove_process(running, managed)` | Until no incarnation of that membership runs | `Void` |
 | `Supervisor.remove_supervisor(running, managed)` | Until that subtree has stopped | `Void` |
@@ -103,7 +104,7 @@ Exact types, failure rows, and compile-time rejections are in
   initialization releases it, restart keeps it, and removal or a terminal end
   without restart releases it.
 - Admission is fail-fast: a request at capacity returns
-  `Supervisor.CapacityReached`. Waiting or retry is composed above the
+  `Supervisor.StartError.CapacityReached`. Waiting or retry is composed above the
   supervisor. Rejection emits a structured admission event.
 - Membership changes are serialized by the supervisor.
 

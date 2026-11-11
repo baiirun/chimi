@@ -59,7 +59,11 @@ The process is declared as an inert specification and owned by a supervisor:
 
 <!-- chimi: pending ts-6ccbc9 ts-f31a20 -->
 ```chimi
-let counting = Process.spec(counter, 64, Duration.seconds(5))
+import std/duration as Duration
+import std/process as Process
+import std/supervisor as Supervisor
+
+const counting = Process.spec(counter, 64, Duration.seconds(5))
   |> Supervisor.process(Supervisor.Restart.OnDefect)
 ```
 

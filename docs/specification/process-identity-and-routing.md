@@ -19,12 +19,15 @@ delivery guarantees, and a direct reference must never silently retarget.
 
 <!-- chimi: pending ts-6ccbc9 ts-f31a20 -->
 ```chimi
+import std/duration as Duration
 import std/process as Process
 import std/process.{Address}
+import std/supervisor as Supervisor
+import std/supervisor.{ManagedProcess}
 
 pub process name counter: CounterMessage
 
-let counting = Process.spec(counter_loop, 64, Duration.seconds(5))
+const counting = Process.spec(counter_loop, 64, Duration.seconds(5))
   |> Process.register(counter)
   |> Supervisor.process(Supervisor.Restart.OnDefect)
 
@@ -66,8 +69,8 @@ fn finish_exactly(managed: ManagedProcess<CounterMessage>) {
   must be a reference to a `process name` declaration; passing a direct
   address is a compile-time error.
 - A name is held by at most one running incarnation. Starting a process whose
-  name is already held fails with the expected `Supervisor.NameTaken`, before
-  initialization, in the same fail-fast style as `Supervisor.CapacityReached`.
+  name is already held fails with the expected `Supervisor.StartError.NameTaken`, before
+  initialization, in the same fail-fast style as `Supervisor.StartError.CapacityReached`.
 
 ## Routing transitions
 
