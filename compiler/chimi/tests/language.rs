@@ -4611,6 +4611,51 @@ fn instantiating_a_requirement_with_a_function_is_t4305() {
     }
 }
 
+// `Ordering` is a closed enum: matching `Less`, `Equal`, and `Greater` covers it,
+// imported bare or qualified, with no wildcard arm.
+#[test]
+fn a_case_over_every_ordering_variant_is_exhaustive() {
+    let source = concat!(
+        "import std/order as Order\n",
+        "import std/order.{Less, Equal, Greater, Ordering}\n",
+        "fn code(o: Ordering) -> Int {\n",
+        "  case o {\n",
+        "    Less -> 0\n",
+        "    Equal -> 1\n",
+        "    Greater -> 2\n",
+        "  }\n",
+        "}\n",
+        "fn qualified(o: Ordering) -> Int {\n",
+        "  case o {\n",
+        "    Ordering.Less -> 10\n",
+        "    Ordering.Equal -> 20\n",
+        "    Ordering.Greater -> 30\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<Int> {\n",
+        "  [code(Order.compare(1, 2)), code(Order.compare(2, 2)), qualified(Order.compare(3, 2))]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("ordering-exhaustive", source),
+        "\"outcome\":\"success\",\"value\":[0,1,30]"
+    );
+    let missing = concat!(
+        "import std/order.{Less, Equal, Ordering}\n",
+        "fn code(o: Ordering) -> Int {\n",
+        "  case o {\n",
+        "    Less -> 0\n",
+        "    Equal -> 1\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { 1 }\n",
+    );
+    let diagnostics = coded_messages(missing);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].0, "T4231");
+    assert!(diagnostics[0].1.contains("Greater"), "{diagnostics:?}");
+}
+
 // E13 when the requirement starts in a standard function: the caller of the user
 // generic gets T4305, labelled at the standard call inside the callee.
 #[test]

@@ -5182,6 +5182,7 @@ impl ProjectTypeChecker {
             self.resolved.standard_symbol(symbol),
             Some(StandardSymbol::Type(
                 StandardType::Option
+                    | StandardType::Ordering
                     | StandardType::JsonValue
                     | StandardType::DecodeError
                     | StandardType::NumberError
