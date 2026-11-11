@@ -718,7 +718,7 @@ Existing codes reused with clause-specific messages:
 | `S1001` | Syntax | A labelled pattern, a misplaced `..base`, or a positional update |
 
 Proposed new codes. `T4260`–`T4264` are already proposed by the process
-specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2022`:
+specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2023`:
 
 | Code | Stage | Condition | Fix |
 | --- | --- | --- | --- |
@@ -726,6 +726,7 @@ specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2022`:
 | `L2020` | Lowering | A later clause repeats `pub`, generics, the success annotation, or `needs` | Remove it, or move it to the first clause |
 | `L2021` | Lowering | A list pattern has more than one `..` | None |
 | `L2022` | Lowering | `{ ..base }` names no field | Replace with `base` |
+| `L2023` | Lowering | A block ends with a `let`, plain or destructuring ([kernel](executable-kernel.md#expressions)) | End the block with its value |
 | `T4280` | Type | Clauses have different parameter counts | None. Chimi has no arity overloading |
 | `T4281` | Type | Clauses require different types for one parameter | Use an enum to model the alternatives |
 | `T4282` | Type | `Success` or `Failure` in a parameter, `let`, or `loop` pattern | Match the operation with `case` |
@@ -770,6 +771,7 @@ specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2022`:
 | TP-05 | `Money(cents: 2500)` as a pattern | `S1001`; message says patterns are positional |
 | TP-06 | `-1` literal pattern | Compiles; matches negative one |
 | TP-07 | `"é"` against a decomposed `"é"` | Runtime: no match |
+| TP-08 | A block whose last item is `let x = 1` or `let (a, b) = pair` | `L2023` |
 | FP-01 | The trace summarizer `main` with failure-type arms | Compiles; residual row matches the same `main` with one arm per variant |
 | FP-02 | `Failure(error: FileError)` against a row without `FileError` | `T4224` |
 | FP-03 | Generic recovery thunk with `Failure(error: FileError)` | Compiles; residual row `E - FileError` |
@@ -805,7 +807,7 @@ Affected compiler stages, in pipeline order:
   heads. `Pattern` currently combines `path`, `literal`, `applied`, and
   `arguments` in one struct. It should become an enum with one variant per
   pattern form, so that a literal with arguments cannot be represented. This
-  stage emits `L2020`–`L2022`.
+  stage emits `L2020`–`L2023`.
 - **Resolution** (`compiler/chimi/src/resolution.rs`). It assigns one symbol per
   clause group, emits `E_SEPARATED_FUNCTION_CLAUSES`, resolves struct patterns
   and update bases against field visibility, and checks duplicate pattern

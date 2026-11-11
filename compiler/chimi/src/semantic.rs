@@ -1783,6 +1783,7 @@ impl ProjectLowerer {
                     .into_iter()
                     .filter(|child| child.kind() == NodeKind::BlockItem)
                     .collect::<Vec<_>>();
+                self.reject_trailing_let(&items);
                 ModuleExpression::Block {
                     semantic_id,
                     items: self.lower_block_items(&items, significant_range(node)),
@@ -2260,6 +2261,25 @@ impl ProjectLowerer {
             parts,
             range: significant_range(node),
         }
+    }
+
+    /// `L2023`: a block's value is its final expression, so a block MUST NOT end with
+    /// a `let`, plain or destructuring. The block still lowers as written.
+    fn reject_trailing_let(&mut self, items: &[SyntaxNode<'_>]) {
+        let Some(binding) = items
+            .last()
+            .and_then(|item| item.child_nodes().into_iter().next())
+            .filter(|child| child.kind() == NodeKind::LetBinding)
+        else {
+            return;
+        };
+        self.diagnostics.push(Diagnostic::error(
+            DiagnosticStage::Lowering,
+            "L2023",
+            FileId::new(0),
+            significant_range(&binding),
+            "a block ends with its value, but this block ends with a `let`; add the value after it, or use the bound expression as the value",
+        ));
     }
 
     /// Lowers block items in order. A `let` whose pattern is not a plain or typed name

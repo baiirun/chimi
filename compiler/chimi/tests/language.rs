@@ -7138,6 +7138,38 @@ fn an_update_without_fields_is_the_base() {
     assert_eq!(report.diagnostics()[0].fixes()[0].replacement(), "config");
 }
 
+// TP-08: a block's value is its final expression, so a block cannot end with a
+// `let`. These once ran: the plain `let` returned its value and the
+// destructuring one evaluated to `Void`.
+#[test]
+fn a_block_cannot_end_with_a_let() {
+    for (source, label) in [
+        ("fn g() -> Int {\n  let a = 1\n}\n", "let a = 1"),
+        (
+            "fn g() -> Void {\n  let (a, b) = (1, 2)\n}\n",
+            "let (a, b) = (1, 2)",
+        ),
+        (
+            "fn g() -> Int {\n  let v = {\n    let b: Int = 2\n  }\n  v\n}\n",
+            "let b: Int = 2",
+        ),
+    ] {
+        assert_eq!(
+            type_diagnostics(source),
+            [("L2023".to_owned(), label.to_owned())],
+            "{source}"
+        );
+    }
+    // A `let` followed by the block's value is the ordinary form.
+    assert_eq!(
+        run_both(
+            "let-then-value",
+            "pub fn main() -> Int {\n  let (a, b) = (1, 2)\n  let c = a + b\n  c\n}\n",
+        ),
+        "\"outcome\":\"success\",\"value\":3"
+    );
+}
+
 // RU-06
 #[test]
 fn only_structs_and_records_can_be_updated() {

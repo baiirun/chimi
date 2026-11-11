@@ -315,6 +315,10 @@ let value = {
 ```
 
 Blocks MUST NOT be empty. A block-local `return` is not part of the kernel.
+A block's last item MUST be an expression: a block that ends with a `let`,
+plain or destructuring, is rejected with `L2023`, because a `let` names a value
+and does not produce one. The fix is to end the block with the value, or to use
+the bound expression itself as the block's last item.
 
 Calls and block items evaluate left to right. Member access and calls bind more
 tightly than unary, multiplicative, additive, and comparison operations.

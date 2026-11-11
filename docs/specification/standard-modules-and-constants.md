@@ -722,7 +722,7 @@ All codes below are new. This specification owns `T4320`–`T4339` and the
 blocks `S1101`–`S1119`, `L2101`–`L2119`, `N3101`–`N3119`, and `E5201`–`E5219`,
 chosen to avoid codes in use (`S1001`–`S1002`, `L2001`, `N3001`–`N3002`,
 `T4001`–`T4250`, `E5001`–`E5008`) and codes other specifications claimed
-(`T4260`–`T4264`, `T4280`–`T4284`, `T4300`–`T4319`, `L2020`–`L2022`).
+(`T4260`–`T4264`, `T4280`–`T4284`, `T4300`–`T4319`, `L2020`–`L2023`).
 
 | Code | Stage | Rejected program |
 | --- | --- | --- |
