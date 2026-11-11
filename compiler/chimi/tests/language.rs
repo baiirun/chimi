@@ -8232,3 +8232,69 @@ fn ranges_format_without_spaces() {
         )
     );
 }
+
+// A `Failure(Enum.Variant(payload))` arm binds the payload at the subject's
+// instantiated type argument, for a user generic enum as for std ones.
+#[test]
+fn failure_variant_pattern_binds_a_generic_payload_at_its_instance_type() {
+    let source = concat!(
+        "enum Bounce<T> {\n",
+        "  Back(value: T)\n",
+        "  Lost\n",
+        "}\n",
+        "struct Order {\n",
+        "  id: Int,\n",
+        "}\n",
+        "fn send(order: Order) -> Int {\n",
+        "  case order.id {\n",
+        "    0 -> Failure(Bounce.Lost)\n",
+        "    _ -> Failure(Bounce.Back(order))\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  case send(Order(7)) {\n",
+        "    Success(n) -> n\n",
+        "    Failure(Bounce.Back(back)) -> back.id\n",
+        "    Failure(Bounce.Lost) -> -1\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("failure-generic-payload", source),
+        "\"outcome\":\"success\",\"value\":7"
+    );
+}
+
+// Binding the whole failure keeps the type argument too: matching it later in
+// an ordinary case still sees `Bounce<Order>`.
+#[test]
+fn bound_generic_failure_keeps_its_instance_type() {
+    let source = concat!(
+        "enum Bounce<T> {\n",
+        "  Back(value: T)\n",
+        "  Lost\n",
+        "}\n",
+        "struct Order {\n",
+        "  id: Int,\n",
+        "}\n",
+        "fn send(order: Order) -> Int {\n",
+        "  case order.id {\n",
+        "    0 -> Failure(Bounce.Lost)\n",
+        "    _ -> Failure(Bounce.Back(order))\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  case send(Order(9)) {\n",
+        "    Success(n) -> n\n",
+        "    Failure(error) -> case error {\n",
+        "      Bounce.Back(back) -> back.id\n",
+        "      Bounce.Lost -> -1\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("failure-generic-bound", source),
+        "\"outcome\":\"success\",\"value\":9"
+    );
+}

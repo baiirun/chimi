@@ -579,6 +579,59 @@ fn native_channel_close_recovers_the_unaccepted_value() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// Task-and-channel "Value transfer": a `Failure(SendError.Closed(value))` arm
+/// recovers the unaccepted value at the sender's element type, so a struct
+/// payload keeps its fields.
+#[test]
+fn native_channel_send_recovers_a_struct_through_a_variant_pattern() {
+    let scratch = scratch_directory("native-channel-send-variant-recovery");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("send-recovery-program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{SendError, Sender}\n",
+            "struct Order {\n",
+            "  id: Int,\n",
+            "}\n",
+            "fn push(sender: Sender<Order>, order: Order) -> Int {\n",
+            "  case Channel.send(sender, order) {\n",
+            "    Success(_) -> 0\n",
+            "    Failure(SendError.Closed(back)) -> back.id\n",
+            "    Failure(SendError.Aborted(back)) -> back.id + 100\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  Channel.close(channel.completion)\n",
+            "  push(channel.sender, Order(7))\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&executable)
+        .output()
+        .expect("build native send-recovery program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let execution = execute_native(&executable, &scratch, "native-send-recovery", "off");
+    assert!(execution.process.status.success());
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":7}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn native_task_cancel_cleans_up_a_parked_child() {
     let scratch = scratch_directory("native-task-cancel");

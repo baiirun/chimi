@@ -4627,10 +4627,21 @@ impl ProjectTypeChecker {
                     .copied()
                     .filter(|parameter| {
                         self.generic_kinds.get(parameter) == Some(&GenericKind::Value)
+                    })
+                    .collect::<Vec<_>>();
+                if !parameters.is_empty() {
+                    substitution
+                        .values
+                        .extend(parameters.into_iter().zip(arguments.arguments));
+                } else if let Some(owner) = self.enum_owner_for_variant(constructor) {
+                    // A user enum: match the raised instance against the declared
+                    // result, which binds the enum's own type parameters.
+                    let raised = self.intern_type(CanonicalType::Named {
+                        symbol: owner,
+                        arguments: arguments.arguments,
                     });
-                substitution
-                    .values
-                    .extend(parameters.zip(arguments.arguments));
+                    self.match_call_type(raised, contract.success, &mut substitution);
+                }
             }
             return Some(
                 contract
@@ -6333,8 +6344,10 @@ impl ProjectTypeChecker {
                 );
                 return (Vec::new(), false);
             }
-            let success = self.contracts[&symbol].success;
-            self.bind_value_pattern(module_id, pattern, success, context, bindings);
+            // Bind against the row, not the constructor's declared type, so the
+            // payload gets the type arguments the variant was raised with.
+            let row_value = self.intern_type(CanonicalType::FailureSetValue(failures));
+            self.bind_value_pattern(module_id, pattern, row_value, context, bindings);
             return (vec![symbol], false);
         }
 
@@ -6492,13 +6505,21 @@ impl ProjectTypeChecker {
                 let contract = self.contracts[&constructor].clone();
                 let mut substitution = CallSubstitution::default();
                 let expected = self.resolve_inference_type(expected);
-                let matches = match self.types[expected.raw() as usize].clone() {
-                    CanonicalType::FailureSetValue(failures) => {
-                        self.failure_row_may_contain(failures, constructor)
+                let instantiated = match self.types[expected.raw() as usize].clone() {
+                    CanonicalType::FailureSetValue(_) => {
+                        self.instantiate_pattern_constructor(constructor, expected)
                     }
-                    _ => self.match_call_type(expected, contract.success, &mut substitution),
+                    _ => self
+                        .match_call_type(expected, contract.success, &mut substitution)
+                        .then(|| {
+                            contract
+                                .inputs
+                                .iter()
+                                .map(|input| self.substitute_call_type(*input, &mut substitution))
+                                .collect::<Vec<_>>()
+                        }),
                 };
-                if !matches {
+                let Some(inputs) = instantiated else {
                     self.type_error_range(
                         module_id,
                         "T4222",
@@ -6506,7 +6527,7 @@ impl ProjectTypeChecker {
                         format!("pattern `{}` does not match the subject type", name.text),
                     );
                     return;
-                }
+                };
                 if arguments.len() != contract.inputs.len() {
                     self.type_error_range(
                         module_id,
@@ -6520,11 +6541,6 @@ impl ProjectTypeChecker {
                         ),
                     );
                 }
-                let inputs = contract
-                    .inputs
-                    .iter()
-                    .map(|input| self.substitute_call_type(*input, &mut substitution))
-                    .collect::<Vec<_>>();
                 for (argument, input) in arguments.iter().zip(inputs) {
                     self.bind_value_pattern(module_id, argument, input, context, bindings);
                 }
@@ -6669,11 +6685,55 @@ impl ProjectTypeChecker {
             }
             return Some(self.intern_type(CanonicalType::FailureSetValue(failures)));
         }
+        // A generic user enum keeps the type arguments its variants were raised
+        // with, so `Failure(error)` over `Bounce<Order>` failures binds
+        // `Bounce<Order>`, not the declaration's `Bounce<T>`. A variant that does
+        // not mention a parameter (`Bounce.Lost`) records it as poison, which
+        // agrees with any argument.
+        if let Some(arguments) = self.merged_variant_arguments(&row) {
+            return Some(self.intern_type(CanonicalType::Named {
+                symbol: *owner,
+                arguments,
+            }));
+        }
         let owner = self.resolved.symbol(*owner);
         self.declaration_types
             .get(&(owner.module_id?, owner.semantic_id?))
             .copied()
             .or_else(|| Some(self.intern_type(CanonicalType::FailureSetValue(failures))))
+    }
+
+    /// The one argument list every raised variant of `row` agrees on, position by
+    /// position, with poison agreeing with anything. `None` when two variants
+    /// disagree or no position is known.
+    fn merged_variant_arguments(&mut self, row: &FailureRow) -> Option<Vec<TypeId>> {
+        let poison = TypeId::new(0);
+        let mut merged: Option<Vec<TypeId>> = None;
+        for candidate in &row.variant_arguments {
+            if !row.variants.contains(&candidate.variant) {
+                continue;
+            }
+            let arguments = candidate
+                .arguments
+                .iter()
+                .map(|argument| self.resolve_inference_type(*argument))
+                .collect::<Vec<_>>();
+            let Some(current) = merged.as_mut() else {
+                merged = Some(arguments);
+                continue;
+            };
+            if current.len() != arguments.len() {
+                return None;
+            }
+            for (slot, argument) in current.iter_mut().zip(arguments) {
+                if *slot == poison {
+                    *slot = argument;
+                } else if argument != poison && argument != *slot {
+                    return None;
+                }
+            }
+        }
+        merged.filter(|arguments| arguments.iter().any(|argument| *argument != poison))
     }
 
     fn remove_handled_failures(
