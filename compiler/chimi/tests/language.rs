@@ -2329,6 +2329,27 @@ fn a_generic_struct_field_has_the_instantiated_type() {
     assert_eq!(check_codes(&source("\"x\"")), ["T4303"]);
 }
 
+// ts-d00929: an unannotated lambda parameter takes the callee's parameter type
+// before the lambda body is checked, so the body can read its fields. Covers a
+// monomorphic callee and a generic one whose `T` comes from an earlier argument.
+#[test]
+fn a_lambda_body_reads_a_field_of_a_parameter_typed_by_the_callee() {
+    let outcome = run_both(
+        "lambda-parameter-from-callee",
+        concat!(
+            "struct Money {\n",
+            "  cents: Int\n",
+            "}\n",
+            "fn apply(money: Money, operation: fn(Money) -> Int) -> Int { operation(money) }\n",
+            "fn with<T>(value: T, operation: fn(T) -> Int) -> Int { operation(value) }\n",
+            "pub fn main() -> Int {\n",
+            "  apply(Money(3), fn(x) { x.cents }) + with(Money(40), fn(y) { y.cents })\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":43");
+}
+
 // A constructor value renders as its constructor's name on both paths, as a
 // standard function value renders as its function's name.
 #[test]

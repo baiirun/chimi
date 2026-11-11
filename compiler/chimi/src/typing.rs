@@ -2581,12 +2581,18 @@ impl ProjectTypeChecker {
                         Some(fact) => self.record_expression_fact(module_id, callee, fact),
                         None => self.infer_expression(module_id, callee, generics, bindings),
                     };
-                    let mut argument_facts = arguments
-                        .iter()
-                        .map(|argument| {
-                            self.infer_expression(module_id, &argument.value, generics, bindings)
-                        })
-                        .collect::<Vec<_>>();
+                    let expected_callee = if labelled_order.is_none() {
+                        callee.success
+                    } else {
+                        TypeId::new(0)
+                    };
+                    let mut argument_facts = self.infer_call_arguments(
+                        module_id,
+                        expected_callee,
+                        arguments,
+                        generics,
+                        bindings,
+                    );
                     if let Some(order) = labelled_order {
                         argument_facts = order
                             .into_iter()
@@ -5141,6 +5147,111 @@ impl ProjectTypeChecker {
             }
             _ => None,
         }
+    }
+
+    /// Infers call arguments in source order, except that a function literal
+    /// argument is inferred after the others: its unannotated parameters first
+    /// take the callee's parameter types (instantiated by the other arguments),
+    /// so its body can use them (`apply(money, fn(x) { x.cents })`). The call
+    /// itself is still matched by `infer_invocation`.
+    fn infer_call_arguments(
+        &mut self,
+        module_id: ModuleId,
+        callee_type: TypeId,
+        arguments: &[crate::semantic::CallArgument],
+        generics: &HashMap<String, SymbolId>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> Vec<ExpressionFact> {
+        let callee_type = self.resolve_inference_type(callee_type);
+        let (inputs, mut substitution) = match self.types[callee_type.raw() as usize].clone() {
+            CanonicalType::Function(contract) => (contract.inputs, None),
+            CanonicalType::PolymorphicFunction { contract, .. } => {
+                (contract.inputs, Some(CallSubstitution::default()))
+            }
+            _ => (Vec::new(), None),
+        };
+        let is_function_literal = |argument: &crate::semantic::CallArgument| {
+            matches!(argument.value, ModuleExpression::Function { .. })
+        };
+        let mut facts = vec![None; arguments.len()];
+        for (index, argument) in arguments.iter().enumerate() {
+            if is_function_literal(argument) && inputs.get(index).is_some() {
+                continue;
+            }
+            let fact = self.infer_expression(module_id, &argument.value, generics, bindings);
+            if let (Some(substitution), Some(expected)) = (&mut substitution, inputs.get(index)) {
+                // Errors are reported when `infer_invocation` matches the call.
+                self.match_call_type(fact.success, *expected, substitution);
+            }
+            facts[index] = Some(fact);
+        }
+        for (index, argument) in arguments.iter().enumerate() {
+            if facts[index].is_some() {
+                continue;
+            }
+            let expected = match &mut substitution {
+                Some(substitution) => self.substitute_call_type(inputs[index], substitution),
+                None => inputs[index],
+            };
+            self.seed_function_literal_parameters(module_id, &argument.value, expected, generics);
+            facts[index] =
+                Some(self.infer_expression(module_id, &argument.value, generics, bindings));
+        }
+        facts
+            .into_iter()
+            .map(|fact| fact.expect("every argument is inferred"))
+            .collect()
+    }
+
+    /// Gives each unannotated parameter of a function literal the matching
+    /// input of `expected`, when that is a function type of the same arity.
+    fn seed_function_literal_parameters(
+        &mut self,
+        module_id: ModuleId,
+        literal: &ModuleExpression,
+        expected: TypeId,
+        generics: &HashMap<String, SymbolId>,
+    ) {
+        let ModuleExpression::Function { signature, .. } = literal else {
+            return;
+        };
+        let expected = self.resolve_inference_type(expected);
+        let CanonicalType::Function(expected) = self.types[expected.raw() as usize].clone() else {
+            return;
+        };
+        if expected.inputs.len() != signature.parameters.len() {
+            return;
+        }
+        let key = (module_id, literal.semantic_id());
+        // A later fixed-point pass reuses the literal's contract from the
+        // previous one, as the function-literal case does.
+        let previous = self.expression_facts.get(&key).and_then(|fact| {
+            let type_id = self.resolve_inference_type(fact.success);
+            match &self.types[type_id.raw() as usize] {
+                CanonicalType::Function(contract) => Some(contract.clone()),
+                _ => None,
+            }
+        });
+        let contract =
+            previous.unwrap_or_else(|| self.lower_signature(module_id, signature, generics));
+        for (input, expected) in contract.inputs.iter().zip(expected.inputs) {
+            let input = self.resolve_inference_type(*input);
+            if matches!(
+                self.types[input.raw() as usize],
+                CanonicalType::InferenceVariable(_)
+            ) {
+                self.unify(input, expected);
+            }
+        }
+        let success = self.intern_type(CanonicalType::Function(contract));
+        self.expression_facts.insert(
+            key,
+            ExpressionFact {
+                success,
+                failures: FailureRowId::new(0),
+                needs: NeedsRowId::new(0),
+            },
+        );
     }
 
     fn infer_invocation(
