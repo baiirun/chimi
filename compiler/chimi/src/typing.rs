@@ -215,6 +215,9 @@ pub(crate) struct TypedProject {
     pub(crate) declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
+    /// A polymorphic callee's function type with this call's substitution
+    /// applied, keyed by the callee expression. Monomorphic callees have none.
+    pub(crate) callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) fields: HashMap<SymbolId, Vec<FieldShape>>,
     pub(crate) generic_kinds: HashMap<SymbolId, GenericKind>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -634,6 +637,7 @@ struct ProjectTypeChecker {
     declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
     expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
+    callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
     fields: HashMap<SymbolId, Vec<FieldShape>>,
     generic_kinds: HashMap<SymbolId, GenericKind>,
     diagnostics: Vec<Diagnostic>,
@@ -647,7 +651,7 @@ struct ValueBinding {
     need: Option<Need>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct CallSubstitution {
     values: HashMap<SymbolId, TypeId>,
     failures: HashMap<SymbolId, FailureRowId>,
@@ -695,6 +699,7 @@ impl ProjectTypeChecker {
             declaration_types: HashMap::new(),
             type_facts: HashMap::new(),
             expression_facts: HashMap::new(),
+            callee_instantiations: HashMap::new(),
             fields: HashMap::new(),
             generic_kinds: HashMap::new(),
             diagnostics,
@@ -1320,6 +1325,12 @@ impl ProjectTypeChecker {
                 .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
                 .map(|(key, value)| (*key, *value))
                 .collect(),
+            callee_instantiations: previous
+                .callee_instantiations
+                .iter()
+                .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
+                .map(|(key, value)| (*key, *value))
+                .collect(),
             fields: previous
                 .fields
                 .iter()
@@ -1414,6 +1425,7 @@ impl ProjectTypeChecker {
             declaration_types: self.declaration_types,
             type_facts: self.type_facts,
             expression_facts: self.expression_facts,
+            callee_instantiations: self.callee_instantiations,
             fields: self.fields,
             generic_kinds: self.generic_kinds,
             diagnostics: self.diagnostics,
@@ -1817,6 +1829,7 @@ impl ProjectTypeChecker {
                         bindings,
                     )
                 } else {
+                    let callee_id = callee.semantic_id();
                     let callee = self.infer_expression(module_id, callee, generics, bindings);
                     let argument_facts = arguments
                         .iter()
@@ -1830,7 +1843,14 @@ impl ProjectTypeChecker {
                             ),
                         })
                         .collect::<Vec<_>>();
-                    self.infer_invocation(module_id, *range, callee_symbol, callee, &argument_facts)
+                    self.infer_invocation(
+                        module_id,
+                        *range,
+                        callee_id,
+                        callee_symbol,
+                        callee,
+                        &argument_facts,
+                    )
                 }
             }
             ModuleExpression::List {
@@ -1914,12 +1934,14 @@ impl ProjectTypeChecker {
                 ..
             } => {
                 let transform_symbol = self.expression_value_symbol(module_id, right);
+                let transform_id = right.semantic_id();
                 let left = self.infer_expression(module_id, left, generics, bindings);
                 let right = self.infer_expression(module_id, right, generics, bindings);
                 if *operator == BinaryOperator::Pipe {
                     self.infer_invocation(
                         module_id,
                         *range,
+                        transform_id,
                         transform_symbol,
                         right,
                         &[InvocationArgument {
@@ -3825,6 +3847,7 @@ impl ProjectTypeChecker {
         &mut self,
         module_id: ModuleId,
         range: TextRange,
+        callee_id: SemanticId,
         callee_symbol: Option<SymbolId>,
         callee: ExpressionFact,
         arguments: &[InvocationArgument],
@@ -3924,6 +3947,16 @@ impl ProjectTypeChecker {
                     }
                 }
                 let unresolved = self.unresolved_call_parameters(&parameters, substitution);
+                // A copy, so recording the instantiation cannot bind parameters
+                // the call left open.
+                let instantiated = self.substitute_call_contract_preserving(
+                    contract.clone(),
+                    &mut substitution.clone(),
+                    &unresolved,
+                );
+                let instantiated = self.intern_type(CanonicalType::Function(instantiated));
+                self.callee_instantiations
+                    .insert((module_id, callee_id), instantiated);
                 let success = self.substitute_call_type_preserving(
                     contract.success,
                     substitution,
