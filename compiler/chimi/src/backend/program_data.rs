@@ -85,8 +85,12 @@ impl ProgramData {
                 (7, constructor.raw(), offset, length, 0)
             }
             ConstantValue::Map(entries) => {
-                let (offset, length) = pairs(self, entries);
-                (8, 0, offset, length, 0)
+                let ids = entries
+                    .iter()
+                    .flat_map(|(key, value)| [self.constant_value(key), self.constant_value(value)])
+                    .collect::<Vec<_>>();
+                let (offset, _) = self.ids(ids);
+                (8, 0, offset, entries.len() as u32, 0)
             }
             ConstantValue::JsonNumber(text) => (9, self.string(text), 0, 0, 0),
             ConstantValue::Function(ConstantFunction::Declared(symbol)) => {

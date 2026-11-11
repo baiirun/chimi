@@ -447,10 +447,7 @@ fn constant_value(
         RuntimeValue::Map(map) => ConstantValue::Map(
             map.entries()
                 .into_iter()
-                .map(|(key, value)| {
-                    *bytes += key.len();
-                    Ok((key, convert(&value, bytes)?))
-                })
+                .map(|(key, value)| Ok((convert(&key, bytes)?, convert(&value, bytes)?)))
                 .collect::<Result<_, String>>()?,
         ),
         RuntimeValue::JsonNumber(text) => {
@@ -548,13 +545,23 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
                     .collect(),
             }
         }
-        ConstantValue::Map(entries) => RuntimeValue::Map(
-            entries
-                .iter()
-                .fold(RuntimeMap::default(), |map, (key, value)| {
-                    map.put(key.clone(), runtime_value(core, value))
-                }),
-        ),
+        ConstantValue::Map(entries) => RuntimeValue::Map(entries.iter().fold(
+            RuntimeMap::default(),
+            |map, (key, value)| {
+                map.put(
+                    runtime_value(core, key),
+                    runtime_value(core, value),
+                    &|left, right| {
+                        super::structural::structural_order(left, right, &|constructor| {
+                            core.symbol(constructor)
+                                .constructor
+                                .as_ref()
+                                .map_or(0, |shape| shape.ordinal)
+                        })
+                    },
+                )
+            },
+        )),
         ConstantValue::JsonNumber(text) => RuntimeValue::JsonNumber(text.clone()),
         ConstantValue::Function(function) => RuntimeValue::Callable(match function {
             ConstantFunction::Declared(symbol) => RuntimeCallable::Declared {

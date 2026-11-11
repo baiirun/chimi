@@ -362,18 +362,23 @@ struct RuntimeMap {
 
 #[derive(Clone, Debug)]
 struct RuntimeMapNode {
-    key: String,
+    key: RuntimeValue,
     value: RuntimeValue,
     height: u16,
     left: Option<Arc<Self>>,
     right: Option<Arc<Self>>,
 }
 
+/// The internal total order over keys: structural order, which is consistent
+/// with equality for every equatable type. It is never observable through
+/// enumeration, which `Map` does not promise.
+type KeyOrder<'order> = dyn Fn(&RuntimeValue, &RuntimeValue) -> Comparison + 'order;
+
 impl RuntimeMap {
-    fn get(&self, key: &str) -> Option<RuntimeValue> {
+    fn get(&self, key: &RuntimeValue, order: &KeyOrder<'_>) -> Option<RuntimeValue> {
         let mut node = self.root.as_deref();
         while let Some(current) = node {
-            match key.as_bytes().cmp(current.key.as_bytes()) {
+            match order(key, &current.key) {
                 Comparison::Less => node = current.left.as_deref(),
                 Comparison::Equal => return Some(current.value.clone()),
                 Comparison::Greater => node = current.right.as_deref(),
@@ -382,15 +387,15 @@ impl RuntimeMap {
         None
     }
 
-    fn put(&self, key: String, value: RuntimeValue) -> Self {
+    fn put(&self, key: RuntimeValue, value: RuntimeValue, order: &KeyOrder<'_>) -> Self {
         Self {
-            root: Some(map_insert(self.root.clone(), key, value)),
+            root: Some(map_insert(self.root.clone(), key, value, order)),
         }
     }
 
     /// Entries in key order, borrowed. The walk keeps its own stack; the tree is
     /// balanced, so it never holds more than the tree height.
-    fn entry_refs(&self) -> Vec<(&String, &RuntimeValue)> {
+    fn entry_refs(&self) -> Vec<(&RuntimeValue, &RuntimeValue)> {
         let mut entries = Vec::new();
         let mut pending = Vec::new();
         let mut node = self.root.as_deref();
@@ -407,33 +412,28 @@ impl RuntimeMap {
         }
     }
 
-    fn entries(&self) -> Vec<(String, RuntimeValue)> {
-        fn visit(node: &Option<Arc<RuntimeMapNode>>, entries: &mut Vec<(String, RuntimeValue)>) {
-            if let Some(node) = node {
-                visit(&node.left, entries);
-                entries.push((node.key.clone(), node.value.clone()));
-                visit(&node.right, entries);
-            }
-        }
-        let mut entries = Vec::new();
-        visit(&self.root, &mut entries);
-        entries
+    fn entries(&self) -> Vec<(RuntimeValue, RuntimeValue)> {
+        self.entry_refs()
+            .into_iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
     }
 }
 
 fn map_insert(
     node: Option<Arc<RuntimeMapNode>>,
-    key: String,
+    key: RuntimeValue,
     value: RuntimeValue,
+    order: &KeyOrder<'_>,
 ) -> Arc<RuntimeMapNode> {
     let Some(node) = node else {
         return map_node(key, value, None, None);
     };
-    let updated = match key.as_bytes().cmp(node.key.as_bytes()) {
+    let updated = match order(&key, &node.key) {
         Comparison::Less => map_node(
             node.key.clone(),
             node.value.clone(),
-            Some(map_insert(node.left.clone(), key, value)),
+            Some(map_insert(node.left.clone(), key, value, order)),
             node.right.clone(),
         ),
         Comparison::Equal => map_node(key, value, node.left.clone(), node.right.clone()),
@@ -441,7 +441,7 @@ fn map_insert(
             node.key.clone(),
             node.value.clone(),
             node.left.clone(),
-            Some(map_insert(node.right.clone(), key, value)),
+            Some(map_insert(node.right.clone(), key, value, order)),
         ),
     };
     map_balance(updated)
@@ -452,7 +452,7 @@ fn map_height(node: &Option<Arc<RuntimeMapNode>>) -> u16 {
 }
 
 fn map_node(
-    key: String,
+    key: RuntimeValue,
     value: RuntimeValue,
     left: Option<Arc<RuntimeMapNode>>,
     right: Option<Arc<RuntimeMapNode>>,
@@ -1404,10 +1404,10 @@ impl<'core> Evaluator<'core> {
                 Control::Success(RuntimeValue::Map(RuntimeMap::default()))
             }
             StandardFunction::MapGet => {
-                let [RuntimeValue::Map(map), RuntimeValue::Text(key)] = arguments.as_slice() else {
+                let [RuntimeValue::Map(map), key] = arguments.as_slice() else {
                     return self.intrinsic_shape_defect(function, call_node);
                 };
-                let value = map.get(key);
+                let value = map.get(key, &self.key_order());
                 Control::Success(match value {
                     Some(value) => {
                         self.standard_value(StandardConstructor::OptionSome, vec![value])
@@ -1416,22 +1416,25 @@ impl<'core> Evaluator<'core> {
                 })
             }
             StandardFunction::MapPut => {
-                let [RuntimeValue::Map(map), RuntimeValue::Text(key), value] = arguments.as_slice()
-                else {
+                let [RuntimeValue::Map(map), key, value] = arguments.as_slice() else {
                     return self.intrinsic_shape_defect(function, call_node);
                 };
-                Control::Success(RuntimeValue::Map(map.put(key.clone(), value.clone())))
+                Control::Success(RuntimeValue::Map(map.put(
+                    key.clone(),
+                    value.clone(),
+                    &self.key_order(),
+                )))
             }
             StandardFunction::MapUpdate => {
                 let [
                     RuntimeValue::Map(map),
-                    RuntimeValue::Text(key),
+                    key,
                     RuntimeValue::Callable(callback),
                 ] = arguments.as_slice()
                 else {
                     return self.intrinsic_shape_defect(function, call_node);
                 };
-                let current = match map.get(key) {
+                let current = match map.get(key, &self.key_order()) {
                     Some(value) => {
                         self.standard_value(StandardConstructor::OptionSome, vec![value])
                     }
@@ -1444,7 +1447,11 @@ impl<'core> Evaluator<'core> {
                     call_node,
                     environment,
                 ));
-                Control::Success(RuntimeValue::Map(map.put(key.clone(), value)))
+                Control::Success(RuntimeValue::Map(map.put(
+                    key.clone(),
+                    value,
+                    &self.key_order(),
+                )))
             }
             StandardFunction::MapMapValues => {
                 let [RuntimeValue::Map(map), RuntimeValue::Callable(callback)] =
@@ -1461,7 +1468,7 @@ impl<'core> Evaluator<'core> {
                         call_node,
                         environment.clone(),
                     ));
-                    output = output.put(key, value);
+                    output = output.put(key, value, &self.key_order());
                 }
                 Control::Success(RuntimeValue::Map(output))
             }
@@ -1805,7 +1812,11 @@ impl<'core> Evaluator<'core> {
             JsonData::Object(fields) => {
                 let mut map = RuntimeMap::default();
                 for (name, value) in fields {
-                    map = map.put(name, self.json_to_runtime(value));
+                    map = map.put(
+                        RuntimeValue::Text(name),
+                        self.json_to_runtime(value),
+                        &self.key_order(),
+                    );
                 }
                 self.standard_value(
                     StandardConstructor::JsonObject,
@@ -1856,13 +1867,22 @@ impl<'core> Evaluator<'core> {
                 RuntimeValue::Map(fields) => fields
                     .entries()
                     .into_iter()
-                    .map(|(name, value)| self.runtime_to_json(&value).map(|value| (name, value)))
+                    .map(|(name, value)| match name {
+                        RuntimeValue::Text(name) => {
+                            self.runtime_to_json(&value).map(|value| (name, value))
+                        }
+                        _ => Err(()),
+                    })
                     .collect::<Result<Vec<_>, _>>()
                     .map(JsonData::Object),
                 _ => Err(()),
             },
             _ => Err(()),
         }
+    }
+
+    fn key_order(&self) -> impl Fn(&RuntimeValue, &RuntimeValue) -> Comparison + '_ {
+        |left, right| self.structural_order(left, right)
     }
 
     fn structural_order(&self, left: &RuntimeValue, right: &RuntimeValue) -> Comparison {
@@ -2229,8 +2249,15 @@ fn public_value(value: RuntimeValue) -> ExecutionValue {
         RuntimeValue::Map(map) => ExecutionValue::Record(
             map.entries()
                 .into_iter()
-                .map(|(name, value)| ValueField {
-                    name,
+                .map(|(key, value)| ValueField {
+                    name: match key {
+                        RuntimeValue::Text(name) => name,
+                        key => {
+                            let mut name = String::new();
+                            write_json_value(&mut name, &public_value(key));
+                            name
+                        }
+                    },
                     value: public_value(value),
                 })
                 .collect(),
@@ -2477,17 +2504,31 @@ mod tests {
         );
     }
 
+    fn order(left: &RuntimeValue, right: &RuntimeValue) -> std::cmp::Ordering {
+        super::structural::structural_order(left, right, &|_| 0)
+    }
+
+    fn text(value: &str) -> RuntimeValue {
+        RuntimeValue::Text(value.to_owned())
+    }
+
     #[test]
     fn persistent_maps_retain_prior_values_and_share_untouched_branches() {
         let mut map = RuntimeMap::default();
         for (index, key) in ["d", "b", "f", "a", "c", "e", "g"].into_iter().enumerate() {
-            map = map.put(key.to_owned(), RuntimeValue::Integer(index as i64));
+            map = map.put(text(key), RuntimeValue::Integer(index as i64), &order);
         }
         let prior = map.clone();
-        let updated = map.put("g".to_owned(), RuntimeValue::Integer(99));
+        let updated = map.put(text("g"), RuntimeValue::Integer(99), &order);
 
-        assert!(matches!(prior.get("g"), Some(RuntimeValue::Integer(6))));
-        assert!(matches!(updated.get("g"), Some(RuntimeValue::Integer(99))));
+        assert!(matches!(
+            prior.get(&text("g"), &order),
+            Some(RuntimeValue::Integer(6))
+        ));
+        assert!(matches!(
+            updated.get(&text("g"), &order),
+            Some(RuntimeValue::Integer(99))
+        ));
         let prior_left = prior.root.as_ref().unwrap().left.as_ref().unwrap();
         let updated_left = updated.root.as_ref().unwrap().left.as_ref().unwrap();
         assert!(Arc::ptr_eq(prior_left, updated_left));
@@ -2497,7 +2538,11 @@ mod tests {
     fn ordered_insertions_keep_map_height_logarithmic() {
         let mut map = RuntimeMap::default();
         for value in 0..10_000 {
-            map = map.put(format!("{value:05}"), RuntimeValue::Integer(value));
+            map = map.put(
+                RuntimeValue::Integer(value),
+                RuntimeValue::Integer(value),
+                &order,
+            );
         }
 
         assert!(map.root.as_ref().unwrap().height <= 20);

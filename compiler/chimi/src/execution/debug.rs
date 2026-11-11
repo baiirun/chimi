@@ -101,7 +101,8 @@ impl Renderer<'_> {
                 let entries = map.entries();
                 let keys = entries
                     .iter()
-                    .map(|(key, _)| format!("{}: ", quote(key)))
+                    // A key renders on one line even in the indented format.
+                    .map(|(key, _)| format!("{}: ", render(self.core, key, false)))
                     .collect::<Vec<_>>();
                 let parts = keys
                     .into_iter()

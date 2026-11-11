@@ -403,7 +403,8 @@ pub(crate) enum ConstantValue {
         fields: Vec<ConstantValue>,
     },
     /// Entries in ascending byte order of their keys.
-    Map(Vec<(String, ConstantValue)>),
+    /// Key and value pairs; keys are any equatable value.
+    Map(Vec<(ConstantValue, ConstantValue)>),
     JsonNumber(String),
     Function(ConstantFunction),
 }

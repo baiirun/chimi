@@ -102,7 +102,7 @@ pub(super) fn structural_order(
                     left.into_iter().zip(right).rev()
                 {
                     steps.push(Step::Compare(left_value, right_value));
-                    steps.push(Step::Decide(left_key.as_bytes().cmp(right_key.as_bytes())));
+                    steps.push(Step::Compare(left_key, right_key));
                 }
                 Ordering::Equal
             }

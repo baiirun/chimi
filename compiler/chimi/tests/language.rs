@@ -1632,7 +1632,6 @@ fn int_and_float_are_never_equal_operands() {
 
 // E20
 #[test]
-#[ignore = "needs == (ts-95bffa)"]
 fn a_map_keyed_by_zero_finds_negative_zero() {
     let outcome = run_both(
         "float-map-key",
@@ -3412,6 +3411,78 @@ fn maps_built_in_different_orders_are_equal() {
     assert_eq!(
         run_both("map-equality", source),
         "\"outcome\":\"success\",\"value\":[true,false,true]"
+    );
+}
+
+// Structured keys through the constants table and the debug format: a constant
+// map keeps value keys on both backends, and `Debug.render` writes each key in
+// the debug format, in one order on both paths whatever the insertion order.
+#[test]
+fn structured_map_keys_survive_constants_and_debug_rendering() {
+    let source = concat!(
+        "import std/debug as Debug\n",
+        "import std/map as Map\n",
+        "struct Point {\n  x: Int,\n  y: Int,\n}\n",
+        "const scores = Map.empty() |> Map.put(Point(2, 1), 20) |> Map.put(Point(1, 9), 10)\n",
+        "pub fn main() -> List<Text> {\n",
+        "  let floats = Map.empty() |> Map.put(1.5, \"b\") |> Map.put(-0.0, \"a\")\n",
+        "  [\n",
+        "    Debug.render(scores |> Map.get(Point(2, 1))),\n",
+        "    Debug.render(scores),\n",
+        "    Debug.render(floats |> Map.put(0.0, \"c\")),\n",
+        "  ]\n",
+        "}\n",
+    );
+    let expected = [
+        "Some(20)",
+        "Map { Point { x: 1, y: 9 }: 10, Point { x: 2, y: 1 }: 20 }",
+        "Map { 0.0: \"c\", 1.5: \"b\" }",
+    ]
+    .iter()
+    .map(|rendered| json_text(rendered))
+    .collect::<Vec<_>>()
+    .join(",");
+    assert_eq!(
+        run_both("structured-map-keys-debug", source),
+        format!("\"outcome\":\"success\",\"value\":[{expected}]")
+    );
+}
+
+// E6 (with a struct and a list for the tuple, which lands with tuples): any
+// equatable key finds its entry through an equal, separately built key, and
+// equal keys replace each other.
+#[test]
+fn a_map_keyed_by_structured_values_finds_equal_keys() {
+    let source = concat!(
+        "import std/map as Map\n",
+        "struct Point { x: Int, y: Int }\n",
+        "enum Shape {\n  Dot\n  Line(points: List<Point>)\n}\n",
+        "fn line() -> Shape { Line([Point(1, 2), Point(3, 4)]) }\n",
+        "pub fn main() -> List<Option<Int>> {\n",
+        "  let shapes = Map.empty() |> Map.put(line(), 1) |> Map.put(Dot, 2) |> Map.put(line(), 3)\n",
+        "  let lists = Map.empty() |> Map.put([1, 2], 10) |> Map.put([1], 20)\n",
+        "  [\n",
+        "    shapes |> Map.get(Line([Point(1, 2), Point(3, 4)])),\n",
+        "    shapes |> Map.get(Dot),\n",
+        "    shapes |> Map.get(Line([Point(1, 2)])),\n",
+        "    lists |> Map.get([1, 2]),\n",
+        "    lists |> Map.get([1]),\n",
+        "  ]\n",
+        "}\n",
+    );
+    let some = |value: i64| {
+        format!("{{\"type\":\"Option\",\"variant\":\"Some\",\"fields\":{{\"value\":{value}}}}}")
+    };
+    let none = "{\"type\":\"Option\",\"variant\":\"None\",\"fields\":{}}";
+    assert_eq!(
+        run_both("structured-map-keys", source),
+        format!(
+            "\"outcome\":\"success\",\"value\":[{},{},{none},{},{}]",
+            some(3),
+            some(2),
+            some(10),
+            some(20)
+        )
     );
 }
 

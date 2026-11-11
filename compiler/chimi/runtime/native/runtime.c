@@ -70,8 +70,9 @@ struct ListNode {
    leaf; `tail` is NULL only when empty. */
 typedef struct { ListNode *root; ListNode *tail; uint32_t length; } ListVector;
 
+/* Keys are any equatable value, kept in the internal structural order. */
 struct MapNode {
-  const char *key;
+  ChimiValue *key;
   ChimiValue *value;
   MapNode *left;
   MapNode *right;
@@ -547,7 +548,7 @@ static void mark_list_node(ListNode *node, uint64_t epoch) {
 
 static void mark_map(MapNode *node, uint64_t epoch) {
   if (!node || !mark_allocation(node, epoch, ALLOCATION_MAP_NODE)) return;
-  mark_allocation((void *)node->key, epoch, ALLOCATION_BYTES);
+  mark_value(node->key, epoch);
   mark_value(node->value, epoch);
   mark_map(node->left, epoch);
   mark_map(node->right, epoch);
@@ -1105,7 +1106,8 @@ static ChimiValue *select_value(ChimiValue *value, const char *name) {
 
 static uint16_t map_height(const MapNode *node) { return node ? node->height : 0; }
 static uint16_t map_max(uint16_t left, uint16_t right) { return left > right ? left : right; }
-static MapNode *map_node(const char *key, ChimiValue *value, MapNode *left, MapNode *right) {
+static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *right_root);
+static MapNode *map_node(ChimiValue *key, ChimiValue *value, MapNode *left, MapNode *right) {
   MapNode *node = allocate(1, sizeof(*node));
   allocation_kind(node, ALLOCATION_MAP_NODE);
   node->key = key; node->value = value; node->left = left; node->right = right;
@@ -1136,18 +1138,18 @@ static MapNode *map_balance(MapNode *node) {
   }
   return node;
 }
-static MapNode *map_put_node(MapNode *node, const char *key, ChimiValue *value) {
+static MapNode *map_put_node(MapNode *node, ChimiValue *key, ChimiValue *value) {
   if (!node) return map_node(key, value, NULL, NULL);
-  int order = strcmp(key, node->key);
+  int order = chimi_value_compare(key, node->key);
   if (order == 0) return map_node(key, value, node->left, node->right);
   if (order < 0) return map_balance(map_node(node->key, node->value,
                                             map_put_node(node->left, key, value), node->right));
   return map_balance(map_node(node->key, node->value, node->left,
                               map_put_node(node->right, key, value)));
 }
-static ChimiValue *map_get_node(MapNode *node, const char *key) {
+static ChimiValue *map_get_node(MapNode *node, const ChimiValue *key) {
   while (node) {
-    int order = strcmp(key, node->key);
+    int order = chimi_value_compare(key, node->key);
     if (order == 0) return node->value;
     node = order < 0 ? node->left : node->right;
   }
@@ -1309,8 +1311,7 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
         compare_decide(&stack, order_of((int64_t)left_entries.length, (int64_t)right_entries.length));
         for (size_t index = shared; index-- > 0;) {
           compare_push(&stack, left_entries.nodes[index]->value, right_entries.nodes[index]->value, 0);
-          int key = strcmp(left_entries.nodes[index]->key, right_entries.nodes[index]->key);
-          compare_decide(&stack, (key > 0) - (key < 0));
+          compare_push(&stack, left_entries.nodes[index]->key, right_entries.nodes[index]->key, 0);
         }
         free(left_entries.nodes); free(right_entries.nodes);
         break;
@@ -1389,7 +1390,8 @@ static bool encode_json_map(TextBuffer *buffer, const MapNode *node, bool *first
   if (!node) return true;
   if (!encode_json_map(buffer, node->left, first)) return false;
   if (!*first) buffer_char(buffer, ','); *first = false;
-  buffer_json_string(buffer, node->key); buffer_char(buffer, ':');
+  if (node->key->kind != VALUE_TEXT) return false;
+  buffer_json_string(buffer, node->key->as.text); buffer_char(buffer, ':');
   if (!encode_json_value(buffer, node->value)) return false;
   return encode_json_map(buffer, node->right, first);
 }
@@ -1526,7 +1528,8 @@ static ChimiValue *json_parse_object(JsonParser *parser, uint32_t depth) {
     if (parser->offset >= parser->length || parser->source[parser->offset] != '"') {
       parser->message = "expected object key"; return NULL;
     }
-    char *key = json_parse_string(parser); if (!key) return NULL; json_skip_space(parser);
+    char *key_text = json_parse_string(parser); if (!key_text) return NULL; json_skip_space(parser);
+    ChimiValue *key = text_value(key_text);
     if (parser->offset >= parser->length || parser->source[parser->offset++] != ':') {
       parser->message = "expected colon after object key"; return NULL;
     }
@@ -1969,7 +1972,11 @@ static void debug_map(DebugRenderer *renderer, const MapNode *node, uint32_t *in
   if (!node) return;
   debug_map(renderer, node->left, index);
   debug_separator(renderer, (*index)++, true);
-  debug_quote(renderer->buffer, node->key);
+  /* A key renders on one line even in the indented format, as the interpreter does. */
+  bool indented = renderer->indented; uint32_t depth = renderer->depth;
+  renderer->indented = false;
+  debug_value(renderer, node->key);
+  renderer->indented = indented; renderer->depth = depth;
   debug_text(renderer->buffer, ": ");
   debug_value(renderer, node->value);
   debug_part_end(renderer);
@@ -2102,22 +2109,22 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     case CHIMI_INTRINSIC_MAP_EMPTY:
       return argument_count == 0 ? success(map_value(NULL)) : intrinsic_shape_defect(call_node);
     case CHIMI_INTRINSIC_MAP_GET: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_MAP || arguments[1]->kind != VALUE_TEXT)
+      if (argument_count != 2 || arguments[0]->kind != VALUE_MAP)
         return intrinsic_shape_defect(call_node);
-      ChimiValue *found = map_get_node(arguments[0]->as.map, arguments[1]->as.text);
+      ChimiValue *found = map_get_node(arguments[0]->as.map, arguments[1]);
       if (!found) return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
       ChimiValue *fields[] = {found};
       return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
     }
     case CHIMI_INTRINSIC_MAP_PUT: {
-      if (argument_count != 3 || arguments[0]->kind != VALUE_MAP || arguments[1]->kind != VALUE_TEXT)
+      if (argument_count != 3 || arguments[0]->kind != VALUE_MAP)
         return intrinsic_shape_defect(call_node);
-      return success(map_value(map_put_node(arguments[0]->as.map, arguments[1]->as.text, arguments[2])));
+      return success(map_value(map_put_node(arguments[0]->as.map, arguments[1], arguments[2])));
     }
     case CHIMI_INTRINSIC_MAP_UPDATE: {
-      if (argument_count != 3 || arguments[0]->kind != VALUE_MAP || arguments[1]->kind != VALUE_TEXT ||
+      if (argument_count != 3 || arguments[0]->kind != VALUE_MAP ||
           arguments[2]->kind != VALUE_CALLABLE) return intrinsic_shape_defect(call_node);
-      ChimiValue *found = map_get_node(arguments[0]->as.map, arguments[1]->as.text);
+      ChimiValue *found = map_get_node(arguments[0]->as.map, arguments[1]);
       ChimiValue *current;
       if (found) { ChimiValue *fields[] = {found}; current = standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1); }
       else current = standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0);
@@ -2125,7 +2132,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       ChimiControl *control = invoke(runtime, arguments[2]->as.callable, callback_arguments, 1,
                                      span, call_node, environment);
       if (control->kind != CONTROL_SUCCESS) return control;
-      return success(map_value(map_put_node(arguments[0]->as.map, arguments[1]->as.text, control->value)));
+      return success(map_value(map_put_node(arguments[0]->as.map, arguments[1], control->value)));
     }
     case CHIMI_INTRINSIC_MAP_MAP_VALUES: {
       if (argument_count != 2 || arguments[0]->kind != VALUE_MAP || arguments[1]->kind != VALUE_CALLABLE)
@@ -2475,7 +2482,7 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
     case CHIMI_CONSTANT_MAP: {
       MapNode *map = NULL;
       for (uint32_t i = 0; i < raw->length; ++i)
-        map = map_put_node(map, CHIMI_STRINGS[ids[2 * i]], constant_values[ids[2 * i + 1]]);
+        map = map_put_node(map, constant_values[ids[2 * i]], constant_values[ids[2 * i + 1]]);
       return map_value(map);
     }
     default: break;
