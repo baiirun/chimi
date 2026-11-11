@@ -3835,4 +3835,50 @@ mod tests {
             ExecutionOutcome::Success(ExecutionValue::Integer(7))
         );
     }
+
+    // Guards: list literals, decoded JSON arrays, and List.first/length agree
+    // past the 32-element boundary where the persistent vector leaves its tail.
+    #[test]
+    fn lists_longer_than_one_vector_leaf_round_trip_through_json() {
+        let elements = (0..40)
+            .map(|index| format!("Json.int({index})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source = format!(
+            concat!(
+                "import std/json as Json\n",
+                "import std/json.{{Value}}\n",
+                "\n",
+                "fn summarize(values: List<Value>) -> Text {{\n",
+                "  case List.first(values) {{\n",
+                "    Some(first) -> Json.encode(Json.array([Json.array(values), first, Json.int(List.length(values))]))\n",
+                "    None -> \"empty\"\n",
+                "  }}\n",
+                "}}\n",
+                "\n",
+                "pub fn main() -> Text {{\n",
+                "  let decoded = Json.decode(Json.encode(Json.array([{elements}])))\n",
+                "  case decoded {{\n",
+                "    Value.Array(values) -> summarize(values)\n",
+                "    _ -> \"unexpected\"\n",
+                "  }}\n",
+                "}}\n",
+            ),
+            elements = elements
+        );
+        let report = Compiler::run_project(
+            vec![module("lists/long", "long.chimi", &source)],
+            ExecutionConfig::new("lists-long").unwrap(),
+        )
+        .expect("long list program compiles and executes");
+
+        let numbers = (0..40).map(|index| index.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Text(format!(
+                "[[{}],0,40]",
+                numbers.join(",")
+            )))
+        );
+    }
 }

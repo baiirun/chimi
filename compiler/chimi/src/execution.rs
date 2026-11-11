@@ -1,3 +1,5 @@
+mod persistent_list;
+
 use crate::executable::{
     CoreArm, CoreLiteral, CoreOperation, CorePattern, CoreProgram, CoreStep, CoreSymbolKind,
     LegacyCoreProgram,
@@ -6,6 +8,7 @@ use crate::ids::{CoreNodeId, FileId, OriginId, SemanticId, SymbolId, TextRange};
 use crate::json::{JsonData, decode_json, write_json_data, write_json_string};
 use crate::semantic::{BinaryOperator, UnaryOperator};
 use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol, StandardType};
+use persistent_list::PersistentList;
 use std::cmp::Ordering as Comparison;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -312,7 +315,7 @@ enum RuntimeValue {
     Integer(i64),
     Text(String),
     Boolean(bool),
-    List(Vec<RuntimeValue>),
+    List(PersistentList<RuntimeValue>),
     Record(Vec<RuntimeField>),
     Constructed {
         constructor: SymbolId,
@@ -812,7 +815,7 @@ impl<'core> Evaluator<'core> {
                         environment.clone()
                     )));
                 }
-                Control::Success(RuntimeValue::List(values))
+                Control::Success(RuntimeValue::List(values.into_iter().collect()))
             }
             CoreOperation::Record(fields) => {
                 let mut values = Vec::with_capacity(fields.len());
@@ -1911,7 +1914,7 @@ fn public_value(value: RuntimeValue) -> ExecutionValue {
         RuntimeValue::Text(value) => ExecutionValue::Text(value),
         RuntimeValue::Boolean(value) => ExecutionValue::Boolean(value),
         RuntimeValue::List(values) => {
-            ExecutionValue::List(values.into_iter().map(public_value).collect())
+            ExecutionValue::List(values.iter().cloned().map(public_value).collect())
         }
         RuntimeValue::Record(fields) => ExecutionValue::Record(public_fields(fields)),
         RuntimeValue::Constructed {

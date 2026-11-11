@@ -50,6 +50,17 @@ typedef struct ChimiTaskContext ChimiTaskContext;
 typedef struct { const char *name; ChimiValue *value; } RuntimeField;
 typedef struct { uint64_t channel; uint64_t owner; uint64_t token; } RuntimeCapability;
 typedef struct MapNode MapNode;
+typedef struct ListNode ListNode;
+
+/* One node of a persistent vector: a 32-way radix trie whose leaves (height 0)
+   hold values and whose branches hold child nodes. Trie leaves are always full;
+   a list's tail leaf holds its last 1..32 values. Nodes are immutable once a
+   list value refers to them, so every version shares all untouched nodes. */
+struct ListNode {
+  uint32_t height;
+  uint32_t count;
+  void *slots[];
+};
 
 struct MapNode {
   const char *key;
@@ -81,7 +92,8 @@ struct ChimiValue {
     int64_t integer;
     const char *text;
     bool boolean;
-    struct { ChimiValue **items; uint32_t length; } list;
+    /* `root` is NULL until the list exceeds one leaf; `tail` is NULL only when empty. */
+    struct { ListNode *root; ListNode *tail; uint32_t length; } list;
     struct { RuntimeField *fields; uint32_t length; } record;
     struct { uint32_t constructor; const char *type_name; const char *variant_name;
              RuntimeField *fields; uint32_t length; } constructed;
@@ -122,6 +134,7 @@ typedef enum {
   ALLOCATION_FIELDS,
   ALLOCATION_CALLABLE,
   ALLOCATION_MAP_NODE,
+  ALLOCATION_LIST_NODE,
   ALLOCATION_KIND_COUNT,
 } AllocationKind;
 
@@ -289,6 +302,114 @@ static uint32_t environment_slot(uint32_t symbol) {
   return CHIMI_SYMBOLS[symbol].environment_slot;
 }
 
+enum { LIST_BITS = 5, LIST_WIDTH = 1 << LIST_BITS, LIST_MASK = LIST_WIDTH - 1 };
+
+static ListNode *list_node(uint32_t height, uint32_t count) {
+  ListNode *node = allocate(1, sizeof(*node) + (size_t)count * sizeof(node->slots[0]));
+  allocation_kind(node, ALLOCATION_LIST_NODE);
+  node->height = height; node->count = count;
+  return node;
+}
+static ListNode *list_node_copy(const ListNode *source, uint32_t count) {
+  ListNode *node = list_node(source->height, count);
+  uint32_t kept = source->count < count ? source->count : count;
+  memcpy(node->slots, source->slots, kept * sizeof(node->slots[0]));
+  return node;
+}
+static ChimiValue *list_value(ListNode *root, ListNode *tail, uint32_t length) {
+  ChimiValue *value = new_value(VALUE_LIST);
+  value->as.list.root = root; value->as.list.tail = tail; value->as.list.length = length;
+  return value;
+}
+/* Index of the first element stored in the tail rather than the trie. */
+static uint32_t list_tail_offset(uint32_t length) {
+  return length == 0 ? 0 : ((length - 1) >> LIST_BITS) << LIST_BITS;
+}
+static uint32_t list_length(const ChimiValue *list) { return list->as.list.length; }
+static ChimiValue *list_get(const ChimiValue *list, uint32_t index) {
+  if (index >= list->as.list.length) return NULL;
+  if (index >= list_tail_offset(list->as.list.length))
+    return list->as.list.tail->slots[index & LIST_MASK];
+  const ListNode *node = list->as.list.root;
+  for (uint32_t height = node->height; height > 0; --height)
+    node = node->slots[(index >> (height * LIST_BITS)) & LIST_MASK];
+  return node->slots[index & LIST_MASK];
+}
+static ListNode *list_new_path(uint32_t height, ListNode *leaf) {
+  if (height == 0) return leaf;
+  ListNode *node = list_node(height, 1);
+  node->slots[0] = list_new_path(height - 1, leaf);
+  return node;
+}
+/* Copies the path to the leaf that starts at element `first_index` and attaches `leaf`. */
+static ListNode *list_push_leaf(const ListNode *node, uint32_t first_index, ListNode *leaf) {
+  uint32_t slot = (first_index >> (node->height * LIST_BITS)) & LIST_MASK;
+  ListNode *copy = list_node_copy(node, slot + 1);
+  if (node->height == 1) copy->slots[slot] = leaf;
+  else if (slot < node->count) copy->slots[slot] = list_push_leaf(node->slots[slot], first_index, leaf);
+  else copy->slots[slot] = list_new_path(node->height - 1, leaf);
+  return copy;
+}
+/* Returns a new list with `item` appended; `list` is unchanged. Amortized O(1):
+   it copies at most one 32-slot tail plus one root-to-leaf path. Chimi code
+   reaches it once the standard-library mechanism (G1) exposes list building. */
+__attribute__((unused)) static ChimiValue *list_push(const ChimiValue *list, ChimiValue *item) {
+  uint32_t length = list->as.list.length;
+  if (length == UINT32_MAX) { fputs("Chimi runtime list length overflow\n", stderr); exit(70); }
+  uint32_t tail_length = length - list_tail_offset(length);
+  ListNode *tail = list->as.list.tail;
+  if (length == 0 || tail_length < LIST_WIDTH) {
+    ListNode *next = length == 0 ? list_node(0, 1) : list_node_copy(tail, tail_length + 1);
+    next->slots[tail_length] = item;
+    return list_value(list->as.list.root, next, length + 1);
+  }
+  ListNode *root = list->as.list.root;
+  uint32_t first_index = length - LIST_WIDTH;
+  if (!root) {
+    root = list_new_path(1, tail);
+  } else if ((uint64_t)(first_index >> LIST_BITS) == (uint64_t)1 << (root->height * LIST_BITS)) {
+    ListNode *grown = list_node(root->height + 1, 2);
+    grown->slots[0] = root; grown->slots[1] = list_new_path(root->height, tail);
+    root = grown;
+  } else {
+    root = list_push_leaf(root, first_index, tail);
+  }
+  ListNode *next = list_node(0, 1);
+  next->slots[0] = item;
+  return list_value(root, next, length + 1);
+}
+/* Builds a list from `length` values in O(length) without intermediate versions. */
+static ChimiValue *list_from_values(ChimiValue *const *values, uint32_t length) {
+  if (length == 0) return list_value(NULL, NULL, 0);
+  uint32_t tail_offset = list_tail_offset(length);
+  ListNode *tail = list_node(0, length - tail_offset);
+  memcpy(tail->slots, values + tail_offset, tail->count * sizeof(tail->slots[0]));
+  uint32_t level_count = tail_offset >> LIST_BITS;
+  if (level_count == 0) return list_value(NULL, tail, length);
+  ListNode **level = malloc(level_count * sizeof(*level));
+  if (!level) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  for (uint32_t index = 0; index < level_count; ++index) {
+    level[index] = list_node(0, LIST_WIDTH);
+    memcpy(level[index]->slots, values + ((size_t)index << LIST_BITS), sizeof(level[index]->slots[0]) * LIST_WIDTH);
+  }
+  uint32_t height = 0;
+  while (level_count > 1 || height == 0) {
+    ++height;
+    uint32_t parent_count = (level_count + LIST_MASK) >> LIST_BITS;
+    for (uint32_t parent = 0; parent < parent_count; ++parent) {
+      uint32_t first = parent << LIST_BITS;
+      uint32_t count = level_count - first < LIST_WIDTH ? level_count - first : LIST_WIDTH;
+      ListNode *node = list_node(height, count);
+      memcpy(node->slots, level + first, count * sizeof(node->slots[0]));
+      level[parent] = node;
+    }
+    level_count = parent_count;
+  }
+  ListNode *root = level[0];
+  free(level);
+  return list_value(root, tail, length);
+}
+
 static void mark_value(ChimiValue *value, uint64_t epoch);
 
 static bool mark_allocation(void *value, uint64_t epoch, AllocationKind expected_kind) {
@@ -328,6 +449,14 @@ static void mark_callable(ChimiCallable *callable, uint64_t epoch) {
   mark_callable(callable->inner, epoch);
 }
 
+static void mark_list_node(ListNode *node, uint64_t epoch) {
+  if (!node || !mark_allocation(node, epoch, ALLOCATION_LIST_NODE)) return;
+  for (uint32_t index = 0; index < node->count; ++index) {
+    if (node->height == 0) mark_value(node->slots[index], epoch);
+    else mark_list_node(node->slots[index], epoch);
+  }
+}
+
 static void mark_map(MapNode *node, uint64_t epoch) {
   if (!node || !mark_allocation(node, epoch, ALLOCATION_MAP_NODE)) return;
   mark_allocation((void *)node->key, epoch, ALLOCATION_BYTES);
@@ -340,7 +469,10 @@ static void mark_value(ChimiValue *value, uint64_t epoch) {
   if (!value || !mark_allocation(value, epoch, ALLOCATION_VALUE)) return;
   switch (value->kind) {
     case VALUE_TEXT: mark_allocation((void *)value->as.text, epoch, ALLOCATION_BYTES); break;
-    case VALUE_LIST: mark_value_pointers(value->as.list.items, epoch); break;
+    case VALUE_LIST:
+      mark_list_node(value->as.list.root, epoch);
+      mark_list_node(value->as.list.tail, epoch);
+      break;
     case VALUE_RECORD: mark_fields(value->as.record.fields, epoch); break;
     case VALUE_CONSTRUCTED: mark_fields(value->as.constructed.fields, epoch); break;
     case VALUE_CALLABLE: mark_callable(value->as.callable, epoch); break;
@@ -464,8 +596,8 @@ static void json_value(FILE *output, const ChimiValue *value) {
     case VALUE_TEXT: json_string(output, value->as.text); break;
     case VALUE_BOOLEAN: fputs(value->as.boolean ? "true" : "false", output); break;
     case VALUE_LIST:
-      fputc('[', output); for (uint32_t i = 0; i < value->as.list.length; ++i) {
-        if (i) fputc(',', output); json_value(output, value->as.list.items[i]);
+      fputc('[', output); for (uint32_t i = 0; i < list_length(value); ++i) {
+        if (i) fputc(',', output); json_value(output, list_get(value, i));
       } fputc(']', output); break;
     case VALUE_RECORD: json_fields(output, value->as.record.fields, value->as.record.length); break;
     case VALUE_CONSTRUCTED:
@@ -666,8 +798,8 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
       return transfer_captured_capability(
         transfer, value, CHIMI_REQUEST_CHANNEL_TRANSFER_COMPLETION);
     case VALUE_LIST:
-      for (uint32_t index = 0; index < value->as.list.length; ++index)
-        if (!transfer_captured_value(transfer, value->as.list.items[index], depth + 1)) return false;
+      for (uint32_t index = 0; index < list_length(value); ++index)
+        if (!transfer_captured_value(transfer, list_get(value, index), depth + 1)) return false;
       return true;
     case VALUE_RECORD:
       for (uint32_t index = 0; index < value->as.record.length; ++index)
@@ -692,6 +824,12 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
     case VALUE_CHANNEL_SENDER: return true;
   }
   return false;
+}
+
+static ChimiValue *application_arguments(int32_t count, const char **argv) {
+  ChimiValue **items = new_value_slots((uint32_t)count);
+  for (int32_t argument = 0; argument < count; ++argument) items[argument] = text_value(argv[argument]);
+  return list_from_values(items, (uint32_t)count);
 }
 
 int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace; }
@@ -847,9 +985,9 @@ static bool encode_json_value(TextBuffer *buffer, const ChimiValue *value) {
     case CHIMI_CONSTRUCTOR_JSON_ARRAY:
       if (!field || field->kind != VALUE_LIST) return false;
       buffer_char(buffer, '[');
-      for (uint32_t index = 0; index < field->as.list.length; ++index) {
+      for (uint32_t index = 0; index < list_length(field); ++index) {
         if (index) buffer_char(buffer, ',');
-        if (!encode_json_value(buffer, field->as.list.items[index])) return false;
+        if (!encode_json_value(buffer, list_get(field, index))) return false;
       }
       buffer_char(buffer, ']'); return true;
     case CHIMI_CONSTRUCTOR_JSON_OBJECT: {
@@ -952,9 +1090,8 @@ static ChimiValue *json_parse_array(JsonParser *parser, uint32_t depth) {
     if (separator != ',') { parser->message = "expected comma in array"; return NULL; }
     json_skip_space(parser);
   }
-  ChimiValue *list = new_value(VALUE_LIST);
-  list->as.list.items = items; list->as.list.length = length;
-  ChimiValue *fields[] = {list}; return standard_value(CHIMI_CONSTRUCTOR_JSON_ARRAY, fields, 1);
+  ChimiValue *fields[] = {list_from_values(items, length)};
+  return standard_value(CHIMI_CONSTRUCTOR_JSON_ARRAY, fields, 1);
 }
 static ChimiValue *json_parse_object(JsonParser *parser, uint32_t depth) {
   ++parser->offset; json_skip_space(parser); MapNode *map = NULL;
@@ -1293,15 +1430,15 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     case CHIMI_INTRINSIC_LIST_FIRST: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_LIST)
         return intrinsic_shape_defect(call_node);
-      if (arguments[0]->as.list.length == 0)
+      if (list_length(arguments[0]) == 0)
         return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
-      ChimiValue *fields[] = {arguments[0]->as.list.items[0]};
+      ChimiValue *fields[] = {list_get(arguments[0], 0)};
       return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
     }
     case CHIMI_INTRINSIC_LIST_LENGTH:
       if (argument_count != 1 || arguments[0]->kind != VALUE_LIST)
         return intrinsic_shape_defect(call_node);
-      return success(integer_value((int64_t)arguments[0]->as.list.length));
+      return success(integer_value((int64_t)list_length(arguments[0])));
     case CHIMI_INTRINSIC_MAP_EMPTY:
       return argument_count == 0 ? success(map_value(NULL)) : intrinsic_shape_defect(call_node);
     case CHIMI_INTRINSIC_MAP_GET: {
@@ -1692,14 +1829,12 @@ NODE_WRAPPER(call, "call", {
 })
 
 NODE_WRAPPER(list, "list", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *value = new_value(VALUE_LIST);
-  value->as.list.length = node->length; value->as.list.items = allocate(node->length, sizeof(*value->as.list.items));
-  allocation_kind(value->as.list.items, ALLOCATION_VALUE_POINTERS);
+  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue **items = new_value_slots(node->length);
   bool stopped = false; for (uint32_t i = 0; i < node->length; ++i) {
     ChimiControl *control = RUN(CHIMI_IDS[node->offset + i]);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
-    value->as.list.items[i] = control->value;
-  } if (!stopped) result = success(value);
+    items[i] = control->value;
+  } if (!stopped) result = success(list_from_values(items, node->length));
 })
 
 NODE_WRAPPER(record, "record", {
@@ -1962,7 +2097,7 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           "{\"schema\":\"chimi.runtime-memory.v1\",\"scoped_total_allocated_bytes\":%zu,"
           "\"scoped_allocated_bytes_by_kind\":{\"bytes\":%zu,\"values\":%zu,"
           "\"controls\":%zu,\"environments\":%zu,\"value_pointers\":%zu,"
-          "\"fields\":%zu,\"callables\":%zu,\"map_nodes\":%zu},"
+          "\"fields\":%zu,\"callables\":%zu,\"map_nodes\":%zu,\"list_nodes\":%zu},"
           "\"scoped_peak_live_bytes\":%zu,\"scoped_retained_bytes\":%zu,"
           "\"scoped_collections\":%" PRIu64 "}\n",
           runtime->scoped_total_allocated_bytes,
@@ -1974,6 +2109,7 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_FIELDS],
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_CALLABLE],
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_MAP_NODE],
+          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_LIST_NODE],
           runtime->scoped_peak_live_bytes,
           runtime->scoped_retained_bytes,
           runtime->scoped_collections);
@@ -2155,12 +2291,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
       ChimiEnvironment *environment = new_environment();
       if (entry_function->parameters_length == 1) {
-        ChimiValue *arguments = new_value(VALUE_LIST);
-        arguments->as.list.length = (uint32_t)(argc - index);
-        arguments->as.list.items = allocate(arguments->as.list.length, sizeof(*arguments->as.list.items));
-        allocation_kind(arguments->as.list.items, ALLOCATION_VALUE_POINTERS);
-        for (uint32_t argument = 0; argument < arguments->as.list.length; ++argument)
-          arguments->as.list.items[argument] = text_value(argv[index + (int32_t)argument]);
+        ChimiValue *arguments = application_arguments(argc - index, argv + index);
         environment->locals[environment_slot(CHIMI_IDS[entry_function->parameters_offset])] = arguments;
       }
       ChimiControl *control = runtime.cancel
@@ -2183,12 +2314,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
   ChimiEnvironment *environment = new_environment();
   if (entry_function->parameters_length == 1) {
-    ChimiValue *arguments = new_value(VALUE_LIST);
-    arguments->as.list.length = (uint32_t)(argc - index);
-    arguments->as.list.items = allocate(arguments->as.list.length, sizeof(*arguments->as.list.items));
-    allocation_kind(arguments->as.list.items, ALLOCATION_VALUE_POINTERS);
-    for (uint32_t argument = 0; argument < arguments->as.list.length; ++argument)
-      arguments->as.list.items[argument] = text_value(argv[index + (int32_t)argument]);
+    ChimiValue *arguments = application_arguments(argc - index, argv + index);
     environment->locals[environment_slot(CHIMI_IDS[entry_function->parameters_offset])] = arguments;
   }
   ChimiControl *control = runtime.cancel

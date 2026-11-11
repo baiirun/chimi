@@ -1484,6 +1484,7 @@ fn native_chimi_code_classifies_and_aggregates_trace_records() {
         "fields",
         "callables",
         "map_nodes",
+        "list_nodes",
     ]
     .into_iter()
     .map(|kind| json_u64_field(&memory_report, kind))
@@ -2228,6 +2229,92 @@ fn native_scheduler_free_loop_reclaims_each_pass() {
     assert!(
         peak_live < 16_384,
         "loop kept {peak_live} live bytes across {passes} passes"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_list_is_a_persistent_vector() {
+    let scratch = scratch_directory("native-list-runtime");
+    let executable = scratch.join("native-list-runtime");
+    let compilation = Command::new("cc")
+        .arg("-std=c11")
+        .arg("-O2")
+        .arg("-I")
+        .arg(repository_path("compiler/chimi/runtime/native"))
+        .arg("-I")
+        .arg(repository_path("runtime/chimi-fiber/include"))
+        .arg(format!(
+            "{}/tests/fixtures/native-list-runtime.c",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("compile native list runtime test");
+    assert!(
+        compilation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compilation.stderr)
+    );
+    let run = Command::new(&executable)
+        .output()
+        .expect("run native list runtime test");
+    let stdout = String::from_utf8(run.stdout).unwrap();
+    assert!(
+        run.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(stdout.ends_with("ok\n"), "{stdout}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Guards: native list literals, decoded JSON arrays, and List.first/length agree
+// past the 32-element boundary where the persistent vector leaves its tail.
+#[test]
+fn native_lists_longer_than_one_vector_leaf_round_trip_through_json() {
+    let scratch = scratch_directory("native-long-list");
+    let elements = (0..40)
+        .map(|index| format!("Json.int({index})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        concat!(
+            "import std/json as Json\n",
+            "import std/json.{{Value}}\n",
+            "\n",
+            "fn summarize(values: List<Value>) -> Text {{\n",
+            "  case List.first(values) {{\n",
+            "    Some(first) -> Json.encode(Json.array([Json.array(values), first, Json.int(List.length(values))]))\n",
+            "    None -> \"empty\"\n",
+            "  }}\n",
+            "}}\n",
+            "\n",
+            "pub fn main() -> Text {{\n",
+            "  let decoded = Json.decode(Json.encode(Json.array([{elements}])))\n",
+            "  case decoded {{\n",
+            "    Value.Array(values) -> summarize(values)\n",
+            "    _ -> \"unexpected\"\n",
+            "  }}\n",
+            "}}\n",
+        ),
+        elements = elements
+    );
+    let executable = build_native(&scratch, "long-list", &source);
+    let execution = execute_native(&executable, &scratch, "long-list", "off");
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    let numbers = (0..40).map(|index| index.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        execution.outcome,
+        format!(
+            "{{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":\"[[{}],0,40]\"}}\n",
+            numbers.join(",")
+        )
     );
     std::fs::remove_dir_all(scratch).unwrap();
 }
