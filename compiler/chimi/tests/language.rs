@@ -439,3 +439,49 @@ fn boolean_operators_format_canonically() {
         )
     );
 }
+
+// ts-8cf7db: a body whose failure row carries a type nothing pins used to
+// grow its contract on every inference pass until the checker panicked.
+#[test]
+fn unpinned_channel_element_in_a_failure_row_reports_diagnostics() {
+    let codes = check_codes(concat!(
+        "import std/channel as Channel\n",
+        "pub fn main() -> Int {\n",
+        "  let jobs = Channel.bounded(1)\n",
+        "  let outbox = Channel.bounded(1)\n",
+        "  let finished = case Channel.send(outbox.sender, jobs.receiver) {\n",
+        "    _ -> True\n",
+        "  }\n",
+        "  1\n",
+        "}\n",
+    ));
+    assert_eq!(codes, ["T4222"]);
+}
+
+#[test]
+fn unpinned_channel_element_in_a_propagated_failure_is_an_incomplete_type() {
+    let scratch = scratch_directory("unpinned-propagated-failure");
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        concat!(
+            "import std/channel as Channel\n",
+            "pub fn main() -> Int {\n",
+            "  let jobs = Channel.bounded(1)\n",
+            "  let outbox = Channel.bounded(1)\n",
+            "  Channel.send(outbox.sender, jobs.receiver)\n",
+            "  1\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run chimi check");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("error[E5006]"), "{stderr}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}

@@ -1939,6 +1939,8 @@ impl ProjectTypeChecker {
                 inferred.failures =
                     self.union_failure_rows([inferred.failures, body_fact.failures]);
                 inferred.needs = self.union_needs_rows([inferred.needs, body_fact.needs]);
+                inferred.failures = self.close_failure_row(inferred.failures);
+                inferred.needs = self.close_needs_row(inferred.needs);
                 self.contracts.insert(function_symbol, inferred);
                 self.contracts[&function_symbol] != previous
             }
@@ -1961,6 +1963,95 @@ impl ProjectTypeChecker {
             ModuleDeclarationKind::Struct
             | ModuleDeclarationKind::Enum
             | ModuleDeclarationKind::Interface => false,
+        }
+    }
+
+    /// Settles the inferred rows a body contributes to its declaration's
+    /// contract. Every body pass allocates fresh inference variables, so a
+    /// variable this pass left unbound (a value whose type nothing pins) can
+    /// never be bound by a later pass. Keeping it would add a distinct row
+    /// entry per pass and stop the body-contract fixed point from converging;
+    /// it becomes `Poison`, whose missing type fact is reported elsewhere.
+    fn close_failure_row(&mut self, row: FailureRowId) -> FailureRowId {
+        let mut row = self.failure_rows[row.raw() as usize].clone();
+        for arguments in &mut row.variant_arguments {
+            for argument in &mut arguments.arguments {
+                *argument = self.close_inferred_type(*argument);
+            }
+        }
+        self.intern_failure_row(row)
+    }
+
+    fn close_needs_row(&mut self, row: NeedsRowId) -> NeedsRowId {
+        let row = self.needs_rows[row.raw() as usize].clone();
+        let entries = row
+            .entries
+            .into_iter()
+            .map(|need| Need {
+                interface: self.close_inferred_type(need.interface),
+                ..need
+            })
+            .collect();
+        let closed = self.intern_needs_row(NeedsRow {
+            entries,
+            parameters: row.parameters,
+        });
+        self.union_needs_rows([closed])
+    }
+
+    fn close_inferred_type(&mut self, type_id: TypeId) -> TypeId {
+        let type_id = self.resolve_inference_type(type_id);
+        match self.types[type_id.raw() as usize].clone() {
+            CanonicalType::InferenceVariable(_) => self.intern_type(CanonicalType::Poison),
+            CanonicalType::Named { symbol, arguments } => {
+                let arguments = arguments
+                    .into_iter()
+                    .map(|argument| self.close_inferred_type(argument))
+                    .collect();
+                self.intern_type(CanonicalType::Named { symbol, arguments })
+            }
+            CanonicalType::Record(fields) => {
+                let fields = fields
+                    .into_iter()
+                    .map(|field| StructuralField {
+                        name: field.name,
+                        type_id: self.close_inferred_type(field.type_id),
+                    })
+                    .collect();
+                self.intern_type(CanonicalType::Record(fields))
+            }
+            CanonicalType::Function(contract) => {
+                let contract = self.close_inferred_contract(contract);
+                self.intern_type(CanonicalType::Function(contract))
+            }
+            CanonicalType::PolymorphicFunction {
+                parameters,
+                contract,
+            } => {
+                let contract = self.close_inferred_contract(contract);
+                self.intern_type(CanonicalType::PolymorphicFunction {
+                    parameters,
+                    contract,
+                })
+            }
+            CanonicalType::FailureSetValue(failures) => {
+                let failures = self.close_failure_row(failures);
+                self.intern_type(CanonicalType::FailureSetValue(failures))
+            }
+            CanonicalType::Generic(_) | CanonicalType::Poison => type_id,
+        }
+    }
+
+    fn close_inferred_contract(&mut self, contract: CallableContract) -> CallableContract {
+        CallableContract {
+            inputs: contract
+                .inputs
+                .into_iter()
+                .map(|input| self.close_inferred_type(input))
+                .collect(),
+            success: self.close_inferred_type(contract.success),
+            failures: self.close_failure_row(contract.failures),
+            needs: self.close_needs_row(contract.needs),
         }
     }
 
