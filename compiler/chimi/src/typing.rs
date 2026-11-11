@@ -1164,8 +1164,12 @@ struct ProjectTypeChecker {
     /// The type every `break` of a loop must supply; it is also the loop's success type.
     /// A loop no break targets keeps an unconstrained variable, so it fits any context.
     loop_break_types: HashMap<(ModuleId, SemanticId), TypeId>,
-    /// Loops some `break` leaves; any other loop has type `Never`.
-    broken_loops: HashSet<(ModuleId, SemanticId)>,
+    /// Loops some `break` leaves, with the first such `break`; any other loop has
+    /// type `Never`.
+    broken_loops: HashMap<(ModuleId, SemanticId), TextRange>,
+    /// Each `case` arm body's success type, so `T4308` can find the arm that
+    /// produces a value.
+    arm_types: HashMap<(ModuleId, SemanticId), TypeId>,
     /// Constants whose latest body pass left an inference variable unbound (`T4324`).
     undetermined_constants: HashSet<(ModuleId, SemanticId)>,
     /// How many function input types the current `unify` or `match_call_type`
@@ -1402,7 +1406,8 @@ impl ProjectTypeChecker {
             next_inference_variable: 0,
             inference_bindings: HashMap::new(),
             loop_break_types: HashMap::new(),
-            broken_loops: HashSet::new(),
+            broken_loops: HashMap::new(),
+            arm_types: HashMap::new(),
             undetermined_constants: HashSet::new(),
             function_input_depth: 0,
         };
@@ -2415,7 +2420,8 @@ impl ProjectTypeChecker {
             next_inference_variable,
             inference_bindings: previous.inference_bindings.clone(),
             loop_break_types: HashMap::new(),
-            broken_loops: HashSet::new(),
+            broken_loops: HashMap::new(),
+            arm_types: HashMap::new(),
             undetermined_constants: HashSet::new(),
             function_input_depth: 0,
         }
@@ -2683,7 +2689,7 @@ impl ProjectTypeChecker {
                     self.type_error_range(
                         module_id,
                         "T4308",
-                        value_producing_range(body),
+                        self.value_producing_range(module_id, body),
                         "this function is declared `-> Never`, but this expression produces a value",
                     );
                 } else {
@@ -3819,7 +3825,7 @@ impl ProjectTypeChecker {
             "loop body (the next state)",
         );
         // A loop that no `break` leaves never produces a value.
-        let success = if self.broken_loops.contains(&(module_id, loop_id)) {
+        let success = if self.broken_loops.contains_key(&(module_id, loop_id)) {
             break_type
         } else {
             self.builtin_type("Never")
@@ -3852,7 +3858,9 @@ impl ProjectTypeChecker {
         };
         let target = self.resolved.break_target(module_id, break_id);
         if let Some(loop_id) = target {
-            self.broken_loops.insert((module_id, loop_id));
+            self.broken_loops
+                .entry((module_id, loop_id))
+                .or_insert(range);
         }
         let break_type =
             target.and_then(|loop_id| self.loop_break_types.get(&(module_id, loop_id)).copied());
@@ -4209,6 +4217,7 @@ impl ProjectTypeChecker {
         arm: TypeId,
         success: &mut Option<TypeId>,
     ) {
+        self.arm_types.insert((module_id, body.semantic_id()), arm);
         *success = Some(match *success {
             Some(joined) => {
                 let result = self.join_branch_type(
@@ -4222,6 +4231,39 @@ impl ProjectTypeChecker {
             }
             None => arm,
         });
+    }
+
+    /// The innermost expression that lets `body` produce a value, for `T4308`: a
+    /// block's last item, the first `case` arm whose type is not `Never`, or the
+    /// first `break` that leaves a loop.
+    fn value_producing_range(&self, module_id: ModuleId, body: &ModuleExpression) -> TextRange {
+        match body {
+            ModuleExpression::Block { items, range, .. } => match items.last() {
+                Some(ModuleBlockItem::Expression(value)) => {
+                    self.value_producing_range(module_id, value)
+                }
+                Some(ModuleBlockItem::Binding { value, .. }) => expression_range(value),
+                None => *range,
+            },
+            ModuleExpression::Case { arms, range, .. } => arms
+                .iter()
+                .find(|arm| {
+                    self.arm_types
+                        .get(&(module_id, arm.body.semantic_id()))
+                        .is_some_and(|arm_type| !self.is_never(*arm_type))
+                })
+                .map_or(*range, |arm| {
+                    self.value_producing_range(module_id, &arm.body)
+                }),
+            ModuleExpression::Loop {
+                state_id, range, ..
+            } => self
+                .broken_loops
+                .get(&(module_id, *state_id))
+                .copied()
+                .unwrap_or(*range),
+            other => expression_range(other),
+        }
     }
 
     fn is_never(&self, type_id: TypeId) -> bool {
@@ -5791,6 +5833,9 @@ impl ProjectTypeChecker {
                             fields: vec![MatchPattern::Wildcard; field_types.len()],
                         })
                 });
+                // `Int` has no finite domain, but when the column tests integers a
+                // concrete one it misses reads better than `_`.
+                let missing = missing.or_else(|| unmatched_integer(matrix));
                 witness.insert(0, missing.unwrap_or(MatchPattern::Wildcard));
                 Some(witness)
             }
@@ -9693,6 +9738,30 @@ fn specialize_pattern_matrix(
 }
 
 /// Rebuilds a constructor witness from the first `arity` entries of `witness`.
+/// The smallest non-negative integer that no integer pattern in the first column
+/// names, or `None` when that column tests no integers.
+fn unmatched_integer(matrix: &[Vec<MatchPattern>]) -> Option<MatchPattern> {
+    let present = matrix
+        .iter()
+        .filter_map(|row| match row.first() {
+            Some(MatchPattern::Constructor {
+                tag: MatchTag::Integer(value),
+                ..
+            }) => Some(*value),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    if present.is_empty() {
+        return None;
+    }
+    (0..)
+        .find(|value| !present.contains(value))
+        .map(|value| MatchPattern::Constructor {
+            tag: MatchTag::Integer(value),
+            fields: Vec::new(),
+        })
+}
+
 fn constructor_witness(
     tag: &MatchTag,
     arity: usize,
@@ -9715,18 +9784,6 @@ fn default_pattern_matrix(matrix: &[Vec<MatchPattern>]) -> Vec<Vec<MatchPattern>
             matches!(head, MatchPattern::Wildcard).then(|| tail.to_vec())
         })
         .collect()
-}
-
-/// The expression whose value a body produces: the last item of a block, recursively.
-fn value_producing_range(body: &ModuleExpression) -> TextRange {
-    match body {
-        ModuleExpression::Block { items, range, .. } => match items.last() {
-            Some(ModuleBlockItem::Expression(value)) => value_producing_range(value),
-            Some(ModuleBlockItem::Binding { value, .. }) => expression_range(value),
-            None => *range,
-        },
-        other => expression_range(other),
-    }
 }
 
 fn expression_range(expression: &ModuleExpression) -> TextRange {

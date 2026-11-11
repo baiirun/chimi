@@ -6132,7 +6132,7 @@ fn a_refutable_field_makes_a_struct_pattern_refutable() {
     ));
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert_eq!(messages[0].0, "T4231");
-    assert!(messages[0].1.contains("`free(Money(_))`"), "{messages:?}");
+    assert!(messages[0].1.contains("`free(Money(1))`"), "{messages:?}");
 }
 
 // TP-04
@@ -7735,6 +7735,14 @@ fn a_refutable_let_names_its_witness() {
     assert_eq!(code, "T4231");
     assert!(message.contains("`[]` is not matched"), "{message}");
     assert!(message.contains("`case`"), "{message}");
+    // T5: an integer the pattern misses, not `(_, _)`, which the pattern partly matches.
+    let diagnostics =
+        coded_messages("fn f(pair: (Int, Int)) -> Int {\n  let (0, x) = pair\n  x\n}\n");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(
+        diagnostics[0].1.contains("`(1, _)` is not matched"),
+        "{diagnostics:?}"
+    );
 }
 
 // ts-494159: `let name: Type = value` states the binding's type, which drives
@@ -7852,6 +7860,23 @@ fn a_never_arm_joins_with_any_type() {
 fn a_never_function_must_not_produce_a_value() {
     let diagnostics = type_diagnostics("fn bad() -> Never {\n  let x = 1\n  x + 1\n}\n");
     assert_eq!(diagnostics, [("T4308".to_owned(), "x + 1".to_owned())]);
+    // The label is the innermost value-producing expression: the arm, or the break.
+    for (source, label) in [
+        (
+            "fn r() -> Never {\n  r()\n}\nfn f(b: Bool) -> Never {\n  case b {\n    True -> r()\n    False -> 1\n  }\n}\n",
+            "1",
+        ),
+        (
+            "fn f() -> Never {\n  loop n = 0 {\n    case n {\n      9 -> break\n      _ -> n + 1\n    }\n  }\n}\n",
+            "break",
+        ),
+    ] {
+        assert_eq!(
+            type_diagnostics(source),
+            [("T4308".to_owned(), label.to_owned())],
+            "{source}"
+        );
+    }
     assert!(
         check_codes(&format!(
             "{REJECT}fn fine() -> Never {{\n  reject(\"x\")\n}}\n"
