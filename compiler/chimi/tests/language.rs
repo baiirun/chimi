@@ -6479,6 +6479,41 @@ fn joining_a_narrowed_failure_with_its_enum_widens_the_row() {
     );
 }
 
+// A `Never` arm adds nothing to a case join, and the arms after it still
+// widen a narrowed failure value to its whole enum: `chosen` is `E`, so a
+// case over it that names only `A` is not exhaustive.
+#[test]
+fn a_never_arm_keeps_the_narrowed_failure_join_widening() {
+    let source = concat!(
+        "enum E {\n",
+        "  A\n",
+        "  B\n",
+        "}\n",
+        "fn op() -> Int {\n",
+        "  Failure(E.A)\n",
+        "}\n",
+        "fn pick(n: Int) -> Int {\n",
+        "  case op() {\n",
+        "    Failure(E.A as err) -> {\n",
+        "      let chosen = case n {\n",
+        "        0 -> Failure(E.A)\n",
+        "        1 -> err\n",
+        "        _ -> E.B\n",
+        "      }\n",
+        "      case chosen {\n",
+        "        A -> 1\n",
+        "      }\n",
+        "    }\n",
+        "    Success(v) -> v\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { pick(2) }\n",
+    );
+    assert_eq!(check_codes(source), ["T4231"]);
+    let covered = source.replace("        A -> 1\n", "        A -> 1\n        B -> 2\n");
+    assert_eq!(check_codes(&covered), Vec::<String>::new());
+}
+
 // The narrowing is one-way: a whole-enum value is not accepted where only
 // the narrowed variants are known to flow.
 #[test]
@@ -7299,6 +7334,159 @@ fn tuple_patterns_nest_inside_list_and_variant_patterns() {
             "    Some([(\"id\", Value.Number(id)), ..]) -> 1\n",
             "    _ -> 0\n",
             "  }\n",
+            "}\n",
+        ))
+        .is_empty()
+    );
+}
+
+const REJECT: &str = concat!(
+    "struct Response {\n",
+    "  code: Int\n",
+    "}\n",
+    "enum RequestError {\n",
+    "  Invalid(reason: Text)\n",
+    "}\n",
+    "fn reject(reason: Text) -> Never {\n",
+    "  Failure(RequestError.Invalid(reason))\n",
+    "}\n",
+);
+
+// R1: a `Never` arm adds nothing to the join, in either arm order, so the `case`
+// has the other arm's type and the failure still propagates at run time.
+#[test]
+fn a_never_arm_joins_with_any_type() {
+    let source = format!(
+        concat!(
+            "{}",
+            "fn route(method: Text) -> Response {{\n",
+            "  case method {{\n",
+            "    \"GET\" -> Response(200)\n",
+            "    other -> reject(other)\n",
+            "  }}\n",
+            "}}\n",
+            "fn route_first(method: Text) {{\n",
+            "  case method {{\n",
+            "    \"PUT\" -> reject(method)\n",
+            "    _ -> Response(201)\n",
+            "  }}\n",
+            "}}\n",
+            "pub fn main() -> List<Int> {{\n",
+            "  [route(\"GET\").code, route_first(\"GET\").code, route(\"POST\").code]\n",
+            "}}\n",
+        ),
+        REJECT
+    );
+    assert_eq!(
+        run_both("never-join", &source),
+        concat!(
+            "\"outcome\":\"expected_failure\",",
+            "\"error\":{\"type\":\"RequestError\",\"variant\":\"Invalid\",\"fields\":{\"reason\":\"POST\"}}",
+        )
+    );
+    let route_first = inspect_at(&source, "route_first(\"GET\")", 0);
+    assert_eq!(
+        route_first
+            .callable()
+            .map(chimi::CallableInspection::display),
+        Some("fn(Text) -> Response errors RequestError")
+    );
+}
+
+// R2: a `-> Never` body that can produce a value is `T4308`, labelling the value.
+#[test]
+fn a_never_function_must_not_produce_a_value() {
+    let diagnostics = type_diagnostics("fn bad() -> Never {\n  let x = 1\n  x + 1\n}\n");
+    assert_eq!(diagnostics, [("T4308".to_owned(), "x + 1".to_owned())]);
+    assert!(
+        check_codes(&format!(
+            "{REJECT}fn fine() -> Never {{\n  reject(\"x\")\n}}\n"
+        ))
+        .is_empty()
+    );
+}
+
+// R3, an all-`Never` case, and a body that only fails: tooling shows an inferred
+// `Never` success type.
+#[test]
+fn an_inferred_success_type_can_be_never() {
+    let source = format!(
+        concat!(
+            "{}",
+            "fn spin() {{\n",
+            "  loop n = 0 {{\n",
+            "    n + 1\n",
+            "  }}\n",
+            "}}\n",
+            "fn refuse(method: Text) {{\n",
+            "  case method {{\n",
+            "    \"a\" -> reject(\"a\")\n",
+            "    _ -> reject(method)\n",
+            "  }}\n",
+            "}}\n",
+            "fn count() -> Int {{\n",
+            "  spin()\n",
+            "}}\n",
+            "fn later() -> Int {{\n",
+            "  refuse(\"b\")\n",
+            "}}\n",
+            "fn fail_now() {{\n",
+            "  Failure(RequestError.Invalid(\"now\"))\n",
+            "}}\n",
+            "fn sooner() -> Int {{\n",
+            "  fail_now()\n",
+            "}}\n",
+        ),
+        REJECT
+    );
+    assert!(check_codes(&source).is_empty());
+    for (needle, contract) in [
+        ("spin()", "fn() -> Never"),
+        ("refuse(\"b\")", "fn(Text) -> Never errors RequestError"),
+        ("fail_now()", "fn() -> Never errors RequestError"),
+    ] {
+        // The use, not the declaration name, carries the inferred contract.
+        let declared = needle == "spin()" || needle == "fail_now()";
+        let report = inspect_at(&source, needle, usize::from(declared));
+        assert_eq!(
+            report.callable().map(chimi::CallableInspection::display),
+            Some(contract)
+        );
+    }
+}
+
+// R4: the type `Never` and a value constructor named `Never` do not conflict.
+#[test]
+fn the_never_type_and_a_never_constructor_coexist() {
+    assert!(
+        check_codes(concat!(
+            "enum Restart {\n",
+            "  Never\n",
+            "  Always\n",
+            "}\n",
+            "fn pick() -> Restart {\n",
+            "  Restart.Never\n",
+            "}\n",
+            "fn stop() -> Never {\n",
+            "  loop n = 0 {\n",
+            "    n\n",
+            "  }\n",
+            "}\n",
+        ))
+        .is_empty()
+    );
+}
+
+// In a failure row, `Never` is the empty failure set.
+#[test]
+fn errors_never_is_the_empty_failure_row() {
+    assert!(
+        check_codes(concat!(
+            "fn apply(operation: fn() -> Int errors Never) -> Int {\n",
+            "  operation()\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  apply(fn() { 1 })\n",
             "}\n",
         ))
         .is_empty()

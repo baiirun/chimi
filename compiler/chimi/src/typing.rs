@@ -1162,6 +1162,8 @@ struct ProjectTypeChecker {
     /// The type every `break` of a loop must supply; it is also the loop's success type.
     /// A loop no break targets keeps an unconstrained variable, so it fits any context.
     loop_break_types: HashMap<(ModuleId, SemanticId), TypeId>,
+    /// Loops some `break` leaves; any other loop has type `Never`.
+    broken_loops: HashSet<(ModuleId, SemanticId)>,
     /// Constants whose latest body pass left an inference variable unbound (`T4324`).
     undetermined_constants: HashSet<(ModuleId, SemanticId)>,
 }
@@ -1389,6 +1391,7 @@ impl ProjectTypeChecker {
             next_inference_variable: 0,
             inference_bindings: HashMap::new(),
             loop_break_types: HashMap::new(),
+            broken_loops: HashSet::new(),
             undetermined_constants: HashSet::new(),
         };
         checker.intern_type(CanonicalType::Poison);
@@ -2390,6 +2393,7 @@ impl ProjectTypeChecker {
             next_inference_variable,
             inference_bindings: previous.inference_bindings.clone(),
             loop_break_types: HashMap::new(),
+            broken_loops: HashSet::new(),
             undetermined_constants: HashSet::new(),
         }
     }
@@ -2650,6 +2654,17 @@ impl ProjectTypeChecker {
                 let body_fact =
                     self.infer_expression(module_id, body, &generic_symbols, &mut bindings);
                 self.unify_expression_result(module_id, body, body_fact.success, contract.success);
+                if signature.success.is_some()
+                    && self.is_never(contract.success)
+                    && !self.is_never(body_fact.success)
+                {
+                    self.type_error_range(
+                        module_id,
+                        "T4308",
+                        value_producing_range(body),
+                        "this function is declared `-> Never`, but this expression produces a value",
+                    );
+                }
                 let requirements_changed = self.settle_property_checks(&generic_symbols);
                 let mut inferred = contract;
                 inferred.success = self.resolve_inference_type(inferred.success);
@@ -3092,6 +3107,9 @@ impl ProjectTypeChecker {
                         element_type,
                         "list element",
                     );
+                    if self.is_never(element_type) {
+                        element_type = fact.success;
+                    }
                 }
                 ExpressionFact {
                     success: self.builtin_type_with_arguments("List", vec![element_type]),
@@ -3506,7 +3524,7 @@ impl ProjectTypeChecker {
         }
         let constructed_failure = constructed_failure.unwrap_or(FailureRowId::new(0));
         ExpressionFact {
-            success: self.fresh_inference_type(),
+            success: self.builtin_type("Never"),
             failures: self.union_failure_rows(
                 facts
                     .iter()
@@ -3638,15 +3656,21 @@ impl ProjectTypeChecker {
             initial_fact.success,
             "loop body (the next state)",
         );
+        // A loop that no `break` leaves never produces a value.
+        let success = if self.broken_loops.contains(&(module_id, loop_id)) {
+            break_type
+        } else {
+            self.builtin_type("Never")
+        };
         ExpressionFact {
-            success: break_type,
+            success,
             failures: self.union_failure_rows([initial_fact.failures, body_fact.failures]),
             needs: self.union_needs_rows([initial_fact.needs, body_fact.needs]),
         }
     }
 
     /// Ensures: the value (or `Void`) unifies with the target loop's break type; the
-    /// break's own success type is a fresh variable because control never continues.
+    /// break's own success type is `Never` because control never continues.
     fn infer_break(
         &mut self,
         module_id: ModuleId,
@@ -3664,10 +3688,12 @@ impl ProjectTypeChecker {
                 needs: NeedsRowId::new(0),
             },
         };
-        let break_type = self
-            .resolved
-            .break_target(module_id, break_id)
-            .and_then(|loop_id| self.loop_break_types.get(&(module_id, loop_id)).copied());
+        let target = self.resolved.break_target(module_id, break_id);
+        if let Some(loop_id) = target {
+            self.broken_loops.insert((module_id, loop_id));
+        }
+        let break_type =
+            target.and_then(|loop_id| self.loop_break_types.get(&(module_id, loop_id)).copied());
         if let Some(break_type) = break_type {
             self.unify_at(
                 module_id,
@@ -3678,7 +3704,7 @@ impl ProjectTypeChecker {
             );
         }
         ExpressionFact {
-            success: self.fresh_inference_type(),
+            success: self.builtin_type("Never"),
             ..value_fact
         }
     }
@@ -3907,16 +3933,7 @@ impl ProjectTypeChecker {
                 facts.push(self.infer_case_guard(module_id, guard, generics, &mut arm_bindings));
             }
             let body = self.infer_expression(module_id, &arm.body, generics, &mut arm_bindings);
-            success = Some(match success {
-                Some(joined) => self.join_branch_type(
-                    module_id,
-                    expression_range(&arm.body),
-                    body.success,
-                    joined,
-                    "function result",
-                ),
-                None => body.success,
-            });
+            self.join_arm_type(module_id, &arm.body, body.success, &mut success);
             facts.push(body);
         }
         let missing = vec![MatchPattern::Wildcard; subjects.len()];
@@ -3988,6 +4005,47 @@ impl ProjectTypeChecker {
             self.types[self.resolve_inference_type(expected).raw() as usize],
             CanonicalType::Generic(_)
         )
+    }
+
+    /// Joins one arm's success type into the `case` result. `Never` is the bottom
+    /// type: a `Never` arm adds nothing, and a later arm replaces a `Never` result.
+    /// Otherwise the join widens as `join_branch_type` does.
+    fn join_arm_type(
+        &mut self,
+        module_id: ModuleId,
+        body: &ModuleExpression,
+        arm: TypeId,
+        success: &mut Option<TypeId>,
+    ) {
+        *success = Some(match *success {
+            Some(joined) => {
+                let result = self.join_branch_type(
+                    module_id,
+                    expression_range(body),
+                    arm,
+                    joined,
+                    "function result",
+                );
+                if self.is_never(joined) { arm } else { result }
+            }
+            None => arm,
+        });
+    }
+
+    fn is_never(&self, type_id: TypeId) -> bool {
+        let type_id = self.resolve_inference_type(type_id);
+        matches!(
+            &self.types[type_id.raw() as usize],
+            CanonicalType::Named { symbol, arguments }
+                if arguments.is_empty() && self.is_builtin_type(*symbol, "Never")
+        )
+    }
+
+    fn is_builtin_type(&self, symbol: SymbolId, name: &str) -> bool {
+        let symbol = self.resolved.symbol(symbol);
+        symbol.module_id.is_none()
+            && symbol.kind == ProjectSymbolKind::BuiltinType
+            && symbol.name == name
     }
 
     fn normalize_pattern(
@@ -5907,16 +5965,7 @@ impl ProjectTypeChecker {
                 ));
             }
             let body = self.infer_expression(module_id, &arm.body, generics, &mut arm_bindings);
-            success = Some(match success {
-                Some(joined) => self.join_branch_type(
-                    module_id,
-                    expression_range(&arm.body),
-                    body.success,
-                    joined,
-                    "function result",
-                ),
-                None => body.success,
-            });
+            self.join_arm_type(module_id, &arm.body, body.success, &mut success);
             arm_facts.push(body);
         }
         let missing_success = vec![MatchPattern::Wildcard];
@@ -6991,6 +7040,10 @@ impl ProjectTypeChecker {
         let Some(symbol) = self.resolved_type_symbol(module_id, *semantic_id) else {
             return FailureRowId::new(0);
         };
+        // `Never` is the empty failure set.
+        if self.is_builtin_type(symbol, "Never") {
+            return FailureRowId::new(0);
+        }
         if self.resolved.symbol(symbol).kind == ProjectSymbolKind::GenericParameter {
             self.constrain_generic(module_id, symbol, GenericKind::FailureRow, name);
             return self.intern_failure_row(FailureRow {
@@ -8007,6 +8060,9 @@ impl ProjectTypeChecker {
                     true
                 }
             }
+            // A `Never` value fits any slot, as in `unify`; a function literal that
+            // only fails reaches here when its type feeds the call substitution.
+            _ if self.is_never(actual) => true,
             (
                 CanonicalType::Named {
                     symbol: actual_symbol,
@@ -8490,6 +8546,8 @@ impl ProjectTypeChecker {
                 self.inference_bindings.insert(variable, left);
                 true
             }
+            // `Never` has no values, so it is compatible with every type.
+            _ if self.is_never(left) || self.is_never(right) => true,
             (
                 CanonicalType::Named {
                     symbol: left_symbol,
@@ -9261,6 +9319,18 @@ fn default_pattern_matrix(matrix: &[Vec<MatchPattern>]) -> Vec<Vec<MatchPattern>
             matches!(head, MatchPattern::Wildcard).then(|| tail.to_vec())
         })
         .collect()
+}
+
+/// The expression whose value a body produces: the last item of a block, recursively.
+fn value_producing_range(body: &ModuleExpression) -> TextRange {
+    match body {
+        ModuleExpression::Block { items, range, .. } => match items.last() {
+            Some(ModuleBlockItem::Expression(value)) => value_producing_range(value),
+            Some(ModuleBlockItem::Binding { value, .. }) => expression_range(value),
+            None => *range,
+        },
+        other => expression_range(other),
+    }
 }
 
 fn expression_range(expression: &ModuleExpression) -> TextRange {

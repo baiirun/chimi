@@ -444,7 +444,9 @@ impl ProjectResolver {
     }
 
     fn index_builtins(&mut self) {
-        for name in ["Bool", "Float", "Int", "List", "Option", "Text", "Void"] {
+        for name in [
+            "Bool", "Float", "Int", "List", "Never", "Option", "Text", "Void",
+        ] {
             let id = self.add_symbol(
                 None,
                 None,
