@@ -44,6 +44,10 @@ MUTATIONS = [
             supervision.restart_times.pop_front();
         }""", "let _ = within;")]),
  m("do not update the handle's incarnation on restart", K, [("""                entry.last_incarnation = Some(incarnation);""", """                entry.last_incarnation = entry.last_incarnation.or(Some(incarnation));""")]),
+ m("park a full send until the receiver drains", K, [("""                    let result = self.deliver(address, message).map_err(""", """                    let result = match self.deliver(address, message) {
+                        Err(SendError::Full(message)) => { self.run_until_idle(); self.deliver(address, message) }
+                        other => other,
+                    }.map_err(""")]),
  m("ignore mailbox capacity", K, [("""                if incarnation.mailbox.len() >= incarnation.spec.mailbox_capacity.get() as usize =>""", """                if false =>""")]),
  m("stop declared members in forward order", K, [("""        order.extend(std::mem::take(&mut supervision.declared).into_iter().rev());""", """        order.extend(std::mem::take(&mut supervision.declared));""")]),
  m("report a forced end as cancelled", K, [("""        (END_FORCED, _) => TerminalCause::Forced,""", """        (END_FORCED, _) => TerminalCause::Cancelled,""")]),
