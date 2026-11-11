@@ -1,10 +1,10 @@
 # Generated; do not edit. Reproduce from the repository root with:
-#   scripts/mutation/mutate.py --revision 192a81c41f2f5ebe1173546ace287835774197b1 scripts/mutation/fiber_mutations.py
-# Commit: 192a81c41f2f5ebe1173546ace287835774197b1
+#   scripts/mutation/mutate.py --revision 0f22e4f32a425e11ff117d462f8de03c05229ec9 scripts/mutation/fiber_mutations.py
+# Commit: 0f22e4f32a425e11ff117d462f8de03c05229ec9
 # Each mutant must turn at least one test red (KILLED).
-# mutation run at 192a81c41f2f5ebe1173546ace287835774197b1
-# fiber_mutations.py: 17 mutants against runtime/chimi-fiber
-BASELINE ok (5s)
+# mutation run at 0f22e4f32a425e11ff117d462f8de03c05229ec9
+# fiber_mutations.py: 28 mutants against runtime/chimi-fiber
+BASELINE ok (3s)
 KILLED       send reply resumes caller at tail [lib -- mb03] (1s)
 KILLED       unread messages not released [lib -- mb05] (1s)
 KILLED       window edge inside [lib -- ra04] (1s)
@@ -19,7 +19,18 @@ KILLED       sleep timer kept on cancel [lib -- cancelling_a_sleeper] (1s)
 KILLED       replacement before children drain [lib -- ra07] (1s)
 KILLED       time moves while runnable [lib -- virtual_time_advances] (1s)
 KILLED       forced fiber destroyed [lib -- sd04_the_c_entry] (1s)
-KILLED       name registered late [lib -- mb04] (1s)
+KILLED       name registered late [lib -- mb04] (2s)
 KILLED       restart limit per member [lib -- ra02] (2s)
 KILLED       rollback skipped [lib -- rt06] (1s)
+KILLED       nested supervisor outside parent capacity [lib -- sv10] (1s)
+KILLED       removal leaves the nested subtree running [lib -- sv10_a_dynamic_nested] (1s)
+KILLED       handle kind unchecked [lib -- sv10_a_dynamic_nested] (1s)
+KILLED       supervisor_started without parent [lib -- sv10_a_dynamic_nested] (1s)
+KILLED       stopped nested supervisor restarts [lib -- sv10_stopping] (1s)
+KILLED       nested stop in flight expanded again [lib -- a_parent_stop] (1s)
+KILLED       nested escalation strands waiting plans [lib -- es02_a_parent_stop] (1s)
+KILLED       only root waiters answered [lib -- sv10_a_wait] (1s)
+KILLED       owner terminal before its roots stop [lib -- an_owner_task_stays] (1s)
+KILLED       parent terminal before its draining child [lib -- a_parent_task_stays] (1s)
+KILLED       process owners not held [lib -- removing_a_process_that_started] (1s)
 # result: every mutant killed
