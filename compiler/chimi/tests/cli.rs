@@ -265,6 +265,48 @@ fn native_source_executes_task_start_and_result() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// A task whose body cannot fail has an empty, concrete failure set; it used to
+// leak `Task.result`'s failure parameter into `main` and give E5005
+// (ts-e2509a). Native only: the interpreter has no Task runtime.
+#[test]
+fn native_task_with_a_body_that_cannot_fail_builds_and_runs() {
+    let scratch = scratch_directory("native-task-infallible");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("task-program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/task as Task\n",
+            "fn work() -> Int { 42 }\n",
+            "pub fn main() -> Int {\n",
+            "  let named = Task.start(work)\n",
+            "  let inline = Task.start(fn() -> Int { 1 })\n",
+            "  Task.result(named) + Task.result(inline)\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&executable)
+        .output()
+        .expect("build native Task program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let execution = execute_native(&executable, &scratch, "native-task-infallible", "off");
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":43}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn native_source_executes_bounded_channel_send_close_and_receive() {
     let scratch = scratch_directory("native-channel-round-trip");

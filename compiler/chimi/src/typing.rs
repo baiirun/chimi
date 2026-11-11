@@ -4361,6 +4361,15 @@ impl ProjectTypeChecker {
         }
     }
 
+    /// The type a failure-set parameter (`E` in `Task<T, E>`) takes when it
+    /// is instantiated with `failures`. An empty row is still a concrete
+    /// failure set ("cannot fail"); making it `Poison` would hide the binding
+    /// from later calls such as `Task.result`, which then leak `E`.
+    fn failure_set_argument_type(&mut self, failures: FailureRowId) -> TypeId {
+        self.failure_value_type(failures)
+            .unwrap_or_else(|| self.intern_type(CanonicalType::FailureSetValue(failures)))
+    }
+
     fn failure_value_type(&mut self, failures: FailureRowId) -> Option<TypeId> {
         let row = self.failure_rows[failures.raw() as usize].clone();
         if row.variants.is_empty() && row.parameters.is_empty() {
@@ -5706,7 +5715,7 @@ impl ProjectTypeChecker {
                     type_id
                 } else if self.generic_kinds.get(&parameter) == Some(&GenericKind::FailureSet) {
                     if let Some(failures) = substitution.failures.get(&parameter).copied() {
-                        self.failure_value_type(failures).unwrap_or(TypeId::new(0))
+                        self.failure_set_argument_type(failures)
                     } else {
                         let type_id = self.fresh_inference_type();
                         substitution.values.insert(parameter, type_id);
@@ -5755,7 +5764,7 @@ impl ProjectTypeChecker {
             }
             CanonicalType::FailureSetValue(failures) => {
                 let failures = self.substitute_call_failure_row(failures, substitution);
-                self.failure_value_type(failures).unwrap_or(TypeId::new(0))
+                self.failure_set_argument_type(failures)
             }
             CanonicalType::InferenceVariable(_) | CanonicalType::Poison => type_id,
         }
