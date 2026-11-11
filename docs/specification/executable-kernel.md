@@ -59,6 +59,11 @@ The parser MUST consume the entire file even when the source is malformed.
 Each source file defines one module. Its workspace-relative path is its stable
 module identity. Source files MUST NOT contain module headers.
 
+A module's items are imports, `struct`, `enum`, `interface`, and `fn`
+declarations, and `let` bindings. An expression at file scope is not a module
+item and MUST be rejected with `S1001`; the parser still consumes it so the CST
+stays lossless.
+
 A module import chooses its source binding explicitly:
 
 <!-- chimi: fragment -->

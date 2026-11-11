@@ -1021,7 +1021,12 @@ impl<'source> Parser<'source> {
                 }
                 TokenKind::Fn if self.fn_starts_declaration() => self.parse_declaration(),
                 TokenKind::Let => self.parse_let_binding(),
-                _ => self.parse_expression(),
+                _ => {
+                    self.error_at_current(
+                        "expected an import, a declaration, or a `let` binding at file scope",
+                    );
+                    self.parse_expression();
+                }
             }
             if self.position == before {
                 self.error_and_bump("parser made no progress at file scope");

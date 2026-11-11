@@ -485,3 +485,13 @@ fn unpinned_channel_element_in_a_propagated_failure_is_an_incomplete_type() {
     assert!(stderr.contains("error[E5006]"), "{stderr}");
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+// ts-270496: an expression is not a module item.
+#[test]
+fn an_expression_at_file_scope_is_a_syntax_error() {
+    let codes = check_codes(concat!(
+        "undefined_thing(1, 2)\n",
+        "pub fn main() -> Int { 1 }\n",
+    ));
+    assert_eq!(codes, ["S1001"]);
+}

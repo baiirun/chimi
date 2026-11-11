@@ -401,12 +401,12 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_top_level_blocks_remain_separate_expressions() {
-        let source = "{ 1 }\n{ 2 }\n";
+    fn adjacent_blocks_remain_separate_expressions() {
+        let source = "fn f() -> Int {\n  { 1 }\n  { 2 }\n}\n";
         let report = format(source);
 
         assert!(!report.is_blocked(), "{}", report.render_diagnostics());
-        assert!(report.text().contains("}\n\n{"));
+        assert!(report.text().contains("}\n  {"), "{}", report.text());
         let reparsed = format(report.text());
         assert!(!reparsed.is_blocked(), "{}", reparsed.render_diagnostics());
     }

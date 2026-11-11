@@ -16,7 +16,7 @@ inside a loop body may silently turn bounded repetition into stack growth.
 
 ## Canonical form
 
-<!-- chimi: check -->
+<!-- chimi: fragment -->
 ```chimi
 loop state = initial {
   body
@@ -52,7 +52,7 @@ fn sum_to(limit: Int) -> Int {
 
 A channel consumer:
 
-<!-- chimi: check -->
+<!-- chimi: fragment -->
 ```chimi
 loop processed = 0 {
   let next = Channel.receive(jobs)
