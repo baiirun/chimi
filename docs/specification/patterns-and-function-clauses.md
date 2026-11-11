@@ -51,7 +51,7 @@ A multi-clause function is two or more adjacent `fn` declarations with the
 same name. Each declaration is a clause. Its parameter list holds patterns
 instead of only names:
 
-<!-- chimi: pending ts-e43af0 -->
+<!-- chimi: check -->
 ```chimi
 enum Shape {
   Circle(radius: Int)
@@ -106,7 +106,7 @@ fn route(_, _) {
 A clause MAY have a guard. The guard follows the parameter list and any
 contract, and it comes immediately before the body:
 
-<!-- chimi: pending ts-e43af0 -->
+<!-- chimi: check -->
 ```chimi
 import std/int as Int
 import std/text as Text
@@ -167,7 +167,7 @@ Generic parameters, needs names, and the success annotation are in scope in
 every clause. A typed binding in a later clause MAY name a generic parameter
 from the first clause:
 
-<!-- chimi: pending ts-e43af0 ts-553107 -->
+<!-- chimi: check -->
 ```chimi
 fn last<T>([]) -> Option<T> {
   None
@@ -573,7 +573,7 @@ let (name, port) = parse_address(raw)
 
 Chimi has no range patterns. Integer ranges are matched with guards:
 
-<!-- chimi: pending ts-e43af0 -->
+<!-- chimi: check -->
 ```chimi
 fn grade(score) if score >= 90 {
   "A"
