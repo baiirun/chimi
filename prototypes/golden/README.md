@@ -135,7 +135,7 @@ Negative cases:
 - `invalid/observable_case_guard.chimi`
 - `invalid/standalone_if.chimi`
 - `invalid/empty_braces.chimi`
-- `invalid/void_value.chimi`
+- `invalid/empty_tuple.chimi`
 - `invalid/implicit_module_alias.chimi`
 
 Each negative file contains the diagnostic and source expression the compiler

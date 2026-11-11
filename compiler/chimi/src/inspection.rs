@@ -722,6 +722,7 @@ fn expression_children(expression: &ModuleExpression) -> Vec<&ModuleExpression> 
             .chain(arguments.iter().map(|argument| &argument.value))
             .collect(),
         ModuleExpression::List { elements, .. }
+        | ModuleExpression::Tuple { elements, .. }
         | ModuleExpression::Sequence {
             expressions: elements,
             ..

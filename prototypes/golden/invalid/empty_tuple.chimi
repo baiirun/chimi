@@ -1,0 +1,8 @@
+// PROTOTYPE
+// EXPECT-COMPILE: failure
+// EXPECT-SYNTAX: failure
+// EXPECT-DIAGNOSTIC: S1005
+// EXPECT-MESSAGE: `()` is not a value; use `Void`
+// EXPECT-SPAN: ()
+
+const completion = ()

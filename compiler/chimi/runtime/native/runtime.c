@@ -34,7 +34,7 @@ __attribute__((weak)) ChimiSchedulerOutcome chimi_scheduler_execute_with_config(
 typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
                VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER, VALUE_TASK,
                VALUE_CHANNEL_SENDER, VALUE_CHANNEL_RECEIVER,
-               VALUE_CHANNEL_COMPLETION } ValueKind;
+               VALUE_CHANNEL_COMPLETION, VALUE_TUPLE } ValueKind;
 /* CALL_CONSTRUCTOR is a constructor with fields named as a value; calling it constructs. */
 typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC,
                CALL_CONSTRUCTOR } CallableKind;
@@ -99,6 +99,7 @@ struct ChimiValue {
     /* A List is the window [start, start + length) of a shared vector, so
        slicing is O(1) amortized; see list_slice for when a window copies. */
     struct { ListVector vector; uint32_t start; uint32_t length; } list;
+    /* A record, or a tuple (VALUE_TUPLE), whose fields have no names. */
     struct { RuntimeField *fields; uint32_t length; } record;
     struct { uint32_t constructor; const char *type_name; const char *variant_name;
              RuntimeField *fields; uint32_t length; } constructed;
@@ -827,7 +828,8 @@ static void mark_children(void *pointer) {
           mark_push(value->as.list.vector.root, ALLOCATION_LIST_NODE);
           mark_push(value->as.list.vector.tail, ALLOCATION_LIST_NODE);
           break;
-        case VALUE_RECORD: mark_push(value->as.record.fields, ALLOCATION_FIELDS); break;
+        case VALUE_RECORD:
+        case VALUE_TUPLE: mark_push(value->as.record.fields, ALLOCATION_FIELDS); break;
         case VALUE_CONSTRUCTED: mark_push(value->as.constructed.fields, ALLOCATION_FIELDS); break;
         case VALUE_CALLABLE: mark_push(value->as.callable, ALLOCATION_CALLABLE); break;
         case VALUE_MAP: mark_push(value->as.map, ALLOCATION_MAP_NODE); break;
@@ -1135,6 +1137,7 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
           break;
         case VALUE_LIST: copy_list_window(copy, value); break;
         case VALUE_RECORD:
+        case VALUE_TUPLE:
           value->as.record.fields = copy_forward(copy, value->as.record.fields, ALLOCATION_FIELDS);
           break;
         case VALUE_CONSTRUCTED:
@@ -1357,6 +1360,10 @@ static void json_value(FILE *output, const ChimiValue *value) {
         if (i) fputc(',', output); json_value(output, list_get(value, i));
       } fputc(']', output); break;
     case VALUE_RECORD: json_fields(output, value->as.record.fields, value->as.record.length); break;
+    case VALUE_TUPLE:
+      fputs("{\"tuple\":[", output); for (uint32_t i = 0; i < value->as.record.length; ++i) {
+        if (i) fputc(',', output); json_value(output, value->as.record.fields[i].value);
+      } fputs("]}", output); break;
     case VALUE_CONSTRUCTED:
       fputs("{\"type\":", output); json_string(output, value->as.constructed.type_name);
       if (value->as.constructed.variant_name) {
@@ -1727,6 +1734,7 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
         if (!transfer_captured_value(transfer, list_get(value, index), depth + 1)) return false;
       return true;
     case VALUE_RECORD:
+    case VALUE_TUPLE:
       for (uint32_t index = 0; index < value->as.record.length; ++index)
         if (!transfer_captured_value(
               transfer, value->as.record.fields[index].value, depth + 1)) return false;
@@ -2039,6 +2047,11 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
         free(left_fields); free(right_fields);
         break;
       }
+      /* Typing gives both tuples one arity; elements compare left to right. */
+      case VALUE_TUPLE:
+        for (uint32_t index = left->as.record.length; index-- > 0;)
+          compare_push(&stack, left->as.record.fields[index].value, right->as.record.fields[index].value, 0);
+        break;
       case VALUE_CONSTRUCTED: {
         order = order_of(constructor_ordinal(left->as.constructed.constructor),
                          constructor_ordinal(right->as.constructed.constructor));
@@ -2862,6 +2875,9 @@ static void debug_value(DebugRenderer *renderer, const ChimiValue *value) {
       debug_fields(renderer, "{", "}", true, value->as.record.fields, order, length, true);
       return;
     }
+    case VALUE_TUPLE:
+      debug_fields(renderer, "(", ")", false, value->as.record.fields, NULL, value->as.record.length, false);
+      return;
     case VALUE_CONSTRUCTED: {
       uint32_t standard = CHIMI_SYMBOLS[value->as.constructed.constructor].standard_constructor;
       bool prelude = standard == CHIMI_CONSTRUCTOR_OPTION_SOME || standard == CHIMI_CONSTRUCTOR_OPTION_NONE;
@@ -2973,6 +2989,16 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       if (argument_count != 3 || arguments[0]->kind != VALUE_MAP)
         return intrinsic_shape_defect(call_node);
       return success(map_value(map_put_node(arguments[0]->as.map, arguments[1], arguments[2])));
+    }
+    case CHIMI_INTRINSIC_MAP_FROM: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST) return intrinsic_shape_defect(call_node);
+      MapNode *map = NULL;
+      for (uint32_t i = 0; i < list_length(arguments[0]); ++i) {
+        ChimiValue *pair = list_get(arguments[0], i);
+        if (pair->kind != VALUE_TUPLE || pair->as.record.length != 2) return intrinsic_shape_defect(call_node);
+        map = map_put_node(map, pair->as.record.fields[0].value, pair->as.record.fields[1].value);
+      }
+      return success(map_value(map));
     }
     case CHIMI_INTRINSIC_MAP_UPDATE: {
       if (argument_count != 3 || arguments[0]->kind != VALUE_MAP ||
@@ -3362,6 +3388,15 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
       for (uint32_t i = 0; i < raw->length; ++i) items[i] = constant_values[ids[i]];
       return list_from_values(items, raw->length);
     }
+    case CHIMI_CONSTANT_TUPLE: {
+      ChimiValue *value = new_value(VALUE_TUPLE);
+      value->as.record.length = raw->length;
+      value->as.record.fields = allocate(raw->length, sizeof(*value->as.record.fields));
+      allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
+      for (uint32_t i = 0; i < raw->length; ++i)
+        value->as.record.fields[i] = (RuntimeField){NULL, constant_values[ids[i]]};
+      return value;
+    }
     case CHIMI_CONSTANT_RECORD: {
       ChimiValue *value = new_value(VALUE_RECORD);
       value->as.record.length = raw->length;
@@ -3489,6 +3524,7 @@ NODE_WRAPPER(constant, "constant", {
   else if (node->a == CHIMI_LITERAL_FLOAT) {
     double raw; memcpy(&raw, &node->integer, sizeof(raw)); value = float_value(raw);
   } else if (node->a == CHIMI_LITERAL_TEXT) value = text_value(CHIMI_STRINGS[node->b]);
+  else if (node->a == CHIMI_LITERAL_VOID) value = void_value();
   else value = boolean_value(node->integer != 0); result = success(value);
 })
 NODE_WRAPPER(reference, "reference", { result = eval_reference(runtime, node_id, environment, span); })
@@ -3585,6 +3621,17 @@ NODE_WRAPPER(record, "record", {
     const ChimiNamedNode *field = &CHIMI_NAMED_NODES[node->offset + i]; ChimiControl *control = RUN(field->node);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
     value->as.record.fields[i] = (RuntimeField){CHIMI_STRINGS[field->name], control->value};
+  } if (!stopped) result = success(value);
+})
+
+NODE_WRAPPER(tuple, "tuple", {
+  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *value = new_value(VALUE_TUPLE);
+  value->as.record.length = node->length; value->as.record.fields = allocate(node->length, sizeof(*value->as.record.fields));
+  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
+  bool stopped = false; for (uint32_t i = 0; i < node->length; ++i) {
+    ChimiControl *control = RUN(CHIMI_IDS[node->offset + i]);
+    if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
+    value->as.record.fields[i] = (RuntimeField){NULL, control->value};
   } if (!stopped) result = success(value);
 })
 
@@ -3709,6 +3756,11 @@ static bool match_plain(uint32_t pattern_id, ChimiValue *value, PatternBinder *b
       return true;
     case CHIMI_PATTERN_OUTCOME: return false;
     case CHIMI_PATTERN_LIST: return match_list(pattern, value, binder);
+    case CHIMI_PATTERN_TUPLE:
+      if (value->kind != VALUE_TUPLE || value->as.record.length != pattern->length) return false;
+      for (uint32_t i = 0; i < pattern->length; ++i)
+        if (!match_plain(CHIMI_IDS[pattern->offset + i], value->as.record.fields[i].value, binder)) return false;
+      return true;
     case CHIMI_PATTERN_ALIAS:
       if (!match_plain(pattern->offset, value, binder)) return false;
       if (binder) binder->environment->locals[environment_slot(pattern->a)] = value;
@@ -3728,7 +3780,8 @@ static bool pattern_binds(uint32_t pattern_id) {
   const ChimiPattern *pattern = &CHIMI_PATTERNS[pattern_id];
   if (pattern->kind == CHIMI_PATTERN_BINDING || pattern->kind == CHIMI_PATTERN_ALIAS) return true;
   if (pattern->kind == CHIMI_PATTERN_OUTCOME) return pattern_binds(pattern->offset);
-  if (pattern->kind != CHIMI_PATTERN_CONSTRUCTOR && pattern->kind != CHIMI_PATTERN_LIST) return false;
+  if (pattern->kind != CHIMI_PATTERN_CONSTRUCTOR && pattern->kind != CHIMI_PATTERN_LIST &&
+      pattern->kind != CHIMI_PATTERN_TUPLE) return false;
   for (uint32_t index = 0; index < pattern->length; ++index)
     if (pattern_binds(CHIMI_IDS[pattern->offset + index])) return true;
   return false;

@@ -197,6 +197,7 @@ pub enum ExecutionValue {
     Text(String),
     Boolean(bool),
     List(Vec<ExecutionValue>),
+    Tuple(Vec<ExecutionValue>),
     Record(Vec<ValueField>),
     Constructed {
         type_name: String,
@@ -343,6 +344,8 @@ enum RuntimeValue {
     Text(String),
     Boolean(bool),
     List(PersistentList<RuntimeValue>),
+    /// Two or more elements; typing fixes the arity.
+    Tuple(Vec<RuntimeValue>),
     Record(Vec<RuntimeField>),
     Constructed {
         constructor: SymbolId,
@@ -859,6 +862,17 @@ impl<'core> Evaluator<'core> {
                     )));
                 }
                 Control::Success(RuntimeValue::List(values.into_iter().collect()))
+            }
+            CoreOperation::Tuple(elements) => {
+                let mut values = Vec::with_capacity(elements.len());
+                for element in elements {
+                    values.push(success_or_return!(self.eval_node(
+                        element,
+                        span,
+                        environment.clone()
+                    )));
+                }
+                Control::Success(RuntimeValue::Tuple(values))
             }
             CoreOperation::Record(fields) => {
                 let mut values = Vec::with_capacity(fields.len());
@@ -1439,6 +1453,23 @@ impl<'core> Evaluator<'core> {
                     value.clone(),
                     &self.key_order(),
                 )))
+            }
+            StandardFunction::MapFrom => {
+                let [RuntimeValue::List(pairs)] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                let order = self.key_order();
+                let mut map = RuntimeMap::default();
+                for pair in pairs.iter() {
+                    let RuntimeValue::Tuple(pair) = pair else {
+                        return self.intrinsic_shape_defect(function, call_node);
+                    };
+                    let [key, value] = pair.as_slice() else {
+                        return self.intrinsic_shape_defect(function, call_node);
+                    };
+                    map = map.put(key.clone(), value.clone(), &order);
+                }
+                Control::Success(RuntimeValue::Map(map))
             }
             StandardFunction::MapUpdate => {
                 let [
@@ -2189,6 +2220,20 @@ fn match_plain_pattern(
             };
             match_list_pattern(prefix, rest.as_deref(), suffix, values, bindings)
         }
+        CorePattern::Tuple(elements) => {
+            let RuntimeValue::Tuple(values) = value else {
+                return Ok(false);
+            };
+            if elements.len() != values.len() {
+                return Ok(false);
+            }
+            for (pattern, value) in elements.iter().zip(values) {
+                if !match_plain_pattern(pattern, value, bindings)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
         CorePattern::Outcome { .. } => Ok(false),
     }
 }
@@ -2266,6 +2311,7 @@ fn runtime_literal(literal: CoreLiteral) -> RuntimeValue {
         CoreLiteral::Float(value) => RuntimeValue::Float(value),
         CoreLiteral::Text(value) => RuntimeValue::Text(value),
         CoreLiteral::Boolean(value) => RuntimeValue::Boolean(value),
+        CoreLiteral::Void => RuntimeValue::Void,
     }
 }
 
@@ -2278,6 +2324,9 @@ fn public_value(value: RuntimeValue) -> ExecutionValue {
         RuntimeValue::Boolean(value) => ExecutionValue::Boolean(value),
         RuntimeValue::List(values) => {
             ExecutionValue::List(values.iter().cloned().map(public_value).collect())
+        }
+        RuntimeValue::Tuple(values) => {
+            ExecutionValue::Tuple(values.into_iter().map(public_value).collect())
         }
         RuntimeValue::Record(fields) => ExecutionValue::Record(public_fields(fields)),
         RuntimeValue::Constructed {
@@ -2345,6 +2394,7 @@ fn operation_name(operation: &CoreOperation) -> &'static str {
         CoreOperation::Construct { .. } => "construct",
         CoreOperation::Call { .. } => "call",
         CoreOperation::List(_) => "list",
+        CoreOperation::Tuple(_) => "tuple",
         CoreOperation::Record(_) => "record",
         CoreOperation::Unary { .. } => "unary",
         CoreOperation::Binary { .. } => "binary",
@@ -2407,6 +2457,16 @@ fn write_json_value(output: &mut String, value: &ExecutionValue) {
                 write_json_value(output, value);
             }
             output.push(']');
+        }
+        ExecutionValue::Tuple(values) => {
+            output.push_str("{\"tuple\":[");
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                write_json_value(output, value);
+            }
+            output.push_str("]}");
         }
         ExecutionValue::Record(fields) => write_json_fields(output, fields),
         ExecutionValue::Constructed {

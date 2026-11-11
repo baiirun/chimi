@@ -265,10 +265,12 @@ impl CapabilityChecker<'_> {
                 }
                 self.type_value(module_id, expression)
             }
-            ModuleExpression::List { elements, .. } => elements
-                .iter()
-                .map(|element| self.evaluate(module_id, element, environment))
-                .fold(FlowValue::shareable(), FlowValue::combine),
+            ModuleExpression::List { elements, .. } | ModuleExpression::Tuple { elements, .. } => {
+                elements
+                    .iter()
+                    .map(|element| self.evaluate(module_id, element, environment))
+                    .fold(FlowValue::shareable(), FlowValue::combine)
+            }
             ModuleExpression::Interpolation { parts, .. } => {
                 for part in crate::semantic::interpolated_expressions(parts) {
                     self.evaluate(module_id, part, environment);
@@ -405,6 +407,7 @@ impl CapabilityChecker<'_> {
                 ModuleBlockItem::Binding {
                     name,
                     value: expression,
+                    ..
                 } => {
                     value = self.evaluate(module_id, expression, environment);
                     if let Some(symbol) = self.typed.resolved.source_symbol(
@@ -838,6 +841,7 @@ fn expression_children(expression: &ModuleExpression) -> Vec<&ModuleExpression> 
             .chain(arguments.iter().map(|argument| &argument.value))
             .collect(),
         ModuleExpression::List { elements, .. }
+        | ModuleExpression::Tuple { elements, .. }
         | ModuleExpression::Sequence {
             expressions: elements,
             ..

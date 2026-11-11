@@ -1,8 +1,0 @@
-// PROTOTYPE
-// EXPECT-COMPILE: failure
-// EXPECT-SYNTAX: failure
-// EXPECT-DIAGNOSTIC: E_VOID_VALUE
-// EXPECT-MESSAGE: Void is a completion type and cannot be constructed as a value
-// EXPECT-SPAN: Void
-
-const completion = Void

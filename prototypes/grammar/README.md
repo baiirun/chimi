@@ -90,7 +90,7 @@ cannot trap the parser in a loop.
 ## Expected corpus result
 
 Every fixture is syntactically accepted except `invalid/standalone_if.chimi`,
-`invalid/empty_braces.chimi`, `invalid/void_value.chimi`, and
+`invalid/empty_braces.chimi`, `invalid/empty_tuple.chimi`, and
 `invalid/implicit_module_alias.chimi`. The other invalid fixtures are
 deliberately well-formed programs whose errors belong to later semantic phases.
 

@@ -60,6 +60,9 @@ impl ProjectTypeChecker {
             CanonicalType::Record(fields) => fields
                 .iter()
                 .all(|field| self.type_is_determined(field.type_id)),
+            CanonicalType::Tuple(elements) => elements
+                .iter()
+                .all(|element| self.type_is_determined(*element)),
             CanonicalType::Function(contract) => {
                 contract
                     .inputs
@@ -275,6 +278,9 @@ fn contains_poison(typed: &TypedProject, id: TypeId) -> bool {
         CanonicalType::Record(fields) => fields
             .iter()
             .any(|field| contains_poison(typed, field.type_id)),
+        CanonicalType::Tuple(elements) => elements
+            .iter()
+            .any(|element| contains_poison(typed, *element)),
         CanonicalType::Function(contract) | CanonicalType::PolymorphicFunction { contract, .. } => {
             contract
                 .inputs
@@ -328,6 +334,12 @@ fn unrepresentable_part(
             unrepresentable_part(typed, field.type_id, generics, visiting)
                 .map(|part| field_part(&field.name, part))
         })),
+        CanonicalType::Tuple(elements) => {
+            joined(elements.iter().enumerate().filter_map(|(index, element)| {
+                unrepresentable_part(typed, *element, generics, visiting)
+                    .map(|part| format!("tuple element {}: {part}", index + 1))
+            }))
+        }
         CanonicalType::Function(_)
         | CanonicalType::PolymorphicFunction { .. }
         | CanonicalType::FailureSetValue(_)

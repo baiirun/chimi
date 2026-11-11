@@ -682,6 +682,10 @@ impl ProjectResolver {
                 vec![StandardGeneric::MapPutKey, StandardGeneric::MapPutValue],
             ),
             (
+                self.standard_function_symbol(StandardFunction::MapFrom),
+                vec![StandardGeneric::MapFromKey, StandardGeneric::MapFromValue],
+            ),
+            (
                 self.standard_function_symbol(StandardFunction::MapUpdate),
                 vec![
                     StandardGeneric::MapUpdateKey,
@@ -1344,6 +1348,12 @@ impl ProjectResolver {
         type_use: &TypeUse,
         generics: &HashMap<String, SymbolId>,
     ) {
+        if let TypeUse::Tuple { elements, .. } = type_use {
+            for element in elements {
+                self.resolve_type(module_index, element, generics);
+            }
+            return;
+        }
         let TypeUse::Named {
             semantic_id,
             path,
@@ -1628,7 +1638,7 @@ impl ProjectResolver {
                     self.resolve_expression(module_index, &argument.value, generics, scope);
                 }
             }
-            ModuleExpression::List { elements, .. } => {
+            ModuleExpression::List { elements, .. } | ModuleExpression::Tuple { elements, .. } => {
                 for element in elements {
                     self.resolve_expression(module_index, element, generics, scope);
                 }
@@ -1698,7 +1708,14 @@ impl ProjectResolver {
                 let mut block = Scope::child(scope);
                 for item in items {
                     match item {
-                        ModuleBlockItem::Binding { name, value } => {
+                        ModuleBlockItem::Binding {
+                            name,
+                            type_use,
+                            value,
+                        } => {
+                            if let Some(type_use) = type_use {
+                                self.resolve_type(module_index, type_use, generics);
+                            }
                             self.resolve_expression(module_index, value, generics, &mut block);
                             self.define_local(
                                 module_index,
@@ -1882,6 +1899,7 @@ impl ProjectResolver {
             Pattern::Wildcard { .. }
             | Pattern::Literal { .. }
             | Pattern::List { .. }
+            | Pattern::Tuple { .. }
             | Pattern::Typed { name: None, .. }
             | Pattern::Alias { .. } => {}
         }

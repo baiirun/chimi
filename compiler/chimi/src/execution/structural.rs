@@ -58,6 +58,16 @@ pub(super) fn structural_order(
                 );
                 Ordering::Equal
             }
+            // Typing gives both tuples one arity; elements compare left to right.
+            (RuntimeValue::Tuple(left), RuntimeValue::Tuple(right)) => {
+                steps.extend(
+                    left.iter()
+                        .zip(right)
+                        .rev()
+                        .map(|(left, right)| Step::Compare(left, right)),
+                );
+                Ordering::Equal
+            }
             (RuntimeValue::Record(left), RuntimeValue::Record(right)) => {
                 // Records have no declaration order; any fixed order serves.
                 let (left, right) = (by_name(left), by_name(right));
@@ -135,6 +145,7 @@ const fn rank(value: &RuntimeValue) -> u8 {
         RuntimeValue::Map(_) => 8,
         RuntimeValue::JsonNumber(_) => 9,
         RuntimeValue::Callable(_) => 10,
+        RuntimeValue::Tuple(_) => 11,
     }
 }
 

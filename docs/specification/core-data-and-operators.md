@@ -730,6 +730,8 @@ Rules:
   elements. Order is lexicographic by element.
 - A `case` over several subjects (`case a, b { ... }`) is not a tuple.
   `case (a, b) { ... }` matches one tuple subject.
+- The debug format renders a tuple as `(1, "a")`. A runtime outcome record
+  encodes it as `{"tuple":[1,"a"]}`, so it stays distinct from a list.
 
 Use a struct when the elements have names that matter to readers. A linter MAY
 suggest a struct for tuples with more than three elements.

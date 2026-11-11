@@ -95,7 +95,7 @@ impl BackendProfile {
                 values.call_arguments += arguments.len();
                 values.max_call_arguments = values.max_call_arguments.max(arguments.len());
             }
-            CoreOperation::List(elements) => {
+            CoreOperation::List(elements) | CoreOperation::Tuple(elements) => {
                 operations.lists += 1;
                 values.list_elements += elements.len();
                 values.max_list_elements = values.max_list_elements.max(elements.len());
@@ -222,7 +222,7 @@ impl BackendValueProfile {
                 self.text_literals += 1;
                 self.text_literal_bytes += value.len();
             }
-            CoreLiteral::Boolean(_) => self.boolean_literals += 1,
+            CoreLiteral::Boolean(_) | CoreLiteral::Void => self.boolean_literals += 1,
         }
     }
 
@@ -235,7 +235,7 @@ impl BackendValueProfile {
         self.pattern_nodes += 1;
         match pattern {
             CorePattern::Literal(literal) => self.record_literal(literal),
-            CorePattern::Constructor { fields, .. } => {
+            CorePattern::Constructor { fields, .. } | CorePattern::Tuple(fields) => {
                 for field in fields {
                     self.record_pattern_nodes(field);
                 }
@@ -259,7 +259,7 @@ impl BackendValueProfile {
 
 fn pattern_depth(pattern: &CorePattern) -> usize {
     1 + match pattern {
-        CorePattern::Constructor { fields, .. } => {
+        CorePattern::Constructor { fields, .. } | CorePattern::Tuple(fields) => {
             fields.iter().map(pattern_depth).max().unwrap_or(0)
         }
         CorePattern::Outcome { value, .. } | CorePattern::Alias { pattern: value, .. } => {

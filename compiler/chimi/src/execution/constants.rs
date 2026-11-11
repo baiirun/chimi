@@ -607,6 +607,14 @@ impl Measure<'_> {
                 Some(size)
             }
             RuntimeValue::Record(fields) => self.fields(fields, 2 * ID_BYTES),
+            RuntimeValue::Tuple(values) => {
+                let mut size = ROW_BYTES;
+                for value in values.iter() {
+                    let part = self.value(value)?;
+                    size = self.sum(size, ID_BYTES + part)?;
+                }
+                Some(size)
+            }
             RuntimeValue::Constructed { fields, .. } => self.fields(fields, ID_BYTES),
             RuntimeValue::Map(map) => {
                 let entries = self.map_node(map.root.as_ref())?;
@@ -719,6 +727,9 @@ fn constant_value(
         RuntimeValue::List(values) => {
             ConstantValue::List(values.iter().map(convert).collect::<Result<_, _>>()?)
         }
+        RuntimeValue::Tuple(values) => {
+            ConstantValue::Tuple(values.iter().map(convert).collect::<Result<_, _>>()?)
+        }
         RuntimeValue::Record(fields) => ConstantValue::Record(
             fields
                 .iter()
@@ -810,6 +821,12 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
         ConstantValue::Text(value) => RuntimeValue::Text(value.clone()),
         ConstantValue::Boolean(value) => RuntimeValue::Boolean(*value),
         ConstantValue::List(values) => RuntimeValue::List(
+            values
+                .iter()
+                .map(|value| runtime_value(core, value))
+                .collect(),
+        ),
+        ConstantValue::Tuple(values) => RuntimeValue::Tuple(
             values
                 .iter()
                 .map(|value| runtime_value(core, value))

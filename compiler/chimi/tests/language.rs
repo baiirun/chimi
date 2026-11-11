@@ -3409,7 +3409,6 @@ fn a_constant_defect_points_at_the_failing_operation() {
     );
 }
 
-
 fn counting_constant(depth: u32) -> String {
     format!(
         concat!(
@@ -7024,5 +7023,284 @@ fn an_update_of_a_provider_keeps_the_interface_type() {
     assert_eq!(
         run_both("update-provider", source),
         "\"outcome\":\"success\",\"value\":[false,true]"
+    );
+}
+
+// V1, V2, V3, and the `Void` pattern: `Void` is a value in expression position, a
+// bare `break` leaves with it, and a `Void` pattern matches it.
+#[test]
+fn void_is_a_value_and_a_pattern() {
+    let source = concat!(
+        "interface Console {\n",
+        "  write_line: fn(Text) -> Void\n",
+        "}\n",
+        "fn greet() -> Void needs { console: Console } {\n",
+        "  console.write_line(\"hi\")\n",
+        "}\n",
+        "fn counted(value: Void) -> Int {\n",
+        "  case value {\n",
+        "    Void -> 1\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<Bool> {\n",
+        "  let quiet = {\n",
+        "    write_line: fn(_line) { Void },\n",
+        "  }\n",
+        "  let greeted = greet() using { console: quiet }\n",
+        "  let stopped = loop count = 0 {\n",
+        "    case count {\n",
+        "      3 -> break\n",
+        "      n -> n + 1\n",
+        "    }\n",
+        "  }\n",
+        "  let idle = loop _ = Void {\n",
+        "    break Void\n",
+        "  }\n",
+        "  [greeted == Void, stopped == Void, idle == Void, counted(Void) == 1]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("void-value", source),
+        "\"outcome\":\"success\",\"value\":[true,true,true,true]"
+    );
+}
+
+// V3: `Void` is the outcome value itself, rendered as the `Void` record.
+#[test]
+fn void_is_a_success_value() {
+    assert_eq!(
+        run_both("void-outcome", "pub fn main() -> Void {\n  Void\n}\n"),
+        "\"outcome\":\"success\",\"value\":{\"type\":\"Void\"}"
+    );
+}
+
+// V4: an empty block still does not stand in for `Void`, and a `Void` pattern
+// rejects a subject of another type.
+#[test]
+fn void_does_not_replace_an_empty_block_or_match_other_types() {
+    assert_eq!(check_codes("pub fn main() -> Void {}\n"), ["S1001"]);
+    assert_eq!(
+        check_codes("pub fn main() -> Int {\n  case 1 {\n    Void -> 0\n  }\n}\n"),
+        ["T4230"]
+    );
+}
+
+// T1, T2, TP-01, and LP-08's `sum`: a tuple is built and read back with `let`, a
+// `loop` state, a `case` subject, and a tuple parameter, on both paths.
+#[test]
+fn tuples_destructure_in_let_loop_case_and_parameters() {
+    let source = concat!(
+        "fn sum(numbers: List<Int>) -> Int {\n",
+        "  loop (remaining, total) = (numbers, 0) {\n",
+        "    case remaining {\n",
+        "      [] -> break total\n",
+        "      [first, ..rest] -> (rest, total + first)\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+        "fn min_and_max(values: List<Int>) -> (Int, Int) {\n",
+        "  loop (remaining, low, high) = (values, 100, 0) {\n",
+        "    case remaining {\n",
+        "      [] -> break (low, high)\n",
+        "      [next, ..rest] -> (rest, Order.min(next, low), Order.max(next, high))\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+        "fn describe(pair: (Int, Text)) -> Text {\n",
+        "  case pair {\n",
+        "    (0, name) -> \"zero ${name}\"\n",
+        "    (_, name) -> name\n",
+        "  }\n",
+        "}\n",
+        "fn swap((left, right)) {\n",
+        "  (right, left)\n",
+        "}\n",
+        "pub fn main() -> List<(Text, Int)> {\n",
+        "  let (low, high) = min_and_max([3, 1, 4])\n",
+        "  let (label, count) = swap((sum([1, 2, 3, 4]), describe((0, \"x\"))))\n",
+        "  [(describe((low, \"low\")), low), (describe((high - high, \"y\")), high), (label, count)]\n",
+        "}\n",
+    );
+    let source = format!("import std/order as Order\n{source}");
+    assert_eq!(
+        run_both("tuple-destructuring", &source),
+        concat!(
+            "\"outcome\":\"success\",\"value\":[",
+            "{\"tuple\":[\"low\",1]},{\"tuple\":[\"zero y\",4]},{\"tuple\":[\"zero x\",10]}]",
+        )
+    );
+}
+
+// E6, O2, and T9: tuples are equatable and ordered element by element, so a
+// separately built equal tuple finds a `Map` entry, and `Map.from` keeps the last
+// value for a repeated key.
+#[test]
+fn tuples_compare_structurally_and_key_maps() {
+    let source = concat!(
+        "import std/map as Map\n",
+        "import std/map.{Map}\n",
+        "fn key(id: Int, name: Text) -> (Int, Text) {\n",
+        "  (id, name)\n",
+        "}\n",
+        "pub fn main() -> List<Bool> {\n",
+        "  let keyed: Map<(Int, Text), Int> = Map.put(Map.empty(), (7, \"seven\"), 70)\n",
+        "  let counts = Map.from([(\"ok\", 3), (\"failed\", 1), (\"ok\", 4)])\n",
+        "  [\n",
+        "    Map.get(keyed, key(7, \"seven\")) == Some(70),\n",
+        "    Map.get(keyed, key(7, \"eight\")) == None,\n",
+        "    (2, \"b\") < (2, \"c\"),\n",
+        "    (1, \"z\") < (2, \"a\"),\n",
+        "    (2, \"c\") > (2, \"b\"),\n",
+        "    (2, \"b\") != (2, \"c\"),\n",
+        "    Map.get(counts, \"ok\") == Some(4),\n",
+        "    Map.get(counts, \"failed\") == Some(1),\n",
+        "  ]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("tuple-structural", source),
+        "\"outcome\":\"success\",\"value\":[true,true,true,true,true,true,true,true]"
+    );
+}
+
+// Tuples render as `(a, b)` in the debug format, also from a module constant.
+#[test]
+fn tuples_render_in_parentheses() {
+    let source = concat!(
+        "import std/debug as Debug\n",
+        "const pair = (1, \"one\")\n",
+        "pub fn main() -> List<Text> {\n",
+        "  [Debug.render((1, (\"a\", [True]))), Debug.render(pair)]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("tuple-render", source),
+        "\"outcome\":\"success\",\"value\":[\"(1, (\\\"a\\\", [True]))\",\"(1, \\\"one\\\")\"]"
+    );
+}
+
+// T3 to T7, TP-02, TP-03, and the irrefutable positions: each written program gets
+// exactly the listed diagnostics.
+#[test]
+fn tuple_and_binding_patterns_report_their_diagnostics() {
+    let cases: [(&str, &[&str]); 12] = [
+        // T3
+        (
+            "fn f(pair: (Int, Text)) -> Text {\n  case pair {\n    (0, name) -> name\n  }\n}\n",
+            &["T4231"],
+        ),
+        // T4: the arity mismatch is the only error; it adds no coverage follow-on.
+        (
+            "fn f() -> Int {\n  let (a, b, c) = (1, 2)\n  a\n}\n",
+            &["T4230"],
+        ),
+        // T5
+        (
+            "fn f(pair: (Int, Int)) -> Int {\n  let (0, x) = pair\n  x\n}\n",
+            &["T4231"],
+        ),
+        // T6
+        ("fn f() -> Int {\n  let x = (1,)\n  1\n}\n", &["S1005"]),
+        ("fn f() -> Int {\n  let x = ()\n  1\n}\n", &["S1005"]),
+        ("fn f(x: (Int)) -> Int {\n  1\n}\n", &["S1005"]),
+        // T7: `(e)` is a group, not a tuple.
+        ("fn f() -> Int {\n  (1)\n}\n", &[]),
+        // TP-02
+        (
+            "fn lookup(key: Text) -> Option<Int> {\n  None\n}\nfn f() -> Int {\n  let Some(value) = lookup(\"a\")\n  value\n}\n",
+            &["T4231"],
+        ),
+        // TP-03
+        (
+            "fn f(pair: (Int, Int)) -> Int {\n  case pair {\n    (a, _, _) -> a\n  }\n}\n",
+            &["T4230"],
+        ),
+        // A rest-only list pattern is irrefutable; one fixed element is not.
+        (
+            "fn f(values: List<Int>) -> List<Int> {\n  let [..rest] = values\n  rest\n}\n",
+            &[],
+        ),
+        (
+            "fn f() -> Int {\n  loop (0, x) = (0, 1) {\n    break x\n  }\n}\n",
+            &["T4231"],
+        ),
+        (
+            // T4282 alone: an outcome pattern is matched as `_`, as for a clause
+            // parameter, so it raises no pattern-type follow-on.
+            "fn f(pair: (Int, Int)) -> Int {\n  let Failure(e) = pair\n  1\n}\n",
+            &["T4282"],
+        ),
+    ];
+    for (source, expected) in cases {
+        assert_eq!(check_codes(source), expected, "{source}");
+    }
+}
+
+// The `T4231` witness names what a refutable `let` misses.
+#[test]
+fn a_refutable_let_names_its_witness() {
+    let diagnostics =
+        coded_messages("fn f(values: List<Int>) -> Int {\n  let [only] = values\n  only\n}\n");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let (code, message) = &diagnostics[0];
+    assert_eq!(code, "T4231");
+    assert!(message.contains("`[]` is not matched"), "{message}");
+    assert!(message.contains("`case`"), "{message}");
+}
+
+// ts-494159: `let name: Type = value` states the binding's type, which drives
+// inference of the value and rejects a value of another type.
+#[test]
+fn an_annotated_let_states_the_binding_type() {
+    assert_eq!(
+        run_both(
+            "typed-let",
+            concat!(
+                "pub fn main() -> List<Option<Int>> {\n",
+                "  let nothing: Option<Int> = None\n",
+                "  let count: Int = 2\n",
+                "  [nothing, Some(count)]\n",
+                "}\n",
+            ),
+        ),
+        "\"outcome\":\"success\",\"value\":[{\"type\":\"Option\",\"variant\":\"None\",\"fields\":{}},{\"type\":\"Option\",\"variant\":\"Some\",\"fields\":{\"value\":2}}]"
+    );
+    assert_eq!(
+        check_codes("fn f() -> Int {\n  let count: Text = 1\n  2\n}\n"),
+        ["T4203"]
+    );
+}
+
+// T8: a tuple of shareable parts is itself shareable, so it can cross a channel.
+#[test]
+fn a_tuple_of_shareable_parts_is_shareable() {
+    assert!(
+        check_codes(concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Sender}\n",
+            "struct Job {\n  name: Text\n}\n",
+            "fn forward(outbox: Sender<(Int, Job)>, item: (Int, Job)) -> Int {\n",
+            "  Channel.send(outbox, item)\n",
+            "  1\n",
+            "}\n",
+        ))
+        .is_empty()
+    );
+}
+
+// LP-09: tuple patterns nest inside list and enum patterns.
+#[test]
+fn tuple_patterns_nest_inside_list_and_variant_patterns() {
+    assert!(
+        check_codes(concat!(
+            "import std/json.{Value}\n",
+            "fn id(fields: Option<List<(Text, Value)>>) -> Int {\n",
+            "  case fields {\n",
+            "    Some([(\"id\", Value.Number(id)), ..]) -> 1\n",
+            "    _ -> 0\n",
+            "  }\n",
+            "}\n",
+        ))
+        .is_empty()
     );
 }

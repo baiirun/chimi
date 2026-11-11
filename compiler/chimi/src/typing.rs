@@ -3,13 +3,13 @@ use crate::ids::{FailureRowId, ModuleId, NeedsRowId, SemanticId, SymbolId, TextR
 use crate::resolution::{
     Namespace, ProjectSymbolKind, ReferenceResolution, Resolution, ResolvedProgram, ResolvedProject,
 };
-use crate::semantic::CaseOrigin;
 use crate::semantic::Literal;
 use crate::semantic::{
     BinaryOperator, FunctionSignature, ModuleBlockItem, ModuleCaseArm, ModuleDeclaration,
     ModuleDeclarationKind, ModuleExpression, Pattern, PatternLiteral, RequirementRowUse,
     RequirementTermUse, TypeUse, UnaryOperator,
 };
+use crate::semantic::{BindingKind, CaseOrigin};
 use crate::standard::{
     StandardConstructor, StandardFunction, StandardGeneric, StandardGenericKind, StandardSymbol,
     StandardType,
@@ -112,10 +112,7 @@ pub(crate) fn check(resolved: ResolvedProgram) -> TypedProgram {
                 let _ = value;
                 TEXT_TYPE
             }
-            Literal::Boolean { value, .. } => {
-                let _ = value;
-                TEXT_TYPE
-            }
+            Literal::Boolean { .. } | Literal::Void { .. } => TEXT_TYPE,
         };
         literal_fact = Some(TypeFact::Known(literal_value_type));
         if literal_value_type != INT_TYPE {
@@ -169,6 +166,8 @@ pub(crate) enum CanonicalType {
         contract: CallableContract,
     },
     Record(Vec<StructuralField>),
+    /// `(T1, T2, ...)`: two or more elements, structural like a record.
+    Tuple(Vec<TypeId>),
     InferenceVariable(u32),
     Poison,
 }
@@ -378,6 +377,11 @@ impl TypeFormatter<'_> {
                     self.collect_generics(field.type_id, generics);
                 }
             }
+            CanonicalType::Tuple(elements) => {
+                for element in elements {
+                    self.collect_generics(*element, generics);
+                }
+            }
             CanonicalType::Function(contract)
             | CanonicalType::PolymorphicFunction { contract, .. } => {
                 for input in contract.inputs.iter().chain([&contract.success]) {
@@ -421,6 +425,14 @@ impl TypeFormatter<'_> {
                 fields
                     .iter()
                     .map(|field| format!("{}: {}", field.name, self.format_type(field.type_id)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CanonicalType::Tuple(elements) => format!(
+                "({})",
+                elements
+                    .iter()
+                    .map(|element| self.format_type(*element))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -994,6 +1006,13 @@ impl TypedProject {
                         ))
                     })
             }
+            CanonicalType::Tuple(elements) => {
+                elements
+                    .iter()
+                    .fold(ValueProperties::SHAREABLE, |result, element| {
+                        result.combine(self.value_properties_with(*element, generics, visiting))
+                    })
+            }
             CanonicalType::InferenceVariable(_) => ValueProperties::VALUE_DEPENDENT,
             CanonicalType::Poison => ValueProperties::INVALID,
         };
@@ -1182,13 +1201,18 @@ struct PatternContext<'a> {
     nested: bool,
 }
 
-/// The function whose clauses an ordinary `case` was desugared from.
-struct ClauseCase {
-    function: String,
-    /// The first clause's name, where coverage diagnostics point.
-    range: TextRange,
-    /// Another group of the same name exists, so coverage is not checked.
-    separated: bool,
+/// What an ordinary `case` was desugared from, when it was not written as one.
+enum CaseSite {
+    /// The clauses of `function`; `range` is the first clause's name, where coverage
+    /// diagnostics point. `separated`: another group of the same name exists, so
+    /// coverage is not checked.
+    Clauses {
+        function: String,
+        range: TextRange,
+        separated: bool,
+    },
+    /// A destructuring `let` or `loop` state, whose one pattern must be irrefutable.
+    Binding { kind: BindingKind },
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1198,6 +1222,8 @@ enum MatchTag {
     Boolean(bool),
     Integer(i64),
     Text(String),
+    /// The one shape of a tuple of this arity.
+    Tuple(usize),
     /// A literal pattern typing rejected (`T4313`); it matches like an opaque
     /// literal so the rejection causes no reachability follow-ons.
     Rejected(SemanticId),
@@ -1484,6 +1510,7 @@ impl ProjectTypeChecker {
             ),
             (StandardFunction::MapGet, self.standard_map_get_contract()),
             (StandardFunction::MapPut, self.standard_map_put_contract()),
+            (StandardFunction::MapFrom, self.standard_map_from_contract()),
             (
                 StandardFunction::MapUpdate,
                 self.standard_map_transform_contract(false),
@@ -1501,6 +1528,7 @@ impl ProjectTypeChecker {
             StandardGeneric::MapEmptyKey,
             StandardGeneric::MapGetKey,
             StandardGeneric::MapPutKey,
+            StandardGeneric::MapFromKey,
             StandardGeneric::MapUpdateKey,
             StandardGeneric::MapValuesKey,
         ] {
@@ -1989,6 +2017,20 @@ impl ProjectTypeChecker {
         CallableContract {
             inputs: vec![map, key, value],
             success: map,
+            failures: FailureRowId::new(0),
+            needs: NeedsRowId::new(0),
+        }
+    }
+
+    /// `fn<K, V>(List<(K, V)>) -> Map<K, V>`.
+    fn standard_map_from_contract(&mut self) -> CallableContract {
+        let key = self.standard_generic_type(StandardGeneric::MapFromKey);
+        let value = self.standard_generic_type(StandardGeneric::MapFromValue);
+        let pair = self.intern_type(CanonicalType::Tuple(vec![key, value]));
+        let pairs = self.builtin_type_with_arguments("List", vec![pair]);
+        CallableContract {
+            inputs: vec![pairs],
+            success: self.standard_named_type(StandardType::Map, vec![key, value]),
             failures: FailureRowId::new(0),
             needs: NeedsRowId::new(0),
         }
@@ -2712,6 +2754,13 @@ impl ProjectTypeChecker {
                     .collect();
                 self.intern_type(CanonicalType::Record(fields))
             }
+            CanonicalType::Tuple(elements) => {
+                let elements = elements
+                    .into_iter()
+                    .map(|element| self.close_inferred_type(element))
+                    .collect();
+                self.intern_type(CanonicalType::Tuple(elements))
+            }
             CanonicalType::Function(contract) => {
                 let contract = self.close_inferred_contract(contract);
                 self.intern_type(CanonicalType::Function(contract))
@@ -2867,6 +2916,7 @@ impl ProjectTypeChecker {
                         let _ = value;
                         "Bool"
                     }
+                    Literal::Void { .. } => "Void",
                 }),
                 failures: FailureRowId::new(0),
                 needs: NeedsRowId::new(0),
@@ -3045,6 +3095,19 @@ impl ProjectTypeChecker {
                 }
                 ExpressionFact {
                     success: self.builtin_type_with_arguments("List", vec![element_type]),
+                    failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
+                    needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
+                }
+            }
+            ModuleExpression::Tuple { elements, .. } => {
+                let facts = elements
+                    .iter()
+                    .map(|element| self.infer_expression(module_id, element, generics, bindings))
+                    .collect::<Vec<_>>();
+                ExpressionFact {
+                    success: self.intern_type(CanonicalType::Tuple(
+                        facts.iter().map(|fact| fact.success).collect(),
+                    )),
                     failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
                     needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
                 }
@@ -3253,13 +3316,33 @@ impl ProjectTypeChecker {
                 let mut facts = Vec::new();
                 for item in items {
                     match item {
-                        ModuleBlockItem::Binding { name, value } => {
+                        ModuleBlockItem::Binding {
+                            name,
+                            type_use,
+                            value,
+                        } => {
                             let value_fact = self.infer_expression(
                                 module_id,
                                 value,
                                 generics,
                                 &mut block_bindings,
                             );
+                            // An annotation states the binding's type; the value must have it.
+                            let binding_type = match type_use {
+                                Some(type_use) => {
+                                    let annotated =
+                                        self.lower_value_type(module_id, type_use, generics);
+                                    self.unify_at(
+                                        module_id,
+                                        expression_range(value),
+                                        value_fact.success,
+                                        annotated,
+                                        "the value of this annotated `let`",
+                                    );
+                                    annotated
+                                }
+                                None => value_fact.success,
+                            };
                             if let Some(symbol) = self.find_symbol(
                                 module_id,
                                 Some(value.semantic_id()),
@@ -3269,7 +3352,7 @@ impl ProjectTypeChecker {
                                 block_bindings.insert(
                                     symbol,
                                     ValueBinding {
-                                        type_id: value_fact.success,
+                                        type_id: binding_type,
                                         need: None,
                                     },
                                 );
@@ -3615,22 +3698,25 @@ impl ProjectTypeChecker {
             .iter()
             .map(|subject| self.infer_expression(module_id, subject, generics, bindings))
             .collect::<Vec<_>>();
-        if let CaseOrigin::Clauses {
-            function,
-            separated,
-        } = origin
-        {
-            let clauses = ClauseCase {
+        let site = match origin {
+            CaseOrigin::Clauses {
+                function,
+                separated,
+            } => Some(CaseSite::Clauses {
                 function: function.text.clone(),
                 range: function.range,
                 separated: *separated,
-            };
+            }),
+            CaseOrigin::Binding { kind } => Some(CaseSite::Binding { kind: *kind }),
+            CaseOrigin::Source => None,
+        };
+        if let Some(site) = site {
             return self.infer_ordinary_case(
                 module_id,
                 &subject_facts,
                 arms,
                 range,
-                Some(&clauses),
+                Some(&site),
                 generics,
                 bindings,
             );
@@ -3667,9 +3753,9 @@ impl ProjectTypeChecker {
         }
     }
 
-    /// Types an ordinary `case`, or a clause group's body when `clauses` is set. The
-    /// rules are the same; clause groups get clause-specific diagnostics, and a
-    /// `Success` or `Failure` clause pattern is `T4282` because parameters are values.
+    /// Types an ordinary `case`, or a clause group's body or a destructuring binding when
+    /// `site` is set. The rules are the same; those sites get their own diagnostics, and
+    /// a `Success` or `Failure` pattern there is `T4282` because they match values.
     #[allow(clippy::too_many_arguments)]
     fn infer_ordinary_case(
         &mut self,
@@ -3677,13 +3763,14 @@ impl ProjectTypeChecker {
         subjects: &[ExpressionFact],
         arms: &[ModuleCaseArm],
         range: TextRange,
-        clauses: Option<&ClauseCase>,
+        site: Option<&CaseSite>,
         generics: &HashMap<String, SymbolId>,
         bindings: &HashMap<SymbolId, ValueBinding>,
     ) -> ExpressionFact {
+        let clauses = matches!(site, Some(CaseSite::Clauses { .. }));
         let context = PatternContext {
             generics,
-            clause_head: clauses.is_some(),
+            clause_head: clauses,
             nested: false,
         };
         let mut facts = subjects.to_vec();
@@ -3693,7 +3780,7 @@ impl ProjectTypeChecker {
             .map(|subject| subject.success)
             .collect::<Vec<_>>();
         let mut coverage = Vec::<Vec<MatchPattern>>::new();
-        if clauses.is_some() {
+        if clauses {
             self.seed_generic_clause_parameters(module_id, subjects, arms, generics);
         }
         // After each arm that added coverage: its index and the coverage length.
@@ -3709,11 +3796,11 @@ impl ProjectTypeChecker {
                 .patterns
                 .iter()
                 .map(|pattern| {
-                    clauses.is_some() && self.reject_outcome_parameter(module_id, pattern)
+                    site.is_some_and(|site| self.reject_outcome_parameter(module_id, pattern, site))
                 })
                 .collect::<Vec<_>>();
             // So is a clause pattern that inspects a generic value (`T4230` below).
-            let inspects_generic = clauses.is_some()
+            let inspects_generic = clauses
                 && arm
                     .patterns
                     .iter()
@@ -3764,7 +3851,7 @@ impl ProjectTypeChecker {
                 .collect::<Vec<_>>();
             let useful = !useful_rows.is_empty();
             if !useful {
-                let message = if clauses.is_some() {
+                let message = if clauses {
                     "this clause can never run; earlier clauses match every input it matches"
                 } else {
                     "case arm is unreachable"
@@ -3785,7 +3872,7 @@ impl ProjectTypeChecker {
                     })
                 });
                 if let Some((covering, _)) = covering {
-                    let label = if clauses.is_some() {
+                    let label = if clauses {
                         "this clause, with the clauses before it, matches every input of the unreachable clause"
                     } else {
                         "this arm, with the arms before it, matches every value of the unreachable arm"
@@ -3805,7 +3892,7 @@ impl ProjectTypeChecker {
                 .iter()
                 .all(|pattern| matches!(pattern, MatchPattern::Wildcard));
             if unguarded && catch_all && !rejected && arm_index + 1 < arms.len() {
-                let message = if clauses.is_some() {
+                let message = if clauses {
                     "a clause whose patterns all match anything must be the last clause"
                 } else {
                     "an unguarded catch-all must be the final case arm"
@@ -3833,7 +3920,13 @@ impl ProjectTypeChecker {
             facts.push(body);
         }
         let missing = vec![MatchPattern::Wildcard; subjects.len()];
-        let separated = clauses.is_some_and(|clauses| clauses.separated);
+        let separated = matches!(
+            site,
+            Some(CaseSite::Clauses {
+                separated: true,
+                ..
+            })
+        );
         let witness = (!rejected_arm && !separated)
             .then(|| self.pattern_row_witness(&coverage, &missing, &subject_types))
             .flatten();
@@ -3843,23 +3936,31 @@ impl ProjectTypeChecker {
                 .map(|pattern| self.render_witness(pattern))
                 .collect::<Vec<_>>()
                 .join(", ");
-            match clauses {
+            match site {
                 // A function literal is a single clause and cannot gain another.
-                Some(clauses) if clauses.function == "fn" => self.type_error_range(
+                Some(CaseSite::Clauses { function, range, .. }) if function == "fn" => self.type_error_range(
                     module_id,
                     "T4231",
-                    clauses.range,
+                    *range,
                     format!(
                         "this function literal's parameter patterns do not cover every input; `fn({witness})` is not matched. A function literal cannot have more clauses: bind the parameter and match it with `case` in the body"
                     ),
                 ),
-                Some(clauses) => self.type_error_range(
+                Some(CaseSite::Clauses { function, range, .. }) => self.type_error_range(
                     module_id,
                     "T4231",
-                    clauses.range,
+                    *range,
                     format!(
-                        "the clauses of `{}` do not cover every input; `{}({witness})` is not matched. Add a clause for it, return a Failure for inputs it cannot handle, or match with `case`",
-                        clauses.function, clauses.function
+                        "the clauses of `{function}` do not cover every input; `{function}({witness})` is not matched. Add a clause for it, return a Failure for inputs it cannot handle, or match with `case`"
+                    ),
+                ),
+                Some(CaseSite::Binding { kind }) => self.type_error_range(
+                    module_id,
+                    "T4231",
+                    arms.first().map_or(range, |arm| arm.range),
+                    format!(
+                        "a `{}` pattern must match every value, but `{witness}` is not matched; match it with `case` instead",
+                        kind.keyword()
                     ),
                 ),
                 None => self.type_error_range(
@@ -3987,6 +4088,19 @@ impl ProjectTypeChecker {
                     PatternLiteral::Boolean(value) => {
                         (self.builtin_type("Bool"), MatchTag::Boolean(*value))
                     }
+                    // `Void` has one value, so its pattern covers like a wildcard.
+                    PatternLiteral::Void => {
+                        let void = self.builtin_type("Void");
+                        if !self.unify(expected, void) {
+                            self.type_error_range(
+                                module_id,
+                                "T4230",
+                                *range,
+                                "a `Void` pattern does not match the subject type",
+                            );
+                        }
+                        return MatchPattern::Wildcard;
+                    }
                     PatternLiteral::Float => {
                         self.reject_float_pattern(module_id, *range);
                         (
@@ -4067,6 +4181,31 @@ impl ProjectTypeChecker {
                 MatchPattern::List {
                     prefix,
                     suffix: rest.as_ref().map(|_| suffix),
+                }
+            }
+            Pattern::Tuple {
+                elements, range, ..
+            } => {
+                let types =
+                    self.tuple_pattern_element_types(module_id, expected, elements.len(), *range);
+                let fitting = types.is_some();
+                let types = types.unwrap_or_else(|| vec![TypeId::new(0); elements.len()]);
+                let fields = elements
+                    .iter()
+                    .zip(types)
+                    .map(|(element, element_type)| {
+                        self.normalize_pattern(module_id, element, element_type, context, bindings)
+                    })
+                    .collect();
+                // A pattern rejected with `T4230` covers like a wildcard, so the
+                // rejection causes no coverage follow-ons.
+                if fitting {
+                    MatchPattern::Constructor {
+                        tag: MatchTag::Tuple(elements.len()),
+                        fields,
+                    }
+                } else {
+                    MatchPattern::Wildcard
                 }
             }
             Pattern::Constructor {
@@ -4654,6 +4793,14 @@ impl ProjectTypeChecker {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            CanonicalType::Tuple(elements) => format!(
+                "({})",
+                elements
+                    .iter()
+                    .map(|element| self.format_checked_type(*element))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             CanonicalType::Function(contract)
             | CanonicalType::PolymorphicFunction { contract, .. } => format!(
                 "fn({}) -> {}",
@@ -4678,6 +4825,7 @@ impl ProjectTypeChecker {
                 self.formatter().format_type(id)
             }
             CanonicalType::Record(_) => "record".to_owned(),
+            CanonicalType::Tuple(_) => "tuple".to_owned(),
             CanonicalType::FailureSetValue(failures) => self.format_failure_set(*failures),
             _ => "this type".to_owned(),
         }
@@ -5212,16 +5360,23 @@ impl ProjectTypeChecker {
 
     /// `T4282`: a clause parameter never holds a live outcome, because callers
     /// evaluate arguments first and a failing argument has already left the caller.
-    fn reject_outcome_parameter(&mut self, module_id: ModuleId, pattern: &Pattern) -> bool {
+    fn reject_outcome_parameter(
+        &mut self,
+        module_id: ModuleId,
+        pattern: &Pattern,
+        site: &CaseSite,
+    ) -> bool {
         let outcome = self.pattern_is_builtin(module_id, pattern, "Success")
             || self.pattern_is_builtin(module_id, pattern, "Failure");
         if outcome {
-            self.type_error_range(
-                module_id,
-                "T4282",
-                pattern.range(),
-                "a parameter is a value, never an outcome: the caller evaluates the argument first, and a failing argument has already left through the caller's failure channel. Match the operation with `case` at the call site, or pass a thunk to a recovery function",
-            );
+            let message = match site {
+                CaseSite::Clauses { .. } => "a parameter is a value, never an outcome: the caller evaluates the argument first, and a failing argument has already left through the caller's failure channel. Match the operation with `case` at the call site, or pass a thunk to a recovery function".to_owned(),
+                CaseSite::Binding { kind } => format!(
+                    "a `{}` pattern matches a value, never an outcome: a failure has already left through the enclosing failure channel. Match the operation with `case`",
+                    kind.keyword()
+                ),
+            };
+            self.type_error_range(module_id, "T4282", pattern.range(), message);
         }
         outcome
     }
@@ -5454,6 +5609,7 @@ impl ProjectTypeChecker {
                     MatchTag::Integer(value) => value.to_string(),
                     MatchTag::Text(value) => format!("{value:?}"),
                     MatchTag::Rejected(_) => "_".to_owned(),
+                    MatchTag::Tuple(_) => String::new(),
                 };
                 if fields.is_empty() {
                     name
@@ -5481,10 +5637,65 @@ impl ProjectTypeChecker {
             MatchTag::EnumVariant(constructor) => {
                 self.instantiate_pattern_constructor(*constructor, expected)
             }
+            MatchTag::Tuple(arity) => self.tuple_element_types(expected, *arity).ok(),
             MatchTag::Boolean(_)
             | MatchTag::Integer(_)
             | MatchTag::Text(_)
             | MatchTag::Rejected(_) => Some(Vec::new()),
+        }
+    }
+
+    /// The element types of `expected` as a tuple of `arity` elements. An unsolved
+    /// `expected` becomes such a tuple. `Err` holds the arity `expected` has instead,
+    /// or `None` when it is not a tuple at all.
+    fn tuple_element_types(
+        &mut self,
+        expected: TypeId,
+        arity: usize,
+    ) -> Result<Vec<TypeId>, Option<usize>> {
+        let resolved = self.resolve_inference_type(expected);
+        match self.types[resolved.raw() as usize].clone() {
+            CanonicalType::Tuple(elements) if elements.len() == arity => Ok(elements),
+            CanonicalType::Tuple(elements) => Err(Some(elements.len())),
+            CanonicalType::Poison => Ok((0..arity).map(|_| TypeId::new(0)).collect()),
+            _ => {
+                let elements = (0..arity)
+                    .map(|_| self.fresh_inference_type())
+                    .collect::<Vec<_>>();
+                let tuple = self.intern_type(CanonicalType::Tuple(elements.clone()));
+                if self.unify(expected, tuple) {
+                    Ok(elements)
+                } else {
+                    Err(None)
+                }
+            }
+        }
+    }
+
+    /// The element types for a tuple pattern of `arity` elements against `expected`;
+    /// `None`, after reporting `T4230`, when the value is not a tuple of that arity.
+    fn tuple_pattern_element_types(
+        &mut self,
+        module_id: ModuleId,
+        expected: TypeId,
+        arity: usize,
+        range: TextRange,
+    ) -> Option<Vec<TypeId>> {
+        match self.tuple_element_types(expected, arity) {
+            Ok(elements) => Some(elements),
+            Err(actual) => {
+                let message = match actual {
+                    Some(actual) => format!(
+                        "this tuple pattern has {arity} elements, but the value is a tuple of {actual}"
+                    ),
+                    None => format!(
+                        "a tuple pattern does not match a value of type `{}`",
+                        self.format_checked_type(expected)
+                    ),
+                };
+                self.type_error_range(module_id, "T4230", range, message);
+                None
+            }
         }
     }
 
@@ -5505,6 +5716,10 @@ impl ProjectTypeChecker {
                     })
                     .collect(),
             );
+        }
+        if let CanonicalType::Tuple(elements) = self.types[type_id.raw() as usize].clone() {
+            // A tuple has one shape, like a struct.
+            return Some(vec![(MatchTag::Tuple(elements.len()), elements)]);
         }
         let CanonicalType::Named { symbol, .. } = self.types[type_id.raw() as usize].clone() else {
             return None;
@@ -5915,6 +6130,7 @@ impl ProjectTypeChecker {
                     PatternLiteral::Integer(_) => "Int",
                     PatternLiteral::Text(_) => "Text",
                     PatternLiteral::Boolean(_) => "Bool",
+                    PatternLiteral::Void => "Void",
                     PatternLiteral::Float => {
                         self.reject_float_pattern(module_id, *range);
                         return;
@@ -5963,6 +6179,16 @@ impl ProjectTypeChecker {
                 }
                 if let Some(rest) = rest {
                     self.bind_value_pattern(module_id, rest, expected, context, bindings);
+                }
+            }
+            Pattern::Tuple {
+                elements, range, ..
+            } => {
+                let types = self
+                    .tuple_pattern_element_types(module_id, expected, elements.len(), *range)
+                    .unwrap_or_else(|| vec![TypeId::new(0); elements.len()]);
+                for (element, element_type) in elements.iter().zip(types) {
+                    self.bind_value_pattern(module_id, element, element_type, context, bindings);
                 }
             }
             Pattern::Constructor {
@@ -6716,6 +6942,13 @@ impl ProjectTypeChecker {
                     needs,
                 }))
             }
+            TypeUse::Tuple { elements, .. } => {
+                let elements = elements
+                    .iter()
+                    .map(|element| self.lower_value_type(module_id, element, generics))
+                    .collect();
+                self.intern_type(CanonicalType::Tuple(elements))
+            }
         };
         self.type_facts
             .insert((module_id, type_use.semantic_id()), result);
@@ -7077,6 +7310,9 @@ impl ProjectTypeChecker {
             CanonicalType::Record(fields) => fields
                 .iter()
                 .all(|field| self.type_is_known(field.type_id, substitution, visiting)),
+            CanonicalType::Tuple(elements) => elements
+                .iter()
+                .all(|element| self.type_is_known(*element, substitution, visiting)),
             CanonicalType::FailureSetValue(failures) => self.failure_rows[failures.raw() as usize]
                 .parameters
                 .iter()
@@ -7807,6 +8043,12 @@ impl ProjectTypeChecker {
                             && self.match_call_type(actual.type_id, expected.type_id, substitution)
                     })
             }
+            (CanonicalType::Tuple(actual), CanonicalType::Tuple(expected)) => {
+                actual.len() == expected.len()
+                    && actual.into_iter().zip(expected).all(|(actual, expected)| {
+                        self.match_call_type(actual, expected, substitution)
+                    })
+            }
             (
                 CanonicalType::PolymorphicFunction {
                     parameters,
@@ -7996,6 +8238,15 @@ impl ProjectTypeChecker {
                     })
                     .collect();
                 self.intern_type(CanonicalType::Record(fields))
+            }
+            CanonicalType::Tuple(elements) => {
+                let elements = elements
+                    .into_iter()
+                    .map(|element| {
+                        self.substitute_call_type_preserving(element, substitution, preserved)
+                    })
+                    .collect();
+                self.intern_type(CanonicalType::Tuple(elements))
             }
             CanonicalType::FailureSetValue(failures) => {
                 let failures = self.substitute_call_failure_row(failures, substitution);
@@ -8290,6 +8541,13 @@ impl ProjectTypeChecker {
                         left.name == right.name && self.unify(left.type_id, right.type_id)
                     })
             }
+            (CanonicalType::Tuple(left), CanonicalType::Tuple(right)) => {
+                left.len() == right.len()
+                    && left
+                        .into_iter()
+                        .zip(right)
+                        .all(|(left, right)| self.unify(left, right))
+            }
             (
                 CanonicalType::PolymorphicFunction {
                     parameters,
@@ -8475,6 +8733,13 @@ impl ProjectTypeChecker {
                     );
                 }
             }
+            (CanonicalType::Tuple(slot), CanonicalType::Tuple(value))
+                if slot.len() == value.len() =>
+            {
+                for (slot, value) in slot.into_iter().zip(value) {
+                    self.bind_value_rows_from_slot(slot, value, parameters, substitution);
+                }
+            }
             _ => {}
         }
     }
@@ -8514,6 +8779,11 @@ impl ProjectTypeChecker {
             CanonicalType::Record(fields) => {
                 for field in fields {
                     self.collect_type_row_parameters(field.type_id, parameters, visiting);
+                }
+            }
+            CanonicalType::Tuple(elements) => {
+                for element in elements {
+                    self.collect_type_row_parameters(*element, parameters, visiting);
                 }
             }
             CanonicalType::FailureSetValue(failures) => {
@@ -8594,6 +8864,13 @@ impl ProjectTypeChecker {
                         left.name == right.name
                             && self.types_equivalent(left.type_id, right.type_id)
                     })
+            }
+            (CanonicalType::Tuple(left), CanonicalType::Tuple(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(right)
+                        .all(|(left, right)| self.types_equivalent(*left, *right))
             }
             _ => false,
         }

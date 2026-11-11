@@ -226,10 +226,12 @@ pub(crate) enum StandardFunction {
     OrderCompare,
     OrderMin,
     OrderMax,
+    /// `std/map.from`: a map of the `(key, value)` pairs; a later pair wins.
+    MapFrom,
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 43] = [
+    pub(crate) const ALL: [Self; 44] = [
         Self::DebugRender,
         Self::DebugRenderIndented,
         Self::IntParse,
@@ -257,6 +259,7 @@ impl StandardFunction {
         Self::MapPut,
         Self::MapUpdate,
         Self::MapMapValues,
+        Self::MapFrom,
         Self::JsonDecode,
         Self::JsonEncode,
         Self::JsonBoolean,
@@ -278,9 +281,12 @@ impl StandardFunction {
     pub(crate) const fn module(self) -> Option<StandardModule> {
         match self {
             Self::IoPath => Some(StandardModule::Io),
-            Self::MapEmpty | Self::MapGet | Self::MapPut | Self::MapUpdate | Self::MapMapValues => {
-                Some(StandardModule::Map)
-            }
+            Self::MapEmpty
+            | Self::MapGet
+            | Self::MapPut
+            | Self::MapUpdate
+            | Self::MapMapValues
+            | Self::MapFrom => Some(StandardModule::Map),
             Self::JsonDecode
             | Self::JsonEncode
             | Self::JsonBoolean
@@ -327,6 +333,7 @@ impl StandardFunction {
             Self::MapPut => "put",
             Self::MapUpdate => "update",
             Self::MapMapValues => "map_values",
+            Self::MapFrom => "from",
             Self::JsonDecode => "decode",
             Self::JsonEncode => "encode",
             Self::JsonBoolean => "boolean",
@@ -661,10 +668,12 @@ pub(crate) enum StandardGeneric {
     OrderCompareValue,
     OrderMinValue,
     OrderMaxValue,
+    MapFromKey,
+    MapFromValue,
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 30] = [
+    pub(crate) const ALL: [Self; 32] = [
         Self::DebugRenderValue,
         Self::DebugRenderIndentedValue,
         Self::FileState,
@@ -695,6 +704,8 @@ impl StandardGeneric {
         Self::OrderCompareValue,
         Self::OrderMinValue,
         Self::OrderMaxValue,
+        Self::MapFromKey,
+        Self::MapFromValue,
     ];
 
     /// The name shown in contracts and diagnostics. Names repeat across
@@ -710,14 +721,14 @@ impl StandardGeneric {
             Self::MapEmptyKey => "K",
             Self::MapEmptyValue => "V",
             Self::MapGetKey => "K",
-            Self::MapGetValue => "V",
+            Self::MapGetValue | Self::MapFromValue => "V",
             Self::MapPutKey => "K",
             Self::MapPutValue => "V",
             Self::MapUpdateKey => "K",
             Self::MapUpdateValue => "V",
             Self::MapUpdateFailures => "E",
             Self::MapUpdateNeeds => "R",
-            Self::MapValuesKey => "K",
+            Self::MapValuesKey | Self::MapFromKey => "K",
             Self::MapValuesInput => "A",
             Self::MapValuesOutput => "B",
             Self::MapValuesFailures => "E",

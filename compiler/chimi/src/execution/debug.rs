@@ -54,6 +54,10 @@ impl Renderer<'_> {
                 let parts = values.iter().map(|value| Part { label: None, value });
                 self.composite("", "[", "]", false, parts.collect());
             }
+            RuntimeValue::Tuple(values) => {
+                let parts = values.iter().map(|value| Part { label: None, value });
+                self.composite("", "(", ")", false, parts.collect());
+            }
             RuntimeValue::Record(fields) => {
                 let mut fields = fields.iter().collect::<Vec<_>>();
                 fields.sort_by(|left, right| left.name.cmp(&right.name));

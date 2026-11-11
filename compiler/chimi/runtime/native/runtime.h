@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 14
+#define CHIMI_RUNTIME_ABI_VERSION 15
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -94,6 +94,7 @@ enum {
   CHIMI_INTRINSIC_ORDER_COMPARE,
   CHIMI_INTRINSIC_ORDER_MIN,
   CHIMI_INTRINSIC_ORDER_MAX,
+  CHIMI_INTRINSIC_MAP_FROM,
 };
 
 enum {
@@ -137,6 +138,7 @@ enum {
   CHIMI_LITERAL_TEXT,
   CHIMI_LITERAL_BOOLEAN,
   CHIMI_LITERAL_FLOAT,
+  CHIMI_LITERAL_VOID,
 };
 
 enum {
@@ -164,6 +166,8 @@ enum {
   CHIMI_PATTERN_LIST,
   /* `a` is the binding symbol and `offset` the pattern id it aliases. */
   CHIMI_PATTERN_ALIAS,
+  /* The ids at `offset` match the tuple's `length` elements in order. */
+  CHIMI_PATTERN_TUPLE,
 };
 
 typedef struct {
@@ -220,6 +224,8 @@ enum {
   CHIMI_CONSTANT_INTRINSIC,
   CHIMI_CONSTANT_CONSTRUCTOR,
   CHIMI_CONSTANT_CLOSURE,
+  /* `length` element value ids at `offset`. */
+  CHIMI_CONSTANT_TUPLE,
 };
 
 typedef struct {
@@ -307,6 +313,7 @@ ChimiControl *chimi_rt_construct(ChimiRuntime *, uint32_t, ChimiEnvironment *, u
 ChimiControl *chimi_rt_call(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
 ChimiControl *chimi_rt_list(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
 ChimiControl *chimi_rt_record(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
+ChimiControl *chimi_rt_tuple(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
 ChimiControl *chimi_rt_unary(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
 ChimiControl *chimi_rt_binary(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
 ChimiControl *chimi_rt_identity(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);

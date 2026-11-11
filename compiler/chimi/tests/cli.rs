@@ -2177,7 +2177,7 @@ fn golden_and_recovery_corpus_reaches_the_real_check_path() {
             true,
         ),
         ("prototypes/golden/invalid/standalone_if.chimi", true),
-        ("prototypes/golden/invalid/void_value.chimi", true),
+        ("prototypes/golden/invalid/empty_tuple.chimi", true),
         (
             "prototypes/lossless-parser/cases/incomplete_pipeline.chimi",
             true,

@@ -174,7 +174,7 @@ impl CoreProgram {
                 debug_assert!(node_exists(*callee));
                 debug_assert!(arguments.iter().all(|argument| node_exists(*argument)));
             }
-            CoreOperation::List(elements) => {
+            CoreOperation::List(elements) | CoreOperation::Tuple(elements) => {
                 debug_assert!(elements.iter().all(|element| node_exists(*element)));
             }
             CoreOperation::Record(fields) => {
@@ -300,6 +300,7 @@ fn touch_literal(literal: &CoreLiteral) {
         CoreLiteral::Boolean(value) => {
             let _ = value;
         }
+        CoreLiteral::Void => {}
     }
 }
 
@@ -314,6 +315,11 @@ fn touch_pattern(pattern: &CorePattern) {
             let _ = symbol;
             for field in fields {
                 touch_pattern(field);
+            }
+        }
+        CorePattern::Tuple(elements) => {
+            for element in elements {
+                touch_pattern(element);
             }
         }
         CorePattern::Outcome { success, value } => {
@@ -404,6 +410,7 @@ pub(crate) enum ConstantValue {
     Text(String),
     Boolean(bool),
     List(Vec<ConstantValue>),
+    Tuple(Vec<ConstantValue>),
     Record(Vec<(String, ConstantValue)>),
     /// A struct or enum value; field names come from the constructor's shape.
     Constructed {
@@ -471,6 +478,8 @@ pub(crate) enum CoreOperation {
         arguments: Vec<CoreNodeId>,
     },
     List(Vec<CoreNodeId>),
+    /// A tuple of two or more elements, evaluated left to right.
+    Tuple(Vec<CoreNodeId>),
     Record(Vec<CoreField>),
     Unary {
         operator: UnaryOperator,
@@ -518,6 +527,9 @@ pub(crate) enum CoreLiteral {
     Float(f64),
     Text(String),
     Boolean(bool),
+    /// The `Void` value. Never a pattern: a `Void` pattern lowers to a wildcard,
+    /// because `Void` has one value.
+    Void,
 }
 
 #[derive(Clone, Debug)]
@@ -562,6 +574,8 @@ pub(crate) enum CorePattern {
         rest: Option<Box<CorePattern>>,
         suffix: Vec<CorePattern>,
     },
+    /// Matches a tuple, whose arity typing fixed, element by element.
+    Tuple(Vec<CorePattern>),
     /// Matches `pattern` and also binds the whole value to `binding`.
     Alias {
         pattern: Box<CorePattern>,
@@ -966,6 +980,7 @@ fn collect_reachable_expression(
             }
         }
         ModuleExpression::List { elements, .. }
+        | ModuleExpression::Tuple { elements, .. }
         | ModuleExpression::Sequence {
             expressions: elements,
             ..
@@ -1082,6 +1097,9 @@ fn type_is_nonpoisoned(
         CanonicalType::Record(fields) => fields
             .iter()
             .all(|field| type_is_nonpoisoned(typed, field.type_id, seen)),
+        CanonicalType::Tuple(elements) => elements
+            .iter()
+            .all(|element| type_is_nonpoisoned(typed, *element, seen)),
         CanonicalType::Generic(_) | CanonicalType::FailureSetValue(_) => true,
     }
 }
@@ -1196,6 +1214,7 @@ impl CoreLowerer {
                 Literal::Float { value, .. } => CoreLiteral::Float(*value),
                 Literal::Text { value, .. } => CoreLiteral::Text(value.clone()),
                 Literal::Boolean { value, .. } => CoreLiteral::Boolean(*value),
+                Literal::Void { .. } => CoreLiteral::Void,
             }),
             ModuleExpression::Name { semantic_id, .. } => self.reference(
                 self.value_symbol(module_id, *semantic_id)
@@ -1247,6 +1266,12 @@ impl CoreLowerer {
                 }
             }
             ModuleExpression::List { elements, .. } => CoreOperation::List(
+                elements
+                    .iter()
+                    .map(|element| self.expression(module_id, element))
+                    .collect(),
+            ),
+            ModuleExpression::Tuple { elements, .. } => CoreOperation::Tuple(
                 elements
                     .iter()
                     .map(|element| self.expression(module_id, element))
@@ -1451,12 +1476,17 @@ impl CoreLowerer {
 
     fn pattern(&self, module_id: ModuleId, pattern: &Pattern) -> CorePattern {
         match pattern {
-            Pattern::Wildcard { .. } => CorePattern::Wildcard,
+            Pattern::Wildcard { .. }
+            | Pattern::Literal {
+                literal: PatternLiteral::Void,
+                ..
+            } => CorePattern::Wildcard,
             Pattern::Literal { literal, .. } => CorePattern::Literal(match literal {
                 PatternLiteral::Integer(value) => CoreLiteral::Integer(*value),
                 PatternLiteral::Text(value) => CoreLiteral::Text(value.clone()),
                 PatternLiteral::Boolean(value) => CoreLiteral::Boolean(*value),
                 PatternLiteral::Float => unreachable!("typing rejects Float literal patterns"),
+                PatternLiteral::Void => unreachable!("a Void pattern lowers to a wildcard"),
             }),
             Pattern::Binding { semantic_id, .. }
             | Pattern::Typed {
@@ -1478,6 +1508,9 @@ impl CoreLowerer {
                     .local_symbol(module_id, *semantic_id, ProjectSymbolKind::PatternBinding)
                     .expect("verified alias binding resolves"),
             },
+            Pattern::Tuple { elements, .. } => {
+                CorePattern::Tuple(self.patterns(module_id, elements))
+            }
             Pattern::List {
                 prefix,
                 rest,
@@ -1869,6 +1902,7 @@ impl CoreLowerer {
                     }
                 }
                 ModuleExpression::List { elements, .. }
+                | ModuleExpression::Tuple { elements, .. }
                 | ModuleExpression::Sequence {
                     expressions: elements,
                     ..

@@ -73,6 +73,14 @@ impl ProgramData {
                 let (offset, length) = pairs(self, fields);
                 (6, 0, offset, length, 0)
             }
+            ConstantValue::Tuple(values) => {
+                let ids = values
+                    .iter()
+                    .map(|value| self.constant_value(value))
+                    .collect::<Vec<_>>();
+                let (offset, length) = self.ids(ids);
+                (14, 0, offset, length, 0)
+            }
             ConstantValue::Constructed {
                 constructor,
                 fields,
@@ -153,6 +161,7 @@ impl ProgramData {
                     (2, 1, text, 0, 0)
                 }
                 CoreLiteral::Boolean(value) => (2, 2, 0, 0, i64::from(*value)),
+                CoreLiteral::Void => unreachable!("a Void pattern lowers to a wildcard"),
             },
             CorePattern::Constructor { symbol, fields } => {
                 let children = fields
@@ -169,6 +178,14 @@ impl ProgramData {
             CorePattern::Alias { pattern, binding } => {
                 let child = self.pattern(pattern);
                 (6, binding.raw(), child, 1, 0)
+            }
+            CorePattern::Tuple(elements) => {
+                let children = elements
+                    .iter()
+                    .map(|element| self.pattern(element))
+                    .collect::<Vec<_>>();
+                let (offset, length) = self.ids(children);
+                (7, 0, offset, length, 0)
             }
             // Children are prefix, then the rest pattern when present, then suffix;
             // `a` counts the prefix and `integer` is 1 when a rest pattern is present.
@@ -295,6 +312,7 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                     row.1 = 3;
                     row.7 = value.to_bits() as i64;
                 }
+                CoreLiteral::Void => row.1 = 4,
             },
             CoreOperation::Reference(symbol) => row.1 = symbol.raw(),
             CoreOperation::Select { receiver, member } => {
@@ -323,7 +341,7 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                 row.1 = callee.raw();
                 (row.5, row.6) = data.ids(arguments.iter().map(|id| id.raw()));
             }
-            CoreOperation::List(elements) => {
+            CoreOperation::List(elements) | CoreOperation::Tuple(elements) => {
                 (row.5, row.6) = data.ids(elements.iter().map(|id| id.raw()))
             }
             CoreOperation::Record(fields) => {
@@ -629,6 +647,7 @@ const fn operation_opcode(operation: &CoreOperation) -> u8 {
         CoreOperation::Match { .. } => 14,
         CoreOperation::Loop { .. } => 15,
         CoreOperation::Break { .. } => 16,
+        CoreOperation::Tuple(_) => 17,
     }
 }
 

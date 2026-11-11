@@ -249,6 +249,8 @@ pub(crate) enum NodeKind {
     ImplementationContract,
     Type,
     FunctionType,
+    /// `(T1, T2, ...)` inside a `Type`.
+    TupleType,
     TypeArguments,
     RequirementClause,
     RequirementRecord,
@@ -270,6 +272,8 @@ pub(crate) enum NodeKind {
     Literal,
     NameReference,
     GroupedExpression,
+    /// `(e1, e2, ...)`: two or more comma-separated elements in parentheses.
+    TupleExpression,
     ListExpression,
     RecordExpression,
     RecordField,
@@ -315,6 +319,7 @@ impl NodeKind {
             Self::ImplementationContract => "implementation_contract",
             Self::Type => "type",
             Self::FunctionType => "function_type",
+            Self::TupleType => "tuple_type",
             Self::TypeArguments => "type_arguments",
             Self::RequirementClause => "requirement_clause",
             Self::RequirementRecord => "requirement_record",
@@ -334,6 +339,7 @@ impl NodeKind {
             Self::Literal => "literal",
             Self::NameReference => "name_reference",
             Self::GroupedExpression => "grouped_expression",
+            Self::TupleExpression => "tuple_expression",
             Self::ListExpression => "list_expression",
             Self::RecordExpression => "record_expression",
             Self::RecordField => "record_field",
@@ -1691,6 +1697,8 @@ impl<'source> Parser<'source> {
         self.skip_newlines();
         if self.at(TokenKind::Fn) {
             self.parse_function_type();
+        } else if self.at(TokenKind::LeftParen) {
+            self.parse_tuple_type();
         } else if self.accept(TokenKind::Identifier) || self.accept(TokenKind::Void) {
             while self.accept(TokenKind::Dot) {
                 self.expect(TokenKind::Identifier);
@@ -1699,6 +1707,32 @@ impl<'source> Parser<'source> {
         } else {
             self.missing(TokenKind::Identifier, "type");
         }
+        self.finish();
+    }
+
+    /// Parses `(T1, T2, ...)`. Ensures: `()` and `(T)` are `S1005`; one `TupleType` node.
+    fn parse_tuple_type(&mut self) {
+        self.start(NodeKind::TupleType);
+        let open = self.current().range;
+        self.bump();
+        self.skip_newlines();
+        let elements = if self.at(TokenKind::RightParen) {
+            0
+        } else {
+            self.parse_type();
+            self.parse_remaining_elements(Self::parse_type)
+        };
+        if elements < 2 {
+            let message = if elements == 0 {
+                "`()` is not a type; use `Void`"
+            } else {
+                "a tuple type needs at least two elements"
+            };
+            let range = TextRange::new(open.start() as usize, self.current().range.end() as usize);
+            self.syntax_error("S1005", range, message);
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::RightParen);
         self.finish();
     }
 
@@ -1807,10 +1841,12 @@ impl<'source> Parser<'source> {
         self.finish();
     }
 
+    /// Parses `let <name> = <value>`, or `let <pattern> = <value>` for any other
+    /// binding form, such as `let (low, high) = pair` or `let count: Int = 0`.
     fn parse_let_binding(&mut self) {
         self.start(NodeKind::LetBinding);
         self.expect(TokenKind::Let);
-        self.expect(TokenKind::Identifier);
+        self.parse_binding_target();
         self.expect(TokenKind::Equal);
         self.parse_expression();
         self.finish();
@@ -2147,7 +2183,8 @@ impl<'source> Parser<'source> {
             | TokenKind::Float
             | TokenKind::Text
             | TokenKind::True
-            | TokenKind::False => {
+            | TokenKind::False
+            | TokenKind::Void => {
                 self.start(NodeKind::Literal);
                 self.bump();
                 self.finish();
@@ -2158,25 +2195,79 @@ impl<'source> Parser<'source> {
                 self.finish();
             }
             TokenKind::TextStart => self.parse_interpolated_text(),
-            TokenKind::LeftParen => {
-                self.start(NodeKind::GroupedExpression);
-                self.bump();
-                self.skip_newlines();
-                self.parse_expression();
-                self.skip_newlines();
-                self.expect(TokenKind::RightParen);
-                self.finish();
-            }
+            TokenKind::LeftParen => self.parse_parenthesized(),
             TokenKind::LeftBracket => self.parse_list(),
             TokenKind::LeftBrace => self.parse_brace_expression(),
             TokenKind::Case => self.parse_case(),
             TokenKind::Loop => self.parse_loop(),
             TokenKind::Break => self.parse_break(),
             TokenKind::Fn => self.parse_function_expression(),
-            TokenKind::Void => self.error_and_bump("Void is a type, not a value"),
             TokenKind::If => self.parse_unsupported_if(),
             _ => self.missing(TokenKind::Identifier, "expression"),
         }
+    }
+
+    /// Parses `(e)` as a `GroupedExpression` and `(e1, e2, ...)` as a `TupleExpression`.
+    /// Ensures: `()` and the one-element `(e,)` are `S1005` and still close their node.
+    fn parse_parenthesized(&mut self) {
+        let marker = self.placeholder();
+        let open = self.current().range;
+        self.bump();
+        self.skip_newlines();
+        if self.at(TokenKind::RightParen) {
+            self.complete(marker, NodeKind::GroupedExpression);
+            let range = TextRange::new(open.start() as usize, self.current().range.end() as usize);
+            self.syntax_error("S1005", range, "`()` is not a value; use `Void`");
+            self.bump();
+            self.finish();
+            return;
+        }
+        self.parse_expression();
+        let tuple = self.at_after_newlines(TokenKind::Comma);
+        self.complete(
+            marker,
+            if tuple {
+                NodeKind::TupleExpression
+            } else {
+                NodeKind::GroupedExpression
+            },
+        );
+        let elements = self.parse_remaining_elements(Self::parse_expression);
+        if tuple && elements < 2 {
+            self.syntax_error(
+                "S1005",
+                TextRange::new(open.start() as usize, self.current().range.end() as usize),
+                "a tuple needs at least two elements",
+            );
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::RightParen);
+        self.finish();
+    }
+
+    /// After a first element, parses `, element` repeatedly up to `)`, allowing a
+    /// trailing comma. Returns the element count, the first one included.
+    fn parse_remaining_elements(&mut self, element: fn(&mut Self)) -> usize {
+        let mut count = 1;
+        while self.accept_after_newlines(TokenKind::Comma) {
+            self.skip_newlines();
+            if self.at(TokenKind::RightParen) {
+                break;
+            }
+            element(self);
+            count += 1;
+        }
+        count
+    }
+
+    fn syntax_error(&mut self, code: &'static str, range: TextRange, message: &str) {
+        self.diagnostics.push(Diagnostic::error(
+            DiagnosticStage::Syntax,
+            code,
+            self.source.file_id(),
+            range,
+            message,
+        ));
     }
 
     fn parse_call_suffix(&mut self) {
@@ -2517,12 +2608,22 @@ impl<'source> Parser<'source> {
     fn parse_loop(&mut self) {
         self.start(NodeKind::LoopExpression);
         self.bump();
-        self.expect(TokenKind::Identifier);
+        self.parse_binding_target();
         self.expect(TokenKind::Equal);
         self.skip_newlines();
         self.parse_expression();
         self.parse_block();
         self.finish();
+    }
+
+    /// The target of `let` or a `loop` state: a plain name stays a direct identifier
+    /// token, and every other form is a `Pattern` child.
+    fn parse_binding_target(&mut self) {
+        if self.at(TokenKind::Identifier) && self.kind_at(self.position + 1) == TokenKind::Equal {
+            self.bump();
+        } else {
+            self.parse_pattern();
+        }
     }
 
     /// Parses `break` with an optional value.
@@ -2602,7 +2703,8 @@ impl<'source> Parser<'source> {
             | TokenKind::Float
             | TokenKind::Text
             | TokenKind::True
-            | TokenKind::False => {
+            | TokenKind::False
+            | TokenKind::Void => {
                 self.bump();
             }
             TokenKind::Minus
@@ -2654,6 +2756,7 @@ impl<'source> Parser<'source> {
                     "a text pattern cannot interpolate; bind the text and compare it in a guard",
                 ));
             }
+            TokenKind::LeftParen => self.parse_tuple_pattern_elements(),
             _ => self.missing(TokenKind::Identifier, "pattern"),
         }
         self.finish();
@@ -2705,6 +2808,33 @@ impl<'source> Parser<'source> {
         }
         self.skip_newlines();
         self.expect(TokenKind::RightBracket);
+    }
+
+    /// Parses the parenthesized elements of a tuple pattern `(p1, p2, ...)`.
+    /// Ensures: each element is a `Pattern` child; `(p)` groups one pattern, and `()`
+    /// and `(p,)` are `S1005`.
+    fn parse_tuple_pattern_elements(&mut self) {
+        let open = self.current().range;
+        self.bump();
+        self.skip_newlines();
+        let (elements, trailing) = if self.at(TokenKind::RightParen) {
+            (0, false)
+        } else {
+            self.parse_pattern();
+            let trailing = self.at_after_newlines(TokenKind::Comma);
+            (self.parse_remaining_elements(Self::parse_pattern), trailing)
+        };
+        if elements == 0 || (elements == 1 && trailing) {
+            let message = if elements == 0 {
+                "`()` is not a pattern; use `Void`"
+            } else {
+                "a tuple pattern needs at least two elements"
+            };
+            let range = TextRange::new(open.start() as usize, self.current().range.end() as usize);
+            self.syntax_error("S1005", range, message);
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::RightParen);
     }
 
     fn parse_function_expression(&mut self) {
@@ -3290,7 +3420,7 @@ mod tests {
             include_str!("../../../prototypes/golden/invalid/empty_braces.chimi"),
             include_str!("../../../prototypes/golden/invalid/implicit_module_alias.chimi"),
             include_str!("../../../prototypes/golden/invalid/standalone_if.chimi"),
-            include_str!("../../../prototypes/golden/invalid/void_value.chimi"),
+            include_str!("../../../prototypes/golden/invalid/empty_tuple.chimi"),
         ];
 
         for source in cases {

@@ -62,6 +62,11 @@ pub(crate) enum Literal {
         value: bool,
         range: TextRange,
     },
+    /// `Void`, the only value of the type `Void`.
+    Void {
+        semantic_id: SemanticId,
+        range: TextRange,
+    },
 }
 
 impl Literal {
@@ -70,7 +75,8 @@ impl Literal {
             Self::Integer { semantic_id, .. }
             | Self::Float { semantic_id, .. }
             | Self::Text { semantic_id, .. }
-            | Self::Boolean { semantic_id, .. } => *semantic_id,
+            | Self::Boolean { semantic_id, .. }
+            | Self::Void { semantic_id, .. } => *semantic_id,
         }
     }
 
@@ -79,7 +85,8 @@ impl Literal {
             Self::Integer { range, .. }
             | Self::Float { range, .. }
             | Self::Text { range, .. }
-            | Self::Boolean { range, .. } => *range,
+            | Self::Boolean { range, .. }
+            | Self::Void { range, .. } => *range,
         }
     }
 }
@@ -453,12 +460,19 @@ pub(crate) enum TypeUse {
         failures: Option<Box<TypeUse>>,
         requirements: RequirementRowUse,
     },
+    /// `(T1, T2, ...)`; the parser reports fewer than two elements as `S1005`.
+    Tuple {
+        semantic_id: SemanticId,
+        elements: Vec<TypeUse>,
+    },
 }
 
 impl TypeUse {
     pub(crate) const fn semantic_id(&self) -> SemanticId {
         match self {
-            Self::Named { semantic_id, .. } | Self::Function { semantic_id, .. } => *semantic_id,
+            Self::Named { semantic_id, .. }
+            | Self::Function { semantic_id, .. }
+            | Self::Tuple { semantic_id, .. } => *semantic_id,
         }
     }
 }
@@ -554,6 +568,12 @@ pub(crate) enum Pattern {
         name: Name,
         range: TextRange,
     },
+    /// `(p1, ..., pn)`: a tuple of arity `n`, then its elements by position.
+    Tuple {
+        semantic_id: SemanticId,
+        elements: Vec<Pattern>,
+        range: TextRange,
+    },
     /// `[p1, ..., pk, ..rest, q1, ..., qm]`. `rest` is `None` for an exact-length
     /// pattern; otherwise it is the `Binding` or `Wildcard` that receives the
     /// remaining elements, and `suffix` holds the patterns after it.
@@ -578,6 +598,7 @@ impl Pattern {
             | Self::Constructor { semantic_id, .. }
             | Self::Typed { semantic_id, .. }
             | Self::Alias { semantic_id, .. }
+            | Self::Tuple { semantic_id, .. }
             | Self::List { semantic_id, .. } => *semantic_id,
         }
     }
@@ -590,6 +611,7 @@ impl Pattern {
             | Self::Constructor { range, .. }
             | Self::Typed { range, .. }
             | Self::Alias { range, .. }
+            | Self::Tuple { range, .. }
             | Self::List { range, .. } => *range,
         }
     }
@@ -630,6 +652,7 @@ impl Pattern {
             | Self::Literal { .. }
             | Self::Typed { .. } => Vec::new(),
             Self::Constructor { arguments, .. } => arguments.iter().collect(),
+            Self::Tuple { elements, .. } => elements.iter().collect(),
             Self::Alias { pattern, .. } => vec![pattern],
             Self::List {
                 prefix,
@@ -646,6 +669,8 @@ pub(crate) enum PatternLiteral {
     Integer(i64),
     Text(String),
     Boolean(bool),
+    /// `Void`, which matches the only value of its type.
+    Void,
     /// `Float` has no literal patterns; typing rejects this with `T4313`.
     Float,
 }
@@ -670,6 +695,12 @@ pub(crate) enum ModuleExpression {
         range: TextRange,
     },
     List {
+        semantic_id: SemanticId,
+        elements: Vec<Self>,
+        range: TextRange,
+    },
+    /// `(e1, e2, ...)`, evaluated left to right.
+    Tuple {
         semantic_id: SemanticId,
         elements: Vec<Self>,
         range: TextRange,
@@ -789,6 +820,7 @@ impl ModuleExpression {
             | Self::Select { semantic_id, .. }
             | Self::Call { semantic_id, .. }
             | Self::List { semantic_id, .. }
+            | Self::Tuple { semantic_id, .. }
             | Self::Record { semantic_id, .. }
             | Self::Update { semantic_id, .. }
             | Self::Unary { semantic_id, .. }
@@ -813,6 +845,7 @@ impl ModuleExpression {
             Self::Select { range, .. }
             | Self::Call { range, .. }
             | Self::List { range, .. }
+            | Self::Tuple { range, .. }
             | Self::Record { range, .. }
             | Self::Update { range, .. }
             | Self::Unary { range, .. }
@@ -873,7 +906,13 @@ pub(crate) enum BinaryOperator {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ModuleBlockItem {
-    Binding { name: Name, value: ModuleExpression },
+    /// `let name = value` or `let name: Type = value`. Every other `let` pattern
+    /// lowers to a `case` whose one arm holds the rest of the block.
+    Binding {
+        name: Name,
+        type_use: Option<TypeUse>,
+        value: ModuleExpression,
+    },
     Expression(ModuleExpression),
 }
 
@@ -882,6 +921,11 @@ pub(crate) enum ModuleBlockItem {
 #[derive(Clone, Debug)]
 pub(crate) enum CaseOrigin {
     Source,
+    /// A destructuring `let` or `loop` state: one arm whose pattern must be
+    /// irrefutable.
+    Binding {
+        kind: BindingKind,
+    },
     /// The body of the function `function`, one arm per clause in source order. Each
     /// arm's range is its clause head, `name(patterns)`.
     Clauses {
@@ -891,6 +935,21 @@ pub(crate) enum CaseOrigin {
         /// for exhaustiveness.
         separated: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BindingKind {
+    Let,
+    LoopState,
+}
+
+impl BindingKind {
+    pub(crate) const fn keyword(self) -> &'static str {
+        match self {
+            Self::Let => "let",
+            Self::LoopState => "loop",
+        }
+    }
 }
 
 /// The prefix of compiler-generated names, such as clause-group parameters. Source
@@ -1419,6 +1478,17 @@ impl ProjectLowerer {
 
     fn lower_type(&mut self, node: &SyntaxNode<'_>) -> TypeUse {
         let semantic_id = self.allocate_semantic_id();
+        if let Some(tuple) = direct_child(node, NodeKind::TupleType) {
+            return TypeUse::Tuple {
+                semantic_id,
+                elements: tuple
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|child| child.kind() == NodeKind::Type)
+                    .map(|child| self.lower_type(&child))
+                    .collect(),
+            };
+        }
         if let Some(function) = direct_child(node, NodeKind::FunctionType) {
             let arrow_offset = function
                 .child_tokens()
@@ -1607,6 +1677,14 @@ impl ProjectLowerer {
                     .collect(),
                 range: significant_range(node),
             },
+            NodeKind::TupleExpression => ModuleExpression::Tuple {
+                semantic_id,
+                elements: direct_expression_children(node)
+                    .into_iter()
+                    .map(|element| self.lower_expression(&element))
+                    .collect(),
+                range: significant_range(node),
+            },
             NodeKind::RecordExpression if direct_child(node, NodeKind::RecordSpread).is_some() => {
                 self.lower_update(node, semantic_id)
             }
@@ -1675,16 +1753,18 @@ impl ProjectLowerer {
             | NodeKind::AndExpression
             | NodeKind::OrExpression => self.lower_binary(node, semantic_id),
             NodeKind::UsingExpression => self.lower_using(node, semantic_id),
-            NodeKind::BlockExpression => ModuleExpression::Block {
-                semantic_id,
-                items: node
+            NodeKind::BlockExpression => {
+                let items = node
                     .child_nodes()
                     .into_iter()
                     .filter(|child| child.kind() == NodeKind::BlockItem)
-                    .filter_map(|item| self.lower_block_item(&item))
-                    .collect(),
-                range: significant_range(node),
-            },
+                    .collect::<Vec<_>>();
+                ModuleExpression::Block {
+                    semantic_id,
+                    items: self.lower_block_items(&items, significant_range(node)),
+                    range: significant_range(node),
+                }
+            }
             NodeKind::FunctionExpression if clause_has_patterns(node) => {
                 let mut signature = self.lower_function_signature(node);
                 let parameter_nodes = clause_parameters(node);
@@ -2008,6 +2088,7 @@ impl ProjectLowerer {
                     | TokenKind::Text
                     | TokenKind::True
                     | TokenKind::False
+                    | TokenKind::Void
             )
         }) else {
             return ModuleExpression::Empty {
@@ -2034,6 +2115,10 @@ impl ProjectLowerer {
             TokenKind::True | TokenKind::False => Literal::Boolean {
                 semantic_id,
                 value: token.kind() == TokenKind::True,
+                range: token.range(),
+            },
+            TokenKind::Void => Literal::Void {
+                semantic_id,
                 range: token.range(),
             },
             _ => unreachable!("literal token was filtered above"),
@@ -2144,23 +2229,115 @@ impl ProjectLowerer {
         }
     }
 
-    fn lower_block_item(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleBlockItem> {
-        let child = node.child_nodes().into_iter().next()?;
-        // A block `const` was already reported as `S1103`; it binds like `let`.
-        if matches!(
-            child.kind(),
-            NodeKind::LetBinding | NodeKind::ConstDeclaration
-        ) {
-            let name = direct_identifier(&child)?;
+    /// Lowers block items in order. A `let` whose pattern is not a plain or typed name
+    /// becomes a `case` over its value with one arm, whose body is the rest of the block,
+    /// so its bindings scope over exactly the items after it. `block` ends that body.
+    fn lower_block_items(
+        &mut self,
+        nodes: &[SyntaxNode<'_>],
+        block: TextRange,
+    ) -> Vec<ModuleBlockItem> {
+        let mut items = Vec::new();
+        for (index, node) in nodes.iter().enumerate() {
+            let Some(child) = node.child_nodes().into_iter().next() else {
+                continue;
+            };
+            // A block `const` was already reported as `S1103`; it binds like `let`.
+            if !matches!(
+                child.kind(),
+                NodeKind::LetBinding | NodeKind::ConstDeclaration
+            ) {
+                items.push(ModuleBlockItem::Expression(self.lower_expression(&child)));
+                continue;
+            }
             let value = direct_expression_child(&child)
                 .map(|value| self.lower_expression(&value))
                 .unwrap_or(ModuleExpression::Empty {
                     semantic_id: self.allocate_semantic_id(),
                     range: significant_range(&child),
                 });
-            Some(ModuleBlockItem::Binding { name, value })
-        } else {
-            Some(ModuleBlockItem::Expression(self.lower_expression(&child)))
+            let pattern = match direct_child(&child, NodeKind::Pattern) {
+                Some(pattern) => self.lower_pattern(&pattern),
+                None => match direct_identifier(&child) {
+                    Some(name) => Pattern::Binding {
+                        semantic_id: self.allocate_semantic_id(),
+                        range: name.range,
+                        name,
+                    },
+                    None => continue,
+                },
+            };
+            match pattern {
+                Pattern::Binding { name, .. } => items.push(ModuleBlockItem::Binding {
+                    name,
+                    type_use: None,
+                    value,
+                }),
+                Pattern::Typed {
+                    name: Some(name),
+                    type_use,
+                    ..
+                } => items.push(ModuleBlockItem::Binding {
+                    name,
+                    type_use: Some(type_use),
+                    value,
+                }),
+                pattern => {
+                    let keyword = child
+                        .child_tokens()
+                        .into_iter()
+                        .find(|token| token.kind() == TokenKind::Let)
+                        .map_or(pattern.range(), |token| token.range());
+                    let start = significant_range(&child).start() as usize;
+                    let rest_range = TextRange::new(start, block.end() as usize);
+                    let rest = self.lower_block_items(&nodes[index + 1..], block);
+                    let body = if rest.is_empty() {
+                        ModuleExpression::Literal(Literal::Void {
+                            semantic_id: self.allocate_semantic_id(),
+                            range: TextRange::empty(significant_range(&child).end() as usize),
+                        })
+                    } else {
+                        ModuleExpression::Block {
+                            semantic_id: self.allocate_semantic_id(),
+                            items: rest,
+                            range: rest_range,
+                        }
+                    };
+                    let case = self.binding_case(value, pattern, body, BindingKind::Let, keyword);
+                    items.push(ModuleBlockItem::Expression(case));
+                    return items;
+                }
+            }
+        }
+        items
+    }
+
+    /// A one-arm `case` that matches `subject` against the irrefutable `pattern` of a
+    /// `let` or `loop` state and evaluates `body` with its bindings.
+    fn binding_case(
+        &mut self,
+        subject: ModuleExpression,
+        pattern: Pattern,
+        body: ModuleExpression,
+        kind: BindingKind,
+        keyword: TextRange,
+    ) -> ModuleExpression {
+        let arm_range = pattern.range();
+        let range = TextRange::new(
+            keyword.start().min(arm_range.start()) as usize,
+            body.range().end().max(arm_range.end()) as usize,
+        );
+        ModuleExpression::Case {
+            semantic_id: self.allocate_semantic_id(),
+            subjects: vec![subject],
+            arms: vec![ModuleCaseArm {
+                patterns: vec![pattern],
+                guard: None,
+                body,
+                range: arm_range,
+            }],
+            range,
+            origin: CaseOrigin::Binding { kind },
         }
     }
 
@@ -2168,7 +2345,7 @@ impl ProjectLowerer {
     /// node keeps its identity and diagnostics come from the parser, never a panic.
     fn lower_loop(&mut self, node: &SyntaxNode<'_>, semantic_id: SemanticId) -> ModuleExpression {
         let range = significant_range(node);
-        let state = direct_identifier(node).unwrap_or_else(|| Name {
+        let mut state = direct_identifier(node).unwrap_or_else(|| Name {
             text: "_".to_owned(),
             range: TextRange::empty(range.start() as usize),
         });
@@ -2181,8 +2358,38 @@ impl ProjectLowerer {
                 })
         };
         let state_id = self.allocate_semantic_id();
+        let pattern = direct_child(node, NodeKind::Pattern)
+            .map(|pattern| self.lower_pattern(&pattern))
+            .filter(|pattern| !matches!(pattern, Pattern::Wildcard { .. }));
+        let pattern = match pattern {
+            Some(Pattern::Binding { name, .. }) => {
+                state = name;
+                None
+            }
+            other => other,
+        };
+        // A `loop _` or a destructuring state still needs a state binding, which
+        // identifies the loop; the destructuring then matches it on every pass.
+        if state.text == "_" || pattern.is_some() {
+            state = Name {
+                text: format!("{GENERATED_NAME_PREFIX}loop{}", state_id.raw()),
+                range: pattern.as_ref().map_or(state.range, Pattern::range),
+            };
+        }
         let initial = lower_part(parts.next(), self);
-        let body = lower_part(parts.next(), self);
+        let mut body = lower_part(parts.next(), self);
+        if let Some(pattern) = pattern {
+            let keyword = node
+                .child_tokens()
+                .into_iter()
+                .find(|token| token.kind() == TokenKind::Loop)
+                .map_or(range, |token| token.range());
+            let subject = ModuleExpression::Name {
+                semantic_id: self.allocate_semantic_id(),
+                name: state.clone(),
+            };
+            body = self.binding_case(subject, pattern, body, BindingKind::LoopState, keyword);
+        }
         ModuleExpression::Loop {
             semantic_id,
             state_id,
@@ -2323,6 +2530,20 @@ impl ProjectLowerer {
             TokenKind::LeftBracket => {
                 return self.lower_list_pattern(semantic_id, &children, range);
             }
+            TokenKind::LeftParen => {
+                let tuple = tokens.iter().any(|token| token.kind() == TokenKind::Comma);
+                return match children.as_slice() {
+                    [only] if !tuple => self.lower_pattern(only),
+                    _ => Pattern::Tuple {
+                        semantic_id,
+                        elements: children
+                            .iter()
+                            .map(|child| self.lower_pattern(child))
+                            .collect(),
+                        range,
+                    },
+                };
+            }
             TokenKind::DotDot => {
                 return match identifiers.into_iter().next() {
                     Some(name) if name.text != "_" => Pattern::Binding {
@@ -2344,6 +2565,7 @@ impl ProjectLowerer {
             TokenKind::True | TokenKind::False => {
                 PatternLiteral::Boolean(first.kind() == TokenKind::True)
             }
+            TokenKind::Void => PatternLiteral::Void,
             _ => {
                 let applied = tokens
                     .iter()
@@ -2576,6 +2798,7 @@ fn is_expression_kind(kind: NodeKind) -> bool {
             | NodeKind::InterpolatedText
             | NodeKind::NameReference
             | NodeKind::GroupedExpression
+            | NodeKind::TupleExpression
             | NodeKind::ListExpression
             | NodeKind::RecordExpression
             | NodeKind::BlockExpression

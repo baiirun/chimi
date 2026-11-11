@@ -14,9 +14,8 @@ may name only a closed enum, not one variant or a struct; full tracing
 identifies the selected clause through the arm body's events, not an
 attribute on the match event; and parameter conflicts that arise only from
 uses in clause bodies are reported as ordinary type mismatches, not `T4281`.
-Tuple patterns, and patterns in `let` and `loop` state positions, are not
-implemented yet (`prog show ts-5be727`); `let` and `loop` accept only a plain
-binding today.
+Tuple patterns, and irrefutable patterns in `let` and `loop` state positions,
+are implemented (`prog show ts-5be727`).
 
 The words MUST, MUST NOT, SHOULD, and MAY are normative. Examples use
 positional construction. Examples that call standard-library modules beyond
@@ -312,7 +311,7 @@ loop search = start {
 The `loop` state binding accepts an irrefutable pattern. The body's value is
 matched against the same pattern before the next pass:
 
-<!-- chimi: pending ts-5be727 ts-553107 -->
+<!-- chimi: check -->
 ```chimi
 fn sum(numbers: List<Int>) -> Int {
   loop (remaining, total) = (numbers, 0) {

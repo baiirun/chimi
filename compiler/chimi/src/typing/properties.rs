@@ -228,6 +228,12 @@ impl Walk<'_, '_> {
             CanonicalType::Function(_) | CanonicalType::PolymorphicFunction { .. } => {
                 Self::lack("a function")
             }
+            CanonicalType::Tuple(elements) => {
+                elements.iter().enumerate().find_map(|(index, element)| {
+                    let lack = self.visit(*element, frame, depth + 1);
+                    Self::within(format!("element {} of a tuple", index + 1), lack)
+                })
+            }
             CanonicalType::Record(fields) => {
                 if self.ordered() {
                     return Self::lack("a record, which has no declaration order");
