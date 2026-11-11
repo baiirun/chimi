@@ -4575,6 +4575,66 @@ fn instantiating_a_requirement_with_a_function_is_t4305() {
     }
 }
 
+// E13 for a generic function used as a value: passing it where a function type
+// fixes its parameter is an instantiation too, so the requirement is checked
+// there, for a user function and for a standard one.
+#[test]
+fn passing_a_generic_function_as_a_value_checks_its_requirement() {
+    let source = concat!(
+        "fn same<T>(left: T, right: T) -> Bool { left == right }\n",
+        "fn one() -> Int { 1 }\n",
+        "fn apply(f: fn(fn() -> Int, fn() -> Int) -> Bool) -> Bool { f(one, one) }\n",
+        "pub fn main() -> Bool { apply(same) }\n",
+    );
+    let report = type_report(source);
+    let diagnostics = report.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{}", report.render_diagnostics());
+    let diagnostic = &diagnostics[0];
+    assert_eq!(
+        diagnostic.code(),
+        "T4305",
+        "{}",
+        report.render_diagnostics()
+    );
+    assert!(
+        diagnostic.message().contains("`same`")
+            && diagnostic.message().contains("it is a function"),
+        "{}",
+        diagnostic.message()
+    );
+    let range = diagnostic.range();
+    assert_eq!(
+        &source[range.start() as usize..range.end() as usize],
+        "apply(same)"
+    );
+    let labelled = diagnostic
+        .labels()
+        .iter()
+        .map(|label| &source[label.range().start() as usize..label.range().end() as usize])
+        .collect::<Vec<_>>();
+    assert_eq!(labelled, ["left == right", "T"]);
+
+    let standard = concat!(
+        "import std/order as Order\n",
+        "import std/order.{Ordering}\n",
+        "fn one() -> Int { 1 }\n",
+        "fn two() -> Int { 2 }\n",
+        "fn apply(f: fn(fn() -> Int, fn() -> Int) -> Ordering) -> Ordering { f(one, two) }\n",
+        "pub fn main() -> Ordering { apply(Order.compare) }\n",
+    );
+    assert_eq!(check_codes(standard), ["T4301"]);
+    // Data instantiations still pass.
+    let data = concat!(
+        "fn same<T>(left: T, right: T) -> Bool { left == right }\n",
+        "fn apply(f: fn(Int, Int) -> Bool) -> Bool { f(1, 1) }\n",
+        "pub fn main() -> Bool { apply(same) }\n",
+    );
+    assert_eq!(
+        run_both("generic-value-data", data),
+        "\"outcome\":\"success\",\"value\":true"
+    );
+}
+
 // E14: a generic struct is equatable per instantiation.
 #[test]
 fn a_generic_struct_instantiated_with_data_is_equatable() {

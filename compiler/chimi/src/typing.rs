@@ -1071,6 +1071,12 @@ struct ProjectTypeChecker {
     generic_requirements: HashMap<SymbolId, GenericRequirement>,
     /// Checks the body being inferred has queued; settled at its end.
     property_checks: Vec<PropertyCheck>,
+    /// The innermost expression being inferred, where a generic function value
+    /// that meets a function type is instantiated.
+    expression_site: Option<(ModuleId, TextRange)>,
+    /// The callable each generic function value's parameter list comes from,
+    /// to name it in a diagnostic about that instantiation.
+    polymorphic_owners: HashMap<Vec<SymbolId>, SymbolId>,
     diagnostics: Vec<Diagnostic>,
     warnings: Vec<Diagnostic>,
     /// Values of `Int` expressions folded from literals, for `T4312`.
@@ -1285,6 +1291,8 @@ impl ProjectTypeChecker {
             generic_kinds: HashMap::new(),
             generic_requirements: HashMap::new(),
             property_checks: Vec::new(),
+            expression_site: None,
+            polymorphic_owners: HashMap::new(),
             diagnostics,
             warnings: Vec::new(),
             integer_constants: HashMap::new(),
@@ -2248,6 +2256,8 @@ impl ProjectTypeChecker {
                 .map(|(symbol, requirement)| (*symbol, requirement.clone()))
                 .collect(),
             property_checks: Vec::new(),
+            expression_site: None,
+            polymorphic_owners: HashMap::new(),
             diagnostics: resolved
                 .diagnostics
                 .iter()
@@ -2752,6 +2762,21 @@ impl ProjectTypeChecker {
     }
 
     fn infer_expression(
+        &mut self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        generics: &HashMap<String, SymbolId>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> ExpressionFact {
+        let outer = self
+            .expression_site
+            .replace((module_id, expression.range()));
+        let fact = self.infer_expression_at_site(module_id, expression, generics, bindings);
+        self.expression_site = outer;
+        fact
+    }
+
+    fn infer_expression_at_site(
         &mut self,
         module_id: ModuleId,
         expression: &ModuleExpression,
@@ -7083,6 +7108,9 @@ impl ProjectTypeChecker {
         if parameters.is_empty() {
             self.intern_type(CanonicalType::Function(contract))
         } else {
+            self.polymorphic_owners
+                .entry(parameters.clone())
+                .or_insert(symbol);
             self.intern_type(CanonicalType::PolymorphicFunction {
                 parameters,
                 contract,
@@ -7843,7 +7871,43 @@ impl ProjectTypeChecker {
             }
         }
         let contract = self.substitute_call_contract_preserving(contract, &mut substitution, &[]);
+        self.check_value_instantiation(parameters, &substitution);
         self.intern_type(CanonicalType::Function(contract))
+    }
+
+    /// Queues the requirement checks for a generic function value instantiated
+    /// at the expression being inferred, as a call to it would.
+    fn check_value_instantiation(
+        &mut self,
+        parameters: &[SymbolId],
+        substitution: &CallSubstitution,
+    ) {
+        let Some((module_id, range)) = self.expression_site else {
+            return;
+        };
+        let callee = self.polymorphic_owners.get(parameters).map_or_else(
+            || "this function".to_owned(),
+            |symbol| self.callable_display_name(*symbol),
+        );
+        for parameter in parameters {
+            let (Some(requirement), Some(argument)) = (
+                self.generic_requirements.get(parameter).cloned(),
+                substitution.values.get(parameter).copied(),
+            ) else {
+                continue;
+            };
+            self.property_checks.push(PropertyCheck {
+                module_id,
+                type_id: argument,
+                property: requirement.property,
+                site: PropertySite::Instantiation {
+                    range,
+                    callee: callee.clone(),
+                    parameter: *parameter,
+                    requirement,
+                },
+            });
+        }
     }
 
     /// Walks `slot` and `value` in parallel and binds each row parameter of
