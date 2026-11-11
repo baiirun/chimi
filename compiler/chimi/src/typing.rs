@@ -3625,7 +3625,9 @@ impl ProjectTypeChecker {
             let normalized = rows[0].clone();
             let useful_rows = rows
                 .into_iter()
-                .filter(|row| rejected || self.pattern_row_is_useful(&coverage, row, &subject_types))
+                .filter(|row| {
+                    rejected || self.pattern_row_is_useful(&coverage, row, &subject_types)
+                })
                 .collect::<Vec<_>>();
             let useful = !useful_rows.is_empty();
             if !useful {
