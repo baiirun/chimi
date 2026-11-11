@@ -668,6 +668,7 @@ Each kind of value renders like the declaration or literal that describes it:
 | Anonymous record | `{ cents: 1, name: "a" }`, fields sorted by name |
 | List | `[1, 2, 3]` |
 | Tuple | `(1, "a")` |
+| `Range` | `0..3`, by its normalized bounds, so `0..=2` renders the same |
 | Map | `Map { "a": 1, "b": 2 }`, entries in an internal canonical order that is not stable across releases |
 | `Json.Number` | `Json.Number(1)`; the canonical normalized number, so `1.0` and `1` both render as `1` |
 | Declared function | `<fn checkout>` |

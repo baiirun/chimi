@@ -73,6 +73,14 @@ impl ProgramData {
                 let (offset, length) = pairs(self, fields);
                 (6, 0, offset, length, 0)
             }
+            ConstantValue::Range { start, end } => {
+                let ids = vec![
+                    self.constant_value(&ConstantValue::Integer(*start)),
+                    self.constant_value(&ConstantValue::Integer(*end)),
+                ];
+                let (offset, length) = self.ids(ids);
+                (15, 0, offset, length, 0)
+            }
             ConstantValue::Tuple(values) => {
                 let ids = values
                     .iter()
@@ -722,6 +730,8 @@ const fn binary_operator(operator: BinaryOperator) -> u32 {
         BinaryOperator::GreaterEqual => 7,
         BinaryOperator::Remainder => 8,
         BinaryOperator::Equal => 9,
+        BinaryOperator::Range => 10,
+        BinaryOperator::RangeInclusive => 11,
         BinaryOperator::And | BinaryOperator::Or | BinaryOperator::NotEqual => {
             panic!("Core lowers `and`, `or`, and `!=` to a Bool match")
         }

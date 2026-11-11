@@ -706,6 +706,8 @@ const fn binary_operator_symbol(operator: BinaryOperator) -> &'static str {
         BinaryOperator::NotEqual => "!=",
         BinaryOperator::And => "and",
         BinaryOperator::Or => "or",
+        BinaryOperator::Range => "..",
+        BinaryOperator::RangeInclusive => "..=",
     }
 }
 
@@ -1670,6 +1672,7 @@ impl ProjectTypeChecker {
             );
         }
         let float = self.builtin_type("Float");
+        let range = self.builtin_type("Range");
         let int_option = self.standard_named_type(StandardType::Option, vec![int]);
         let int_parse_failure = self.standard_failure_row(&[
             StandardConstructor::IntParseEmpty,
@@ -1725,6 +1728,15 @@ impl ProjectTypeChecker {
             ),
             (StandardFunction::IntModulo, vec![int, int], int, pure.0),
             (StandardFunction::FloatFromInt, vec![int], float, pure.0),
+            (StandardFunction::RangeStart, vec![range], int, pure.0),
+            (StandardFunction::RangeEnd, vec![range], int, pure.0),
+            (StandardFunction::RangeLength, vec![range], int, pure.0),
+            (
+                StandardFunction::RangeContains,
+                vec![range, int],
+                self.builtin_type("Bool"),
+                pure.0,
+            ),
             (StandardFunction::FloatTruncate, vec![float], float, pure.0),
             (StandardFunction::FloatFloor, vec![float], float, pure.0),
             (StandardFunction::FloatCeiling, vec![float], float, pure.0),
@@ -3260,6 +3272,36 @@ impl ProjectTypeChecker {
                     success: boolean,
                     failures: self.union_failure_rows([left.failures, right.failures]),
                     needs: self.union_needs_rows([left.needs, right.needs]),
+                }
+            }
+            ModuleExpression::Binary {
+                operator: operator @ (BinaryOperator::Range | BinaryOperator::RangeInclusive),
+                left: left_operand,
+                right: right_operand,
+                ..
+            } => {
+                let int = self.builtin_type("Int");
+                let mut facts = Vec::new();
+                for operand in [left_operand, right_operand] {
+                    let fact = self.infer_expression(module_id, operand, generics, bindings);
+                    if !self.unify(fact.success, int) {
+                        let found = self.format_checked_type(fact.success);
+                        self.type_error_range(
+                            module_id,
+                            "T4311",
+                            expression_range(operand),
+                            format!(
+                                "a range bound must be `Int`, but this is `{found}`; `{}` builds integer ranges only",
+                                binary_operator_symbol(*operator)
+                            ),
+                        );
+                    }
+                    facts.push(fact);
+                }
+                ExpressionFact {
+                    success: self.builtin_type("Range"),
+                    failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
+                    needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
                 }
             }
             ModuleExpression::Binary {

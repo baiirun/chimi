@@ -589,6 +589,8 @@ impl Measure<'_> {
             | RuntimeValue::Integer(_)
             | RuntimeValue::Float(_)
             | RuntimeValue::Boolean(_) => Some(ROW_BYTES),
+            // Its row refers to one `Int` row per bound.
+            RuntimeValue::Range { .. } => self.sum(ROW_BYTES, 2 * (ID_BYTES + ROW_BYTES)),
             RuntimeValue::Text(text) | RuntimeValue::JsonNumber(text) => {
                 self.sum(ROW_BYTES, text.len())
             }
@@ -727,6 +729,10 @@ fn constant_value(
         RuntimeValue::List(values) => {
             ConstantValue::List(values.iter().map(convert).collect::<Result<_, _>>()?)
         }
+        RuntimeValue::Range { start, end } => ConstantValue::Range {
+            start: *start,
+            end: *end,
+        },
         RuntimeValue::Tuple(values) => {
             ConstantValue::Tuple(values.iter().map(convert).collect::<Result<_, _>>()?)
         }
@@ -826,6 +832,10 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
                 .map(|value| runtime_value(core, value))
                 .collect(),
         ),
+        ConstantValue::Range { start, end } => RuntimeValue::Range {
+            start: *start,
+            end: *end,
+        },
         ConstantValue::Tuple(values) => RuntimeValue::Tuple(
             values
                 .iter()

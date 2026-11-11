@@ -7492,3 +7492,143 @@ fn errors_never_is_the_empty_failure_row() {
         .is_empty()
     );
 }
+
+// N11, G1, G2, G5, and `std/range`: `..` builds a half-open range, `..=` normalizes
+// to one, a range binds below additive operators, and equality and order use the
+// normalized bounds.
+#[test]
+fn ranges_normalize_and_answer_std_range_queries() {
+    let source = concat!(
+        "import std/range as Range\n",
+        "const dice = 1..=6\n",
+        "fn width(span: Range) -> Int {\n",
+        "  Range.end(span) - Range.start(span)\n",
+        "}\n",
+        "pub fn main() -> List<Bool> {\n",
+        "  let n = 2\n",
+        "  let r = 0..10\n",
+        "  [\n",
+        "    0..3 == 0..=2,\n",
+        "    5..2 != 4..2,\n",
+        "    0..3 < 0..4,\n",
+        "    Range.length(5..2) == 0,\n",
+        "    Range.length(dice) == 6,\n",
+        "    width(0..n + 1) == 3,\n",
+        "    Range.contains(r, 9),\n",
+        "    Range.contains(r, 10) == False,\n",
+        "    Range.contains(r, -1) == False,\n",
+        "    Range.contains(5..2, 3) == False,\n",
+        "  ]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("range-queries", source),
+        "\"outcome\":\"success\",\"value\":[true,true,true,true,true,true,true,true,true,true]"
+    );
+}
+
+// A range renders as its normalized `start..end`, and an outcome record encodes
+// its bounds.
+#[test]
+fn ranges_render_with_normalized_bounds() {
+    let source = concat!(
+        "import std/debug as Debug\n",
+        "pub fn main() -> List<Text> {\n",
+        "  [Debug.render((0..=2, 4..1))]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("range-render", source),
+        "\"outcome\":\"success\",\"value\":[\"(0..3, 4..1)\"]"
+    );
+    assert_eq!(
+        run_both("range-outcome", "pub fn main() -> Range {\n  -2..=5\n}\n"),
+        "\"outcome\":\"success\",\"value\":{\"range\":{\"start\":-2,\"end\":6}}"
+    );
+}
+
+// G3, and `Range.length` past `Int`: both defect on both paths.
+#[test]
+fn ranges_defect_when_a_bound_or_length_overflows() {
+    let program = |body: &str| {
+        format!(
+            concat!(
+                "import std/range as Range\n",
+                "fn largest() -> Int {{\n",
+                "  9223372036854775807\n",
+                "}}\n",
+                "pub fn main() -> Int {{\n",
+                "  {}\n",
+                "}}\n",
+            ),
+            body
+        )
+    };
+    let inclusive = run_both(
+        "range-inclusive-overflow",
+        &program("Range.start(0..=largest())"),
+    );
+    assert!(
+        defect_message(&inclusive).contains("`..=` ends at the largest Int"),
+        "{inclusive}"
+    );
+    let length = run_both(
+        "range-length-overflow",
+        &program("Range.length(-1..largest())"),
+    );
+    assert!(
+        defect_message(&length).contains("Range.length overflows Int"),
+        "{length}"
+    );
+    assert_eq!(
+        run_both(
+            "range-length-largest",
+            &program("Range.length(0..largest())")
+        ),
+        "\"outcome\":\"success\",\"value\":9223372036854775807"
+    );
+}
+
+// G4 and G6.
+#[test]
+fn range_bounds_must_be_int_and_ranges_do_not_chain() {
+    assert_eq!(check_codes("fn f() -> Range {\n  0..1.5\n}\n"), ["T4311"]);
+    assert_eq!(
+        check_codes("fn f() -> Range {\n  \"a\"..=2\n}\n"),
+        ["T4311"]
+    );
+    assert_eq!(
+        check_codes("fn f(a: Int, b: Int, c: Int) -> Range {\n  a..b..c\n}\n"),
+        ["S1006"]
+    );
+}
+
+// The canonical form writes a range without spaces, and keeps list rest patterns.
+#[test]
+fn ranges_format_without_spaces() {
+    let source = concat!(
+        "fn f(values: List<Int>, n: Int) -> Range {\n",
+        "  case values {\n",
+        "    [_, .. rest] -> 0 .. n + 1\n",
+        "    _ -> (n) ..= 4\n",
+        "  }\n",
+        "}\n",
+    );
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(
+        !formatted.is_blocked(),
+        "{}",
+        formatted.render_diagnostics()
+    );
+    assert_eq!(
+        formatted.text(),
+        concat!(
+            "fn f(values: List<Int>, n: Int) -> Range {\n",
+            "  case values {\n",
+            "    [_, ..rest] -> 0..n + 1\n",
+            "    _ -> (n)..=4\n",
+            "  }\n",
+            "}\n",
+        )
+    );
+}

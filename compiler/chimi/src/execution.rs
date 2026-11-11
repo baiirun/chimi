@@ -198,6 +198,10 @@ pub enum ExecutionValue {
     Boolean(bool),
     List(Vec<ExecutionValue>),
     Tuple(Vec<ExecutionValue>),
+    Range {
+        start: i64,
+        end: i64,
+    },
     Record(Vec<ValueField>),
     Constructed {
         type_name: String,
@@ -346,6 +350,11 @@ enum RuntimeValue {
     List(PersistentList<RuntimeValue>),
     /// Two or more elements; typing fixes the arity.
     Tuple(Vec<RuntimeValue>),
+    /// The half-open run `start..end`; `..=` is already normalized to it.
+    Range {
+        start: i64,
+        end: i64,
+    },
     Record(Vec<RuntimeField>),
     Constructed {
         constructor: SymbolId,
@@ -1712,6 +1721,36 @@ impl<'core> Evaluator<'core> {
                     },
                 }
             }
+            StandardFunction::RangeStart
+            | StandardFunction::RangeEnd
+            | StandardFunction::RangeLength => {
+                let [RuntimeValue::Range { start, end }] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(RuntimeValue::Integer(match function {
+                    StandardFunction::RangeStart => *start,
+                    StandardFunction::RangeEnd => *end,
+                    _ => match range_length(*start, *end) {
+                        Some(length) => length,
+                        None => {
+                            return Control::Defect {
+                                message: RANGE_LENGTH_OVERFLOW.to_owned(),
+                                node: Some(call_node),
+                            };
+                        }
+                    },
+                }))
+            }
+            StandardFunction::RangeContains => {
+                let [
+                    RuntimeValue::Range { start, end },
+                    RuntimeValue::Integer(value),
+                ] = arguments.as_slice()
+                else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                Control::Success(RuntimeValue::Boolean(start <= value && value < end))
+            }
             StandardFunction::FloatFromInt => {
                 let [RuntimeValue::Integer(value)] = arguments.as_slice() else {
                     return self.intrinsic_shape_defect(function, call_node);
@@ -1991,6 +2030,28 @@ impl<'core> Evaluator<'core> {
                 _ => defect("verified binary operands are not numbers".to_owned()),
             };
         }
+        match (operator, &left, &right) {
+            (BinaryOperator::Range, RuntimeValue::Integer(start), RuntimeValue::Integer(end)) => {
+                return Control::Success(RuntimeValue::Range {
+                    start: *start,
+                    end: *end,
+                });
+            }
+            (
+                BinaryOperator::RangeInclusive,
+                RuntimeValue::Integer(start),
+                RuntimeValue::Integer(end),
+            ) => {
+                return match end.checked_add(1) {
+                    Some(end) => Control::Success(RuntimeValue::Range { start: *start, end }),
+                    None => defect(INCLUSIVE_RANGE_OVERFLOW.to_owned()),
+                };
+            }
+            (BinaryOperator::Range | BinaryOperator::RangeInclusive, _, _) => {
+                return defect("verified range bounds are not integers".to_owned());
+            }
+            _ => {}
+        }
         let ordering = self.structural_order(&left, &right);
         let result = match operator {
             BinaryOperator::Less => ordering.is_lt(),
@@ -2000,6 +2061,9 @@ impl<'core> Evaluator<'core> {
             BinaryOperator::Equal => ordering.is_eq(),
             BinaryOperator::And | BinaryOperator::Or | BinaryOperator::NotEqual => {
                 unreachable!("Core lowers `and`, `or`, and `!=` to a Bool match")
+            }
+            BinaryOperator::Range | BinaryOperator::RangeInclusive => {
+                unreachable!("ranges returned above")
             }
             BinaryOperator::Add
             | BinaryOperator::Subtract
@@ -2285,6 +2349,24 @@ fn match_list_pattern(
     }
 }
 
+/// The defect of `Range.length` when the count of a range exceeds `Int`.
+const RANGE_LENGTH_OVERFLOW: &str =
+    "Range.length overflows Int: the range holds more than the largest Int elements";
+
+/// `end - start` for a nonempty range, 0 for an empty one, or `None` when the count
+/// exceeds `Int`.
+fn range_length(start: i64, end: i64) -> Option<i64> {
+    if end <= start {
+        Some(0)
+    } else {
+        end.checked_sub(start)
+    }
+}
+
+/// The defect of `start..=end` when `end` is the largest `Int`.
+const INCLUSIVE_RANGE_OVERFLOW: &str =
+    "the inclusive range `..=` ends at the largest Int, so its exclusive end overflows";
+
 fn literal_matches(literal: &CoreLiteral, value: &RuntimeValue) -> bool {
     match (literal, value) {
         (CoreLiteral::Integer(left), RuntimeValue::Integer(right)) => left == right,
@@ -2328,6 +2410,7 @@ fn public_value(value: RuntimeValue) -> ExecutionValue {
         RuntimeValue::Tuple(values) => {
             ExecutionValue::Tuple(values.into_iter().map(public_value).collect())
         }
+        RuntimeValue::Range { start, end } => ExecutionValue::Range { start, end },
         RuntimeValue::Record(fields) => ExecutionValue::Record(public_fields(fields)),
         RuntimeValue::Constructed {
             type_name,
@@ -2467,6 +2550,10 @@ fn write_json_value(output: &mut String, value: &ExecutionValue) {
                 write_json_value(output, value);
             }
             output.push_str("]}");
+        }
+        ExecutionValue::Range { start, end } => {
+            write!(output, "{{\"range\":{{\"start\":{start},\"end\":{end}}}}}")
+                .expect("writing JSON to a string cannot fail")
         }
         ExecutionValue::Record(fields) => write_json_fields(output, fields),
         ExecutionValue::Constructed {

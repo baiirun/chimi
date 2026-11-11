@@ -59,8 +59,10 @@ pub(crate) enum TokenKind {
     Colon,
     Comma,
     Dot,
-    /// `..`, the rest marker inside a list pattern.
+    /// `..`: the half-open range operator, or the rest marker inside a list pattern.
     DotDot,
+    /// `..=`, the inclusive range operator.
+    DotDotEqual,
     Slash,
     Less,
     LessEqual,
@@ -133,6 +135,7 @@ impl TokenKind {
             Self::Comma => "comma",
             Self::Dot => "dot",
             Self::DotDot => "dot_dot",
+            Self::DotDotEqual => "dot_dot_equal",
             Self::Slash => "slash",
             Self::Less => "less",
             Self::LessEqual => "less_equal",
@@ -201,6 +204,7 @@ impl TokenKind {
             Self::Comma => "`,`",
             Self::Dot => "`.`",
             Self::DotDot => "`..`",
+            Self::DotDotEqual => "`..=`",
             Self::Slash => "`/`",
             Self::Less => "`<`",
             Self::LessEqual => "`<=`",
@@ -274,6 +278,8 @@ pub(crate) enum NodeKind {
     GroupedExpression,
     /// `(e1, e2, ...)`: two or more comma-separated elements in parentheses.
     TupleExpression,
+    /// `start..end` or `start..=end`.
+    RangeExpression,
     ListExpression,
     RecordExpression,
     RecordField,
@@ -340,6 +346,7 @@ impl NodeKind {
             Self::NameReference => "name_reference",
             Self::GroupedExpression => "grouped_expression",
             Self::TupleExpression => "tuple_expression",
+            Self::RangeExpression => "range_expression",
             Self::ListExpression => "list_expression",
             Self::RecordExpression => "record_expression",
             Self::RecordField => "record_field",
@@ -885,8 +892,13 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                 emit(TokenKind::Bang, start, offset, &mut tokens);
             }
             b'.' if offset + 1 < bytes.len() && bytes[offset + 1] == b'.' => {
-                offset += 2;
-                emit(TokenKind::DotDot, start, offset, &mut tokens);
+                if offset + 2 < bytes.len() && bytes[offset + 2] == b'=' {
+                    offset += 3;
+                    emit(TokenKind::DotDotEqual, start, offset, &mut tokens);
+                } else {
+                    offset += 2;
+                    emit(TokenKind::DotDot, start, offset, &mut tokens);
+                }
             }
             b'<' if offset + 1 < bytes.len() && bytes[offset + 1] == b'=' => {
                 offset += 2;
@@ -1985,7 +1997,7 @@ impl<'source> Parser<'source> {
             TokenKind::BangEqual,
         ];
         let marker = self.placeholder();
-        self.parse_additive();
+        self.parse_range();
         let mut wrapped = false;
         while self.after_any_newlines(&COMPARISONS) {
             self.skip_newlines();
@@ -1999,6 +2011,35 @@ impl<'source> Parser<'source> {
                 ));
             } else {
                 self.complete(marker, NodeKind::ComparisonExpression);
+                wrapped = true;
+            }
+            self.bump();
+            self.skip_newlines();
+            self.parse_range();
+        }
+        if wrapped {
+            self.finish();
+        }
+    }
+
+    /// Ranges sit between comparison and additive operators and do not chain: a
+    /// second `..` or `..=`, as in `a..b..c`, is `S1006`; it is still consumed so the
+    /// rest of the expression recovers.
+    fn parse_range(&mut self) {
+        const RANGES: [TokenKind; 2] = [TokenKind::DotDot, TokenKind::DotDotEqual];
+        let marker = self.placeholder();
+        self.parse_additive();
+        let mut wrapped = false;
+        while self.after_any_newlines(&RANGES) {
+            self.skip_newlines();
+            if wrapped {
+                self.syntax_error(
+                    "S1006",
+                    self.current().range,
+                    "ranges do not chain; write one range, such as `a..c`",
+                );
+            } else {
+                self.complete(marker, NodeKind::RangeExpression);
                 wrapped = true;
             }
             self.bump();

@@ -247,6 +247,14 @@ fn format_parse(parsed: &ParseResult) -> String {
                 writer.write(token.text());
                 writer.write(" ");
             }
+            // A range is written without spaces, like `0..count`.
+            TokenKind::DotDot | TokenKind::DotDotEqual
+                if token_has_ancestor(token, &[NodeKind::RangeExpression])
+                    && !token_has_ancestor(token, &[NodeKind::Pattern]) =>
+            {
+                writer.trim_space();
+                writer.write(token.text());
+            }
             TokenKind::Not => {
                 if needs_space(previous, kind, writer.line()) {
                     writer.space();

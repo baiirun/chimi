@@ -12,9 +12,11 @@ the representation expectations for L2 (`Decimal`).
 Implementation status (Phase 1, epic `ep-a6f138`): boolean logic is
 implemented (`ts-fd46b6`). Numbers are implemented (`ts-a28bb7`) except
 `Decimal`, `==` on numbers, and `Float` map keys, which wait for equality.
-The other sections are implementation targets tracked by `ts-95bffa`
-(equality, hashing, ordering) and `ts-5be727` (tuples, `Void`, `Never`,
-ranges); `Decimal` is phase 2. Chimi remains free to break. This is an
+Tuples, the `Void` value, `Never`, and ranges are implemented
+(`ts-5be727`), except `List.slice`, which waits for `std/list`; `std/range`
+is a built-in standard module like `std/order`. The other sections are
+implementation targets tracked by `ts-95bffa` (equality, hashing,
+ordering); `Decimal` is phase 2. Chimi remains free to break. This is an
 implementation target.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. Examples
@@ -834,6 +836,9 @@ Rules:
   `Range.length`, and `Range.contains`. `Range.length` returns 0 for an empty
   range and defects when the count exceeds `Int`.
 - `..` is non-associative: `a..b..c` is rejected with `S1006`.
+- The debug format renders a range by its normalized bounds, so `0..=2`
+  renders as `0..3`. A runtime outcome record encodes it as
+  `{"range":{"start":0,"end":3}}`.
 - `..` in a list pattern (G15, `[head, ..rest]`) is a pattern form, not a
   range. Chimi has no range patterns. The
   [patterns spec](patterns-and-function-clauses.md#range-patterns) matches
@@ -881,7 +886,7 @@ MUST NOT blur stages.
 | `S1003` | syntax | A float literal rounds to an infinity, in an expression or a pattern. | "float literal is outside the finite `Float` range" |
 | `S1004` | syntax | `&&`, `\|\|`, or prefix `!`. | "Chimi spells this `and`" (or `or`, `not`), with a replacement edit |
 | `S1005` | syntax | `()` in expression or type position, or a one-element tuple `(e,)`. | "`()` is not a value; use `Void`", or "a tuple needs at least two elements" |
-| `S1006` | syntax | A second non-associative operator at the same level, as in `a < b < c`, `a == b == c`, or `a..b..c`. | "comparisons do not chain; write `a < b and b < c`" |
+| `S1006` | syntax | A second non-associative operator at the same level, as in `a < b < c`, `a == b == c`, or `a..b..c`. | "comparisons do not chain; write `a < b and b < c`", or for `..` and `..=`, "ranges do not chain" |
 | `T4300` | type | An operand of `==` or `!=`, or a `Map` key or `Set` element type, is not equatable. | Names the path to the offending component, such as "field `handler` of `Route` is a function" |
 | `T4301` | type | An operand of `<`, `<=`, `>`, `>=`, or an argument of `Order.compare` or `List.sort`, is not ordered. | Names the component; once `std/list` provides `List.sort_by`, suggests a comparator with it |
 | `T4302` | type | The operands of a binary arithmetic, equality, or comparison operator have different types. | For `Int` and `Float`, suggests `Float.from_int` or `Float.to_int` |

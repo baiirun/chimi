@@ -411,6 +411,11 @@ pub(crate) enum ConstantValue {
     Boolean(bool),
     List(Vec<ConstantValue>),
     Tuple(Vec<ConstantValue>),
+    /// A normalized half-open range.
+    Range {
+        start: i64,
+        end: i64,
+    },
     Record(Vec<(String, ConstantValue)>),
     /// A struct or enum value; field names come from the constructor's shape.
     Constructed {

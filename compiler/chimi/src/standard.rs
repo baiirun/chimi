@@ -9,10 +9,11 @@ pub(crate) enum StandardModule {
     Float,
     Debug,
     Order,
+    Range,
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::Channel,
         Self::Io,
         Self::Json,
@@ -22,6 +23,7 @@ impl StandardModule {
         Self::Float,
         Self::Debug,
         Self::Order,
+        Self::Range,
     ];
 
     pub(crate) const fn path(self) -> &'static str {
@@ -35,6 +37,7 @@ impl StandardModule {
             Self::Float => "std/float",
             Self::Debug => "std/debug",
             Self::Order => "std/order",
+            Self::Range => "std/range",
         }
     }
 
@@ -228,10 +231,16 @@ pub(crate) enum StandardFunction {
     OrderMax,
     /// `std/map.from`: a map of the `(key, value)` pairs; a later pair wins.
     MapFrom,
+    RangeStart,
+    /// The exclusive end.
+    RangeEnd,
+    /// 0 for an empty range; defects when the count exceeds `Int`.
+    RangeLength,
+    RangeContains,
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 44] = [
+    pub(crate) const ALL: [Self; 48] = [
         Self::DebugRender,
         Self::DebugRenderIndented,
         Self::IntParse,
@@ -253,6 +262,10 @@ impl StandardFunction {
         Self::OrderCompare,
         Self::OrderMin,
         Self::OrderMax,
+        Self::RangeStart,
+        Self::RangeEnd,
+        Self::RangeLength,
+        Self::RangeContains,
         Self::IoPath,
         Self::MapEmpty,
         Self::MapGet,
@@ -319,6 +332,9 @@ impl StandardFunction {
             | Self::FloatParse => Some(StandardModule::Float),
             Self::DebugRender | Self::DebugRenderIndented => Some(StandardModule::Debug),
             Self::OrderCompare | Self::OrderMin | Self::OrderMax => Some(StandardModule::Order),
+            Self::RangeStart | Self::RangeEnd | Self::RangeLength | Self::RangeContains => {
+                Some(StandardModule::Range)
+            }
             Self::ListFirst | Self::ListLength | Self::TextAppend | Self::TextEqual => None,
         }
     }
@@ -334,6 +350,10 @@ impl StandardFunction {
             Self::MapUpdate => "update",
             Self::MapMapValues => "map_values",
             Self::MapFrom => "from",
+            Self::RangeStart => "start",
+            Self::RangeEnd => "end",
+            Self::RangeLength => "length",
+            Self::RangeContains => "contains",
             Self::JsonDecode => "decode",
             Self::JsonEncode => "encode",
             Self::JsonBoolean => "boolean",

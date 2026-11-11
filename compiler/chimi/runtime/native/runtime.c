@@ -34,7 +34,7 @@ __attribute__((weak)) ChimiSchedulerOutcome chimi_scheduler_execute_with_config(
 typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
                VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER, VALUE_TASK,
                VALUE_CHANNEL_SENDER, VALUE_CHANNEL_RECEIVER,
-               VALUE_CHANNEL_COMPLETION, VALUE_TUPLE } ValueKind;
+               VALUE_CHANNEL_COMPLETION, VALUE_TUPLE, VALUE_RANGE } ValueKind;
 /* CALL_CONSTRUCTOR is a constructor with fields named as a value; calling it constructs. */
 typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC,
                CALL_CONSTRUCTOR } CallableKind;
@@ -103,6 +103,8 @@ struct ChimiValue {
     struct { RuntimeField *fields; uint32_t length; } record;
     struct { uint32_t constructor; const char *type_name; const char *variant_name;
              RuntimeField *fields; uint32_t length; } constructed;
+    /* Normalized half-open bounds: `..=` already added one to the end. */
+    struct { int64_t start; int64_t end; } range;
     ChimiCallable *callable;
     MapNode *map;
     const char *json_number;
@@ -840,7 +842,8 @@ static void mark_children(void *pointer) {
         case VALUE_VOID:
         case VALUE_INTEGER:
         case VALUE_FLOAT:
-        case VALUE_BOOLEAN: break;
+        case VALUE_BOOLEAN:
+        case VALUE_RANGE: break;
       }
       break;
     }
@@ -1154,7 +1157,8 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
         case VALUE_VOID:
         case VALUE_INTEGER:
         case VALUE_FLOAT:
-        case VALUE_BOOLEAN: break;
+        case VALUE_BOOLEAN:
+        case VALUE_RANGE: break;
       }
       break;
     }
@@ -1360,6 +1364,9 @@ static void json_value(FILE *output, const ChimiValue *value) {
         if (i) fputc(',', output); json_value(output, list_get(value, i));
       } fputc(']', output); break;
     case VALUE_RECORD: json_fields(output, value->as.record.fields, value->as.record.length); break;
+    case VALUE_RANGE:
+      fprintf(output, "{\"range\":{\"start\":%" PRId64 ",\"end\":%" PRId64 "}}",
+              value->as.range.start, value->as.range.end); break;
     case VALUE_TUPLE:
       fputs("{\"tuple\":[", output); for (uint32_t i = 0; i < value->as.record.length; ++i) {
         if (i) fputc(',', output); json_value(output, value->as.record.fields[i].value);
@@ -1437,6 +1444,9 @@ static ChimiControl *finish_node(ChimiRuntime *runtime, uint32_t node, uint64_t 
 }
 
 static ChimiValue *integer_value(int64_t raw) { ChimiValue *v = new_value(VALUE_INTEGER); v->as.integer = raw; return v; }
+static ChimiValue *range_value(int64_t start, int64_t end) {
+  ChimiValue *v = new_value(VALUE_RANGE); v->as.range.start = start; v->as.range.end = end; return v;
+}
 static ChimiValue *void_value(void) { return new_value(VALUE_VOID); }
 static char *copy_text(const char *raw) {
   size_t length = strlen(raw);
@@ -1753,6 +1763,7 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
     case VALUE_FLOAT:
     case VALUE_TEXT:
     case VALUE_BOOLEAN:
+    case VALUE_RANGE:
     case VALUE_JSON_NUMBER:
     case VALUE_TASK:
     case VALUE_CHANNEL_SENDER: return true;
@@ -2047,6 +2058,11 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
         free(left_fields); free(right_fields);
         break;
       }
+      /* Normalized bounds, so 0..3 == 0..=2; empty ranges keep their bounds. */
+      case VALUE_RANGE:
+        order = order_of(left->as.range.start, right->as.range.start);
+        if (order == 0) order = order_of(left->as.range.end, right->as.range.end);
+        break;
       /* Typing gives both tuples one arity; elements compare left to right. */
       case VALUE_TUPLE:
         for (uint32_t index = left->as.record.length; index-- > 0;)
@@ -2875,6 +2891,9 @@ static void debug_value(DebugRenderer *renderer, const ChimiValue *value) {
       debug_fields(renderer, "{", "}", true, value->as.record.fields, order, length, true);
       return;
     }
+    case VALUE_RANGE:
+      snprintf(scalar, sizeof(scalar), "%" PRId64 "..%" PRId64, value->as.range.start, value->as.range.end);
+      debug_text(buffer, scalar); return;
     case VALUE_TUPLE:
       debug_fields(renderer, "(", ")", false, value->as.record.fields, NULL, value->as.record.length, false);
       return;
@@ -3124,6 +3143,24 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       if (remainder != 0 && (remainder < 0) != (modulus < 0)) remainder += modulus;
       return success(integer_value(remainder));
     }
+    case CHIMI_INTRINSIC_RANGE_START:
+    case CHIMI_INTRINSIC_RANGE_END:
+    case CHIMI_INTRINSIC_RANGE_LENGTH: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_RANGE) return intrinsic_shape_defect(call_node);
+      int64_t start = arguments[0]->as.range.start, end = arguments[0]->as.range.end;
+      if (intrinsic == CHIMI_INTRINSIC_RANGE_START) return success(integer_value(start));
+      if (intrinsic == CHIMI_INTRINSIC_RANGE_END) return success(integer_value(end));
+      if (end <= start) return success(integer_value(0));
+      int64_t length;
+      if (__builtin_sub_overflow(end, start, &length))
+        return defect("Range.length overflows Int: the range holds more than the largest Int elements", call_node);
+      return success(integer_value(length));
+    }
+    case CHIMI_INTRINSIC_RANGE_CONTAINS:
+      if (argument_count != 2 || arguments[0]->kind != VALUE_RANGE || arguments[1]->kind != VALUE_INTEGER)
+        return intrinsic_shape_defect(call_node);
+      return success(boolean_value(arguments[0]->as.range.start <= arguments[1]->as.integer &&
+                                   arguments[1]->as.integer < arguments[0]->as.range.end));
     case CHIMI_INTRINSIC_FLOAT_FROM_INT:
       if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
       return success(float_value((double)arguments[0]->as.integer));
@@ -3388,6 +3425,8 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
       for (uint32_t i = 0; i < raw->length; ++i) items[i] = constant_values[ids[i]];
       return list_from_values(items, raw->length);
     }
+    case CHIMI_CONSTANT_RANGE:
+      return range_value(constant_values[ids[0]]->as.integer, constant_values[ids[1]]->as.integer);
     case CHIMI_CONSTANT_TUPLE: {
       ChimiValue *value = new_value(VALUE_TUPLE);
       value->as.record.length = raw->length;
@@ -3658,6 +3697,20 @@ NODE_WRAPPER(binary, "binary", {
     else
       result = defect("verified binary operands are not numbers", node_id);
     break;
+  }
+  if (node->a == CHIMI_BINARY_RANGE || node->a == CHIMI_BINARY_RANGE_INCLUSIVE) {
+    if (left->value->kind != VALUE_INTEGER || right->value->kind != VALUE_INTEGER) {
+      result = defect("verified range bounds are not integers", node_id); break;
+    }
+    int64_t end = right->value->as.integer;
+    if (node->a == CHIMI_BINARY_RANGE_INCLUSIVE) {
+      if (end == INT64_MAX) {
+        result = defect("the inclusive range `..=` ends at the largest Int, so its exclusive end overflows", node_id);
+        break;
+      }
+      ++end;
+    }
+    result = success(range_value(left->value->as.integer, end)); break;
   }
   int order = chimi_value_compare(left->value, right->value);
   switch (node->a) {

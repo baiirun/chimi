@@ -68,6 +68,17 @@ pub(super) fn structural_order(
                 );
                 Ordering::Equal
             }
+            // Normalized bounds, so `0..3 == 0..=2`; empty ranges keep their bounds.
+            (
+                RuntimeValue::Range {
+                    start: left_start,
+                    end: left_end,
+                },
+                RuntimeValue::Range {
+                    start: right_start,
+                    end: right_end,
+                },
+            ) => (left_start, left_end).cmp(&(right_start, right_end)),
             (RuntimeValue::Record(left), RuntimeValue::Record(right)) => {
                 // Records have no declaration order; any fixed order serves.
                 let (left, right) = (by_name(left), by_name(right));
@@ -146,6 +157,7 @@ const fn rank(value: &RuntimeValue) -> u8 {
         RuntimeValue::JsonNumber(_) => 9,
         RuntimeValue::Callable(_) => 10,
         RuntimeValue::Tuple(_) => 11,
+        RuntimeValue::Range { .. } => 12,
     }
 }
 

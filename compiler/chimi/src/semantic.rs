@@ -902,6 +902,11 @@ pub(crate) enum BinaryOperator {
     And,
     /// Short-circuit disjunction. Core lowering turns it into a `Match`, so it never reaches Core.
     Or,
+    /// `start..end`, the half-open `Range`.
+    Range,
+    /// `start..=end`, which means `start..(end + 1)` and defects when `end` is the
+    /// largest `Int`.
+    RangeInclusive,
 }
 
 #[derive(Clone, Debug)]
@@ -1751,7 +1756,8 @@ impl ProjectLowerer {
             | NodeKind::ComparisonExpression
             | NodeKind::PipelineExpression
             | NodeKind::AndExpression
-            | NodeKind::OrExpression => self.lower_binary(node, semantic_id),
+            | NodeKind::OrExpression
+            | NodeKind::RangeExpression => self.lower_binary(node, semantic_id),
             NodeKind::UsingExpression => self.lower_using(node, semantic_id),
             NodeKind::BlockExpression => {
                 let items = node
@@ -1976,6 +1982,8 @@ impl ProjectLowerer {
                     TokenKind::GreaterEqual => Some(BinaryOperator::GreaterEqual),
                     TokenKind::EqualEqual => Some(BinaryOperator::Equal),
                     TokenKind::BangEqual => Some(BinaryOperator::NotEqual),
+                    TokenKind::DotDot => Some(BinaryOperator::Range),
+                    TokenKind::DotDotEqual => Some(BinaryOperator::RangeInclusive),
                     TokenKind::Pipe => None,
                     TokenKind::And | TokenKind::AmpersandAmpersand => Some(BinaryOperator::And),
                     TokenKind::Or | TokenKind::BarBar => Some(BinaryOperator::Or),
@@ -1984,7 +1992,14 @@ impl ProjectLowerer {
                 Some(operator)
             })
             .collect::<Vec<_>>();
-        let operands = operands.collect::<Vec<_>>();
+        let mut operands = operands.collect::<Vec<_>>();
+        let mut operators = operators;
+        // A chained range was reported as `S1006`; only its first range lowers, so the
+        // chain adds no type follow-ons.
+        if node.kind() == NodeKind::RangeExpression {
+            operators.truncate(1);
+            operands.truncate(1);
+        }
         let last_operator = operators.len().saturating_sub(1);
         let start = significant_range(&first).start();
         let mut left = self.lower_expression(&first);
@@ -2799,6 +2814,7 @@ fn is_expression_kind(kind: NodeKind) -> bool {
             | NodeKind::NameReference
             | NodeKind::GroupedExpression
             | NodeKind::TupleExpression
+            | NodeKind::RangeExpression
             | NodeKind::ListExpression
             | NodeKind::RecordExpression
             | NodeKind::BlockExpression

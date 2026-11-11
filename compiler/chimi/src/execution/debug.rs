@@ -54,6 +54,9 @@ impl Renderer<'_> {
                 let parts = values.iter().map(|value| Part { label: None, value });
                 self.composite("", "[", "]", false, parts.collect());
             }
+            RuntimeValue::Range { start, end } => {
+                self.output.push_str(&format!("{start}..{end}"));
+            }
             RuntimeValue::Tuple(values) => {
                 let parts = values.iter().map(|value| Part { label: None, value });
                 self.composite("", "(", ")", false, parts.collect());
