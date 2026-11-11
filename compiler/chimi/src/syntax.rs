@@ -952,7 +952,15 @@ fn symbolic_logic_diagnostic(
 ) -> Diagnostic {
     let bytes = source.text().as_bytes();
     let touches = |byte: Option<&u8>| byte.is_some_and(|byte| !byte.is_ascii_whitespace());
-    let prefix = word != "not" && start > 0 && touches(bytes.get(start - 1));
+    // `not` is prefix, so it only needs a space where it would otherwise join
+    // a preceding word, as in `if!ready`; the binary keywords need one after
+    // any non-space neighbor.
+    let prefix = start > 0
+        && if word == "not" {
+            is_identifier_continue(bytes[start - 1])
+        } else {
+            touches(bytes.get(start - 1))
+        };
     let suffix = touches(bytes.get(end));
     let replacement = format!(
         "{}{word}{}",

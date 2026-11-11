@@ -343,13 +343,23 @@ fn boolean_operands_must_be_bool() {
 // B11: the symbolic spellings are rejected, and applying the offered edits fixes the program.
 #[test]
 fn symbolic_boolean_operators_are_rejected_with_keyword_edits() {
-    let source = "pub fn main() -> Bool {\n  let a = True\n  a&&!a || a\n}\n";
+    let source = concat!(
+        "pub fn main() -> Bool {\n",
+        "  let a = True\n",
+        "  let b = a&&!a || a\n",
+        "  let c = a and!a\n",
+        "  case b or c {\n",
+        "    v if!v -> v\n",
+        "    v -> v\n",
+        "  }\n",
+        "}\n",
+    );
     let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
         .expect("valid module path");
     let report = Compiler::type_project(vec![module]);
     let diagnostics = report.diagnostics();
     let codes = diagnostics.iter().map(|d| d.code()).collect::<Vec<_>>();
-    assert_eq!(codes, ["S1004", "S1004", "S1004"]);
+    assert_eq!(codes, ["S1004", "S1004", "S1004", "S1004", "S1004"]);
 
     let mut fixed = source.to_owned();
     let mut edits = diagnostics
@@ -363,7 +373,17 @@ fn symbolic_boolean_operators_are_rejected_with_keyword_edits() {
     }
     assert_eq!(
         fixed,
-        "pub fn main() -> Bool {\n  let a = True\n  a and not a or a\n}\n"
+        concat!(
+            "pub fn main() -> Bool {\n",
+            "  let a = True\n",
+            "  let b = a and not a or a\n",
+            "  let c = a and not a\n",
+            "  case b or c {\n",
+            "    v if not v -> v\n",
+            "    v -> v\n",
+            "  }\n",
+            "}\n",
+        )
     );
     assert!(check_codes(&fixed).is_empty());
 }
