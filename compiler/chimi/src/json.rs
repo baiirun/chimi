@@ -357,12 +357,110 @@ impl JsonParser<'_> {
 struct CanonicalNumber {
     sign: i8,
     digits: Vec<u8>,
-    exponent: i64,
+    exponent: Exponent,
 }
 
-/// Written exponents are clamped to this magnitude; two numbers that differ only
-/// beyond it compare equal. No program can build such numbers by arithmetic.
-const EXPONENT_LIMIT: i64 = 1 << 60;
+/// A signed decimal integer of any size. A written exponent may have more digits
+/// than any machine integer holds, and numbers that differ only there still
+/// differ, so the exponent is never clamped or wrapped.
+struct Exponent {
+    negative: bool,
+    /// Decimal digit values, most significant first, with no leading zeros;
+    /// empty for zero, which is never negative.
+    magnitude: Vec<u8>,
+}
+
+impl Exponent {
+    fn new(negative: bool, digits: &[u8]) -> Self {
+        let leading = digits.iter().take_while(|digit| **digit == 0).count();
+        let magnitude = digits[leading..].to_vec();
+        Exponent {
+            negative: negative && !magnitude.is_empty(),
+            magnitude,
+        }
+    }
+
+    fn from_offset(offset: i64) -> Self {
+        let digits = offset.unsigned_abs().to_string().into_bytes();
+        let digits = digits.iter().map(|digit| digit - b'0').collect::<Vec<_>>();
+        Exponent::new(offset < 0, &digits)
+    }
+
+    fn plus(&self, other: &Exponent) -> Exponent {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        if self.negative == other.negative {
+            let sum = add_magnitudes(&self.magnitude, &other.magnitude);
+            return Exponent::new(self.negative, &sum);
+        }
+        match compare_magnitudes(&self.magnitude, &other.magnitude) {
+            Equal => Exponent::new(false, &[]),
+            Greater => Exponent::new(
+                self.negative,
+                &subtract_magnitudes(&self.magnitude, &other.magnitude),
+            ),
+            Less => Exponent::new(
+                other.negative,
+                &subtract_magnitudes(&other.magnitude, &self.magnitude),
+            ),
+        }
+    }
+
+    fn compare(&self, other: &Exponent) -> std::cmp::Ordering {
+        let rank = |exponent: &Exponent| {
+            if exponent.negative {
+                -1
+            } else {
+                i8::from(!exponent.magnitude.is_empty())
+            }
+        };
+        rank(self).cmp(&rank(other)).then_with(|| {
+            let magnitude = compare_magnitudes(&self.magnitude, &other.magnitude);
+            if self.negative {
+                magnitude.reverse()
+            } else {
+                magnitude
+            }
+        })
+    }
+}
+
+fn compare_magnitudes(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+}
+
+fn add_magnitudes(left: &[u8], right: &[u8]) -> Vec<u8> {
+    let mut sum = Vec::with_capacity(left.len().max(right.len()) + 1);
+    let (mut left, mut right) = (left.iter().rev(), right.iter().rev());
+    let mut carry = 0;
+    loop {
+        let (a, b) = (left.next(), right.next());
+        if a.is_none() && b.is_none() {
+            break;
+        }
+        let total = a.copied().unwrap_or(0) + b.copied().unwrap_or(0) + carry;
+        sum.push(total % 10);
+        carry = total / 10;
+    }
+    if carry > 0 {
+        sum.push(carry);
+    }
+    sum.reverse();
+    sum
+}
+
+/// Requires: `larger` is at least `smaller`.
+fn subtract_magnitudes(larger: &[u8], smaller: &[u8]) -> Vec<u8> {
+    let mut difference = Vec::with_capacity(larger.len());
+    let mut smaller = smaller.iter().rev();
+    let mut borrow = 0;
+    for digit in larger.iter().rev() {
+        let subtrahend = smaller.next().copied().unwrap_or(0) + borrow;
+        borrow = u8::from(*digit < subtrahend);
+        difference.push(digit + 10 * borrow - subtrahend);
+    }
+    difference.reverse();
+    difference
+}
 
 fn canonical_number(text: &str) -> CanonicalNumber {
     let bytes = text.as_bytes();
@@ -375,20 +473,18 @@ fn canonical_number(text: &str) -> CanonicalNumber {
         .position(|byte| matches!(byte, b'e' | b'E'))
         .unwrap_or(rest.len());
     let (mantissa, exponent_part) = rest.split_at(mantissa_end);
-    let mut exponent: i64 = 0;
-    if let Some((_, written)) = exponent_part.split_first() {
-        let (negative_exponent, digits) = match written.split_first() {
-            Some((b'-', digits)) => (true, digits),
-            Some((b'+', digits)) => (false, digits),
-            _ => (false, written),
-        };
-        for digit in digits {
-            exponent = (exponent * 10 + i64::from(digit - b'0')).min(EXPONENT_LIMIT);
+    let written = match exponent_part.split_first() {
+        None => Exponent::new(false, &[]),
+        Some((_, written)) => {
+            let (negative_exponent, digits) = match written.split_first() {
+                Some((b'-', digits)) => (true, digits),
+                Some((b'+', digits)) => (false, digits),
+                _ => (false, written),
+            };
+            let digits = digits.iter().map(|digit| digit - b'0').collect::<Vec<_>>();
+            Exponent::new(negative_exponent, &digits)
         }
-        if negative_exponent {
-            exponent = -exponent;
-        }
-    }
+    };
     let point = mantissa
         .iter()
         .position(|byte| *byte == b'.')
@@ -407,13 +503,13 @@ fn canonical_number(text: &str) -> CanonicalNumber {
         return CanonicalNumber {
             sign: 0,
             digits,
-            exponent: 0,
+            exponent: Exponent::new(false, &[]),
         };
     }
     CanonicalNumber {
         sign: if negative { -1 } else { 1 },
         digits,
-        exponent: point as i64 - leading as i64 + exponent,
+        exponent: written.plus(&Exponent::from_offset(point as i64 - leading as i64)),
     }
 }
 
@@ -426,7 +522,7 @@ pub(crate) fn compare_numbers(left: &str, right: &str) -> std::cmp::Ordering {
     left.sign.cmp(&right.sign).then_with(|| {
         let magnitude = left
             .exponent
-            .cmp(&right.exponent)
+            .compare(&right.exponent)
             .then_with(|| left.digits.cmp(&right.digits));
         if left.sign < 0 {
             magnitude.reverse()
@@ -458,6 +554,33 @@ mod tests {
             ("1e400", "1e399", Greater),
             ("12345678901234567890123", "12345678901234567890124", Less),
             ("0.1", "0.09999999999999999999", Greater),
+            // Exponents beyond any machine integer stay exact.
+            ("1e9999999999999999999", "1", Greater),
+            ("1e9999999999999999999", "1e9999999999999999998", Greater),
+            ("1e-9999999999999999999", "1e-9999999999999999998", Less),
+            ("1e1152921504606846977", "1e1152921504606846976", Greater),
+            ("10e1152921504606846976", "1e1152921504606846977", Equal),
+            (
+                "0.01e100000000000000000002",
+                "1e100000000000000000000",
+                Equal,
+            ),
+            (
+                "-1e99999999999999999999999",
+                "-1e99999999999999999999998",
+                Less,
+            ),
+            ("1e-00000000000000000000001", "0.1", Equal),
+            ("0e99999999999999999999999", "-0", Equal),
+            ("1e9223372036854775807", "10e9223372036854775806", Equal),
+            ("1e9223372036854775808", "1e9223372036854775807", Greater),
+            (
+                "0.001e-9223372036854775807",
+                "1e-9223372036854775810",
+                Equal,
+            ),
+            ("100e9999999999999999999", "1e10000000000000000001", Equal),
+            ("0.001e10000000000000000000", "1e9999999999999999997", Equal),
         ];
         for (left, right, expected) in cases {
             assert_eq!(compare_numbers(left, right), expected, "{left} vs {right}");

@@ -1854,21 +1854,67 @@ static void compare_push(CompareStack *stack, const ChimiValue *left, const Chim
 static void compare_decide(CompareStack *stack, int decided) { compare_push(stack, NULL, NULL, decided); }
 static int order_of(int64_t left, int64_t right) { return (left > right) - (left < right); }
 
+/* A signed decimal integer of any size, as in json.rs: a written exponent may have
+   more digits than any machine integer holds and is never clamped or wrapped.
+   `digits` are values 0-9, most significant first, with no leading zeros; zero has
+   length 0 and is never negative. The buffer is owned. */
+typedef struct { bool negative; unsigned char *digits; size_t length; } DecimalExponent;
+static DecimalExponent decimal_exponent(bool negative, const unsigned char *digits, size_t length, unsigned char zero) {
+  while (length > 0 && *digits == zero) { ++digits; --length; }
+  DecimalExponent exponent = {negative && length > 0, malloc(length ? length : 1), length};
+  if (exponent.digits == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  for (size_t index = 0; index < length; ++index) exponent.digits[index] = (unsigned char)(digits[index] - zero);
+  return exponent;
+}
+static int magnitude_order(const DecimalExponent *left, const DecimalExponent *right) {
+  if (left->length != right->length) return left->length < right->length ? -1 : 1;
+  int order = left->length ? memcmp(left->digits, right->digits, left->length) : 0;
+  return (order > 0) - (order < 0);
+}
+static int decimal_exponent_order(const DecimalExponent *left, const DecimalExponent *right) {
+  int left_rank = left->negative ? -1 : left->length > 0, right_rank = right->negative ? -1 : right->length > 0;
+  if (left_rank != right_rank) return left_rank < right_rank ? -1 : 1;
+  return left->negative ? -magnitude_order(left, right) : magnitude_order(left, right);
+}
+/* left + right as a new value; neither argument is consumed. */
+static DecimalExponent decimal_exponent_sum(const DecimalExponent *left, const DecimalExponent *right) {
+  int order = magnitude_order(left, right);
+  if (left->negative != right->negative && order == 0) return decimal_exponent(false, NULL, 0, 0);
+  const DecimalExponent *larger = order >= 0 ? left : right, *smaller = order >= 0 ? right : left;
+  bool subtract = left->negative != right->negative;
+  size_t length = larger->length + 1;
+  unsigned char *result = malloc(length);
+  if (result == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  int carry = 0;
+  for (size_t place = 0; place < length; ++place) {
+    int big = place < larger->length ? larger->digits[larger->length - 1 - place] : 0;
+    int small = place < smaller->length ? smaller->digits[smaller->length - 1 - place] : 0;
+    int digit = subtract ? big - small - carry : big + small + carry;
+    carry = subtract ? digit < 0 : digit > 9;
+    result[length - 1 - place] = (unsigned char)(subtract ? digit + 10 * carry : digit - 10 * carry);
+  }
+  DecimalExponent sum = decimal_exponent(larger->negative, result, length, 0);
+  free(result);
+  return sum;
+}
+static DecimalExponent decimal_exponent_of(int64_t value) {
+  char text[24]; snprintf(text, sizeof(text), "%" PRIu64, value < 0 ? -(uint64_t)value : (uint64_t)value);
+  return decimal_exponent(value < 0, (const unsigned char *)text, strlen(text), '0');
+}
+
 /* A JSON number as sign x 0.digits x 10^exponent with no leading or trailing zeros
-   in digits; zero has sign 0. Written exponents clamp at 2^60, like json.rs. */
-typedef struct { int sign; const char *digits; size_t length; int64_t exponent; char *owned; } CanonicalNumber;
+   in digits; zero has sign 0. */
+typedef struct { int sign; const char *digits; size_t length; DecimalExponent exponent; char *owned; } CanonicalNumber;
 static CanonicalNumber canonical_number(const char *text) {
   CanonicalNumber number = {0};
   bool negative = *text == '-'; if (negative) ++text;
-  size_t mantissa = strcspn(text, "eE"); int64_t exponent = 0;
+  size_t mantissa = strcspn(text, "eE");
+  DecimalExponent exponent = decimal_exponent(false, NULL, 0, 0);
   if (text[mantissa]) {
     const char *written = text + mantissa + 1; bool negative_exponent = *written == '-';
     if (*written == '-' || *written == '+') ++written;
-    for (; *written; ++written) {
-      exponent = exponent * 10 + (*written - '0');
-      if (exponent > ((int64_t)1 << 60)) exponent = (int64_t)1 << 60;
-    }
-    if (negative_exponent) exponent = -exponent;
+    free(exponent.digits);
+    exponent = decimal_exponent(negative_exponent, (const unsigned char *)written, strlen(written), '0');
   }
   size_t point = strcspn(text, ".eE"); if (point > mantissa) point = mantissa;
   number.owned = malloc(mantissa + 1);
@@ -1878,16 +1924,19 @@ static CanonicalNumber canonical_number(const char *text) {
     if (text[index] != '.') number.owned[length++] = text[index];
   size_t leading = 0; while (leading < length && number.owned[leading] == '0') ++leading;
   while (length > leading && number.owned[length - 1] == '0') --length;
+  number.exponent = exponent;
   if (length == leading) return number;
   number.sign = negative ? -1 : 1; number.digits = number.owned + leading; number.length = length - leading;
-  number.exponent = (int64_t)point - (int64_t)leading + exponent;
+  DecimalExponent offset = decimal_exponent_of((int64_t)point - (int64_t)leading);
+  number.exponent = decimal_exponent_sum(&exponent, &offset);
+  free(exponent.digits); free(offset.digits);
   return number;
 }
 static int json_number_compare(const char *left_text, const char *right_text) {
   CanonicalNumber left = canonical_number(left_text), right = canonical_number(right_text);
   int order = order_of(left.sign, right.sign);
   if (order == 0 && left.sign != 0) {
-    order = order_of(left.exponent, right.exponent);
+    order = decimal_exponent_order(&left.exponent, &right.exponent);
     if (order == 0) {
       size_t shared = left.length < right.length ? left.length : right.length;
       int digits = memcmp(left.digits, right.digits, shared);
@@ -1895,7 +1944,7 @@ static int json_number_compare(const char *left_text, const char *right_text) {
     }
     if (left.sign < 0) order = -order;
   }
-  free(left.owned); free(right.owned);
+  free(left.owned); free(right.owned); free(left.exponent.digits); free(right.exponent.digits);
   return order;
 }
 

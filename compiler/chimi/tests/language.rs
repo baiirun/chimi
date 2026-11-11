@@ -4251,6 +4251,35 @@ fn json_values_compare_numbers_by_exact_value() {
     );
 }
 
+// E15: exponents wider than any machine integer compare exactly on both paths:
+// no overflow, no clamp, and Map keys that differ only there stay distinct.
+#[test]
+fn json_numbers_with_huge_exponents_compare_exactly() {
+    let source = concat!(
+        "import std/json as Json\n",
+        "import std/map as Map\n",
+        "pub fn main() -> List<Bool> {\n",
+        "  let keys = Map.empty()\n",
+        "    |> Map.put(Json.decode(\"1e1152921504606846977\"), 1)\n",
+        "    |> Map.put(Json.decode(\"1e1152921504606846976\"), 2)\n",
+        "    |> Map.put(Json.decode(\"10e1152921504606846976\"), 3)\n",
+        "  [\n",
+        "    Json.decode(\"1e9999999999999999999\") == Json.decode(\"1\"),\n",
+        "    Json.decode(\"1e9999999999999999999\") == Json.decode(\"1e9999999999999999998\"),\n",
+        "    Json.decode(\"1e1152921504606846977\") == Json.decode(\"1e1152921504606846976\"),\n",
+        "    Json.decode(\"10e1152921504606846976\") == Json.decode(\"1e1152921504606846977\"),\n",
+        "    Json.decode(\"1e-9999999999999999999\") == Json.decode(\"0.1e-9999999999999999998\"),\n",
+        "    Map.get(keys, Json.decode(\"1e1152921504606846977\")) == Some(3),\n",
+        "    Map.get(keys, Json.decode(\"1e1152921504606846976\")) == Some(2),\n",
+        "  ]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("json-number-huge-exponents", source),
+        "\"outcome\":\"success\",\"value\":[false,false,false,true,true,true,true]"
+    );
+}
+
 // E17: text equality is by UTF-8 bytes, with no normalization.
 #[test]
 fn text_equality_does_not_normalize() {
