@@ -2219,6 +2219,20 @@ impl ProjectLowerer {
             .filter(|child| child.kind() == NodeKind::Pattern)
             .collect::<Vec<_>>();
         let Some(first) = tokens.first() else {
+            // An interpolated text pattern is already S1101. Lowering it as a text
+            // literal keeps it from reading as a catch-all, which would add T4233.
+            if let Some(text) = direct_child(node, NodeKind::InterpolatedText) {
+                return Pattern::Literal {
+                    semantic_id,
+                    literal: PatternLiteral::Text(
+                        text.descendant_tokens()
+                            .iter()
+                            .map(SyntaxToken::text)
+                            .collect(),
+                    ),
+                    range: significant_range(&text),
+                };
+            }
             return Pattern::Wildcard { semantic_id, range };
         };
         let identifiers = tokens

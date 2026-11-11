@@ -561,6 +561,9 @@ pub fn main() -> Text {
 - An interpolation MUST contain an expression (`S1101` for `${}`). Text
   literals cannot span lines, and an interpolation MUST NOT contain a line
   break (`S1101`).
+- A text pattern is a literal and MUST NOT interpolate. `"a${x}" -> ...` in a
+  case arm is one `S1101` for the whole pattern; match the text with a binding
+  and a guard instead.
 - Interpolation never applies to `{` alone. JSON text such as
   `"{\"account\":\"a\"}"` keeps its meaning, which is why the `{name}` form
   used in one sketch was rejected.

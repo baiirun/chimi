@@ -3445,6 +3445,22 @@ fn interpolation_rejects_empty_unclosed_and_non_text_parts() {
     assert!(codes("\"sum: ${Text.append(\"a\",\n\"b\")}\"").contains(&"S1101".to_owned()));
 }
 
+// G9: a text pattern is a literal and cannot interpolate; the whole pattern is one
+// S1101, with no cascade of token or coverage errors.
+#[test]
+fn an_interpolated_text_pattern_is_one_diagnostic() {
+    let source = concat!(
+        "pub fn main() -> Int {\n",
+        "  case \"a1\" {\n",
+        "    \"a${1}b${2}\" -> 1\n",
+        "    \"a\" -> 2\n",
+        "    _ -> 0\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_eq!(check_codes(source), ["S1101"]);
+}
+
 // G9: interpolated parts evaluate left to right, so the first failing part decides
 // the failure.
 #[test]

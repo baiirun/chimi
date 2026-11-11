@@ -2504,6 +2504,19 @@ impl<'source> Parser<'source> {
                 }
             }
             TokenKind::LeftBracket => self.parse_list_pattern_elements(),
+            // Consumed whole so one diagnostic replaces a cascade of token errors.
+            TokenKind::TextStart => {
+                let start = self.current().range.start() as usize;
+                self.parse_interpolated_text();
+                let end = self.tokens[self.significant[self.position - 1]].range.end() as usize;
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Syntax,
+                    "S1101",
+                    self.source.file_id(),
+                    TextRange::new(start, end),
+                    "a text pattern cannot interpolate; bind the text and compare it in a guard",
+                ));
+            }
             _ => self.missing(TokenKind::Identifier, "pattern"),
         }
         self.finish();
