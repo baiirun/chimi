@@ -1,15 +1,13 @@
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
-use crate::ids::{
-    EffectRowId, FailureRowId, ModuleId, NeedsRowId, SemanticId, SymbolId, TextRange, TypeId,
-};
+use crate::ids::{FailureRowId, ModuleId, NeedsRowId, SemanticId, SymbolId, TextRange, TypeId};
 use crate::resolution::{
     Namespace, ProjectSymbolKind, ReferenceResolution, Resolution, ResolvedProgram, ResolvedProject,
 };
 use crate::semantic::Literal;
 use crate::semantic::{
-    BinaryOperator, EffectRowUse, FunctionSignature, ModuleBlockItem, ModuleCaseArm,
-    ModuleDeclaration, ModuleDeclarationKind, ModuleExpression, Pattern, PatternLiteral,
-    RequirementRowUse, RequirementTermUse, TypeUse, UnaryOperator,
+    BinaryOperator, FunctionSignature, ModuleBlockItem, ModuleCaseArm, ModuleDeclaration,
+    ModuleDeclarationKind, ModuleExpression, Pattern, PatternLiteral, RequirementRowUse,
+    RequirementTermUse, TypeUse, UnaryOperator,
 };
 use crate::standard::{
     StandardConstructor, StandardFunction, StandardGeneric, StandardGenericKind, StandardSymbol,
@@ -53,20 +51,6 @@ pub(crate) fn check(resolved: ResolvedProgram) -> TypedProgram {
         let Some(structure) = resolved.structure() else {
             return TypeFact::Poisoned;
         };
-
-        if function.body.field_name.text != structure.field_name.text {
-            diagnostics.push(Diagnostic::error(
-                DiagnosticStage::Type,
-                "T4002",
-                resolved.semantic.source.file_id(),
-                function.body.field_name.range,
-                format!(
-                    "struct `{}` has no field `{}`",
-                    structure.name.text, function.body.field_name.text
-                ),
-            ));
-            return TypeFact::Poisoned;
-        }
 
         let literal_value_type = match &function.body.value {
             Literal::Integer { .. } => INT_TYPE,
@@ -114,7 +98,6 @@ pub(crate) enum GenericKind {
     FailureRow,
     FailureSet,
     NeedsRow,
-    EffectRow,
     Conflicting,
 }
 
@@ -142,14 +125,20 @@ pub(crate) struct CallableContract {
     pub(crate) success: TypeId,
     pub(crate) failures: FailureRowId,
     pub(crate) needs: NeedsRowId,
-    pub(crate) effects: EffectRowId,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct FailureRow {
     pub(crate) variants: Vec<SymbolId>,
+    pub(crate) variant_arguments: Vec<FailureVariantArguments>,
     pub(crate) parameters: Vec<SymbolId>,
     pub(crate) exclusions: Vec<FailureRowExclusion>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct FailureVariantArguments {
+    pub(crate) variant: SymbolId,
+    pub(crate) arguments: Vec<TypeId>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -172,17 +161,6 @@ pub(crate) struct NeedsRow {
     pub(crate) parameters: Vec<SymbolId>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) enum Effect {
-    Io,
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct EffectRow {
-    pub(crate) effects: Vec<Effect>,
-    pub(crate) parameters: Vec<SymbolId>,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FieldShape {
     pub(crate) semantic_id: SemanticId,
@@ -201,7 +179,85 @@ pub(crate) struct ExpressionFact {
     pub(crate) success: TypeId,
     pub(crate) failures: FailureRowId,
     pub(crate) needs: NeedsRowId,
-    pub(crate) effects: EffectRowId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PropertyDerivation {
+    Always,
+    Never,
+    ValueDependent,
+}
+
+impl PropertyDerivation {
+    fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Never, _) | (_, Self::Never) => Self::Never,
+            (Self::ValueDependent, _) | (_, Self::ValueDependent) => Self::ValueDependent,
+            (Self::Always, Self::Always) => Self::Always,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CapabilityClass {
+    Ordinary,
+    Exclusive,
+    ParentLocal,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ValueProperties {
+    pub(crate) transferable: PropertyDerivation,
+    pub(crate) shareable: PropertyDerivation,
+    pub(crate) capability: CapabilityClass,
+}
+
+impl ValueProperties {
+    pub(crate) const SHAREABLE: Self = Self {
+        transferable: PropertyDerivation::Always,
+        shareable: PropertyDerivation::Always,
+        capability: CapabilityClass::Ordinary,
+    };
+
+    pub(crate) const VALUE_DEPENDENT: Self = Self {
+        transferable: PropertyDerivation::ValueDependent,
+        shareable: PropertyDerivation::ValueDependent,
+        capability: CapabilityClass::Ordinary,
+    };
+
+    pub(crate) const EXCLUSIVE: Self = Self {
+        transferable: PropertyDerivation::Always,
+        shareable: PropertyDerivation::Never,
+        capability: CapabilityClass::Exclusive,
+    };
+
+    pub(crate) const PARENT_LOCAL: Self = Self {
+        transferable: PropertyDerivation::Never,
+        shareable: PropertyDerivation::Never,
+        capability: CapabilityClass::ParentLocal,
+    };
+
+    pub(crate) const INVALID: Self = Self {
+        transferable: PropertyDerivation::Never,
+        shareable: PropertyDerivation::Never,
+        capability: CapabilityClass::Ordinary,
+    };
+
+    pub(crate) fn combine(self, other: Self) -> Self {
+        Self {
+            transferable: self.transferable.combine(other.transferable),
+            shareable: self.shareable.combine(other.shareable),
+            capability: match (self.capability, other.capability) {
+                (CapabilityClass::ParentLocal, _) | (_, CapabilityClass::ParentLocal) => {
+                    CapabilityClass::ParentLocal
+                }
+                (CapabilityClass::Exclusive, _) | (_, CapabilityClass::Exclusive) => {
+                    CapabilityClass::Exclusive
+                }
+                (CapabilityClass::Ordinary, CapabilityClass::Ordinary) => CapabilityClass::Ordinary,
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -210,11 +266,12 @@ pub(crate) struct TypedProject {
     pub(crate) types: Vec<CanonicalType>,
     pub(crate) failure_rows: Vec<FailureRow>,
     pub(crate) needs_rows: Vec<NeedsRow>,
-    pub(crate) effect_rows: Vec<EffectRow>,
     pub(crate) contracts: HashMap<SymbolId, CallableContract>,
     pub(crate) declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
+    pub(crate) pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
+    pub(crate) expression_value_properties: HashMap<(ModuleId, SemanticId), ValueProperties>,
     pub(crate) fields: HashMap<SymbolId, Vec<FieldShape>>,
     pub(crate) generic_kinds: HashMap<SymbolId, GenericKind>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -419,6 +476,172 @@ impl TypedProject {
         }
     }
 
+    pub(crate) fn value_properties(&self, id: TypeId) -> ValueProperties {
+        self.value_properties_with(id, &HashMap::new(), &mut HashSet::new())
+    }
+
+    fn value_properties_with(
+        &self,
+        id: TypeId,
+        generics: &HashMap<SymbolId, TypeId>,
+        visiting: &mut HashSet<TypeId>,
+    ) -> ValueProperties {
+        let id = self.resolve_type_id(id);
+        if !visiting.insert(id) {
+            return ValueProperties::SHAREABLE;
+        }
+        let properties = match &self.types[id.raw() as usize] {
+            CanonicalType::Named { symbol, arguments } => {
+                self.named_value_properties(*symbol, arguments, generics, visiting)
+            }
+            CanonicalType::Generic(symbol) => generics
+                .get(symbol)
+                .map_or(ValueProperties::VALUE_DEPENDENT, |bound| {
+                    self.value_properties_with(*bound, generics, visiting)
+                }),
+            CanonicalType::FailureSetValue(failures) => {
+                let row = &self.failure_rows[failures.raw() as usize];
+                let parameter_properties = if row.parameters.is_empty() {
+                    ValueProperties::SHAREABLE
+                } else {
+                    ValueProperties::VALUE_DEPENDENT
+                };
+                row.variants
+                    .iter()
+                    .fold(parameter_properties, |result, variant| {
+                        let fields = self.fields.get(variant).into_iter().flatten();
+                        fields.fold(result, |result, field| {
+                            result.combine(self.value_properties_with(
+                                field.type_id,
+                                generics,
+                                visiting,
+                            ))
+                        })
+                    })
+            }
+            CanonicalType::Function(_) | CanonicalType::PolymorphicFunction { .. } => {
+                ValueProperties::VALUE_DEPENDENT
+            }
+            CanonicalType::Record(fields) => {
+                fields
+                    .iter()
+                    .fold(ValueProperties::SHAREABLE, |result, field| {
+                        result.combine(self.value_properties_with(
+                            field.type_id,
+                            generics,
+                            visiting,
+                        ))
+                    })
+            }
+            CanonicalType::InferenceVariable(_) => ValueProperties::VALUE_DEPENDENT,
+            CanonicalType::Poison => ValueProperties::INVALID,
+        };
+        visiting.remove(&id);
+        properties
+    }
+
+    fn named_value_properties(
+        &self,
+        symbol: SymbolId,
+        arguments: &[TypeId],
+        outer_generics: &HashMap<SymbolId, TypeId>,
+        visiting: &mut HashSet<TypeId>,
+    ) -> ValueProperties {
+        match self.resolved.standard_symbol(symbol) {
+            Some(StandardSymbol::Type(StandardType::Task)) => {
+                return ValueProperties::PARENT_LOCAL;
+            }
+            Some(StandardSymbol::Type(
+                StandardType::ChannelReceiver | StandardType::ChannelCompletion,
+            )) => {
+                return ValueProperties::EXCLUSIVE;
+            }
+            Some(StandardSymbol::Type(StandardType::ChannelSender)) => {
+                return ValueProperties::SHAREABLE;
+            }
+            _ => {}
+        }
+
+        let symbol_kind = self.resolved.symbol(symbol).kind;
+        if symbol_kind == ProjectSymbolKind::Interface
+            || matches!(
+                self.resolved.standard_symbol(symbol),
+                Some(StandardSymbol::Type(
+                    StandardType::Console | StandardType::FileSystem
+                ))
+            )
+        {
+            return ValueProperties::VALUE_DEPENDENT;
+        }
+
+        let mut generics = outer_generics.clone();
+        for (parameter, argument) in self
+            .type_generic_parameters(symbol)
+            .into_iter()
+            .zip(arguments)
+        {
+            generics.insert(parameter, *argument);
+        }
+
+        let mut fields = self
+            .fields
+            .get(&symbol)
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if symbol_kind == ProjectSymbolKind::Enum {
+            for variant in self.enum_variants(symbol) {
+                fields.extend(self.fields.get(&variant).into_iter().flatten());
+            }
+        }
+        if !fields.is_empty() {
+            return fields
+                .into_iter()
+                .fold(ValueProperties::SHAREABLE, |result, field| {
+                    result.combine(self.value_properties_with(field.type_id, &generics, visiting))
+                });
+        }
+
+        if matches!(
+            self.resolved.symbol(symbol).name.as_str(),
+            "List" | "Map" | "Option"
+        ) {
+            return arguments
+                .iter()
+                .fold(ValueProperties::SHAREABLE, |result, argument| {
+                    result.combine(self.value_properties_with(*argument, &generics, visiting))
+                });
+        }
+        ValueProperties::SHAREABLE
+    }
+
+    fn type_generic_parameters(&self, owner: SymbolId) -> Vec<SymbolId> {
+        let owner = self.resolved.symbol(owner);
+        let (Some(module_id), Some(semantic_id)) = (owner.module_id, owner.semantic_id) else {
+            return Vec::new();
+        };
+        let Some(declaration) = self.resolved.semantic.modules[module_id.raw() as usize]
+            .declarations
+            .iter()
+            .find(|declaration| declaration.semantic_id == semantic_id)
+        else {
+            return Vec::new();
+        };
+        declaration
+            .generic_parameters
+            .iter()
+            .filter_map(|parameter| {
+                self.resolved.symbols.iter().find(|symbol| {
+                    symbol.module_id == Some(module_id)
+                        && symbol.semantic_id == Some(semantic_id)
+                        && symbol.kind == ProjectSymbolKind::GenericParameter
+                        && symbol.name == parameter.text
+                })
+            })
+            .map(|symbol| symbol.id)
+            .collect()
+    }
+
     fn resolve_type_id(&self, mut id: TypeId) -> TypeId {
         while let CanonicalType::InferenceVariable(variable) = self.types[id.raw() as usize] {
             let Some(bound) = self.inference_bindings.get(&variable).copied() else {
@@ -444,29 +667,7 @@ impl TypedProject {
             result.push_str(" needs ");
             result.push_str(&self.format_needs_row(needs));
         }
-        let effects = &self.effect_rows[contract.effects.raw() as usize];
-        if !effects.effects.is_empty() || !effects.parameters.is_empty() {
-            result.push_str(" effects ");
-            result.push_str(&self.format_effect_row(effects));
-        }
         result
-    }
-
-    fn format_effect_row(&self, row: &EffectRow) -> String {
-        let mut members = row
-            .parameters
-            .iter()
-            .map(|symbol| self.resolved.symbol(*symbol).name.clone())
-            .collect::<Vec<_>>();
-        members.extend(row.effects.iter().map(|effect| match effect {
-            Effect::Io => "io".to_owned(),
-        }));
-        members.sort();
-        if members.len() == 1 {
-            members.pop().expect("one member")
-        } else {
-            format!("{{ {} }}", members.join(", "))
-        }
     }
 
     fn format_failure_row(&self, row: &FailureRow) -> String {
@@ -486,15 +687,34 @@ impl TypedProject {
         for (owner, mut variants) in enum_groups {
             variants.sort_unstable();
             let all_variants = self.enum_variants(owner);
+            let owner_name = row
+                .variant_arguments
+                .iter()
+                .find(|arguments| arguments.variant == variants[0])
+                .filter(|arguments| {
+                    row.variant_arguments.iter().all(|candidate| {
+                        !variants.contains(&candidate.variant)
+                            || candidate.arguments == arguments.arguments
+                    })
+                })
+                .map(|arguments| {
+                    format!(
+                        "{}<{}>",
+                        self.resolved.symbol(owner).name,
+                        arguments
+                            .arguments
+                            .iter()
+                            .map(|argument| self.format_type(*argument))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
+                .unwrap_or_else(|| self.resolved.symbol(owner).name.clone());
             if variants == all_variants {
-                members.push(self.resolved.symbol(owner).name.clone());
+                members.push(owner_name);
             } else {
                 members.extend(variants.into_iter().map(|variant| {
-                    format!(
-                        "{}.{}",
-                        self.resolved.symbol(owner).name,
-                        self.resolved.symbol(variant).name
-                    )
+                    format!("{}.{}", owner_name, self.resolved.symbol(variant).name)
                 }));
             }
         }
@@ -566,6 +786,11 @@ impl TypedProject {
     }
 
     fn enum_for_variant(&self, variant: SymbolId) -> Option<SymbolId> {
+        if let Some(StandardSymbol::Constructor(constructor)) =
+            self.resolved.standard_symbol(variant)
+        {
+            return Some(self.resolved.standard_type(constructor.type_kind()));
+        }
         let variant = self.resolved.symbol(variant);
         let module_id = variant.module_id?;
         let variant_semantic_id = variant.semantic_id?;
@@ -591,6 +816,23 @@ impl TypedProject {
     }
 
     fn enum_variants(&self, owner: SymbolId) -> Vec<SymbolId> {
+        if let Some(StandardSymbol::Type(kind)) = self.resolved.standard_symbol(owner) {
+            let mut variants = self
+                .resolved
+                .symbols
+                .iter()
+                .filter_map(|symbol| match self.resolved.standard_symbol(symbol.id) {
+                    Some(StandardSymbol::Constructor(constructor))
+                        if constructor.type_kind() == kind =>
+                    {
+                        Some(symbol.id)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            variants.sort_unstable();
+            return variants;
+        }
         let owner = self.resolved.symbol(owner);
         let module_id = owner.module_id.expect("enum is source-backed");
         let declaration = self.resolved.semantic.modules[module_id.raw() as usize]
@@ -628,10 +870,9 @@ struct ProjectTypeChecker {
     failure_row_intern: HashMap<FailureRow, FailureRowId>,
     needs_rows: Vec<NeedsRow>,
     needs_row_intern: HashMap<NeedsRow, NeedsRowId>,
-    effect_rows: Vec<EffectRow>,
-    effect_row_intern: HashMap<EffectRow, EffectRowId>,
     contracts: HashMap<SymbolId, CallableContract>,
     declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
+    pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
     type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
     expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
     fields: HashMap<SymbolId, Vec<FieldShape>>,
@@ -639,6 +880,9 @@ struct ProjectTypeChecker {
     diagnostics: Vec<Diagnostic>,
     next_inference_variable: u32,
     inference_bindings: HashMap<u32, TypeId>,
+    /// The type every `break` of a loop must supply; it is also the loop's success type.
+    /// A loop no break targets keeps an unconstrained variable, so it fits any context.
+    loop_break_types: HashMap<(ModuleId, SemanticId), TypeId>,
 }
 
 #[derive(Clone, Debug)]
@@ -647,17 +891,11 @@ struct ValueBinding {
     need: Option<Need>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct CallSubstitution {
     values: HashMap<SymbolId, TypeId>,
     failures: HashMap<SymbolId, FailureRowId>,
     needs: HashMap<SymbolId, NeedsRowId>,
-    effects: HashMap<SymbolId, EffectRowId>,
-}
-
-struct InvocationArgument {
-    label: Option<crate::semantic::Name>,
-    fact: ExpressionFact,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -689,10 +927,9 @@ impl ProjectTypeChecker {
             failure_row_intern: HashMap::new(),
             needs_rows: Vec::new(),
             needs_row_intern: HashMap::new(),
-            effect_rows: Vec::new(),
-            effect_row_intern: HashMap::new(),
             contracts: HashMap::new(),
             declaration_types: HashMap::new(),
+            pattern_binding_types: HashMap::new(),
             type_facts: HashMap::new(),
             expression_facts: HashMap::new(),
             fields: HashMap::new(),
@@ -700,19 +937,17 @@ impl ProjectTypeChecker {
             diagnostics,
             next_inference_variable: 0,
             inference_bindings: HashMap::new(),
+            loop_break_types: HashMap::new(),
         };
         checker.intern_type(CanonicalType::Poison);
         checker.intern_failure_row(FailureRow {
             variants: Vec::new(),
+            variant_arguments: Vec::new(),
             parameters: Vec::new(),
             exclusions: Vec::new(),
         });
         checker.intern_needs_row(NeedsRow {
             entries: Vec::new(),
-            parameters: Vec::new(),
-        });
-        checker.intern_effect_row(EffectRow {
-            effects: Vec::new(),
             parameters: Vec::new(),
         });
         checker.index_standard_contracts();
@@ -724,8 +959,8 @@ impl ProjectTypeChecker {
             let kind = match generic.kind() {
                 StandardGenericKind::Value => GenericKind::Value,
                 StandardGenericKind::FailureRow => GenericKind::FailureRow,
+                StandardGenericKind::FailureSet => GenericKind::FailureSet,
                 StandardGenericKind::NeedsRow => GenericKind::NeedsRow,
-                StandardGenericKind::EffectRow => GenericKind::EffectRow,
             };
             self.generic_kinds
                 .insert(self.resolved.standard_generic(generic), kind);
@@ -735,6 +970,70 @@ impl ProjectTypeChecker {
         let int = self.builtin_type("Int");
         let bool_type = self.builtin_type("Bool");
         let void = self.builtin_type("Void");
+        let task_value = self.standard_generic_type(StandardGeneric::TaskValue);
+        let task_failures = self.standard_generic_type(StandardGeneric::TaskFailures);
+        let task_needs = self.intern_needs_row(NeedsRow {
+            entries: Vec::new(),
+            parameters: vec![self.resolved.standard_generic(StandardGeneric::TaskNeeds)],
+        });
+        let task_failure_row = self.intern_failure_row(FailureRow {
+            variants: Vec::new(),
+            variant_arguments: Vec::new(),
+            parameters: vec![
+                self.resolved
+                    .standard_generic(StandardGeneric::TaskFailures),
+            ],
+            exclusions: Vec::new(),
+        });
+        let task = self.standard_named_type(StandardType::Task, vec![task_value, task_failures]);
+        let task_thunk = self.intern_type(CanonicalType::Function(CallableContract {
+            inputs: Vec::new(),
+            success: task_value,
+            failures: task_failure_row,
+            needs: task_needs,
+        }));
+        let channel_value = self.standard_generic_type(StandardGeneric::ChannelValue);
+        let channel_sender =
+            self.standard_named_type(StandardType::ChannelSender, vec![channel_value]);
+        let channel_receiver =
+            self.standard_named_type(StandardType::ChannelReceiver, vec![channel_value]);
+        let channel_completion =
+            self.standard_named_type(StandardType::ChannelCompletion, vec![channel_value]);
+        let channel_bundle = self.intern_type(CanonicalType::Record(vec![
+            StructuralField {
+                name: "completion".to_owned(),
+                type_id: channel_completion,
+            },
+            StructuralField {
+                name: "receiver".to_owned(),
+                type_id: channel_receiver,
+            },
+            StructuralField {
+                name: "sender".to_owned(),
+                type_id: channel_sender,
+            },
+        ]));
+        let channel_receive =
+            self.standard_named_type(StandardType::ChannelReceive, vec![channel_value]);
+        let channel_send_variants = [
+            StandardConstructor::ChannelSendClosed,
+            StandardConstructor::ChannelSendAborted,
+        ]
+        .map(|constructor| self.standard_constructor_symbol(constructor));
+        let channel_send_failures = self.intern_failure_row(FailureRow {
+            variants: channel_send_variants.to_vec(),
+            variant_arguments: channel_send_variants
+                .into_iter()
+                .map(|variant| FailureVariantArguments {
+                    variant,
+                    arguments: vec![channel_value],
+                })
+                .collect(),
+            parameters: Vec::new(),
+            exclusions: Vec::new(),
+        });
+        let channel_receive_failures =
+            self.standard_failure_row(&[StandardConstructor::ChannelAborted]);
         let path = self.standard_named_type(StandardType::Path, Vec::new());
         let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
         let number = self.standard_named_type(StandardType::JsonNumber, Vec::new());
@@ -744,11 +1043,6 @@ impl ProjectTypeChecker {
             StandardConstructor::NumberOutOfRange,
         ]);
         let console_failure = self.standard_failure_row(&[StandardConstructor::ConsoleWriteFailed]);
-        let io_effect = self.intern_effect_row(EffectRow {
-            effects: vec![Effect::Io],
-            parameters: Vec::new(),
-        });
-
         let map_contracts = [
             (
                 StandardFunction::MapEmpty,
@@ -760,7 +1054,6 @@ impl ProjectTypeChecker {
                     ),
                     failures: FailureRowId::new(0),
                     needs: NeedsRowId::new(0),
-                    effects: EffectRowId::new(0),
                 },
             ),
             (StandardFunction::MapGet, self.standard_map_get_contract()),
@@ -778,12 +1071,85 @@ impl ProjectTypeChecker {
             let symbol = self.standard_function_symbol(function);
             self.contracts.insert(symbol, contract);
         }
+        for (function, contract) in [
+            (
+                StandardFunction::TaskStart,
+                CallableContract {
+                    inputs: vec![task_thunk],
+                    success: task,
+                    failures: FailureRowId::new(0),
+                    needs: task_needs,
+                },
+            ),
+            (
+                StandardFunction::TaskResult,
+                CallableContract {
+                    inputs: vec![task],
+                    success: task_value,
+                    failures: task_failure_row,
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::TaskCancel,
+                CallableContract {
+                    inputs: vec![task],
+                    success: void,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::ChannelBounded,
+                CallableContract {
+                    inputs: vec![int],
+                    success: channel_bundle,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::ChannelSend,
+                CallableContract {
+                    inputs: vec![channel_sender, channel_value],
+                    success: void,
+                    failures: channel_send_failures,
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::ChannelReceive,
+                CallableContract {
+                    inputs: vec![channel_receiver],
+                    success: channel_receive,
+                    failures: channel_receive_failures,
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::ChannelClose,
+                CallableContract {
+                    inputs: vec![channel_completion],
+                    success: void,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::ChannelAbort,
+                CallableContract {
+                    inputs: vec![channel_receiver],
+                    success: void,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+        ] {
+            let symbol = self.standard_function_symbol(function);
+            self.contracts.insert(symbol, contract);
+        }
 
-        let pure = (
-            FailureRowId::new(0),
-            NeedsRowId::new(0),
-            EffectRowId::new(0),
-        );
+        let pure = (FailureRowId::new(0), NeedsRowId::new(0));
         let json_contracts = [
             (
                 StandardFunction::JsonDecode,
@@ -828,7 +1194,6 @@ impl ProjectTypeChecker {
                     success,
                     failures,
                     needs: pure.1,
-                    effects: pure.2,
                 },
             );
         }
@@ -840,7 +1205,6 @@ impl ProjectTypeChecker {
                 success: text,
                 failures: pure.0,
                 needs: pure.1,
-                effects: pure.2,
             },
         );
         let text_equal = self.standard_function_symbol(StandardFunction::TextEqual);
@@ -851,7 +1215,6 @@ impl ProjectTypeChecker {
                 success: bool_type,
                 failures: pure.0,
                 needs: pure.1,
-                effects: pure.2,
             },
         );
         let io_path = self.standard_function_symbol(StandardFunction::IoPath);
@@ -862,7 +1225,6 @@ impl ProjectTypeChecker {
                 success: path,
                 failures: pure.0,
                 needs: pure.1,
-                effects: pure.2,
             },
         );
         let list_value = self.standard_generic_type(StandardGeneric::ListFirstValue);
@@ -876,7 +1238,6 @@ impl ProjectTypeChecker {
                 success: option,
                 failures: pure.0,
                 needs: pure.1,
-                effects: pure.2,
             },
         );
         let list_length = self.standard_function_symbol(StandardFunction::ListLength);
@@ -889,7 +1250,6 @@ impl ProjectTypeChecker {
                 success: int,
                 failures: pure.0,
                 needs: pure.1,
-                effects: pure.2,
             },
         );
 
@@ -899,7 +1259,6 @@ impl ProjectTypeChecker {
             success: void,
             failures: console_failure,
             needs: pure.1,
-            effects: io_effect,
         }));
         self.fields.insert(
             console,
@@ -920,6 +1279,7 @@ impl ProjectTypeChecker {
         let file_state = self.standard_generic_type(StandardGeneric::FileState);
         let callback_failures = self.intern_failure_row(FailureRow {
             variants: Vec::new(),
+            variant_arguments: Vec::new(),
             parameters: vec![
                 self.resolved
                     .standard_generic(StandardGeneric::FileFailures),
@@ -930,16 +1290,11 @@ impl ProjectTypeChecker {
             entries: Vec::new(),
             parameters: vec![self.resolved.standard_generic(StandardGeneric::FileNeeds)],
         });
-        let callback_effects = self.intern_effect_row(EffectRow {
-            effects: Vec::new(),
-            parameters: vec![self.resolved.standard_generic(StandardGeneric::FileEffects)],
-        });
         let callback = self.intern_type(CanonicalType::Function(CallableContract {
             inputs: vec![file_state, text],
             success: file_state,
             failures: callback_failures,
             needs: callback_needs,
-            effects: callback_effects,
         }));
         let file_failures = self.intern_failure_row(FailureRow {
             variants: vec![
@@ -949,22 +1304,18 @@ impl ProjectTypeChecker {
                 self.standard_constructor_symbol(StandardConstructor::FileRead),
                 self.standard_constructor_symbol(StandardConstructor::Utf8Invalid),
             ],
+            variant_arguments: Vec::new(),
             parameters: vec![
                 self.resolved
                     .standard_generic(StandardGeneric::FileFailures),
             ],
             exclusions: Vec::new(),
         });
-        let file_effects = self.intern_effect_row(EffectRow {
-            effects: vec![Effect::Io],
-            parameters: vec![self.resolved.standard_generic(StandardGeneric::FileEffects)],
-        });
         let file_contract = CallableContract {
             inputs: vec![path, file_state, callback],
             success: file_state,
             failures: file_failures,
             needs: callback_needs,
-            effects: file_effects,
         };
         let file_method = self.intern_type(CanonicalType::PolymorphicFunction {
             parameters: vec![
@@ -972,7 +1323,6 @@ impl ProjectTypeChecker {
                 self.resolved
                     .standard_generic(StandardGeneric::FileFailures),
                 self.resolved.standard_generic(StandardGeneric::FileNeeds),
-                self.resolved.standard_generic(StandardGeneric::FileEffects),
             ],
             contract: file_contract,
         });
@@ -1009,7 +1359,6 @@ impl ProjectTypeChecker {
                     success,
                     failures: FailureRowId::new(0),
                     needs: NeedsRowId::new(0),
-                    effects: EffectRowId::new(0),
                 },
             );
         }
@@ -1044,7 +1393,6 @@ impl ProjectTypeChecker {
             success: option,
             failures: FailureRowId::new(0),
             needs: NeedsRowId::new(0),
-            effects: EffectRowId::new(0),
         }
     }
 
@@ -1057,46 +1405,39 @@ impl ProjectTypeChecker {
             success: map,
             failures: FailureRowId::new(0),
             needs: NeedsRowId::new(0),
-            effects: EffectRowId::new(0),
         }
     }
 
     fn standard_map_transform_contract(&mut self, changes_value_type: bool) -> CallableContract {
-        let (key_generic, input_generic, output_generic, failures, needs, effects) =
-            if changes_value_type {
-                (
-                    StandardGeneric::MapValuesKey,
-                    StandardGeneric::MapValuesInput,
-                    StandardGeneric::MapValuesOutput,
-                    StandardGeneric::MapValuesFailures,
-                    StandardGeneric::MapValuesNeeds,
-                    StandardGeneric::MapValuesEffects,
-                )
-            } else {
-                (
-                    StandardGeneric::MapUpdateKey,
-                    StandardGeneric::MapUpdateValue,
-                    StandardGeneric::MapUpdateValue,
-                    StandardGeneric::MapUpdateFailures,
-                    StandardGeneric::MapUpdateNeeds,
-                    StandardGeneric::MapUpdateEffects,
-                )
-            };
+        let (key_generic, input_generic, output_generic, failures, needs) = if changes_value_type {
+            (
+                StandardGeneric::MapValuesKey,
+                StandardGeneric::MapValuesInput,
+                StandardGeneric::MapValuesOutput,
+                StandardGeneric::MapValuesFailures,
+                StandardGeneric::MapValuesNeeds,
+            )
+        } else {
+            (
+                StandardGeneric::MapUpdateKey,
+                StandardGeneric::MapUpdateValue,
+                StandardGeneric::MapUpdateValue,
+                StandardGeneric::MapUpdateFailures,
+                StandardGeneric::MapUpdateNeeds,
+            )
+        };
         let key = self.standard_generic_type(key_generic);
         let input = self.standard_generic_type(input_generic);
         let output = self.standard_generic_type(output_generic);
         let failures = self.intern_failure_row(FailureRow {
             variants: Vec::new(),
+            variant_arguments: Vec::new(),
             parameters: vec![self.resolved.standard_generic(failures)],
             exclusions: Vec::new(),
         });
         let needs = self.intern_needs_row(NeedsRow {
             entries: Vec::new(),
             parameters: vec![self.resolved.standard_generic(needs)],
-        });
-        let effects = self.intern_effect_row(EffectRow {
-            effects: Vec::new(),
-            parameters: vec![self.resolved.standard_generic(effects)],
         });
         let callback_input = if changes_value_type {
             input
@@ -1108,7 +1449,6 @@ impl ProjectTypeChecker {
             success: output,
             failures,
             needs,
-            effects,
         }));
         let input_map = self.standard_named_type(StandardType::Map, vec![key, input]);
         let output_map = self.standard_named_type(StandardType::Map, vec![key, output]);
@@ -1122,7 +1462,6 @@ impl ProjectTypeChecker {
             success: output_map,
             failures,
             needs,
-            effects,
         }
     }
 
@@ -1134,6 +1473,7 @@ impl ProjectTypeChecker {
         variants.sort_unstable();
         self.intern_failure_row(FailureRow {
             variants,
+            variant_arguments: Vec::new(),
             parameters: Vec::new(),
             exclusions: Vec::new(),
         })
@@ -1201,6 +1541,31 @@ impl ProjectTypeChecker {
                 vec![number],
                 self.standard_named_type(StandardType::NumberError, Vec::new()),
             ),
+            StandardConstructor::ChannelSendClosed | StandardConstructor::ChannelSendAborted => {
+                let value = self.standard_generic_type(StandardGeneric::ChannelValue);
+                (
+                    vec![value],
+                    self.standard_named_type(StandardType::ChannelSendError, vec![value]),
+                )
+            }
+            StandardConstructor::ChannelReceived => {
+                let value = self.standard_generic_type(StandardGeneric::ChannelValue);
+                (
+                    vec![value],
+                    self.standard_named_type(StandardType::ChannelReceive, vec![value]),
+                )
+            }
+            StandardConstructor::ChannelDrained => {
+                let value = self.standard_generic_type(StandardGeneric::ChannelValue);
+                (
+                    Vec::new(),
+                    self.standard_named_type(StandardType::ChannelReceive, vec![value]),
+                )
+            }
+            StandardConstructor::ChannelAborted => (
+                Vec::new(),
+                self.standard_named_type(StandardType::ChannelError, Vec::new()),
+            ),
         }
     }
 
@@ -1256,7 +1621,6 @@ impl ProjectTypeChecker {
         let types = previous.types.clone();
         let failure_rows = previous.failure_rows.clone();
         let needs_rows = previous.needs_rows.clone();
-        let effect_rows = previous.effect_rows.clone();
         let next_inference_variable = types
             .iter()
             .filter_map(|value| match value {
@@ -1289,13 +1653,6 @@ impl ProjectTypeChecker {
                 .map(|(index, value)| (value, NeedsRowId::new(index as u32)))
                 .collect(),
             needs_rows,
-            effect_row_intern: effect_rows
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(index, value)| (value, EffectRowId::new(index as u32)))
-                .collect(),
-            effect_rows,
             contracts: previous
                 .contracts
                 .iter()
@@ -1304,6 +1661,12 @@ impl ProjectTypeChecker {
                 .collect(),
             declaration_types: previous
                 .declaration_types
+                .iter()
+                .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
+                .map(|(key, value)| (*key, *value))
+                .collect(),
+            pattern_binding_types: previous
+                .pattern_binding_types
                 .iter()
                 .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
                 .map(|(key, value)| (*key, *value))
@@ -1349,6 +1712,7 @@ impl ProjectTypeChecker {
                 .collect(),
             next_inference_variable,
             inference_bindings: previous.inference_bindings.clone(),
+            loop_break_types: HashMap::new(),
         }
     }
 
@@ -1409,16 +1773,20 @@ impl ProjectTypeChecker {
             types: self.types,
             failure_rows: self.failure_rows,
             needs_rows: self.needs_rows,
-            effect_rows: self.effect_rows,
             contracts: self.contracts,
             declaration_types: self.declaration_types,
+            pattern_binding_types: self.pattern_binding_types,
             type_facts: self.type_facts,
             expression_facts: self.expression_facts,
+            expression_value_properties: HashMap::new(),
             fields: self.fields,
             generic_kinds: self.generic_kinds,
             diagnostics: self.diagnostics,
             inference_bindings: self.inference_bindings,
         };
+        let capability_report = crate::capability::check(&typed);
+        typed.expression_value_properties = capability_report.expression_properties;
+        typed.diagnostics.extend(capability_report.diagnostics);
         typed.validate_closed_roots();
         typed.diagnostics.sort_by_key(|diagnostic| {
             (
@@ -1495,7 +1863,6 @@ impl ProjectTypeChecker {
                             success: declaration_type,
                             failures: FailureRowId::new(0),
                             needs: NeedsRowId::new(0),
-                            effects: EffectRowId::new(0),
                         };
                         self.contracts.insert(constructor, contract.clone());
                         self.fields.insert(constructor, variant_fields);
@@ -1519,7 +1886,6 @@ impl ProjectTypeChecker {
                             success: declaration_type,
                             failures: FailureRowId::new(0),
                             needs: NeedsRowId::new(0),
-                            effects: EffectRowId::new(0),
                         };
                         self.contracts.insert(constructor, contract.clone());
                         self.fields.insert(constructor, constructor_fields);
@@ -1573,7 +1939,6 @@ impl ProjectTypeChecker {
                 inferred.failures =
                     self.union_failure_rows([inferred.failures, body_fact.failures]);
                 inferred.needs = self.union_needs_rows([inferred.needs, body_fact.needs]);
-                inferred.effects = self.union_effect_rows([inferred.effects, body_fact.effects]);
                 self.contracts.insert(function_symbol, inferred);
                 self.contracts[&function_symbol] != previous
             }
@@ -1673,13 +2038,11 @@ impl ProjectTypeChecker {
             None => self.fresh_inference_type(),
         };
         let needs = self.lower_needs_row(module_id, &signature.requirements, generics);
-        let effects = self.lower_effect_row(module_id, &signature.effects, generics);
         CallableContract {
             inputs,
             success,
             failures: FailureRowId::new(0),
             needs,
-            effects,
         }
     }
 
@@ -1708,7 +2071,6 @@ impl ProjectTypeChecker {
                 }),
                 failures: FailureRowId::new(0),
                 needs: NeedsRowId::new(0),
-                effects: EffectRowId::new(0),
             },
             ModuleExpression::Name { semantic_id, .. } => {
                 let Some(symbol) = self.resolved_value_symbol(module_id, *semantic_id) else {
@@ -1729,7 +2091,6 @@ impl ProjectTypeChecker {
                         success: binding.type_id,
                         failures: FailureRowId::new(0),
                         needs,
-                        effects: EffectRowId::new(0),
                     }
                 } else if self.is_builtin_value(symbol, "Success")
                     || self.is_builtin_value(symbol, "Failure")
@@ -1746,14 +2107,12 @@ impl ProjectTypeChecker {
                         success: self.callable_type_for_symbol(symbol, contract),
                         failures: FailureRowId::new(0),
                         needs: NeedsRowId::new(0),
-                        effects: EffectRowId::new(0),
                     }
                 } else if let Some(type_id) = self.symbol_value_type(symbol) {
                     ExpressionFact {
                         success: type_id,
                         failures: FailureRowId::new(0),
                         needs: NeedsRowId::new(0),
-                        effects: EffectRowId::new(0),
                     }
                 } else {
                     self.poison_expression_fact()
@@ -1772,7 +2131,6 @@ impl ProjectTypeChecker {
                         success: type_id,
                         failures: FailureRowId::new(0),
                         needs: NeedsRowId::new(0),
-                        effects: EffectRowId::new(0),
                     }
                 } else {
                     let receiver = self.infer_expression(module_id, receiver, generics, bindings);
@@ -1793,7 +2151,6 @@ impl ProjectTypeChecker {
                         success,
                         failures: receiver.failures,
                         needs: receiver.needs,
-                        effects: receiver.effects,
                     }
                 }
             }
@@ -1804,6 +2161,8 @@ impl ProjectTypeChecker {
                 ..
             } => {
                 let callee_symbol = self.expression_value_symbol(module_id, callee);
+                let labelled_order =
+                    self.reject_argument_labels(module_id, callee, callee_symbol, arguments);
                 if callee_symbol.is_some_and(|symbol| {
                     self.is_builtin_value(symbol, "Success")
                         || self.is_builtin_value(symbol, "Failure")
@@ -1818,18 +2177,18 @@ impl ProjectTypeChecker {
                     )
                 } else {
                     let callee = self.infer_expression(module_id, callee, generics, bindings);
-                    let argument_facts = arguments
+                    let mut argument_facts = arguments
                         .iter()
-                        .map(|argument| InvocationArgument {
-                            label: argument.label.clone(),
-                            fact: self.infer_expression(
-                                module_id,
-                                &argument.value,
-                                generics,
-                                bindings,
-                            ),
+                        .map(|argument| {
+                            self.infer_expression(module_id, &argument.value, generics, bindings)
                         })
                         .collect::<Vec<_>>();
+                    if let Some(order) = labelled_order {
+                        argument_facts = order
+                            .into_iter()
+                            .map(|index| argument_facts[index])
+                            .collect();
+                    }
                     self.infer_invocation(module_id, *range, callee_symbol, callee, &argument_facts)
                 }
             }
@@ -1856,7 +2215,6 @@ impl ProjectTypeChecker {
                     success: self.builtin_type_with_arguments("List", vec![element_type]),
                     failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
                     needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
-                    effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
                 }
             }
             ModuleExpression::Record { fields, .. } => {
@@ -1887,7 +2245,6 @@ impl ProjectTypeChecker {
                     success: self.intern_type(CanonicalType::Record(structural_fields)),
                     failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
                     needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
-                    effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
                 }
             }
             ModuleExpression::Unary {
@@ -1903,7 +2260,6 @@ impl ProjectTypeChecker {
                     success: int,
                     failures: fact.failures,
                     needs: fact.needs,
-                    effects: fact.effects,
                 }
             }
             ModuleExpression::Binary {
@@ -1917,16 +2273,7 @@ impl ProjectTypeChecker {
                 let left = self.infer_expression(module_id, left, generics, bindings);
                 let right = self.infer_expression(module_id, right, generics, bindings);
                 if *operator == BinaryOperator::Pipe {
-                    self.infer_invocation(
-                        module_id,
-                        *range,
-                        transform_symbol,
-                        right,
-                        &[InvocationArgument {
-                            label: None,
-                            fact: left,
-                        }],
-                    )
+                    self.infer_invocation(module_id, *range, transform_symbol, right, &[left])
                 } else {
                     let int = self.builtin_type("Int");
                     self.unify_at(module_id, *range, left.success, int, "binary left operand");
@@ -1951,7 +2298,6 @@ impl ProjectTypeChecker {
                         },
                         failures: self.union_failure_rows([left.failures, right.failures]),
                         needs: self.union_needs_rows([left.needs, right.needs]),
-                        effects: self.union_effect_rows([left.effects, right.effects]),
                     }
                 }
             }
@@ -1972,7 +2318,6 @@ impl ProjectTypeChecker {
                     success: facts.last().map_or(TypeId::new(0), |fact| fact.success),
                     failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
                     needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
-                    effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
                 }
             }
             ModuleExpression::Block { items, .. } => {
@@ -2015,7 +2360,6 @@ impl ProjectTypeChecker {
                     success: facts.last().map_or(TypeId::new(0), |fact| fact.success),
                     failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
                     needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
-                    effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
                 }
             }
             ModuleExpression::Function {
@@ -2041,12 +2385,10 @@ impl ProjectTypeChecker {
                 contract.failures =
                     self.union_failure_rows([contract.failures, body_fact.failures]);
                 contract.needs = self.union_needs_rows([contract.needs, body_fact.needs]);
-                contract.effects = self.union_effect_rows([contract.effects, body_fact.effects]);
                 ExpressionFact {
                     success: self.intern_type(CanonicalType::Function(contract)),
                     failures: FailureRowId::new(0),
                     needs: NeedsRowId::new(0),
-                    effects: EffectRowId::new(0),
                 }
             }
             ModuleExpression::Case {
@@ -2055,6 +2397,24 @@ impl ProjectTypeChecker {
                 range,
                 ..
             } => self.infer_case(module_id, subjects, arms, *range, generics, bindings),
+            ModuleExpression::Loop {
+                state_id,
+                initial,
+                body,
+                ..
+            } => self.infer_loop(module_id, *state_id, initial, body, generics, bindings),
+            ModuleExpression::Break {
+                semantic_id,
+                value,
+                range,
+            } => self.infer_break(
+                module_id,
+                *semantic_id,
+                value.as_deref(),
+                *range,
+                generics,
+                bindings,
+            ),
             ModuleExpression::Empty { .. } => self.poison_expression_fact(),
         };
         self.record_expression_fact(module_id, expression, fact)
@@ -2076,7 +2436,6 @@ impl ProjectTypeChecker {
             success: TypeId::new(0),
             failures: FailureRowId::new(0),
             needs: NeedsRowId::new(0),
-            effects: EffectRowId::new(0),
         }
     }
 
@@ -2093,13 +2452,13 @@ impl ProjectTypeChecker {
             .iter()
             .map(|argument| self.infer_expression(module_id, &argument.value, generics, bindings))
             .collect::<Vec<_>>();
-        if arguments.len() != 1 || arguments.iter().any(|argument| argument.label.is_some()) {
+        if arguments.len() != 1 {
             self.type_error_range(
                 module_id,
                 "T4221",
                 range,
                 format!(
-                    "{} expects exactly one unlabeled value",
+                    "{} expects exactly one value",
                     self.resolved.symbol(constructor).name
                 ),
             );
@@ -2113,7 +2472,6 @@ impl ProjectTypeChecker {
                 success: argument.success,
                 failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
                 needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
-                effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
             };
         }
 
@@ -2142,7 +2500,6 @@ impl ProjectTypeChecker {
                     .chain(std::iter::once(constructed_failure)),
             ),
             needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
-            effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
         }
     }
 
@@ -2167,25 +2524,52 @@ impl ProjectTypeChecker {
         if let Some(symbol) = constructed
             && self.is_enum_constructor(symbol)
         {
+            let type_id = self.resolve_inference_type(type_id);
+            let variant_arguments = match self.types[type_id.raw() as usize].clone() {
+                CanonicalType::Named { arguments, .. } if !arguments.is_empty() => {
+                    vec![FailureVariantArguments {
+                        variant: symbol,
+                        arguments,
+                    }]
+                }
+                _ => Vec::new(),
+            };
             return Some(self.intern_failure_row(FailureRow {
                 variants: vec![symbol],
+                variant_arguments,
                 parameters: Vec::new(),
                 exclusions: Vec::new(),
             }));
         }
         let type_id = self.resolve_inference_type(type_id);
         match self.types[type_id.raw() as usize].clone() {
-            CanonicalType::Named { symbol, .. }
+            CanonicalType::Named { symbol, arguments }
                 if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Enum
                     || matches!(
                         self.resolved.standard_symbol(symbol),
                         Some(StandardSymbol::Type(
-                            StandardType::DecodeError | StandardType::NumberError
+                            StandardType::DecodeError
+                                | StandardType::NumberError
+                                | StandardType::ChannelSendError
+                                | StandardType::ChannelError
                         ))
                     ) =>
             {
+                let variants = self.enum_variant_symbols(symbol);
                 Some(self.intern_failure_row(FailureRow {
-                    variants: self.enum_variant_symbols(symbol),
+                    variant_arguments: if arguments.is_empty() {
+                        Vec::new()
+                    } else {
+                        variants
+                            .iter()
+                            .copied()
+                            .map(|variant| FailureVariantArguments {
+                                variant,
+                                arguments: arguments.clone(),
+                            })
+                            .collect()
+                    },
+                    variants,
                     parameters: Vec::new(),
                     exclusions: Vec::new(),
                 }))
@@ -2195,12 +2579,98 @@ impl ProjectTypeChecker {
             {
                 Some(self.intern_failure_row(FailureRow {
                     variants: Vec::new(),
+                    variant_arguments: Vec::new(),
                     parameters: vec![parameter],
                     exclusions: Vec::new(),
                 }))
             }
             CanonicalType::FailureSetValue(failures) => Some(failures),
             _ => None,
+        }
+    }
+
+    /// Ensures: the state's type is the initial value's type; the body must produce that
+    /// type (a mismatch is reported at the body, the forgotten-update error); the loop's
+    /// success type is its break type; failures and needs are the union of initial and body.
+    fn infer_loop(
+        &mut self,
+        module_id: ModuleId,
+        loop_id: SemanticId,
+        initial: &ModuleExpression,
+        body: &ModuleExpression,
+        generics: &HashMap<String, SymbolId>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> ExpressionFact {
+        let initial_fact = self.infer_expression(module_id, initial, generics, bindings);
+        let break_type = self.fresh_inference_type();
+        self.loop_break_types
+            .insert((module_id, loop_id), break_type);
+        let mut pass_bindings = bindings.clone();
+        let state = self
+            .resolved
+            .source_symbols(module_id, loop_id)
+            .iter()
+            .copied()
+            .find(|symbol| self.resolved.symbol(*symbol).kind == ProjectSymbolKind::LocalBinding);
+        if let Some(state) = state {
+            pass_bindings.insert(
+                state,
+                ValueBinding {
+                    type_id: initial_fact.success,
+                    need: None,
+                },
+            );
+        }
+        let body_fact = self.infer_expression(module_id, body, generics, &mut pass_bindings);
+        self.unify_at(
+            module_id,
+            expression_range(body),
+            body_fact.success,
+            initial_fact.success,
+            "loop body (the next state)",
+        );
+        ExpressionFact {
+            success: break_type,
+            failures: self.union_failure_rows([initial_fact.failures, body_fact.failures]),
+            needs: self.union_needs_rows([initial_fact.needs, body_fact.needs]),
+        }
+    }
+
+    /// Ensures: the value (or `Void`) unifies with the target loop's break type; the
+    /// break's own success type is a fresh variable because control never continues.
+    fn infer_break(
+        &mut self,
+        module_id: ModuleId,
+        break_id: SemanticId,
+        value: Option<&ModuleExpression>,
+        range: TextRange,
+        generics: &HashMap<String, SymbolId>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> ExpressionFact {
+        let value_fact = match value {
+            Some(value) => self.infer_expression(module_id, value, generics, bindings),
+            None => ExpressionFact {
+                success: self.builtin_type("Void"),
+                failures: FailureRowId::new(0),
+                needs: NeedsRowId::new(0),
+            },
+        };
+        let break_type = self
+            .resolved
+            .break_target(module_id, break_id)
+            .and_then(|loop_id| self.loop_break_types.get(&(module_id, loop_id)).copied());
+        if let Some(break_type) = break_type {
+            self.unify_at(
+                module_id,
+                range,
+                value_fact.success,
+                break_type,
+                "break value",
+            );
+        }
+        ExpressionFact {
+            success: self.fresh_inference_type(),
+            ..value_fact
         }
     }
 
@@ -2317,7 +2787,6 @@ impl ProjectTypeChecker {
             success: success.unwrap_or(TypeId::new(0)),
             failures: self.union_failure_rows(facts.iter().map(|fact| fact.failures)),
             needs: self.union_needs_rows(facts.iter().map(|fact| fact.needs)),
-            effects: self.union_effect_rows(facts.iter().map(|fact| fact.effects)),
         }
     }
 
@@ -2354,6 +2823,8 @@ impl ProjectTypeChecker {
             };
         }
         if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
+            self.pattern_binding_types
+                .insert((module_id, pattern.semantic_id), expected);
             bindings.insert(
                 binding,
                 ValueBinding {
@@ -2432,6 +2903,24 @@ impl ProjectTypeChecker {
             if !self.failure_row_may_contain(failures, constructor) {
                 return None;
             }
+            if let Some(arguments) = self.failure_rows[failures.raw() as usize]
+                .variant_arguments
+                .iter()
+                .find(|arguments| arguments.variant == constructor)
+                .cloned()
+            {
+                let parameters = self
+                    .resolved
+                    .standard_callable_parameters(constructor)
+                    .iter()
+                    .copied()
+                    .filter(|parameter| {
+                        self.generic_kinds.get(parameter) == Some(&GenericKind::Value)
+                    });
+                substitution
+                    .values
+                    .extend(parameters.zip(arguments.arguments));
+            }
             return Some(
                 contract
                     .inputs
@@ -2487,15 +2976,13 @@ impl ProjectTypeChecker {
         let boolean = self.builtin_type("Bool");
         if !self.unify(fact.success, boolean) {
             self.type_error_range(module_id, "T4234", range, "case guard must produce Bool");
-        } else if !self.failure_row_is_empty(fact.failures)
-            || !self.needs_row_is_empty(fact.needs)
-            || !self.effect_row_is_empty(fact.effects)
+        } else if !self.failure_row_is_empty(fact.failures) || !self.needs_row_is_empty(fact.needs)
         {
             self.type_error_range(
                 module_id,
                 "T4234",
                 range,
-                "case guards must be pure and cannot expose failures, dependencies, or effects",
+                "case guards cannot expose failures or dependencies",
             );
         }
         fact
@@ -2608,6 +3095,9 @@ impl ProjectTypeChecker {
                     | StandardType::JsonValue
                     | StandardType::DecodeError
                     | StandardType::NumberError
+                    | StandardType::ChannelSendError
+                    | StandardType::ChannelReceive
+                    | StandardType::ChannelError
             ))
         );
         if symbol_kind != ProjectSymbolKind::Enum && !standard_enum {
@@ -2783,9 +3273,6 @@ impl ProjectTypeChecker {
             needs: self.union_needs_rows(
                 std::iter::once(subject.needs).chain(arm_facts.iter().map(|fact| fact.needs)),
             ),
-            effects: self.union_effect_rows(
-                std::iter::once(subject.effects).chain(arm_facts.iter().map(|fact| fact.effects)),
-            ),
         }
     }
 
@@ -2893,6 +3380,8 @@ impl ProjectTypeChecker {
             return;
         };
         if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
+            self.pattern_binding_types
+                .insert((module_id, pattern.semantic_id), expected);
             bindings.insert(
                 binding,
                 ValueBinding {
@@ -2978,17 +3467,32 @@ impl ProjectTypeChecker {
     fn failure_row_for_type(&mut self, type_id: TypeId) -> Option<FailureRowId> {
         let type_id = self.resolve_inference_type(type_id);
         match self.types[type_id.raw() as usize].clone() {
-            CanonicalType::Named { symbol, .. }
+            CanonicalType::Named { symbol, arguments }
                 if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Enum
                     || matches!(
                         self.resolved.standard_symbol(symbol),
                         Some(StandardSymbol::Type(
-                            StandardType::DecodeError | StandardType::NumberError
+                            StandardType::DecodeError
+                                | StandardType::NumberError
+                                | StandardType::ChannelSendError
+                                | StandardType::ChannelError
                         ))
                     ) =>
             {
                 let variants = self.enum_variant_symbols(symbol);
                 Some(self.intern_failure_row(FailureRow {
+                    variant_arguments: if arguments.is_empty() {
+                        Vec::new()
+                    } else {
+                        variants
+                            .iter()
+                            .copied()
+                            .map(|variant| FailureVariantArguments {
+                                variant,
+                                arguments: arguments.clone(),
+                            })
+                            .collect()
+                    },
                     variants,
                     parameters: Vec::new(),
                     exclusions: Vec::new(),
@@ -2999,6 +3503,7 @@ impl ProjectTypeChecker {
             {
                 Some(self.intern_failure_row(FailureRow {
                     variants: Vec::new(),
+                    variant_arguments: Vec::new(),
                     parameters: vec![parameter],
                     exclusions: Vec::new(),
                 }))
@@ -3035,17 +3540,22 @@ impl ProjectTypeChecker {
             self.resolved.standard_symbol(*owner),
             Some(StandardSymbol::Type(_))
         ) {
-            return self
-                .types
+            let arguments = row
+                .variant_arguments
                 .iter()
-                .position(|candidate| {
-                    matches!(
-                        candidate,
-                        CanonicalType::Named { symbol, arguments }
-                            if symbol == owner && arguments.is_empty()
-                    )
-                })
-                .map(|index| TypeId::new(index as u32));
+                .find(|arguments| arguments.variant == row.variants[0])
+                .map(|arguments| arguments.arguments.clone())
+                .unwrap_or_default();
+            let consistent = row.variant_arguments.iter().all(|candidate| {
+                !row.variants.contains(&candidate.variant) || candidate.arguments == arguments
+            });
+            if consistent {
+                return Some(self.intern_type(CanonicalType::Named {
+                    symbol: *owner,
+                    arguments,
+                }));
+            }
+            return Some(self.intern_type(CanonicalType::FailureSetValue(failures)));
         }
         let owner = self.resolved.symbol(*owner);
         self.declaration_types
@@ -3063,6 +3573,8 @@ impl ProjectTypeChecker {
         let mut row = self.failure_rows[failures.raw() as usize].clone();
         row.variants
             .retain(|variant| !handled_variants.contains(variant));
+        row.variant_arguments
+            .retain(|arguments| !handled_variants.contains(&arguments.variant));
         if handles_unknown_row {
             row.parameters.clear();
             row.exclusions.clear();
@@ -3107,11 +3619,6 @@ impl ProjectTypeChecker {
     fn needs_row_is_empty(&self, needs: NeedsRowId) -> bool {
         let row = &self.needs_rows[needs.raw() as usize];
         row.entries.is_empty() && row.parameters.is_empty()
-    }
-
-    fn effect_row_is_empty(&self, effects: EffectRowId) -> bool {
-        let row = &self.effect_rows[effects.raw() as usize];
-        row.effects.is_empty() && row.parameters.is_empty()
     }
 
     fn enum_owner_for_variant(&self, variant: SymbolId) -> Option<SymbolId> {
@@ -3282,10 +3789,6 @@ impl ProjectTypeChecker {
                 std::iter::once(remaining_expression_needs)
                     .chain(provider_facts.iter().map(|(_, fact)| fact.needs)),
             ),
-            effects: self.union_effect_rows(
-                std::iter::once(expression_fact.effects)
-                    .chain(provider_facts.iter().map(|(_, fact)| fact.effects)),
-            ),
         }
     }
 
@@ -3450,9 +3953,6 @@ impl ProjectTypeChecker {
                 if !self.needs_row_is_subset(actual.needs, expected.needs) {
                     return Some("it needs dependencies outside the interface contract");
                 }
-                if !self.effect_row_is_subset(actual.effects, expected.effects) {
-                    return Some("it performs effects outside the interface contract");
-                }
                 None
             }
             _ if self.unify(actual, expected) => None,
@@ -3501,19 +4001,6 @@ impl ProjectTypeChecker {
             .all(|parameter| expected.parameters.contains(parameter))
     }
 
-    fn effect_row_is_subset(&self, actual: EffectRowId, expected: EffectRowId) -> bool {
-        let actual = &self.effect_rows[actual.raw() as usize];
-        let expected = &self.effect_rows[expected.raw() as usize];
-        actual
-            .effects
-            .iter()
-            .all(|effect| expected.effects.contains(effect))
-            && actual
-                .parameters
-                .iter()
-                .all(|parameter| expected.parameters.contains(parameter))
-    }
-
     fn lower_value_type(
         &mut self,
         module_id: ModuleId,
@@ -3553,7 +4040,6 @@ impl ProjectTypeChecker {
                 success,
                 failures,
                 requirements,
-                effects,
                 ..
             } => {
                 let inputs = inputs
@@ -3565,56 +4051,17 @@ impl ProjectTypeChecker {
                     self.lower_failure_row(module_id, failures, generics)
                 });
                 let needs = self.lower_needs_row(module_id, requirements, generics);
-                let effects = self.lower_effect_row(module_id, effects, generics);
                 self.intern_type(CanonicalType::Function(CallableContract {
                     inputs,
                     success,
                     failures,
                     needs,
-                    effects,
                 }))
             }
         };
         self.type_facts
             .insert((module_id, type_use.semantic_id()), result);
         result
-    }
-
-    fn lower_effect_row(
-        &mut self,
-        module_id: ModuleId,
-        row: &EffectRowUse,
-        generics: &HashMap<String, SymbolId>,
-    ) -> EffectRowId {
-        let mut effects = Vec::new();
-        let mut parameters = Vec::new();
-        for term in &row.terms {
-            let name = &term.name;
-            if name.text == "io" {
-                effects.push(Effect::Io);
-            } else if let Some(symbol) = generics.get(&name.text).copied() {
-                self.constrain_generic(module_id, symbol, GenericKind::EffectRow, name);
-                parameters.push(symbol);
-            } else {
-                self.type_error(
-                    module_id,
-                    "T4104",
-                    name,
-                    format!(
-                        "unknown effect `{}`; the only built-in effect is `io`",
-                        name.text
-                    ),
-                );
-            }
-        }
-        effects.sort_unstable();
-        effects.dedup();
-        parameters.sort_unstable();
-        parameters.dedup();
-        self.intern_effect_row(EffectRow {
-            effects,
-            parameters,
-        })
     }
 
     fn lower_failure_row(
@@ -3639,6 +4086,7 @@ impl ProjectTypeChecker {
             self.constrain_generic(module_id, symbol, GenericKind::FailureRow, name);
             return self.intern_failure_row(FailureRow {
                 variants: Vec::new(),
+                variant_arguments: Vec::new(),
                 parameters: vec![symbol],
                 exclusions: Vec::new(),
             });
@@ -3651,6 +4099,7 @@ impl ProjectTypeChecker {
         ) {
             return self.intern_failure_row(FailureRow {
                 variants: self.enum_variant_symbols(symbol),
+                variant_arguments: Vec::new(),
                 parameters: Vec::new(),
                 exclusions: Vec::new(),
             });
@@ -3699,6 +4148,7 @@ impl ProjectTypeChecker {
         variants.sort_unstable();
         self.intern_failure_row(FailureRow {
             variants,
+            variant_arguments: Vec::new(),
             parameters: Vec::new(),
             exclusions: Vec::new(),
         })
@@ -3827,7 +4277,7 @@ impl ProjectTypeChecker {
         range: TextRange,
         callee_symbol: Option<SymbolId>,
         callee: ExpressionFact,
-        arguments: &[InvocationArgument],
+        arguments: &[ExpressionFact],
     ) -> ExpressionFact {
         let callee_type = self.resolve_inference_type(callee.success);
         let (contract, parameters, mut substitution) = match self
@@ -3848,15 +4298,11 @@ impl ProjectTypeChecker {
                     success: TypeId::new(0),
                     failures: self.union_failure_rows(
                         std::iter::once(callee.failures)
-                            .chain(arguments.iter().map(|argument| argument.fact.failures)),
+                            .chain(arguments.iter().map(|argument| argument.failures)),
                     ),
                     needs: self.union_needs_rows(
                         std::iter::once(callee.needs)
-                            .chain(arguments.iter().map(|argument| argument.fact.needs)),
-                    ),
-                    effects: self.union_effect_rows(
-                        std::iter::once(callee.effects)
-                            .chain(arguments.iter().map(|argument| argument.fact.effects)),
+                            .chain(arguments.iter().map(|argument| argument.needs)),
                     ),
                 };
             }
@@ -3873,22 +4319,9 @@ impl ProjectTypeChecker {
                 ),
             );
         }
-        let argument_order = self.invocation_argument_order(
-            module_id,
-            range,
-            callee_symbol,
-            arguments,
-            contract.inputs.len(),
-        );
-        for (input_index, argument_index) in argument_order.into_iter().enumerate() {
-            let Some(expected) = contract.inputs.get(input_index).copied() else {
-                break;
-            };
-            let Some(argument) = arguments.get(argument_index) else {
-                continue;
-            };
+        for (argument, expected) in arguments.iter().zip(contract.inputs.iter().copied()) {
             if let Some(substitution) = &mut substitution {
-                if !self.match_call_type(argument.fact.success, expected, substitution) {
+                if !self.match_call_type(argument.success, expected, substitution) {
                     self.type_error_range(
                         module_id,
                         "T4203",
@@ -3900,65 +4333,56 @@ impl ProjectTypeChecker {
                 self.unify_at(
                     module_id,
                     range,
-                    argument.fact.success,
+                    argument.success,
                     expected,
                     "call argument",
                 );
             }
         }
-        let (success, contract_failures, contract_needs, contract_effects) =
-            if let Some(substitution) = &mut substitution {
-                if callee_symbol.is_some_and(|symbol| {
-                    matches!(
-                        self.resolved.standard_symbol(symbol),
-                        Some(StandardSymbol::Function(_) | StandardSymbol::Constructor(_))
-                    )
-                }) {
-                    for parameter in &parameters {
-                        if self.generic_kinds.get(parameter) == Some(&GenericKind::Value)
-                            && !substitution.values.contains_key(parameter)
-                        {
-                            let fresh = self.fresh_inference_type();
-                            substitution.values.insert(*parameter, fresh);
-                        }
+        let (success, contract_failures, contract_needs) = if let Some(substitution) =
+            &mut substitution
+        {
+            if callee_symbol.is_some_and(|symbol| {
+                matches!(
+                    self.resolved.standard_symbol(symbol),
+                    Some(StandardSymbol::Function(_) | StandardSymbol::Constructor(_))
+                )
+            }) {
+                for parameter in &parameters {
+                    if self.generic_kinds.get(parameter) == Some(&GenericKind::Value)
+                        && !substitution.values.contains_key(parameter)
+                    {
+                        let fresh = self.fresh_inference_type();
+                        substitution.values.insert(*parameter, fresh);
                     }
                 }
-                let unresolved = self.unresolved_call_parameters(&parameters, substitution);
-                let success = self.substitute_call_type_preserving(
-                    contract.success,
-                    substitution,
-                    &unresolved,
-                );
-                (
-                    self.generalize_callable_type(success, unresolved),
-                    self.substitute_call_failure_row(contract.failures, substitution),
-                    self.substitute_call_needs_row(contract.needs, substitution),
-                    self.substitute_call_effect_row(contract.effects, substitution),
-                )
-            } else {
-                (
-                    self.resolve_inference_type(contract.success),
-                    contract.failures,
-                    contract.needs,
-                    contract.effects,
-                )
-            };
+            }
+            let unresolved = self.unresolved_call_parameters(&parameters, substitution);
+            let success =
+                self.substitute_call_type_preserving(contract.success, substitution, &unresolved);
+            (
+                self.generalize_callable_type(success, unresolved),
+                self.substitute_call_failure_row(contract.failures, substitution),
+                self.substitute_call_needs_row(contract.needs, substitution),
+            )
+        } else {
+            (
+                self.resolve_inference_type(contract.success),
+                contract.failures,
+                contract.needs,
+            )
+        };
         ExpressionFact {
             success,
             failures: self.union_failure_rows(
                 std::iter::once(callee.failures)
-                    .chain(arguments.iter().map(|argument| argument.fact.failures))
+                    .chain(arguments.iter().map(|argument| argument.failures))
                     .chain(std::iter::once(contract_failures)),
             ),
             needs: self.union_needs_rows(
                 std::iter::once(callee.needs)
-                    .chain(arguments.iter().map(|argument| argument.fact.needs))
+                    .chain(arguments.iter().map(|argument| argument.needs))
                     .chain(std::iter::once(contract_needs)),
-            ),
-            effects: self.union_effect_rows(
-                std::iter::once(callee.effects)
-                    .chain(arguments.iter().map(|argument| argument.fact.effects))
-                    .chain(std::iter::once(contract_effects)),
             ),
         }
     }
@@ -3980,12 +4404,10 @@ impl ProjectTypeChecker {
                             && !substitution.failures.contains_key(parameter)
                     }
                     Some(GenericKind::NeedsRow) => !substitution.needs.contains_key(parameter),
-                    Some(GenericKind::EffectRow) => !substitution.effects.contains_key(parameter),
                     Some(GenericKind::Unconstrained | GenericKind::Conflicting) | None => {
                         !substitution.values.contains_key(parameter)
                             && !substitution.failures.contains_key(parameter)
                             && !substitution.needs.contains_key(parameter)
-                            && !substitution.effects.contains_key(parameter)
                     }
                 },
             )
@@ -4008,71 +4430,90 @@ impl ProjectTypeChecker {
         }
     }
 
-    fn invocation_argument_order(
+    /// Reports labelled call arguments, which Chimi does not have. When every
+    /// argument of a constructor call names a distinct declared field, the
+    /// diagnostic shows the positional rewrite and the returned order lets
+    /// checking continue as if the user had written it.
+    fn reject_argument_labels(
         &mut self,
         module_id: ModuleId,
-        range: TextRange,
+        callee: &ModuleExpression,
         callee_symbol: Option<SymbolId>,
-        arguments: &[InvocationArgument],
-        input_count: usize,
-    ) -> Vec<usize> {
-        let constructor_fields = callee_symbol.and_then(|symbol| {
-            matches!(
-                self.resolved.symbol(symbol).kind,
-                ProjectSymbolKind::StructConstructor | ProjectSymbolKind::EnumConstructor
-            )
-            .then(|| self.fields.get(&symbol).cloned())
-            .flatten()
-        });
-        let Some(fields) = constructor_fields else {
-            if arguments.iter().any(|argument| argument.label.is_some()) {
-                self.type_error_range(
-                    module_id,
-                    "T4210",
-                    range,
-                    "named arguments are reserved for nominal constructors",
-                );
-            }
-            return (0..arguments.len().min(input_count)).collect();
-        };
-        let mut order = Vec::with_capacity(fields.len());
-        for field in &fields {
-            let matches = arguments
-                .iter()
-                .enumerate()
-                .filter(|(_, argument)| {
-                    argument
-                        .label
-                        .as_ref()
-                        .is_some_and(|label| label.text == field.name)
-                })
-                .map(|(index, _)| index)
-                .collect::<Vec<_>>();
-            if matches.len() == 1 {
-                order.push(matches[0]);
-            } else {
-                self.type_error_range(
-                    module_id,
-                    "T4210",
-                    range,
-                    format!("constructor requires exactly one `{}` field", field.name),
-                );
-            }
-        }
-        if arguments.iter().any(|argument| {
-            argument
-                .label
-                .as_ref()
-                .is_none_or(|label| !fields.iter().any(|field| field.name == label.text))
-        }) {
+        arguments: &[crate::semantic::CallArgument],
+    ) -> Option<Vec<usize>> {
+        let first_label = arguments
+            .iter()
+            .find_map(|argument| argument.label.as_ref())?;
+        let fields = callee_symbol
+            .filter(|symbol| self.is_constructor_symbol(*symbol))
+            .and_then(|symbol| self.fields.get(&symbol).cloned());
+        let Some(fields) = fields else {
             self.type_error_range(
                 module_id,
                 "T4210",
-                range,
-                "constructor arguments must name declared fields",
+                first_label.range,
+                format!(
+                    "Chimi arguments are positional; remove the `{}:` label",
+                    first_label.text
+                ),
             );
-        }
+            return None;
+        };
+        let order = (arguments.len() == fields.len())
+            .then(|| {
+                fields
+                    .iter()
+                    .map(|field| {
+                        let mut matching = arguments.iter().enumerate().filter(|(_, argument)| {
+                            argument
+                                .label
+                                .as_ref()
+                                .is_some_and(|label| label.text == field.name)
+                        });
+                        match (matching.next(), matching.next()) {
+                            (Some((index, _)), None) => Some(index),
+                            _ => None,
+                        }
+                    })
+                    .collect::<Option<Vec<_>>>()
+            })
+            .flatten();
+        let source = self.resolved.semantic.modules[module_id.raw() as usize]
+            .source
+            .text();
+        let slice = |range: TextRange| &source[range.start() as usize..range.end() as usize];
+        let message = match &order {
+            Some(order) => format!(
+                "Chimi arguments are positional; write `{}({})`",
+                slice(callee.range()),
+                order
+                    .iter()
+                    .map(|index| slice(arguments[*index].value.range()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            None => format!(
+                "Chimi arguments are positional; pass `{}` fields in declaration order ({})",
+                slice(callee.range()),
+                fields
+                    .iter()
+                    .map(|field| field.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+        self.type_error_range(module_id, "T4210", first_label.range, message);
         order
+    }
+
+    fn is_constructor_symbol(&self, symbol: SymbolId) -> bool {
+        matches!(
+            self.resolved.symbol(symbol).kind,
+            ProjectSymbolKind::StructConstructor | ProjectSymbolKind::EnumConstructor
+        ) || matches!(
+            self.resolved.standard_symbol(symbol),
+            Some(StandardSymbol::Constructor(_))
+        )
     }
 
     fn symbol_value_type(&self, symbol: SymbolId) -> Option<TypeId> {
@@ -4236,7 +4677,6 @@ impl ProjectTypeChecker {
                     && self.match_call_type(actual.success, expected.success, substitution)
                     && self.match_call_failure_row(actual.failures, expected.failures, substitution)
                     && self.match_call_needs_row(actual.needs, expected.needs, substitution)
-                    && self.match_call_effect_row(actual.effects, expected.effects, substitution)
             }
             (CanonicalType::Record(actual), CanonicalType::Record(expected)) => {
                 actual.len() == expected.len()
@@ -4270,8 +4710,14 @@ impl ProjectTypeChecker {
         match expected.parameters.as_slice() {
             [] => remaining_variants.is_empty() && actual.parameters.is_empty(),
             [parameter] => {
+                let remaining_variant_arguments = actual
+                    .variant_arguments
+                    .into_iter()
+                    .filter(|arguments| remaining_variants.contains(&arguments.variant))
+                    .collect();
                 let residual = self.intern_failure_row(FailureRow {
                     variants: remaining_variants,
+                    variant_arguments: remaining_variant_arguments,
                     parameters: actual.parameters,
                     exclusions: actual.exclusions,
                 });
@@ -4318,42 +4764,6 @@ impl ProjectTypeChecker {
                     self.needs_rows_equivalent(bound, residual)
                 } else {
                     substitution.needs.insert(*parameter, residual);
-                    true
-                }
-            }
-            _ => false,
-        }
-    }
-
-    fn match_call_effect_row(
-        &mut self,
-        actual: EffectRowId,
-        expected: EffectRowId,
-        substitution: &mut CallSubstitution,
-    ) -> bool {
-        let actual = self.effect_rows[actual.raw() as usize].clone();
-        let expected = self.effect_rows[expected.raw() as usize].clone();
-        let mut remaining_effects = actual.effects;
-        for effect in &expected.effects {
-            let Some(index) = remaining_effects
-                .iter()
-                .position(|candidate| candidate == effect)
-            else {
-                return false;
-            };
-            remaining_effects.remove(index);
-        }
-        match expected.parameters.as_slice() {
-            [] => remaining_effects.is_empty() && actual.parameters.is_empty(),
-            [parameter] => {
-                let residual = self.intern_effect_row(EffectRow {
-                    effects: remaining_effects,
-                    parameters: actual.parameters,
-                });
-                if let Some(bound) = substitution.effects.get(parameter).copied() {
-                    self.effect_rows_equivalent(bound, residual)
-                } else {
-                    substitution.effects.insert(*parameter, residual);
                     true
                 }
             }
@@ -4461,7 +4871,6 @@ impl ProjectTypeChecker {
                 substitution,
                 preserved,
             ),
-            effects: self.substitute_call_effect_row(contract.effects, substitution),
         }
     }
 
@@ -4471,8 +4880,22 @@ impl ProjectTypeChecker {
         substitution: &CallSubstitution,
     ) -> FailureRowId {
         let row = self.failure_rows[row.raw() as usize].clone();
+        let mut type_substitution = (*substitution).clone();
+        let variant_arguments = row
+            .variant_arguments
+            .into_iter()
+            .map(|arguments| FailureVariantArguments {
+                variant: arguments.variant,
+                arguments: arguments
+                    .arguments
+                    .into_iter()
+                    .map(|argument| self.substitute_call_type(argument, &mut type_substitution))
+                    .collect(),
+            })
+            .collect();
         let mut rows = vec![self.intern_failure_row(FailureRow {
             variants: row.variants,
+            variant_arguments,
             parameters: Vec::new(),
             exclusions: Vec::new(),
         })];
@@ -4484,6 +4907,7 @@ impl ProjectTypeChecker {
                 .unwrap_or_else(|| {
                     self.intern_failure_row(FailureRow {
                         variants: Vec::new(),
+                        variant_arguments: Vec::new(),
                         parameters: vec![parameter],
                         exclusions: Vec::new(),
                     })
@@ -4544,33 +4968,6 @@ impl ProjectTypeChecker {
             );
         }
         self.union_needs_rows(rows)
-    }
-
-    fn substitute_call_effect_row(
-        &mut self,
-        row: EffectRowId,
-        substitution: &CallSubstitution,
-    ) -> EffectRowId {
-        let row = self.effect_rows[row.raw() as usize].clone();
-        let mut rows = vec![self.intern_effect_row(EffectRow {
-            effects: row.effects,
-            parameters: Vec::new(),
-        })];
-        for parameter in row.parameters {
-            rows.push(
-                substitution
-                    .effects
-                    .get(&parameter)
-                    .copied()
-                    .unwrap_or_else(|| {
-                        self.intern_effect_row(EffectRow {
-                            effects: Vec::new(),
-                            parameters: vec![parameter],
-                        })
-                    }),
-            );
-        }
-        self.union_effect_rows(rows)
     }
 
     fn resolve_inference_type(&self, mut id: TypeId) -> TypeId {
@@ -4671,7 +5068,6 @@ impl ProjectTypeChecker {
                     && self.unify(left.success, right.success)
                     && self.failure_rows_equivalent(left.failures, right.failures)
                     && self.needs_rows_equivalent(left.needs, right.needs)
-                    && self.effect_rows_equivalent(left.effects, right.effects)
             }
             (CanonicalType::Record(left), CanonicalType::Record(right)) => {
                 left.len() == right.len()
@@ -4698,10 +5094,6 @@ impl ProjectTypeChecker {
                         && left_need.interface == right_need.interface
                 })
             })
-    }
-
-    fn effect_rows_equivalent(&self, left: EffectRowId, right: EffectRowId) -> bool {
-        self.effect_rows[left.raw() as usize] == self.effect_rows[right.raw() as usize]
     }
 
     fn types_equivalent(&self, left: TypeId, right: TypeId) -> bool {
@@ -4771,7 +5163,6 @@ impl ProjectTypeChecker {
             && self.types_equivalent(left.success, right.success)
             && self.failure_rows_equivalent(left.failures, right.failures)
             && self.needs_rows_structurally_equivalent(left.needs, right.needs)
-            && self.effect_rows_equivalent(left.effects, right.effects)
     }
 
     fn needs_rows_structurally_equivalent(&self, left: NeedsRowId, right: NeedsRowId) -> bool {
@@ -4790,11 +5181,22 @@ impl ProjectTypeChecker {
 
     fn union_failure_rows(&mut self, rows: impl IntoIterator<Item = FailureRowId>) -> FailureRowId {
         let mut variants = Vec::new();
+        let mut variant_arguments = Vec::new();
         let mut parameters = Vec::new();
         let mut exclusions = HashMap::<SymbolId, HashSet<SymbolId>>::new();
         for row in rows {
-            let row = &self.failure_rows[row.raw() as usize];
+            let row = self.failure_rows[row.raw() as usize].clone();
             variants.extend(&row.variants);
+            variant_arguments.extend(row.variant_arguments.into_iter().map(|arguments| {
+                FailureVariantArguments {
+                    variant: arguments.variant,
+                    arguments: arguments
+                        .arguments
+                        .into_iter()
+                        .map(|argument| self.resolve_inference_type(argument))
+                        .collect(),
+                }
+            }));
             for parameter in &row.parameters {
                 parameters.push(*parameter);
                 let row_exclusions = row
@@ -4833,6 +5235,7 @@ impl ProjectTypeChecker {
         exclusions.sort_by_key(|exclusion| exclusion.parameter);
         self.intern_failure_row(FailureRow {
             variants,
+            variant_arguments,
             parameters,
             exclusions,
         })
@@ -4862,24 +5265,6 @@ impl ProjectTypeChecker {
         parameters.dedup();
         self.intern_needs_row(NeedsRow {
             entries,
-            parameters,
-        })
-    }
-
-    fn union_effect_rows(&mut self, rows: impl IntoIterator<Item = EffectRowId>) -> EffectRowId {
-        let mut effects = Vec::new();
-        let mut parameters = Vec::new();
-        for row in rows {
-            let row = &self.effect_rows[row.raw() as usize];
-            effects.extend(&row.effects);
-            parameters.extend(&row.parameters);
-        }
-        effects.sort_unstable();
-        effects.dedup();
-        parameters.sort_unstable();
-        parameters.dedup();
-        self.intern_effect_row(EffectRow {
-            effects,
             parameters,
         })
     }
@@ -4987,6 +5372,15 @@ impl ProjectTypeChecker {
     fn intern_failure_row(&mut self, mut value: FailureRow) -> FailureRowId {
         value.variants.sort_unstable();
         value.variants.dedup();
+        value
+            .variant_arguments
+            .retain(|arguments| value.variants.contains(&arguments.variant));
+        value.variant_arguments.sort_by(|left, right| {
+            left.variant
+                .cmp(&right.variant)
+                .then_with(|| left.arguments.cmp(&right.arguments))
+        });
+        value.variant_arguments.dedup();
         value.parameters.sort_unstable();
         value.parameters.dedup();
         value
@@ -5029,16 +5423,6 @@ impl ProjectTypeChecker {
         let id = NeedsRowId::new(self.needs_rows.len() as u32);
         self.needs_rows.push(value.clone());
         self.needs_row_intern.insert(value, id);
-        id
-    }
-
-    fn intern_effect_row(&mut self, value: EffectRow) -> EffectRowId {
-        if let Some(id) = self.effect_row_intern.get(&value).copied() {
-            return id;
-        }
-        let id = EffectRowId::new(self.effect_rows.len() as u32);
-        self.effect_rows.push(value.clone());
-        self.effect_row_intern.insert(value, id);
         id
     }
 

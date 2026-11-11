@@ -1,0 +1,31 @@
+import std/channel as Channel
+import std/channel.{Completion, Receiver, Receive, Sender, SendError}
+
+fn send(sender: Sender<Int>, value: Int) -> Void {
+  Channel.send(sender, value)
+}
+
+fn receive(receiver: Receiver<Int>) -> Receive<Int> {
+  Channel.receive(receiver)
+}
+
+fn close(completion: Completion<Int>) -> Void {
+  Channel.close(completion)
+}
+
+fn abort(receiver: Receiver<Int>) -> Void {
+  Channel.abort(receiver)
+}
+
+fn recover(
+  sender: Sender<Receiver<Int>>,
+  value: Receiver<Int>,
+) -> Option<Receiver<Int>> {
+  case Channel.send(sender, value) {
+    Success(_) -> None()
+    Failure(error) -> case error {
+      SendError.Closed(recovered) -> Some(recovered)
+      SendError.Aborted(recovered) -> Some(recovered)
+    }
+  }
+}

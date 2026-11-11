@@ -1,10 +1,10 @@
 //! Immutable runtime metadata encoding shared by native emission and comparison tools.
 
 use crate::executable::{
-    CoreEffect, CoreLiteral, CoreOperation, CorePattern, CoreProgram, CoreStep, CoreSymbolKind,
+    CoreLiteral, CoreOperation, CorePattern, CoreProgram, CoreStep, CoreSymbolKind,
 };
 use crate::semantic::{BinaryOperator, UnaryOperator};
-use crate::standard::StandardSymbol;
+use crate::standard::{StandardFunction, StandardSymbol};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -34,13 +34,10 @@ impl ProgramData {
         self.ids.extend(values);
         (offset, self.ids.len() as u32 - offset)
     }
-    fn named<'a>(
-        &mut self,
-        values: impl IntoIterator<Item = (Option<&'a str>, u32)>,
-    ) -> (u32, u32) {
+    fn named<'a>(&mut self, values: impl IntoIterator<Item = (&'a str, u32)>) -> (u32, u32) {
         let offset = self.named_nodes.len() as u32;
         for (name, node) in values {
-            let name = name.map_or(u32::MAX, |name| self.string(name));
+            let name = self.string(name);
             self.named_nodes.push((name, node));
         }
         (offset, self.named_nodes.len() as u32 - offset)
@@ -79,17 +76,9 @@ impl ProgramData {
 pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String {
     let mut data = ProgramData::default();
     let mut functions = Vec::new();
-    let mut function_effects = Vec::new();
     for function in &core.functions {
         let (offset, length) = data.ids(function.parameters.iter().map(|symbol| symbol.raw()));
         functions.push((function.symbol.raw(), function.body.raw(), offset, length));
-        let (effect_parameter_offset, effect_parameter_length) =
-            data.ids(function.effect_parameters.iter().map(|symbol| symbol.raw()));
-        function_effects.push((
-            u32::from(function.effects.contains(&CoreEffect::Io)),
-            effect_parameter_offset,
-            effect_parameter_length,
-        ));
     }
     let mut constructors = Vec::new();
     let mut symbols = Vec::new();
@@ -192,29 +181,17 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                 arguments,
             } => {
                 row.1 = constructor.raw();
-                (row.5, row.6) = data.named(
-                    arguments
-                        .iter()
-                        .map(|a| (a.label.as_deref(), a.value.raw())),
-                );
+                (row.5, row.6) = data.ids(arguments.iter().map(|id| id.raw()));
             }
             CoreOperation::Call { callee, arguments } => {
                 row.1 = callee.raw();
-                (row.5, row.6) = data.named(
-                    arguments
-                        .iter()
-                        .map(|a| (a.label.as_deref(), a.value.raw())),
-                );
+                (row.5, row.6) = data.ids(arguments.iter().map(|id| id.raw()));
             }
             CoreOperation::List(elements) => {
                 (row.5, row.6) = data.ids(elements.iter().map(|id| id.raw()))
             }
             CoreOperation::Record(fields) => {
-                (row.5, row.6) = data.named(
-                    fields
-                        .iter()
-                        .map(|f| (Some(f.name.as_str()), f.value.raw())),
-                )
+                (row.5, row.6) = data.named(fields.iter().map(|f| (f.name.as_str(), f.value.raw())))
             }
             CoreOperation::Unary {
                 operator: UnaryOperator::Negate,
@@ -235,11 +212,8 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                 providers,
             } => {
                 row.1 = expression.raw();
-                (row.5, row.6) = data.named(
-                    providers
-                        .iter()
-                        .map(|f| (Some(f.name.as_str()), f.value.raw())),
-                );
+                (row.5, row.6) =
+                    data.named(providers.iter().map(|f| (f.name.as_str(), f.value.raw())));
             }
             CoreOperation::Sequence(sequence) => {
                 row.5 = data.steps.len() as u32;
@@ -253,8 +227,13 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                 }
                 row.6 = data.steps.len() as u32 - row.5;
             }
-            CoreOperation::Closure { parameters, body } => {
+            CoreOperation::Closure {
+                parameters,
+                captures,
+                body,
+            } => {
                 row.1 = body.raw();
+                (row.2, row.3) = data.ids(captures.iter().map(|id| id.raw()));
                 (row.5, row.6) = data.ids(parameters.iter().map(|id| id.raw()));
             }
             CoreOperation::Match { subjects, arms } => {
@@ -276,6 +255,19 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                 }
                 row.2 = data.arms.len() as u32 - row.1;
             }
+            CoreOperation::Loop {
+                state,
+                initial,
+                body,
+            } => {
+                row.1 = state.raw();
+                row.2 = initial.raw();
+                row.3 = body.raw();
+            }
+            CoreOperation::Break { target, value } => {
+                row.1 = target.raw();
+                row.2 = value.map_or(u32::MAX, |value| value.raw());
+            }
         }
         nodes.push(row);
     }
@@ -289,12 +281,12 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         c_string(&core.computation)
     )
     .unwrap();
-    render_array(
-        &mut output,
-        "const uint32_t CHIMI_FUNCTION_EFFECTS[][3]",
-        &function_effects,
-        |r| format!("{{{}, {}, {}}}", r.0, r.1, r.2),
-    );
+    writeln!(
+        output,
+        "const uint32_t CHIMI_REQUIRES_SCHEDULER = {};",
+        u32::from(requires_scheduler(core))
+    )
+    .unwrap();
     render_array(
         &mut output,
         "const char *CHIMI_STRINGS[]",
@@ -445,6 +437,27 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
     output
 }
 
+fn requires_scheduler(core: &CoreProgram) -> bool {
+    core.nodes.iter().any(|node| {
+        let CoreOperation::Reference(symbol) = node.operation else {
+            return false;
+        };
+        matches!(
+            core.symbol(symbol).standard,
+            Some(StandardSymbol::Function(
+                StandardFunction::TaskStart
+                    | StandardFunction::TaskResult
+                    | StandardFunction::TaskCancel
+                    | StandardFunction::ChannelSend
+                    | StandardFunction::ChannelReceive
+                    | StandardFunction::ChannelClose
+                    | StandardFunction::ChannelAbort
+                    | StandardFunction::ChannelBounded
+            ))
+        )
+    })
+}
+
 const fn operation_opcode(operation: &CoreOperation) -> u8 {
     match operation {
         CoreOperation::Constant(_) => 0,
@@ -462,6 +475,8 @@ const fn operation_opcode(operation: &CoreOperation) -> u8 {
         CoreOperation::Sequence(_) => 12,
         CoreOperation::Closure { .. } => 13,
         CoreOperation::Match { .. } => 14,
+        CoreOperation::Loop { .. } => 15,
+        CoreOperation::Break { .. } => 16,
     }
 }
 

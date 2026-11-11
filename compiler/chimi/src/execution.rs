@@ -545,6 +545,12 @@ enum Control {
         node: Option<CoreNodeId>,
     },
     Cancellation,
+    /// Unwinds to the loop whose state symbol is `target`. Verified programs never let it
+    /// cross a function boundary, so it never reaches a call, task, or root outcome.
+    Break {
+        target: SymbolId,
+        value: RuntimeValue,
+    },
 }
 
 pub(crate) fn execute(core: &CoreProgram, config: ExecutionConfig) -> ExecutionReport {
@@ -738,12 +744,11 @@ impl<'core> Evaluator<'core> {
             } => {
                 let mut values = Vec::with_capacity(arguments.len());
                 for argument in arguments {
-                    let value = success_or_return!(self.eval_node(
-                        argument.value,
+                    values.push(success_or_return!(self.eval_node(
+                        argument,
                         span,
                         environment.clone()
-                    ));
-                    values.push((argument.label, value));
+                    )));
                 }
                 let symbol = self.core.symbol(constructor);
                 let shape = symbol
@@ -755,28 +760,23 @@ impl<'core> Evaluator<'core> {
                     let value = values
                         .into_iter()
                         .next()
-                        .expect("outcome constructor has one argument")
-                        .1;
+                        .expect("outcome constructor has one argument");
                     return if success {
                         Control::Success(value)
                     } else {
                         Control::Failure(value)
                     };
                 }
-                let mut fields = Vec::with_capacity(shape.fields.len());
-                for (index, field_name) in shape.fields.iter().enumerate() {
-                    let value = values
-                        .iter()
-                        .find(|(label, _)| label.as_deref() == Some(field_name))
-                        .or_else(|| values.get(index))
-                        .expect("verified constructor supplies every field")
-                        .1
-                        .clone();
-                    fields.push(RuntimeField {
+                debug_assert_eq!(values.len(), shape.fields.len());
+                let fields = shape
+                    .fields
+                    .iter()
+                    .zip(values)
+                    .map(|(field_name, value)| RuntimeField {
                         name: field_name.clone(),
                         value,
-                    });
-                }
+                    })
+                    .collect();
                 Control::Success(RuntimeValue::Constructed {
                     constructor,
                     type_name: shape.type_name,
@@ -796,7 +796,7 @@ impl<'core> Evaluator<'core> {
                 let mut values = Vec::with_capacity(arguments.len());
                 for argument in arguments {
                     values.push(success_or_return!(self.eval_node(
-                        argument.value,
+                        argument,
                         span,
                         environment.clone(),
                     )));
@@ -908,18 +908,69 @@ impl<'core> Evaluator<'core> {
                 }
                 Control::Success(last.expect("verified sequence is nonempty"))
             }
-            CoreOperation::Closure { parameters, body } => {
-                Control::Success(RuntimeValue::Callable(RuntimeCallable::Closure {
-                    parameters,
-                    body,
-                    environment,
-                    name: "closure".to_owned(),
-                }))
-            }
+            CoreOperation::Closure {
+                parameters, body, ..
+            } => Control::Success(RuntimeValue::Callable(RuntimeCallable::Closure {
+                parameters,
+                body,
+                environment,
+                name: "closure".to_owned(),
+            })),
             CoreOperation::Match { subjects, arms } => {
                 self.eval_match(node_id, span, environment, subjects, arms)
             }
+            CoreOperation::Loop {
+                state,
+                initial,
+                body,
+            } => self.eval_loop(span, environment, state, initial, body),
+            CoreOperation::Break { target, value } => {
+                self.eval_break(span, environment, target, value)
+            }
         }
+    }
+
+    /// Ensures: passes run iteratively, so host stack use is independent of the pass
+    /// count; each pass is evaluated under the loop's span, so pass operations are
+    /// siblings; a `Break` for this loop becomes `Success`, every other non-success
+    /// control propagates unchanged; cancellation is observed before each pass.
+    fn eval_loop(
+        &mut self,
+        span: u64,
+        environment: Environment,
+        state: SymbolId,
+        initial: CoreNodeId,
+        body: CoreNodeId,
+    ) -> Control {
+        let mut value = success_or_return!(self.eval_node(initial, span, environment.clone()));
+        loop {
+            if self.config.cancellation_requested {
+                return Control::Cancellation;
+            }
+            let mut pass = environment.clone();
+            pass.locals.insert(state, value);
+            match self.eval_node(body, span, pass) {
+                Control::Success(next) => value = next,
+                Control::Break { target, value } if target == state => {
+                    return Control::Success(value);
+                }
+                other => return other,
+            }
+        }
+    }
+
+    fn eval_break(
+        &mut self,
+        span: u64,
+        environment: Environment,
+        target: SymbolId,
+        value: Option<CoreNodeId>,
+    ) -> Control {
+        let value = match value {
+            Some(value) => success_or_return!(self.eval_node(value, span, environment)),
+            None => RuntimeValue::Void,
+        };
+        Control::Break { target, value }
     }
 
     fn eval_reference(&mut self, symbol: SymbolId, span: u64, environment: Environment) -> Control {
@@ -1453,6 +1504,26 @@ impl<'core> Evaluator<'core> {
                 };
                 Control::Success(RuntimeValue::Boolean(left == right))
             }
+            StandardFunction::TaskStart
+            | StandardFunction::TaskResult
+            | StandardFunction::TaskCancel => Control::Defect {
+                message: format!(
+                    "standard function {} requires the finite Task runtime",
+                    function.name()
+                ),
+                node: Some(call_node),
+            },
+            StandardFunction::ChannelSend
+            | StandardFunction::ChannelReceive
+            | StandardFunction::ChannelClose
+            | StandardFunction::ChannelAbort
+            | StandardFunction::ChannelBounded => Control::Defect {
+                message: format!(
+                    "standard function {} requires the bounded Channel runtime",
+                    function.name()
+                ),
+                node: Some(call_node),
+            },
         }
     }
 
@@ -1735,6 +1806,11 @@ impl<'core> Evaluator<'core> {
             Control::Cancellation => ExecutionOutcome::Cancellation(ExecutionCancellation {
                 reason: "requested before the next semantic operation".to_owned(),
             }),
+            Control::Break { .. } => ExecutionOutcome::Defect(ExecutionDefect {
+                message: "verified break escaped its loop".to_owned(),
+                core_node_id: None,
+                origin_id: None,
+            }),
         }
     }
 }
@@ -1903,6 +1979,8 @@ fn operation_name(operation: &CoreOperation) -> &'static str {
         CoreOperation::Sequence(_) => "sequence",
         CoreOperation::Closure { .. } => "closure",
         CoreOperation::Match { .. } => "match",
+        CoreOperation::Loop { .. } => "loop",
+        CoreOperation::Break { .. } => "break",
     }
 }
 
@@ -1912,6 +1990,7 @@ fn control_name(control: &Control) -> &'static str {
         Control::Failure(_) => "expected_failure",
         Control::Defect { .. } => "defect",
         Control::Cancellation => "cancellation",
+        Control::Break { .. } => "break",
     }
 }
 

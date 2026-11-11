@@ -1,9 +1,9 @@
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::ids::{FileId, ModuleId, SemanticId, SymbolId};
 use crate::semantic::{
-    EffectRowUse, ImportBinding, ModuleBlockItem, ModuleCaseArm, ModuleDeclarationKind,
-    ModuleExpression, Name, Pattern, RequirementRowUse, RequirementTermUse, SemanticModule,
-    SemanticProgram, SemanticProject, StructDeclaration, TypeUse,
+    ImportBinding, ModuleBlockItem, ModuleCaseArm, ModuleDeclarationKind, ModuleExpression, Name,
+    Pattern, RequirementRowUse, RequirementTermUse, SemanticModule, SemanticProgram,
+    SemanticProject, StructDeclaration, TypeUse,
 };
 use crate::standard::{
     StandardConstructor, StandardFunction, StandardGeneric, StandardModule, StandardSymbol,
@@ -238,9 +238,20 @@ pub(crate) struct ResolvedProject {
     standard_types: HashMap<StandardType, SymbolId>,
     standard_generics: HashMap<StandardGeneric, SymbolId>,
     standard_callable_parameters: HashMap<SymbolId, Vec<SymbolId>>,
+    break_targets: HashMap<(ModuleId, SemanticId), SemanticId>,
 }
 
 impl ResolvedProject {
+    /// The `state_id` of the loop a `break` leaves. `None` only for a break that
+    /// resolution rejected, so a verified root always has a target for every break.
+    pub(crate) fn break_target(
+        &self,
+        module_id: ModuleId,
+        break_id: SemanticId,
+    ) -> Option<SemanticId> {
+        self.break_targets.get(&(module_id, break_id)).copied()
+    }
+
     pub(crate) fn symbol(&self, id: SymbolId) -> &ProjectSymbol {
         self.symbols
             .get(id.raw() as usize)
@@ -346,6 +357,7 @@ struct ProjectResolver {
     standard_generics: HashMap<StandardGeneric, SymbolId>,
     standard_callable_parameters: HashMap<SymbolId, Vec<SymbolId>>,
     references: Vec<ProjectReference>,
+    break_targets: HashMap<(ModuleId, SemanticId), SemanticId>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -399,6 +411,7 @@ pub(crate) fn resolve_project(semantic: SemanticProject) -> ResolvedProject {
         standard_types: resolver.standard_types,
         standard_generics: resolver.standard_generics,
         standard_callable_parameters: resolver.standard_callable_parameters,
+        break_targets: resolver.break_targets,
     }
 }
 
@@ -421,6 +434,7 @@ impl ProjectResolver {
             standard_generics: HashMap::new(),
             standard_callable_parameters: HashMap::new(),
             references: Vec::new(),
+            break_targets: HashMap::new(),
             diagnostics: Vec::new(),
         };
         resolver.index_builtins();
@@ -546,6 +560,13 @@ impl ProjectResolver {
             (StandardType::JsonNumber, StandardModule::Json),
             (StandardType::DecodeError, StandardModule::Json),
             (StandardType::NumberError, StandardModule::Json),
+            (StandardType::ChannelSender, StandardModule::Channel),
+            (StandardType::ChannelReceiver, StandardModule::Channel),
+            (StandardType::ChannelCompletion, StandardModule::Channel),
+            (StandardType::ChannelSendError, StandardModule::Channel),
+            (StandardType::ChannelReceive, StandardModule::Channel),
+            (StandardType::ChannelError, StandardModule::Channel),
+            (StandardType::Task, StandardModule::Task),
         ] {
             let symbol = self.add_symbol(
                 None,
@@ -654,7 +675,6 @@ impl ProjectResolver {
                     StandardGeneric::MapUpdateValue,
                     StandardGeneric::MapUpdateFailures,
                     StandardGeneric::MapUpdateNeeds,
-                    StandardGeneric::MapUpdateEffects,
                 ],
             ),
             (
@@ -665,7 +685,6 @@ impl ProjectResolver {
                     StandardGeneric::MapValuesOutput,
                     StandardGeneric::MapValuesFailures,
                     StandardGeneric::MapValuesNeeds,
-                    StandardGeneric::MapValuesEffects,
                 ],
             ),
             (
@@ -675,6 +694,58 @@ impl ProjectResolver {
             (
                 self.standard_constructor_symbol(StandardConstructor::OptionNone),
                 vec![StandardGeneric::OptionValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::TaskStart),
+                vec![
+                    StandardGeneric::TaskValue,
+                    StandardGeneric::TaskFailures,
+                    StandardGeneric::TaskNeeds,
+                ],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::TaskResult),
+                vec![StandardGeneric::TaskValue, StandardGeneric::TaskFailures],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::TaskCancel),
+                vec![StandardGeneric::TaskValue, StandardGeneric::TaskFailures],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::ChannelSend),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::ChannelBounded),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::ChannelReceive),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::ChannelClose),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::ChannelAbort),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_constructor_symbol(StandardConstructor::ChannelSendClosed),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_constructor_symbol(StandardConstructor::ChannelSendAborted),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_constructor_symbol(StandardConstructor::ChannelReceived),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_constructor_symbol(StandardConstructor::ChannelDrained),
+                vec![StandardGeneric::ChannelValue],
             ),
         ] {
             self.standard_callable_parameters.insert(
@@ -1185,7 +1256,6 @@ impl ProjectResolver {
                 &generics,
                 Some(&mut scope),
             );
-            self.resolve_effect_row(module_index, &signature.effects, &generics);
         }
         if let Some(body) = &declaration.body {
             self.resolve_expression(module_index, body, &generics, &mut scope);
@@ -1209,7 +1279,6 @@ impl ProjectResolver {
                 success,
                 failures,
                 requirements,
-                effects,
                 ..
             } = type_use
             else {
@@ -1223,7 +1292,6 @@ impl ProjectResolver {
                 self.resolve_type(module_index, failures, generics);
             }
             self.resolve_requirement_row(module_index, requirements, generics, None);
-            self.resolve_effect_row(module_index, effects, generics);
             return;
         };
         if let Some(first) = path.first() {
@@ -1370,28 +1438,6 @@ impl ProjectResolver {
         }
     }
 
-    fn resolve_effect_row(
-        &mut self,
-        module_index: usize,
-        row: &EffectRowUse,
-        generics: &HashMap<String, SymbolId>,
-    ) {
-        for term in &row.terms {
-            if term.name.text == "io" {
-                continue;
-            }
-            if let Some(symbol) = generics.get(&term.name.text).copied() {
-                self.reference(
-                    module_index,
-                    term.semantic_id,
-                    Namespace::Type,
-                    &term.name,
-                    ReferenceResolution::Resolved(symbol),
-                );
-            }
-        }
-    }
-
     fn resolve_expression(
         &mut self,
         module_index: usize,
@@ -1501,6 +1547,7 @@ impl ProjectResolver {
                 signature, body, ..
             } => {
                 let mut function = Scope::child(scope);
+                function.enclosing_loop = None;
                 for parameter in &signature.parameters {
                     if let Some(type_use) = &parameter.type_use {
                         self.resolve_type(module_index, type_use, generics);
@@ -1532,7 +1579,90 @@ impl ProjectResolver {
                     self.resolve_case_arm(module_index, arm, generics, scope);
                 }
             }
+            ModuleExpression::Loop {
+                state_id,
+                state,
+                initial,
+                body,
+                ..
+            } => self.resolve_loop(
+                module_index,
+                *state_id,
+                state,
+                initial,
+                body,
+                generics,
+                scope,
+            ),
+            ModuleExpression::Break {
+                semantic_id,
+                value,
+                range,
+            } => self.resolve_break(
+                module_index,
+                *semantic_id,
+                value.as_deref(),
+                *range,
+                generics,
+                scope,
+            ),
             ModuleExpression::Empty { .. } => {}
+        }
+    }
+
+    /// Ensures: `initial` resolves in the outer scope; `state` is a `LocalBinding` defined
+    /// at `loop_id` (the loop's `state_id`) and visible only in `body`; breaks in `body`
+    /// target `loop_id`.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_loop(
+        &mut self,
+        module_index: usize,
+        loop_id: SemanticId,
+        state: &Name,
+        initial: &ModuleExpression,
+        body: &ModuleExpression,
+        generics: &HashMap<String, SymbolId>,
+        scope: &Scope,
+    ) {
+        let mut outer = Scope::child(scope);
+        self.resolve_expression(module_index, initial, generics, &mut outer);
+        let mut passes = Scope::child(scope);
+        passes.enclosing_loop = Some(loop_id);
+        self.define_local(
+            module_index,
+            loop_id,
+            state,
+            ProjectSymbolKind::LocalBinding,
+            &mut passes,
+        );
+        self.resolve_expression(module_index, body, generics, &mut passes);
+    }
+
+    /// Ensures: records the enclosing loop as this break's target, or reports
+    /// `E_BREAK_OUTSIDE_LOOP` when the break is not inside a loop of its own function.
+    fn resolve_break(
+        &mut self,
+        module_index: usize,
+        break_id: SemanticId,
+        value: Option<&ModuleExpression>,
+        range: crate::ids::TextRange,
+        generics: &HashMap<String, SymbolId>,
+        scope: &mut Scope,
+    ) {
+        if let Some(value) = value {
+            self.resolve_expression(module_index, value, generics, scope);
+        }
+        let module = &self.semantic.modules[module_index];
+        match scope.enclosing_loop {
+            Some(loop_id) => {
+                self.break_targets.insert((module.id, break_id), loop_id);
+            }
+            None => self.diagnostics.push(name_error(
+                module,
+                "E_BREAK_OUTSIDE_LOOP",
+                range,
+                "break must be inside a loop in the same function".to_owned(),
+            )),
         }
     }
 
@@ -1974,6 +2104,9 @@ impl ProjectResolver {
 struct Scope {
     parents: Vec<HashMap<String, SymbolId>>,
     values: HashMap<String, SymbolId>,
+    /// The innermost loop a `break` here would leave. Function bodies reset it, so a
+    /// break can never target a loop outside its own function.
+    enclosing_loop: Option<SemanticId>,
 }
 
 impl Scope {
@@ -1983,6 +2116,7 @@ impl Scope {
         Self {
             parents,
             values: HashMap::new(),
+            enclosing_loop: parent.enclosing_loop,
         }
     }
 

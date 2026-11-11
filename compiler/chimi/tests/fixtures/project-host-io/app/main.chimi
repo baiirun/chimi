@@ -15,7 +15,7 @@ pub fn main(arguments: List<Text>) -> Void
     files: FileSystem,
     console: Console,
   }
-  effects { io } {
+{
   case List.first(arguments) {
     Some(path) -> {
       let processed = files.process_utf8_lines(IO.path(path), Map.empty(), fn(state: Map<Text, Value>, line: Text) {

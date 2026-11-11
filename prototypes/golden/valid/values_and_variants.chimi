@@ -20,5 +20,5 @@ fn describe(state: CheckoutState) -> Text {
   }
 }
 
-let state = Ready(item_count: 2)
+let state = Ready(2)
 let description = describe(state)

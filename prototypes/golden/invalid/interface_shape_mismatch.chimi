@@ -5,7 +5,7 @@
 // EXPECT-SPAN: payment: invalid_payment
 
 let invalid_payment = {
-  charge: fn(reference: Text) { Receipt(id: reference) },
+  charge: fn(reference: Text) { Receipt(reference) },
 }
 
 pub fn main() {

@@ -9,11 +9,16 @@ use crate::resolution::{ReferenceResolution, ResolvedProject, resolve, resolve_p
 use crate::semantic;
 use crate::source::SourceSnapshot;
 use crate::syntax::ParseResult;
-use crate::typing::{GenericKind, TypedProject, check, check_project};
+use crate::typing::{
+    CapabilityClass, GenericKind, PropertyDerivation, TypedProject, ValueProperties, check,
+    check_project,
+};
 use std::sync::Arc;
 
 mod session;
-pub use session::{CompilerSession, IncrementalStatistics, IncrementalTypeReport};
+pub use session::{
+    CompilerSession, IncrementalStatistics, IncrementalTypeReport, ModuleDiagnostics,
+};
 
 #[derive(Clone, Debug)]
 pub struct ProjectSource {
@@ -194,7 +199,6 @@ pub enum GenericParameterKind {
     FailureRow,
     FailureSet,
     NeedsRow,
-    EffectRow,
     Conflicting,
 }
 
@@ -203,12 +207,32 @@ pub struct TypeArenaStats {
     pub types: usize,
     pub failure_rows: usize,
     pub needs_rows: usize,
-    pub effect_rows: usize,
     pub callable_contracts: usize,
     pub type_facts: usize,
     pub expression_facts: usize,
     pub declaration_types: usize,
     pub field_shapes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValuePropertyStatus {
+    Always,
+    Never,
+    ValueDependent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValueCapabilityClass {
+    Ordinary,
+    Exclusive,
+    ParentLocal,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValuePropertyReport {
+    pub transferable: ValuePropertyStatus,
+    pub shareable: ValuePropertyStatus,
+    pub capability: ValueCapabilityClass,
 }
 
 #[derive(Debug)]
@@ -245,7 +269,6 @@ impl TypeReport {
                 GenericKind::FailureRow => GenericParameterKind::FailureRow,
                 GenericKind::FailureSet => GenericParameterKind::FailureSet,
                 GenericKind::NeedsRow => GenericParameterKind::NeedsRow,
-                GenericKind::EffectRow => GenericParameterKind::EffectRow,
                 GenericKind::Conflicting => GenericParameterKind::Conflicting,
             })
     }
@@ -255,7 +278,6 @@ impl TypeReport {
             types: self.typed.types.len(),
             failure_rows: self.typed.failure_rows.len(),
             needs_rows: self.typed.needs_rows.len(),
-            effect_rows: self.typed.effect_rows.len(),
             callable_contracts: self.typed.contracts.len(),
             type_facts: self.typed.type_facts.len(),
             expression_facts: self.typed.expression_facts.len(),
@@ -264,8 +286,48 @@ impl TypeReport {
         }
     }
 
+    pub fn function_input_value_properties(
+        &self,
+        module_path: &str,
+        function_name: &str,
+        input: usize,
+    ) -> Option<ValuePropertyReport> {
+        let type_id = *self
+            .typed
+            .contract(module_path, function_name)?
+            .inputs
+            .get(input)?;
+        Some(value_property_report(self.typed.value_properties(type_id)))
+    }
+
+    pub fn function_success_value_properties(
+        &self,
+        module_path: &str,
+        function_name: &str,
+    ) -> Option<ValuePropertyReport> {
+        let type_id = self.typed.contract(module_path, function_name)?.success;
+        Some(value_property_report(self.typed.value_properties(type_id)))
+    }
+
     pub fn render_diagnostics(&self) -> String {
         render_project_diagnostics(&self.typed.resolved, &self.typed.diagnostics)
+    }
+}
+
+fn value_property_report(properties: ValueProperties) -> ValuePropertyReport {
+    let property = |value| match value {
+        PropertyDerivation::Always => ValuePropertyStatus::Always,
+        PropertyDerivation::Never => ValuePropertyStatus::Never,
+        PropertyDerivation::ValueDependent => ValuePropertyStatus::ValueDependent,
+    };
+    ValuePropertyReport {
+        transferable: property(properties.transferable),
+        shareable: property(properties.shareable),
+        capability: match properties.capability {
+            CapabilityClass::Ordinary => ValueCapabilityClass::Ordinary,
+            CapabilityClass::Exclusive => ValueCapabilityClass::Exclusive,
+            CapabilityClass::ParentLocal => ValueCapabilityClass::ParentLocal,
+        },
     }
 }
 
@@ -561,18 +623,21 @@ fn seal(
 
 #[cfg(test)]
 mod tests {
-    use super::{Compiler, GenericParameterKind, ProjectSource, resolve_project_sources};
+    use super::{
+        Compiler, GenericParameterKind, ProjectSource, ValueCapabilityClass, ValuePropertyReport,
+        ValuePropertyStatus, resolve_project_sources,
+    };
     use crate::diagnostic::{Diagnostic, DiagnosticStage};
     use crate::executable::{lower, seal_entry};
     use crate::execution::{
         EventKind, ExecutionAttributeValue, ExecutionConfig, ExecutionOutcome, ExecutionValue,
-        TraceMode,
+        TraceMode, ValueField,
     };
     use crate::source::SourceSnapshot;
     use crate::typing::check_project;
     use std::sync::Arc;
 
-    const VALID: &str = "struct Answer { value: Int } pub fn main() { Answer(value: 42) }";
+    const VALID: &str = "struct Answer { value: Int } pub fn main() { Answer(42) }";
 
     fn source(text: &str) -> SourceSnapshot {
         SourceSnapshot::from_text("test.chimi", text)
@@ -598,11 +663,11 @@ mod tests {
         assert_eq!(report.events.len(), 2);
         assert_eq!(report.events[0].sequence, 0);
         assert_eq!(report.events[1].sequence, 1);
-        let expression_start = VALID.find("Answer(value: 42)").unwrap() as u32;
+        let expression_start = VALID.find("Answer(42)").unwrap() as u32;
         assert_eq!(report.events[0].source_range.start(), expression_start);
         assert_eq!(
             report.events[0].source_range.end(),
-            expression_start + "Answer(value: 42)".len() as u32
+            expression_start + "Answer(42)".len() as u32
         );
         assert_eq!(report.events[0].origin_id, report.events[0].semantic_id);
         assert_eq!(report.events[0].file_id, 0);
@@ -625,7 +690,7 @@ mod tests {
         let text = concat!(
             "// retained trivia\r\n",
             "struct Answer {\n  value: Int\n}\n\n",
-            "pub fn main() {\n  Answer( value: 42 ) // retained too\n}\n",
+            "pub fn main() {\n  Answer( 42 ) // retained too\n}\n",
         );
         let report = Compiler::run(
             source(text),
@@ -633,11 +698,11 @@ mod tests {
         )
         .expect("source with trivia executes");
 
-        let expression_start = text.find("Answer( value: 42 )").unwrap() as u32;
+        let expression_start = text.find("Answer( 42 )").unwrap() as u32;
         assert_eq!(report.events[0].source_range.start(), expression_start);
         assert_eq!(
             report.events[0].source_range.end(),
-            expression_start + "Answer( value: 42 )".len() as u32
+            expression_start + "Answer( 42 )".len() as u32
         );
     }
 
@@ -645,7 +710,7 @@ mod tests {
     fn missing_or_renamed_main_cannot_seal() {
         for text in [
             "struct Answer { value: Int }",
-            "struct Answer { value: Int } pub fn start() { Answer(value: 42) }",
+            "struct Answer { value: Int } pub fn start() { Answer(42) }",
         ] {
             let report = Compiler::check(source(text));
             assert_eq!(report.diagnostics().len(), 1);
@@ -659,7 +724,7 @@ mod tests {
 
     #[test]
     fn unresolved_constructor_stops_at_name_resolution() {
-        let text = "struct Answer { value: Int } pub fn main() { Missing(value: 42) }";
+        let text = "struct Answer { value: Int } pub fn main() { Missing(42) }";
         let report = Compiler::check(source(text));
 
         assert_eq!(report.diagnostics().len(), 1);
@@ -673,7 +738,7 @@ mod tests {
 
     #[test]
     fn invalid_field_value_stops_at_type_checking() {
-        let text = "struct Answer { value: Int } pub fn main() { Answer(value: \"forty-two\") }";
+        let text = "struct Answer { value: Int } pub fn main() { Answer(\"forty-two\") }";
         let report = Compiler::check(source(text));
 
         assert_eq!(report.diagnostics().len(), 1);
@@ -688,8 +753,8 @@ mod tests {
     #[test]
     fn malformed_source_is_diagnosed_without_panicking() {
         for text in [
-            "struct Answer { value: Int } pub fn main() { Answer(value: 999999999999999999999999999999999999) }",
-            "struct Answer { value: Int } pub fn main() { Answer(value: λ) }",
+            "struct Answer { value: Int } pub fn main() { Answer(999999999999999999999999999999999999) }",
+            "struct Answer { value: Int } pub fn main() { Answer(λ) }",
         ] {
             let report = Compiler::check(source(text));
             assert!(!report.is_success());
@@ -702,7 +767,7 @@ mod tests {
         let text = concat!(
             "struct Answer { value: Int }\n",
             "struct Other { value: Int }\n",
-            "pub fn main() { Answer(value: 42) }\n",
+            "pub fn main() { Answer(42) }\n",
         );
         let report = Compiler::check(source(text));
 
@@ -911,7 +976,7 @@ mod tests {
             .iter()
             .find(|diagnostic| diagnostic.code() == "E_PRIVATE_STRUCT_CONSTRUCTOR")
             .expect("private constructor is diagnosed");
-        let expected = "Money.Money(cents: -100)";
+        let expected = "Money.Money(-100)";
         let start = PRIVATE.rfind(expected).unwrap() as u32;
         assert_eq!(diagnostic.range().start(), start);
         assert_eq!(diagnostic.range().end(), start + expected.len() as u32);
@@ -1350,177 +1415,10 @@ mod tests {
     }
 
     #[test]
-    fn effects_are_inferred_and_substituted_through_higher_order_calls() {
-        let report = Compiler::type_project(vec![module(
-            "contracts/effects",
-            "effects.chimi",
-            concat!(
-                "interface Console { write: fn(Text) -> Void effects { io } }\n",
-                "fn apply<A, B, E, R>(value: A, operation: fn(A) -> B needs R effects E) -> B needs R effects E {\n",
-                "  operation(value)\n",
-                "}\n",
-                "fn write(value: Text) -> Void needs { console: Console } {\n",
-                "  console.write(value)\n",
-                "}\n",
-                "fn composed() -> Void needs { console: Console } {\n",
-                "  apply(\"hello\", write)\n",
-                "}\n",
-            ),
-        )]);
-
-        assert!(report.is_success(), "{}", report.render_diagnostics());
-        assert_eq!(
-            report.contract("contracts/effects", "write").as_deref(),
-            Some("fn(Text) -> Void needs { console: Console } effects io")
-        );
-        assert_eq!(
-            report.contract("contracts/effects", "composed").as_deref(),
-            Some("fn() -> Void needs { console: Console } effects io")
-        );
-        assert_eq!(
-            report.generic_kind("contracts/effects", "apply", "E"),
-            Some(GenericParameterKind::EffectRow)
-        );
-    }
-
-    #[test]
-    fn effects_are_checked_in_guards_and_provider_contracts() {
-        let guard_source = concat!(
-            "interface Probe { test: fn() -> Bool effects { io } }\n",
-            "fn choose() -> Int needs { probe: Probe } {\n",
-            "  case True {\n",
-            "    value if probe.test() -> 1,\n",
-            "    _ -> 0,\n",
-            "  }\n",
-            "}\n",
-        );
-        let guard = Compiler::type_project(vec![module(
-            "contracts/effect_guard",
-            "effect_guard.chimi",
-            guard_source,
-        )]);
-        assert!(guard.diagnostics().iter().any(|diagnostic| {
-            diagnostic.code() == "T4234"
-                && diagnostic.message().contains("dependencies, or effects")
-        }));
-
-        let provider_source = concat!(
-            "interface PureProbe { test: fn() -> Bool }\n",
-            "fn consume() -> Bool needs { probe: PureProbe } { probe.test() }\n",
-            "let effectful = { test: fn() effects { io } { True } }\n",
-            "fn invalid() -> Bool { consume() using { probe: effectful } }\n",
-        );
-        let provider = Compiler::type_project(vec![module(
-            "contracts/effect_provider",
-            "effect_provider.chimi",
-            provider_source,
-        )]);
-        assert!(provider.diagnostics().iter().any(|diagnostic| {
-            diagnostic.code() == "T4213"
-                && diagnostic
-                    .message()
-                    .contains("effects outside the interface contract")
-        }));
-    }
-
-    #[test]
-    fn using_and_failure_recovery_preserve_effects() {
-        let report = Compiler::type_project(vec![module(
-            "contracts/effect_preservation",
-            "effect_preservation.chimi",
-            concat!(
-                "enum ProbeError { Failed }\n",
-                "interface Probe { test: fn() -> Bool errors ProbeError effects { io } }\n",
-                "fn probe() -> Bool needs { probe: Probe } { probe.test() }\n",
-                "let provider = { test: fn() effects { io } { True } }\n",
-                "fn configured() -> Bool { probe() using { probe: provider } }\n",
-                "fn recovered() -> Bool needs { probe: Probe } {\n",
-                "  case probe.test() {\n",
-                "    Success(value) -> value\n",
-                "    Failure(_error) -> False\n",
-                "  }\n",
-                "}\n",
-            ),
-        )]);
-
-        assert!(report.is_success(), "{}", report.render_diagnostics());
-        assert_eq!(
-            report
-                .contract("contracts/effect_preservation", "configured")
-                .as_deref(),
-            Some("fn() -> Bool errors ProbeError effects io")
-        );
-        assert_eq!(
-            report
-                .contract("contracts/effect_preservation", "recovered")
-                .as_deref(),
-            Some("fn() -> Bool needs { probe: Probe } effects io")
-        );
-    }
-
-    #[test]
-    fn unknown_effects_are_type_errors() {
-        let report = Compiler::type_project(vec![module(
-            "contracts/unknown_effect",
-            "unknown_effect.chimi",
-            "fn invalid() effects { network } { 1 }\n",
-        )]);
-
-        assert_eq!(report.diagnostics().len(), 1);
-        assert_eq!(report.diagnostics()[0].code(), "T4104");
-        assert!(
-            report.diagnostics()[0]
-                .message()
-                .contains("unknown effect `network`")
-        );
-    }
-
-    #[test]
-    fn one_generic_cannot_be_both_a_value_and_effect_row() {
-        let report = Compiler::type_project(vec![module(
-            "contracts/conflicting_effect",
-            "conflicting_effect.chimi",
-            "fn invalid<E>(value: E) effects E { value }\n",
-        )]);
-
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .any(|diagnostic| diagnostic.code() == "T4101")
-        );
-        assert_eq!(
-            report.generic_kind("contracts/conflicting_effect", "invalid", "E"),
-            Some(GenericParameterKind::Conflicting)
-        );
-    }
-
-    #[test]
-    fn generic_effect_terms_resolve_to_their_declared_binder() {
-        let report = Compiler::resolve_project(vec![module(
-            "contracts/effect_resolution",
-            "effect_resolution.chimi",
-            "fn apply<E>(operation: fn() -> Void effects E) effects E { operation() }\n",
-        )]);
-
-        let references = report
-            .references()
-            .into_iter()
-            .filter(|reference| reference.text() == "E")
-            .collect::<Vec<_>>();
-        assert_eq!(references.len(), 2);
-        assert!(
-            references
-                .iter()
-                .all(|reference| reference.status() == "resolved")
-        );
-    }
-
-    #[test]
-    fn inspection_and_core_retain_normalized_effect_rows() {
+    fn inspection_and_core_omit_user_facing_effect_rows() {
         let source = concat!(
-            "fn work() -> Int effects { io } { 1 }\n",
-            "pub fn main() -> Int { work() }\n",
+            "fn work() -> Int { 1 }\n",
+            "pub fn main() -> Int { work() }\n"
         );
         let sources = vec![module("main", "main.chimi", source)];
         let inspection = Compiler::inspect_project(
@@ -1528,25 +1426,22 @@ mod tests {
             "main",
             source.rfind("work").expect("work call"),
         )
-        .expect("inspect effectful entry");
+        .expect("inspect entry");
         let callable = inspection
             .callable()
             .expect("entry has callable inspection");
-        assert_eq!(callable.effects(), ["io"]);
-        assert!(callable.effect_parameters().is_empty());
-        assert!(inspection.render_json().contains("\"effects\":[\"io\"]"));
+        assert_eq!(callable.display(), "fn() -> Int");
+        assert!(!inspection.render_json().contains("\"effects\""));
 
         let core = lower(
             seal_entry(check_project(resolve_project_sources(sources)))
-                .expect("effectful root is executable"),
+                .expect("root is executable"),
         );
-        let entry = core
-            .functions
-            .iter()
-            .find(|function| function.symbol == core.entry)
-            .expect("core retains entry");
-        assert_eq!(entry.effects, [crate::executable::CoreEffect::Io]);
-        assert!(entry.effect_parameters.is_empty());
+        assert!(
+            core.functions
+                .iter()
+                .any(|function| function.symbol == core.entry)
+        );
     }
 
     #[test]
@@ -1611,10 +1506,10 @@ mod tests {
                 "struct Box<A> { value: A }\n",
                 "enum Maybe<A> { Some(value: A), None }\n",
                 "let provider = { value: 7, label: \"seven\" }\n",
-                "fn make_money() -> Money { Money(cents: 2500, id: \"m-1\") }\n",
-                "fn boxed_int() -> Box<Int> { Box(value: 1) }\n",
-                "fn boxed_text() -> Box<Text> { Box(value: \"text\") }\n",
-                "fn maybe_int() -> Maybe<Int> { Some(value: 1) }\n",
+                "fn make_money() -> Money { Money(\"m-1\", 2500) }\n",
+                "fn boxed_int() -> Box<Int> { Box(1) }\n",
+                "fn boxed_text() -> Box<Text> { Box(\"text\") }\n",
+                "fn maybe_int() -> Maybe<Int> { Some(1) }\n",
                 "fn read_money(value: Money) -> Int { value.cents }\n",
                 "fn read_record() -> Int { provider.value }\n",
                 "fn integers() -> List<Int> { [1, 2, 3] }\n",
@@ -1658,10 +1553,10 @@ mod tests {
             concat!(
                 "struct Money { cents: Int }\n",
                 "fn identity(value: Int) -> Int { value }\n",
-                "fn unknown_field() -> Money { Money(dollars: 1) }\n",
-                "fn wrong_field_type() -> Money { Money(cents: \"many\") }\n",
+                "fn wrong_arity() -> Money { Money(1, 2) }\n",
+                "fn wrong_field_type() -> Money { Money(\"many\") }\n",
                 "fn mixed_list() -> List<Int> { [1, \"two\"] }\n",
-                "fn named_function_argument() -> Int { identity(value: 1) }\n",
+                "fn wrong_call_arity() -> Int { identity() }\n",
             ),
         )]);
 
@@ -1671,7 +1566,7 @@ mod tests {
                 .iter()
                 .map(Diagnostic::code)
                 .collect::<Vec<_>>(),
-            ["T4210", "T4203", "T4203", "T4210"]
+            ["T4202", "T4203", "T4203", "T4202"]
         );
         assert!(
             report
@@ -1679,6 +1574,114 @@ mod tests {
                 .iter()
                 .all(|diagnostic| diagnostic.stage() == DiagnosticStage::Type)
         );
+    }
+
+    #[test]
+    fn positional_construction_fills_fields_in_declaration_order() {
+        let report = Compiler::run_project(
+            vec![module(
+                "app/main",
+                "main.chimi",
+                concat!(
+                    "struct Payment { id: Text, cents: Int }\n",
+                    "enum Charge { Settled(payment: Payment, attempts: Int) }\n",
+                    "pub fn main() -> Charge { Settled(Payment(\"p-1\", 2500), 3) }\n",
+                ),
+            )],
+            ExecutionConfig::new("positional-construction").unwrap(),
+        )
+        .expect("positional construction executes");
+
+        let ExecutionOutcome::Success(ExecutionValue::Constructed {
+            variant_name,
+            fields,
+            ..
+        }) = report.outcome
+        else {
+            panic!("main returns the constructed charge")
+        };
+        assert_eq!(variant_name.as_deref(), Some("Settled"));
+        assert_eq!(fields[0].name, "payment");
+        assert_eq!(
+            fields[0].value,
+            ExecutionValue::Constructed {
+                type_name: "Payment".to_owned(),
+                variant_name: None,
+                fields: vec![
+                    ValueField {
+                        name: "id".to_owned(),
+                        value: ExecutionValue::Text("p-1".to_owned()),
+                    },
+                    ValueField {
+                        name: "cents".to_owned(),
+                        value: ExecutionValue::Integer(2500),
+                    },
+                ],
+            }
+        );
+        assert_eq!(fields[1].name, "attempts");
+        assert_eq!(fields[1].value, ExecutionValue::Integer(3));
+    }
+
+    #[test]
+    fn positional_construction_rejects_wrong_order_and_arity() {
+        let report = Compiler::type_project(vec![module(
+            "expressions/positional",
+            "positional.chimi",
+            concat!(
+                "struct Payment { id: Text, cents: Int }\n",
+                "fn swapped() -> Payment { Payment(2500, \"p-1\") }\n",
+                "fn missing() -> Payment { Payment(\"p-1\") }\n",
+                "fn extra() -> Payment { Payment(\"p-1\", 2500, 3) }\n",
+            ),
+        )]);
+
+        let codes = report
+            .diagnostics()
+            .iter()
+            .map(Diagnostic::code)
+            .collect::<Vec<_>>();
+        assert!(codes.contains(&"T4203"), "{codes:?}");
+        assert_eq!(codes.iter().filter(|code| **code == "T4202").count(), 2);
+    }
+
+    #[test]
+    fn labelled_arguments_are_rejected_with_the_positional_form() {
+        let text = concat!(
+            "struct Payment { id: Text, cents: Int }\n",
+            "fn identity(value: Int) -> Int { value }\n",
+            "fn reordered() -> Payment { Payment(cents: 2500, id: \"p-1\") }\n",
+            "fn unknown() -> Payment { Payment(id: \"p-1\", dollars: 1) }\n",
+            "fn function() -> Int { identity(value: 1) }\n",
+        );
+        let report =
+            Compiler::type_project(vec![module("expressions/labelled", "labelled.chimi", text)]);
+
+        let diagnostics = report
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| (diagnostic.code(), diagnostic.message()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            diagnostics,
+            [
+                (
+                    "T4210",
+                    "Chimi arguments are positional; write `Payment(\"p-1\", 2500)`"
+                ),
+                (
+                    "T4210",
+                    "Chimi arguments are positional; pass `Payment` fields in declaration order (id, cents)"
+                ),
+                (
+                    "T4210",
+                    "Chimi arguments are positional; remove the `value:` label"
+                ),
+            ],
+            "a recognised constructor rewrite must not cascade into type errors"
+        );
+        let label = text.find("cents: 2500").unwrap() as u32;
+        assert_eq!(report.diagnostics()[0].range().start(), label);
     }
 
     #[test]
@@ -1822,13 +1825,13 @@ mod tests {
                 "enum CheckoutError { Payment(error: PaymentError) }\n",
                 "fn operation(mode: Int) -> Receipt {\n",
                 "  case mode {\n",
-                "    0 -> Failure(Declined(reason: \"declined\"))\n",
+                "    0 -> Failure(Declined(\"declined\"))\n",
                 "    _ -> Failure(Offline())\n",
                 "  }\n",
                 "}\n",
                 "fn bubble(mode: Int) -> Receipt { operation(mode) }\n",
                 "fn explicit_success() -> Int { Success(1) }\n",
-                "fn decline_only() -> Receipt { Failure(Declined(reason: \"declined\")) }\n",
+                "fn decline_only() -> Receipt { Failure(Declined(\"declined\")) }\n",
                 "fn capture_precise_failure() -> Text {\n",
                 "  case decline_only() {\n",
                 "    Success(_receipt) -> \"success\"\n",
@@ -1840,26 +1843,26 @@ mod tests {
                 "fn recover_declined(mode: Int) -> Receipt {\n",
                 "  case operation(mode) {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(Declined(_reason)) -> Receipt(id: \"fallback\")\n",
+                "    Failure(Declined(_reason)) -> Receipt(\"fallback\")\n",
                 "  }\n",
                 "}\n",
                 "fn recover_all(mode: Int) -> Receipt {\n",
                 "  case operation(mode) {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(_error) -> Receipt(id: \"fallback\")\n",
+                "    Failure(_error) -> Receipt(\"fallback\")\n",
                 "  }\n",
                 "}\n",
                 "fn guarded_recovery(mode: Int) -> Receipt {\n",
                 "  case operation(mode) {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(Declined(_reason)) if True -> Receipt(id: \"declined\")\n",
-                "    Failure(Offline) -> Receipt(id: \"offline\")\n",
+                "    Failure(Declined(_reason)) if True -> Receipt(\"declined\")\n",
+                "    Failure(Offline) -> Receipt(\"offline\")\n",
                 "  }\n",
                 "}\n",
                 "fn remap(mode: Int) -> Receipt {\n",
                 "  case operation(mode) {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(error) -> Failure(Payment(error: error))\n",
+                "    Failure(error) -> Failure(Payment(error))\n",
                 "  }\n",
                 "}\n",
             ),
@@ -1906,7 +1909,7 @@ mod tests {
                 "  fn() {\n",
                 "    case operation() {\n",
                 "      Success(receipt) -> receipt\n",
-                "      Failure(Declined(reason)) -> Receipt(id: reason)\n",
+                "      Failure(Declined(reason)) -> Receipt(reason)\n",
                 "    }\n",
                 "  }\n",
                 "}\n",
@@ -1914,7 +1917,7 @@ mod tests {
                 "  fn() {\n",
                 "    case operation() {\n",
                 "      Success(receipt) -> receipt\n",
-                "      Failure(Declined(reason)) if True -> Receipt(id: reason)\n",
+                "      Failure(Declined(reason)) if True -> Receipt(reason)\n",
                 "    }\n",
                 "  }\n",
                 "}\n",
@@ -2005,11 +2008,11 @@ mod tests {
                     "  fn() {\n",
                     "    case operation() {\n",
                     "      Success(receipt) -> receipt\n",
-                    "      Failure(Declined(reason)) -> Receipt(id: reason)\n",
+                    "      Failure(Declined(reason)) -> Receipt(reason)\n",
                     "    }\n",
                     "  }\n",
                     "}\n",
-                    "fn operation() -> Receipt { Failure(Declined(reason: \"recovered\")) }\n",
+                    "fn operation() -> Receipt { Failure(Declined(\"recovered\")) }\n",
                     "pub fn main() -> Receipt {\n",
                     "  let configured = operation |> recover_declined\n",
                     "  configured()\n",
@@ -2045,13 +2048,13 @@ mod tests {
                     "  fn() {\n",
                     "    case operation() {\n",
                     "      Success(receipt) -> receipt\n",
-                    "      Failure(Declined(reason)) -> Receipt(id: reason)\n",
+                    "      Failure(Declined(reason)) -> Receipt(reason)\n",
                     "    }\n",
                     "  }\n",
                     "}\n",
                     "fn operation() -> Receipt {\n",
                     "  let _crash = 1 / 0\n",
-                    "  Receipt(id: \"unreachable\")\n",
+                    "  Receipt(\"unreachable\")\n",
                     "}\n",
                     "pub fn main() -> Receipt {\n",
                     "  let configured = operation |> recover_declined\n",
@@ -2092,7 +2095,7 @@ mod tests {
             "fn recover_declined<E>(operation: fn() -> Receipt errors E) {\n",
             "  case operation() {\n",
             "    Success(receipt) -> receipt\n",
-            "    Failure(Declined(reason)) -> Receipt(id: reason)\n",
+            "    Failure(Declined(reason)) -> Receipt(reason)\n",
             "  }\n",
             "}\n",
             "fn operation() -> Receipt { Failure(Offline()) }\n",
@@ -2126,9 +2129,9 @@ mod tests {
             concat!(
                 "struct Receipt { id: Text }\n",
                 "enum PaymentError { Declined(reason: Text), Offline }\n",
-                "fn operation() -> Receipt { Failure(Declined(reason: \"no\")) }\n",
+                "fn operation() -> Receipt { Failure(Declined(\"no\")) }\n",
                 "fn raw_case() -> Receipt {\n",
-                "  case operation() { _ -> Receipt(id: \"raw\") }\n",
+                "  case operation() { _ -> Receipt(\"raw\") }\n",
                 "}\n",
                 "fn incomplete() -> Receipt {\n",
                 "  case operation() {\n",
@@ -2138,20 +2141,20 @@ mod tests {
                 "fn impossible() -> Receipt {\n",
                 "  case operation() {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(Offline) -> Receipt(id: \"offline\")\n",
+                "    Failure(Offline) -> Receipt(\"offline\")\n",
                 "  }\n",
                 "}\n",
                 "fn invalid_pattern() -> Receipt {\n",
                 "  case operation() {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(True) -> Receipt(id: \"invalid\")\n",
+                "    Failure(True) -> Receipt(\"invalid\")\n",
                 "  }\n",
                 "}\n",
                 "fn unreachable_outcome() -> Receipt {\n",
                 "  case operation() {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(_error) -> Receipt(id: \"fallback\")\n",
-                "    Failure(Declined(_reason)) -> Receipt(id: \"duplicate\")\n",
+                "    Failure(_error) -> Receipt(\"fallback\")\n",
+                "    Failure(Declined(_reason)) -> Receipt(\"duplicate\")\n",
                 "  }\n",
                 "}\n",
                 "fn bad_failure() -> Int { Failure(1) }\n",
@@ -2477,7 +2480,7 @@ mod tests {
             "basic_core.chimi",
             concat!(
                 "struct Answer { value: Int }\n",
-                "fn make(value: Int) -> Answer { Answer(value: value) }\n",
+                "fn make(value: Int) -> Answer { Answer(value) }\n",
                 "pub fn main() -> Answer {\n",
                 "  let answer = make(42)\n",
                 "  answer\n",
@@ -2568,8 +2571,8 @@ mod tests {
                     "  let increment = fn(value: Int) -> Int { value + 1 }\n",
                     "  let configured_read = read using { source: provider }\n",
                     "  case maybe(configured_read()) {\n",
-                    "    Success(value) -> Answer(value: value |> increment)\n",
-                    "    Failure(Failed) -> Answer(value: -1)\n",
+                    "    Success(value) -> Answer(value |> increment)\n",
+                    "    Failure(Failed) -> Answer(-1)\n",
                     "  }\n",
                     "}\n",
                 ),
@@ -3112,6 +3115,456 @@ mod tests {
     }
 
     #[test]
+    fn task_contracts_capture_needs_and_store_expected_failures() {
+        let report = Compiler::type_project(vec![module(
+            "concurrency/task_contracts",
+            "task_contracts.chimi",
+            concat!(
+                "import std/task as Task\n",
+                "import std/task.{Task}\n",
+                "\n",
+                "enum WorkError { Stopped }\n",
+                "interface Clock { now: fn() -> Int }\n",
+                "\n",
+                "fn work() -> Int needs { clock: Clock } {\n",
+                "  case clock.now() {\n",
+                "    0 -> Failure(Stopped())\n",
+                "    _ -> 42\n",
+                "  }\n",
+                "}\n",
+                "\n",
+                "fn launch() -> Task<Int, WorkError> needs { clock: Clock } {\n",
+                "  Task.start(work)\n",
+                "}\n",
+                "\n",
+                "fn await(task: Task<Int, WorkError>) -> Int { Task.result(task) }\n",
+                "fn stop(task: Task<Int, WorkError>) -> Void { Task.cancel(task) }\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report
+                .contract("concurrency/task_contracts", "launch")
+                .as_deref(),
+            Some("fn() -> Task<Int, WorkError> needs { clock: Clock }")
+        );
+        assert_eq!(
+            report
+                .contract("concurrency/task_contracts", "await")
+                .as_deref(),
+            Some("fn(Task<Int, WorkError>) -> Int errors WorkError")
+        );
+        assert_eq!(
+            report
+                .contract("concurrency/task_contracts", "stop")
+                .as_deref(),
+            Some("fn(Task<Int, WorkError>) -> Void")
+        );
+    }
+
+    #[test]
+    fn value_properties_derive_through_data_and_runtime_capabilities() {
+        let report = Compiler::type_project(vec![module(
+            "concurrency/value_properties",
+            "value_properties.chimi",
+            concat!(
+                "import std/channel.{Completion, Receiver, Sender}\n",
+                "import std/task.{Task}\n",
+                "\n",
+                "enum WorkError { Stopped }\n",
+                "struct Payload { label: Text, counts: List<Int> }\n",
+                "struct Envelope<A> { value: A }\n",
+                "enum Consumer { Waiting, Active(receiver: Receiver<Int>) }\n",
+                "\n",
+                "fn payload(value: Payload) -> Payload { value }\n",
+                "fn sender(value: Sender<Int>) -> Sender<Int> { value }\n",
+                "fn receiver(value: Receiver<Int>) -> Receiver<Int> { value }\n",
+                "fn completion(value: Completion<Int>) -> Completion<Int> { value }\n",
+                "fn wrapped(value: Envelope<Receiver<Int>>) -> Envelope<Receiver<Int>> { value }\n",
+                "fn consumer(value: Consumer) -> Consumer { value }\n",
+                "fn child(value: Task<Int, WorkError>) -> Task<Int, WorkError> { value }\n",
+                "fn callback(value: fn() -> Int) -> fn() -> Int { value }\n",
+            ),
+        )]);
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+
+        let always = ValuePropertyStatus::Always;
+        let never = ValuePropertyStatus::Never;
+        let dependent = ValuePropertyStatus::ValueDependent;
+        let ordinary = ValueCapabilityClass::Ordinary;
+        let exclusive = ValueCapabilityClass::Exclusive;
+        let parent_local = ValueCapabilityClass::ParentLocal;
+        let properties = |function| {
+            report
+                .function_input_value_properties("concurrency/value_properties", function, 0)
+                .expect("fixture function has one input")
+        };
+
+        assert_eq!(
+            properties("payload"),
+            ValuePropertyReport {
+                transferable: always,
+                shareable: always,
+                capability: ordinary,
+            }
+        );
+        assert_eq!(
+            properties("sender"),
+            ValuePropertyReport {
+                transferable: always,
+                shareable: always,
+                capability: ordinary,
+            }
+        );
+        for function in ["receiver", "completion", "wrapped", "consumer"] {
+            assert_eq!(
+                properties(function),
+                ValuePropertyReport {
+                    transferable: always,
+                    shareable: never,
+                    capability: exclusive,
+                },
+                "{function}"
+            );
+        }
+        assert_eq!(
+            properties("child"),
+            ValuePropertyReport {
+                transferable: never,
+                shareable: never,
+                capability: parent_local,
+            }
+        );
+        assert_eq!(
+            properties("callback"),
+            ValuePropertyReport {
+                transferable: dependent,
+                shareable: dependent,
+                capability: ordinary,
+            }
+        );
+    }
+
+    #[test]
+    fn shared_closures_remain_reusable_across_task_starts() {
+        let report = Compiler::type_project(vec![module(
+            "concurrency/shared_task_capture",
+            "shared_task_capture.chimi",
+            concat!(
+                "import std/channel.{Sender}\n",
+                "import std/task as Task\n",
+                "\n",
+                "struct Payload { value: Int }\n",
+                "\n",
+                "fn start_shared(sender: Sender<Int>, payload: Payload) -> Int {\n",
+                "  let thunk = fn() -> Int {\n",
+                "    sender\n",
+                "    payload\n",
+                "    1\n",
+                "  }\n",
+                "  let first = Task.start(thunk)\n",
+                "  let second = Task.start(thunk)\n",
+                "  1\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+    }
+
+    #[test]
+    fn exclusive_and_parent_local_captures_report_ownership_transitions() {
+        let report = Compiler::type_project(vec![module(
+            "concurrency/invalid_task_capture",
+            "invalid_task_capture.chimi",
+            concat!(
+                "import std/channel.{Receiver}\n",
+                "import std/task as Task\n",
+                "import std/task.{Task}\n",
+                "\n",
+                "enum WorkError { Stopped }\n",
+                "\n",
+                "fn start_twice(receiver: Receiver<Int>) -> Int {\n",
+                "  let thunk = fn() -> Int {\n",
+                "    receiver\n",
+                "    1\n",
+                "  }\n",
+                "  let first = Task.start(thunk)\n",
+                "  let second = Task.start(thunk)\n",
+                "  1\n",
+                "}\n",
+                "\n",
+                "fn use_old_owner(receiver: Receiver<Int>) -> Int {\n",
+                "  let thunk = fn() -> Int {\n",
+                "    receiver\n",
+                "    1\n",
+                "  }\n",
+                "  receiver\n",
+                "  1\n",
+                "}\n",
+                "\n",
+                "fn capture_twice(receiver: Receiver<Int>) -> Int {\n",
+                "  let first = fn() -> Int { receiver\n 1 }\n",
+                "  let second = fn() -> Int { receiver\n 2 }\n",
+                "  1\n",
+                "}\n",
+                "\n",
+                "fn capture_child(child: Task<Int, WorkError>) -> Int {\n",
+                "  let nested = Task.start(fn() -> Int { child\n 1 })\n",
+                "  1\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(!report.is_success());
+        let codes = report
+            .diagnostics()
+            .iter()
+            .map(Diagnostic::code)
+            .collect::<Vec<_>>();
+        assert_eq!(codes, ["T4241", "T4241", "T4241", "T4240"]);
+        let rendered = report.render_diagnostics();
+        assert!(rendered.contains("`thunk` was transferred"));
+        assert!(rendered.contains("`receiver` was transferred"));
+        assert!(rendered.contains("cannot be captured again"));
+        assert!(rendered.contains("capture `child` (Task<Int, WorkError>) is parent-local"));
+    }
+
+    #[test]
+    fn task_start_requires_attached_providers_to_be_shareable() {
+        let report = Compiler::type_project(vec![module(
+            "concurrency/task_provider_safety",
+            "task_provider_safety.chimi",
+            concat!(
+                "import std/channel.{Receiver}\n",
+                "import std/task as Task\n",
+                "\n",
+                "interface Store { read: fn() -> Int }\n",
+                "fn work() -> Int needs { store: Store } { store.read() }\n",
+                "\n",
+                "fn shared_provider() -> Int {\n",
+                "  let provider = { read: fn() -> Int { 1 } }\n",
+                "  let child = Task.start(work using { store: provider })\n",
+                "  1\n",
+                "}\n",
+                "\n",
+                "fn task_local_provider(receiver: Receiver<Int>) -> Int {\n",
+                "  let provider = { read: fn() -> Int { receiver\n 1 } }\n",
+                "  let child = Task.start(work using { store: provider })\n",
+                "  1\n",
+                "}\n",
+            ),
+        )]);
+
+        assert_eq!(
+            report
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            ["T4242"]
+        );
+        assert!(
+            report
+                .render_diagnostics()
+                .contains("provider `store` to be shareable across tasks")
+        );
+    }
+
+    #[test]
+    fn channel_operations_expose_transfer_recovery_and_terminal_contracts() {
+        let report = Compiler::type_project(vec![module(
+            "concurrency/channel_contracts",
+            "channel_contracts.chimi",
+            concat!(
+                "import std/channel as Channel\n",
+                "import std/channel.{Completion, Receiver, Receive, Sender, SendError}\n",
+                "\n",
+                "fn send(sender: Sender<Int>, value: Int) -> Void {\n",
+                "  Channel.send(sender, value)\n",
+                "}\n",
+                "fn receive(receiver: Receiver<Int>) -> Receive<Int> {\n",
+                "  Channel.receive(receiver)\n",
+                "}\n",
+                "fn close(completion: Completion<Int>) -> Void {\n",
+                "  Channel.close(completion)\n",
+                "}\n",
+                "fn abort(receiver: Receiver<Int>) -> Void {\n",
+                "  Channel.abort(receiver)\n",
+                "}\n",
+                "fn recover(\n",
+                "  sender: Sender<Receiver<Int>>,\n",
+                "  value: Receiver<Int>,\n",
+                ") -> Option<Receiver<Int>> {\n",
+                "  case Channel.send(sender, value) {\n",
+                "    Success(_) -> None()\n",
+                "    Failure(error) -> case error {\n",
+                "      SendError.Closed(recovered) -> Some(recovered)\n",
+                "      SendError.Aborted(recovered) -> Some(recovered)\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.is_success(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report
+                .contract("concurrency/channel_contracts", "send")
+                .as_deref(),
+            Some("fn(Sender<Int>, Int) -> Void errors SendError<Int>")
+        );
+        assert_eq!(
+            report
+                .contract("concurrency/channel_contracts", "receive")
+                .as_deref(),
+            Some("fn(Receiver<Int>) -> Receive<Int> errors ChannelError")
+        );
+        assert_eq!(
+            report
+                .contract("concurrency/channel_contracts", "close")
+                .as_deref(),
+            Some("fn(Completion<Int>) -> Void")
+        );
+        assert_eq!(
+            report
+                .contract("concurrency/channel_contracts", "abort")
+                .as_deref(),
+            Some("fn(Receiver<Int>) -> Void")
+        );
+        assert_eq!(
+            report
+                .contract("concurrency/channel_contracts", "recover")
+                .as_deref(),
+            Some("fn(Sender<Receiver<Int>>, Receiver<Int>) -> Option<Receiver<Int>>")
+        );
+    }
+
+    #[test]
+    fn channel_send_rejects_parent_local_payloads_and_transfers_exclusive_values() {
+        let report = Compiler::type_project(vec![module(
+            "concurrency/invalid_channel_transfer",
+            "invalid_channel_transfer.chimi",
+            concat!(
+                "import std/channel as Channel\n",
+                "import std/channel.{Receiver, Sender, SendError}\n",
+                "import std/task as Task\n",
+                "import std/task.{Task}\n",
+                "\n",
+                "enum WorkError { Stopped }\n",
+                "\n",
+                "fn use_after_send(\n",
+                "  sender: Sender<Receiver<Int>>,\n",
+                "  value: Receiver<Int>,\n",
+                ") -> Int {\n",
+                "  Channel.send(sender, value)\n",
+                "  value\n",
+                "  1\n",
+                "}\n",
+                "fn send_child(\n",
+                "  sender: Sender<Task<Int, WorkError>>,\n",
+                "  child: Task<Int, WorkError>,\n",
+                ") -> Void {\n",
+                "  Channel.send(sender, child)\n",
+                "}\n",
+                "fn start_recovered_twice(\n",
+                "  sender: Sender<Receiver<Int>>,\n",
+                "  value: Receiver<Int>,\n",
+                ") -> Int {\n",
+                "  let thunk = case Channel.send(sender, value) {\n",
+                "    Success(_) -> fn() -> Int { 1 }\n",
+                "    Failure(error) -> case error {\n",
+                "      SendError.Closed(recovered) -> fn() -> Int { recovered\n 1 }\n",
+                "      SendError.Aborted(recovered) -> fn() -> Int { recovered\n 1 }\n",
+                "    }\n",
+                "  }\n",
+                "  let first = Task.start(thunk)\n",
+                "  let second = Task.start(thunk)\n",
+                "  1\n",
+                "}\n",
+            ),
+        )]);
+
+        assert_eq!(
+            report
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            ["T4241", "T4243", "T4241"]
+        );
+        let rendered = report.render_diagnostics();
+        assert!(rendered.contains("`value` was transferred by Channel.send"));
+        assert!(rendered.contains("Channel.send cannot transfer Task<Int, WorkError>"));
+    }
+
+    #[test]
+    fn channel_send_failure_recovers_the_exact_payload_type() {
+        let report = Compiler::type_project(vec![module(
+            "concurrency/wrong_channel_recovery",
+            "wrong_channel_recovery.chimi",
+            concat!(
+                "import std/channel as Channel\n",
+                "import std/channel.{Receiver, Sender, SendError}\n",
+                "\n",
+                "fn recover_as_text(\n",
+                "  sender: Sender<Receiver<Int>>,\n",
+                "  value: Receiver<Int>,\n",
+                ") -> Option<Text> {\n",
+                "  case Channel.send(sender, value) {\n",
+                "    Success(_) -> None()\n",
+                "    Failure(error) -> case error {\n",
+                "      SendError.Closed(recovered) -> Some(recovered)\n",
+                "      SendError.Aborted(recovered) -> Some(recovered)\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+        )]);
+
+        assert!(report.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code() == "T4203" && diagnostic.stage() == DiagnosticStage::Type
+        }));
+    }
+
+    #[test]
+    fn channel_capability_fixtures_remain_connected() {
+        let valid = Compiler::type_project(vec![module(
+            "concurrency/fixture_valid",
+            "channel-static-valid.chimi",
+            include_str!("../tests/fixtures/channel-static-valid.chimi"),
+        )]);
+        assert!(valid.is_success(), "{}", valid.render_diagnostics());
+
+        let invalid = Compiler::type_project(vec![module(
+            "concurrency/fixture_invalid",
+            "channel-static-invalid.chimi",
+            include_str!("../tests/fixtures/channel-static-invalid.chimi"),
+        )]);
+        assert_eq!(
+            invalid
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            ["T4241", "T4243", "T4241"]
+        );
+
+        let wrong_recovery = Compiler::type_project(vec![module(
+            "concurrency/fixture_wrong_recovery",
+            "channel-static-wrong-recovery.chimi",
+            include_str!("../tests/fixtures/channel-static-wrong-recovery.chimi"),
+        )]);
+        assert!(
+            wrong_recovery
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code() == "T4203")
+        );
+    }
+
+    #[test]
     fn project_execution_preserves_all_terminal_outcome_classes() {
         let failure = Compiler::run_project(
             vec![module(
@@ -3164,5 +3617,222 @@ mod tests {
             ExecutionOutcome::Cancellation(_)
         ));
         assert_eq!(cancellation.events.len(), 2);
+    }
+
+    fn run_loop(text: &str, trace_mode: TraceMode) -> crate::execution::ExecutionReport {
+        Compiler::run_project(
+            vec![module("app/main", "main.chimi", text)],
+            ExecutionConfig::new("loop-test")
+                .unwrap()
+                .with_trace_mode(trace_mode),
+        )
+        .expect("loop source executes")
+    }
+
+    fn loop_diagnostics(text: &str) -> Vec<&'static str> {
+        Compiler::verify_project(vec![module("app/main", "main.chimi", text)])
+            .err()
+            .unwrap_or_default()
+            .iter()
+            .map(Diagnostic::code)
+            .collect()
+    }
+
+    // Guards: unbounded repetition must not grow the host stack with the pass count.
+    #[test]
+    fn loop_runs_many_passes_without_growing_the_stack() {
+        let report = run_loop(
+            concat!(
+                "pub fn main() -> Int {\n",
+                "  loop count = 0 {\n",
+                "    case count {\n",
+                "      100000 -> break count\n",
+                "      _ -> count + 1\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+            TraceMode::Off,
+        );
+        assert_eq!(
+            report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Integer(100_000))
+        );
+    }
+
+    // Guards: each pass is traced as a sibling under the loop, not nested in the previous pass.
+    #[test]
+    fn loop_passes_are_sibling_spans_under_the_loop() {
+        let report = run_loop(
+            concat!(
+                "pub fn main() -> Int {\n",
+                "  loop count = 0 {\n",
+                "    case count {\n",
+                "      3 -> break count\n",
+                "      _ -> count + 1\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+            TraceMode::Full,
+        );
+        let started = |operation: &str| {
+            report
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::OperationStarted)
+                .filter(|event| event.operation == operation)
+                .collect::<Vec<_>>()
+        };
+        let loops = started("loop");
+        assert_eq!(loops.len(), 1);
+        let passes = started("sequence")
+            .into_iter()
+            .filter(|pass| pass.parent_span_id == Some(loops[0].span_id))
+            .count();
+        assert_eq!(passes, 4, "one body pass for each count 0, 1, 2, and 3");
+        assert_eq!(started("match").len(), 4);
+    }
+
+    // Guards: break leaves only the nearest loop; the outer loop keeps its own state.
+    #[test]
+    fn inner_break_leaves_only_the_inner_loop() {
+        let report = run_loop(
+            concat!(
+                "pub fn main() -> Int {\n",
+                "  loop total = 0 {\n",
+                "    let inner = loop step = 0 {\n",
+                "      case step {\n",
+                "        2 -> break 10\n",
+                "        _ -> step + 1\n",
+                "      }\n",
+                "    }\n",
+                "    case total {\n",
+                "      30 -> break total\n",
+                "      _ -> total + inner\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+            TraceMode::Off,
+        );
+        assert_eq!(
+            report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Integer(30))
+        );
+    }
+
+    // Guards: an expected failure in a pass ends the loop through the failure channel.
+    #[test]
+    fn failure_in_a_pass_ends_the_loop_as_a_failure() {
+        let report = run_loop(
+            concat!(
+                "enum CountError { TooFar(at: Int) }\n",
+                "pub fn main() -> Int {\n",
+                "  loop count = 0 {\n",
+                "    case count {\n",
+                "      2 -> Failure(TooFar(count))\n",
+                "      _ -> count + 1\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+            TraceMode::Off,
+        );
+        assert!(matches!(
+            report.outcome,
+            ExecutionOutcome::ExpectedFailure(_)
+        ));
+    }
+
+    // Guards: a forgotten state update is a type error, not a silent stale pass.
+    #[test]
+    fn body_value_must_have_the_state_type() {
+        let codes = loop_diagnostics(concat!(
+            "pub fn main() -> Int {\n",
+            "  loop count = 0 {\n",
+            "    case count {\n",
+            "      3 -> break count\n",
+            "      _ -> \"next\"\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ));
+        assert_eq!(codes, ["T4203"]);
+    }
+
+    // Guards: break never crosses a function boundary, including a closure in a loop.
+    #[test]
+    fn break_outside_a_loop_of_its_own_function_is_rejected() {
+        let codes = loop_diagnostics(concat!(
+            "fn outside() -> Int {\n",
+            "  break 1\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  loop count = 0 {\n",
+            "    let escape = fn() -> Int { break count }\n",
+            "    count + 1\n",
+            "  }\n",
+            "}\n",
+        ));
+        assert_eq!(codes, ["E_BREAK_OUTSIDE_LOOP", "E_BREAK_OUTSIDE_LOOP"]);
+    }
+
+    // Guards: a loop with no break never returns, so it fits any expected type.
+    #[test]
+    fn loop_without_break_fits_any_expected_type() {
+        let codes = loop_diagnostics(concat!(
+            "fn spin() -> Text {\n",
+            "  loop count = 0 {\n",
+            "    count + 1\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int { 1 }\n",
+        ));
+        assert!(codes.is_empty(), "{codes:?}");
+    }
+
+    // Guards: a pass may not transfer a capability that the next pass would use again.
+    #[test]
+    fn loop_body_cannot_transfer_an_outer_capability() {
+        let codes = loop_diagnostics(concat!(
+            "import std/channel as Channel\n",
+            "import std/task as Task\n",
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  let receiver = channel.receiver\n",
+            "  loop count = 0 {\n",
+            "    let child = Task.start(fn() { Channel.receive(receiver) })\n",
+            "    case count {\n",
+            "      2 -> break count\n",
+            "      _ -> count + 1\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ));
+        assert_eq!(codes, ["T4250"]);
+    }
+
+    // Regression: a block whose first item is a call with several arguments is a block,
+    // not a record; only a comma at the brace's own nesting level marks a record.
+    #[test]
+    fn block_starting_with_a_multi_argument_call_is_a_block() {
+        let report = run_loop(
+            concat!(
+                "fn add(left: Int, right: Int) -> Int { left + right }\n",
+                "pub fn main() -> Int {\n",
+                "  let total = {\n",
+                "    add(1, 2)\n",
+                "    add(3, 4)\n",
+                "  }\n",
+                "  total\n",
+                "}\n",
+            ),
+            TraceMode::Off,
+        );
+        assert_eq!(
+            report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Integer(7))
+        );
     }
 }

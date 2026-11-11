@@ -19,7 +19,7 @@ fn map_success<A, B, C, E, R>(
 }
 
 fn confirm(order: Order) -> Confirmation {
-  Confirmation(order_id: order.id)
+  Confirmation(order.id)
 }
 
 fn configure_submit(

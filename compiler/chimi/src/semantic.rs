@@ -35,7 +35,6 @@ pub(crate) struct Construction {
     pub(crate) semantic_id: SemanticId,
     pub(crate) range: TextRange,
     pub(crate) constructor: Name,
-    pub(crate) field_name: Name,
     pub(crate) value: Literal,
 }
 
@@ -213,9 +212,9 @@ impl<'source> Lowerer<'source> {
             return None;
         };
         let tokens = significant_tokens(node);
-        if tokens.len() != 13
+        if tokens.len() != 11
             || !matches_kinds(
-                &tokens[..10],
+                &tokens[..8],
                 &[
                     TokenKind::Pub,
                     TokenKind::Fn,
@@ -225,13 +224,11 @@ impl<'source> Lowerer<'source> {
                     TokenKind::LeftBrace,
                     TokenKind::Identifier,
                     TokenKind::LeftParen,
-                    TokenKind::Identifier,
-                    TokenKind::Colon,
                 ],
             )
-            || !matches!(tokens[10].kind(), TokenKind::Integer | TokenKind::Text)
+            || !matches!(tokens[8].kind(), TokenKind::Integer | TokenKind::Text)
             || !matches_kinds(
-                &tokens[11..],
+                &tokens[9..],
                 &[TokenKind::RightParen, TokenKind::RightBrace],
             )
         {
@@ -242,7 +239,7 @@ impl<'source> Lowerer<'source> {
             return None;
         }
         let function_semantic_id = self.allocate_semantic_id();
-        let body = self.lower_construction(&tokens[6..12], body_syntax.syntax())?;
+        let body = self.lower_construction(&tokens[6..10], body_syntax.syntax())?;
 
         Some(FunctionDeclaration {
             semantic_id: function_semantic_id,
@@ -257,22 +254,16 @@ impl<'source> Lowerer<'source> {
         tokens: &[SyntaxToken<'_>],
         owner: &SyntaxNode<'_>,
     ) -> Option<Construction> {
-        let [constructor, _, field_name, _, value, right_paren] = tokens else {
+        let [constructor, left_paren, value, right_paren] = tokens else {
             self.lowering_error(
                 owner,
                 "incomplete construction expression cannot be lowered",
             );
             return None;
         };
-        if !matches_kinds(
-            &tokens[..4],
-            &[
-                TokenKind::Identifier,
-                TokenKind::LeftParen,
-                TokenKind::Identifier,
-                TokenKind::Colon,
-            ],
-        ) || right_paren.kind() != TokenKind::RightParen
+        if constructor.kind() != TokenKind::Identifier
+            || left_paren.kind() != TokenKind::LeftParen
+            || right_paren.kind() != TokenKind::RightParen
         {
             self.lowering_error(owner, "malformed construction expression cannot be lowered");
             return None;
@@ -315,7 +306,6 @@ impl<'source> Lowerer<'source> {
                 right_paren.range().end() as usize,
             ),
             constructor: name_from(constructor),
-            field_name: name_from(field_name),
             value: literal,
         })
     }
@@ -436,7 +426,6 @@ pub(crate) enum TypeUse {
         success: Box<TypeUse>,
         failures: Option<Box<TypeUse>>,
         requirements: RequirementRowUse,
-        effects: EffectRowUse,
     },
 }
 
@@ -474,18 +463,6 @@ pub(crate) struct FunctionSignature {
     pub(crate) parameters: Vec<ValueParameter>,
     pub(crate) success: Option<TypeUse>,
     pub(crate) requirements: RequirementRowUse,
-    pub(crate) effects: EffectRowUse,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct EffectRowUse {
-    pub(crate) terms: Vec<EffectTermUse>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct EffectTermUse {
-    pub(crate) semantic_id: SemanticId,
-    pub(crate) name: Name,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -598,6 +575,24 @@ pub(crate) enum ModuleExpression {
         arms: Vec<ModuleCaseArm>,
         range: TextRange,
     },
+    /// `loop state = initial { body }`. The body's value is the next pass's state.
+    /// The state is a local binding defined at `state_id`, which also identifies the loop:
+    /// resolution links each `Break` to it. It differs from `semantic_id` because a `let`
+    /// whose value is this loop defines its own binding at `semantic_id`.
+    Loop {
+        semantic_id: SemanticId,
+        state_id: SemanticId,
+        state: Name,
+        initial: Box<Self>,
+        body: Box<Self>,
+        range: TextRange,
+    },
+    /// `break` or `break value`. `None` means `Void`.
+    Break {
+        semantic_id: SemanticId,
+        value: Option<Box<Self>>,
+        range: TextRange,
+    },
     Empty {
         semantic_id: SemanticId,
         range: TextRange,
@@ -621,6 +616,8 @@ impl ModuleExpression {
             | Self::Block { semantic_id, .. }
             | Self::Function { semantic_id, .. }
             | Self::Case { semantic_id, .. }
+            | Self::Loop { semantic_id, .. }
+            | Self::Break { semantic_id, .. }
             | Self::Empty { semantic_id, .. } => *semantic_id,
         }
     }
@@ -641,6 +638,8 @@ impl ModuleExpression {
             | Self::Block { range, .. }
             | Self::Function { range, .. }
             | Self::Case { range, .. }
+            | Self::Loop { range, .. }
+            | Self::Break { range, .. }
             | Self::Empty { range, .. } => *range,
         }
     }
@@ -946,16 +945,12 @@ impl ProjectLowerer {
             let requirements = direct_child(&function, NodeKind::RequirementClause)
                 .map(|requirements| self.lower_requirement_row(&requirements))
                 .unwrap_or_default();
-            let effects = direct_child(&function, NodeKind::EffectClause)
-                .map(|effects| self.lower_effect_row(&effects))
-                .unwrap_or_default();
             return TypeUse::Function {
                 semantic_id,
                 inputs,
                 success: Box::new(success),
                 failures,
                 requirements,
-                effects,
             };
         }
         let path = node
@@ -1030,16 +1025,10 @@ impl ProjectLowerer {
             .and_then(|contract| direct_child(contract, NodeKind::RequirementClause))
             .map(|requirements| self.lower_requirement_row(&requirements))
             .unwrap_or_default();
-        let effects = contract
-            .as_ref()
-            .and_then(|contract| direct_child(contract, NodeKind::EffectClause))
-            .map(|effects| self.lower_effect_row(&effects))
-            .unwrap_or_default();
         FunctionSignature {
             parameters,
             success,
             requirements,
-            effects,
         }
     }
 
@@ -1084,35 +1073,6 @@ impl ProjectLowerer {
             );
         }
         RequirementRowUse { terms }
-    }
-
-    fn lower_effect_row(&mut self, node: &SyntaxNode<'_>) -> EffectRowUse {
-        let mut terms = node
-            .child_tokens()
-            .into_iter()
-            .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
-            .map(|token| EffectTermUse {
-                semantic_id: self.allocate_semantic_id(),
-                name: name_from(&token),
-            })
-            .collect::<Vec<_>>();
-        for record in node
-            .child_nodes()
-            .into_iter()
-            .filter(|child| child.kind() == NodeKind::EffectRecord)
-        {
-            terms.extend(
-                record
-                    .child_tokens()
-                    .into_iter()
-                    .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
-                    .map(|token| EffectTermUse {
-                        semantic_id: self.allocate_semantic_id(),
-                        name: name_from(&token),
-                    }),
-            );
-        }
-        EffectRowUse { terms }
     }
 
     fn lower_expression(&mut self, node: &SyntaxNode<'_>) -> ModuleExpression {
@@ -1204,6 +1164,8 @@ impl ProjectLowerer {
                 }
             }
             NodeKind::CaseExpression => self.lower_case(node, semantic_id),
+            NodeKind::LoopExpression => self.lower_loop(node, semantic_id),
+            NodeKind::BreakExpression => self.lower_break(node, semantic_id),
             _ => ModuleExpression::Sequence {
                 semantic_id,
                 expressions: contained_expression_children(node)
@@ -1410,6 +1372,44 @@ impl ProjectLowerer {
         }
     }
 
+    /// Ensures: missing state, initial, or body lower to `Empty`/placeholder parts so the
+    /// node keeps its identity and diagnostics come from the parser, never a panic.
+    fn lower_loop(&mut self, node: &SyntaxNode<'_>, semantic_id: SemanticId) -> ModuleExpression {
+        let range = significant_range(node);
+        let state = direct_identifier(node).unwrap_or_else(|| Name {
+            text: "_".to_owned(),
+            range: TextRange::empty(range.start() as usize),
+        });
+        let mut parts = direct_expression_children(node).into_iter();
+        let lower_part = |part: Option<SyntaxNode<'_>>, lowerer: &mut Self| {
+            part.map(|part| lowerer.lower_expression(&part))
+                .unwrap_or_else(|| ModuleExpression::Empty {
+                    semantic_id: lowerer.allocate_semantic_id(),
+                    range,
+                })
+        };
+        let state_id = self.allocate_semantic_id();
+        let initial = lower_part(parts.next(), self);
+        let body = lower_part(parts.next(), self);
+        ModuleExpression::Loop {
+            semantic_id,
+            state_id,
+            state,
+            initial: Box::new(initial),
+            body: Box::new(body),
+            range,
+        }
+    }
+
+    fn lower_break(&mut self, node: &SyntaxNode<'_>, semantic_id: SemanticId) -> ModuleExpression {
+        ModuleExpression::Break {
+            semantic_id,
+            value: direct_expression_child(node)
+                .map(|value| Box::new(self.lower_expression(&value))),
+            range: significant_range(node),
+        }
+    }
+
     fn lower_case(&mut self, node: &SyntaxNode<'_>, semantic_id: SemanticId) -> ModuleExpression {
         let subjects = direct_expression_children(node)
             .into_iter()
@@ -1557,6 +1557,8 @@ fn is_expression_kind(kind: NodeKind) -> bool {
             | NodeKind::RecordExpression
             | NodeKind::BlockExpression
             | NodeKind::CaseExpression
+            | NodeKind::LoopExpression
+            | NodeKind::BreakExpression
             | NodeKind::FunctionExpression
             | NodeKind::EmptyBraceExpression
             | NodeKind::ErrorIfExpression

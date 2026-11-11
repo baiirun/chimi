@@ -22,7 +22,6 @@ identifier!(SemanticId);
 identifier!(SymbolId);
 identifier!(FailureRowId);
 identifier!(NeedsRowId);
-identifier!(EffectRowId);
 identifier!(OriginId);
 identifier!(CoreNodeId);
 

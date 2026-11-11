@@ -1,0 +1,44 @@
+import std/channel as Channel
+import std/channel.{Receiver, Sender, SendError}
+import std/task as Task
+import std/task.{Task}
+
+enum WorkError { Stopped }
+
+fn use_after_send(
+  sender: Sender<Receiver<Int>>,
+  value: Receiver<Int>,
+) -> Int {
+  Channel.send(sender, value)
+  value
+  1
+}
+
+fn send_child(
+  sender: Sender<Task<Int, WorkError>>,
+  child: Task<Int, WorkError>,
+) -> Void {
+  Channel.send(sender, child)
+}
+
+fn start_recovered_twice(
+  sender: Sender<Receiver<Int>>,
+  value: Receiver<Int>,
+) -> Int {
+  let thunk = case Channel.send(sender, value) {
+    Success(_) -> fn() -> Int { 1 }
+    Failure(error) -> case error {
+      SendError.Closed(recovered) -> fn() -> Int {
+        recovered
+        1
+      }
+      SendError.Aborted(recovered) -> fn() -> Int {
+        recovered
+        1
+      }
+    }
+  }
+  let first = Task.start(thunk)
+  let second = Task.start(thunk)
+  1
+}

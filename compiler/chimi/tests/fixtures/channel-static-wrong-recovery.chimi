@@ -1,0 +1,15 @@
+import std/channel as Channel
+import std/channel.{Receiver, Sender, SendError}
+
+fn recover_as_text(
+  sender: Sender<Receiver<Int>>,
+  value: Receiver<Int>,
+) -> Option<Text> {
+  case Channel.send(sender, value) {
+    Success(_) -> None()
+    Failure(error) -> case error {
+      SendError.Closed(recovered) -> Some(recovered)
+      SendError.Aborted(recovered) -> Some(recovered)
+    }
+  }
+}

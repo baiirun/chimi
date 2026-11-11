@@ -1,5 +1,6 @@
-/* Chimi native runtime ABI version 6. */
+/* Chimi native runtime ABI version 8. */
 #include "runtime.h"
+#include "chimi_fiber.h"
 
 #include <inttypes.h>
 #include <errno.h>
@@ -12,14 +13,42 @@
 #include <time.h>
 #include <unistd.h>
 
+// Ordinary binaries keep the native runtime but intentionally omit the fiber
+// archive. Concurrency builds force-load the archive, whose strong definitions
+// replace these unreachable fallbacks.
+__attribute__((weak)) ChimiFiberCommand chimi_fiber_request(
+  void *request, const ChimiRootFrame *roots) {
+  (void)request;
+  (void)roots;
+  abort();
+}
+
+__attribute__((weak)) ChimiSchedulerOutcome chimi_scheduler_execute(
+  ChimiFiberEntry entry, void *context, size_t stack_bytes, uint32_t trace_mode,
+  ChimiSchedulerTraceSink trace_sink, void *trace_context) {
+  (void)entry;
+  (void)context;
+  (void)stack_bytes;
+  (void)trace_mode;
+  (void)trace_sink;
+  (void)trace_context;
+  return (ChimiSchedulerOutcome){.state = CHIMI_FIBER_DEFECTED};
+}
+
 typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
-               VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER } ValueKind;
+               VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER, VALUE_TASK,
+               VALUE_CHANNEL_SENDER, VALUE_CHANNEL_RECEIVER,
+               VALUE_CHANNEL_COMPLETION } ValueKind;
 typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC } CallableKind;
 typedef enum { HOST_PROCESS_UTF8_LINES, HOST_WRITE_LINE, HOST_WRITE_ERROR } HostFunction;
-typedef enum { CONTROL_SUCCESS, CONTROL_FAILURE, CONTROL_DEFECT, CONTROL_CANCEL } ControlKind;
+/* CONTROL_BREAK carries the target loop's state symbol in `node` and its value in `value`.
+   Verified programs keep it inside one function, so it never reaches a call or root. */
+typedef enum { CONTROL_SUCCESS, CONTROL_FAILURE, CONTROL_DEFECT, CONTROL_CANCEL, CONTROL_BREAK } ControlKind;
 
 typedef struct ChimiValue ChimiValue;
+typedef struct ChimiTaskContext ChimiTaskContext;
 typedef struct { const char *name; ChimiValue *value; } RuntimeField;
+typedef struct { uint64_t channel; uint64_t owner; uint64_t token; } RuntimeCapability;
 typedef struct MapNode MapNode;
 
 struct MapNode {
@@ -59,6 +88,8 @@ struct ChimiValue {
     ChimiCallable *callable;
     MapNode *map;
     const char *json_number;
+    uint64_t task;
+    RuntimeCapability capability;
   } as;
 };
 
@@ -72,6 +103,14 @@ struct ChimiControl {
   ChimiValue *value;
   const char *message;
   int64_t node;
+};
+
+struct ChimiTaskContext {
+  ChimiRuntime *runtime;
+  ChimiEnvironment *environment;
+  ChimiCallable *callable;
+  ChimiNodeFn entry;
+  uint64_t span;
 };
 
 typedef enum {
@@ -233,6 +272,19 @@ static ChimiEnvironment *capture_requirements(const ChimiEnvironment *source) {
   environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
   return environment;
 }
+static ChimiEnvironment *capture_closure_environment(const ChimiEnvironment *source,
+                                                     const ChimiNode *node) {
+  ChimiEnvironment *environment = allocate(1, sizeof(*environment));
+  allocation_kind(environment, ALLOCATION_ENVIRONMENT);
+  environment->locals = new_value_slots(CHIMI_LOCAL_SLOT_COUNT);
+  environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
+  for (uint32_t index = 0; index < node->c; ++index) {
+    uint32_t symbol = CHIMI_IDS[node->b + index];
+    uint32_t slot = CHIMI_SYMBOLS[symbol].environment_slot;
+    environment->locals[slot] = source->locals[slot];
+  }
+  return environment;
+}
 static uint32_t environment_slot(uint32_t symbol) {
   return CHIMI_SYMBOLS[symbol].environment_slot;
 }
@@ -295,6 +347,10 @@ static void mark_value(ChimiValue *value, uint64_t epoch) {
     case VALUE_MAP: mark_map(value->as.map, epoch); break;
     case VALUE_JSON_NUMBER:
       mark_allocation((void *)value->as.json_number, epoch, ALLOCATION_BYTES); break;
+    case VALUE_TASK:
+    case VALUE_CHANNEL_SENDER:
+    case VALUE_CHANNEL_RECEIVER:
+    case VALUE_CHANNEL_COMPLETION: break;
     case VALUE_VOID:
     case VALUE_INTEGER:
     case VALUE_BOOLEAN: break;
@@ -369,6 +425,7 @@ static const char *control_name(const ChimiControl *control) {
     case CONTROL_FAILURE: return "expected_failure";
     case CONTROL_DEFECT: return "defect";
     case CONTROL_CANCEL: return "cancellation";
+    case CONTROL_BREAK: return "break";
   }
   return "defect";
 }
@@ -424,6 +481,11 @@ static void json_value(FILE *output, const ChimiValue *value) {
       fputc('}', output); break;
     case VALUE_MAP: fputs("{\"map\":\"opaque\"}", output); break;
     case VALUE_JSON_NUMBER: json_string(output, value->as.json_number); break;
+    case VALUE_TASK: fprintf(output, "{\"task\":%" PRIu64 "}", value->as.task); break;
+    case VALUE_CHANNEL_SENDER:
+    case VALUE_CHANNEL_RECEIVER:
+    case VALUE_CHANNEL_COMPLETION:
+      fprintf(output, "{\"channel\":%" PRIu64 "}", value->as.capability.channel); break;
   }
 }
 
@@ -491,6 +553,146 @@ static ChimiValue *boolean_value(bool raw) { ChimiValue *v = new_value(VALUE_BOO
 static ChimiValue *callable_value(ChimiCallable *raw) { ChimiValue *v = new_value(VALUE_CALLABLE); v->as.callable = raw; return v; }
 static ChimiValue *map_value(MapNode *raw) { ChimiValue *v = new_value(VALUE_MAP); v->as.map = raw; return v; }
 static ChimiValue *json_number_value(const char *raw) { ChimiValue *v = new_value(VALUE_JSON_NUMBER); v->as.json_number = copy_text(raw); return v; }
+static ChimiValue *task_value(uint64_t raw) { ChimiValue *v = new_value(VALUE_TASK); v->as.task = raw; return v; }
+static ChimiValue *channel_capability_value(ValueKind kind, uint64_t channel,
+                                            uint64_t owner, uint64_t token) {
+  ChimiValue *value = new_value(kind);
+  value->as.capability = (RuntimeCapability){channel, owner, token};
+  return value;
+}
+static ChimiValue *channel_bundle_value(uint64_t channel, uint64_t owner, uint64_t token) {
+  ChimiValue *value = new_value(VALUE_RECORD);
+  value->as.record.length = 3;
+  value->as.record.fields = allocate(3, sizeof(*value->as.record.fields));
+  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
+  value->as.record.fields[0] = (RuntimeField){
+    "completion", channel_capability_value(VALUE_CHANNEL_COMPLETION, channel, owner, token)
+  };
+  value->as.record.fields[1] = (RuntimeField){
+    "receiver", channel_capability_value(VALUE_CHANNEL_RECEIVER, channel, owner, token)
+  };
+  value->as.record.fields[2] = (RuntimeField){
+    "sender", channel_capability_value(VALUE_CHANNEL_SENDER, channel, 0, 0)
+  };
+  return value;
+}
+
+typedef struct {
+  ChimiValue **visited;
+  size_t length;
+  size_t capacity;
+  uint64_t child;
+  bool cancelled;
+  bool allocation_failed;
+} CapabilityTransfer;
+
+static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *value,
+                                    uint32_t depth);
+
+static bool remember_transfer_value(CapabilityTransfer *transfer, ChimiValue *value) {
+  for (size_t index = 0; index < transfer->length; ++index)
+    if (transfer->visited[index] == value) return false;
+  if (transfer->length == transfer->capacity) {
+    size_t capacity = transfer->capacity ? transfer->capacity * 2 : 16;
+    ChimiValue **visited = realloc(transfer->visited, capacity * sizeof(*visited));
+    if (!visited) {
+      transfer->allocation_failed = true;
+      return false;
+    }
+    transfer->visited = visited;
+    transfer->capacity = capacity;
+  }
+  transfer->visited[transfer->length++] = value;
+  return true;
+}
+
+static bool transfer_captured_environment(CapabilityTransfer *transfer,
+                                          ChimiEnvironment *environment,
+                                          uint32_t depth) {
+  if (!environment) return true;
+  if (environment->locals)
+    for (uint32_t slot = 0; slot < CHIMI_LOCAL_SLOT_COUNT; ++slot)
+      if (!transfer_captured_value(transfer, environment->locals[slot], depth + 1)) return false;
+  if (environment->requirements)
+    for (uint32_t slot = 0; slot < CHIMI_REQUIREMENT_SLOT_COUNT; ++slot)
+      if (!transfer_captured_value(transfer, environment->requirements[slot], depth + 1)) return false;
+  return true;
+}
+
+static bool transfer_captured_callable(CapabilityTransfer *transfer, ChimiCallable *callable,
+                                       uint32_t depth) {
+  if (!callable) return true;
+  if (!transfer_captured_environment(transfer, callable->environment, depth + 1)) return false;
+  return transfer_captured_callable(transfer, callable->inner, depth + 1);
+}
+
+static bool transfer_captured_map(CapabilityTransfer *transfer, MapNode *node,
+                                  uint32_t depth) {
+  if (!node) return true;
+  return transfer_captured_value(transfer, node->value, depth + 1) &&
+         transfer_captured_map(transfer, node->left, depth + 1) &&
+         transfer_captured_map(transfer, node->right, depth + 1);
+}
+
+static bool transfer_captured_capability(CapabilityTransfer *transfer, ChimiValue *value,
+                                         uint32_t request_kind) {
+  ChimiSchedulerRequest request = {
+    .kind = request_kind,
+    .task = transfer->child,
+    .channel = value->as.capability.channel,
+    .owner = value->as.capability.owner,
+    .token = value->as.capability.token,
+  };
+  ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+  if (command == CHIMI_FIBER_CANCEL) {
+    transfer->cancelled = true;
+    return false;
+  }
+  if (request.status != CHIMI_RESPONSE_OK) return false;
+  value->as.capability.owner = request.owner;
+  value->as.capability.token = request.token;
+  return true;
+}
+
+static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *value,
+                                    uint32_t depth) {
+  if (!value || depth > 1024) return depth <= 1024;
+  if (!remember_transfer_value(transfer, value)) return !transfer->allocation_failed;
+  switch (value->kind) {
+    case VALUE_CHANNEL_RECEIVER:
+      return transfer_captured_capability(
+        transfer, value, CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER);
+    case VALUE_CHANNEL_COMPLETION:
+      return transfer_captured_capability(
+        transfer, value, CHIMI_REQUEST_CHANNEL_TRANSFER_COMPLETION);
+    case VALUE_LIST:
+      for (uint32_t index = 0; index < value->as.list.length; ++index)
+        if (!transfer_captured_value(transfer, value->as.list.items[index], depth + 1)) return false;
+      return true;
+    case VALUE_RECORD:
+      for (uint32_t index = 0; index < value->as.record.length; ++index)
+        if (!transfer_captured_value(
+              transfer, value->as.record.fields[index].value, depth + 1)) return false;
+      return true;
+    case VALUE_CONSTRUCTED:
+      for (uint32_t index = 0; index < value->as.constructed.length; ++index)
+        if (!transfer_captured_value(
+              transfer, value->as.constructed.fields[index].value, depth + 1)) return false;
+      return true;
+    case VALUE_CALLABLE:
+      return transfer_captured_callable(transfer, value->as.callable, depth + 1);
+    case VALUE_MAP:
+      return transfer_captured_map(transfer, value->as.map, depth + 1);
+    case VALUE_VOID:
+    case VALUE_INTEGER:
+    case VALUE_TEXT:
+    case VALUE_BOOLEAN:
+    case VALUE_JSON_NUMBER:
+    case VALUE_TASK:
+    case VALUE_CHANNEL_SENDER: return true;
+  }
+  return false;
+}
 
 int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace; }
 ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t node_count,
@@ -890,6 +1092,21 @@ static ChimiControl *invoke_line_callback(ChimiRuntime *runtime, ChimiCallable *
   return invoke(runtime, callback, arguments, 2, span, call_node, environment);
 }
 
+/* Ends a reclaiming scope. Only an outermost scope reports to the runtime, because a
+   nested scope's statistics already merge into its parent. */
+static void end_measured_allocation_scope(ChimiRuntime *runtime, AllocationScope *scope) {
+  bool top_scope = scope->parent == NULL;
+  allocation_scope_end(scope);
+  if (!top_scope) return;
+  runtime->scoped_total_allocated_bytes += scope->total_allocated_bytes;
+  for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
+    runtime->scoped_allocated_bytes_by_kind[kind] += scope->allocated_bytes_by_kind[kind];
+  if (scope->peak_live_bytes > runtime->scoped_peak_live_bytes)
+    runtime->scoped_peak_live_bytes = scope->peak_live_bytes;
+  runtime->scoped_retained_bytes += scope->live_bytes;
+  runtime->scoped_collections += scope->collections;
+}
+
 static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **arguments,
                                         uint32_t argument_count, uint64_t span,
                                         uint32_t call_node, ChimiEnvironment *environment) {
@@ -960,17 +1177,7 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
     control = host_file_message(CHIMI_CONSTRUCTOR_FILE_CLOSE, path, strerror(errno));
     allocation_scope_collect(&allocation_scope, NULL, control);
   }
-  bool top_scope = allocation_scope.parent == NULL;
-  allocation_scope_end(&allocation_scope);
-  if (top_scope) {
-    runtime->scoped_total_allocated_bytes += allocation_scope.total_allocated_bytes;
-    for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
-      runtime->scoped_allocated_bytes_by_kind[kind] += allocation_scope.allocated_bytes_by_kind[kind];
-    if (allocation_scope.peak_live_bytes > runtime->scoped_peak_live_bytes)
-      runtime->scoped_peak_live_bytes = allocation_scope.peak_live_bytes;
-    runtime->scoped_retained_bytes += allocation_scope.live_bytes;
-    runtime->scoped_collections += allocation_scope.collections;
-  }
+  end_measured_allocation_scope(runtime, &allocation_scope);
   return control;
 }
 
@@ -1027,6 +1234,31 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
   for (uint32_t index = 0; index < count; ++index)
     environment->locals[environment_slot(CHIMI_IDS[callable->parameters_offset + index])] = arguments[index];
   return run_node(callable->body, runtime, environment, span);
+}
+
+static ChimiFiberResult task_fiber_result(ChimiControl *control) {
+  if (control->kind == CONTROL_CANCEL)
+    return (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED};
+  if (control->kind == CONTROL_DEFECT)
+    return (ChimiFiberResult){
+      .state = CHIMI_FIBER_DEFECTED,
+      .defect_code = (int64_t)(intptr_t)control,
+    };
+  return (ChimiFiberResult){
+    .state = CHIMI_FIBER_SUCCEEDED,
+    .value = (int64_t)(intptr_t)control,
+  };
+}
+
+static ChimiFiberResult chimi_task_entry(void *raw_context) {
+  ChimiTaskContext *context = raw_context;
+  ChimiControl *control;
+  if (context->entry)
+    control = context->entry(context->runtime, context->environment, context->span);
+  else
+    control = invoke(context->runtime, context->callable, NULL, 0, context->span,
+                     UINT32_MAX, context->environment);
+  return task_fiber_result(control);
 }
 
 static ChimiControl *map_values_node(ChimiRuntime *runtime, MapNode *node,
@@ -1171,6 +1403,160 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT ||
           arguments[1]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
       return success(boolean_value(strcmp(arguments[0]->as.text, arguments[1]->as.text) == 0));
+    case CHIMI_INTRINSIC_TASK_START: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_CALLABLE)
+        return intrinsic_shape_defect(call_node);
+      ChimiTaskContext *context = allocate(1, sizeof(*context));
+      context->runtime = runtime;
+      context->environment = capture_requirements(environment);
+      context->callable = arguments[0]->as.callable;
+      context->entry = NULL;
+      context->span = span;
+      ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_TASK_START,
+        .entry = chimi_task_entry,
+        .context = context,
+      };
+      ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      if (request.status != CHIMI_RESPONSE_OK)
+        return defect("Task.start scheduler request failed", call_node);
+      CapabilityTransfer transfer = {.child = request.task};
+      bool transferred = transfer_captured_value(&transfer, arguments[0], 0);
+      free(transfer.visited);
+      if (!transferred) {
+        if (transfer.cancelled) return cancelled();
+        return defect("Task.start could not transfer an exclusive capture", call_node);
+      }
+      return success(task_value(request.task));
+    }
+    case CHIMI_INTRINSIC_TASK_RESULT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TASK)
+        return intrinsic_shape_defect(call_node);
+      for (;;) {
+        ChimiSchedulerRequest request = {
+          .kind = CHIMI_REQUEST_TASK_RESULT,
+          .task = arguments[0]->as.task,
+        };
+        ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+        if (command == CHIMI_FIBER_CANCEL) return cancelled();
+        if (request.status == CHIMI_RESPONSE_PENDING) continue;
+        if (request.status == CHIMI_RESPONSE_SUCCEEDED)
+          return (ChimiControl *)(intptr_t)request.value;
+        if (request.status == CHIMI_RESPONSE_CANCELLED) return cancelled();
+        if (request.status == CHIMI_RESPONSE_DEFECTED && request.value != 0)
+          return (ChimiControl *)(intptr_t)request.value;
+        if (request.status == CHIMI_RESPONSE_STACK_OVERFLOW)
+          return defect("Task stack overflow", call_node);
+        return defect("Task.result scheduler request failed", call_node);
+      }
+    }
+    case CHIMI_INTRINSIC_TASK_CANCEL: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TASK)
+        return intrinsic_shape_defect(call_node);
+      ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_TASK_CANCEL,
+        .task = arguments[0]->as.task,
+      };
+      ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      return request.status == CHIMI_RESPONSE_OK
+        ? success(void_value())
+        : defect("Task.cancel scheduler request failed", call_node);
+    }
+    case CHIMI_INTRINSIC_CHANNEL_BOUNDED: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER ||
+          arguments[0]->as.integer < 0)
+        return intrinsic_shape_defect(call_node);
+      ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_CHANNEL_BOUNDED,
+        .value = arguments[0]->as.integer,
+      };
+      ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      return request.status == CHIMI_RESPONSE_OK
+        ? success(channel_bundle_value(request.channel, request.owner, request.token))
+        : defect("Channel.bounded scheduler request failed", call_node);
+    }
+    case CHIMI_INTRINSIC_CHANNEL_SEND: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_CHANNEL_SENDER)
+        return intrinsic_shape_defect(call_node);
+      for (;;) {
+        ChimiSchedulerRequest request = {
+          .kind = CHIMI_REQUEST_CHANNEL_SEND,
+          .channel = arguments[0]->as.capability.channel,
+          .value = (int64_t)(intptr_t)arguments[1],
+        };
+        ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+        if (command == CHIMI_FIBER_CANCEL) return cancelled();
+        if (request.status == CHIMI_RESPONSE_PENDING) continue;
+        if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
+        ChimiValue *recovered = (ChimiValue *)(intptr_t)request.value;
+        ChimiValue *fields[] = {recovered};
+        if (request.status == CHIMI_RESPONSE_CLOSED)
+          return failure(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED, fields, 1));
+        if (request.status == CHIMI_RESPONSE_ABORTED)
+          return failure(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_SEND_ABORTED, fields, 1));
+        return defect("Channel.send scheduler request failed", call_node);
+      }
+    }
+    case CHIMI_INTRINSIC_CHANNEL_RECEIVE: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_CHANNEL_RECEIVER)
+        return intrinsic_shape_defect(call_node);
+      RuntimeCapability capability = arguments[0]->as.capability;
+      for (;;) {
+        ChimiSchedulerRequest request = {
+          .kind = CHIMI_REQUEST_CHANNEL_RECEIVE,
+          .channel = capability.channel,
+          .owner = capability.owner,
+          .token = capability.token,
+        };
+        ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+        if (command == CHIMI_FIBER_CANCEL) return cancelled();
+        if (request.status == CHIMI_RESPONSE_PENDING) continue;
+        if (request.status == CHIMI_RESPONSE_SUCCEEDED) {
+          ChimiValue *fields[] = {(ChimiValue *)(intptr_t)request.value};
+          return success(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED, fields, 1));
+        }
+        if (request.status == CHIMI_RESPONSE_DRAINED)
+          return success(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_DRAINED, NULL, 0));
+        if (request.status == CHIMI_RESPONSE_ABORTED)
+          return failure(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_ABORTED, NULL, 0));
+        return defect("Channel.receive scheduler request failed", call_node);
+      }
+    }
+    case CHIMI_INTRINSIC_CHANNEL_CLOSE: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_CHANNEL_COMPLETION)
+        return intrinsic_shape_defect(call_node);
+      RuntimeCapability capability = arguments[0]->as.capability;
+      ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_CHANNEL_CLOSE,
+        .channel = capability.channel,
+        .owner = capability.owner,
+        .token = capability.token,
+      };
+      ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      return request.status == CHIMI_RESPONSE_OK
+        ? success(void_value())
+        : defect("Channel.close scheduler request failed", call_node);
+    }
+    case CHIMI_INTRINSIC_CHANNEL_ABORT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_CHANNEL_RECEIVER)
+        return intrinsic_shape_defect(call_node);
+      RuntimeCapability capability = arguments[0]->as.capability;
+      ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_CHANNEL_ABORT,
+        .channel = capability.channel,
+        .owner = capability.owner,
+        .token = capability.token,
+      };
+      ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      return request.status == CHIMI_RESPONSE_OK
+        ? success(void_value())
+        : defect("Channel.abort scheduler request failed", call_node);
+    }
   }
   return defect("unknown standard intrinsic", call_node);
 }
@@ -1273,7 +1659,7 @@ NODE_WRAPPER(construct, "construct", {
   ChimiValue **values = allocate(node->length, sizeof(*values));
   bool stopped = false;
   for (uint32_t index = 0; index < node->length; ++index) {
-    ChimiControl *control = RUN(CHIMI_NAMED_NODES[node->offset + index].node);
+    ChimiControl *control = RUN(CHIMI_IDS[node->offset + index]);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
     values[index] = control->value;
   }
@@ -1286,12 +1672,8 @@ NODE_WRAPPER(construct, "construct", {
   value->as.constructed.fields = allocate(shape->fields_length, sizeof(*value->as.constructed.fields));
   allocation_kind(value->as.constructed.fields, ALLOCATION_FIELDS);
   for (uint32_t field = 0; field < shape->fields_length; ++field) {
-    const char *name = CHIMI_STRINGS[CHIMI_IDS[shape->fields_offset + field]]; uint32_t selected = field;
-    for (uint32_t argument = 0; argument < node->length; ++argument) {
-      uint32_t label = CHIMI_NAMED_NODES[node->offset + argument].name;
-      if (label != UINT32_MAX && strcmp(CHIMI_STRINGS[label], name) == 0) { selected = argument; break; }
-    }
-    value->as.constructed.fields[field] = (RuntimeField){name, values[selected]};
+    const char *name = CHIMI_STRINGS[CHIMI_IDS[shape->fields_offset + field]];
+    value->as.constructed.fields[field] = (RuntimeField){name, values[field]};
   }
   result = success(value);
 })
@@ -1302,7 +1684,7 @@ NODE_WRAPPER(call, "call", {
   if (callee->value->kind != VALUE_CALLABLE) { result = defect("verified call target is not callable", node_id); break; }
   ChimiValue **arguments = allocate(node->length, sizeof(*arguments)); bool stopped = false;
   for (uint32_t index = 0; index < node->length; ++index) {
-    ChimiControl *control = RUN(CHIMI_NAMED_NODES[node->offset + index].node);
+    ChimiControl *control = RUN(CHIMI_IDS[node->offset + index]);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
     arguments[index] = control->value;
   }
@@ -1398,7 +1780,8 @@ NODE_WRAPPER(closure, "closure", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiCallable *callable = allocate(1, sizeof(*callable));
   allocation_kind(callable, ALLOCATION_CALLABLE);
   callable->kind = CALL_CLOSURE; callable->body = node->a; callable->parameters_offset = node->offset;
-  callable->parameters_length = node->length; callable->environment = clone_environment(environment);
+  callable->parameters_length = node->length;
+  callable->environment = capture_closure_environment(environment, node);
   callable->name = "closure"; result = success(callable_value(callable));
 })
 
@@ -1489,6 +1872,59 @@ NODE_WRAPPER(match, "match", {
   }
 })
 
+/* Runs passes in a C loop so stack use is independent of the pass count. The loop owns
+   one cloned environment and rebinds only its state slot between passes; that is safe
+   because closures copy captured slots and binding nodes clone before writing. Each
+   pass checks cancellation first and runs under this node's span, so pass operations
+   are siblings.
+
+   Without a scheduler, a pass's allocations are reclaimed once it ends, keeping only
+   what the next state reaches. Values are immutable and the loop environment lives in
+   the enclosing scope, so the state is the only path from one pass to the next. With a
+   scheduler this is unsafe: Channel.send hands the scheduler an unmarked pointer, and
+   fibers share one current scope (prog show ts-da83af). */
+NODE_WRAPPER(loop, "loop", {
+  const ChimiNode *node = &CHIMI_NODES[node_id];
+  ChimiControl *initial = RUN(node->b);
+  if (initial->kind != CONTROL_SUCCESS) { result = initial; break; }
+  environment = clone_local_environment(incoming);
+  uint32_t state_slot = environment_slot(node->a);
+  ChimiValue *state = initial->value;
+  bool reclaims = !CHIMI_REQUIRES_SCHEDULER;
+  AllocationScope passes;
+  if (reclaims) allocation_scope_begin(&passes);
+  for (;;) {
+    if (runtime->cancel) { result = cancelled(); break; }
+    environment->locals[state_slot] = state;
+    ChimiControl *pass = RUN(node->c);
+    if (pass->kind == CONTROL_SUCCESS) {
+      state = pass->value;
+      if (reclaims) allocation_scope_collect(&passes, state, NULL);
+      continue;
+    }
+    if (pass->kind == CONTROL_BREAK && pass->node == (int64_t)node->a) {
+      result = success(pass->value);
+    } else {
+      result = pass;
+    }
+    break;
+  }
+  if (reclaims) {
+    allocation_scope_collect(&passes, NULL, result);
+    end_measured_allocation_scope(runtime, &passes);
+  }
+})
+NODE_WRAPPER(break, "break", {
+  const ChimiNode *node = &CHIMI_NODES[node_id];
+  ChimiValue *value = void_value();
+  if (node->b != UINT32_MAX) {
+    ChimiControl *control = RUN(node->b);
+    if (control->kind != CONTROL_SUCCESS) { result = control; break; }
+    value = control->value;
+  }
+  result = new_control(CONTROL_BREAK, value, NULL, node->a);
+})
+
 static void print_outcome(FILE *output, const ChimiControl *control) {
   fputs("{\"schema\":\"chimi.runtime.v1\",", output);
   switch (control->kind) {
@@ -1542,6 +1978,75 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           runtime->scoped_retained_bytes,
           runtime->scoped_collections);
   return close_output(output);
+}
+
+static const char *scheduler_event_name(const ChimiSchedulerTraceEvent *event) {
+  static const char *task_names[] = {
+    "task_started", "task_parked", "task_woken", "task_cancellation_requested",
+    "task_cleanup_completed", "task_terminal",
+  };
+  static const char *channel_names[] = {
+    "channel_created", "channel_send_accepted", "channel_send_parked",
+    "channel_send_rejected_closed", "channel_send_rejected_aborted",
+    "channel_send_cancelled", "channel_receive_delivered", "channel_receive_parked",
+    "channel_receive_cancelled", "channel_closed", "channel_drained",
+    "channel_aborted", "channel_receiver_transferred", "channel_completion_transferred",
+  };
+  if (event->family == CHIMI_SCHEDULER_TRACE_TASK &&
+      event->kind > 0 && event->kind <= sizeof(task_names) / sizeof(*task_names))
+    return task_names[event->kind - 1];
+  if (event->family == CHIMI_SCHEDULER_TRACE_CHANNEL &&
+      event->kind > 0 && event->kind <= sizeof(channel_names) / sizeof(*channel_names))
+    return channel_names[event->kind - 1];
+  return "scheduler_event";
+}
+
+static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *event) {
+  ChimiRuntime *runtime = context;
+  FILE *output = runtime->telemetry;
+  fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":", output);
+  json_string(output, scheduler_event_name(event));
+  fprintf(output, ",\"sequence\":%" PRIu64 ",\"computation\":", runtime->next_sequence++);
+  json_string(output, CHIMI_COMPUTATION);
+  fputs(",\"execution_id\":", output);
+  json_string(output, runtime->execution_id);
+  fputs(",\"task_id\":", output);
+  if (event->task == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->task);
+  fputs(",\"parent_task_id\":", output);
+  if (event->parent == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->parent);
+  fputs(",\"cause_task_id\":", output);
+  if (event->cause == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->cause);
+  fputs(",\"channel_id\":", output);
+  if (event->channel == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->channel);
+  fprintf(output,
+          ",\"attributes\":{\"scheduler_sequence\":%" PRIu64
+          ",\"capacity\":%" PRIu64 ",\"queue_depth\":%" PRIu64
+          ",\"waiter_depth\":%" PRIu64 ",\"discard_count\":%" PRIu64 "}}\n",
+          event->sequence, event->capacity, event->queue_depth,
+          event->waiter_depth, event->discard_count);
+}
+
+static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn entry,
+                                           ChimiEnvironment *environment) {
+  if (!CHIMI_REQUIRES_SCHEDULER) return entry(runtime, environment, 1);
+  ChimiTaskContext context = {
+    .runtime = runtime,
+    .environment = environment,
+    .entry = entry,
+    .span = 1,
+  };
+  uint32_t trace_mode = runtime->silent ? 0 : (runtime->full_trace ? 2 : 1);
+  ChimiSchedulerOutcome outcome = chimi_scheduler_execute(
+    chimi_task_entry, &context, 64u * 1024u, trace_mode,
+    emit_scheduler_event, runtime);
+  if (outcome.state == CHIMI_FIBER_SUCCEEDED)
+    return (ChimiControl *)(intptr_t)outcome.value;
+  if (outcome.state == CHIMI_FIBER_CANCELLED) return cancelled();
+  if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code != 0)
+    return (ChimiControl *)(intptr_t)outcome.defect_code;
+  if (outcome.state == CHIMI_FIBER_STACK_OVERFLOW)
+    return defect("Task stack overflow", -1);
+  return defect("Task scheduler failed to produce a terminal root", -1);
 }
 
 int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
@@ -1658,7 +2163,9 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
           arguments->as.list.items[argument] = text_value(argv[index + (int32_t)argument]);
         environment->locals[environment_slot(CHIMI_IDS[entry_function->parameters_offset])] = arguments;
       }
-      ChimiControl *control = runtime.cancel ? cancelled() : entry(&runtime, environment, 1);
+      ChimiControl *control = runtime.cancel
+        ? cancelled()
+        : execute_program_entry(&runtime, entry, environment);
       if (control == NULL) return 70;
       if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
     }
@@ -1684,7 +2191,9 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       arguments->as.list.items[argument] = text_value(argv[index + (int32_t)argument]);
     environment->locals[environment_slot(CHIMI_IDS[entry_function->parameters_offset])] = arguments;
   }
-  ChimiControl *control = runtime.cancel ? cancelled() : entry(&runtime, environment, 1);
+  ChimiControl *control = runtime.cancel
+    ? cancelled()
+    : execute_program_entry(&runtime, entry, environment);
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
   if (runtime.outcome) print_outcome(runtime.outcome, control);
   bool write_failed = write_memory_report(memory_report_path, &runtime);

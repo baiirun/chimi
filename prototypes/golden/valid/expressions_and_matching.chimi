@@ -38,12 +38,12 @@ fn authorize(state: AccountState, request: Request) -> Decision {
       let reason = normalize("Transfer amount must be positive")
       Denied(reason)
     }
-    Active, View -> Allowed(summary: "view")
+    Active, View -> Allowed("view")
     Active, Transfer(amount) -> {
       let summary = Text.concat("transfer:", Int.to_text(amount.cents))
-      Allowed(summary: summary)
+      Allowed(summary)
     }
   }
 }
 
-let decision = authorize(Active, Transfer(amount: Money(cents: 500)))
+let decision = authorize(Active, Transfer(Money(500)))

@@ -66,6 +66,28 @@ fn version_reports_the_bootstrap_compiler() {
 }
 
 #[test]
+fn concurrency_lab_runs_each_evidence_kind_independently() {
+    for kind in ["static", "runtime", "observability", "performance", "smoke"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi-concurrency-lab"))
+            .arg(kind)
+            .output()
+            .expect("run concurrency conformance lab");
+        assert!(
+            output.status.success(),
+            "{kind}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty(), "{kind}");
+        let report = String::from_utf8(output.stdout).unwrap();
+        assert!(report.starts_with("{\"schema\":\"chimi.concurrency-conformance.v1\",\"kind\":\""));
+        assert!(report.contains(&format!("\"kind\":\"{kind}\"")));
+        assert!(report.contains("\"checks\":["));
+        assert!(report.contains("\"metrics\":{"));
+        assert_eq!(report.lines().count(), 1);
+    }
+}
+
+#[test]
 fn check_accepts_a_single_module_project() {
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .args(["check", &fixture("success")])
@@ -160,8 +182,13 @@ fn build_links_a_runnable_executable_and_reports_its_artifacts() {
     assert!(report.contains("\"application_objects\":["));
     assert!(report.contains("\"metadata_object\":"));
     assert!(report.contains("\"runtime_archive\":"));
+    assert!(report.contains("\"fiber_runtime_archive\":null"));
     assert!(report.contains("\"dynamic_dependencies\":["));
     assert!(executable.is_file());
+    assert!(
+        std::fs::metadata(&executable).unwrap().len() < 1024 * 1024,
+        "an ordinary binary must not retain the unused fiber runtime"
+    );
 
     let manifest = scratch.join("target/chimi/answer/build.json");
     assert_eq!(std::fs::read_to_string(manifest).unwrap(), report);
@@ -185,6 +212,491 @@ fn build_links_a_runnable_executable_and_reports_its_artifacts() {
         )
     );
 
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_source_executes_task_start_and_result() {
+    let scratch = scratch_directory("native-task-start-result");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("task-program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/task as Task\n",
+            "enum WorkError { Stopped }\n",
+            "fn work() -> Int {\n",
+            "  case 1 {\n",
+            "    0 -> Failure(Stopped())\n",
+            "    _ -> 42\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let child = Task.start(work)\n",
+            "  Task.result(child)\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&executable)
+        .output()
+        .expect("build native Task program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let execution = execute_native(&executable, &scratch, "native-task", "off");
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_source_executes_bounded_channel_send_close_and_receive() {
+    let scratch = scratch_directory("native-channel-round-trip");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("channel-program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Receive}\n",
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  Channel.send(channel.sender, 42)\n",
+            "  Channel.close(channel.completion)\n",
+            "  let first = Channel.receive(channel.receiver)\n",
+            "  let second = Channel.receive(channel.receiver)\n",
+            "  case first {\n",
+            "    Receive.Received(value) -> case second {\n",
+            "      Receive.Received(_) -> 0\n",
+            "      Receive.Drained -> value\n",
+            "    }\n",
+            "    Receive.Drained -> 0\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&executable)
+        .output()
+        .expect("build native Channel program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let execution = execute_native(&executable, &scratch, "native-channel", "off");
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_source_suspends_a_task_on_a_rendezvous_channel() {
+    let scratch = scratch_directory("native-task-channel-rendezvous");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("rendezvous-program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Receive}\n",
+            "import std/task as Task\n",
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(0)\n",
+            "  let sender = channel.sender\n",
+            "  let receiver = channel.receiver\n",
+            "  let completion = channel.completion\n",
+            "  let child = Task.start(fn() -> Int {\n",
+            "    Channel.send(sender, 42)\n",
+            "    7\n",
+            "  })\n",
+            "  let received = Channel.receive(receiver)\n",
+            "  let child_value = Task.result(child)\n",
+            "  Channel.close(completion)\n",
+            "  case received {\n",
+            "    Receive.Received(value) -> value + child_value\n",
+            "    Receive.Drained -> 0\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&executable)
+        .output()
+        .expect("build native Task and Channel rendezvous program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let execution = execute_native(&executable, &scratch, "native-rendezvous", "off");
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":49}\n"
+    );
+    assert!(execution.telemetry.is_empty());
+
+    let boundaries = execute_native(
+        &executable,
+        &scratch,
+        "native-rendezvous-boundaries",
+        "boundaries",
+    );
+    assert!(boundaries.process.status.success());
+    assert!(boundaries.telemetry.contains("\"event\":\"task_started\""));
+    assert!(
+        boundaries
+            .telemetry
+            .contains("\"event\":\"channel_created\"")
+    );
+    assert!(!boundaries.telemetry.contains("\"event\":\"task_parked\""));
+
+    let full = execute_native(&executable, &scratch, "native-rendezvous-full", "full");
+    assert!(full.process.status.success());
+    assert!(full.telemetry.contains("\"event\":\"task_parked\""));
+    assert!(
+        full.telemetry
+            .contains("\"event\":\"channel_receive_parked\"")
+    );
+    assert!(
+        full.telemetry
+            .contains("\"event\":\"channel_receive_delivered\"")
+    );
+    let sequences = full
+        .telemetry
+        .lines()
+        .map(|line| json_u64_field(line, "sequence"))
+        .collect::<Vec<_>>();
+    assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_source_transfers_an_exclusive_receiver_to_a_child() {
+    let scratch = scratch_directory("native-channel-receiver-transfer");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("receiver-transfer-program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Receive}\n",
+            "import std/task as Task\n",
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(0)\n",
+            "  let sender = channel.sender\n",
+            "  let receiver = channel.receiver\n",
+            "  let completion = channel.completion\n",
+            "  let child = Task.start(fn() -> Int {\n",
+            "    let received = Channel.receive(receiver)\n",
+            "    case received {\n",
+            "      Receive.Received(value) -> value\n",
+            "      Receive.Drained -> 0\n",
+            "    }\n",
+            "  })\n",
+            "  Channel.send(sender, 42)\n",
+            "  let value = Task.result(child)\n",
+            "  Channel.close(completion)\n",
+            "  value\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&executable)
+        .output()
+        .expect("build native receiver-transfer program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let execution = execute_native(&executable, &scratch, "native-transfer", "off");
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_channel_close_recovers_the_unaccepted_value() {
+    let scratch = scratch_directory("native-channel-close-recovery");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("close-recovery-program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{SendError}\n",
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  Channel.close(channel.completion)\n",
+            "  case Channel.send(channel.sender, 42) {\n",
+            "    Success(_) -> 0\n",
+            "    Failure(error) -> case error {\n",
+            "      SendError.Closed(value) -> value\n",
+            "      SendError.Aborted(value) -> value\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&executable)
+        .output()
+        .expect("build native close-recovery program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let execution = execute_native(&executable, &scratch, "native-close-recovery", "off");
+    assert!(execution.process.status.success());
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_task_cancel_cleans_up_a_parked_child() {
+    let scratch = scratch_directory("native-task-cancel");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("cancel-program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Receive}\n",
+            "import std/task as Task\n",
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(0)\n",
+            "  let receiver = channel.receiver\n",
+            "  let child = Task.start(fn() -> Int {\n",
+            "    let received = Channel.receive(receiver)\n",
+            "    case received {\n",
+            "      Receive.Received(value) -> value\n",
+            "      Receive.Drained -> 0\n",
+            "    }\n",
+            "  })\n",
+            "  Task.cancel(child)\n",
+            "  42\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&executable)
+        .output()
+        .expect("build native cancellation program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let execution = execute_native(&executable, &scratch, "native-cancel", "off");
+    assert!(execution.process.status.success());
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_channel_abort_discards_values_and_fails_receive_explicitly() {
+    let scratch = scratch_directory("native-channel-abort");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("abort-program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{ChannelError}\n",
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  Channel.send(channel.sender, 10)\n",
+            "  Channel.abort(channel.receiver)\n",
+            "  case Channel.receive(channel.receiver) {\n",
+            "    Success(_) -> 0\n",
+            "    Failure(ChannelError.Aborted) -> 42\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&executable)
+        .output()
+        .expect("build native abort program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let execution = execute_native(&executable, &scratch, "native-abort", "full");
+    assert!(execution.process.status.success());
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+    assert!(
+        execution
+            .telemetry
+            .contains("\"event\":\"channel_aborted\"")
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_child_defect_propagates_through_task_result() {
+    let scratch = scratch_directory("native-task-defect");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("defect-program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/task as Task\n",
+            "enum WorkError { Stopped }\n",
+            "fn broken() -> Int {\n",
+            "  case 1 {\n",
+            "    0 -> Failure(Stopped())\n",
+            "    _ -> 1 / 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let child = Task.start(broken)\n",
+            "  Task.result(child)\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&executable)
+        .output()
+        .expect("build native child-defect program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let execution = execute_native(&executable, &scratch, "native-defect", "full");
+    assert_eq!(execution.process.status.code(), Some(70));
+    assert!(execution.outcome.contains("\"outcome\":\"defect\""));
+    assert!(execution.outcome.contains("integer division by zero"));
+    assert!(execution.telemetry.contains("\"event\":\"task_terminal\""));
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_task_result_preserves_expected_failure_values() {
+    let scratch = scratch_directory("native-task-expected-failure");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("expected-failure-program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/task as Task\n",
+            "enum WorkError { Stopped }\n",
+            "fn fail() -> Int { Failure(Stopped()) }\n",
+            "pub fn main() -> Int {\n",
+            "  let child = Task.start(fail)\n",
+            "  Task.result(child)\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&executable)
+        .output()
+        .expect("build native expected-failure task program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let execution = execute_native(&executable, &scratch, "native-task-failure", "full");
+    assert_eq!(execution.process.status.code(), Some(1));
+    assert!(
+        execution
+            .outcome
+            .contains("\"outcome\":\"expected_failure\"")
+    );
+    assert!(execution.outcome.contains("\"type\":\"WorkError\""));
+    assert!(execution.outcome.contains("\"variant\":\"Stopped\""));
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
@@ -579,6 +1091,49 @@ fn build_executes_virtual_json_and_map_standard_modules() {
         )
     );
 
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn native_concurrency_pipeline_forces_the_connected_runtime() {
+    let scratch = scratch_directory("native-concurrency-pipeline");
+    let executable = scratch.join("concurrency-pipeline");
+    let root = repository_path("programs/concurrency-pipeline");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", "--root"])
+        .arg(&root)
+        .args(["app/main", "-o"])
+        .arg(&executable)
+        .output()
+        .expect("build the source-level concurrency forcing program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let execution = execute_native(&executable, &scratch, "native-concurrency-pipeline", "full");
+    assert!(execution.process.status.success());
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":25}\n"
+    );
+    for event in [
+        "channel_send_parked",
+        "channel_receiver_transferred",
+        "channel_completion_transferred",
+        "task_terminal",
+        "dependency_called",
+    ] {
+        assert!(
+            execution
+                .telemetry
+                .contains(&format!("\"event\":\"{event}\"")),
+            "missing {event} in {}",
+            execution.telemetry
+        );
+    }
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
@@ -1529,4 +2084,150 @@ fn golden_and_recovery_corpus_reaches_the_real_check_path() {
             "fixture {relative_path}: {stderr}"
         );
     }
+}
+
+fn build_native(scratch: &Path, name: &str, source_text: &str) -> PathBuf {
+    let source = scratch.join(format!("{name}.chimi"));
+    let executable = scratch.join(name);
+    std::fs::write(&source, source_text).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(scratch)
+        .args(["build"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&executable)
+        .output()
+        .expect("build native loop program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    executable
+}
+
+// Guards: native loops run passes without growing the C stack (recursion overflowed here).
+#[test]
+fn native_loop_runs_a_million_passes() {
+    let scratch = scratch_directory("native-loop-million");
+    let executable = build_native(
+        &scratch,
+        "loop-million",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  loop count = 0 {\n",
+            "    case count {\n",
+            "      1000000 -> break count\n",
+            "      _ -> count + 1\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "loop-million", "off");
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":1000000}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Guards: a loop drives a real channel consumer until Drained, across task parking.
+#[test]
+fn native_loop_consumes_a_channel_until_drained() {
+    let scratch = scratch_directory("native-loop-channel");
+    let executable = build_native(
+        &scratch,
+        "loop-channel",
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Receiver, Receive}\n",
+            "import std/task as Task\n",
+            "fn total(jobs: Receiver<Int>) -> Int {\n",
+            "  loop sum = 0 {\n",
+            "    let next = Channel.receive(jobs)\n",
+            "    case next {\n",
+            "      Receive.Received(value) -> sum + value\n",
+            "      Receive.Drained -> break sum\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let jobs = Channel.bounded(1)\n",
+            "  let receiver = jobs.receiver\n",
+            "  let sender = jobs.sender\n",
+            "  let completion = jobs.completion\n",
+            "  let child = Task.start(fn() -> Int { total(receiver) })\n",
+            "  Channel.send(sender, 1)\n",
+            "  Channel.send(sender, 2)\n",
+            "  Channel.send(sender, 3)\n",
+            "  Channel.send(sender, 4)\n",
+            "  Channel.send(sender, 5)\n",
+            "  Channel.close(completion)\n",
+            "  Task.result(child)\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "loop-channel", "off");
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":15}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Guards: without a scheduler, each pass's garbage is reclaimed, so live memory stays
+// bounded by one pass instead of growing with the pass count.
+#[test]
+fn native_scheduler_free_loop_reclaims_each_pass() {
+    let scratch = scratch_directory("native-loop-reclaim");
+    let passes = 100_000_u64;
+    let executable = build_native(
+        &scratch,
+        "loop-reclaim",
+        &format!(
+            concat!(
+                "pub fn main() -> Int {{\n",
+                "  loop count = 0 {{\n",
+                "    case count {{\n",
+                "      {passes} -> break count\n",
+                "      _ -> count + 1\n",
+                "    }}\n",
+                "  }}\n",
+                "}}\n",
+            ),
+            passes = passes
+        ),
+    );
+    let memory_report = scratch.join("loop-memory.json");
+    let execution = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--memory-report-file={}", memory_report.display()))
+        .arg("--")
+        .output()
+        .expect("run native loop with a memory report");
+    assert!(
+        execution.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+    let memory_report = std::fs::read_to_string(memory_report).unwrap();
+    assert!(json_u64_field(&memory_report, "scoped_collections") >= passes);
+    let peak_live = json_u64_field(&memory_report, "scoped_peak_live_bytes");
+    assert!(
+        peak_live < 16_384,
+        "loop kept {peak_live} live bytes across {passes} passes"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
 }

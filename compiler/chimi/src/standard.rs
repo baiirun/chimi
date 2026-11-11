@@ -1,18 +1,22 @@
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum StandardModule {
+    Channel,
     Io,
     Json,
     Map,
+    Task,
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 3] = [Self::Io, Self::Json, Self::Map];
+    pub(crate) const ALL: [Self; 5] = [Self::Channel, Self::Io, Self::Json, Self::Map, Self::Task];
 
     pub(crate) const fn path(self) -> &'static str {
         match self {
+            Self::Channel => "std/channel",
             Self::Io => "std/io",
             Self::Json => "std/json",
             Self::Map => "std/map",
+            Self::Task => "std/task",
         }
     }
 }
@@ -31,6 +35,13 @@ pub(crate) enum StandardType {
     DecodeError,
     NumberError,
     Option,
+    ChannelSender,
+    ChannelReceiver,
+    ChannelCompletion,
+    ChannelSendError,
+    ChannelReceive,
+    ChannelError,
+    Task,
 }
 
 impl StandardType {
@@ -48,9 +59,21 @@ impl StandardType {
             Self::DecodeError => "DecodeError",
             Self::NumberError => "NumberError",
             Self::Option => "Option",
+            Self::ChannelSender => "Sender",
+            Self::ChannelReceiver => "Receiver",
+            Self::ChannelCompletion => "Completion",
+            Self::ChannelSendError => "SendError",
+            Self::ChannelReceive => "Receive",
+            Self::ChannelError => "ChannelError",
+            Self::Task => "Task",
         }
     }
 
+    #[cfg(any(
+        feature = "embedded-bytecode-prototype",
+        feature = "native-backend",
+        feature = "native-aot-prototype"
+    ))]
     pub(crate) const fn runtime_id(self) -> u32 {
         self as u32
     }
@@ -76,10 +99,18 @@ pub(crate) enum StandardFunction {
     JsonNumberToInt,
     TextAppend,
     TextEqual,
+    TaskStart,
+    TaskResult,
+    TaskCancel,
+    ChannelSend,
+    ChannelReceive,
+    ChannelClose,
+    ChannelAbort,
+    ChannelBounded,
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 22] = [
         Self::IoPath,
         Self::MapEmpty,
         Self::MapGet,
@@ -94,6 +125,14 @@ impl StandardFunction {
         Self::JsonArray,
         Self::JsonObject,
         Self::JsonNumberToInt,
+        Self::TaskStart,
+        Self::TaskResult,
+        Self::TaskCancel,
+        Self::ChannelSend,
+        Self::ChannelReceive,
+        Self::ChannelClose,
+        Self::ChannelAbort,
+        Self::ChannelBounded,
     ];
 
     pub(crate) const fn module(self) -> Option<StandardModule> {
@@ -110,6 +149,12 @@ impl StandardFunction {
             | Self::JsonArray
             | Self::JsonObject
             | Self::JsonNumberToInt => Some(StandardModule::Json),
+            Self::TaskStart | Self::TaskResult | Self::TaskCancel => Some(StandardModule::Task),
+            Self::ChannelSend
+            | Self::ChannelReceive
+            | Self::ChannelClose
+            | Self::ChannelAbort
+            | Self::ChannelBounded => Some(StandardModule::Channel),
             Self::ListFirst | Self::ListLength | Self::TextAppend | Self::TextEqual => None,
         }
     }
@@ -134,9 +179,22 @@ impl StandardFunction {
             Self::JsonNumberToInt => "number_to_int",
             Self::TextAppend => "append",
             Self::TextEqual => "equal",
+            Self::TaskStart => "start",
+            Self::TaskResult => "result",
+            Self::TaskCancel => "cancel",
+            Self::ChannelSend => "send",
+            Self::ChannelReceive => "receive",
+            Self::ChannelClose => "close",
+            Self::ChannelAbort => "abort",
+            Self::ChannelBounded => "bounded",
         }
     }
 
+    #[cfg(any(
+        feature = "embedded-bytecode-prototype",
+        feature = "native-backend",
+        feature = "native-aot-prototype"
+    ))]
     pub(crate) const fn runtime_id(self) -> u32 {
         self as u32
     }
@@ -161,10 +219,15 @@ pub(crate) enum StandardConstructor {
     DecodeInvalidJson,
     NumberNotInteger,
     NumberOutOfRange,
+    ChannelSendClosed,
+    ChannelSendAborted,
+    ChannelReceived,
+    ChannelDrained,
+    ChannelAborted,
 }
 
 impl StandardConstructor {
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 22] = [
         Self::ConsoleWriteFailed,
         Self::FileClose,
         Self::FileLineTooLong,
@@ -182,6 +245,11 @@ impl StandardConstructor {
         Self::DecodeInvalidJson,
         Self::NumberNotInteger,
         Self::NumberOutOfRange,
+        Self::ChannelSendClosed,
+        Self::ChannelSendAborted,
+        Self::ChannelReceived,
+        Self::ChannelDrained,
+        Self::ChannelAborted,
     ];
 
     pub(crate) const fn type_kind(self) -> StandardType {
@@ -200,6 +268,9 @@ impl StandardConstructor {
             | Self::JsonObject => StandardType::JsonValue,
             Self::DecodeInvalidJson => StandardType::DecodeError,
             Self::NumberNotInteger | Self::NumberOutOfRange => StandardType::NumberError,
+            Self::ChannelSendClosed | Self::ChannelSendAborted => StandardType::ChannelSendError,
+            Self::ChannelReceived | Self::ChannelDrained => StandardType::ChannelReceive,
+            Self::ChannelAborted => StandardType::ChannelError,
         }
     }
 
@@ -213,6 +284,15 @@ impl StandardConstructor {
             | StandardType::DecodeError
             | StandardType::NumberError => Some(StandardModule::Json),
             StandardType::Option => None,
+            StandardType::ChannelSender
+            | StandardType::ChannelReceiver
+            | StandardType::ChannelCompletion
+            | StandardType::ChannelReceive
+            | StandardType::ChannelError => Some(StandardModule::Channel),
+            // SendError owns both Closed and Aborted, but only type-qualified
+            // access is valid: Channel.Aborted names the receive failure.
+            StandardType::ChannelSendError => None,
+            StandardType::Task => None,
             StandardType::Console
             | StandardType::FileSystem
             | StandardType::Map
@@ -239,6 +319,10 @@ impl StandardConstructor {
             Self::DecodeInvalidJson => "InvalidJson",
             Self::NumberNotInteger => "NotInteger",
             Self::NumberOutOfRange => "OutOfRange",
+            Self::ChannelSendClosed => "Closed",
+            Self::ChannelSendAborted | Self::ChannelAborted => "Aborted",
+            Self::ChannelReceived => "Received",
+            Self::ChannelDrained => "Drained",
         }
     }
 
@@ -255,9 +339,18 @@ impl StandardConstructor {
             Self::JsonObject => &["fields"],
             Self::DecodeInvalidJson => &["message", "offset"],
             Self::NumberNotInteger | Self::NumberOutOfRange => &["value"],
+            Self::ChannelSendClosed | Self::ChannelSendAborted | Self::ChannelReceived => {
+                &["value"]
+            }
+            Self::ChannelDrained | Self::ChannelAborted => &[],
         }
     }
 
+    #[cfg(any(
+        feature = "embedded-bytecode-prototype",
+        feature = "native-backend",
+        feature = "native-aot-prototype"
+    ))]
     pub(crate) const fn runtime_id(self) -> u32 {
         self as u32
     }
@@ -276,8 +369,8 @@ pub(crate) enum StandardSymbol {
 pub(crate) enum StandardGenericKind {
     Value,
     FailureRow,
+    FailureSet,
     NeedsRow,
-    EffectRow,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -285,7 +378,6 @@ pub(crate) enum StandardGeneric {
     FileState,
     FileFailures,
     FileNeeds,
-    FileEffects,
     ListFirstValue,
     ListLengthValue,
     OptionValue,
@@ -299,21 +391,22 @@ pub(crate) enum StandardGeneric {
     MapUpdateValue,
     MapUpdateFailures,
     MapUpdateNeeds,
-    MapUpdateEffects,
     MapValuesKey,
     MapValuesInput,
     MapValuesOutput,
     MapValuesFailures,
     MapValuesNeeds,
-    MapValuesEffects,
+    TaskValue,
+    TaskFailures,
+    TaskNeeds,
+    ChannelValue,
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 24] = [
+    pub(crate) const ALL: [Self; 25] = [
         Self::FileState,
         Self::FileFailures,
         Self::FileNeeds,
-        Self::FileEffects,
         Self::ListFirstValue,
         Self::ListLengthValue,
         Self::OptionValue,
@@ -327,13 +420,15 @@ impl StandardGeneric {
         Self::MapUpdateValue,
         Self::MapUpdateFailures,
         Self::MapUpdateNeeds,
-        Self::MapUpdateEffects,
         Self::MapValuesKey,
         Self::MapValuesInput,
         Self::MapValuesOutput,
         Self::MapValuesFailures,
         Self::MapValuesNeeds,
-        Self::MapValuesEffects,
+        Self::TaskValue,
+        Self::TaskFailures,
+        Self::TaskNeeds,
+        Self::ChannelValue,
     ];
 
     pub(crate) const fn name(self) -> &'static str {
@@ -341,7 +436,6 @@ impl StandardGeneric {
             Self::FileState => "$file_state",
             Self::FileFailures => "$file_failures",
             Self::FileNeeds => "$file_needs",
-            Self::FileEffects => "$file_effects",
             Self::ListFirstValue => "$list_first_value",
             Self::ListLengthValue => "$list_length_value",
             Self::OptionValue => "$option_value",
@@ -355,13 +449,15 @@ impl StandardGeneric {
             Self::MapUpdateValue => "$map_update_value",
             Self::MapUpdateFailures => "$map_update_failures",
             Self::MapUpdateNeeds => "$map_update_needs",
-            Self::MapUpdateEffects => "$map_update_effects",
             Self::MapValuesKey => "$map_values_key",
             Self::MapValuesInput => "$map_values_input",
             Self::MapValuesOutput => "$map_values_output",
             Self::MapValuesFailures => "$map_values_failures",
             Self::MapValuesNeeds => "$map_values_needs",
-            Self::MapValuesEffects => "$map_values_effects",
+            Self::TaskValue => "$task_value",
+            Self::TaskFailures => "$task_failures",
+            Self::TaskNeeds => "$task_needs",
+            Self::ChannelValue => "$channel_value",
         }
     }
 
@@ -370,11 +466,9 @@ impl StandardGeneric {
             Self::FileFailures | Self::MapUpdateFailures | Self::MapValuesFailures => {
                 StandardGenericKind::FailureRow
             }
+            Self::TaskFailures => StandardGenericKind::FailureSet,
             Self::FileNeeds | Self::MapUpdateNeeds | Self::MapValuesNeeds => {
                 StandardGenericKind::NeedsRow
-            }
-            Self::FileEffects | Self::MapUpdateEffects | Self::MapValuesEffects => {
-                StandardGenericKind::EffectRow
             }
             _ => StandardGenericKind::Value,
         }

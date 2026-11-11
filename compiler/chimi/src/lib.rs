@@ -1,5 +1,9 @@
 pub mod backend;
+mod capability;
 mod compiler;
+#[cfg(feature = "native-backend")]
+#[doc(hidden)]
+pub mod concurrency_lab;
 pub mod diagnostic;
 mod executable;
 pub mod execution;
@@ -10,6 +14,7 @@ pub mod frontend_benchmark;
 mod ids;
 mod inspection;
 mod json;
+pub mod line_index;
 pub mod project;
 mod resolution;
 mod semantic;
@@ -21,8 +26,8 @@ mod typing;
 pub use backend::{BackendOperationProfile, BackendProfile, BackendProgram, BackendValueProfile};
 pub use compiler::{
     CheckReport, Compiler, CompilerSession, GenericParameterKind, IncrementalStatistics,
-    IncrementalTypeReport, NameReport, ProjectPathError, ProjectSource, ReferenceInfo,
-    SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport,
+    IncrementalTypeReport, ModuleDiagnostics, NameReport, ProjectPathError, ProjectSource,
+    ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport,
 };
 pub use formatter::FormatReport;
 pub use inspection::{

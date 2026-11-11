@@ -13,6 +13,7 @@ frontend-benchmarks = []
 embedded-bytecode-prototype = []
 native-aot-prototype = ["native-backend"]
 native-backend = [
+  "dep:chimi-fiber",
   "dep:blake3",
   "dep:cranelift-codegen",
   "dep:cranelift-frontend",
@@ -22,6 +23,7 @@ native-backend = [
 ]
 
 [dependencies]
+chimi-fiber = { path = "../../runtime/chimi-fiber", optional = true }
 blake3 = { version = "=1.8.6", optional = true }
 cranelift-codegen = { version = "=0.131.3", optional = true }
 cranelift-frontend = { version = "=0.131.3", optional = true }
@@ -42,6 +44,11 @@ required-features = ["native-aot-prototype"]
 name = "chimi-bytecode-prototype"
 path = "src/bin/bytecode_prototype.rs"
 required-features = ["embedded-bytecode-prototype"]
+
+[[bin]]
+name = "chimi-concurrency-lab"
+path = "src/bin/concurrency_lab.rs"
+required-features = ["native-backend"]
 
 [[bench]]
 name = "frontend"

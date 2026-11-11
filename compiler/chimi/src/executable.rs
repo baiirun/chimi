@@ -8,7 +8,7 @@ use crate::semantic::{
     PatternLiteral, UnaryOperator,
 };
 use crate::standard::StandardSymbol;
-use crate::typing::{CanonicalType, Effect, TypeFact, TypedProgram, TypedProject};
+use crate::typing::{CanonicalType, TypeFact, TypedProgram, TypedProject};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -80,12 +80,6 @@ impl CoreProgram {
                     .all(|parameter| (parameter.raw() as usize) < self.symbols.len())
             );
             debug_assert!((function.body.raw() as usize) < self.nodes.len());
-            debug_assert!(
-                function
-                    .effect_parameters
-                    .iter()
-                    .all(|parameter| (parameter.raw() as usize) < self.symbols.len())
-            );
         }
         for binding in &self.bindings {
             debug_assert!((binding.symbol.raw() as usize) < self.symbols.len());
@@ -170,17 +164,11 @@ impl CoreProgram {
                 arguments,
             } => {
                 debug_assert!((constructor.raw() as usize) < self.symbols.len());
-                for argument in arguments {
-                    let _ = &argument.label;
-                    debug_assert!(node_exists(argument.value));
-                }
+                debug_assert!(arguments.iter().all(|argument| node_exists(*argument)));
             }
             CoreOperation::Call { callee, arguments } => {
                 debug_assert!(node_exists(*callee));
-                for argument in arguments {
-                    let _ = &argument.label;
-                    debug_assert!(node_exists(argument.value));
-                }
+                debug_assert!(arguments.iter().all(|argument| node_exists(*argument)));
             }
             CoreOperation::List(elements) => {
                 debug_assert!(elements.iter().all(|element| node_exists(*element)));
@@ -226,11 +214,20 @@ impl CoreProgram {
                     }
                 }
             }
-            CoreOperation::Closure { parameters, body } => {
+            CoreOperation::Closure {
+                parameters,
+                captures,
+                body,
+            } => {
                 debug_assert!(
                     parameters
                         .iter()
                         .all(|parameter| (parameter.raw() as usize) < self.symbols.len())
+                );
+                debug_assert!(
+                    captures
+                        .iter()
+                        .all(|capture| (capture.raw() as usize) < self.symbols.len())
                 );
                 debug_assert!(node_exists(*body));
             }
@@ -245,6 +242,19 @@ impl CoreProgram {
                     }
                     debug_assert!(node_exists(arm.body));
                 }
+            }
+            CoreOperation::Loop {
+                state,
+                initial,
+                body,
+            } => {
+                debug_assert!((state.raw() as usize) < self.symbols.len());
+                debug_assert!(node_exists(*initial));
+                debug_assert!(node_exists(*body));
+            }
+            CoreOperation::Break { target, value } => {
+                debug_assert!((target.raw() as usize) < self.symbols.len());
+                debug_assert!(value.is_none_or(node_exists));
             }
         }
     }
@@ -317,13 +327,6 @@ pub(crate) struct CoreFunction {
     pub(crate) symbol: SymbolId,
     pub(crate) parameters: Vec<SymbolId>,
     pub(crate) body: CoreNodeId,
-    pub(crate) effects: Vec<CoreEffect>,
-    pub(crate) effect_parameters: Vec<SymbolId>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoreEffect {
-    Io,
 }
 
 #[derive(Clone, Debug)]
@@ -356,11 +359,11 @@ pub(crate) enum CoreOperation {
     },
     Construct {
         constructor: SymbolId,
-        arguments: Vec<CoreArgument>,
+        arguments: Vec<CoreNodeId>,
     },
     Call {
         callee: CoreNodeId,
-        arguments: Vec<CoreArgument>,
+        arguments: Vec<CoreNodeId>,
     },
     List(Vec<CoreNodeId>),
     Record(Vec<CoreField>),
@@ -381,11 +384,25 @@ pub(crate) enum CoreOperation {
     Sequence(Vec<CoreStep>),
     Closure {
         parameters: Vec<SymbolId>,
+        captures: Vec<SymbolId>,
         body: CoreNodeId,
     },
     Match {
         subjects: Vec<CoreNodeId>,
         arms: Vec<CoreArm>,
+    },
+    /// Binds `state` to `initial`, then evaluates `body` repeatedly, rebinding `state` to
+    /// each successful body value. Ends only when a `Break` naming this `state` arrives.
+    /// `state` doubles as the loop's identity: every loop defines exactly one.
+    Loop {
+        state: SymbolId,
+        initial: CoreNodeId,
+        body: CoreNodeId,
+    },
+    /// Leaves the loop whose state symbol is `target` with `value`, or `Void` when absent.
+    Break {
+        target: SymbolId,
+        value: Option<CoreNodeId>,
     },
 }
 
@@ -394,12 +411,6 @@ pub(crate) enum CoreLiteral {
     Integer(i64),
     Text(String),
     Boolean(bool),
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct CoreArgument {
-    pub(crate) label: Option<String>,
-    pub(crate) value: CoreNodeId,
 }
 
 #[derive(Clone, Debug)]
@@ -563,9 +574,6 @@ pub(crate) fn seal_entry(
             .parameters
             .is_empty()
         || !typed.needs_rows[contract.needs.raw() as usize]
-            .parameters
-            .is_empty()
-        || !typed.effect_rows[contract.effects.raw() as usize]
             .parameters
             .is_empty()
         || matches!(
@@ -853,6 +861,15 @@ fn collect_reachable_expression(
             }
         }
         ModuleExpression::Function { body, .. } => visit(body),
+        ModuleExpression::Loop { initial, body, .. } => {
+            visit(initial);
+            visit(body);
+        }
+        ModuleExpression::Break { value, .. } => {
+            if let Some(value) = value {
+                visit(value);
+            }
+        }
         ModuleExpression::Case { subjects, arms, .. } => {
             for subject in subjects {
                 visit(subject);
@@ -971,24 +988,10 @@ pub(crate) fn lower(root: VerifiedRoot) -> CoreProgram {
         let body = lowerer.expression(module_id, &body);
         match kind {
             ModuleDeclarationKind::Function => {
-                let contract = lowerer
-                    .typed
-                    .contracts
-                    .get(&symbol_id)
-                    .expect("verified function owns a callable contract");
-                let effect_row = &lowerer.typed.effect_rows[contract.effects.raw() as usize];
                 functions.push(CoreFunction {
                     symbol: symbol_id,
                     parameters,
                     body,
-                    effects: effect_row
-                        .effects
-                        .iter()
-                        .map(|effect| match effect {
-                            Effect::Io => CoreEffect::Io,
-                        })
-                        .collect(),
-                    effect_parameters: effect_row.parameters.clone(),
                 });
             }
             ModuleDeclarationKind::Binding => bindings.push(CoreBinding {
@@ -1064,10 +1067,7 @@ impl CoreLowerer {
             } => {
                 let arguments = arguments
                     .iter()
-                    .map(|argument| CoreArgument {
-                        label: argument.label.as_ref().map(|label| label.text.clone()),
-                        value: self.expression(module_id, &argument.value),
-                    })
+                    .map(|argument| self.expression(module_id, &argument.value))
                     .collect::<Vec<_>>();
                 let callee_symbol = self.expression_symbol(module_id, callee);
                 if let Some(constructor) =
@@ -1171,6 +1171,7 @@ impl CoreLowerer {
                         .expect("verified closure parameter has a symbol")
                     })
                     .collect(),
+                captures: self.closure_captures(module_id, body),
                 body: self.expression(module_id, body),
             },
             ModuleExpression::Case { subjects, arms, .. } => CoreOperation::Match {
@@ -1194,6 +1195,15 @@ impl CoreLowerer {
                     })
                     .collect(),
             },
+            ModuleExpression::Loop {
+                state_id,
+                initial,
+                body,
+                ..
+            } => self.lower_loop(module_id, *state_id, initial, body),
+            ModuleExpression::Break {
+                semantic_id, value, ..
+            } => self.lower_break(module_id, *semantic_id, value.as_deref()),
             ModuleExpression::Empty { .. } => {
                 unreachable!("diagnostic-free verified programs contain no empty expressions")
             }
@@ -1319,6 +1329,156 @@ impl CoreLowerer {
             .find(|field| field.name == member)?
             .semantic_id;
         Some((requirement, *interface, method))
+    }
+
+    /// Requires: `loop_id` defines the loop's state binding in resolution.
+    fn lower_loop(
+        &mut self,
+        module_id: ModuleId,
+        loop_id: SemanticId,
+        initial: &ModuleExpression,
+        body: &ModuleExpression,
+    ) -> CoreOperation {
+        CoreOperation::Loop {
+            state: self.loop_state(module_id, loop_id),
+            initial: self.expression(module_id, initial),
+            body: self.expression(module_id, body),
+        }
+    }
+
+    /// Requires: resolution linked `break_id` to an enclosing loop in the same function.
+    fn lower_break(
+        &mut self,
+        module_id: ModuleId,
+        break_id: SemanticId,
+        value: Option<&ModuleExpression>,
+    ) -> CoreOperation {
+        let loop_id = self
+            .typed
+            .resolved
+            .break_target(module_id, break_id)
+            .expect("verified break has a target loop");
+        CoreOperation::Break {
+            target: self.loop_state(module_id, loop_id),
+            value: value.map(|value| self.expression(module_id, value)),
+        }
+    }
+
+    fn loop_state(&self, module_id: ModuleId, loop_id: SemanticId) -> SymbolId {
+        self.local_symbol(module_id, loop_id, ProjectSymbolKind::LocalBinding)
+            .expect("verified loop defines its state binding")
+    }
+
+    fn closure_captures(
+        &self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+    ) -> Vec<SymbolId> {
+        fn collect(
+            lowerer: &CoreLowerer,
+            module_id: ModuleId,
+            expression: &ModuleExpression,
+            captures: &mut HashSet<SymbolId>,
+        ) {
+            if let ModuleExpression::Name { semantic_id, .. } = expression
+                && let Some(symbol) = lowerer.value_symbol(module_id, *semantic_id)
+                && matches!(
+                    lowerer.typed.resolved.symbol(symbol).kind,
+                    ProjectSymbolKind::Parameter
+                        | ProjectSymbolKind::LocalBinding
+                        | ProjectSymbolKind::PatternBinding
+                )
+            {
+                captures.insert(symbol);
+            }
+            match expression {
+                ModuleExpression::Literal(_)
+                | ModuleExpression::Name { .. }
+                | ModuleExpression::Empty { .. } => {}
+                ModuleExpression::Select { receiver, .. }
+                | ModuleExpression::Unary {
+                    operand: receiver, ..
+                }
+                | ModuleExpression::Group {
+                    expression: receiver,
+                    ..
+                } => collect(lowerer, module_id, receiver, captures),
+                ModuleExpression::Call {
+                    callee, arguments, ..
+                } => {
+                    collect(lowerer, module_id, callee, captures);
+                    for argument in arguments {
+                        collect(lowerer, module_id, &argument.value, captures);
+                    }
+                }
+                ModuleExpression::List { elements, .. }
+                | ModuleExpression::Sequence {
+                    expressions: elements,
+                    ..
+                } => {
+                    for element in elements {
+                        collect(lowerer, module_id, element, captures);
+                    }
+                }
+                ModuleExpression::Record { fields, .. } => {
+                    for field in fields {
+                        collect(lowerer, module_id, &field.value, captures);
+                    }
+                }
+                ModuleExpression::Binary { left, right, .. } => {
+                    collect(lowerer, module_id, left, captures);
+                    collect(lowerer, module_id, right, captures);
+                }
+                ModuleExpression::Using {
+                    expression,
+                    providers,
+                    ..
+                } => {
+                    collect(lowerer, module_id, expression, captures);
+                    for provider in providers {
+                        collect(lowerer, module_id, &provider.value, captures);
+                    }
+                }
+                ModuleExpression::Block { items, .. } => {
+                    for item in items {
+                        let value = match item {
+                            ModuleBlockItem::Binding { value, .. }
+                            | ModuleBlockItem::Expression(value) => value,
+                        };
+                        collect(lowerer, module_id, value, captures);
+                    }
+                }
+                ModuleExpression::Function { body, .. } => {
+                    collect(lowerer, module_id, body, captures);
+                }
+                ModuleExpression::Loop { initial, body, .. } => {
+                    collect(lowerer, module_id, initial, captures);
+                    collect(lowerer, module_id, body, captures);
+                }
+                ModuleExpression::Break { value, .. } => {
+                    if let Some(value) = value {
+                        collect(lowerer, module_id, value, captures);
+                    }
+                }
+                ModuleExpression::Case { subjects, arms, .. } => {
+                    for subject in subjects {
+                        collect(lowerer, module_id, subject, captures);
+                    }
+                    for arm in arms {
+                        if let Some(guard) = &arm.guard {
+                            collect(lowerer, module_id, guard, captures);
+                        }
+                        collect(lowerer, module_id, &arm.body, captures);
+                    }
+                }
+            }
+        }
+
+        let mut captures = HashSet::new();
+        collect(self, module_id, expression, &mut captures);
+        let mut captures = captures.into_iter().collect::<Vec<_>>();
+        captures.sort_unstable();
+        captures
     }
 
     fn value_symbol(&self, module_id: ModuleId, semantic_id: SemanticId) -> Option<SymbolId> {

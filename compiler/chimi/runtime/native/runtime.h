@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 6
+#define CHIMI_RUNTIME_ABI_VERSION 9
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -33,6 +33,13 @@ enum {
   CHIMI_TYPE_DECODE_ERROR,
   CHIMI_TYPE_NUMBER_ERROR,
   CHIMI_TYPE_OPTION,
+  CHIMI_TYPE_CHANNEL_SENDER,
+  CHIMI_TYPE_CHANNEL_RECEIVER,
+  CHIMI_TYPE_CHANNEL_COMPLETION,
+  CHIMI_TYPE_CHANNEL_SEND_ERROR,
+  CHIMI_TYPE_CHANNEL_RECEIVE,
+  CHIMI_TYPE_CHANNEL_ERROR,
+  CHIMI_TYPE_TASK,
 };
 
 enum {
@@ -54,6 +61,14 @@ enum {
   CHIMI_INTRINSIC_JSON_NUMBER_TO_INT,
   CHIMI_INTRINSIC_TEXT_APPEND,
   CHIMI_INTRINSIC_TEXT_EQUAL,
+  CHIMI_INTRINSIC_TASK_START,
+  CHIMI_INTRINSIC_TASK_RESULT,
+  CHIMI_INTRINSIC_TASK_CANCEL,
+  CHIMI_INTRINSIC_CHANNEL_SEND,
+  CHIMI_INTRINSIC_CHANNEL_RECEIVE,
+  CHIMI_INTRINSIC_CHANNEL_CLOSE,
+  CHIMI_INTRINSIC_CHANNEL_ABORT,
+  CHIMI_INTRINSIC_CHANNEL_BOUNDED,
 };
 
 enum {
@@ -74,6 +89,11 @@ enum {
   CHIMI_CONSTRUCTOR_DECODE_INVALID_JSON,
   CHIMI_CONSTRUCTOR_NUMBER_NOT_INTEGER,
   CHIMI_CONSTRUCTOR_NUMBER_OUT_OF_RANGE,
+  CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED,
+  CHIMI_CONSTRUCTOR_CHANNEL_SEND_ABORTED,
+  CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED,
+  CHIMI_CONSTRUCTOR_CHANNEL_DRAINED,
+  CHIMI_CONSTRUCTOR_CHANNEL_ABORTED,
 };
 
 enum {
@@ -174,6 +194,7 @@ typedef struct {
 } ChimiPattern;
 
 extern const char *CHIMI_COMPUTATION;
+extern const uint32_t CHIMI_REQUIRES_SCHEDULER;
 extern const char *CHIMI_STRINGS[];
 extern const uint32_t CHIMI_IDS[];
 extern const ChimiOrigin CHIMI_ORIGINS[];
@@ -211,5 +232,9 @@ ChimiControl *chimi_rt_provision(ChimiRuntime *, uint32_t, ChimiEnvironment *, u
 ChimiControl *chimi_rt_sequence(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
 ChimiControl *chimi_rt_closure(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
 ChimiControl *chimi_rt_match(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
+/* Node layout: a = state symbol, b = initial node, c = body node. */
+ChimiControl *chimi_rt_loop(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
+/* Node layout: a = target loop state symbol, b = value node or UINT32_MAX for Void. */
+ChimiControl *chimi_rt_break(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
 
 #endif

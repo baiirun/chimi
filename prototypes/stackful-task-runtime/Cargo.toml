@@ -1,0 +1,15 @@
+[package]
+name = "chimi-stackful-task-runtime-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+backtrace = "0.3"
+corosensei = "0.3.4"
+libc = "0.2"
+
+[build-dependencies]
+cc = "1"
+
+[workspace]

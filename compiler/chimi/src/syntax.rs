@@ -23,10 +23,11 @@ pub(crate) enum TokenKind {
     Fn,
     Let,
     Case,
+    Loop,
+    Break,
     If,
     Errors,
     Needs,
-    Effects,
     Using,
     Void,
     True,
@@ -74,10 +75,11 @@ impl TokenKind {
             Self::Fn => "fn",
             Self::Let => "let",
             Self::Case => "case",
+            Self::Loop => "loop",
+            Self::Break => "break",
             Self::If => "if",
             Self::Errors => "errors",
             Self::Needs => "needs",
-            Self::Effects => "effects",
             Self::Using => "using",
             Self::Void => "void",
             Self::True => "true",
@@ -126,10 +128,11 @@ impl TokenKind {
             Self::Fn => "`fn`",
             Self::Let => "`let`",
             Self::Case => "`case`",
+            Self::Loop => "`loop`",
+            Self::Break => "`break`",
             Self::If => "`if`",
             Self::Errors => "`errors`",
             Self::Needs => "`needs`",
-            Self::Effects => "`effects`",
             Self::Using => "`using`",
             Self::Void => "`Void`",
             Self::True => "`True`",
@@ -191,8 +194,6 @@ pub(crate) enum NodeKind {
     TypeArguments,
     RequirementClause,
     RequirementRecord,
-    EffectClause,
-    EffectRecord,
     LetBinding,
     UsingExpression,
     PipelineExpression,
@@ -211,6 +212,8 @@ pub(crate) enum NodeKind {
     BlockItem,
     CaseExpression,
     CaseArm,
+    LoopExpression,
+    BreakExpression,
     Pattern,
     FunctionExpression,
     CallSuffix,
@@ -246,8 +249,6 @@ impl NodeKind {
             Self::TypeArguments => "type_arguments",
             Self::RequirementClause => "requirement_clause",
             Self::RequirementRecord => "requirement_record",
-            Self::EffectClause => "effect_clause",
-            Self::EffectRecord => "effect_record",
             Self::LetBinding => "let_binding",
             Self::UsingExpression => "using_expression",
             Self::PipelineExpression => "pipeline_expression",
@@ -266,6 +267,8 @@ impl NodeKind {
             Self::BlockItem => "block_item",
             Self::CaseExpression => "case_expression",
             Self::CaseArm => "case_arm",
+            Self::LoopExpression => "loop_expression",
+            Self::BreakExpression => "break_expression",
             Self::Pattern => "pattern",
             Self::FunctionExpression => "function_expression",
             Self::CallSuffix => "call_suffix",
@@ -852,10 +855,11 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                     "fn" => TokenKind::Fn,
                     "let" => TokenKind::Let,
                     "case" => TokenKind::Case,
+                    "loop" => TokenKind::Loop,
+                    "break" => TokenKind::Break,
                     "if" => TokenKind::If,
                     "errors" => TokenKind::Errors,
                     "needs" => TokenKind::Needs,
-                    "effects" => TokenKind::Effects,
                     "using" => TokenKind::Using,
                     "Void" => TokenKind::Void,
                     "True" => TokenKind::True,
@@ -1208,10 +1212,6 @@ impl<'source> Parser<'source> {
         if self.at(TokenKind::Needs) {
             self.parse_requirement_clause();
         }
-        self.skip_newlines();
-        if self.at(TokenKind::Effects) {
-            self.parse_effect_clause();
-        }
         self.finish();
     }
 
@@ -1262,10 +1262,6 @@ impl<'source> Parser<'source> {
         if self.at(TokenKind::Needs) {
             self.parse_requirement_clause();
         }
-        self.skip_newlines();
-        if self.at(TokenKind::Effects) {
-            self.parse_effect_clause();
-        }
         self.finish();
     }
 
@@ -1315,42 +1311,6 @@ impl<'source> Parser<'source> {
                     break;
                 }
                 self.parse_named_type_field();
-            }
-        }
-        self.skip_newlines();
-        self.expect(TokenKind::RightBrace);
-        self.finish();
-    }
-
-    fn parse_effect_clause(&mut self) {
-        self.start(NodeKind::EffectClause);
-        self.expect(TokenKind::Effects);
-        self.skip_newlines();
-        self.parse_effect_atom();
-        while self.accept_after_newlines(TokenKind::Plus) {
-            self.skip_newlines();
-            self.parse_effect_atom();
-        }
-        self.finish();
-    }
-
-    fn parse_effect_atom(&mut self) {
-        if self.accept(TokenKind::Identifier) {
-            return;
-        }
-        self.start(NodeKind::EffectRecord);
-        self.expect(TokenKind::LeftBrace);
-        self.skip_newlines();
-        if self.at(TokenKind::RightBrace) {
-            self.error_at_current("empty effect records are invalid");
-        } else {
-            self.expect(TokenKind::Identifier);
-            while self.accept(TokenKind::Comma) {
-                self.skip_newlines();
-                if self.at(TokenKind::RightBrace) {
-                    break;
-                }
-                self.expect(TokenKind::Identifier);
             }
         }
         self.skip_newlines();
@@ -1568,6 +1528,8 @@ impl<'source> Parser<'source> {
             TokenKind::LeftBracket => self.parse_list(),
             TokenKind::LeftBrace => self.parse_brace_expression(),
             TokenKind::Case => self.parse_case(),
+            TokenKind::Loop => self.parse_loop(),
+            TokenKind::Break => self.parse_break(),
             TokenKind::Fn => self.parse_function_expression(),
             TokenKind::Void => self.error_and_bump("Void is a type, not a value"),
             TokenKind::If => self.parse_unsupported_if(),
@@ -1650,12 +1612,18 @@ impl<'source> Parser<'source> {
             return true;
         }
         let mut scan = position + 1;
+        let mut depth = 0_u32;
         loop {
             match self.kind_at(scan) {
-                TokenKind::Comma => return true,
-                TokenKind::Newline | TokenKind::RightBrace | TokenKind::End => return false,
-                _ => scan += 1,
+                TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => depth += 1,
+                TokenKind::RightParen | TokenKind::RightBracket if depth > 0 => depth -= 1,
+                TokenKind::RightBrace if depth > 0 => depth -= 1,
+                TokenKind::Comma if depth == 0 => return true,
+                TokenKind::Newline | TokenKind::RightBrace if depth == 0 => return false,
+                TokenKind::End => return false,
+                _ => {}
             }
+            scan += 1;
         }
     }
 
@@ -1711,6 +1679,39 @@ impl<'source> Parser<'source> {
             }
         }
         self.expect(TokenKind::RightBrace);
+        self.finish();
+    }
+
+    /// Parses `loop <name> = <initial> <block>`.
+    /// Ensures: one `LoopExpression` node whose children are the state identifier token,
+    /// the initial expression, and a `BlockExpression` body, recovering like `case`.
+    fn parse_loop(&mut self) {
+        self.start(NodeKind::LoopExpression);
+        self.bump();
+        self.expect(TokenKind::Identifier);
+        self.expect(TokenKind::Equal);
+        self.skip_newlines();
+        self.parse_expression();
+        self.parse_block();
+        self.finish();
+    }
+
+    /// Parses `break` with an optional value.
+    /// Ensures: the value is parsed only when the next significant token can start an
+    /// expression on the same line; `break` before a newline, `}`, `,`, or `)` is bare.
+    fn parse_break(&mut self) {
+        self.start(NodeKind::BreakExpression);
+        self.bump();
+        if !matches!(
+            self.kind(),
+            TokenKind::Newline
+                | TokenKind::RightBrace
+                | TokenKind::Comma
+                | TokenKind::RightParen
+                | TokenKind::End
+        ) {
+            self.parse_expression();
+        }
         self.finish();
     }
 
@@ -2065,6 +2066,7 @@ mod tests {
     use super::{
         DeclarationSyntax, FileSyntax, NodeKind, SyntaxElement, SyntaxNode, TypedSyntaxNode, parse,
     };
+    use crate::diagnostic::DiagnosticStage;
     use crate::source::SourceSnapshot;
     use std::collections::BTreeSet;
 
@@ -2099,7 +2101,7 @@ mod tests {
 
     #[test]
     fn valid_source_round_trips_with_every_trivia_byte() {
-        let source = "// answer\r\nstruct Answer {\n  value: Int // cents\n}\n\npub fn main() {\n  Answer(value: 42)\n}\n";
+        let source = "// answer\r\nstruct Answer {\n  value: Int // cents\n}\n\npub fn main() {\n  Answer(42)\n}\n";
         let snapshot = SourceSnapshot::from_text("round-trip.chimi", source);
         let result = parse(&snapshot);
 
@@ -2130,7 +2132,7 @@ mod tests {
 
     #[test]
     fn invalid_unicode_is_preserved_and_parsing_terminates() {
-        let source = "struct Answer { value: Int } pub fn main() { Answer(value: λ) }";
+        let source = "struct Answer { value: Int } pub fn main() { Answer(λ) }";
         let snapshot = SourceSnapshot::from_text("unicode.chimi", source);
         let result = parse(&snapshot);
 
@@ -2166,20 +2168,6 @@ mod tests {
     }
 
     #[test]
-    fn effect_rows_round_trip_in_function_types_and_implementations() {
-        let source = concat!(
-            "interface Console { write: fn(Text) -> Void effects { io } }\n",
-            "fn apply<E>(operation: fn() -> Void effects E) effects E { operation() }\n",
-        );
-        let result = parse(&SourceSnapshot::from_text("effects.chimi", source));
-
-        assert_eq!(result.round_trip(), source);
-        assert_eq!(result.diagnostics(), []);
-        assert!(contains_node(&result.root(), NodeKind::EffectClause));
-        assert!(contains_node(&result.root(), NodeKind::EffectRecord));
-    }
-
-    #[test]
     fn missing_generic_delimiter_recovers_into_the_following_body() {
         let source = "struct Box<Value {\n  value: Value\n}\n";
         let snapshot = SourceSnapshot::from_text("missing-generic-close.chimi", source);
@@ -2210,10 +2198,6 @@ mod tests {
                 "interface Service { call: fn() -> Void needs {} }\n",
                 "empty requirement records are invalid",
             ),
-            (
-                "interface Service { call: fn() -> Void effects {} }\n",
-                "empty effect records are invalid",
-            ),
         ];
 
         for (source, expected_message) in cases {
@@ -2224,6 +2208,21 @@ mod tests {
             assert_eq!(result.diagnostics().len(), 1);
             assert_eq!(result.diagnostics()[0].message(), expected_message);
         }
+    }
+
+    #[test]
+    fn effect_clauses_are_not_language_syntax() {
+        let source = "fn main() effects { io } { 1 }\n";
+        let result = parse(&SourceSnapshot::from_text("effects.chimi", source));
+
+        assert_eq!(result.round_trip(), source);
+        assert!(!result.diagnostics().is_empty());
+        assert!(
+            result
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.stage() == DiagnosticStage::Syntax)
+        );
     }
 
     #[test]
@@ -2433,7 +2432,7 @@ mod tests {
 
     #[test]
     fn snapshot_ids_are_deterministic_for_identical_parse_trees() {
-        let source = "struct Answer { value: Int }\npub fn main() { Answer(value: 42) }\n";
+        let source = "struct Answer { value: Int }\npub fn main() { Answer(42) }\n";
         let first = parse(&SourceSnapshot::from_text("first.chimi", source));
         let second = parse(&SourceSnapshot::from_text("second.chimi", source));
         let mut first_ids = Vec::new();
@@ -2446,7 +2445,7 @@ mod tests {
 
     #[test]
     fn typed_facade_exposes_declarations_and_expression_shapes() {
-        let source = "struct Answer { value: Int }\npub fn main() { Answer(value: 42) }\n";
+        let source = "struct Answer { value: Int }\npub fn main() { Answer(42) }\n";
         let result = parse(&SourceSnapshot::from_text("typed.chimi", source));
         let file = FileSyntax::cast(result.root()).expect("file root");
         let declarations = file.declarations();
@@ -2514,7 +2513,6 @@ mod tests {
             "if",
             "errors",
             "needs",
-            "effects",
             "using",
             "Void",
             "name",

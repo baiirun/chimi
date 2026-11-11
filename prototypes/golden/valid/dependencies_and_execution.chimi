@@ -3,7 +3,7 @@
 // EXPECT-SHAPE: submit =
 //   fn(Cart) -> Order errors CheckoutError
 //   needs { payment: Payment, inventory: Inventory }
-// EXPECT-RUN: Success(Order(id: OrderId(value: "order-1")))
+// EXPECT-RUN: Success(Order(OrderId("order-1")))
 // EXPECT-ROOT-REQUIREMENTS: {}
 // EXPECT-EVENTS: computation.started, dependency.called, dependency.called,
 //   computation.completed
@@ -65,24 +65,24 @@ fn submit(cart: Cart)
   }
 {
   case inventory.reserve(cart.items) {
-    Failure(error) -> Failure(InventoryFailed(error: error))
+    Failure(error) -> Failure(InventoryFailed(error))
     Success(_reservation) -> case payment.charge(cart.total) {
-      Failure(error) -> Failure(PaymentFailed(error: error))
-      Success(_receipt) -> Order(id: OrderId(value: "order-1"))
+      Failure(error) -> Failure(PaymentFailed(error))
+      Success(_receipt) -> Order(OrderId("order-1"))
     }
   }
 }
 
 let fake_inventory = {
-  reserve: fn(_items) { Reservation(id: "reservation-1") },
+  reserve: fn(_items) { Reservation("reservation-1") },
 }
 
 let fake_payment = {
-  charge: fn(_total) { Receipt(id: "receipt-1") },
+  charge: fn(_total) { Receipt("receipt-1") },
 }
 
 pub fn main() {
-  submit(Cart(items: [], total: Money(cents: 0))) using {
+  submit(Cart([], Money(0))) using {
     payment: fake_payment,
     inventory: fake_inventory,
   }

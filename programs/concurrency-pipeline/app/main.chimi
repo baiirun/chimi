@@ -1,0 +1,63 @@
+import std/channel as Channel
+import std/channel.{Completion, Receiver, Receive, Sender}
+import std/task as Task
+
+interface Transform {
+  apply: fn(Int) -> Int
+}
+
+fn apply_transform(value: Int) -> Int needs {
+  transformer: Transform,
+} {
+  transformer.apply(value)
+}
+
+fn worker(
+  jobs: Receiver<Int>,
+  results: Sender<Int>,
+  completion: Completion<Int>,
+) -> Int needs {
+  transformer: Transform,
+} {
+  loop processed = 0 {
+    let next = Channel.receive(jobs)
+    case next {
+      Receive.Received(value) -> {
+        Channel.send(results, apply_transform(value))
+        processed + 1
+      }
+      Receive.Drained -> {
+        Channel.close(completion)
+        break processed
+      }
+    }
+  }
+}
+
+pub fn main() -> Int {
+  let transformer = { apply: fn(value: Int) -> Int { value + 10 } }
+  let jobs = Channel.bounded(1)
+  let results = Channel.bounded(1)
+  let job_sender = jobs.sender
+  let job_receiver = jobs.receiver
+  let job_completion = jobs.completion
+  let result_sender = results.sender
+  let result_receiver = results.receiver
+  let result_completion = results.completion
+  let run = fn() -> Int {
+    worker(job_receiver, result_sender, result_completion) using {
+      transformer: transformer,
+    }
+  }
+  Channel.send(job_sender, 1)
+  let child = Task.start(run)
+  Channel.send(job_sender, 2)
+  Channel.close(job_completion)
+  let first = Channel.receive(result_receiver)
+  let second = Channel.receive(result_receiver)
+  let processed = Task.result(child)
+  case first, second {
+    Receive.Received(left), Receive.Received(right) -> left + right + processed
+    _, _ -> 0
+  }
+}

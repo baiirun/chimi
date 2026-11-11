@@ -123,6 +123,8 @@ impl BackendProfile {
                 values.closure_parameters += parameters.len();
                 values.max_closure_parameters = values.max_closure_parameters.max(parameters.len());
             }
+            CoreOperation::Loop { .. } => operations.loops += 1,
+            CoreOperation::Break { .. } => operations.breaks += 1,
             CoreOperation::Match { subjects, arms } => {
                 operations.matches += 1;
                 values.match_subjects += subjects.len();
@@ -156,6 +158,8 @@ pub struct BackendOperationProfile {
     pub sequences: usize,
     pub closures: usize,
     pub matches: usize,
+    pub loops: usize,
+    pub breaks: usize,
 }
 
 impl BackendOperationProfile {
@@ -175,6 +179,8 @@ impl BackendOperationProfile {
             + self.sequences
             + self.closures
             + self.matches
+            + self.loops
+            + self.breaks
     }
 }
 

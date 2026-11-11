@@ -1,0 +1,12 @@
+{
+  "lsp": {
+    "chimi-lsp": {
+      "initialization_options": {
+        "projects": [
+          { "root": "programs/chimi-trace-summary", "entry": "app/main" },
+          { "root": "programs/concurrency-pipeline", "entry": "app/main" }
+        ]
+      }
+    }
+  }
+}

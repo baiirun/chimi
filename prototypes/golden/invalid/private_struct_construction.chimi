@@ -2,8 +2,8 @@
 // EXPECT-COMPILE: failure
 // EXPECT-DIAGNOSTIC: E_PRIVATE_STRUCT_CONSTRUCTOR
 // EXPECT-MESSAGE: Money.Money is module-private; use Money.from_cents
-// EXPECT-SPAN: Money.Money(cents: -100)
+// EXPECT-SPAN: Money.Money(-100)
 
 import modules/money as Money
 
-let invalid = Money.Money(cents: -100)
+let invalid = Money.Money(-100)

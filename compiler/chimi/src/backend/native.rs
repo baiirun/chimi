@@ -5,6 +5,7 @@ use super::program_data::render_program_data;
 use crate::executable::{CoreOperation, CoreProgram};
 use crate::json::write_json_string;
 use crate::semantic::{BinaryOperator, UnaryOperator};
+use crate::standard::{StandardFunction, StandardSymbol};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     AbiParam, Function, InstBuilder, Signature, UserFuncName, Value, types,
@@ -24,14 +25,16 @@ const CACHE_SCHEMA: &str = "chimi.native-cache.v1";
 const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
 const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
 const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
-const NATIVE_LOWERING_REVISION: &str = "standard-data-intrinsics-v1";
-const RUNTIME_ABI_VERSION: u32 = 6;
+const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v3";
+const RUNTIME_ABI_VERSION: u32 = 9;
+const FIBER_RUNTIME_ABI_VERSION: u32 = chimi_fiber::ABI_VERSION;
 static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct NativeArtifact {
     pub object_paths: Vec<PathBuf>,
     pub data_object_path: PathBuf,
     pub runtime_archive_path: PathBuf,
+    pub fiber_runtime_archive_path: Option<PathBuf>,
     pub executable_path: PathBuf,
     pub object_emission: Duration,
     pub runtime_compilation: Duration,
@@ -48,6 +51,7 @@ pub struct NativeBuildReport {
     pub application_object_paths: Vec<PathBuf>,
     pub metadata_object_path: PathBuf,
     pub runtime_archive_path: PathBuf,
+    pub fiber_runtime_archive_path: Option<PathBuf>,
     pub manifest_path: PathBuf,
     pub dynamic_dependencies: Vec<String>,
     pub fully_static: bool,
@@ -82,6 +86,12 @@ impl NativeBuildReport {
         write_path(&mut output, &self.metadata_object_path);
         output.push_str(",\"runtime_archive\":");
         write_path(&mut output, &self.runtime_archive_path);
+        output.push_str(",\"fiber_runtime_archive\":");
+        if let Some(path) = &self.fiber_runtime_archive_path {
+            write_path(&mut output, path);
+        } else {
+            output.push_str("null");
+        }
         output.push_str(",\"manifest\":");
         write_path(&mut output, &self.manifest_path);
         output.push_str("},\"dynamic_dependencies\":[");
@@ -117,6 +127,7 @@ pub fn build_application(
         application_object_paths: artifact.object_paths,
         metadata_object_path: artifact.data_object_path,
         runtime_archive_path: artifact.runtime_archive_path,
+        fiber_runtime_archive_path: artifact.fiber_runtime_archive_path,
         manifest_path: manifest_path.clone(),
         fully_static: dynamic_dependencies.is_empty(),
         dynamic_dependencies,
@@ -153,6 +164,8 @@ fn build_to_path(
     let data_object_path = output_directory.join("program_data.o");
     let runtime_object_path = output_directory.join("runtime.o");
     let runtime_archive_path = output_directory.join("libchimi_rt.a");
+    let fiber_runtime_archive_path =
+        requires_fiber_runtime(&program.core).then(|| output_directory.join("libchimi_fiber.a"));
     let include_directory = output_directory.to_path_buf();
     let cache_directory = output_directory
         .parent()
@@ -194,6 +207,12 @@ fn build_to_path(
         .map_err(|error| format!("write embedded runtime source: {error}"))?;
     std::fs::write(output_directory.join("runtime.h"), RUNTIME_HEADER)
         .map_err(|error| format!("write embedded runtime header: {error}"))?;
+    std::fs::write(output_directory.join("chimi_fiber.h"), FIBER_RUNTIME_HEADER)
+        .map_err(|error| format!("write embedded fiber runtime header: {error}"))?;
+    if let Some(path) = &fiber_runtime_archive_path {
+        std::fs::copy(bundled_fiber_archive()?, path)
+            .map_err(|error| format!("materialize bundled fiber runtime: {error}"))?;
+    }
     let started = Instant::now();
     let runtime_key = runtime_cache_key(&target, &cc);
     cache.materialize(
@@ -253,9 +272,17 @@ fn build_to_path(
     let mut link = Command::new("cc");
     link.args(&object_paths)
         .arg(&data_object_path)
-        .arg(&runtime_archive_path)
-        .arg("-o")
-        .arg(executable_path);
+        .arg(&runtime_archive_path);
+    if let Some(path) = &fiber_runtime_archive_path {
+        if cfg!(target_os = "macos") {
+            link.arg(format!("-Wl,-force_load,{}", path.display()));
+        } else {
+            link.arg("-Wl,--whole-archive")
+                .arg(path)
+                .arg("-Wl,--no-whole-archive");
+        }
+    }
+    link.arg("-o").arg(executable_path);
     run(&mut link, "link native backend executable")?;
     let linking = started.elapsed();
     let (cache_hits, cache_misses) = cache.finish();
@@ -264,6 +291,7 @@ fn build_to_path(
         object_paths,
         data_object_path,
         runtime_archive_path,
+        fiber_runtime_archive_path,
         executable_path: executable_path.to_owned(),
         object_emission,
         runtime_compilation,
@@ -276,6 +304,83 @@ fn build_to_path(
 
 const RUNTIME_SOURCE: &str = include_str!("../../runtime/native/runtime.c");
 const RUNTIME_HEADER: &str = include_str!("../../runtime/native/runtime.h");
+const FIBER_RUNTIME_HEADER: &str =
+    include_str!("../../../../runtime/chimi-fiber/include/chimi_fiber.h");
+
+fn bundled_fiber_archive() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("CHIMI_FIBER_RUNTIME_ARCHIVE") {
+        let path = PathBuf::from(path);
+        return path
+            .is_file()
+            .then_some(path)
+            .ok_or_else(|| "CHIMI_FIBER_RUNTIME_ARCHIVE does not name a file".to_owned());
+    }
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("locate compiler executable for fiber runtime: {error}"))?;
+    let parent = executable
+        .parent()
+        .ok_or_else(|| "compiler executable has no parent directory".to_owned())?;
+    let mut directories = vec![parent.to_path_buf(), parent.join("deps")];
+    if parent.file_name().is_some_and(|name| name == "deps")
+        && let Some(profile) = parent.parent()
+    {
+        directories.push(profile.to_path_buf());
+    }
+    let mut candidates = Vec::new();
+    for directory in directories {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if (name == "libchimi_fiber.a"
+                || name.starts_with("libchimi_fiber-") && name.ends_with(".a"))
+                && path.is_file()
+            {
+                candidates.push(path);
+            }
+        }
+    }
+    candidates.sort_by_key(|path| {
+        path.metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    candidates.pop().ok_or_else(|| {
+        format!(
+            "bundled Chimi fiber runtime ABI {FIBER_RUNTIME_ABI_VERSION} is missing; set CHIMI_FIBER_RUNTIME_ARCHIVE"
+        )
+    })
+}
+
+fn requires_fiber_runtime(core: &CoreProgram) -> bool {
+    let fiber_symbols = core
+        .symbols
+        .iter()
+        .filter_map(|symbol| match symbol.standard {
+            Some(StandardSymbol::Function(
+                StandardFunction::TaskStart
+                | StandardFunction::TaskResult
+                | StandardFunction::TaskCancel
+                | StandardFunction::ChannelSend
+                | StandardFunction::ChannelReceive
+                | StandardFunction::ChannelClose
+                | StandardFunction::ChannelAbort
+                | StandardFunction::ChannelBounded,
+            )) => Some(symbol.id),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    core.nodes.iter().any(|node| {
+        matches!(
+            node.operation,
+            CoreOperation::Reference(symbol) if fiber_symbols.contains(&symbol)
+        )
+    })
+}
 
 fn run(command: &mut Command, operation: &str) -> Result<(), String> {
     let output = command
@@ -629,6 +734,8 @@ fn emit_module_object(
         "sequence",
         "closure",
         "match",
+        "loop",
+        "break",
     ] {
         helpers.insert(
             operation,
@@ -993,14 +1100,17 @@ fn operation_name(operation: &CoreOperation) -> &'static str {
         CoreOperation::Sequence(_) => "sequence",
         CoreOperation::Closure { .. } => "closure",
         CoreOperation::Match { .. } => "match",
+        CoreOperation::Loop { .. } => "loop",
+        CoreOperation::Break { .. } => "break",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        BinaryOperator, CACHE_SCHEMA, CoreOperation, RUNTIME_ABI_VERSION, RUNTIME_HEADER,
-        cache_key, direct_integer_roots, parse_dependency, pure_integer_node_counts,
+        BinaryOperator, CACHE_SCHEMA, CoreOperation, FIBER_RUNTIME_ABI_VERSION,
+        FIBER_RUNTIME_HEADER, RUNTIME_ABI_VERSION, RUNTIME_HEADER, cache_key, direct_integer_roots,
+        parse_dependency, pure_integer_node_counts, requires_fiber_runtime,
     };
     use crate::source::SourceSnapshot;
     use crate::{BackendProgram, Compiler, ProjectSource};
@@ -1095,6 +1205,33 @@ mod tests {
         assert!(RUNTIME_HEADER.contains(&format!(
             "#define CHIMI_RUNTIME_ABI_VERSION {RUNTIME_ABI_VERSION}"
         )));
+        assert!(FIBER_RUNTIME_HEADER.contains(&format!(
+            "#define CHIMI_FIBER_ABI_VERSION {FIBER_RUNTIME_ABI_VERSION}u"
+        )));
+    }
+
+    #[test]
+    fn fiber_archive_is_linked_only_for_reachable_concurrency_operations() {
+        assert!(!requires_fiber_runtime(
+            &prepared("pub fn main() -> Int { 1 }").core
+        ));
+        assert!(requires_fiber_runtime(
+            &prepared(concat!(
+                "import std/task as Task\n",
+                "enum WorkError { Stopped }\n",
+                "fn work() -> Int {\n",
+                "  case 1 {\n",
+                "    0 -> Failure(Stopped())\n",
+                "    _ -> 1\n",
+                "  }\n",
+                "}\n",
+                "pub fn main() -> Int {\n",
+                "  let child = Task.start(work)\n",
+                "  Task.result(child)\n",
+                "}\n",
+            ))
+            .core
+        ));
     }
 
     #[test]

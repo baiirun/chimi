@@ -179,7 +179,7 @@ fn format_parse(parsed: &ParseResult) -> String {
 }
 
 fn should_join_line(previous: Option<TokenKind>, next: Option<TokenKind>) -> bool {
-    matches!(next, Some(TokenKind::Needs | TokenKind::Effects))
+    matches!(next, Some(TokenKind::Needs))
         || next == Some(TokenKind::LeftBrace)
             && matches!(
                 previous,
@@ -259,10 +259,11 @@ const fn word_kind(kind: TokenKind) -> bool {
             | TokenKind::Fn
             | TokenKind::Let
             | TokenKind::Case
+            | TokenKind::Loop
+            | TokenKind::Break
             | TokenKind::If
             | TokenKind::Errors
             | TokenKind::Needs
-            | TokenKind::Effects
             | TokenKind::Using
             | TokenKind::Void
             | TokenKind::True
@@ -348,7 +349,7 @@ mod tests {
         let source = concat!(
             "// comments survive canonical formatting\n",
             "struct   Money{cents:Int}\n",
-            "fn add(left:Money,right:Money)->Money{Money(cents:left.cents+right.cents)}\n",
+            "fn add(left:Money,right:Money)->Money{Money(left.cents+right.cents)}\n",
         );
         let first = format(source);
         assert!(!first.is_blocked());

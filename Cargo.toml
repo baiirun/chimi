@@ -1,5 +1,5 @@
 [workspace]
-members = ["compiler/chimi"]
+members = ["compiler/chimi", "compiler/chimi-lsp", "runtime/chimi-fiber"]
 resolver = "3"
 
 [workspace.package]

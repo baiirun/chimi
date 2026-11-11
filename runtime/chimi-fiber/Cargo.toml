@@ -1,0 +1,19 @@
+[package]
+name = "chimi-fiber"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+backtrace = "=0.3.76"
+corosensei = "=0.3.4"
+
+[target.'cfg(all(unix, any(target_os = "macos", target_os = "linux"), any(target_arch = "aarch64", target_arch = "x86_64")))'.dependencies]
+libc = "=0.2.189"
+
+[build-dependencies]
+cc = "=1.4.0"

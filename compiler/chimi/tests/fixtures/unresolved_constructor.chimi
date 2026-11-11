@@ -3,5 +3,5 @@ struct Answer {
 }
 
 pub fn main() {
-  Missing(value: 42)
+  Missing(42)
 }

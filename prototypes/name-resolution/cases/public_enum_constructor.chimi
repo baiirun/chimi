@@ -3,4 +3,4 @@
 
 import modules/money as Money
 
-let error = Money.NegativeAmount(cents: -1)
+let error = Money.NegativeAmount(-1)

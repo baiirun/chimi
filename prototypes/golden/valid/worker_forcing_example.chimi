@@ -43,11 +43,11 @@ fn process<R>(
 ) -> fn(Job) -> Done errors JobError needs R + { clock: Clock } {
   handle
   |> Retry.with(
-    policy: RetryPolicy(
-      maximum_attempts: 3,
-      retry_when: retryable,
+    RetryPolicy(
+      3,
+      retryable,
     ),
-    delay: fn(_attempt) { Duration.seconds(1) },
+    fn(_attempt) { Duration.seconds(1) },
   )
 }
 
