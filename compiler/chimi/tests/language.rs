@@ -2023,3 +2023,91 @@ fn hovering_a_list_pattern_binding_reports_its_type() {
         assert_eq!(inspection.inferred_type(), Some(expected), "{name}");
     }
 }
+
+// A generic function value instantiates where it meets a function type, so it
+// can fill a monomorphic function parameter (ts-9e7bae).
+#[test]
+fn generic_function_values_fill_monomorphic_function_parameters() {
+    let outcome = run_both(
+        "generic-function-value-argument",
+        concat!(
+            "fn wrap<T>(value: T) -> Option<T> { Some(value) }\n",
+            "fn apply(f: fn(Int) -> Option<Int>, value: Int) -> Option<Int> { f(value) }\n",
+            "fn total(option: Option<Int>) -> Int {\n",
+            "  case option {\n",
+            "    Some(value) -> value\n",
+            "    None -> 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  total(apply(wrap, 3)) * 10 + total(apply(Some, 4))\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":34");
+}
+
+// A generic constructor passed to a generic standard function must not leak
+// the callee's failure and needs row parameters into the caller's contract;
+// the leak kept the contract fixed point from settling (a checker panic).
+#[test]
+fn a_generic_constructor_maps_the_values_of_an_updated_map() {
+    let outcome = run_both(
+        "map-values-with-some",
+        concat!(
+            "import std/map as Map\n",
+            "pub fn main() -> Int {\n",
+            "  let counts = Map.update(Map.empty(), \"a\", fn(_current) { 2 })\n",
+            "  let wrapped = Map.map_values(counts, Some)\n",
+            "  case Map.get(wrapped, \"a\") {\n",
+            "    Some(Some(value)) -> value\n",
+            "    _ -> 0\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":2");
+}
+
+// Unrelated declarations change how many fixed-point passes the checker
+// runs; with them the leak surfaced as bogus T4203 and E5002 diagnostics.
+#[test]
+fn map_values_with_a_constructor_checks_cleanly_beside_other_declarations() {
+    let codes = check_codes(concat!(
+        "import std/map as Map\n",
+        "fn unused() -> Int { 1 }\n",
+        "fn unused_too() -> Int { 1 }\n",
+        "pub fn main() -> Int {\n",
+        "  let counts = Map.update(Map.empty(), \"a\", fn(_current) { 2 })\n",
+        "  let wrapped = Map.map_values(counts, Some)\n",
+        "  1\n",
+        "}\n",
+    ));
+    assert!(codes.is_empty(), "unexpected diagnostics: {codes:?}");
+}
+
+// A type parameter no argument mentions is fixed by the call's context, both
+// for the enum constructor in the body and at the call site (ts-5a8e9a).
+#[test]
+fn a_type_parameter_only_in_the_result_is_inferred_from_context() {
+    let outcome = run_both(
+        "result-only-type-parameter",
+        concat!(
+            "enum Res<T, E> {\n",
+            "  Good(value: T)\n",
+            "  Bad(error: E)\n",
+            "}\n",
+            "fn fail_with<T, E>(error: E) -> Res<T, E> { Bad(error) }\n",
+            "fn score(result: Res<Int, Int>) -> Int {\n",
+            "  case result {\n",
+            "    Good(value) -> value\n",
+            "    Bad(error) -> error + 1\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  score(fail_with(3))\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":4");
+}

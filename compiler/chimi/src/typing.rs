@@ -2008,8 +2008,14 @@ impl ProjectTypeChecker {
                     .len()
             })
             .sum::<usize>();
+        // Each pass moves every inferred contract fact at least one call edge
+        // further, and a fact's shortest path crosses at most every
+        // declaration, so a monotone fixed point settles within
+        // `declaration_count + 1` passes. Failing to settle means a body
+        // contributes a fresh fact on every pass, a checker defect that must
+        // surface as a diagnostic rather than a crash or a silent cut-off.
         for pass in 0..=declaration_count {
-            let mut changed = false;
+            let mut last_changed = None;
             for module_id in order
                 .iter()
                 .filter(|module_id| body_modules.contains(module_id))
@@ -2018,16 +2024,23 @@ impl ProjectTypeChecker {
                     .declarations
                     .clone();
                 for declaration in declarations {
-                    changed |= self.check_declaration_body(*module_id, &declaration);
+                    if self.check_declaration_body(*module_id, &declaration) {
+                        last_changed = Some((*module_id, declaration.name.range));
+                    }
                 }
             }
-            if !changed {
+            let Some((module_id, range)) = last_changed else {
                 break;
+            };
+            if pass == declaration_count {
+                self.type_error_range(
+                    module_id,
+                    "T4290",
+                    range,
+                    "internal checker limit: this declaration's inferred contract did not \
+                     settle; please report this program",
+                );
             }
-            assert!(
-                pass < declaration_count,
-                "monotonic body-contract inference must converge within the declaration count"
-            );
         }
         let mut typed = TypedProject {
             resolved: self.resolved,
@@ -5176,12 +5189,22 @@ impl ProjectTypeChecker {
         let (success, contract_failures, contract_needs) = if let Some(substitution) =
             &mut substitution
         {
-            if callee_symbol.is_some_and(|symbol| {
-                matches!(
-                    self.resolved.standard_symbol(symbol),
-                    Some(StandardSymbol::Function(_) | StandardSymbol::Constructor(_))
-                )
-            }) {
+            // A value parameter the arguments leave open (`T` in
+            // `wrap<T, E>(e: E) -> Res<T, E>`) is fixed by the call's context,
+            // so it becomes an inference variable. Only a declared function
+            // returning a function keeps it open, so the result generalizes.
+            let returns_function = matches!(
+                self.types[self.resolve_inference_type(contract.success).raw() as usize],
+                CanonicalType::Function(_) | CanonicalType::PolymorphicFunction { .. }
+            );
+            if !returns_function
+                || callee_symbol.is_some_and(|symbol| {
+                    matches!(
+                        self.resolved.standard_symbol(symbol),
+                        Some(StandardSymbol::Function(_) | StandardSymbol::Constructor(_))
+                    )
+                })
+            {
                 for parameter in &parameters {
                     if self.generic_kinds.get(parameter) == Some(&GenericKind::Value)
                         && !substitution.values.contains_key(parameter)
@@ -5564,6 +5587,16 @@ impl ProjectTypeChecker {
                         actual.name == expected.name
                             && self.match_call_type(actual.type_id, expected.type_id, substitution)
                     })
+            }
+            (
+                CanonicalType::PolymorphicFunction {
+                    parameters,
+                    contract,
+                },
+                CanonicalType::Function(_),
+            ) => {
+                let actual = self.instantiate_function_value(&parameters, contract);
+                self.match_call_type(actual, expected, substitution)
             }
             _ => self.unify(actual, expected),
         }
@@ -5955,8 +5988,64 @@ impl ProjectTypeChecker {
                         left.name == right.name && self.unify(left.type_id, right.type_id)
                     })
             }
+            (
+                CanonicalType::PolymorphicFunction {
+                    parameters,
+                    contract,
+                },
+                CanonicalType::Function(_),
+            ) => {
+                let left = self.instantiate_function_value(&parameters, contract);
+                self.unify(left, right)
+            }
+            (
+                CanonicalType::Function(_),
+                CanonicalType::PolymorphicFunction {
+                    parameters,
+                    contract,
+                },
+            ) => {
+                let right = self.instantiate_function_value(&parameters, contract);
+                self.unify(left, right)
+            }
             _ => false,
         }
+    }
+
+    /// Instantiates a generic function value (`wrap`, `Some`, `Map.get`) where
+    /// it meets a function type, so it can flow into a monomorphic or
+    /// differently generic function-typed slot. Value parameters become fresh
+    /// inference variables. Rows have no inference variables, so a failure or
+    /// needs row parameter of the value instantiates to the empty row: leaving
+    /// it in place would leak the callee's own row parameter into the caller's
+    /// contract.
+    fn instantiate_function_value(
+        &mut self,
+        parameters: &[SymbolId],
+        contract: CallableContract,
+    ) -> TypeId {
+        let mut substitution = CallSubstitution::default();
+        for parameter in parameters {
+            match self.generic_kinds.get(parameter).copied() {
+                Some(GenericKind::Value | GenericKind::FailureSet) => {}
+                Some(GenericKind::FailureRow) => {
+                    substitution
+                        .failures
+                        .insert(*parameter, FailureRowId::new(0));
+                }
+                Some(GenericKind::NeedsRow) => {
+                    substitution.needs.insert(*parameter, NeedsRowId::new(0));
+                }
+                Some(GenericKind::Unconstrained | GenericKind::Conflicting) | None => {
+                    substitution
+                        .failures
+                        .insert(*parameter, FailureRowId::new(0));
+                    substitution.needs.insert(*parameter, NeedsRowId::new(0));
+                }
+            }
+        }
+        let contract = self.substitute_call_contract_preserving(contract, &mut substitution, &[]);
+        self.intern_type(CanonicalType::Function(contract))
     }
 
     fn failure_rows_equivalent(&self, left: FailureRowId, right: FailureRowId) -> bool {
