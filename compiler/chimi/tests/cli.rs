@@ -2751,6 +2751,83 @@ fn native_repeated_drains_of_a_list_built_outside_loops_do_not_accumulate_copies
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// LP-10: `w` holds exactly a quarter of its vector, so each `rest` view of it is
+// shorter than a quarter and must not retain the vector. `w` adopts a compact vector
+// on the first match and every later view shares it, so 18,000 more matches add a
+// constant amount per match. A copy per match would add 16,383 elements (about
+// 130 KB of list nodes) each time.
+#[test]
+fn native_matching_one_boundary_window_repeatedly_copies_it_once() {
+    let scratch = scratch_directory("native-list-boundary-window");
+    let measure = |matches: u32| {
+        let executable = build_native(
+            &scratch,
+            &format!("list-boundary-{matches}"),
+            &format!(
+                concat!(
+                    "import std/json as Json\n",
+                    "import std/json.{{Value}}\n",
+                    "fn ones(doublings: Int) -> Text {{\n",
+                    "  loop state = {{ text: \"1\", left: doublings }} {{\n",
+                    "    case state.left {{\n",
+                    "      0 -> break state.text\n",
+                    "      _ -> {{ text: Text.append(Text.append(state.text, \",\"), state.text), left: state.left - 1 }}\n",
+                    "    }}\n",
+                    "  }}\n",
+                    "}}\n",
+                    "fn skip(values: List<Value>, count: Int) -> List<Value> {{\n",
+                    "  loop state = {{ rest: values, left: count }} {{\n",
+                    "    case state.left {{\n",
+                    "      0 -> break state.rest\n",
+                    "      _ -> case state.rest {{\n",
+                    "        [] -> break state.rest\n",
+                    "        [_, ..rest] -> {{ rest: rest, left: state.left - 1 }}\n",
+                    "      }}\n",
+                    "    }}\n",
+                    "  }}\n",
+                    "}}\n",
+                    "fn peek(w: List<Value>) -> Int {{\n",
+                    "  loop state = {{ left: {matches}, total: 0 }} {{\n",
+                    "    case state.left {{\n",
+                    "      0 -> break state.total\n",
+                    "      _ -> case w {{\n",
+                    "        [_, ..rest] -> {{ left: state.left - 1, total: state.total + List.length(rest) }}\n",
+                    "        [] -> break 0\n",
+                    "      }}\n",
+                    "    }}\n",
+                    "  }}\n",
+                    "}}\n",
+                    "pub fn main() -> Int {{\n",
+                    "  let decoded = Json.decode(Text.append(Text.append(\"[\", ones(16)), \"]\"))\n",
+                    "  case decoded {{\n",
+                    "    Value.Array(values) -> peek(skip(values, 49152))\n",
+                    "    _ -> -1\n",
+                    "  }}\n",
+                    "}}\n",
+                ),
+                matches = matches
+            ),
+        );
+        let (outcome, report) = execute_with_memory_report(&executable, &scratch);
+        assert_eq!(
+            outcome,
+            format!(
+                "{{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":{}}}\n",
+                u64::from(matches) * 16_383
+            )
+        );
+        std::fs::remove_file(scratch.join("outcome.jsonl")).unwrap();
+        std::fs::remove_file(scratch.join("memory.json")).unwrap();
+        json_u64_field(&report, "scoped_total_allocated_bytes")
+            + json_u64_field(&report, "unscoped_allocated_bytes")
+    };
+    let few = measure(2_000);
+    let many = measure(20_000);
+    let per_match = (many - few) / 18_000;
+    assert!(per_match < 4096, "{per_match} bytes per match");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // LP-07: `[.., last]` checks the length and reads one element, so matching a
 // 1,048,576-element list 10,000 times allocates no list storage. A copy per match
 // would allocate about 8 MB of list nodes each time.

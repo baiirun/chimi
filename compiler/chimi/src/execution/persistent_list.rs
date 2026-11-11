@@ -12,10 +12,13 @@
 //! a large vector alive. Draining a list of n elements one at a time therefore
 //! copies n/4 + n/16 + ... < n/3 elements in total: each copy of m elements is
 //! paid for by the 3m or more elements dropped since the vector was built. The
-//! native runtime's `list_slice` applies the same rule.
+//! source window is compacted, not just the slice: it adopts a vector of exactly
+//! its own elements, which every later slice of it shares, so matching the same
+//! window again is O(1) rather than another copy. The native runtime's
+//! `list_slice` applies the same rule.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 const BITS: u32 = 5;
 const WIDTH: usize = 1 << BITS;
@@ -32,6 +35,9 @@ pub(super) struct PersistentList<T> {
     vector: Vector<T>,
     start: usize,
     length: usize,
+    /// This window's elements in a vector of their own, built the first time a
+    /// slice of it would copy. Clones share it, so the copy happens once per value.
+    compacted: Arc<OnceLock<Vector<T>>>,
 }
 
 impl<T> Clone for PersistentList<T> {
@@ -40,17 +46,14 @@ impl<T> Clone for PersistentList<T> {
             vector: self.vector.clone(),
             start: self.start,
             length: self.length,
+            compacted: Arc::clone(&self.compacted),
         }
     }
 }
 
 impl<T> Default for PersistentList<T> {
     fn default() -> Self {
-        Self {
-            vector: Vector::default(),
-            start: 0,
-            length: 0,
-        }
+        Self::window(Vector::default(), 0, 0)
     }
 }
 
@@ -145,6 +148,30 @@ fn set_node<T>(node: &Node<T>, shift: u32, index: usize, value: Arc<T>) -> Arc<N
 }
 
 impl<T> PersistentList<T> {
+    fn window(vector: Vector<T>, start: usize, length: usize) -> Self {
+        Self {
+            vector,
+            start,
+            length,
+            compacted: Arc::default(),
+        }
+    }
+
+    /// Elements `range` of this window in a fresh vector.
+    fn copy_range(&self, range: std::ops::Range<usize>) -> Vector<T> {
+        Vector::from_shared(
+            range
+                .map(|index| {
+                    Arc::clone(
+                        self.vector
+                            .get(self.start + index)
+                            .expect("index is inside the window"),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     pub(super) fn len(&self) -> usize {
         self.length
     }
@@ -179,17 +206,14 @@ impl<T> PersistentList<T> {
         } else {
             self.vector.set(end, value)
         };
-        Self {
-            vector,
-            start: self.start,
-            length: self.length + 1,
-        }
+        Self::window(vector, self.start, self.length + 1)
     }
 
     /// Window `range` of this list. `None` when the range is reversed or extends
     /// past the end. The window shares this list's vector in O(1), unless it is
-    /// shorter than a quarter of that vector: then it copies its elements into a
-    /// fresh vector so it does not retain the rest.
+    /// shorter than a quarter of that vector, so it does not retain the rest. Then
+    /// it shares this list's compacted vector, built on first use, or copies its
+    /// own elements when it is shorter than a quarter of this list too.
     pub(super) fn slice(&self, range: std::ops::Range<usize>) -> Option<Self> {
         if range.start > range.end || range.end > self.length {
             return None;
@@ -197,27 +221,21 @@ impl<T> PersistentList<T> {
         if range.is_empty() {
             return Some(Self::default());
         }
-        let start = self.start + range.start;
         let length = range.len();
-        if length * RETAINED_FRACTION < self.vector.length {
-            let vector = Vector::from_shared(
-                (start..start + length)
-                    .map(|index| {
-                        Arc::clone(self.vector.get(index).expect("index is inside the window"))
-                    })
-                    .collect(),
-            );
-            return Some(Self {
-                vector,
-                start: 0,
+        if length * RETAINED_FRACTION >= self.vector.length {
+            return Some(Self::window(
+                self.vector.clone(),
+                self.start + range.start,
                 length,
-            });
+            ));
         }
-        Some(Self {
-            vector: self.vector.clone(),
-            start,
-            length,
-        })
+        if length * RETAINED_FRACTION < self.length {
+            return Some(Self::window(self.copy_range(range), 0, length));
+        }
+        let compacted = self
+            .compacted
+            .get_or_init(|| self.copy_range(0..self.length));
+        Some(Self::window(compacted.clone(), range.start, length))
     }
 }
 
@@ -303,11 +321,8 @@ impl<T> Vector<T> {
 impl<T> FromIterator<T> for PersistentList<T> {
     fn from_iter<I: IntoIterator<Item = T>>(values: I) -> Self {
         let vector = values.into_iter().collect::<Vector<T>>();
-        Self {
-            start: 0,
-            length: vector.length,
-            vector,
-        }
+        let length = vector.length;
+        Self::window(vector, 0, length)
     }
 }
 
@@ -575,6 +590,25 @@ mod tests {
             drop(window);
             assert_eq!(alive(&weak, 0..10_000), Vec::<usize>::new());
         }
+    }
+
+    // LP-10: `window` holds exactly a quarter of its vector, so each rest view must
+    // not share that vector. The window copies its elements once and every later
+    // view shares the copy; copying per view would clone 16,383 elements 50,000
+    // times (about 8 * 10^8 reference-count updates).
+    #[test]
+    fn repeated_rest_views_of_a_boundary_window_copy_it_once() {
+        let list = pushed(65_536);
+        let window = list.slice(49_152..65_536).unwrap();
+        drop(list);
+        let started = std::time::Instant::now();
+        for _ in 0..50_000 {
+            let rest = window.clone().slice(1..window.len()).unwrap();
+            assert_eq!(rest.first(), Some(&49_153));
+        }
+        let elapsed = started.elapsed();
+        assert!(elapsed.as_secs() < 5, "50,000 rest views took {elapsed:?}");
+        assert_window(&window, 49_152, 16_384);
     }
 
     // Guards: pushing onto a prefix window whose end lies inside the trie (not

@@ -500,43 +500,67 @@ static bool scope_encloses(const AllocationScope *outer, const AllocationScope *
     if (inner == outer) return true;
   return false;
 }
-/* Whether every element of `vector` lives in a scope strictly enclosing the current
-   one: the vector does, or it is a window copy, whose elements already do. A vector
-   that list_push extended from a copy has an untagged tail, so it falls to the scope test. */
-static bool elements_outside_current_scope(ListVector vector) {
-  if (!current_allocation_scope) return false;
+/* Whether every element of `vector` lives in a scope strictly enclosing `scope`: the
+   vector does, or it is a window copy, whose elements already do. A vector that
+   list_push extended from a copy has an untagged tail, so it falls to the scope test. */
+static bool elements_outside_scope(ListVector vector, const AllocationScope *scope) {
+  if (!scope) return false;
   bool copied = vector.tail && allocation_header(vector.tail)->window_copy &&
                 (!vector.root || allocation_header(vector.root)->window_copy);
   if (copied) return true;
   AllocationScope *source = vector_scope(vector);
-  return source != current_allocation_scope && scope_encloses(source, current_allocation_scope);
+  return source != scope && scope_encloses(source, scope);
+}
+/* Copies elements [from, from + length) of `list` into a fresh vector allocated in
+   `scope`. When every element lives in a strictly enclosing scope, the copy reaches
+   nothing in its own scope: it is tagged as a window copy, which ordinary collections
+   skip, so a loop draining a list built before the loop does not re-mark each
+   surviving copy on every pass. */
+static ListVector list_copy_window(const ChimiValue *list, uint32_t from, uint32_t length,
+                                   AllocationScope *scope) {
+  ChimiValue **values = malloc((size_t)length * sizeof(*values));
+  if (!values) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  for (uint32_t index = 0; index < length; ++index) values[index] = list_get(list, from + index);
+  AllocationScope *current = current_allocation_scope;
+  current_allocation_scope = scope;
+  allocating_window_copy = elements_outside_scope(list->as.list.vector, scope);
+  ListVector copy = vector_from_values(values, length);
+  allocating_window_copy = false;
+  current_allocation_scope = current;
+  free(values);
+  return copy;
 }
 /* A window shorter than 1/LIST_RETAINED_FRACTION of its vector is copied. */
 enum { LIST_RETAINED_FRACTION = 4 };
+static bool list_retains_too_much(uint32_t window, uint32_t vector) {
+  return (uint64_t)window * LIST_RETAINED_FRACTION < vector;
+}
 /* Window [from, to) of `list`, or NULL when the range is reversed or past the end.
-   The window shares the vector in O(1) unless it is shorter than a quarter of it;
-   then it copies its elements into a fresh vector so a small window does not keep a
-   large vector alive. Draining n elements one at a time copies fewer than n/3 in
-   total (n/4 + n/16 + ...), because each copy of m elements follows at least 3m
-   dropped ones. The interpreter's PersistentList::slice applies the same rule. */
-static ChimiValue *list_slice(const ChimiValue *list, uint32_t from, uint32_t to) {
+   The window shares the vector in O(1) unless it is shorter than a quarter of it,
+   so a small window does not keep a large vector alive. Then `list` itself is
+   compacted first: it adopts a fresh vector holding exactly its elements, and the
+   window shares that. Values are immutable, so swapping the representation is
+   unobservable, and every later window of `list` shares the compact vector instead
+   of copying again; a window shorter than a quarter of `list` itself is copied on
+   its own. Draining n elements one at a time copies fewer than n/3 in total
+   (n/4 + n/16 + ...), because each copy of m elements follows at least 3m dropped
+   ones. The interpreter's PersistentList::slice applies the same rule.
+
+   The compact vector is allocated in the scope that holds `list`, so `list` never
+   points into a younger scope. The in-place update is safe because one carrier runs
+   every fiber and none switches inside list_slice; parallel carriers (R4) would
+   have to publish the vector and start together, for example through an atomic
+   pointer to an immutable window, or leave shared values uncompacted. */
+static ChimiValue *list_slice(ChimiValue *list, uint32_t from, uint32_t to) {
   if (from > to || to > list->as.list.length) return NULL;
   if (from == to) return list_value((ListVector){NULL, NULL, 0}, 0, 0);
   uint32_t length = to - from;
-  if ((uint64_t)length * LIST_RETAINED_FRACTION < list->as.list.vector.length) {
-    ChimiValue **values = malloc((size_t)length * sizeof(*values));
-    if (!values) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
-    for (uint32_t index = 0; index < length; ++index) values[index] = list_get(list, from + index);
-    /* The copy lives in the current scope, so the scope's collections free it once it
-       is garbage. When every element lives in a strictly enclosing scope, the copy
-       reaches nothing in its own scope: it is tagged as a window copy, which ordinary
-       collections skip, so a loop draining a list built before the loop does not
-       re-mark each surviving copy on every pass. */
-    allocating_window_copy = elements_outside_current_scope(list->as.list.vector);
-    ChimiValue *copy = list_from_values(values, length);
-    allocating_window_copy = false;
-    free(values);
-    return copy;
+  if (list_retains_too_much(length, list->as.list.vector.length)) {
+    if (list_retains_too_much(length, list->as.list.length))
+      return list_value(list_copy_window(list, from, length, current_allocation_scope), 0, length);
+    list->as.list.vector =
+      list_copy_window(list, 0, list->as.list.length, allocation_header(list)->scope);
+    list->as.list.start = 0;
   }
   return list_value(list->as.list.vector, list->as.list.start + from, length);
 }

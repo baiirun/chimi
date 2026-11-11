@@ -429,12 +429,18 @@ Over the persistent vector (`L3`), matching MUST stay within these bounds:
 - A view shorter than a quarter of its vector MUST instead copy its elements
   into a new vector, so a small `rest` never keeps a large list alive. Both
   execution paths apply the same rule.
+- The copy is made at most once per source list value: the source adopts a
+  vector holding exactly its own elements, and the view shares it. Values are
+  immutable, so the change of representation is unobservable. Matching
+  `[x, ..rest]` against the same list value repeatedly is therefore O(1)
+  amortized per match, whatever that list's length relative to its vector.
 - Draining a list of `n` elements one at a time, as the `loop` example does,
   therefore copies fewer than `n / 3` elements in total (`n/4 + n/16 + ...`):
   each copy of `m` elements follows at least `3m` dropped ones, so every
-  `rest` costs O(1) amortized. A program that repeatedly takes a short view of
-  one long-lived large window pays O(view length) per view; that is the cost
-  of not retaining the large vector.
+  `rest` costs O(1) amortized. A view shorter than a quarter of the source
+  list itself is copied on its own each time. A pattern's `rest` omits only its
+  fixed elements, so that happens only for a list of a few elements, and the
+  copy costs O(pattern length).
 - Matching a pattern without `..rest`, such as `[.., last]`, MUST NOT allocate
   list storage.
 
@@ -737,6 +743,7 @@ specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2022`:
 | LP-07 | `[.., last]` against a 1,000,000-element list | Runtime: one indexed read; no list storage allocated |
 | LP-08 | `sum` over 10,000,000 elements with the `loop` example | Runtime: constant stack; `rest` views allocate O(1) each, amortized over window copies |
 | LP-09 | `Some([("id", Json.Number(id)), ..])` | Compiles; nested match binds `id` |
+| LP-10 | `[_, ..rest]` matched 20,000 times against one list that holds exactly a quarter of its vector | Runtime: the list's elements are copied once, not once per match |
 | TP-01 | `let (name, port) = parse_address(raw)` | Compiles |
 | TP-02 | `let Some(value) = lookup(key)` | `T4231`; witness `None` |
 | TP-03 | Tuple pattern of arity 3 against a pair | `T4230` |
