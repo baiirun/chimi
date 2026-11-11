@@ -852,7 +852,7 @@ outcome.
 | B1 | `status >= 200 and status < 300` with `status: Int` | Pass; type `Bool` |
 | B2 | `not a == b` | Pass; parses as `not (a == b)` |
 | B3 | `a or b and c` | Pass; parses as `a or (b and c)` |
-| B4 | `xs \|> List.is_empty and ready` | Pass; parses as `(xs \|> List.is_empty) and ready` |
+| B4 | `xs \|> List.is_empty and ready` (`List.is_empty` arrives with `std/list`; a local `is_empty` helper stands in until then) | Pass; parses as `(xs \|> List.is_empty) and ready` |
 | B5 | `False and consume(sender)` where `consume` writes to a channel | Run: success `False`; no send event in a `full` trace |
 | B6 | `True or fail_now()` where `fail_now` returns `Failure(E.X)` | Run: success `True`; the inferred failure row still contains `E.X` |
 | B7 | `True and fail_now()` | Run: expected failure `E.X` |
@@ -861,7 +861,7 @@ outcome.
 | B10 | `1 and True` | Fail `T4304` |
 | B11 | `a && b`, `a \|\| b`, `!a` | Fail `S1004` with replacement edits |
 | B12 | a guard `x if x > 0 and is_valid(x)` where `is_valid` calls a provider | Fail with the existing guard-purity diagnostic |
-| B13 | a loop pass with `done or Channel.send(captured_tx, value)` where the sender is an exclusive capability bound outside the loop | Fail `T4250` |
+| B13 | a loop pass with `done or sent(Channel.send(outbox, captured_rx))`, where `captured_rx` is an exclusive `Receiver` bound outside the loop and `sent` maps the send to `Bool` | Fail `T4250` |
 
 ### Equality and hashing
 
