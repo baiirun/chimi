@@ -4435,6 +4435,25 @@ impl ProjectTypeChecker {
         self.push_type_diagnostic(diagnostic);
     }
 
+    /// The declaration that owns generic `parameter`, to name a call target
+    /// that has no name of its own, such as the function `mk()` returns.
+    fn generic_owner_name(&self, parameter: SymbolId) -> String {
+        let symbol = self.resolved.symbol(parameter);
+        symbol
+            .module_id
+            .zip(symbol.semantic_id)
+            .and_then(|(module_id, semantic_id)| {
+                self.resolved.semantic.modules[module_id.raw() as usize]
+                    .declarations
+                    .iter()
+                    .find(|declaration| declaration.semantic_id == semantic_id)
+            })
+            .map_or_else(
+                || "this function".to_owned(),
+                |declaration| declaration.name.text.clone(),
+            )
+    }
+
     /// Where a source generic parameter is declared.
     fn generic_parameter_range(&self, parameter: SymbolId) -> Option<(ModuleId, TextRange)> {
         let symbol = self.resolved.symbol(parameter);
@@ -7033,7 +7052,7 @@ impl ProjectTypeChecker {
                     site: PropertySite::Instantiation {
                         range,
                         callee: callee_symbol.map_or_else(
-                            || "this function".to_owned(),
+                            || self.generic_owner_name(*parameter),
                             |symbol| self.callable_display_name(symbol),
                         ),
                         parameter: *parameter,
@@ -8057,11 +8076,12 @@ impl ProjectTypeChecker {
         let Some((module_id, range)) = self.expression_site else {
             return;
         };
-        let callee = self.polymorphic_owners.get(parameters).map_or_else(
-            || "this function".to_owned(),
-            |symbol| self.callable_display_name(*symbol),
-        );
+        let owner = self.polymorphic_owners.get(parameters).copied();
         for parameter in parameters {
+            let callee = owner.map_or_else(
+                || self.generic_owner_name(*parameter),
+                |symbol| self.callable_display_name(symbol),
+            );
             let (Some(requirement), Some(argument)) = (
                 self.generic_requirements.get(parameter).cloned(),
                 substitution.values.get(parameter).copied(),
@@ -8074,7 +8094,7 @@ impl ProjectTypeChecker {
                 property: requirement.property,
                 site: PropertySite::Instantiation {
                     range,
-                    callee: callee.clone(),
+                    callee,
                     parameter: *parameter,
                     requirement,
                 },

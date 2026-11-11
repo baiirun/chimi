@@ -4816,6 +4816,22 @@ fn a_requirement_from_a_standard_function_labels_the_call_in_the_callee() {
     assert_eq!(labels[1].0, "T", "{labels:?}");
 }
 
+// A call with no named target, such as calling the function another call
+// returns, names the declaration that owns the instantiated parameter.
+#[test]
+fn an_unnamed_call_target_is_named_by_the_parameter_owner() {
+    let source = concat!(
+        "fn mk<T>() -> fn(T, T) -> Bool { fn(a, b) { a == b } }\n",
+        "fn one() -> Int { 1 }\n",
+        "fn two() -> Int { 2 }\n",
+        "pub fn main() -> Bool { mk()(one, two) }\n",
+    );
+    let diagnostics = coded_messages(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].0, "T4305", "{diagnostics:?}");
+    assert!(diagnostics[0].1.contains("`T` of `mk`"), "{diagnostics:?}");
+}
+
 // E13 for a generic function used as a value: passing it where a function type
 // fixes its parameter is an instantiation too, so the requirement is checked
 // there, for a user function and for a standard one.
