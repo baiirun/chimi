@@ -4522,14 +4522,45 @@ fn mismatched_and_chained_comparisons_are_rejected() {
         check_codes("pub fn main() -> Bool { \"a\" < 1 }\n"),
         ["T4302"]
     );
-    for chained in ["1 < 2 < 3", "1 == 1 == True"] {
+    // The chain is the one error; the operand types it happens to pair are not.
+    for chained in ["1 < 2 < 3", "1 == 1 == True", "1 == 2 == 3"] {
         let codes = check_codes(&format!("pub fn main() -> Bool {{ {chained} }}\n"));
-        assert_eq!(
-            codes.first().map(String::as_str),
-            Some("S1006"),
-            "{chained}"
-        );
+        assert_eq!(codes, ["S1006"], "{chained}");
     }
+    // Parentheses make it one comparison of a `Bool` with an `Int`.
+    assert_eq!(
+        check_codes("pub fn main() -> Bool { (1 < 2) == 3 }\n"),
+        ["T4302"]
+    );
+}
+
+// One missing property is one diagnostic: a pipeline of standard Map calls that
+// all instantiate `K` with the same function type reports it once.
+#[test]
+fn a_map_pipeline_with_a_function_key_reports_once() {
+    let source = concat!(
+        "import std/map as Map\n",
+        "fn one() -> Int { 1 }\n",
+        "pub fn main() -> Option<Int> { Map.empty() |> Map.put(one, 1) |> Map.get(one) }\n",
+    );
+    let diagnostics = coded_messages(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].0, "T4300");
+    assert!(
+        diagnostics[0].1.contains("needs `K` to be equatable"),
+        "{diagnostics:?}"
+    );
+    // Two separate maps are two errors.
+    let separate = concat!(
+        "import std/map as Map\n",
+        "fn one() -> Int { 1 }\n",
+        "pub fn main() -> Int {\n",
+        "  let first = Map.empty() |> Map.put(one, 1)\n",
+        "  let second = Map.empty() |> Map.put(one, 2)\n",
+        "  1\n",
+        "}\n",
+    );
+    assert_eq!(check_codes(separate), ["T4300", "T4300"]);
 }
 
 // G5 sweep: a non-numeric arithmetic operand is T4303 on either side, and so is

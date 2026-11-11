@@ -3133,7 +3133,19 @@ impl ProjectTypeChecker {
                 let left = self.infer_expression(module_id, left_operand, generics, bindings);
                 let right = self.infer_expression(module_id, right_operand, generics, bindings);
                 if let Some(property) = comparison_property(*operator) {
-                    self.infer_comparison(module_id, *operator, property, *range, left, right);
+                    // A comparison operand that is itself an ungrouped
+                    // comparison only comes from a chain `a < b < c`, which
+                    // the parser reported as `S1006`; the `Bool` the chain
+                    // pairs with `c` is not a second error. A grouped
+                    // `(a < b) == c` lowers to `Group` and is still checked.
+                    let chained = matches!(
+                        left_operand.as_ref(),
+                        ModuleExpression::Binary { operator: inner, .. }
+                            if comparison_property(*inner).is_some()
+                    );
+                    if !chained {
+                        self.infer_comparison(module_id, *operator, property, *range, left, right);
+                    }
                     ExpressionFact {
                         success: self.builtin_type("Bool"),
                         failures: self.union_failure_rows([left.failures, right.failures]),
@@ -4222,9 +4234,32 @@ impl ProjectTypeChecker {
     fn settle_property_checks(&mut self, generics: &HashMap<String, SymbolId>) -> bool {
         let own = generics.values().copied().collect::<HashSet<_>>();
         let mut changed = false;
+        // Instantiations already reported, as (module, range, type, property).
+        // A call whose range encloses one of them with the same lacking type
+        // only receives that type from it, as `Map.put` does from `Map.empty`
+        // in `Map.empty() |> Map.put(f, 1)`, so it is not a second error.
+        // Arguments are inferred before their call queues its checks, so the
+        // inner call comes first.
+        let mut reported = Vec::<(ModuleId, TextRange, String, ValueProperty)>::new();
         for check in std::mem::take(&mut self.property_checks) {
             let derivation = self.type_view().derive(check.type_id, check.property);
             if let Some(lack) = derivation.lack {
+                if let PropertySite::Instantiation { range, .. } = &check.site {
+                    let found = self.format_checked_type(check.type_id);
+                    let follows = reported
+                        .iter()
+                        .any(|(module_id, inner, earlier, property)| {
+                            *module_id == check.module_id
+                                && *property == check.property
+                                && *earlier == found
+                                && range.start() <= inner.start()
+                                && inner.end() <= range.end()
+                        });
+                    reported.push((check.module_id, *range, found, check.property));
+                    if follows {
+                        continue;
+                    }
+                }
                 self.report_property_lack(&check, &lack);
                 continue;
             }
