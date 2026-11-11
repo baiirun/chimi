@@ -61,9 +61,13 @@ impl FormatReport {
 
 fn format_parse(parsed: &ParseResult) -> String {
     let tokens = parsed.root().descendant_tokens();
+    let clause_ends = clause_group_joints(parsed);
     let mut writer = Writer::default();
     let mut previous = None;
     let mut saw_newline = false;
+    // Set after a clause that the next clause of the same function follows, so no
+    // blank line separates them; cleared by the next significant token.
+    let mut joining_clauses = false;
 
     for (index, token) in tokens.iter().enumerate() {
         let kind = token.kind();
@@ -73,7 +77,7 @@ fn format_parse(parsed: &ParseResult) -> String {
         let next = next_significant(&tokens, index + 1);
         match kind {
             TokenKind::Newline => {
-                if saw_newline {
+                if saw_newline && !joining_clauses {
                     writer.blank_line();
                 } else if !should_join_line(previous, next) || writer.line_is_empty() {
                     writer.flush();
@@ -112,7 +116,11 @@ fn format_parse(parsed: &ParseResult) -> String {
                 {
                     writer.flush();
                     if writer.brace_depth == 0 {
-                        writer.blank_line();
+                        if clause_ends.contains(&token.range().start()) {
+                            joining_clauses = true;
+                        } else {
+                            writer.blank_line();
+                        }
                     }
                 }
             }
@@ -168,7 +176,9 @@ fn format_parse(parsed: &ParseResult) -> String {
                 writer.trim_space();
                 writer.write(token.text());
             }
-            TokenKind::Minus if token_has_ancestor(token, &[NodeKind::UnaryExpression]) => {
+            TokenKind::Minus
+                if token_has_ancestor(token, &[NodeKind::UnaryExpression, NodeKind::Pattern]) =>
+            {
                 writer.write("-");
             }
             TokenKind::Arrow
@@ -205,10 +215,44 @@ fn format_parse(parsed: &ParseResult) -> String {
         saw_newline = false;
         if kind != TokenKind::Comment {
             previous = Some(kind);
+            if kind != TokenKind::RightBrace {
+                joining_clauses = false;
+            }
         }
     }
 
     writer.finish()
+}
+
+/// The start offsets of each `}` that closes a function clause directly followed by
+/// another clause of the same function. The formatter keeps a clause group together.
+fn clause_group_joints(parsed: &ParseResult) -> Vec<u32> {
+    let declarations = parsed.root().child_nodes();
+    let function_name = |node: &crate::syntax::SyntaxNode<'_>| {
+        (node.kind() == NodeKind::FunctionDeclaration)
+            .then(|| {
+                node.child_tokens()
+                    .into_iter()
+                    .skip_while(|token| token.kind() != TokenKind::Fn)
+                    .find(|token| token.kind() == TokenKind::Identifier)
+                    .map(|token| token.text().to_owned())
+            })
+            .flatten()
+    };
+    declarations
+        .windows(2)
+        .filter(|pair| {
+            function_name(&pair[0]).is_some() && function_name(&pair[0]) == function_name(&pair[1])
+        })
+        .filter_map(|pair| {
+            pair[0]
+                .descendant_tokens()
+                .into_iter()
+                .rev()
+                .find(|token| token.kind() == TokenKind::RightBrace && !token.is_missing())
+                .map(|token| token.range().start())
+        })
+        .collect()
 }
 
 fn should_join_line(previous: Option<TokenKind>, next: Option<TokenKind>) -> bool {

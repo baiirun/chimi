@@ -329,6 +329,10 @@ fn touch_pattern(pattern: &CorePattern) {
                 touch_pattern(element);
             }
         }
+        CorePattern::Alias { pattern, binding } => {
+            let _ = binding;
+            touch_pattern(pattern);
+        }
     }
 }
 
@@ -543,6 +547,11 @@ pub(crate) enum CorePattern {
         prefix: Vec<CorePattern>,
         rest: Option<Box<CorePattern>>,
         suffix: Vec<CorePattern>,
+    },
+    /// Matches `pattern` and also binds the whole value to `binding`.
+    Alias {
+        pattern: Box<CorePattern>,
+        binding: SymbolId,
     },
 }
 
@@ -1421,10 +1430,26 @@ impl CoreLowerer {
                 PatternLiteral::Boolean(value) => CoreLiteral::Boolean(*value),
                 PatternLiteral::Float => unreachable!("typing rejects Float literal patterns"),
             }),
-            Pattern::Binding { semantic_id, .. } => CorePattern::Binding(
+            Pattern::Binding { semantic_id, .. }
+            | Pattern::Typed {
+                semantic_id,
+                name: Some(_),
+                ..
+            } => CorePattern::Binding(
                 self.local_symbol(module_id, *semantic_id, ProjectSymbolKind::PatternBinding)
                     .expect("verified pattern binding resolves"),
             ),
+            Pattern::Typed { name: None, .. } => CorePattern::Wildcard,
+            Pattern::Alias {
+                semantic_id,
+                pattern,
+                ..
+            } => CorePattern::Alias {
+                pattern: Box::new(self.pattern(module_id, pattern)),
+                binding: self
+                    .local_symbol(module_id, *semantic_id, ProjectSymbolKind::PatternBinding)
+                    .expect("verified alias binding resolves"),
+            },
             Pattern::List {
                 prefix,
                 rest,

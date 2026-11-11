@@ -32,6 +32,6 @@ pub use compiler::{
 };
 pub use formatter::FormatReport;
 pub use inspection::{
-    CallableInspection, InspectedToken, InspectionError, InspectionReport, NeedInspection,
-    ReferenceInspection, SymbolInspection, SyntaxFrame,
+    CallableInspection, ClausePosition, InspectedToken, InspectionError, InspectionReport,
+    NeedInspection, ReferenceInspection, SymbolInspection, SyntaxFrame,
 };

@@ -1747,7 +1747,7 @@ impl ProjectResolver {
     ) {
         let mut scope = Scope::child(parent);
         for pattern in &arm.patterns {
-            self.resolve_pattern(module_index, pattern, &mut scope);
+            self.resolve_pattern(module_index, pattern, generics, &mut scope);
         }
         if let Some(guard) = &arm.guard {
             self.resolve_expression(module_index, guard, generics, &mut scope);
@@ -1755,10 +1755,21 @@ impl ProjectResolver {
         self.resolve_expression(module_index, &arm.body, generics, &mut scope);
     }
 
-    fn resolve_pattern(&mut self, module_index: usize, pattern: &Pattern, scope: &mut Scope) {
+    fn resolve_pattern(
+        &mut self,
+        module_index: usize,
+        pattern: &Pattern,
+        generics: &HashMap<String, SymbolId>,
+        scope: &mut Scope,
+    ) {
         match pattern {
             Pattern::Binding {
                 semantic_id, name, ..
+            }
+            | Pattern::Typed {
+                semantic_id,
+                name: Some(name),
+                ..
             } => self.define_local(
                 module_index,
                 *semantic_id,
@@ -1769,10 +1780,29 @@ impl ProjectResolver {
             Pattern::Constructor {
                 semantic_id, path, ..
             } => self.resolve_pattern_constructor(module_index, *semantic_id, path),
-            Pattern::Wildcard { .. } | Pattern::Literal { .. } | Pattern::List { .. } => {}
+            Pattern::Wildcard { .. }
+            | Pattern::Literal { .. }
+            | Pattern::List { .. }
+            | Pattern::Typed { name: None, .. }
+            | Pattern::Alias { .. } => {}
+        }
+        if let Pattern::Typed { type_use, .. } = pattern {
+            self.resolve_type(module_index, type_use, generics);
         }
         for child in pattern.children() {
-            self.resolve_pattern(module_index, child, scope);
+            self.resolve_pattern(module_index, child, generics, scope);
+        }
+        if let Pattern::Alias {
+            semantic_id, name, ..
+        } = pattern
+        {
+            self.define_local(
+                module_index,
+                *semantic_id,
+                name,
+                ProjectSymbolKind::PatternBinding,
+                scope,
+            );
         }
     }
 

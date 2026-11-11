@@ -142,6 +142,10 @@ impl ProgramData {
                 let child = self.pattern(value);
                 (4, u32::from(*success), child, 1, 0)
             }
+            CorePattern::Alias { pattern, binding } => {
+                let child = self.pattern(pattern);
+                (6, binding.raw(), child, 1, 0)
+            }
             // Children are prefix, then the rest pattern when present, then suffix;
             // `a` counts the prefix and `integer` is 1 when a rest pattern is present.
             CorePattern::List {

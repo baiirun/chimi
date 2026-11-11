@@ -1,8 +1,11 @@
 use crate::diagnostic::Diagnostic;
 use crate::ids::{ModuleId, SemanticId, SymbolId, TextRange};
 use crate::json::write_json_string;
-use crate::resolution::{ProjectReference, ReferenceResolution};
-use crate::semantic::{ModuleBlockItem, ModuleExpression, Pattern, SemanticModule};
+use crate::resolution::{ProjectReference, ProjectSymbolKind, ReferenceResolution};
+use crate::semantic::{
+    CaseOrigin, ModuleBlockItem, ModuleDeclaration, ModuleExpression, Pattern, SemanticModule,
+    is_generated_name,
+};
 use crate::syntax::ParseResult;
 use crate::typing::{CallableContract, TypedProject};
 use std::fmt::{self, Write};
@@ -183,9 +186,27 @@ pub struct InspectionReport {
     callable: Option<CallableInspection>,
     instantiated_callable: Option<CallableInspection>,
     executable_origin: Option<u32>,
+    clause: Option<ClausePosition>,
     diagnostics: Vec<Diagnostic>,
     semantic_id: Option<SemanticId>,
     module_id: ModuleId,
+}
+
+/// Where a function clause sits in its group, counted from 1.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClausePosition {
+    index: usize,
+    count: usize,
+}
+
+impl ClausePosition {
+    pub const fn index(&self) -> usize {
+        self.index
+    }
+
+    pub const fn count(&self) -> usize {
+        self.count
+    }
 }
 
 impl InspectionReport {
@@ -239,6 +260,11 @@ impl InspectionReport {
         self.executable_origin
     }
 
+    /// The clause whose head holds the offset, when it is a multi-clause function's.
+    pub const fn clause(&self) -> Option<ClausePosition> {
+        self.clause
+    }
+
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
     }
@@ -285,6 +311,17 @@ impl InspectionReport {
         output.push_str(",\"executable_origin\":");
         if let Some(origin) = self.executable_origin {
             write!(output, "{origin}").expect("writing JSON to a string cannot fail");
+        } else {
+            output.push_str("null");
+        }
+        output.push_str(",\"clause\":");
+        if let Some(clause) = self.clause {
+            write!(
+                output,
+                "{{\"index\":{},\"count\":{}}}",
+                clause.index, clause.count
+            )
+            .expect("writing JSON to a string cannot fail");
         } else {
             output.push_str("null");
         }
@@ -376,6 +413,18 @@ pub(crate) fn inspect(
         .or_else(|| {
             expression_fact.and_then(|fact| typed.callable_contract_for_type(fact.success))
         });
+    // A clause head names the whole group: report its contract and the position.
+    let clause = clause_at(module, offset);
+    let callable_contract = callable_contract.or_else(|| {
+        let (declaration, _) = clause?;
+        let symbol = typed.resolved.source_symbol(
+            module.id,
+            declaration.semantic_id,
+            ProjectSymbolKind::Function,
+            &declaration.name.text,
+        )?;
+        typed.contracts.get(&symbol)
+    });
     let (line, byte_column) = line_byte_column(module.source.text(), offset);
 
     Ok(InspectionReport {
@@ -391,6 +440,7 @@ pub(crate) fn inspect(
         callable: callable_contract.map(|contract| inspect_callable(typed, contract)),
         instantiated_callable,
         executable_origin: None,
+        clause: clause.map(|(_, position)| position),
         diagnostics: typed.diagnostics.clone(),
         semantic_id,
         module_id: module.id,
@@ -440,7 +490,9 @@ fn reference_at<'typed>(
         .references
         .iter()
         .filter(|reference| {
-            reference.file_id == module.source.file_id() && range_contains(reference.range, offset)
+            reference.file_id == module.source.file_id()
+                && range_contains(reference.range, offset)
+                && !is_generated_name(&reference.text)
         })
         .min_by_key(|reference| reference.range.end() - reference.range.start())
 }
@@ -550,6 +602,34 @@ fn declaration_range(module: &SemanticModule, semantic_id: SemanticId) -> Option
     None
 }
 
+/// The clause group declaration and clause position whose head, `name(patterns)`,
+/// holds `offset`.
+fn clause_at(
+    module: &SemanticModule,
+    offset: usize,
+) -> Option<(&ModuleDeclaration, ClausePosition)> {
+    module.declarations.iter().find_map(|declaration| {
+        let Some(ModuleExpression::Case {
+            arms,
+            origin: CaseOrigin::Clauses { .. },
+            ..
+        }) = &declaration.body
+        else {
+            return None;
+        };
+        let index = arms
+            .iter()
+            .position(|arm| range_contains(arm.range, offset))?;
+        Some((
+            declaration,
+            ClausePosition {
+                index: index + 1,
+                count: arms.len(),
+            },
+        ))
+    })
+}
+
 fn expression_at(module: &SemanticModule, offset: usize) -> Option<&ModuleExpression> {
     module
         .declarations
@@ -563,7 +643,9 @@ fn expression_at_recursive(
     expression: &ModuleExpression,
     offset: usize,
 ) -> Option<&ModuleExpression> {
-    if !range_contains(expression.range(), offset) {
+    if !range_contains(expression.range(), offset)
+        || matches!(expression, ModuleExpression::Name { name, .. } if is_generated_name(&name.text))
+    {
         return None;
     }
     expression_children(expression)

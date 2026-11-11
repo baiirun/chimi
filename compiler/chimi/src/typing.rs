@@ -3,6 +3,7 @@ use crate::ids::{FailureRowId, ModuleId, NeedsRowId, SemanticId, SymbolId, TextR
 use crate::resolution::{
     Namespace, ProjectSymbolKind, ReferenceResolution, Resolution, ResolvedProgram, ResolvedProject,
 };
+use crate::semantic::CaseOrigin;
 use crate::semantic::Literal;
 use crate::semantic::{
     BinaryOperator, FunctionSignature, ModuleBlockItem, ModuleCaseArm, ModuleDeclaration,
@@ -1086,6 +1087,22 @@ struct CallSubstitution {
     values: HashMap<SymbolId, TypeId>,
     failures: HashMap<SymbolId, FailureRowId>,
     needs: HashMap<SymbolId, NeedsRowId>,
+}
+
+/// What pattern checking needs besides the expected type.
+#[derive(Clone, Copy)]
+struct PatternContext<'a> {
+    generics: &'a HashMap<String, SymbolId>,
+    /// The pattern is (part of) a function clause's parameter pattern, so type
+    /// conflicts are between clauses (`T4281`) and generic positions are opaque.
+    clause_head: bool,
+}
+
+/// The function whose clauses an ordinary `case` was desugared from.
+struct ClauseCase {
+    function: String,
+    /// The first clause's name, where coverage diagnostics point.
+    range: TextRange,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -3161,8 +3178,11 @@ impl ProjectTypeChecker {
                 subjects,
                 arms,
                 range,
+                origin,
                 ..
-            } => self.infer_case(module_id, subjects, arms, *range, generics, bindings),
+            } => self.infer_case(
+                module_id, subjects, arms, *range, origin, generics, bindings,
+            ),
             ModuleExpression::Loop {
                 state_id,
                 initial,
@@ -3435,12 +3455,14 @@ impl ProjectTypeChecker {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn infer_case(
         &mut self,
         module_id: ModuleId,
         subjects: &[ModuleExpression],
         arms: &[ModuleCaseArm],
         range: TextRange,
+        origin: &CaseOrigin,
         generics: &HashMap<String, SymbolId>,
         bindings: &mut HashMap<SymbolId, ValueBinding>,
     ) -> ExpressionFact {
@@ -3448,6 +3470,21 @@ impl ProjectTypeChecker {
             .iter()
             .map(|subject| self.infer_expression(module_id, subject, generics, bindings))
             .collect::<Vec<_>>();
+        if let CaseOrigin::Clauses { function } = origin {
+            let clauses = ClauseCase {
+                function: function.text.clone(),
+                range: function.range,
+            };
+            return self.infer_ordinary_case(
+                module_id,
+                &subject_facts,
+                arms,
+                range,
+                Some(&clauses),
+                generics,
+                bindings,
+            );
+        }
         let has_outcome_pattern = arms.iter().any(|arm| {
             arm.patterns.first().is_some_and(|pattern| {
                 self.pattern_is_builtin(module_id, pattern, "Success")
@@ -3468,19 +3505,36 @@ impl ProjectTypeChecker {
                     "a case over a fallible expression must use Success(...) and Failure(...) patterns",
                 );
             }
-            self.infer_ordinary_case(module_id, &subject_facts, arms, range, generics, bindings)
+            self.infer_ordinary_case(
+                module_id,
+                &subject_facts,
+                arms,
+                range,
+                None,
+                generics,
+                bindings,
+            )
         }
     }
 
+    /// Types an ordinary `case`, or a clause group's body when `clauses` is set. The
+    /// rules are the same; clause groups get clause-specific diagnostics, and a
+    /// `Success` or `Failure` clause pattern is `T4282` because parameters are values.
+    #[allow(clippy::too_many_arguments)]
     fn infer_ordinary_case(
         &mut self,
         module_id: ModuleId,
         subjects: &[ExpressionFact],
         arms: &[ModuleCaseArm],
         range: TextRange,
+        clauses: Option<&ClauseCase>,
         generics: &HashMap<String, SymbolId>,
         bindings: &HashMap<SymbolId, ValueBinding>,
     ) -> ExpressionFact {
+        let context = PatternContext {
+            generics,
+            clause_head: clauses.is_some(),
+        };
         let mut facts = subjects.to_vec();
         let mut success = None;
         let subject_types = subjects
@@ -3508,30 +3562,46 @@ impl ProjectTypeChecker {
                     ),
                 );
             }
+            if clauses.is_some() {
+                for pattern in &arm.patterns {
+                    self.reject_outcome_parameter(module_id, pattern);
+                }
+            }
             let normalized = arm
                 .patterns
                 .iter()
                 .zip(subjects)
                 .map(|(pattern, subject)| {
-                    self.normalize_pattern(module_id, pattern, subject.success, &mut arm_bindings)
+                    self.normalize_pattern(
+                        module_id,
+                        pattern,
+                        subject.success,
+                        context,
+                        &mut arm_bindings,
+                    )
                 })
                 .collect::<Vec<_>>();
             let useful =
                 rejected || self.pattern_row_is_useful(&coverage, &normalized, &subject_types);
             if !useful {
-                self.type_error_range(module_id, "T4232", arm.range, "case arm is unreachable");
+                let message = if clauses.is_some() {
+                    "this clause can never run; earlier clauses match every input it matches"
+                } else {
+                    "case arm is unreachable"
+                };
+                self.type_error_range(module_id, "T4232", arm.range, message);
             }
             let unguarded = arm.guard.is_none();
             let catch_all = normalized
                 .iter()
                 .all(|pattern| matches!(pattern, MatchPattern::Wildcard));
             if unguarded && catch_all && arm_index + 1 < arms.len() {
-                self.type_error_range(
-                    module_id,
-                    "T4233",
-                    arm.range,
-                    "an unguarded catch-all must be the final case arm",
-                );
+                let message = if clauses.is_some() {
+                    "a clause whose patterns all match anything must be the last clause"
+                } else {
+                    "an unguarded catch-all must be the final case arm"
+                };
+                self.type_error_range(module_id, "T4233", arm.range, message);
             }
             if unguarded && useful && !rejected && normalized.len() == subjects.len() {
                 coverage.push(normalized);
@@ -3557,12 +3627,23 @@ impl ProjectTypeChecker {
                 .map(|pattern| self.render_witness(pattern))
                 .collect::<Vec<_>>()
                 .join(", ");
-            self.type_error_range(
-                module_id,
-                "T4231",
-                range,
-                format!("case is not exhaustive; `{witness}` is not matched"),
-            );
+            match clauses {
+                Some(clauses) => self.type_error_range(
+                    module_id,
+                    "T4231",
+                    clauses.range,
+                    format!(
+                        "the clauses of `{}` do not cover every input; `{}({witness})` is not matched. Add a clause for it, return a Failure for inputs it cannot handle, or match with `case`",
+                        clauses.function, clauses.function
+                    ),
+                ),
+                None => self.type_error_range(
+                    module_id,
+                    "T4231",
+                    range,
+                    format!("case is not exhaustive; `{witness}` is not matched"),
+                ),
+            }
         }
         ExpressionFact {
             success: success.unwrap_or(TypeId::new(0)),
@@ -3576,10 +3657,73 @@ impl ProjectTypeChecker {
         module_id: ModuleId,
         pattern: &Pattern,
         expected: TypeId,
+        context: PatternContext<'_>,
         bindings: &mut HashMap<SymbolId, ValueBinding>,
     ) -> MatchPattern {
+        if context.clause_head
+            && !matches!(
+                pattern,
+                Pattern::Wildcard { .. } | Pattern::Binding { .. } | Pattern::Typed { .. }
+            )
+            && let CanonicalType::Generic(parameter) =
+                self.types[self.resolve_inference_type(expected).raw() as usize].clone()
+        {
+            let name = self.resolved.symbol(parameter).name.clone();
+            self.type_error_range(
+                module_id,
+                "T4230",
+                pattern.range(),
+                format!(
+                    "a pattern against the generic parameter `{name}` may only be a binding, `_`, or `name: {name}`; no clause can inspect a generic value"
+                ),
+            );
+            return MatchPattern::Wildcard;
+        }
         match pattern {
             Pattern::Wildcard { .. } => MatchPattern::Wildcard,
+            Pattern::Typed {
+                semantic_id,
+                type_use,
+                range,
+                ..
+            } => {
+                let annotated = self.lower_value_type(module_id, type_use, context.generics);
+                if !self.unify(expected, annotated) {
+                    self.typed_binding_mismatch(module_id, *range, expected, annotated, context);
+                }
+                if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
+                    self.pattern_binding_types
+                        .insert((module_id, *semantic_id), expected);
+                    bindings.insert(
+                        binding,
+                        ValueBinding {
+                            type_id: expected,
+                            need: None,
+                        },
+                    );
+                }
+                MatchPattern::Wildcard
+            }
+            Pattern::Alias {
+                semantic_id,
+                pattern: inner,
+                ..
+            } => {
+                let normalized =
+                    self.normalize_pattern(module_id, inner, expected, context, bindings);
+                if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
+                    self.pattern_binding_types
+                        .insert((module_id, *semantic_id), expected);
+                    bindings.insert(
+                        binding,
+                        ValueBinding {
+                            type_id: expected,
+                            need: None,
+                        },
+                    );
+                }
+                normalized
+            }
             Pattern::Literal { literal, range, .. } => {
                 let (literal_type, tag) = match literal {
                     PatternLiteral::Integer(value) => {
@@ -3600,12 +3744,16 @@ impl ProjectTypeChecker {
                     }
                 };
                 if !self.unify(expected, literal_type) {
-                    self.type_error_range(
-                        module_id,
-                        "T4230",
-                        *range,
-                        "literal pattern does not match the subject type",
-                    );
+                    if context.clause_head {
+                        self.clause_type_conflict(module_id, *range, expected, literal_type);
+                    } else {
+                        self.type_error_range(
+                            module_id,
+                            "T4230",
+                            *range,
+                            "literal pattern does not match the subject type",
+                        );
+                    }
                 }
                 MatchPattern::Constructor {
                     tag,
@@ -3646,14 +3794,20 @@ impl ProjectTypeChecker {
                     patterns
                         .iter()
                         .map(|element_pattern| {
-                            checker.normalize_pattern(module_id, element_pattern, element, bindings)
+                            checker.normalize_pattern(
+                                module_id,
+                                element_pattern,
+                                element,
+                                context,
+                                bindings,
+                            )
                         })
                         .collect::<Vec<_>>()
                 };
                 let prefix = normalize_all(self, prefix);
                 let suffix = normalize_all(self, suffix);
                 if let Some(rest) = rest {
-                    self.normalize_pattern(module_id, rest, expected, bindings);
+                    self.normalize_pattern(module_id, rest, expected, context, bindings);
                 }
                 MatchPattern::List {
                     prefix,
@@ -3663,7 +3817,7 @@ impl ProjectTypeChecker {
             Pattern::Constructor {
                 arguments, range, ..
             } => self.normalize_constructor_pattern(
-                module_id, pattern, arguments, *range, expected, bindings,
+                module_id, pattern, arguments, *range, expected, context, bindings,
             ),
         }
     }
@@ -3676,6 +3830,7 @@ impl ProjectTypeChecker {
         self.unify(expected, list).then_some(element)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn normalize_constructor_pattern(
         &mut self,
         module_id: ModuleId,
@@ -3683,6 +3838,7 @@ impl ProjectTypeChecker {
         arguments: &[Pattern],
         range: TextRange,
         expected: TypeId,
+        context: PatternContext<'_>,
         bindings: &mut HashMap<SymbolId, ValueBinding>,
     ) -> MatchPattern {
         let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
@@ -3698,6 +3854,16 @@ impl ProjectTypeChecker {
             return MatchPattern::Wildcard;
         }
         let Some(inputs) = self.instantiate_pattern_constructor(constructor, expected) else {
+            if context.clause_head {
+                let constructed = self
+                    .contracts
+                    .get(&constructor)
+                    .map(|contract| contract.success);
+                if let Some(constructed) = constructed {
+                    self.clause_type_conflict(module_id, range, expected, constructed);
+                    return MatchPattern::Wildcard;
+                }
+            }
             self.type_error_range(
                 module_id,
                 "T4230",
@@ -3729,7 +3895,7 @@ impl ProjectTypeChecker {
                 arguments
                     .get(index)
                     .map_or(MatchPattern::Wildcard, |argument| {
-                        self.normalize_pattern(module_id, argument, *input, bindings)
+                        self.normalize_pattern(module_id, argument, *input, context, bindings)
                     })
             })
             .collect();
@@ -4234,6 +4400,67 @@ impl ProjectTypeChecker {
         boolean
     }
 
+    /// `T4282`: a clause parameter never holds a live outcome, because callers
+    /// evaluate arguments first and a failing argument has already left the caller.
+    fn reject_outcome_parameter(&mut self, module_id: ModuleId, pattern: &Pattern) {
+        if self.pattern_is_builtin(module_id, pattern, "Success")
+            || self.pattern_is_builtin(module_id, pattern, "Failure")
+        {
+            self.type_error_range(
+                module_id,
+                "T4282",
+                pattern.range(),
+                "a parameter is a value, never an outcome: the caller evaluates the argument first, and a failing argument has already left through the caller's failure channel. Match the operation with `case` at the call site, or pass a thunk to a recovery function",
+            );
+        }
+    }
+
+    /// `T4281`: two clauses need different types for one parameter position.
+    fn clause_type_conflict(
+        &mut self,
+        module_id: ModuleId,
+        range: TextRange,
+        expected: TypeId,
+        found: TypeId,
+    ) {
+        let expected = self.type_display_name(expected);
+        let found = self.type_display_name(found);
+        self.type_error_range(
+            module_id,
+            "T4281",
+            range,
+            format!(
+                "this clause needs `{found}` where another clause needs `{expected}`; clauses select by value, and Chimi does not overload functions by type. Use an enum to model the alternatives"
+            ),
+        );
+    }
+
+    /// A typed binding names a type other than the value's: `T4281` across clause
+    /// heads, `T4283` elsewhere.
+    fn typed_binding_mismatch(
+        &mut self,
+        module_id: ModuleId,
+        range: TextRange,
+        expected: TypeId,
+        annotated: TypeId,
+        context: PatternContext<'_>,
+    ) {
+        if context.clause_head {
+            self.clause_type_conflict(module_id, range, expected, annotated);
+            return;
+        }
+        let expected = self.type_display_name(expected);
+        let annotated = self.type_display_name(annotated);
+        self.type_error_range(
+            module_id,
+            "T4283",
+            range,
+            format!(
+                "the value has type `{expected}`, not `{annotated}`; a typed binding does not test types at run time, and only failure values can be selected by type. Remove the annotation, or match variants"
+            ),
+        );
+    }
+
     fn infer_case_guard(
         &mut self,
         module_id: ModuleId,
@@ -4521,6 +4748,10 @@ impl ProjectTypeChecker {
         generics: &HashMap<String, SymbolId>,
         bindings: &HashMap<SymbolId, ValueBinding>,
     ) -> ExpressionFact {
+        let context = PatternContext {
+            generics,
+            clause_head: false,
+        };
         let mut arm_facts = Vec::new();
         let mut success = None;
         let mut success_coverage = Vec::<Vec<MatchPattern>>::new();
@@ -4541,6 +4772,7 @@ impl ProjectTypeChecker {
                         module_id,
                         inner,
                         subject.success,
+                        context,
                         &mut arm_bindings,
                     );
                     let row = vec![normalized];
@@ -4564,6 +4796,7 @@ impl ProjectTypeChecker {
                         module_id,
                         inner,
                         subject.failures,
+                        context,
                         &mut arm_bindings,
                     );
                     candidate_failure_variants.extend(variants.iter().copied());
@@ -4584,6 +4817,7 @@ impl ProjectTypeChecker {
                             module_id,
                             inner,
                             failure_type,
+                            context,
                             &mut arm_bindings,
                         );
                         let row = vec![normalized];
@@ -4708,6 +4942,7 @@ impl ProjectTypeChecker {
         module_id: ModuleId,
         pattern: &Pattern,
         failures: FailureRowId,
+        context: PatternContext<'_>,
         bindings: &mut HashMap<SymbolId, ValueBinding>,
     ) -> (Vec<SymbolId>, bool) {
         let symbol = self.resolved_pattern_symbol(module_id, pattern);
@@ -4725,15 +4960,15 @@ impl ProjectTypeChecker {
                 return (Vec::new(), false);
             }
             let success = self.contracts[&symbol].success;
-            self.bind_value_pattern(module_id, pattern, success, bindings);
+            self.bind_value_pattern(module_id, pattern, success, context, bindings);
             return (vec![symbol], false);
         }
 
         if self.pattern_binding_symbol(module_id, pattern).is_some() {
             if let Some(error_type) = self.failure_value_type(failures) {
-                self.bind_value_pattern(module_id, pattern, error_type, bindings);
+                self.bind_value_pattern(module_id, pattern, error_type, context, bindings);
             } else {
-                self.bind_value_pattern(module_id, pattern, TypeId::new(0), bindings);
+                self.bind_value_pattern(module_id, pattern, TypeId::new(0), context, bindings);
             }
             return (
                 self.failure_rows[failures.raw() as usize].variants.clone(),
@@ -4757,10 +4992,51 @@ impl ProjectTypeChecker {
         module_id: ModuleId,
         pattern: &Pattern,
         expected: TypeId,
+        context: PatternContext<'_>,
         bindings: &mut HashMap<SymbolId, ValueBinding>,
     ) {
         match pattern {
             Pattern::Wildcard { .. } => {}
+            Pattern::Typed {
+                semantic_id,
+                type_use,
+                range,
+                ..
+            } => {
+                let annotated = self.lower_value_type(module_id, type_use, context.generics);
+                if !self.unify(expected, annotated) {
+                    self.typed_binding_mismatch(module_id, *range, expected, annotated, context);
+                }
+                if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
+                    self.pattern_binding_types
+                        .insert((module_id, *semantic_id), expected);
+                    bindings.insert(
+                        binding,
+                        ValueBinding {
+                            type_id: expected,
+                            need: None,
+                        },
+                    );
+                }
+            }
+            Pattern::Alias {
+                semantic_id,
+                pattern: inner,
+                ..
+            } => {
+                self.bind_value_pattern(module_id, inner, expected, context, bindings);
+                if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
+                    self.pattern_binding_types
+                        .insert((module_id, *semantic_id), expected);
+                    bindings.insert(
+                        binding,
+                        ValueBinding {
+                            type_id: expected,
+                            need: None,
+                        },
+                    );
+                }
+            }
             Pattern::Literal { literal, range, .. } => {
                 let literal_type = self.builtin_type(match literal {
                     PatternLiteral::Integer(_) => "Int",
@@ -4810,10 +5086,10 @@ impl ProjectTypeChecker {
                     return;
                 };
                 for element_pattern in prefix.iter().chain(suffix) {
-                    self.bind_value_pattern(module_id, element_pattern, element, bindings);
+                    self.bind_value_pattern(module_id, element_pattern, element, context, bindings);
                 }
                 if let Some(rest) = rest {
-                    self.bind_value_pattern(module_id, rest, expected, bindings);
+                    self.bind_value_pattern(module_id, rest, expected, context, bindings);
                 }
             }
             Pattern::Constructor {
@@ -4865,7 +5141,7 @@ impl ProjectTypeChecker {
                     .map(|input| self.substitute_call_type(*input, &mut substitution))
                     .collect::<Vec<_>>();
                 for (argument, input) in arguments.iter().zip(inputs) {
-                    self.bind_value_pattern(module_id, argument, input, bindings);
+                    self.bind_value_pattern(module_id, argument, input, context, bindings);
                 }
             }
         }
@@ -4877,11 +5153,19 @@ impl ProjectTypeChecker {
     }
 
     fn pattern_binding_symbol(&self, module_id: ModuleId, pattern: &Pattern) -> Option<SymbolId> {
-        let Pattern::Binding {
-            semantic_id, name, ..
-        } = pattern
-        else {
-            return None;
+        let (semantic_id, name) = match pattern {
+            Pattern::Binding {
+                semantic_id, name, ..
+            }
+            | Pattern::Typed {
+                semantic_id,
+                name: Some(name),
+                ..
+            }
+            | Pattern::Alias {
+                semantic_id, name, ..
+            } => (semantic_id, name),
+            _ => return None,
         };
         self.find_symbol(
             module_id,

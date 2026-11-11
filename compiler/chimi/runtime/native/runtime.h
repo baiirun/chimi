@@ -162,6 +162,8 @@ enum {
      The ids at `offset` are the prefix, then the rest pattern if present, then the
      suffix, `length` in all. */
   CHIMI_PATTERN_LIST,
+  /* `a` is the binding symbol and `offset` the pattern id it aliases. */
+  CHIMI_PATTERN_ALIAS,
 };
 
 typedef struct {

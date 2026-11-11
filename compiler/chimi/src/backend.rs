@@ -240,7 +240,9 @@ impl BackendValueProfile {
                     self.record_pattern_nodes(field);
                 }
             }
-            CorePattern::Outcome { value, .. } => self.record_pattern_nodes(value),
+            CorePattern::Outcome { value, .. } | CorePattern::Alias { pattern: value, .. } => {
+                self.record_pattern_nodes(value);
+            }
             CorePattern::List {
                 prefix,
                 rest,
@@ -260,7 +262,9 @@ fn pattern_depth(pattern: &CorePattern) -> usize {
         CorePattern::Constructor { fields, .. } => {
             fields.iter().map(pattern_depth).max().unwrap_or(0)
         }
-        CorePattern::Outcome { value, .. } => pattern_depth(value),
+        CorePattern::Outcome { value, .. } | CorePattern::Alias { pattern: value, .. } => {
+            pattern_depth(value)
+        }
         CorePattern::List {
             prefix,
             rest,

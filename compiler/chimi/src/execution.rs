@@ -2141,6 +2141,13 @@ fn match_plain_pattern(
             bindings.insert(*symbol, value.clone());
             Ok(true)
         }
+        CorePattern::Alias { pattern, binding } => {
+            if !match_plain_pattern(pattern, value, bindings)? {
+                return Ok(false);
+            }
+            bindings.insert(*binding, value.clone());
+            Ok(true)
+        }
         CorePattern::Literal(literal) => Ok(literal_matches(literal, value)),
         CorePattern::Constructor { symbol, fields } => {
             let RuntimeValue::Constructed {

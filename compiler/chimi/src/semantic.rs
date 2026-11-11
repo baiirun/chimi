@@ -537,6 +537,22 @@ pub(crate) enum Pattern {
         arguments: Vec<Pattern>,
         range: TextRange,
     },
+    /// `name: Type` or `_: Type`. Over an ordinary value the type is an annotation;
+    /// over a failure-set value it selects the members of that type.
+    Typed {
+        semantic_id: SemanticId,
+        /// `None` for the typed wildcard `_: Type`.
+        name: Option<Name>,
+        type_use: TypeUse,
+        range: TextRange,
+    },
+    /// `pattern as name`: matches `pattern` and also binds the whole value to `name`.
+    Alias {
+        semantic_id: SemanticId,
+        pattern: Box<Pattern>,
+        name: Name,
+        range: TextRange,
+    },
     /// `[p1, ..., pk, ..rest, q1, ..., qm]`. `rest` is `None` for an exact-length
     /// pattern; otherwise it is the `Binding` or `Wildcard` that receives the
     /// remaining elements, and `suffix` holds the patterns after it.
@@ -559,6 +575,8 @@ impl Pattern {
             | Self::Binding { semantic_id, .. }
             | Self::Literal { semantic_id, .. }
             | Self::Constructor { semantic_id, .. }
+            | Self::Typed { semantic_id, .. }
+            | Self::Alias { semantic_id, .. }
             | Self::List { semantic_id, .. } => *semantic_id,
         }
     }
@@ -569,6 +587,8 @@ impl Pattern {
             | Self::Binding { range, .. }
             | Self::Literal { range, .. }
             | Self::Constructor { range, .. }
+            | Self::Typed { range, .. }
+            | Self::Alias { range, .. }
             | Self::List { range, .. } => *range,
         }
     }
@@ -604,8 +624,12 @@ impl Pattern {
 
     pub(crate) fn children(&self) -> Vec<&Pattern> {
         match self {
-            Self::Wildcard { .. } | Self::Binding { .. } | Self::Literal { .. } => Vec::new(),
+            Self::Wildcard { .. }
+            | Self::Binding { .. }
+            | Self::Literal { .. }
+            | Self::Typed { .. } => Vec::new(),
             Self::Constructor { arguments, .. } => arguments.iter().collect(),
+            Self::Alias { pattern, .. } => vec![pattern],
             Self::List {
                 prefix,
                 rest,
@@ -699,6 +723,7 @@ pub(crate) enum ModuleExpression {
         subjects: Vec<Self>,
         arms: Vec<ModuleCaseArm>,
         range: TextRange,
+        origin: CaseOrigin,
     },
     /// `loop state = initial { body }`. The body's value is the next pass's state.
     /// The state is a local binding defined at `state_id`, which also identifies the loop:
@@ -841,6 +866,26 @@ pub(crate) enum ModuleBlockItem {
     Expression(ModuleExpression),
 }
 
+/// Where a `case` came from. Clause groups lower to a `case` over compiler-generated
+/// parameters; diagnostics use the origin to talk about clauses instead of arms.
+#[derive(Clone, Debug)]
+pub(crate) enum CaseOrigin {
+    Source,
+    /// The body of the function `function`, one arm per clause in source order. Each
+    /// arm's range is its clause head, `name(patterns)`.
+    Clauses {
+        function: Name,
+    },
+}
+
+/// The prefix of compiler-generated names, such as clause-group parameters. Source
+/// identifiers cannot contain it, so a generated name never collides with one.
+pub(crate) const GENERATED_NAME_PREFIX: char = '#';
+
+pub(crate) fn is_generated_name(text: &str) -> bool {
+    text.starts_with(GENERATED_NAME_PREFIX)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ModuleCaseArm {
     pub(crate) patterns: Vec<Pattern>,
@@ -930,13 +975,58 @@ impl ProjectLowerer {
         };
         let mut imports = Vec::new();
         let mut declarations = Vec::new();
-        for node in root.child_nodes() {
+        let nodes = root.child_nodes();
+        let mut clause_groups = Vec::<(String, TextRange)>::new();
+        let mut index = 0;
+        while index < nodes.len() {
+            let node = &nodes[index];
+            index += 1;
+            if node.kind() == NodeKind::FunctionDeclaration {
+                let name = function_name(node);
+                let mut group = vec![node.clone()];
+                while let Some(next) = nodes.get(index)
+                    && next.kind() == NodeKind::FunctionDeclaration
+                    && name.is_some()
+                    && function_name(next).map(|next| next.text)
+                        == name.as_ref().map(|name| name.text.clone())
+                {
+                    group.push(next.clone());
+                    index += 1;
+                }
+                if let Some(name) = &name
+                    && let Some((_, first)) = clause_groups
+                        .iter()
+                        .find(|(existing, _)| *existing == name.text)
+                {
+                    lowerer.diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticStage::Name,
+                            "E_SEPARATED_FUNCTION_CLAUSES",
+                            FileId::new(0),
+                            name.range,
+                            format!(
+                                "clauses of `{}` must be adjacent; move this clause next to the others",
+                                name.text
+                            ),
+                        )
+                        .with_label(FileId::new(0), *first, "the first clause group is here"),
+                    );
+                    continue;
+                }
+                if let Some(name) = &name {
+                    clause_groups.push((name.text.clone(), name.range));
+                }
+                if let Some(declaration) = lowerer.lower_function_group(&group) {
+                    declarations.push(declaration);
+                }
+                continue;
+            }
+            let node = node.clone();
             match node.kind() {
                 NodeKind::ImportDeclaration => imports.push(lowerer.lower_import(&node)),
                 NodeKind::StructDeclaration
                 | NodeKind::EnumDeclaration
-                | NodeKind::InterfaceDeclaration
-                | NodeKind::FunctionDeclaration => {
+                | NodeKind::InterfaceDeclaration => {
                     if let Some(declaration) = lowerer.lower_module_declaration(&node) {
                         declarations.push(declaration);
                     }
@@ -1033,16 +1123,7 @@ impl ProjectLowerer {
         };
         let name = direct_token_after(node, keyword, TokenKind::Identifier)
             .map(|token| name_from(&token))?;
-        let generic_parameters = direct_child(node, NodeKind::GenericParameters)
-            .map(|generics| {
-                generics
-                    .child_nodes()
-                    .into_iter()
-                    .filter(|parameter| parameter.kind() == NodeKind::GenericParameter)
-                    .filter_map(|parameter| direct_identifier(&parameter))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let generic_parameters = self.lower_generic_parameters(node);
         let fields = node
             .child_nodes()
             .into_iter()
@@ -1077,6 +1158,216 @@ impl ProjectLowerer {
             body,
             annotation: None,
         })
+    }
+
+    /// Lowers adjacent same-named functions as one declaration. A group that is one
+    /// plain function lowers as before. Otherwise the parameters become generated
+    /// names and the body a `case` over them with one arm per clause, in source order.
+    /// Header items come from the first clause; a later clause that repeats one is
+    /// `L2020`, and a clause with a different parameter count is `T4280` and is left out.
+    fn lower_function_group(&mut self, clauses: &[SyntaxNode<'_>]) -> Option<ModuleDeclaration> {
+        let first = clauses.first()?;
+        if clauses.len() == 1 && !clause_has_patterns(first) {
+            return self.lower_module_declaration(first);
+        }
+        let name = function_name(first)?;
+        let generic_parameters = self.lower_generic_parameters(first);
+        let mut signature = self.lower_function_signature(first);
+        let arity = clause_parameters(first).len();
+        let (parameters, subjects) = self.generated_parameters(arity, name.range);
+        let mut arms = Vec::new();
+        for (index, clause) in clauses.iter().enumerate() {
+            if index > 0 {
+                self.reject_repeated_header(clause);
+            }
+            let parameter_nodes = clause_parameters(clause);
+            let head = clause_head_range(clause);
+            if parameter_nodes.len() != arity {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Type,
+                    "T4280",
+                    FileId::new(0),
+                    head,
+                    format!(
+                        "clauses of `{}` take {arity} parameters, but this clause takes {}; Chimi has no arity overloading",
+                        name.text,
+                        parameter_nodes.len()
+                    ),
+                ));
+                continue;
+            }
+            arms.push(self.lower_clause_arm(clause, &parameter_nodes, head));
+        }
+        let last = clauses.last().map_or(name.range, significant_range);
+        signature.parameters = parameters;
+        let body = ModuleExpression::Case {
+            semantic_id: self.allocate_semantic_id(),
+            subjects,
+            arms,
+            range: TextRange::new(name.range.start() as usize, last.end() as usize),
+            origin: CaseOrigin::Clauses {
+                function: name.clone(),
+            },
+        };
+        Some(ModuleDeclaration {
+            semantic_id: self.allocate_semantic_id(),
+            kind: ModuleDeclarationKind::Function,
+            public: first
+                .child_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::Pub),
+            name,
+            generic_parameters,
+            fields: Vec::new(),
+            variants: Vec::new(),
+            function: Some(signature),
+            body: Some(body),
+            annotation: None,
+        })
+    }
+
+    /// `arity` generated parameters and the name expressions a clause `case` matches.
+    /// They take the range `at`, because every executable expression needs a source
+    /// range; inspection skips generated names.
+    fn generated_parameters(
+        &mut self,
+        arity: usize,
+        at: TextRange,
+    ) -> (Vec<ValueParameter>, Vec<ModuleExpression>) {
+        let parameters = (0..arity)
+            .map(|index| ValueParameter {
+                semantic_id: self.allocate_semantic_id(),
+                name: Name {
+                    text: format!("{GENERATED_NAME_PREFIX}{index}"),
+                    range: at,
+                },
+                type_use: None,
+            })
+            .collect::<Vec<_>>();
+        let subjects = parameters
+            .iter()
+            .map(|parameter| ModuleExpression::Name {
+                semantic_id: self.allocate_semantic_id(),
+                name: parameter.name.clone(),
+            })
+            .collect();
+        (parameters, subjects)
+    }
+
+    fn lower_clause_arm(
+        &mut self,
+        clause: &SyntaxNode<'_>,
+        parameters: &[SyntaxNode<'_>],
+        head: TextRange,
+    ) -> ModuleCaseArm {
+        let patterns = parameters
+            .iter()
+            .map(|parameter| self.lower_parameter_pattern(parameter))
+            .collect();
+        let guard = direct_child(clause, NodeKind::ClauseGuard)
+            .and_then(|guard| direct_expression_child(&guard))
+            .map(|guard| self.lower_expression(&guard));
+        let body = match direct_child(clause, NodeKind::BlockExpression) {
+            Some(body) => self.lower_expression(&body),
+            None => ModuleExpression::Empty {
+                semantic_id: self.allocate_semantic_id(),
+                range: head,
+            },
+        };
+        ModuleCaseArm {
+            patterns,
+            guard,
+            body,
+            range: head,
+        }
+    }
+
+    /// Reports each header item a later clause repeats (`L2020`), with a fix that
+    /// removes it.
+    fn reject_repeated_header(&mut self, clause: &SyntaxNode<'_>) {
+        let mut repeated = Vec::new();
+        if let Some(token) = clause
+            .child_tokens()
+            .into_iter()
+            .find(|token| token.kind() == TokenKind::Pub)
+        {
+            repeated.push(("`pub`", token.range()));
+        }
+        if let Some(generics) = direct_child(clause, NodeKind::GenericParameters) {
+            repeated.push(("generic parameters", significant_range(&generics)));
+        }
+        if let Some(contract) = direct_child(clause, NodeKind::ImplementationContract) {
+            let arrow = contract
+                .child_tokens()
+                .into_iter()
+                .find(|token| token.kind() == TokenKind::Arrow);
+            if let (Some(arrow), Some(success)) = (arrow, direct_child(&contract, NodeKind::Type)) {
+                repeated.push((
+                    "the success annotation",
+                    TextRange::new(
+                        arrow.range().start() as usize,
+                        significant_range(&success).end() as usize,
+                    ),
+                ));
+            }
+            if let Some(needs) = direct_child(&contract, NodeKind::RequirementClause) {
+                repeated.push(("`needs`", significant_range(&needs)));
+            }
+        }
+        for (item, range) in repeated {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticStage::Lowering,
+                    "L2020",
+                    FileId::new(0),
+                    range,
+                    format!(
+                        "only the first clause states {item}; remove it here, or move it to the first clause"
+                    ),
+                )
+                .with_fix(range, ""),
+            );
+        }
+    }
+
+    /// The pattern a clause parameter matches: its `Pattern` child, or the plain
+    /// `name` or `name: Type` form as a binding or typed binding.
+    fn lower_parameter_pattern(&mut self, parameter: &SyntaxNode<'_>) -> Pattern {
+        if let Some(pattern) = direct_child(parameter, NodeKind::Pattern) {
+            return self.lower_pattern(&pattern);
+        }
+        let semantic_id = self.allocate_semantic_id();
+        let range = significant_range(parameter);
+        let name = direct_identifier(parameter).filter(|name| name.text != "_");
+        if let Some(type_node) = direct_child(parameter, NodeKind::Type) {
+            return Pattern::Typed {
+                semantic_id,
+                name,
+                type_use: self.lower_type(&type_node),
+                range,
+            };
+        }
+        match name {
+            Some(name) => Pattern::Binding {
+                semantic_id,
+                name,
+                range,
+            },
+            None => Pattern::Wildcard { semantic_id, range },
+        }
+    }
+
+    fn lower_generic_parameters(&mut self, node: &SyntaxNode<'_>) -> Vec<Name> {
+        direct_child(node, NodeKind::GenericParameters)
+            .map(|generics| {
+                generics
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|parameter| parameter.kind() == NodeKind::GenericParameter)
+                    .filter_map(|parameter| direct_identifier(&parameter))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Lowers a `ConstDeclaration`, or a module-level `LetBinding` already reported as `L2101`.
@@ -1367,6 +1658,32 @@ impl ProjectLowerer {
                     .collect(),
                 range: significant_range(node),
             },
+            NodeKind::FunctionExpression if clause_has_patterns(node) => {
+                let mut signature = self.lower_function_signature(node);
+                let parameter_nodes = clause_parameters(node);
+                let range = significant_range(node);
+                let head = direct_child(node, NodeKind::ValueParameters)
+                    .map_or(range, |parameters| significant_range(&parameters));
+                let (parameters, subjects) = self.generated_parameters(parameter_nodes.len(), head);
+                let arm = self.lower_clause_arm(node, &parameter_nodes, head);
+                signature.parameters = parameters;
+                let function = Name {
+                    text: "fn".to_owned(),
+                    range: TextRange::empty(range.start() as usize),
+                };
+                ModuleExpression::Function {
+                    semantic_id,
+                    signature,
+                    body: Box::new(ModuleExpression::Case {
+                        semantic_id: self.allocate_semantic_id(),
+                        subjects,
+                        arms: vec![arm],
+                        range,
+                        origin: CaseOrigin::Clauses { function },
+                    }),
+                    range,
+                }
+            }
             NodeKind::FunctionExpression => {
                 let signature = self.lower_function_signature(node);
                 let body = direct_child(node, NodeKind::BlockExpression)
@@ -1824,6 +2141,7 @@ impl ProjectLowerer {
             subjects,
             arms,
             range: significant_range(node),
+            origin: CaseOrigin::Source,
         }
     }
 
@@ -1844,7 +2162,49 @@ impl ProjectLowerer {
             .filter(|token| token.kind() == TokenKind::Identifier)
             .map(name_from)
             .collect::<Vec<_>>();
+        if tokens.iter().any(|token| token.kind() == TokenKind::As) {
+            let inner = match children.first() {
+                Some(inner) => self.lower_pattern(inner),
+                None => Pattern::Wildcard {
+                    semantic_id: self.allocate_semantic_id(),
+                    range,
+                },
+            };
+            return match direct_token_after(node, TokenKind::As, TokenKind::Identifier) {
+                Some(name) => Pattern::Alias {
+                    semantic_id,
+                    pattern: Box::new(inner),
+                    name: name_from(&name),
+                    range,
+                },
+                None => inner,
+            };
+        }
+        if tokens.iter().any(|token| token.kind() == TokenKind::Colon) {
+            let name = identifiers.first().filter(|name| name.text != "_").cloned();
+            return match (direct_child(node, NodeKind::Type), name) {
+                (Some(type_node), name) => Pattern::Typed {
+                    semantic_id,
+                    name,
+                    type_use: self.lower_type(&type_node),
+                    range,
+                },
+                // A labelled pattern, already `S1001`.
+                (None, Some(name)) => Pattern::Binding {
+                    semantic_id,
+                    name,
+                    range,
+                },
+                (None, None) => Pattern::Wildcard { semantic_id, range },
+            };
+        }
         let literal = match first.kind() {
+            TokenKind::Minus => match tokens.get(1) {
+                Some(digits) if digits.kind() == TokenKind::Integer => {
+                    PatternLiteral::Integer(self.integer_literal(digits, true))
+                }
+                _ => PatternLiteral::Float,
+            },
             TokenKind::LeftBracket => {
                 return self.lower_list_pattern(semantic_id, &children, range);
             }
@@ -1983,6 +2343,41 @@ fn decode_text(chunk: &str) -> String {
         }
     }
     decoded
+}
+
+fn function_name(node: &SyntaxNode<'_>) -> Option<Name> {
+    direct_token_after(node, TokenKind::Fn, TokenKind::Identifier).map(|token| name_from(&token))
+}
+
+fn clause_parameters<'tree>(node: &SyntaxNode<'tree>) -> Vec<SyntaxNode<'tree>> {
+    direct_child(node, NodeKind::ValueParameters)
+        .map(|parameters| {
+            parameters
+                .child_nodes()
+                .into_iter()
+                .filter(|child| child.kind() == NodeKind::ValueParameter)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether a function or anonymous function is written with clause syntax: a
+/// parameter that is a pattern, or a guard.
+fn clause_has_patterns(node: &SyntaxNode<'_>) -> bool {
+    direct_child(node, NodeKind::ClauseGuard).is_some()
+        || clause_parameters(node)
+            .iter()
+            .any(|parameter| direct_child(parameter, NodeKind::Pattern).is_some())
+}
+
+/// `name(patterns)`: where clause diagnostics point.
+fn clause_head_range(node: &SyntaxNode<'_>) -> TextRange {
+    let whole = significant_range(node);
+    let start = function_name(node).map_or(whole.start(), |name| name.range.start());
+    let end = direct_child(node, NodeKind::ValueParameters).map_or(whole.end(), |parameters| {
+        significant_range(&parameters).end()
+    });
+    TextRange::new(start as usize, end as usize)
 }
 
 fn direct_child<'tree>(node: &SyntaxNode<'tree>, kind: NodeKind) -> Option<SyntaxNode<'tree>> {

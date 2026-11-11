@@ -277,6 +277,8 @@ pub(crate) enum NodeKind {
     BlockItem,
     CaseExpression,
     CaseArm,
+    /// `if <guard>` between a function clause's parameters or contract and its body.
+    ClauseGuard,
     LoopExpression,
     BreakExpression,
     Pattern,
@@ -337,6 +339,7 @@ impl NodeKind {
             Self::BlockItem => "block_item",
             Self::CaseExpression => "case_expression",
             Self::CaseArm => "case_arm",
+            Self::ClauseGuard => "clause_guard",
             Self::LoopExpression => "loop_expression",
             Self::BreakExpression => "break_expression",
             Self::Pattern => "pattern",
@@ -1490,6 +1493,12 @@ impl<'source> Parser<'source> {
         self.skip_newlines();
         self.parse_value_parameters();
         self.parse_implementation_contract();
+        if self.at(TokenKind::If) {
+            self.start(NodeKind::ClauseGuard);
+            self.bump();
+            self.parse_expression();
+            self.finish();
+        }
         self.skip_newlines();
         self.parse_block();
         self.finish();
@@ -1520,14 +1529,51 @@ impl<'source> Parser<'source> {
         self.finish();
     }
 
+    /// Parses one parameter. A typed name, or a lowercase name, keeps the plain
+    /// `ValueParameter` shape; any other form, such as `None` or `Circle(r)`, is a
+    /// clause pattern, parsed as a `Pattern` child of the `ValueParameter`.
     fn parse_value_parameter(&mut self) {
         self.start(NodeKind::ValueParameter);
-        self.expect(TokenKind::Identifier);
-        if self.accept(TokenKind::Colon) {
-            self.skip_newlines();
-            self.parse_type();
+        let lowercase = !self
+            .current()
+            .text
+            .starts_with(|character: char| character.is_uppercase());
+        let plain = self.at(TokenKind::Identifier)
+            && match self.kind_at(self.position + 1) {
+                TokenKind::Colon => !self.parameter_type_is_aliased(),
+                TokenKind::Comma | TokenKind::RightParen | TokenKind::Newline => lowercase,
+                _ => false,
+            };
+        if plain {
+            self.bump();
+            if self.accept(TokenKind::Colon) {
+                self.skip_newlines();
+                self.parse_type();
+            }
+        } else {
+            self.parse_pattern();
         }
         self.finish();
+    }
+
+    /// Whether the typed parameter starting at the current name continues with `as`,
+    /// which makes it an alias pattern rather than a plain parameter.
+    fn parameter_type_is_aliased(&self) -> bool {
+        let mut position = self.position + 2;
+        let mut depth = 0_u32;
+        loop {
+            match self.kind_at(position) {
+                TokenKind::Less | TokenKind::LeftParen => depth += 1,
+                TokenKind::Greater | TokenKind::RightParen if depth > 0 => depth -= 1,
+                TokenKind::As if depth == 0 => return true,
+                TokenKind::Comma | TokenKind::RightParen | TokenKind::End if depth == 0 => {
+                    return false;
+                }
+                TokenKind::LeftBrace | TokenKind::End => return false,
+                _ => {}
+            }
+            position += 1;
+        }
     }
 
     fn parse_implementation_contract(&mut self) {
@@ -2217,7 +2263,20 @@ impl<'source> Parser<'source> {
         self.finish();
     }
 
+    /// Parses one pattern. `as name` binds less tightly than every other form, so an
+    /// alias wraps the complete pattern before it in an outer `Pattern` node.
     fn parse_pattern(&mut self) {
+        let marker = self.placeholder();
+        self.parse_unaliased_pattern();
+        if self.at(TokenKind::As) {
+            self.complete(marker, NodeKind::Pattern);
+            self.bump();
+            self.expect(TokenKind::Identifier);
+            self.finish();
+        }
+    }
+
+    fn parse_unaliased_pattern(&mut self) {
         self.start(NodeKind::Pattern);
         match self.kind() {
             TokenKind::Integer
@@ -2227,28 +2286,64 @@ impl<'source> Parser<'source> {
             | TokenKind::False => {
                 self.bump();
             }
-            TokenKind::Identifier => {
+            TokenKind::Minus
+                if matches!(
+                    self.kind_at(self.position + 1),
+                    TokenKind::Integer | TokenKind::Float
+                ) =>
+            {
                 self.bump();
-                while self.accept(TokenKind::Dot) {
-                    self.expect(TokenKind::Identifier);
-                }
-                if self.accept(TokenKind::LeftParen) {
-                    self.skip_newlines();
-                    if !self.at(TokenKind::RightParen) {
-                        self.parse_pattern();
-                        while self.accept(TokenKind::Comma) {
-                            self.skip_newlines();
-                            self.parse_pattern();
-                        }
+                self.bump();
+            }
+            TokenKind::Identifier => {
+                let lowercase = !self
+                    .current()
+                    .text
+                    .starts_with(|character: char| character.is_uppercase());
+                self.bump();
+                if lowercase && self.at(TokenKind::Colon) {
+                    self.parse_pattern_type();
+                } else {
+                    while self.accept(TokenKind::Dot) {
+                        self.expect(TokenKind::Identifier);
                     }
-                    self.skip_newlines();
-                    self.expect(TokenKind::RightParen);
+                    if self.accept(TokenKind::LeftParen) {
+                        self.skip_newlines();
+                        if !self.at(TokenKind::RightParen) {
+                            self.parse_pattern();
+                            while self.accept(TokenKind::Comma) {
+                                self.skip_newlines();
+                                self.parse_pattern();
+                            }
+                        }
+                        self.skip_newlines();
+                        self.expect(TokenKind::RightParen);
+                    }
                 }
             }
             TokenKind::LeftBracket => self.parse_list_pattern_elements(),
             _ => self.missing(TokenKind::Identifier, "pattern"),
         }
         self.finish();
+    }
+
+    /// Parses `: Type` after a binding name. A colon in a pattern always introduces a
+    /// type; a colon followed by anything else is a labelled pattern, which is `S1001`
+    /// because patterns are positional. The labelled pattern is still parsed so the
+    /// rest of the pattern recovers.
+    fn parse_pattern_type(&mut self) {
+        self.bump();
+        if matches!(
+            self.kind(),
+            TokenKind::Identifier | TokenKind::Void | TokenKind::Fn
+        ) {
+            self.parse_type();
+        } else {
+            self.error_at_current(
+                "patterns are positional, as construction is; a colon in a pattern introduces a type, not a field label",
+            );
+            self.parse_pattern();
+        }
     }
 
     /// Parses the bracketed elements of a list pattern such as `[first, ..rest]`.

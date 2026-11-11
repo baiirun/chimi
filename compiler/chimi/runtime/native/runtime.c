@@ -2931,6 +2931,10 @@ static bool match_plain(uint32_t pattern_id, ChimiValue *value, PatternBinder *b
       return true;
     case CHIMI_PATTERN_OUTCOME: return false;
     case CHIMI_PATTERN_LIST: return match_list(pattern, value, binder);
+    case CHIMI_PATTERN_ALIAS:
+      if (!match_plain(pattern->offset, value, binder)) return false;
+      if (binder) binder->environment->locals[environment_slot(pattern->a)] = value;
+      return true;
   }
   return false;
 }
@@ -2944,7 +2948,7 @@ static bool match_value(uint32_t pattern_id, MatchValue value, PatternBinder *bi
 }
 static bool pattern_binds(uint32_t pattern_id) {
   const ChimiPattern *pattern = &CHIMI_PATTERNS[pattern_id];
-  if (pattern->kind == CHIMI_PATTERN_BINDING) return true;
+  if (pattern->kind == CHIMI_PATTERN_BINDING || pattern->kind == CHIMI_PATTERN_ALIAS) return true;
   if (pattern->kind == CHIMI_PATTERN_OUTCOME) return pattern_binds(pattern->offset);
   if (pattern->kind != CHIMI_PATTERN_CONSTRUCTOR && pattern->kind != CHIMI_PATTERN_LIST) return false;
   for (uint32_t index = 0; index < pattern->length; ++index)

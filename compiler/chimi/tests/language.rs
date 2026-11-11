@@ -4047,3 +4047,556 @@ fn order_compare_rejects_an_unordered_argument() {
         diagnostics[0].1
     );
 }
+
+// Multi-clause functions (patterns-and-function-clauses.md, "Multi-clause functions").
+
+const SHAPES: &str = concat!(
+    "enum Shape {\n",
+    "  Circle(radius: Int)\n",
+    "  Rectangle(width: Int, height: Int)\n",
+    "}\n",
+);
+
+const DESCRIBE: &str = concat!(
+    "enum CountError {\n",
+    "  Negative(count: Int)\n",
+    "}\n",
+    "fn describe(0) -> Text {\n",
+    "  \"no items\"\n",
+    "}\n",
+    "fn describe(1) {\n",
+    "  \"one item\"\n",
+    "}\n",
+    "fn describe(count) if count < 0 {\n",
+    "  Failure(CountError.Negative(count))\n",
+    "}\n",
+    "fn describe(count) {\n",
+    "  Text.append(Int.to_text(count), \" items\")\n",
+    "}\n",
+);
+
+/// Inspects `source` at the start of the `occurrence`-th (from 0) match of `needle`.
+fn inspect_at(source: &str, needle: &str, occurrence: usize) -> chimi::InspectionReport {
+    let offset = source
+        .match_indices(needle)
+        .nth(occurrence)
+        .unwrap_or_else(|| panic!("`{needle}` occurs fewer than {} times", occurrence + 1))
+        .0;
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    Compiler::inspect_project(vec![module], "main", offset).expect("inspectable offset")
+}
+
+// PC-01
+#[test]
+fn clauses_dispatch_on_the_argument_shape() {
+    let source = format!(
+        concat!(
+            "{}",
+            "pub fn area(Circle(radius)) -> Int {{\n",
+            "  3 * radius * radius\n",
+            "}}\n",
+            "fn area(Rectangle(width, height)) {{\n",
+            "  width * height\n",
+            "}}\n",
+            "pub fn main() -> List<Int> {{ [area(Circle(2)), area(Rectangle(3, 4))] }}\n",
+        ),
+        SHAPES
+    );
+    assert_eq!(
+        run_both("clauses-area", &source),
+        "\"outcome\":\"success\",\"value\":[12,12]"
+    );
+    let callable = inspect_at(&source, "area(Rectangle(width", 0);
+    assert_eq!(
+        callable.callable().map(chimi::CallableInspection::display),
+        Some("fn(Shape) -> Int")
+    );
+}
+
+// PC-02
+#[test]
+fn a_clause_gap_names_the_missing_argument_shape() {
+    let source = format!(
+        concat!(
+            "{}",
+            "fn area(Circle(radius)) -> Int {{\n",
+            "  radius\n",
+            "}}\n",
+            "pub fn main() -> Int {{ area(Circle(2)) }}\n",
+        ),
+        SHAPES
+    );
+    let messages = coded_messages(&source);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(messages[0].0, "T4231");
+    assert!(
+        messages[0].1.contains("`area(Rectangle(_, _))`"),
+        "{messages:?}"
+    );
+}
+
+// PC-03
+#[test]
+fn a_clause_after_a_covering_clause_never_runs() {
+    let source = concat!(
+        "fn describe(count) -> Int {\n",
+        "  count\n",
+        "}\n",
+        "fn describe(0) {\n",
+        "  1\n",
+        "}\n",
+        "pub fn main() -> Int { describe(0) }\n",
+    );
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let unreachable = report
+        .diagnostics()
+        .iter()
+        .find(|diagnostic| diagnostic.code() == "T4232")
+        .expect("the second clause is unreachable");
+    let start = source.find("describe(0)").unwrap();
+    assert_eq!(unreachable.range().start() as usize, start);
+}
+
+// PC-04
+#[test]
+fn a_catch_all_clause_must_be_last() {
+    let codes = check_codes(concat!(
+        "fn f(_) -> Int {\n",
+        "  0\n",
+        "}\n",
+        "fn f(1) {\n",
+        "  1\n",
+        "}\n",
+        "pub fn main() -> Int { f(1) }\n",
+    ));
+    assert_eq!(codes, ["T4233", "T4232"]);
+}
+
+// PC-05 and the guarded-clause example: a guard that fails selects the next clause,
+// and a clause that returns `Failure` adds to the group's failure row.
+#[test]
+fn guarded_clauses_run_in_order_and_contribute_failures() {
+    let source = format!(
+        "import std/int as Int\n{DESCRIBE}{}",
+        concat!(
+            "pub fn main() -> List<Text> {\n",
+            "  [describe(0), describe(1), describe(5), describe(-2)]\n",
+            "}\n",
+        )
+    );
+    assert_eq!(
+        run_both("clauses-describe", &source),
+        concat!(
+            "\"outcome\":\"expected_failure\",",
+            "\"error\":{\"type\":\"CountError\",\"variant\":\"Negative\",\"fields\":{\"count\":-2}}",
+        )
+    );
+    let succeeding = source.replace("describe(-2)]", "describe(-0)]");
+    assert_eq!(
+        run_both("clauses-describe-success", &succeeding),
+        "\"outcome\":\"success\",\"value\":[\"no items\",\"one item\",\"5 items\",\"no items\"]"
+    );
+    let callable = inspect_at(&source, "describe(count) if", 0);
+    assert_eq!(
+        callable.callable().map(chimi::CallableInspection::display),
+        Some("fn(Int) -> Text errors CountError")
+    );
+}
+
+// Range patterns: integer ranges are guards over clauses.
+#[test]
+fn integer_ranges_are_matched_with_guards() {
+    let source = concat!(
+        "fn grade(score) if score >= 90 {\n",
+        "  \"A\"\n",
+        "}\n",
+        "fn grade(score) if score >= 80 {\n",
+        "  \"B\"\n",
+        "}\n",
+        "fn grade(_) {\n",
+        "  \"C\"\n",
+        "}\n",
+        "pub fn main() -> List<Text> { [grade(95), grade(80), grade(79)] }\n",
+    );
+    assert_eq!(
+        run_both("clauses-grade", source),
+        "\"outcome\":\"success\",\"value\":[\"A\",\"B\",\"C\"]"
+    );
+}
+
+// PC-06
+#[test]
+fn guarded_clauses_do_not_count_toward_coverage() {
+    let codes = check_codes(concat!(
+        "fn sign(n) -> Int if n < 0 {\n",
+        "  -1\n",
+        "}\n",
+        "fn sign(n) if n >= 0 {\n",
+        "  1\n",
+        "}\n",
+        "pub fn main() -> Int { sign(3) }\n",
+    ));
+    assert_eq!(codes, ["T4231"]);
+}
+
+// PC-07
+#[test]
+fn a_clause_guard_must_be_pure() {
+    let codes = check_codes(concat!(
+        "interface Validator {\n",
+        "  valid: fn(Int) -> Bool\n",
+        "}\n",
+        "fn classify(value) -> Int needs { validator: Validator } if validator.valid(value) {\n",
+        "  1\n",
+        "}\n",
+        "fn classify(_) {\n",
+        "  0\n",
+        "}\n",
+        "pub fn main() -> Int { 0 }\n",
+    ));
+    assert_eq!(codes, ["T4234"]);
+}
+
+// PC-08
+#[test]
+fn clauses_must_take_the_same_number_of_parameters() {
+    let codes = check_codes(concat!(
+        "fn f(0) -> Int {\n",
+        "  0\n",
+        "}\n",
+        "fn f(a, b) {\n",
+        "  a + b\n",
+        "}\n",
+        "fn f(_) {\n",
+        "  1\n",
+        "}\n",
+        "pub fn main() -> Int { f(1) }\n",
+    ));
+    assert_eq!(codes, ["T4280"]);
+}
+
+// PC-09
+#[test]
+fn clauses_cannot_overload_by_type() {
+    let messages = coded_messages(concat!(
+        "fn f(0) -> Int {\n",
+        "  0\n",
+        "}\n",
+        "fn f(\"zero\") {\n",
+        "  1\n",
+        "}\n",
+        "fn f(_) {\n",
+        "  2\n",
+        "}\n",
+        "pub fn main() -> Int { f(1) }\n",
+    ));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(messages[0].0, "T4281");
+    assert!(messages[0].1.contains("does not overload"), "{messages:?}");
+}
+
+// PC-10
+#[test]
+fn only_the_first_clause_states_the_header() {
+    let source = concat!(
+        "pub fn f(0) -> Int {\n",
+        "  0\n",
+        "}\n",
+        "pub fn f(_) -> Int {\n",
+        "  1\n",
+        "}\n",
+        "pub fn main() -> Int { f(1) }\n",
+    );
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let repeated = report
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.code() == "L2020")
+        .collect::<Vec<_>>();
+    assert_eq!(repeated.len(), 2, "{:?}", report.diagnostics());
+    let second_clause = source.match_indices("pub fn f").nth(1).unwrap().0;
+    let mut fixed = source.to_owned();
+    for diagnostic in repeated.iter().rev() {
+        let fix = &diagnostic.fixes()[0];
+        assert_eq!(fix.replacement(), "");
+        assert!(fix.range().start() as usize >= second_clause);
+        fixed.replace_range(fix.range().start() as usize..fix.range().end() as usize, "");
+    }
+    assert!(check_codes(&fixed).is_empty(), "{fixed}");
+}
+
+// PC-11
+#[test]
+fn clauses_separated_by_another_declaration_are_rejected() {
+    let codes = check_codes(concat!(
+        "fn f(0) -> Int {\n",
+        "  0\n",
+        "}\n",
+        "struct Money {\n",
+        "  cents: Int\n",
+        "}\n",
+        "fn f(_) {\n",
+        "  1\n",
+        "}\n",
+        "pub fn main() -> Int { f(1) }\n",
+    ));
+    assert_eq!(codes, ["E_SEPARATED_FUNCTION_CLAUSES", "T4231"]);
+}
+
+#[test]
+fn a_non_function_named_like_a_function_is_a_duplicate_symbol() {
+    let codes = check_codes(concat!(
+        "fn Money(0) -> Int {\n",
+        "  0\n",
+        "}\n",
+        "struct Money {\n",
+        "  cents: Int\n",
+        "}\n",
+        "pub fn main() -> Int { 0 }\n",
+    ));
+    assert!(
+        codes.contains(&"E_DUPLICATE_SYMBOL".to_owned()),
+        "{codes:?}"
+    );
+}
+
+// PC-12
+#[test]
+fn needs_from_the_first_clause_are_in_scope_in_every_clause() {
+    let source = concat!(
+        "interface Database {\n",
+        "  ping: fn() -> Bool\n",
+        "}\n",
+        "fn route(\"health\") -> Text needs { db: Database } {\n",
+        "  case db.ping() {\n",
+        "    True -> \"ready\"\n",
+        "    False -> \"unavailable\"\n",
+        "  }\n",
+        "}\n",
+        "fn route(_) {\n",
+        "  case db.ping() {\n",
+        "    True -> \"not found\"\n",
+        "    False -> \"unavailable\"\n",
+        "  }\n",
+        "}\n",
+        "const up = { ping: fn() { True } }\n",
+        "pub fn main() -> List<Text> {\n",
+        "  [route(\"health\"), route(\"orders\")] using { db: up }\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("clauses-needs", source),
+        "\"outcome\":\"success\",\"value\":[\"ready\",\"not found\"]"
+    );
+    let callable = inspect_at(source, "route(_)", 0);
+    let needs = callable.callable().expect("the group contract").needs();
+    assert_eq!(needs.len(), 1);
+    assert_eq!(needs[0].name(), "db");
+}
+
+// PC-13
+#[test]
+fn a_clause_cannot_inspect_a_generic_parameter() {
+    let codes = check_codes(concat!(
+        "fn f<T>(value: T) -> Int {\n",
+        "  1\n",
+        "}\n",
+        "fn f(0) {\n",
+        "  0\n",
+        "}\n",
+        "pub fn main() -> Int { f(1) }\n",
+    ));
+    assert!(codes.contains(&"T4230".to_owned()), "{codes:?}");
+}
+
+#[test]
+fn a_typed_binding_in_a_later_clause_may_name_a_generic_of_the_first() {
+    let source = concat!(
+        "fn last<T>([]) -> Option<T> {\n",
+        "  None\n",
+        "}\n",
+        "fn last([.., item: T]) {\n",
+        "  Some(item)\n",
+        "}\n",
+        "pub fn main() -> Option<Int> { last([1, 2, 3]) }\n",
+    );
+    assert_eq!(
+        run_both("clauses-generic-typed-binding", source),
+        "\"outcome\":\"success\",\"value\":{\"type\":\"Option\",\"variant\":\"Some\",\"fields\":{\"value\":3}}"
+    );
+}
+
+// PC-14
+#[test]
+fn a_clause_parameter_is_never_an_outcome() {
+    let messages = coded_messages(concat!(
+        "fn f(Failure(e)) -> Int {\n",
+        "  0\n",
+        "}\n",
+        "fn f(_) {\n",
+        "  1\n",
+        "}\n",
+        "pub fn main() -> Int { f(1) }\n",
+    ));
+    assert!(
+        messages
+            .iter()
+            .any(|(code, message)| code == "T4282" && message.contains("`case`")),
+        "{messages:?}"
+    );
+}
+
+// PC-15
+#[test]
+fn a_clause_group_is_one_function_value() {
+    let source = concat!(
+        "fn grade(score) if score >= 90 {\n",
+        "  \"A\"\n",
+        "}\n",
+        "fn grade(_) {\n",
+        "  \"C\"\n",
+        "}\n",
+        "fn apply(transform: fn(Int) -> Text, value: Int) -> Text {\n",
+        "  transform(value)\n",
+        "}\n",
+        "pub fn main() -> List<Text> {\n",
+        "  let label = 95 |> grade\n",
+        "  [label, apply(grade, 10)]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("clauses-function-value", source),
+        "\"outcome\":\"success\",\"value\":[\"A\",\"C\"]"
+    );
+}
+
+// PC-16
+#[test]
+fn break_in_a_clause_body_cannot_leave_a_callers_loop() {
+    let codes = check_codes(concat!(
+        "fn step(0) -> Int {\n",
+        "  break 0\n",
+        "}\n",
+        "fn step(n) {\n",
+        "  n - 1\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  loop n = 3 {\n",
+        "    step(n)\n",
+        "  }\n",
+        "}\n",
+    ));
+    assert!(
+        codes.contains(&"E_BREAK_OUTSIDE_LOOP".to_owned()),
+        "{codes:?}"
+    );
+}
+
+// PC-17
+#[test]
+fn a_clause_cannot_bind_one_name_twice() {
+    let codes = check_codes(concat!(
+        "fn same(x, x) -> Bool {\n",
+        "  True\n",
+        "}\n",
+        "pub fn main() -> Bool { same(1, 1) }\n",
+    ));
+    assert!(codes.contains(&"E_DUPLICATE_LOCAL".to_owned()), "{codes:?}");
+}
+
+#[test]
+fn a_single_function_with_a_refutable_parameter_pattern_is_not_exhaustive() {
+    let messages = coded_messages(concat!(
+        "fn unwrap(Some(value)) -> Int {\n",
+        "  value\n",
+        "}\n",
+        "pub fn main() -> Int { unwrap(Some(1)) }\n",
+    ));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(messages[0].0, "T4231");
+    assert!(messages[0].1.contains("`unwrap(None)`"), "{messages:?}");
+}
+
+#[test]
+fn recursion_through_clauses_refers_to_the_whole_group() {
+    let source = concat!(
+        "fn sum([]) -> Int {\n",
+        "  0\n",
+        "}\n",
+        "fn sum([first, ..rest]) {\n",
+        "  first + sum(rest)\n",
+        "}\n",
+        "pub fn main() -> Int { sum([1, 2, 3, 4]) }\n",
+    );
+    assert_eq!(
+        run_both("clauses-recursion", source),
+        "\"outcome\":\"success\",\"value\":10"
+    );
+}
+
+// Formatting: one clause group reads as one declaration and keeps its order.
+#[test]
+fn the_formatter_keeps_a_clause_group_together_in_source_order() {
+    let source = concat!(
+        "fn f(1) -> Int {\n",
+        "  10\n",
+        "}\n",
+        "\n",
+        "// the catch-all\n",
+        "fn f(_) {\n",
+        "  0\n",
+        "}\n",
+        "fn g() -> Int {\n",
+        "  f(1)\n",
+        "}\n",
+    );
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(
+        !formatted.is_blocked(),
+        "{}",
+        formatted.render_diagnostics()
+    );
+    assert_eq!(
+        formatted.text(),
+        concat!(
+            "fn f(1) -> Int {\n",
+            "  10\n",
+            "}\n",
+            "// the catch-all\n",
+            "fn f(_) {\n",
+            "  0\n",
+            "}\n",
+            "\n",
+            "fn g() -> Int {\n",
+            "  f(1)\n",
+            "}\n",
+        )
+    );
+}
+
+// Inspection reports the group contract and the clause position for any clause.
+#[test]
+fn inspecting_any_clause_reports_the_group_and_the_clause_position() {
+    let source =
+        format!("import std/int as Int\n{DESCRIBE}pub fn main() -> Text {{ describe(1) }}\n");
+    for (needle, index) in [
+        ("describe(0)", 1),
+        ("describe(1) {", 2),
+        ("describe(count) if", 3),
+        ("describe(count) {", 4),
+    ] {
+        let report = inspect_at(&source, needle, 0);
+        let clause = report.clause().expect("a clause head");
+        assert_eq!((clause.index(), clause.count()), (index, 4), "{needle}");
+        assert_eq!(
+            report.callable().map(chimi::CallableInspection::display),
+            Some("fn(Int) -> Text errors CountError"),
+            "{needle}"
+        );
+    }
+}
