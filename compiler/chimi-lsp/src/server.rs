@@ -15,13 +15,15 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
     Notification as _, PublishDiagnostics,
 };
-use lsp_types::request::{Formatting, Request as _};
+use lsp_types::request::{Formatting, GotoDefinition, HoverRequest, Request as _};
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    InitializeParams, NumberOrString, Position, PositionEncodingKind, PublishDiagnosticsParams,
-    Range, SaveOptions, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Uri,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString, Position,
+    PositionEncodingKind, PublishDiagnosticsParams, Range, SaveOptions, ServerCapabilities,
+    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, TextEdit, Uri,
 };
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -49,6 +51,8 @@ pub fn run(connection: &Connection) -> ServerResult<()> {
             },
         )),
         document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
+        hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
+        definition_provider: Some(lsp_types::OneOf::Left(true)),
         ..ServerCapabilities::default()
     };
     connection.initialize_finish(
@@ -107,6 +111,36 @@ impl Server<'_> {
                         }]
                     });
                 Response::new_ok(id, edits)
+            }
+            // Both answer `null` for positions with nothing to show, including
+            // positions an editor sent for text the server has not analyzed.
+            HoverRequest::METHOD => {
+                let (id, params) = request.extract::<HoverParams>(HoverRequest::METHOD)?;
+                let at = params.text_document_position_params;
+                let hover = document(&at.text_document.uri)
+                    .and_then(|path| self.workspace.hover(&path, line_position(at.position)))
+                    .map(|hover| Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: hover.markdown,
+                        }),
+                        range: Some(range(hover.range)),
+                    });
+                Response::new_ok(id, hover)
+            }
+            GotoDefinition::METHOD => {
+                let (id, params) =
+                    request.extract::<GotoDefinitionParams>(GotoDefinition::METHOD)?;
+                let at = params.text_document_position_params;
+                let location = document(&at.text_document.uri)
+                    .and_then(|path| self.workspace.definition(&path, line_position(at.position)))
+                    .map(|target| {
+                        GotoDefinitionResponse::Scalar(Location {
+                            uri: file_uri(target.path.as_path()),
+                            range: range(target.range),
+                        })
+                    });
+                Response::new_ok(id, location)
             }
             _ => Response::new_err(
                 request.id,
@@ -288,6 +322,13 @@ fn range(range: LineRange) -> Range {
     Range {
         start: position(range.start),
         end: position(range.end),
+    }
+}
+
+const fn line_position(position: Position) -> LinePosition {
+    LinePosition {
+        line: position.line,
+        character: position.character,
     }
 }
 
