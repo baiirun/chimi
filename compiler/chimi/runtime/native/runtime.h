@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 9
+#define CHIMI_RUNTIME_ABI_VERSION 10
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -111,7 +111,6 @@ enum {
   CHIMI_BINARY_LESS_EQUAL,
   CHIMI_BINARY_GREATER,
   CHIMI_BINARY_GREATER_EQUAL,
-  CHIMI_BINARY_PIPE,
 };
 
 enum {

@@ -22,7 +22,7 @@ fn recover(
   value: Receiver<Int>,
 ) -> Option<Receiver<Int>> {
   case Channel.send(sender, value) {
-    Success(_) -> None()
+    Success(_) -> None
     Failure(error) -> case error {
       SendError.Closed(recovered) -> Some(recovered)
       SendError.Aborted(recovered) -> Some(recovered)

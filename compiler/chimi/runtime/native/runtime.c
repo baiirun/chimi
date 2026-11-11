@@ -39,7 +39,9 @@ typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST,
                VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER, VALUE_TASK,
                VALUE_CHANNEL_SENDER, VALUE_CHANNEL_RECEIVER,
                VALUE_CHANNEL_COMPLETION } ValueKind;
-typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC } CallableKind;
+/* CALL_CONSTRUCTOR is a constructor with fields named as a value; calling it constructs. */
+typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC,
+               CALL_CONSTRUCTOR } CallableKind;
 typedef enum { HOST_PROCESS_UTF8_LINES, HOST_WRITE_LINE, HOST_WRITE_ERROR } HostFunction;
 /* CONTROL_BREAK carries the target loop's state symbol in `node` and its value in `value`.
    Verified programs keep it inside one function, so it never reaches a call or root. */
@@ -1380,9 +1382,12 @@ static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
   return runtime->cancel ? cancelled() : success(void_value());
 }
 
+static ChimiControl *construct_value(uint32_t symbol, ChimiValue **values);
+
 static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
                             uint32_t argument_count, uint64_t span, uint32_t call_node,
                             ChimiEnvironment *call_environment) {
+  if (callable->kind == CALL_CONSTRUCTOR) return construct_value(callable->symbol, arguments);
   if (callable->kind == CALL_DEPENDENCY) {
     if (!runtime->silent) {
       uint64_t dependency_span = runtime->next_span++;
@@ -1769,6 +1774,12 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
       if (environment->locals[shape->environment_slot])
         return success(environment->locals[shape->environment_slot]);
       return defect("verified local is not bound", -1);
+    case CHIMI_SYMBOL_CONSTRUCTOR: {
+      ChimiCallable *callable = allocate(1, sizeof(*callable));
+      allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_CONSTRUCTOR;
+      callable->symbol = symbol; callable->name = CHIMI_STRINGS[shape->name];
+      return success(callable_value(callable));
+    }
     case CHIMI_SYMBOL_INTRINSIC: {
       ChimiCallable *callable = allocate(1, sizeof(*callable));
       allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_INTRINSIC;
@@ -1834,19 +1845,10 @@ NODE_WRAPPER(dependency_method, "dependency_method", {
   callable->method = node->c; callable->name = CHIMI_STRINGS[node->d]; result = success(callable_value(callable));
 })
 
-NODE_WRAPPER(construct, "construct", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; const ChimiSymbol *symbol = &CHIMI_SYMBOLS[node->a];
-  const ChimiConstructor *shape = &CHIMI_CONSTRUCTORS[symbol->constructor];
-  ChimiValue **values = allocate(node->length, sizeof(*values));
-  bool stopped = false;
-  for (uint32_t index = 0; index < node->length; ++index) {
-    ChimiControl *control = RUN(CHIMI_IDS[node->offset + index]);
-    if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
-    values[index] = control->value;
-  }
-  if (stopped) break;
-  if (shape->outcome_success >= 0) { result = shape->outcome_success ? success(values[0]) : failure(values[0]); break; }
-  ChimiValue *value = new_value(VALUE_CONSTRUCTED); value->as.constructed.constructor = node->a;
+static ChimiControl *construct_value(uint32_t symbol, ChimiValue **values) {
+  const ChimiConstructor *shape = &CHIMI_CONSTRUCTORS[CHIMI_SYMBOLS[symbol].constructor];
+  if (shape->outcome_success >= 0) return shape->outcome_success ? success(values[0]) : failure(values[0]);
+  ChimiValue *value = new_value(VALUE_CONSTRUCTED); value->as.constructed.constructor = symbol;
   value->as.constructed.type_name = CHIMI_STRINGS[shape->type_name];
   value->as.constructed.variant_name = shape->variant_name == UINT32_MAX ? NULL : CHIMI_STRINGS[shape->variant_name];
   value->as.constructed.length = shape->fields_length;
@@ -1856,7 +1858,20 @@ NODE_WRAPPER(construct, "construct", {
     const char *name = CHIMI_STRINGS[CHIMI_IDS[shape->fields_offset + field]];
     value->as.constructed.fields[field] = (RuntimeField){name, values[field]};
   }
-  result = success(value);
+  return success(value);
+}
+
+NODE_WRAPPER(construct, "construct", {
+  const ChimiNode *node = &CHIMI_NODES[node_id];
+  ChimiValue **values = allocate(node->length, sizeof(*values));
+  bool stopped = false;
+  for (uint32_t index = 0; index < node->length; ++index) {
+    ChimiControl *control = RUN(CHIMI_IDS[node->offset + index]);
+    if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
+    values[index] = control->value;
+  }
+  if (stopped) break;
+  result = construct_value(node->a, values);
 })
 
 NODE_WRAPPER(call, "call", {
@@ -1904,10 +1919,6 @@ NODE_WRAPPER(binary, "binary", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiControl *left = RUN(node->b);
   if (left->kind != CONTROL_SUCCESS) { result = left; break; }
   ChimiControl *right = RUN(node->c); if (right->kind != CONTROL_SUCCESS) { result = right; break; }
-  if (node->a == CHIMI_BINARY_PIPE) {
-    if (right->value->kind != VALUE_CALLABLE) { result = defect("verified pipeline target is not callable", node_id); break; }
-    ChimiValue *arguments[] = {left->value}; result = invoke(runtime, right->value->as.callable, arguments, 1, span, node_id, environment); break;
-  }
   if (left->value->kind != VALUE_INTEGER || right->value->kind != VALUE_INTEGER) {
     result = defect("verified binary operands are not integers", node_id); break;
   }

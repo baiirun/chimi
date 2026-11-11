@@ -2193,6 +2193,8 @@ impl ProjectTypeChecker {
                         "contextual outcome constructors must be called with one value",
                     );
                     self.poison_expression_fact()
+                } else if let Some(fact) = self.fieldless_constructor_value_fact(symbol) {
+                    fact
                 } else if let Some(contract) = self.contracts.get(&symbol).cloned() {
                     ExpressionFact {
                         success: self.callable_type_for_symbol(symbol, contract),
@@ -2215,7 +2217,12 @@ impl ProjectTypeChecker {
                 member,
                 ..
             } => {
-                if let Some(symbol) = self.resolved_value_symbol(module_id, *semantic_id)
+                if let Some(fact) = self
+                    .resolved_value_symbol(module_id, *semantic_id)
+                    .and_then(|symbol| self.fieldless_constructor_value_fact(symbol))
+                {
+                    fact
+                } else if let Some(symbol) = self.resolved_value_symbol(module_id, *semantic_id)
                     && let Some(type_id) = self.symbol_value_type_or_contract(symbol)
                 {
                     ExpressionFact {
@@ -2267,7 +2274,18 @@ impl ProjectTypeChecker {
                         bindings,
                     )
                 } else {
-                    let callee = self.infer_expression(module_id, callee, generics, bindings);
+                    let callee = match callee_symbol
+                        .filter(|_| {
+                            matches!(
+                                callee.as_ref(),
+                                ModuleExpression::Name { .. } | ModuleExpression::Select { .. }
+                            )
+                        })
+                        .and_then(|symbol| self.constructor_callable_fact(symbol))
+                    {
+                        Some(fact) => self.record_expression_fact(module_id, callee, fact),
+                        None => self.infer_expression(module_id, callee, generics, bindings),
+                    };
                     let mut argument_facts = arguments
                         .iter()
                         .map(|argument| {
@@ -2396,12 +2414,9 @@ impl ProjectTypeChecker {
                 range,
                 ..
             } => {
-                let transform_symbol = self.expression_value_symbol(module_id, right);
                 let left = self.infer_expression(module_id, left, generics, bindings);
                 let right = self.infer_expression(module_id, right, generics, bindings);
-                if *operator == BinaryOperator::Pipe {
-                    self.infer_invocation(module_id, *range, transform_symbol, right, &[left])
-                } else {
+                {
                     let int = self.builtin_type("Int");
                     self.unify_at(module_id, *range, left.success, int, "binary left operand");
                     self.unify_at(
@@ -4643,6 +4658,42 @@ impl ProjectTypeChecker {
         };
         self.type_error_range(module_id, "T4210", first_label.range, message);
         order
+    }
+
+    /// A constructor named as a callee is its construction function, even when
+    /// it has no fields (`None()`).
+    fn constructor_callable_fact(&mut self, symbol: SymbolId) -> Option<ExpressionFact> {
+        if !self.is_constructor_symbol(symbol) {
+            return None;
+        }
+        let contract = self.contracts.get(&symbol).cloned()?;
+        Some(ExpressionFact {
+            success: self.callable_type_for_symbol(symbol, contract),
+            failures: FailureRowId::new(0),
+            needs: NeedsRowId::new(0),
+        })
+    }
+
+    /// A fieldless constructor named as a value is the value it constructs
+    /// (`None`, `Broken`), with fresh type arguments for a generic owner.
+    fn fieldless_constructor_value_fact(&mut self, symbol: SymbolId) -> Option<ExpressionFact> {
+        if !self.is_constructor_symbol(symbol) {
+            return None;
+        }
+        let contract = self.contracts.get(&symbol).cloned()?;
+        if !contract.inputs.is_empty() {
+            return None;
+        }
+        let success = if self.callable_generic_parameters(symbol).is_empty() {
+            contract.success
+        } else {
+            self.substitute_call_type(contract.success, &mut CallSubstitution::default())
+        };
+        Some(ExpressionFact {
+            success,
+            failures: FailureRowId::new(0),
+            needs: NeedsRowId::new(0),
+        })
     }
 
     fn is_constructor_symbol(&self, symbol: SymbolId) -> bool {

@@ -674,7 +674,6 @@ pub(crate) enum BinaryOperator {
     LessEqual,
     Greater,
     GreaterEqual,
-    Pipe,
     /// Short-circuit conjunction. Core lowering turns it into a `Match`, so it never reaches Core.
     And,
     /// Short-circuit disjunction. Core lowering turns it into a `Match`, so it never reaches Core.
@@ -1258,19 +1257,20 @@ impl ProjectLowerer {
         let operators = node
             .child_tokens()
             .into_iter()
+            // `None` is a pipeline stage, which lowers to a call rather than an operator.
             .filter_map(|token| {
                 let operator = match token.kind() {
-                    TokenKind::Plus => BinaryOperator::Add,
-                    TokenKind::Minus => BinaryOperator::Subtract,
-                    TokenKind::Star => BinaryOperator::Multiply,
-                    TokenKind::Slash => BinaryOperator::Divide,
-                    TokenKind::Less => BinaryOperator::Less,
-                    TokenKind::LessEqual => BinaryOperator::LessEqual,
-                    TokenKind::Greater => BinaryOperator::Greater,
-                    TokenKind::GreaterEqual => BinaryOperator::GreaterEqual,
-                    TokenKind::Pipe => BinaryOperator::Pipe,
-                    TokenKind::And | TokenKind::AmpersandAmpersand => BinaryOperator::And,
-                    TokenKind::Or | TokenKind::BarBar => BinaryOperator::Or,
+                    TokenKind::Plus => Some(BinaryOperator::Add),
+                    TokenKind::Minus => Some(BinaryOperator::Subtract),
+                    TokenKind::Star => Some(BinaryOperator::Multiply),
+                    TokenKind::Slash => Some(BinaryOperator::Divide),
+                    TokenKind::Less => Some(BinaryOperator::Less),
+                    TokenKind::LessEqual => Some(BinaryOperator::LessEqual),
+                    TokenKind::Greater => Some(BinaryOperator::Greater),
+                    TokenKind::GreaterEqual => Some(BinaryOperator::GreaterEqual),
+                    TokenKind::Pipe => None,
+                    TokenKind::And | TokenKind::AmpersandAmpersand => Some(BinaryOperator::And),
+                    TokenKind::Or | TokenKind::BarBar => Some(BinaryOperator::Or),
                     _ => return None,
                 };
                 Some(operator)
@@ -1278,23 +1278,33 @@ impl ProjectLowerer {
             .collect::<Vec<_>>();
         let operands = operands.collect::<Vec<_>>();
         let last_operator = operators.len().saturating_sub(1);
+        let start = significant_range(&first).start();
         let mut left = self.lower_expression(&first);
-        for (index, (operator, right)) in operators.into_iter().zip(operands).enumerate() {
+        for (index, (operator, right_node)) in operators.into_iter().zip(operands).enumerate() {
             let semantic_id = if index == last_operator {
                 semantic_id
             } else {
                 self.allocate_semantic_id()
             };
-            let right = self.lower_expression(&right);
-            let range = significant_range(node);
+            let right = self.lower_expression(&right_node);
+            // Stage `index` of a chain spans the first operand through its own
+            // right operand, so diagnostics and inspection name that stage only.
+            let range = TextRange::new(
+                start as usize,
+                significant_range(&right_node).end() as usize,
+            );
             left = match (operator, right) {
                 (
-                    BinaryOperator::Pipe,
+                    None,
                     ModuleExpression::Call {
                         callee, arguments, ..
                     },
                 ) => insert_pipeline_subject(semantic_id, left, *callee, arguments, range),
-                (operator, right) => ModuleExpression::Binary {
+                // `x |> f` is exactly the call `f(x)`.
+                (None, callee) => {
+                    insert_pipeline_subject(semantic_id, left, callee, Vec::new(), range)
+                }
+                (Some(operator), right) => ModuleExpression::Binary {
                     semantic_id,
                     operator,
                     left: Box::new(left),

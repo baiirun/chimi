@@ -1054,7 +1054,7 @@ impl CoreLowerer {
                 Literal::Text { value, .. } => CoreLiteral::Text(value.clone()),
                 Literal::Boolean { value, .. } => CoreLiteral::Boolean(*value),
             }),
-            ModuleExpression::Name { semantic_id, .. } => CoreOperation::Reference(
+            ModuleExpression::Name { semantic_id, .. } => self.reference(
                 self.value_symbol(module_id, *semantic_id)
                     .expect("verified value reference resolves"),
             ),
@@ -1065,7 +1065,7 @@ impl CoreLowerer {
                 ..
             } => {
                 if let Some(symbol) = self.value_symbol(module_id, *semantic_id) {
-                    CoreOperation::Reference(symbol)
+                    self.reference(symbol)
                 } else if let Some((requirement, interface, method)) =
                     self.dependency_method(module_id, receiver, &member.text)
                 {
@@ -1547,6 +1547,21 @@ impl CoreLowerer {
         let mut captures = captures.into_iter().collect::<Vec<_>>();
         captures.sort_unstable();
         captures
+    }
+
+    /// A fieldless constructor named as a value is that value, so it constructs
+    /// here. Any other constructor reference evaluates to a callable value.
+    fn reference(&self, symbol: SymbolId) -> CoreOperation {
+        if is_core_constructor(&self.typed, symbol) {
+            let shape = lower_core_constructor(&self.typed, symbol);
+            if shape.outcome_success.is_none() && shape.fields.is_empty() {
+                return CoreOperation::Construct {
+                    constructor: symbol,
+                    arguments: Vec::new(),
+                };
+            }
+        }
+        CoreOperation::Reference(symbol)
     }
 
     fn value_symbol(&self, module_id: ModuleId, semantic_id: SemanticId) -> Option<SymbolId> {

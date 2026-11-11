@@ -29,6 +29,14 @@ fn interpreter_outcome(source: &Path) -> String {
         .arg(source)
         .output()
         .expect("run the reference interpreter");
+    // `chimi run` reports every outcome, defects included, on stdout and exits
+    // 0; anything else means the compiler or interpreter itself failed.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "interpreter did not complete: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     stdout
         .lines()
@@ -58,7 +66,7 @@ fn native_outcome(scratch: &Path, source: &Path) -> String {
         String::from_utf8_lossy(&build.stderr)
     );
     let outcome_path = scratch.join("outcome.jsonl");
-    Command::new(&executable)
+    let execution = Command::new(&executable)
         .arg("--chimi-runner")
         .arg("--trace=off")
         .arg(format!(
@@ -70,10 +78,26 @@ fn native_outcome(scratch: &Path, source: &Path) -> String {
         .arg("--")
         .output()
         .expect("execute the native program");
-    std::fs::read_to_string(outcome_path)
+    let outcome = std::fs::read_to_string(outcome_path)
         .expect("native outcome file")
         .trim_end()
-        .to_owned()
+        .to_owned();
+    // The runner exits 0 on success, 1 on an expected failure, and 70 on a
+    // defect. A signal or any other code means the runtime itself crashed.
+    let expected_code = if outcome.contains("\"outcome\":\"success\"") {
+        0
+    } else if outcome.contains("\"outcome\":\"expected_failure\"") {
+        1
+    } else {
+        70
+    };
+    assert_eq!(
+        execution.status.code(),
+        Some(expected_code),
+        "native runner exit does not match {outcome}: {}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+    outcome
 }
 
 fn assert_formatter_round_trips(source: &str) {
@@ -627,4 +651,229 @@ fn formatting_keeps_the_space_before_a_grouping_parenthesis() {
     let reformatted = run_both("grouping-after-format", text);
     assert_eq!(original, "\"outcome\":\"success\",\"value\":18");
     assert_eq!(reformatted, original);
+}
+
+const BIG: &str = "9223372036854775807";
+
+// Kernel "Pipelines": `x |> f` evaluates exactly as `f(x)`, so the callee
+// runs before the left operand. Both operands defect here; the callee's
+// division wins.
+#[test]
+fn unary_pipeline_evaluates_the_callee_before_the_subject() {
+    let outcome = run_both(
+        "pipe-unary-callee-first",
+        &format!(
+            concat!(
+                "fn make(offset: Int) -> fn(Int) -> Int {{ fn(value) {{ value + offset }} }}\n",
+                "pub fn main() -> Int {{\n",
+                "  let big = {}\n",
+                "  (big + 1) |> (make(1 / 0))\n",
+                "}}\n",
+            ),
+            BIG
+        ),
+    );
+    assert!(outcome.contains("integer division by zero"), "{outcome}");
+}
+
+#[test]
+fn call_pipeline_evaluates_the_callee_before_the_subject() {
+    let outcome = run_both(
+        "pipe-call-callee-first",
+        &format!(
+            concat!(
+                "fn make(offset: Int) -> fn(Int, Int) -> Int {{\n",
+                "  fn(value, extra) {{ value + extra + offset }}\n",
+                "}}\n",
+                "pub fn main() -> Int {{\n",
+                "  let big = {}\n",
+                "  (big + 1) |> make(1 / 0)(5)\n",
+                "}}\n",
+            ),
+            BIG
+        ),
+    );
+    assert!(outcome.contains("integer division by zero"), "{outcome}");
+}
+
+#[test]
+fn pipeline_into_a_curried_call_inserts_the_subject_into_the_last_call() {
+    // `x |> f(a)(b)` is `f(a)(x, b)`.
+    let outcome = run_both(
+        "pipe-curried",
+        concat!(
+            "fn make(offset: Int) -> fn(Int, Int) -> Int {\n",
+            "  fn(value, extra) { value * 100 + extra * 10 + offset }\n",
+            "}\n",
+            "pub fn main() -> Int { 1 |> make(3)(2) }\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":123");
+}
+
+#[test]
+fn pipeline_into_member_constructor_and_empty_calls() {
+    let outcome = run_both(
+        "pipe-member-constructor-empty",
+        concat!(
+            "struct Pair {\n",
+            "  left: Int\n",
+            "  right: Int\n",
+            "}\n",
+            "fn length(text: Text) -> Int {\n",
+            "  case text {\n",
+            "    \"xy\" -> 2\n",
+            "    _ -> 0\n",
+            "  }\n",
+            "}\n",
+            "fn tenfold(value: Int) -> Int { value * 10 }\n",
+            "pub fn main() -> Int {\n",
+            "  let pair = 3 |> Pair(4)\n",
+            "  let joined = \"x\" |> Text.append(\"y\")\n",
+            "  (joined |> length()) + pair.left * 100 + (pair.right |> tenfold())\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":342");
+}
+
+#[test]
+fn pipeline_stages_run_under_an_enclosing_using() {
+    let outcome = run_both(
+        "pipe-under-using",
+        concat!(
+            "interface Scale {\n",
+            "  apply: fn(Int) -> Int\n",
+            "}\n",
+            "fn scaled(value: Int) -> Int needs { scale: Scale } { scale.apply(value) }\n",
+            "fn add(value: Int, extra: Int) -> Int { value + extra }\n",
+            "let triple = { apply: fn(value) { value * 3 } }\n",
+            "pub fn main() -> Int {\n",
+            "  2 |> scaled |> add(1) using { scale: triple }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":7");
+}
+
+fn type_diagnostics(source: &str) -> Vec<(String, String)> {
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    Compiler::type_project(vec![module])
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| {
+            let range = diagnostic.range();
+            (
+                diagnostic.code().to_owned(),
+                source[range.start() as usize..range.end() as usize].to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_diagnostic_inside_a_chain_covers_only_its_stage() {
+    let source = concat!(
+        "fn one(value: Int) -> Int { value }\n",
+        "fn two(value: Int, extra: Int) -> Int { value * extra }\n",
+        "pub fn main() -> Int {\n",
+        "  1\n",
+        "  |> one(2)\n",
+        "  |> two(3)\n",
+        "  |> two(4)\n",
+        "}\n",
+    );
+    assert_eq!(
+        type_diagnostics(source),
+        [("T4202".to_owned(), "1\n  |> one(2)".to_owned())]
+    );
+}
+
+#[test]
+fn hover_on_a_later_stage_reports_that_stage_type() {
+    let source = concat!(
+        "struct Label {\n",
+        "  text: Text\n",
+        "}\n",
+        "struct Sized {\n",
+        "  label: Label\n",
+        "  size: Int\n",
+        "}\n",
+        "fn label(value: Int, text: Text) -> Label { Label(text) }\n",
+        "fn size(label: Label, size: Int) -> Sized { Sized(label, size) }\n",
+        "pub fn main() -> Sized { 1 |> label(\"a\") |> size(5) }\n",
+    );
+    let hover = |needle: &str| {
+        let offset = source.find(needle).expect("needle is in the source");
+        let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+            .expect("valid module path");
+        Compiler::inspect_project(vec![module], "main", offset)
+            .expect("inspection succeeds")
+            .inferred_type()
+            .map(str::to_owned)
+    };
+    assert_eq!(hover("(5)").as_deref(), Some("Sized"));
+    assert_eq!(hover("(\"a\")").as_deref(), Some("Label"));
+}
+
+// A constructor named as a value: one with fields is a callable, a fieldless
+// variant is the value itself.
+#[test]
+fn constructors_with_fields_are_callable_values() {
+    let outcome = run_both(
+        "constructor-callable-value",
+        concat!(
+            "struct Meters {\n",
+            "  value: Int\n",
+            "}\n",
+            "fn apply(make: fn(Int) -> Meters, value: Int) -> Meters { make(value) }\n",
+            "fn total(option: Option<Int>) -> Int {\n",
+            "  case option {\n",
+            "    Some(value) -> value\n",
+            "    None -> 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let wrap = Some\n",
+            "  total(1 |> Some) + total(wrap(20)) + apply(Meters, 300).value\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":321");
+}
+
+#[test]
+fn a_fieldless_variant_named_as_a_value_is_that_value() {
+    let outcome = run_both(
+        "fieldless-variant-value",
+        concat!(
+            "enum Problem {\n",
+            "  Broken\n",
+            "  Worn(level: Int)\n",
+            "}\n",
+            "fn count(option: Option<Int>) -> Int {\n",
+            "  case option {\n",
+            "    Some(value) -> value\n",
+            "    None -> 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let nothing = None\n",
+            "  let explicit = None()\n",
+            "  let total = count(nothing) + count(explicit) + 1\n",
+            "  case total {\n",
+            "    1 -> Failure(Broken)\n",
+            "    _ -> total\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        concat!(
+            "\"outcome\":\"expected_failure\",",
+            "\"error\":{\"type\":\"Problem\",\"variant\":\"Broken\",\"fields\":{}}",
+        )
+    );
 }

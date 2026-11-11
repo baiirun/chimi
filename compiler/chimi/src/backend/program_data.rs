@@ -553,7 +553,6 @@ const fn binary_operator(operator: BinaryOperator) -> u32 {
         BinaryOperator::LessEqual => 5,
         BinaryOperator::Greater => 6,
         BinaryOperator::GreaterEqual => 7,
-        BinaryOperator::Pipe => 8,
         BinaryOperator::And | BinaryOperator::Or => {
             panic!("Core lowers `and` and `or` to a Bool match")
         }

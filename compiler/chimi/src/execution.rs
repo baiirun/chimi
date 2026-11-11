@@ -524,6 +524,8 @@ enum RuntimeCallable {
     },
     Intrinsic(StandardFunction),
     Host(HostFunction),
+    /// A constructor with fields named as a value; calling it constructs.
+    Constructor(SymbolId),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -753,39 +755,7 @@ impl<'core> Evaluator<'core> {
                         environment.clone()
                     )));
                 }
-                let symbol = self.core.symbol(constructor);
-                let shape = symbol
-                    .constructor
-                    .as_ref()
-                    .expect("core constructor symbol owns shape")
-                    .clone();
-                if let Some(success) = shape.outcome_success {
-                    let value = values
-                        .into_iter()
-                        .next()
-                        .expect("outcome constructor has one argument");
-                    return if success {
-                        Control::Success(value)
-                    } else {
-                        Control::Failure(value)
-                    };
-                }
-                debug_assert_eq!(values.len(), shape.fields.len());
-                let fields = shape
-                    .fields
-                    .iter()
-                    .zip(values)
-                    .map(|(field_name, value)| RuntimeField {
-                        name: field_name.clone(),
-                        value,
-                    })
-                    .collect();
-                Control::Success(RuntimeValue::Constructed {
-                    constructor,
-                    type_name: shape.type_name,
-                    variant_name: shape.variant_name,
-                    fields,
-                })
+                self.construct(constructor, values)
             }
             CoreOperation::Call { callee, arguments } => {
                 let callable =
@@ -852,21 +822,6 @@ impl<'core> Evaluator<'core> {
                 operator: UnaryOperator::Not,
                 ..
             } => unreachable!("Core lowers `not` to a Bool match"),
-            CoreOperation::Binary {
-                operator: BinaryOperator::Pipe,
-                left,
-                right,
-            } => {
-                let value = success_or_return!(self.eval_node(left, span, environment.clone()));
-                let callable = success_or_return!(self.eval_node(right, span, environment.clone()));
-                let RuntimeValue::Callable(callable) = callable else {
-                    return Control::Defect {
-                        message: "verified pipeline target is not callable".to_owned(),
-                        node: Some(node_id),
-                    };
-                };
-                self.invoke(callable, vec![value], span, node_id, environment)
-            }
             CoreOperation::Binary {
                 operator,
                 left,
@@ -1034,11 +989,50 @@ impl<'core> Evaluator<'core> {
                     node: None,
                 },
             },
-            CoreSymbolKind::Constructor | CoreSymbolKind::Other => Control::Defect {
+            CoreSymbolKind::Constructor => {
+                Control::Success(RuntimeValue::Callable(RuntimeCallable::Constructor(symbol)))
+            }
+            CoreSymbolKind::Other => Control::Defect {
                 message: format!("symbol {} is not a runtime value", core_symbol.name),
                 node: None,
             },
         }
+    }
+
+    fn construct(&self, constructor: SymbolId, values: Vec<RuntimeValue>) -> Control {
+        let symbol = self.core.symbol(constructor);
+        let shape = symbol
+            .constructor
+            .as_ref()
+            .expect("core constructor symbol owns shape")
+            .clone();
+        if let Some(success) = shape.outcome_success {
+            let value = values
+                .into_iter()
+                .next()
+                .expect("outcome constructor has one argument");
+            return if success {
+                Control::Success(value)
+            } else {
+                Control::Failure(value)
+            };
+        }
+        debug_assert_eq!(values.len(), shape.fields.len());
+        let fields = shape
+            .fields
+            .iter()
+            .zip(values)
+            .map(|(field_name, value)| RuntimeField {
+                name: field_name.clone(),
+                value,
+            })
+            .collect();
+        Control::Success(RuntimeValue::Constructed {
+            constructor,
+            type_name: shape.type_name,
+            variant_name: shape.variant_name,
+            fields,
+        })
     }
 
     fn invoke(
@@ -1121,6 +1115,7 @@ impl<'core> Evaluator<'core> {
             RuntimeCallable::Host(function) => {
                 self.invoke_host(function, arguments, span, call_node, call_environment)
             }
+            RuntimeCallable::Constructor(constructor) => self.construct(constructor, arguments),
         }
     }
 
@@ -1698,7 +1693,6 @@ impl<'core> Evaluator<'core> {
             BinaryOperator::LessEqual => Control::Success(RuntimeValue::Boolean(left <= right)),
             BinaryOperator::Greater => Control::Success(RuntimeValue::Boolean(left > right)),
             BinaryOperator::GreaterEqual => Control::Success(RuntimeValue::Boolean(left >= right)),
-            BinaryOperator::Pipe => unreachable!("pipelines are evaluated separately"),
             BinaryOperator::And | BinaryOperator::Or => {
                 unreachable!("Core lowers `and` and `or` to a Bool match")
             }
@@ -1969,6 +1963,7 @@ fn callable_name(callable: &RuntimeCallable) -> &str {
         RuntimeCallable::Host(HostFunction::ProcessUtf8Lines) => "process_utf8_lines",
         RuntimeCallable::Host(HostFunction::WriteLine) => "write_line",
         RuntimeCallable::Host(HostFunction::WriteError) => "write_error",
+        RuntimeCallable::Constructor(_) => "constructor",
     }
 }
 

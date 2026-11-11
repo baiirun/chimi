@@ -141,8 +141,11 @@ declared payload arity and match payload fields by the same position.
 
 A variant without payload is written bare, with no parentheses, in both
 expressions and patterns: `PaymentError.GatewayUnavailable`, `None`,
-`Supervisor.Restart.OnDefect`. The bare name is the value itself, not a
-function that builds it.
+`Supervisor.Restart.OnDefect`. The bare name is the value itself.
+`PaymentError.GatewayUnavailable()` is accepted as the same value, and the
+formatter writes the bare form. A struct or variant constructor with fields is
+a function of its fields, so `let make = Some` and `value |> Some` are valid
+and `make(value)` constructs as `Some(value)` does.
 
 ### Anonymous records
 

@@ -6,7 +6,7 @@ fn recover_as_text(
   value: Receiver<Int>,
 ) -> Option<Text> {
   case Channel.send(sender, value) {
-    Success(_) -> None()
+    Success(_) -> None
     Failure(error) -> case error {
       SendError.Closed(recovered) -> Some(recovered)
       SendError.Aborted(recovered) -> Some(recovered)

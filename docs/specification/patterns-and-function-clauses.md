@@ -160,7 +160,7 @@ Generic parameters, needs names, and the success annotation are in scope in
 every clause. A typed binding in a later clause MAY name a generic parameter
 from the first clause:
 
-<!-- chimi: pending ts-e43af0 ts-553107 ts-dc28b2 -->
+<!-- chimi: pending ts-e43af0 ts-553107 -->
 ```chimi
 fn last<T>([]) -> Option<T> {
   None
