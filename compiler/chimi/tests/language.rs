@@ -4426,6 +4426,33 @@ fn json_numbers_with_huge_exponents_compare_exactly() {
     );
 }
 
+// Operands evaluate left to right, so when both fail the left failure is the
+// outcome of the comparison.
+#[test]
+fn a_comparison_propagates_the_left_operand_failure_first() {
+    let source = concat!(
+        "enum E {\n  A\n  B\n}\n",
+        "fn a() -> Int { Failure(E.A) }\n",
+        "fn b() -> Int { Failure(E.B) }\n",
+        "pub fn main() -> List<Bool> { [a() == b(), b() < a()] }\n",
+    );
+    assert_eq!(
+        run_both("comparison-evaluation-order", source),
+        concat!(
+            "\"outcome\":\"expected_failure\",",
+            "\"error\":{\"type\":\"E\",\"variant\":\"A\",\"fields\":{}}"
+        )
+    );
+    let reversed = source.replace("[a() == b(), b() < a()]", "[b() < a(), a() == b()]");
+    assert_eq!(
+        run_both("comparison-evaluation-order-reversed", &reversed),
+        concat!(
+            "\"outcome\":\"expected_failure\",",
+            "\"error\":{\"type\":\"E\",\"variant\":\"B\",\"fields\":{}}"
+        )
+    );
+}
+
 // E17: text equality is by UTF-8 bytes, with no normalization.
 #[test]
 fn text_equality_does_not_normalize() {
@@ -4550,7 +4577,7 @@ fn comparing_values_without_the_property_names_the_offending_component() {
             "import std/json.{Value}\n\
              fn less(a: List<Value>, b: List<Value>) -> Bool { a < b }\n",
             "T4301",
-            "element of `List`",
+            "element of `List` is `Value`, which is not ordered because an `Object` holds a `Map`",
         ),
     ];
     for (declarations, code, fragment) in cases {
