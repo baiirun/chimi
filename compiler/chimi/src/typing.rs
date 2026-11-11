@@ -3882,10 +3882,40 @@ impl ProjectTypeChecker {
         generics: &HashMap<String, SymbolId>,
         bindings: &mut HashMap<SymbolId, ValueBinding>,
     ) -> ExpressionFact {
-        let subject_facts = subjects
+        let mut subject_facts = subjects
             .iter()
             .map(|subject| self.infer_expression(module_id, subject, generics, bindings))
             .collect::<Vec<_>>();
+        // `let _: T = value` is an annotated `let` that binds no name, so a mismatch
+        // is reported like `let name: T = value`, at the value. The subject then
+        // takes the annotated type, so the pattern adds no second diagnostic.
+        if let (
+            CaseOrigin::Binding {
+                kind: BindingKind::Let,
+            },
+            [arm],
+            [subject],
+            [fact],
+        ) = (origin, arms, subjects, subject_facts.as_mut_slice())
+            && let [
+                Pattern::Typed {
+                    name: None,
+                    type_use,
+                    ..
+                },
+            ] = arm.patterns.as_slice()
+        {
+            let annotated = self.lower_value_type(module_id, type_use, generics);
+            if !self.unify_at(
+                module_id,
+                expression_range(subject),
+                fact.success,
+                annotated,
+                "the value of this annotated `let`",
+            ) {
+                fact.success = annotated;
+            }
+        }
         let site = match origin {
             CaseOrigin::Clauses {
                 function,

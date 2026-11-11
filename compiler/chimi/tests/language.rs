@@ -7138,6 +7138,23 @@ fn an_update_without_fields_is_the_base() {
     assert_eq!(report.diagnostics()[0].fixes()[0].replacement(), "config");
 }
 
+// `let _: T = value` is an annotated `let` like `let name: T = value`: a mismatch
+// is T4203 at the value, not the typed-binding pattern's T4283.
+#[test]
+fn a_typed_wildcard_let_checks_its_value_like_an_annotated_let() {
+    assert_eq!(
+        type_diagnostics("fn f() -> Int {\n  let _: Int = \"x\"\n  1\n}\n"),
+        [("T4203".to_owned(), "\"x\"".to_owned())]
+    );
+    assert_eq!(
+        run_both(
+            "typed-wildcard-let",
+            "pub fn main() -> Int {\n  let _: Int = 4\n  5\n}\n",
+        ),
+        "\"outcome\":\"success\",\"value\":5"
+    );
+}
+
 // TP-08: a block's value is its final expression, so a block cannot end with a
 // `let`. These once ran: the plain `let` returned its value and the
 // destructuring one evaluated to `Void`.
