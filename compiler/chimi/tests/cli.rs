@@ -3031,6 +3031,235 @@ fn native_aborting_a_channel_frees_its_queued_messages() {
     );
 }
 
+// Guards: a child cancelled before it first ran never adopted its captures, so the
+// copy of what it captured stayed allocated until exit, one per round.
+#[test]
+fn native_cancelling_a_child_before_it_runs_frees_its_captures() {
+    let source = format!(
+        concat!(
+            "import std/task as Task\n",
+            "{payload}",
+            "pub fn main(arguments: List<Text>) -> Int {{\n",
+            "  let message = payload()\n",
+            "  let rounds = List.length(arguments)\n",
+            "  loop round = 0 {{\n",
+            "    case round < rounds {{\n",
+            "      False -> break round\n",
+            "      True -> {{\n",
+            "        let child = Task.start(fn() -> Text {{ message }})\n",
+            "        Task.cancel(child)\n",
+            "        round + 1\n",
+            "      }}\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+        ),
+        payload = PAYLOAD_FUNCTION
+    );
+    let measure = |rounds| memory_report_over_rounds("unrun-child", &source, &[], rounds);
+    let (small, large) = (measure(2), measure(40));
+    assert_flat_fragment_peak(&small, &large);
+    let small_peak = json_u64_field(&small, "peak_footprint_bytes");
+    let large_peak = json_u64_field(&large, "peak_footprint_bytes");
+    assert!(
+        large_peak <= small_peak + 16_384,
+        "peak footprint grew from {small_peak} to {large_peak} bytes"
+    );
+}
+
+/// Each round drops a channel of capacity 1 or 2 that still holds queued messages,
+/// after cancelling two producers parked on it. Nothing aborts or closes it.
+fn abandoned_channels_program() -> String {
+    format!(
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{{Receive, Sender}}\n",
+            "import std/task as Task\n",
+            "{payload}",
+            "fn spam(out: Sender<Text>, message: Text) -> Int {{\n",
+            "  loop sent = 0 {{\n",
+            "    Channel.send(out, message)\n",
+            "    sent + 1\n",
+            "  }}\n",
+            "}}\n",
+            "pub fn main(arguments: List<Text>) -> Int {{\n",
+            "  let message = payload()\n",
+            "  let rounds = List.length(arguments)\n",
+            "  loop state = {{ round: 0, received: 0 }} {{\n",
+            "    case state.round < rounds {{\n",
+            "      False -> break state.received\n",
+            "      True -> {{\n",
+            "        let channel = Channel.bounded(state.round - state.round / 2 * 2 + 1)\n",
+            "        let sender = channel.sender\n",
+            "        let receiver = channel.receiver\n",
+            "        let first = Task.start(fn() -> Int {{ spam(sender, message) }})\n",
+            "        let second = Task.start(fn() -> Int {{ spam(sender, message) }})\n",
+            "        let got = Channel.receive(receiver)\n",
+            "        let received = case got {{\n",
+            "          Receive.Received(_) -> 1\n",
+            "          Receive.Drained -> 0\n",
+            "        }}\n",
+            "        Task.cancel(first)\n",
+            "        Task.cancel(second)\n",
+            "        {{ round: state.round + 1, received: state.received + received }}\n",
+            "      }}\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+        ),
+        payload = PAYLOAD_FUNCTION
+    )
+}
+
+// Guards: messages queued in a channel the program dropped stayed allocated until
+// exit (a 5.5 MB fragment peak over 80 rounds of review-heap s5). Once no endpoint
+// value of a channel is left in any heap or fragment, the runtime releases it, and
+// the scheduler frees what it still queues.
+#[test]
+fn native_dropping_a_channel_frees_its_queued_messages() {
+    let source = abandoned_channels_program();
+    let measure = |rounds| memory_report_over_rounds("abandoned-channel", &source, &[], rounds);
+    let (small, large) = (measure(2), measure(40));
+    assert_flat_fragment_peak(&small, &large);
+    let small_peak = json_u64_field(&small, "peak_footprint_bytes");
+    let large_peak = json_u64_field(&large, "peak_footprint_bytes");
+    assert!(
+        large_peak <= small_peak + 16_384,
+        "peak footprint grew from {small_peak} to {large_peak} bytes"
+    );
+}
+
+// The trace names the release: scheduler channel event kind 15.
+#[test]
+fn native_trace_reports_a_released_channel() {
+    let scratch = scratch_directory("native-channel-released-trace");
+    let executable = build_native(
+        &scratch,
+        "released",
+        concat!(
+            "import std/channel as Channel\n",
+            "pub fn main() -> Int {\n",
+            "  loop round = 0 {\n",
+            "    case round {\n",
+            "      2 -> break round\n",
+            "      _ -> {\n",
+            "        let channel = Channel.bounded(1)\n",
+            "        Channel.send(channel.sender, round)\n",
+            "        round + 1\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "released", "full");
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert!(
+        execution
+            .telemetry
+            .contains("\"event\":\"channel_released\""),
+        "{}",
+        execution.telemetry
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Guards the release rule against releasing too early: copies of a channel's
+// endpoints that children captured keep it alive after the creator's loop pass
+// reclaims its own, so the children still send and receive on it. An early release
+// would defect the next request that names the channel.
+#[test]
+fn native_children_keep_using_a_channel_whose_creator_dropped_its_endpoints() {
+    let scratch = scratch_directory("native-channel-held-by-children");
+    let executable = build_native(
+        &scratch,
+        "held",
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Completion, Receiver, Receive, Sender}\n",
+            "import std/task as Task\n",
+            "fn produce(out: Sender<Int>, done: Completion<Int>) -> Int {\n",
+            "  loop sent = 0 {\n",
+            "    case sent {\n",
+            "      50 -> {\n",
+            "        Channel.close(done)\n",
+            "        break sent\n",
+            "      }\n",
+            "      _ -> {\n",
+            "        Channel.send(out, sent)\n",
+            "        sent + 1\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "fn consume(input: Receiver<Int>) -> Int {\n",
+            "  loop total = 0 {\n",
+            "    let next = Channel.receive(input)\n",
+            "    case next {\n",
+            "      Receive.Received(value) -> total + value\n",
+            "      Receive.Drained -> break total\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let consumer = loop pass = 0 {\n",
+            "    let channel = Channel.bounded(0)\n",
+            "    let sender = channel.sender\n",
+            "    let completion = channel.completion\n",
+            "    let receiver = channel.receiver\n",
+            "    let producer = Task.start(fn() -> Int { produce(sender, completion) })\n",
+            "    break Task.start(fn() -> Int { consume(receiver) })\n",
+            "  }\n",
+            "  Task.result(consumer)\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "held", "off");
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":1225}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Guards the release rule against releasing too early: one endpoint value is still
+// a reference. The pass that made the channel reclaims its sender and completion
+// but returns its receiver, which then receives the message still queued.
+#[test]
+fn native_a_receiver_that_outlives_its_sender_still_receives_the_queued_message() {
+    let scratch = scratch_directory("native-channel-held-by-receiver");
+    let executable = build_native(
+        &scratch,
+        "receiver-only",
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Receive}\n",
+            "pub fn main() -> Int {\n",
+            "  let receiver = loop pass = 0 {\n",
+            "    let channel = Channel.bounded(1)\n",
+            "    Channel.send(channel.sender, 42)\n",
+            "    break channel.receiver\n",
+            "  }\n",
+            "  let got = Channel.receive(receiver)\n",
+            "  case got {\n",
+            "    Receive.Received(value) -> value\n",
+            "    Receive.Drained -> 0\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "receiver-only", "off");
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // Port requirement (Task.result adoption): a task handle can be read many times, and
 // each read inside a loop pass gets its own copy of the child's result, so a later
 // pass that reclaims one copy leaves the next read intact.

@@ -593,9 +593,33 @@ list names the test that fails when it is broken.
   aborted channel, or one still held at the end) to the runtime's
   `release_channel_value` hook, which frees it. A fiber cancelled while its
   last reply still carries a message frees that message itself. A message
-  still queued in a channel the program no longer reaches stays until the
-  execution ends, because the native runtime does not release channels
-  while it runs.
+  still queued in a channel the program no longer reaches is freed when the
+  runtime releases that channel (next item).
+- **Channel release.** Each live Sender, Receiver, or Completion value is
+  one reference to its channel, wherever it is allocated: in any owner heap,
+  or in a fragment in transit (a queued or parked message, a task's
+  captures, a task's result), because endpoints move between tasks.
+  `runtime.c` keeps a count per channel id. Creating an endpoint value and
+  copying one (`copy_forward`, the only copier) add one; freeing one in
+  `release_allocation` (a collection pass, a heap teardown, or a freed
+  fragment) takes one away. When the count reaches zero, no value can name
+  the channel again. The runtime then issues
+  `CHIMI_REQUEST_CHANNEL_RELEASE` once for that id, and the scheduler frees
+  the queued messages through `release_channel_value`. A count often reaches
+  zero inside a pass or a scheduler release hook, where no request may be
+  issued, so the id waits until the next scheduler request of any task,
+  which `scheduler_request` sends first. If that task is cancelled
+  meanwhile, its own request is not sent and its status stays `UNSET`.
+  The rule is conservative. A message that holds an endpoint of its own
+  channel keeps that channel alive, so the channel is freed when the
+  execution ends. The same holds for endpoints in the main heap's base area,
+  outside every loop. A parked sender or receiver holds its endpoint value,
+  so a release never wakes a parked peer with `ABORTED`. The counts restart
+  with each execution's scheduler (`--benchmark-repeats`).
+- **Unrun children.** A child cancelled before its entry runs never adopts
+  its captures. The scheduler passes its `ChimiTaskContext` to the
+  `release_task_context` hook, which frees the context and the captures
+  fragment, endpoint copies included.
 - **Capability transfer rewrites the child's copy.** `Task.start` copies the
   callable and the captured requirements into one fragment. The exclusive
   capability transfer then updates owners and tokens in that copy, which the
@@ -650,6 +674,10 @@ restores the file. Every mutant was killed. One kill is a timeout.
 | The heap follows the resumed fiber | no restore in `scheduler_request` | `native_task_result_preserves_expected_failure_values` and others |
 | Loops reclaim under the scheduler | skip passes when the scheduler is linked | `native_concurrency_pipeline_runs_in_flat_memory` |
 | Reused small blocks are zeroed | drop the `memset` | `native-heap.c` without AddressSanitizer |
+| A channel is released at its last endpoint reference | release at one remaining reference | `native_a_receiver_that_outlives_its_sender_still_receives_the_queued_message` |
+| An endpoint copy in transit is a reference | `copy_forward` does not count | `native_children_keep_using_a_channel_whose_creator_dropped_its_endpoints` |
+| Dropped channels free their queued messages | never queue the release; frees do not count | `native_dropping_a_channel_frees_its_queued_messages` |
+| An unrun child's captures are freed | no `release_task_context` hook | `native_cancelling_a_child_before_it_runs_frees_its_captures` |
 
 Before this port, at commit `b5c399e`, the pipeline test failed. Its
 unscoped bytes were 176,600 at 50 jobs and 17,046,200 at 5,000 jobs. After

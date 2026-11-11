@@ -39,6 +39,9 @@ def cargo(*tests):
 HEAP = harness(ASAN, "native-heap.c", [])
 HEAP_CACHED = harness(["-O2"], "native-heap.c", [])
 FUZZ = harness(ASAN, "native-list-fuzz.c", ["88172645463325252", "40000"])
+RELEASE = cargo("native_cancelling_a_child", "native_dropping_a_channel", "native_trace_reports_a_released",
+                "native_children_keep", "native_a_receiver_that", "native_cancelled_sends",
+                "native_aborting_a_channel", "native_concurrency_pipeline")
 E2E = cargo("native_concurrency_pipeline_runs", "native_task_result_can_be_read",
             "native_a_task_keeps", "native_a_queued_message", "native_child_defect", "native_channel", "native_task")
 
@@ -89,11 +92,23 @@ MUTANTS = [
      "      for (;;) {\n        ChimiSchedulerRequest request = {\n          .kind = CHIMI_REQUEST_CHANNEL_SEND,",
      "      message->roots[0] = arguments[1];\n      for (;;) {\n        ChimiSchedulerRequest request = {\n          .kind = CHIMI_REQUEST_CHANNEL_SEND,", E2E),
     ("no-heap-switch-on-resume", "the current heap follows the resumed fiber",
-     "  ChimiFiberCommand command = chimi_fiber_request(request, NULL);\n  current_heap = heap;",
-     "  ChimiFiberCommand command = chimi_fiber_request(request, NULL);\n  (void)heap;", E2E),
+     "  if (command != CHIMI_FIBER_CANCEL) command = chimi_fiber_request(request, NULL);\n  current_heap = heap;",
+     "  if (command != CHIMI_FIBER_CANCEL) command = chimi_fiber_request(request, NULL);\n  (void)heap;", E2E),
     ("no-reclamation-under-scheduler", "loops reclaim under the scheduler",
      "      if (allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {",
      "      if (!CHIMI_REQUIRES_SCHEDULER && allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {", E2E),
+    ("release-at-one-reference", "a channel is released at its last endpoint reference",
+     "  if (--channel_endpoints[slot].endpoints != 0) return;",
+     "  if (--channel_endpoints[slot].endpoints > 1) return;", RELEASE),
+    ("endpoint-copy-not-counted", "an endpoint copy in transit is a reference",
+     "    channel_endpoint_retain(((ChimiValue *)duplicate)->as.capability.channel);\n", "    (void)0;\n", RELEASE),
+    ("never-queue-release", "dropped channels free their queued messages",
+     "  released_channels[released_channel_count++] = channel;\n", "\n", RELEASE),
+    ("endpoint-free-not-counted", "dropped channels free their queued messages",
+     "    if (is_channel_endpoint(value)) channel_endpoint_drop(value->as.capability.channel);\n",
+     "    (void)value;\n", RELEASE),
+    ("no-task-context-hook", "an unrun child's captures are freed",
+     "    .release_task_context = release_task_context,\n", "", RELEASE),
     ("small-block-not-zeroed", "reused blocks are zeroed like calloc",
      "      memset(block, 0, rounded);\n", "", HEAP_CACHED),
 ]

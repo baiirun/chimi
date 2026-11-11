@@ -423,8 +423,106 @@ static void allocation_kind(void *value, AllocationKind kind) {
   header->kind = kind;
 }
 
+/* Channel release (docs/architecture/supervised-process-runtime.md, "Channel
+   release"). Each live Sender, Receiver, or Completion value counts as one
+   reference to its channel, in whichever heap or fragment it is allocated, so a
+   copy in transit (a message, a task's captures or result) counts while the
+   scheduler holds it. channel_capability_value creates endpoint values,
+   copy_forward is the only thing that copies them, and release_allocation the only
+   thing that frees them; those three keep the counts. At zero no value can name
+   the channel again, so its id waits in `released_channels` for the next
+   scheduler request of any task (flush_channel_releases). A count can reach zero
+   inside a collection or a scheduler release hook, where no request may be issued.
+   The table is an open-addressing map keyed by channel id; ids are never 0. */
+typedef struct { uint64_t channel; size_t endpoints; } ChannelEndpoints;
+static ChannelEndpoints *channel_endpoints;
+static size_t channel_endpoint_capacity;
+static size_t channel_endpoint_count;
+static uint64_t *released_channels;
+static size_t released_channel_count;
+static size_t released_channel_capacity;
+
+static bool is_channel_endpoint(const ChimiValue *value) {
+  return value->kind == VALUE_CHANNEL_SENDER || value->kind == VALUE_CHANNEL_RECEIVER ||
+         value->kind == VALUE_CHANNEL_COMPLETION;
+}
+
+static size_t channel_slot(uint64_t channel, size_t capacity) {
+  return (size_t)((channel * UINT64_C(0x9E3779B97F4A7C15)) >> 32) & (capacity - 1);
+}
+
+static void channel_endpoints_grow(void) {
+  size_t capacity = channel_endpoint_capacity ? channel_endpoint_capacity * 2 : 64;
+  ChannelEndpoints *table = calloc(capacity, sizeof(*table));
+  if (!table) exhausted_memory();
+  for (size_t index = 0; index < channel_endpoint_capacity; ++index) {
+    if (!channel_endpoints[index].channel) continue;
+    size_t slot = channel_slot(channel_endpoints[index].channel, capacity);
+    while (table[slot].channel) slot = (slot + 1) & (capacity - 1);
+    table[slot] = channel_endpoints[index];
+  }
+  free(channel_endpoints);
+  channel_endpoints = table;
+  channel_endpoint_capacity = capacity;
+}
+
+static void channel_endpoint_retain(uint64_t channel) {
+  if (2 * (channel_endpoint_count + 1) > channel_endpoint_capacity) channel_endpoints_grow();
+  size_t mask = channel_endpoint_capacity - 1;
+  size_t slot = channel_slot(channel, channel_endpoint_capacity);
+  while (channel_endpoints[slot].channel && channel_endpoints[slot].channel != channel)
+    slot = (slot + 1) & mask;
+  if (!channel_endpoints[slot].channel) {
+    channel_endpoints[slot].channel = channel;
+    ++channel_endpoint_count;
+  }
+  ++channel_endpoints[slot].endpoints;
+}
+
+static void channel_endpoint_drop(uint64_t channel) {
+  size_t mask = channel_endpoint_capacity - 1;
+  size_t slot = channel_slot(channel, channel_endpoint_capacity);
+  while (channel_endpoints[slot].channel != channel) {
+    /* An endpoint of an earlier execution's scheduler (benchmark repeats). */
+    if (!channel_endpoints[slot].channel) return;
+    slot = (slot + 1) & mask;
+  }
+  if (--channel_endpoints[slot].endpoints != 0) return;
+  /* Backward-shift deletion keeps every probe sequence unbroken. */
+  size_t hole = slot;
+  for (size_t next = (hole + 1) & mask; channel_endpoints[next].channel;
+       next = (next + 1) & mask) {
+    size_t home = channel_slot(channel_endpoints[next].channel, channel_endpoint_capacity);
+    if (((next - home) & mask) >= ((next - hole) & mask)) {
+      channel_endpoints[hole] = channel_endpoints[next];
+      hole = next;
+    }
+  }
+  channel_endpoints[hole] = (ChannelEndpoints){0};
+  --channel_endpoint_count;
+  if (released_channel_count == released_channel_capacity) {
+    size_t capacity = released_channel_capacity ? released_channel_capacity * 2 : 16;
+    uint64_t *released = realloc(released_channels, capacity * sizeof(*released));
+    if (!released) exhausted_memory();
+    released_channels = released;
+    released_channel_capacity = capacity;
+  }
+  released_channels[released_channel_count++] = channel;
+}
+
+/* Each execution starts a new scheduler, whose channel ids start over. */
+static void channel_endpoints_reset(void) {
+  if (channel_endpoints) memset(channel_endpoints, 0, channel_endpoint_capacity * sizeof(*channel_endpoints));
+  channel_endpoint_count = 0;
+  released_channel_count = 0;
+}
+
 /* Frees one allocation that its area has already unlinked. */
 static void release_allocation(AllocationHeader *header) {
+  if (channel_endpoint_count && header->kind == ALLOCATION_VALUE) {
+    ChimiValue *value = (ChimiValue *)(header + 1);
+    if (is_channel_endpoint(value)) channel_endpoint_drop(value->as.capability.channel);
+  }
   if (header->area->role != AREA_STATIC) {
     --heap_totals.live_allocations;
     heap_totals.footprint_bytes -= sizeof(*header) + header->bytes;
@@ -1098,6 +1196,8 @@ static void *copy_forward(FragmentCopy *copy, void *pointer, AllocationKind kind
   allocation_target = previous;
   allocation_kind(duplicate, kind);
   memcpy(duplicate, pointer, header->bytes);
+  if (kind == ALLOCATION_VALUE && is_channel_endpoint(duplicate))
+    channel_endpoint_retain(((ChimiValue *)duplicate)->as.capability.channel);
   copy_table_insert(copy, pointer, duplicate);
   pointer_stack_push(&copy_pending, duplicate);
   return duplicate;
@@ -1623,6 +1723,7 @@ static ChimiValue *channel_capability_value(ValueKind kind, uint64_t channel,
                                             uint64_t owner, uint64_t token) {
   ChimiValue *value = new_value(kind);
   value->as.capability = (RuntimeCapability){channel, owner, token};
+  channel_endpoint_retain(channel);
   return value;
 }
 static ChimiValue *channel_bundle_value(uint64_t channel, uint64_t owner, uint64_t token) {
@@ -1642,11 +1743,28 @@ static ChimiValue *channel_bundle_value(uint64_t channel, uint64_t owner, uint64
   return value;
 }
 
+/* Issues CHIMI_REQUEST_CHANNEL_RELEASE once for each channel whose last endpoint
+   value was freed. The scheduler serves a request as soon as the task parks, so a
+   release is done even when the task resumes with CHIMI_FIBER_CANCEL. */
+static ChimiFiberCommand flush_channel_releases(void) {
+  while (released_channel_count) {
+    ChimiSchedulerRequest request = {
+      .kind = CHIMI_REQUEST_CHANNEL_RELEASE,
+      .channel = released_channels[--released_channel_count],
+    };
+    if (chimi_fiber_request(&request, NULL) == CHIMI_FIBER_CANCEL) return CHIMI_FIBER_CANCEL;
+  }
+  return CHIMI_FIBER_RESUME;
+}
+
 /* Every scheduler request goes through here. A fiber resumes only by returning from
-   its request, so restoring the caller's heap here switches heaps on every resume. */
+   its request, so restoring the caller's heap here switches heaps on every resume.
+   Pending channel releases go first; if the task is cancelled meanwhile, `request`
+   is not issued and keeps status CHIMI_RESPONSE_UNSET. */
 static ChimiFiberCommand scheduler_request(void *request) {
   RuntimeHeap *heap = current_heap;
-  ChimiFiberCommand command = chimi_fiber_request(request, NULL);
+  ChimiFiberCommand command = flush_channel_releases();
+  if (command != CHIMI_FIBER_CANCEL) command = chimi_fiber_request(request, NULL);
   current_heap = heap;
   return command;
 }
@@ -2696,6 +2814,14 @@ static void release_task_word(void *context, int64_t word) {
 static void release_channel_word(void *context, int64_t word) {
   (void)context;
   fragment_free((RuntimeFragment *)(intptr_t)word);
+}
+
+/* A child the scheduler ends before its entry runs never adopts its captures. */
+static void release_task_context(void *context, void *raw) {
+  (void)context;
+  ChimiTaskContext *task = raw;
+  fragment_free(task->captures);
+  free(task);
 }
 
 static ChimiControl *map_values_node(ChimiRuntime *runtime, MapNode *node,
@@ -4012,6 +4138,7 @@ static const char *scheduler_event_name(const ChimiSchedulerTraceEvent *event) {
     "channel_send_cancelled", "channel_receive_delivered", "channel_receive_parked",
     "channel_receive_cancelled", "channel_closed", "channel_drained",
     "channel_aborted", "channel_receiver_transferred", "channel_completion_transferred",
+    "channel_released",
   };
   if (event->family == CHIMI_SCHEDULER_TRACE_TASK &&
       event->kind > 0 && event->kind <= sizeof(task_names) / sizeof(*task_names))
@@ -4066,7 +4193,9 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .release_task_value = release_task_word,
     .release_channel_value = release_channel_word,
     .release_context = runtime,
+    .release_task_context = release_task_context,
   };
+  channel_endpoints_reset();
   ChimiSchedulerOutcome outcome = chimi_scheduler_execute_with_config(&config);
   current_heap = &main_heap;
   /* The outcome's word is ours: copy a child's result fragment, then free it. */
