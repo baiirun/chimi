@@ -1,0 +1,22 @@
+{
+  "grammars": [
+    {
+      "name": "chimi",
+      "camelcase": "Chimi",
+      "scope": "source.chimi",
+      "path": ".",
+      "file-types": [
+        "chimi"
+      ],
+      "highlights": "../zed-chimi/languages/chimi/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.0.0",
+    "license": "UNLICENSED",
+    "description": "Chimi grammar for editor highlighting",
+    "links": {
+      "repository": "https://github.com/baiirun/chimi"
+    }
+  }
+}
