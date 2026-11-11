@@ -281,8 +281,16 @@ orders
 |> Text.join(", ")
 ```
 
-Lowering rewrites each pipeline to the call it denotes, so the call's argument
-evaluation order, arity checks, and diagnostics apply unchanged.
+Lowering rewrites each pipeline, in both forms, to the call it denotes, so the
+call's evaluation order, arity checks, and diagnostics apply unchanged: the
+callee expression evaluates first, then the left operand, then the remaining
+arguments from left to right. `x |> (make(c))` therefore evaluates `make(c)`
+before `x`.
+
+The right side of `|>` is parsed at the tighter precedence of comparison and
+arithmetic, so `x |> f(a) + 1` means `x |> (f(a) + 1)`, a unary application
+that is usually a type error. Parenthesize the pipeline instead:
+`(x |> f(a)) + 1`.
 
 ### Case expressions
 
