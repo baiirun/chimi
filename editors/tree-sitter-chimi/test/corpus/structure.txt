@@ -1,0 +1,124 @@
+==================
+Record and block braces
+==================
+
+fn main() -> Int {
+  let point = { x: 1, y: 2 }
+  { point.x }
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameters)
+    return_type: (return_type (named_type name: (type_identifier)))
+    body: (block
+      (let_binding
+        name: (identifier)
+        value: (record_expression
+          (record_field name: (identifier) value: (integer))
+          (record_field name: (identifier) value: (integer))))
+      (block
+        (member_expression object: (identifier) member: (identifier))))))
+
+==================
+Requirement record before the body
+==================
+
+fn work(value: Int) -> Int needs Clock + {
+  transformer: Transform,
+} {
+  value
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter name: (identifier) type: (named_type name: (type_identifier))))
+    return_type: (return_type (named_type name: (type_identifier)))
+    (requirement_clause
+      (type_identifier)
+      (requirement_record
+        (field name: (identifier) type: (named_type name: (type_identifier)))))
+    body: (block (identifier))))
+
+==================
+Case arms after expression bodies
+==================
+
+case first, second {
+  Receive.Received(left), Receive.Received(right) -> left + right
+  _, _ if ready -> 0
+}
+
+---
+
+(source_file
+  (case_expression
+    subject: (identifier)
+    subject: (identifier)
+    (case_arm
+      pattern: (constructor_pattern (identifier) (identifier) (constructor_pattern (identifier)))
+      pattern: (constructor_pattern (identifier) (identifier) (constructor_pattern (identifier)))
+      body: (binary_expression left: (identifier) right: (identifier)))
+    (case_arm
+      pattern: (constructor_pattern (identifier))
+      pattern: (constructor_pattern (identifier))
+      guard: (identifier)
+      body: (integer))))
+
+==================
+Operator precedence with pipelines and using
+==================
+
+value + 1 * 2 |> Retry.with(policy) using { clock: clock }
+
+---
+
+(source_file
+  (using_expression
+    operation: (pipeline_expression
+      value: (binary_expression
+        left: (identifier)
+        right: (binary_expression left: (integer) right: (integer)))
+      transform: (call_expression
+        function: (member_expression object: (identifier) member: (identifier))
+        arguments: (arguments (argument value: (identifier)))))
+    providers: (record_expression
+      (record_field name: (identifier) value: (identifier)))))
+
+==================
+Loop with break and generic function types
+==================
+
+fn apply<A>(run: fn(A) -> A errors Failure needs Clock) -> A {
+  loop count = 0 {
+    break count
+  }
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    (generic_parameters name: (identifier))
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (function_type
+          (named_type name: (type_identifier))
+          return_type: (named_type name: (type_identifier))
+          errors: (named_type name: (type_identifier))
+          (requirement_clause (type_identifier)))))
+    return_type: (return_type (named_type name: (type_identifier)))
+    body: (block
+      (loop_expression
+        state: (identifier)
+        initial: (integer)
+        body: (block (break_expression value: (identifier)))))))

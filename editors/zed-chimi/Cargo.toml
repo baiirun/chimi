@@ -1,0 +1,14 @@
+[package]
+name = "zed-chimi"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+# Zed builds the extension on its own, outside the Chimi workspace.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "=0.7.0"
