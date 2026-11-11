@@ -5,7 +5,8 @@
 //! prototype's kernel decisions, the prototype test name.
 
 use super::process_abi::{
-    ADDRESS_DIRECT, ADDRESS_NAMED, CLOCK_VIRTUAL, MEMBER_PROCESS, MEMBER_SUPERVISOR, RESTART_ON_DEFECT,
+    ADDRESS_DIRECT, ADDRESS_NAMED, CLOCK_VIRTUAL, MEMBER_PROCESS, MEMBER_SUPERVISOR, RESTART_NEVER,
+    RESTART_ON_DEFECT,
     chimi_scheduler_run,
 };
 use super::*;
@@ -45,6 +46,8 @@ enum Msg {
     StartSibling(SupervisorId),
     Sleep(Duration),
     SpawnSleeper,
+    /// Starts a root supervisor whose member lingers in cleanup.
+    StartLingeringRoot,
     Overflow,
 }
 
@@ -332,6 +335,10 @@ unsafe extern "C" fn worker(context: *mut c_void) -> ChimiFiberResult {
                 request.entry = Some(sleeper_task);
                 scheduler_call(&mut request);
                 assert_eq!(request.status, RESPONSE_OK);
+            }
+            Msg::StartLingeringRoot => {
+                let status = start_lingering_root();
+                log(|log| log.outcomes.push(status));
             }
             Msg::Overflow => {
                 std::hint::black_box(overflow(0));
@@ -622,6 +629,19 @@ fn render(time: i64, kind: ProcessEventKind) -> String {
         ProcessEventKind::Stopped { supervisor } => {
             format!("supervisor_stopped supervisor=S{}", supervisor.get())
         }
+        ProcessEventKind::SupervisorStarted {
+            supervisor,
+            parent,
+            membership,
+        } => match (parent, membership) {
+            (Some(parent), Some(membership)) => format!(
+                "supervisor_started supervisor=S{} parent=S{} membership=M{}",
+                supervisor.get(),
+                parent.get(),
+                membership.get()
+            ),
+            _ => format!("supervisor_started supervisor=S{} parent=root", supervisor.get()),
+        },
         ProcessEventKind::Sent {
             address,
             incarnation,
@@ -687,6 +707,12 @@ fn render_trace(events: &[SchedulerTraceEvent]) -> Vec<String> {
                 },
                 7 => ProcessEventKind::Removed { membership },
                 8 => ProcessEventKind::Stopped { supervisor },
+                10 => ProcessEventKind::SupervisorStarted {
+                    supervisor,
+                    parent: (event.parent_supervisor != 0)
+                        .then(|| SupervisorId::from_raw(event.parent_supervisor)),
+                    membership: (event.membership != 0).then_some(membership),
+                },
                 9 => ProcessEventKind::Sent {
                     address: if event.address_kind == ADDRESS_NAMED {
                         Address::Named(name(event.name))
@@ -978,7 +1004,8 @@ fn sv01_declared_members_start_in_list_order() {
     assert_eq!(
         lab.transcript(),
         lines(
-            "@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.counter
+            "@0s supervisor_started supervisor=S1 parent=root
+             @0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.counter
              @0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.peer
              @0s process_started supervisor=S1 membership=M3 incarnation=I3 name=name3"
         )
@@ -1151,7 +1178,9 @@ fn sv09_a_nested_supervisor_starts_in_member_order_and_stops_with_its_subtree() 
     assert_eq!(
         lab.transcript(),
         lines(
-            "@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.counter
+            "@0s supervisor_started supervisor=S1 parent=root
+             @0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.counter
+             @0s supervisor_started supervisor=S2 parent=S1 membership=M2
              @0s process_started supervisor=S2 membership=M3 incarnation=I2 name=app/main.peer
              @0s process_started supervisor=S2 membership=M4 incarnation=I3 name=name3
              @0s process_started supervisor=S1 membership=M5 incarnation=I4 name=name4
@@ -1344,7 +1373,7 @@ fn ra06_a_replacement_that_fails_to_start_is_still_charged() {
     lab.scheduler.kernel.failing_spawns = 1;
     lab.deliver(named(COUNTER), Msg::Crash);
     lab.settle();
-    let after_first: Vec<_> = lab.transcript().into_iter().skip(2).collect();
+    let after_first: Vec<_> = lab.transcript().into_iter().skip(3).collect();
     assert_eq!(
         after_first,
         lines(
@@ -1605,7 +1634,8 @@ fn rr02_removal_before_the_replacement_runs_still_consumes_restart_budget() {
     assert_eq!(
         lab.transcript(),
         lines(
-            "@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.p
+            "@0s supervisor_started supervisor=S1 parent=root
+             @0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.p
              @0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.q
              @0s process_send kind=named name=app/main.p incarnation=I1 outcome=accepted
              @0s process_send kind=named name=app/main.q incarnation=I2 outcome=accepted
@@ -1639,7 +1669,7 @@ fn rr03_a_defect_while_draining_for_removal_is_not_restarted() {
     lab.deliver(named(COUNTER), Msg::Crash);
     lab.scheduler.remove_process(root, managed).unwrap();
     assert_eq!(
-        lab.lifecycle()[1..],
+        lab.lifecycle()[2..],
         [
             ProcessEventKind::Terminated {
                 membership: managed,
@@ -1713,7 +1743,7 @@ fn rr06_a_removal_during_stop_terminates_the_sibling_once_and_stop_skips_it() {
     lab.deliver(newest_address, Msg::Remove(root, older));
     assert_eq!(lab.scheduler.stop_supervisor(root), Ok(Progress::Done));
     assert_eq!(
-        lab.transcript()[3..],
+        lab.transcript()[4..],
         lines(
             "@0s process_terminated membership=M1 incarnation=I1 cause=cancelled
              @0s membership_removed membership=M1
@@ -2266,6 +2296,7 @@ fn run_c(
 }
 
 const ES01: &str = "
+@0s supervisor_started supervisor=S1 parent=root
 @0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.counter
 @0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.peer
 @0s process_send kind=named name=app/main.counter incarnation=I1 outcome=accepted
@@ -2323,7 +2354,8 @@ fn sd04_the_c_entry_forces_cleanup_that_parks_again_and_never_resumes_it() {
     assert_eq!(
         render_trace(&events),
         lines(
-            "@0s process_started supervisor=S1 membership=M1 incarnation=I1
+            "@0s supervisor_started supervisor=S1 parent=root
+             @0s process_started supervisor=S1 membership=M1 incarnation=I1
              @5.001s process_terminated membership=M1 incarnation=I1 cause=forced
              @5.001s supervisor_stopped supervisor=S1"
         )
@@ -2411,6 +2443,14 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiSchedulerConfig, deadlock_context),
         size_of::<ChimiDeadlockWaiter>(),
         offset_of!(ChimiDeadlockWaiter, request_kind),
+        REQUEST_SUPERVISOR_START_SUPERVISOR as usize,
+        REQUEST_SUPERVISOR_REMOVE_SUPERVISOR as usize,
+        ProcessEventKind::SupervisorStarted {
+            supervisor: SupervisorId::from_raw(1),
+            parent: None,
+            membership: None,
+        }
+        .trace_kind() as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
     assert_eq!(crate::chimi_fiber_abi_version(), 4);
@@ -2908,4 +2948,514 @@ fn a_root_supervisor_stops_when_the_task_that_started_it_ends() {
         .expect("main terminal")
         .sequence;
     assert!(stopped < main_terminal, "the supervisor stops before its owner is terminal");
+}
+
+// ----- Dynamic nested supervisors (SV10) ---------------------------------
+
+fn nested_of(lab: &Lab, managed: MembershipId) -> SupervisorId {
+    lab.scheduler.nested_supervisor(managed).expect("a nested supervisor")
+}
+
+#[test]
+fn sv10_a_dynamic_nested_supervisor_takes_a_parent_slot_and_removal_stops_its_subtree() {
+    let mut lab = Lab::new();
+    let root = lab
+        .scheduler
+        .start_supervisor(policy_with(
+            vec![counter_member(COUNTER)],
+            2,
+            0,
+            Duration::from_secs(30),
+        ))
+        .unwrap();
+    let nested = policy(vec![counter_member(PEER), counter_member(THIRD)], 0);
+    let managed = lab
+        .scheduler
+        .start_nested_supervisor(root, nested, Restart::Never)
+        .unwrap();
+    assert_eq!(
+        lab.scheduler.start_process(root, spec(None, 8), Restart::Never),
+        Err(StartError::CapacityReached),
+        "the nested supervisor holds one of the parent's two slots"
+    );
+    assert_eq!(
+        lab.scheduler.remove_process(root, managed),
+        Err(ProcessError::WrongMemberKind(managed))
+    );
+    lab.settle();
+    lab.deliver(named(PEER), Msg::Add(1));
+    assert_eq!(lab.scheduler.remove_supervisor(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.transcript(),
+        lines(
+            "@0s supervisor_started supervisor=S1 parent=root
+             @0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.counter
+             @0s supervisor_started supervisor=S2 parent=S1 membership=M2
+             @0s process_started supervisor=S2 membership=M3 incarnation=I2 name=app/main.peer
+             @0s process_started supervisor=S2 membership=M4 incarnation=I3 name=name3
+             @0s admission_rejected supervisor=S1 reason=capacity_reached
+             @0s process_send kind=named name=app/main.peer incarnation=I2 outcome=accepted
+             @0s process_terminated membership=M4 incarnation=I3 cause=cancelled
+             @0s process_terminated membership=M3 incarnation=I2 cause=cancelled
+             @0s supervisor_stopped supervisor=S2
+             @0s membership_removed membership=M2"
+        )
+    );
+    assert!(lab.send(named(PEER), Msg::Add(1)).is_err(), "the subtree's names are free");
+    assert_eq!(
+        lab.scheduler.supervisor_state(SupervisorId::from_raw(2)),
+        Some(SupervisorState::Stopped)
+    );
+    lab.scheduler
+        .start_process(root, spec(None, 8), Restart::Never)
+        .expect("removal released the slot");
+    assert_eq!(
+        lab.scheduler.remove_supervisor(root, managed),
+        Err(ProcessError::UnknownMembership(managed)),
+        "removal consumed the handle"
+    );
+}
+
+/// Starts a root and a dynamic nested supervisor whose one member lingers in
+/// cleanup, then removes it through the request ABI. Returns the nested
+/// supervisor's identity; logs each status and the instant removal returned.
+unsafe extern "C" fn sv10_abi_main(_context: *mut c_void) -> ChimiFiberResult {
+    let lingering = ChimiSupervisorMember {
+        kind: MEMBER_PROCESS,
+        restart: RESTART_ON_DEFECT,
+        process: ChimiProcessSpec {
+            entry: Some(worker),
+            context: behavior_context(&STUBBORN),
+            mailbox_capacity: 4,
+            shutdown_within: 5_000_000_000,
+            name: 0,
+        },
+        supervisor: ptr::null(),
+    };
+    let nested = ChimiSupervisorPolicy {
+        members: &lingering,
+        member_count: 1,
+        capacity: 2,
+        restart_limit: 0,
+        restart_within: 1_000_000_000,
+    };
+    let root_policy = ChimiSupervisorPolicy {
+        members: ptr::null(),
+        member_count: 0,
+        capacity: 1,
+        restart_limit: 0,
+        restart_within: 1_000_000_000,
+    };
+    let mut start = ChimiProcessRequest::new(REQUEST_SUPERVISOR_START);
+    start.policy = &root_policy;
+    let root = supervisor_call(start).expect("not cancelled").supervisor;
+    let start_nested = || {
+        let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_START_SUPERVISOR);
+        request.supervisor = root;
+        request.restart = RESTART_NEVER;
+        request.policy = &nested;
+        supervisor_call(request).expect("not cancelled")
+    };
+    let started = start_nested();
+    let rejected = start_nested();
+    // Let the nested member run and park in receive.
+    sleep_until(now() + 1_000_000);
+    let remove = |kind: u32| {
+        let mut request = ChimiProcessRequest::new(kind);
+        request.supervisor = root;
+        request.membership = started.membership;
+        supervisor_call(request).expect("not cancelled").status
+    };
+    let wrong_kind = remove(REQUEST_SUPERVISOR_REMOVE_PROCESS);
+    let removed = remove(REQUEST_SUPERVISOR_REMOVE_SUPERVISOR);
+    let returned_at = now();
+    log(|log| {
+        log.outcomes
+            .extend([started.status, rejected.status, wrong_kind, removed]);
+        log.woke.push((started.membership, returned_at));
+    });
+    ended(started.supervisor as i64)
+}
+
+#[test]
+fn sv10_the_request_abi_starts_a_nested_supervisor_and_removal_parks_until_its_subtree_stops() {
+    let mut lab = Lab::new();
+    let main = lab.scheduler.start_root(sv10_abi_main).unwrap();
+    let run = lab.scheduler.run_root(main, DEADLOCK_DEFECT_CODE);
+    assert_eq!((run.outcome.state, run.outcome.value), (ChimiFiberState::Succeeded as u32, 2));
+    assert_eq!(
+        log(|log| log.outcomes.clone()),
+        [RESPONSE_OK, RESPONSE_CAPACITY_REACHED, RESPONSE_ERROR, RESPONSE_OK]
+    );
+    assert_eq!(log(|log| log.woke.clone()), [(1, 5_001_000_000)], "removal waited for the deadline");
+    assert_eq!(
+        lab.transcript(),
+        lines(
+            "@0s supervisor_started supervisor=S1 parent=root
+             @0s supervisor_started supervisor=S2 parent=S1 membership=M1
+             @0s process_started supervisor=S2 membership=M2 incarnation=I1
+             @0s admission_rejected supervisor=S1 reason=capacity_reached
+             @5.001s process_terminated membership=M2 incarnation=I1 cause=forced
+             @5.001s supervisor_stopped supervisor=S2
+             @5.001s membership_removed membership=M1
+             @5.001s supervisor_stopped supervisor=S1"
+        )
+    );
+}
+
+#[test]
+fn sv10_stopping_a_nested_supervisor_ends_its_membership_without_a_restart() {
+    let mut lab = Lab::new();
+    let root = lab
+        .scheduler
+        .start_supervisor(policy_with(vec![], 1, 2, Duration::from_secs(30)))
+        .unwrap();
+    let managed = lab
+        .scheduler
+        .start_nested_supervisor(root, policy(vec![counter_member(PEER)], 0), Restart::OnDefect)
+        .unwrap();
+    let nested = nested_of(&lab, managed);
+    lab.settle();
+    assert_eq!(lab.scheduler.stop_supervisor(nested), Ok(Progress::Done));
+    assert!(lab.restarts().is_empty(), "a requested stop is not a defect");
+    assert_eq!(lab.scheduler.supervisor_state(nested), Some(SupervisorState::Stopped));
+    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Running));
+    assert_eq!(
+        lab.lifecycle()[lab.lifecycle().len() - 2..],
+        [
+            ProcessEventKind::Terminated {
+                membership: MembershipId::from_raw(2),
+                incarnation: IncarnationId::from_raw(1),
+                cause: TerminalCause::Cancelled,
+            },
+            ProcessEventKind::Stopped { supervisor: nested },
+        ]
+    );
+    lab.scheduler
+        .start_process(root, spec(None, 8), Restart::Never)
+        .expect("the stopped nested supervisor freed its slot");
+    assert_eq!(lab.scheduler.remove_supervisor(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.lifecycle().last(),
+        Some(&ProcessEventKind::Removed { membership: managed }),
+        "a handle whose supervisor stopped on its own is still removed visibly"
+    );
+}
+
+#[test]
+fn sv10_a_parent_stop_waits_for_a_nested_stop_already_in_flight_and_stops_it_once() {
+    let mut lab = Lab::new();
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![counter_member(COUNTER)], 0))
+        .unwrap();
+    let lingering = Member::Process(spec_with(&STUBBORN, None, 8), Restart::Never);
+    let managed = lab
+        .scheduler
+        .start_nested_supervisor(root, policy(vec![lingering], 0), Restart::Never)
+        .unwrap();
+    let nested = nested_of(&lab, managed);
+    lab.settle();
+    assert_eq!(lab.scheduler.stop_supervisor(nested), Ok(Progress::Pending));
+    assert_eq!(lab.scheduler.stop_supervisor(root), Ok(Progress::Pending));
+    lab.settle();
+    assert_eq!(
+        lab.transcript()[4..],
+        lines(
+            "@5s process_terminated membership=M3 incarnation=I2 cause=forced
+             @5s supervisor_stopped supervisor=S2
+             @5s process_terminated membership=M1 incarnation=I1 cause=cancelled
+             @5s supervisor_stopped supervisor=S1"
+        )
+    );
+}
+
+#[test]
+fn sv10_a_dynamic_nested_supervisor_escalates_to_its_parent_which_replaces_it() {
+    let mut lab = Lab::new();
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![counter_member(PEER)], 1))
+        .unwrap();
+    let managed = lab
+        .scheduler
+        .start_nested_supervisor(root, policy(vec![counter_member(COUNTER)], 0), Restart::OnDefect)
+        .unwrap();
+    let first = nested_of(&lab, managed);
+    lab.deliver(named(PEER), Msg::Add(4));
+    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.settle();
+    lab.deliver(named(COUNTER), Msg::Add(2));
+    lab.settle();
+    let replacement = nested_of(&lab, managed);
+    assert_ne!(replacement, first, "the handle follows the replacement");
+    let lifecycle = lab.lifecycle();
+    assert!(lifecycle.contains(&ProcessEventKind::Escalated {
+        supervisor: first,
+        parent: Some(root)
+    }));
+    assert!(lifecycle.contains(&ProcessEventKind::SupervisorStarted {
+        supervisor: replacement,
+        parent: Some(root),
+        membership: Some(managed),
+    }));
+    assert_eq!(lab.restarts(), [(managed, 1)], "one parent-level restart");
+    assert_eq!(lab.scheduler.supervisor_state(first), Some(SupervisorState::Stopped));
+    let (_, rebuilt) = *lab.started().last().unwrap();
+    assert_eq!(total(rebuilt), 2);
+    assert_eq!(total(lab.started()[0].1), 4, "the parent's other member kept its state");
+    assert_eq!(lab.scheduler.remove_supervisor(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.lifecycle()[lab.lifecycle().len() - 3..],
+        [
+            ProcessEventKind::Terminated {
+                membership: lab.started().last().unwrap().0,
+                incarnation: rebuilt,
+                cause: TerminalCause::Cancelled,
+            },
+            ProcessEventKind::Stopped { supervisor: replacement },
+            ProcessEventKind::Removed { membership: managed },
+        ]
+    );
+
+    // With no parent-level budget the escalation continues to the root.
+    let mut lab = Lab::new();
+    let root = lab.scheduler.start_supervisor(policy(vec![], 0)).unwrap();
+    let managed = lab
+        .scheduler
+        .start_nested_supervisor(root, policy(vec![counter_member(COUNTER)], 0), Restart::OnDefect)
+        .unwrap();
+    let nested = nested_of(&lab, managed);
+    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.settle();
+    assert!(lab.scheduler.program_terminated());
+    let escalations: Vec<_> = lab
+        .lifecycle()
+        .into_iter()
+        .filter_map(|kind| match kind {
+            ProcessEventKind::Escalated { supervisor, parent } => Some((supervisor, parent)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(escalations, [(nested, Some(root)), (root, None)]);
+}
+
+/// Waits on the supervisor named by its context and returns the status.
+unsafe extern "C" fn waits_on_supervisor(context: *mut c_void) -> ChimiFiberResult {
+    let mut wait = ChimiProcessRequest::new(REQUEST_SUPERVISOR_WAIT);
+    wait.supervisor = context as usize as u64;
+    match supervisor_call(wait) {
+        Some(reply) => ended(i64::from(reply.status)),
+        None => ended(-1),
+    }
+}
+
+#[test]
+fn sv10_a_wait_on_a_nested_supervisor_returns_when_its_parent_stops_it() {
+    let mut lab = Lab::new();
+    let root = lab.scheduler.start_supervisor(policy(vec![], 0)).unwrap();
+    let managed = lab
+        .scheduler
+        .start_nested_supervisor(root, policy(vec![counter_member(PEER)], 0), Restart::Never)
+        .unwrap();
+    let nested = nested_of(&lab, managed);
+    let waiter = lab
+        .scheduler
+        .start_root_with_context(waits_on_supervisor, nested.get() as usize as *mut c_void)
+        .unwrap();
+    lab.scheduler.drive();
+    assert_eq!(lab.scheduler.result(None, waiter), Ok(TaskResult::Pending));
+    assert_eq!(lab.scheduler.stop_supervisor(root), Ok(Progress::Done));
+    lab.scheduler.drive();
+    assert_eq!(
+        lab.scheduler.result(None, waiter),
+        Ok(TaskResult::Ready(TaskOutcome::Succeeded(i64::from(RESPONSE_OK))))
+    );
+}
+
+// ----- Structured stop: an owner drains until its supervisors stop -------
+
+/// Starts a root supervisor whose one member lingers in cleanup until its
+/// 5 s deadline; returns the request status.
+fn start_lingering_root() -> u32 {
+    let lingering = ChimiSupervisorMember {
+        kind: MEMBER_PROCESS,
+        restart: RESTART_ON_DEFECT,
+        process: ChimiProcessSpec {
+            entry: Some(worker),
+            context: behavior_context(&STUBBORN),
+            mailbox_capacity: 4,
+            shutdown_within: 5_000_000_000,
+            name: 0,
+        },
+        supervisor: ptr::null(),
+    };
+    let policy = ChimiSupervisorPolicy {
+        members: &lingering,
+        member_count: 1,
+        capacity: 1,
+        restart_limit: 0,
+        restart_within: 1_000_000_000,
+    };
+    let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_START);
+    request.policy = &policy;
+    supervisor_call(request).expect("not cancelled").status
+}
+
+/// Starts a lingering root, lets its member park, then returns.
+unsafe extern "C" fn starts_a_lingering_root_and_returns(_context: *mut c_void) -> ChimiFiberResult {
+    assert_eq!(start_lingering_root(), RESPONSE_OK);
+    sleep_until(now() + 1_000_000);
+    ended(0)
+}
+
+/// Starts a child that owns a lingering root, outlives the child's body by
+/// a millisecond without awaiting it, then returns.
+unsafe extern "C" fn outlives_a_child_that_owns_a_lingering_root(
+    _context: *mut c_void,
+) -> ChimiFiberResult {
+    let mut request = blank_request(REQUEST_TASK_START);
+    request.entry = Some(starts_a_lingering_root_and_returns);
+    scheduler_call(&mut request);
+    assert_eq!(request.status, RESPONSE_OK);
+    sleep_until(now() + 2_000_000);
+    ended(0)
+}
+
+/// Process lifecycle events and the named tasks' terminal events in one
+/// sequence order.
+fn timeline(lab: &Lab, tasks: &[(TaskId, &str)]) -> Vec<String> {
+    let mut lines: Vec<(u64, String)> = lab
+        .scheduler
+        .process_events()
+        .iter()
+        .filter(|event| !matches!(event.kind, ProcessEventKind::Sent { .. }))
+        .map(|event| (event.sequence, render(event.time.as_nanos(), event.kind)))
+        .collect();
+    lines.extend(lab.scheduler.events().iter().filter_map(|event| {
+        let (_, label) = tasks.iter().find(|(task, _)| *task == event.task)?;
+        (event.kind == TaskEventKind::Terminal).then(|| (event.sequence, format!("{label} terminal")))
+    }));
+    lines.sort();
+    lines.into_iter().map(|(_, line)| line).collect()
+}
+
+fn structured_stop_run() -> (Vec<String>, Instant) {
+    let mut lab = Lab::new();
+    let main = lab
+        .scheduler
+        .start_root(starts_a_lingering_root_and_returns)
+        .unwrap();
+    let run = lab.scheduler.run_root(main, DEADLOCK_DEFECT_CODE);
+    assert_eq!((run.outcome.state, run.outcome.value), (ChimiFiberState::Succeeded as u32, 0));
+    (timeline(&lab, &[(main, "main")]), lab.scheduler.now())
+}
+
+#[test]
+fn an_owner_task_stays_draining_until_the_supervisor_it_started_has_stopped() {
+    let (timeline, ended_at) = structured_stop_run();
+    assert_eq!(
+        timeline,
+        lines(
+            "@0s supervisor_started supervisor=S1 parent=root
+             @0s process_started supervisor=S1 membership=M1 incarnation=I1
+             @5.001s process_terminated membership=M1 incarnation=I1 cause=forced
+             @5.001s supervisor_stopped supervisor=S1
+             main terminal"
+        )
+    );
+    assert_eq!(ended_at, Instant::from_nanos(5_001_000_000));
+    assert_eq!(structured_stop_run(), (timeline, ended_at), "deterministic under virtual time");
+}
+
+#[test]
+fn a_parent_task_stays_draining_until_a_child_waiting_on_its_supervisor_is_terminal() {
+    let mut lab = Lab::new();
+    let main = lab
+        .scheduler
+        .start_root(outlives_a_child_that_owns_a_lingering_root)
+        .unwrap();
+    let run = lab.scheduler.run_root(main, DEADLOCK_DEFECT_CODE);
+    assert_eq!(run.outcome.state, ChimiFiberState::Succeeded as u32);
+    let child = lab
+        .scheduler
+        .events()
+        .iter()
+        .find(|event| event.kind == TaskEventKind::Started && event.parent == Some(main))
+        .expect("the child started")
+        .task;
+    assert_eq!(
+        timeline(&lab, &[(main, "main"), (child, "child")]),
+        lines(
+            "@0s supervisor_started supervisor=S1 parent=root
+             @0s process_started supervisor=S1 membership=M1 incarnation=I1
+             @5.001s process_terminated membership=M1 incarnation=I1 cause=forced
+             @5.001s supervisor_stopped supervisor=S1
+             child terminal
+             main terminal"
+        )
+    );
+}
+
+#[test]
+fn removing_a_process_that_started_a_root_waits_for_that_root_to_stop() {
+    let mut lab = Lab::new();
+    let outer_root = lab.scheduler.start_supervisor(policy(vec![], 0)).unwrap();
+    let managed = lab
+        .scheduler
+        .start_process(outer_root, spec(Some(COUNTER), 8), Restart::Never)
+        .unwrap();
+    lab.deliver(named(COUNTER), Msg::StartLingeringRoot);
+    lab.scheduler.drive();
+    assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_OK]);
+    assert_eq!(lab.scheduler.remove_process(outer_root, managed), Ok(Progress::Pending));
+    assert!(lab.send(named(COUNTER), Msg::Add(1)).is_err(), "unrouted while the root it started stops");
+    lab.settle();
+    assert_eq!(
+        lab.transcript()
+            .into_iter()
+            .filter(|line| !line.contains("process_send"))
+            .collect::<Vec<_>>(),
+        lines(
+            "@0s supervisor_started supervisor=S1 parent=root
+             @0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.counter
+             @0s supervisor_started supervisor=S2 parent=root
+             @0s process_started supervisor=S2 membership=M2 incarnation=I2
+             @5s process_terminated membership=M2 incarnation=I2 cause=forced
+             @5s supervisor_stopped supervisor=S2
+             @5s process_terminated membership=M1 incarnation=I1 cause=cancelled
+             @5s membership_removed membership=M1"
+        )
+    );
+}
+
+#[test]
+fn es02_a_parent_stop_during_a_nested_escalation_waits_for_it_instead_of_stopping_it_again() {
+    let mut lab = Lab::new();
+    let lingering = Member::Process(spec_with(&STUBBORN, None, 8), Restart::Never);
+    let nested = policy(vec![lingering, counter_member(COUNTER)], 0);
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![Member::Supervisor(nested, Restart::OnDefect)], 1))
+        .unwrap();
+    lab.settle();
+    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.scheduler.drive();
+    assert_eq!(lab.scheduler.stop_supervisor(root), Ok(Progress::Pending));
+    lab.settle();
+    assert_eq!(
+        lab.transcript()
+            .into_iter()
+            .skip(4)
+            .filter(|line| !line.contains("process_send"))
+            .collect::<Vec<_>>(),
+        lines(
+            "@0s process_terminated membership=M3 incarnation=I2 cause=defected
+             @0s restart_limit_exceeded supervisor=S2
+             @5s process_terminated membership=M2 incarnation=I1 cause=forced
+             @5s supervisor_escalated supervisor=S2 parent=S1
+             @5s supervisor_stopped supervisor=S1"
+        )
+    );
+    assert!(lab.restarts().is_empty(), "a stopping parent does not replace it");
 }

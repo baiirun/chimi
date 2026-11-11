@@ -40,11 +40,16 @@ resumes. Shutdown first cancels and drains the incarnation's child tasks and
 withdraws whatever its current park waits on; the body is then cancelled at
 that park, or at its next park that would block if it was running, while a
 receive drains the mailbox first. Stops and removals are plans that wait for a
-lingering incarnation's `shutdown_within` deadline and then force it. A root
-supervisor started by a task stops when that task ends. Process requests
+lingering incarnation's `shutdown_within` deadline and then force it. Nested
+supervisors, declared or dynamic (`start_nested_supervisor`,
+`remove_supervisor`), take one slot of their parent, escalate to it, and can
+be stopped on their own; a plan that reaches a nested supervisor another plan
+is already stopping waits for it to retire. A root supervisor started by a
+task stops when that task ends, and the task stays draining, with its
+terminal event withheld, until that stop has finished. Process requests
 use `ChimiProcessRequest` (`CHIMI_REQUEST_PROCESS_*`,
-`CHIMI_REQUEST_SUPERVISOR_*`), and lifecycle events use the process trace
-family. `docs/architecture/supervised-process-runtime.md` records the design.
+`CHIMI_REQUEST_SUPERVISOR_*`), and lifecycle events, including
+`supervisor_started`, use the process trace family. `docs/architecture/supervised-process-runtime.md` records the design.
 
 The execution clock (`scheduler/clock.rs`) is real or virtual. Virtual time
 moves only in `run_until_idle`, when nothing is runnable and no host

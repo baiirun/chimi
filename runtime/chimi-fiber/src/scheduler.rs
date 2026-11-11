@@ -60,6 +60,8 @@ pub const REQUEST_SUPERVISOR_ADDRESS: u32 = 18;
 pub const REQUEST_SUPERVISOR_REMOVE_PROCESS: u32 = 19;
 pub const REQUEST_SUPERVISOR_STOP: u32 = 20;
 pub const REQUEST_SUPERVISOR_WAIT: u32 = 21;
+pub const REQUEST_SUPERVISOR_START_SUPERVISOR: u32 = 22;
+pub const REQUEST_SUPERVISOR_REMOVE_SUPERVISOR: u32 = 23;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -1069,7 +1071,7 @@ impl Scheduler {
         if process && self.park_lingers(owner, kind) {
             return;
         }
-        if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_WAIT).contains(&kind) {
+        if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_REMOVE_SUPERVISOR).contains(&kind) {
             self.handle_process_request(owner, request.cast());
         } else {
             self.handle_task_request(owner, park, request);
@@ -1298,6 +1300,7 @@ impl Scheduler {
         if let Some(timer) = record.timer.take() {
             self.cancel_timer(timer);
         }
+        self.unroute_task(task);
 
         let channel_cleanup = self.channels.cleanup_task(task);
         self.apply_channel_transition(channel_cleanup);
@@ -1347,15 +1350,25 @@ impl Scheduler {
         for child in children {
             self.begin_terminal(child, TaskOutcome::Cancelled, false);
         }
-        debug_assert!(
-            self.tasks
-                .get(&task)
-                .expect("draining task")
-                .children
-                .is_empty()
-        );
         // Root supervisors the task started are structured children too.
         self.stop_owned_supervisors(task);
+        self.finish_draining(task);
+    }
+
+    /// Publishes a draining task's terminal once its children are terminal
+    /// and every root supervisor it started has retired; a child or root
+    /// that is still stopping calls this again when it finishes. A no-op for
+    /// a task that is not draining.
+    fn finish_draining(&mut self, task: TaskId) {
+        let Some(record) = self.tasks.get(&task) else {
+            return;
+        };
+        let TaskPhase::Draining(outcome) = record.phase else {
+            return;
+        };
+        if !record.children.is_empty() || self.owns_live_roots(task) {
+            return;
+        }
         self.emit(task, TaskEventKind::CleanupCompleted, cause(outcome), false);
         self.publish_terminal(task, outcome);
         if self.incarnation_of(task).is_some() {
@@ -1374,6 +1387,9 @@ impl Scheduler {
                 .remove(&task);
         }
         self.emit(task, TaskEventKind::Terminal, cause(outcome), false);
+        if let Some(parent) = parent {
+            self.finish_draining(parent);
+        }
 
         let waiting_parent = parent.filter(|parent| {
             self.tasks.get(parent).is_some_and(|record| {

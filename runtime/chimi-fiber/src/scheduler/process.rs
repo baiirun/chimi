@@ -14,11 +14,16 @@
 //!   happen in one step.
 //! - Stops, removals, and escalations run as plans. A plan step that must
 //!   wait for an incarnation's cleanup parks the plan on that incarnation;
-//!   its shutdown deadline timer guarantees the plan resumes.
+//!   its shutdown deadline timer guarantees the plan resumes. A plan that
+//!   reaches a nested supervisor another plan is already stopping parks on
+//!   that supervisor until it retires, so a subtree is stopped once.
+//! - A task stays draining until every root supervisor it started has
+//!   retired, so its terminal event follows its members' terminal events.
 //! - Bookkeeping follows the slot: a membership record lives while its slot
-//!   does, and a handle whose record is gone keeps only its last incarnation
-//!   until `remove_process` consumes it. Stopped root records are dropped;
-//!   an identity that was issued but has no record is a stopped supervisor.
+//!   does, and a handle whose record is gone keeps only its last instance
+//!   until `remove_process` or `remove_supervisor` consumes it. Retired
+//!   supervisor records are dropped; an identity that was issued but has no
+//!   record is a stopped (or replaced) supervisor.
 
 use super::clock::{Instant, TimerTarget};
 use super::{
@@ -243,10 +248,17 @@ pub enum ProcessEventKind {
         incarnation: Option<IncarnationId>,
         outcome: SendOutcome,
     },
+    /// Emitted before the supervisor's declared members start. A root has
+    /// no parent and no membership.
+    SupervisorStarted {
+        supervisor: SupervisorId,
+        parent: Option<SupervisorId>,
+        membership: Option<MembershipId>,
+    },
 }
 
 impl ProcessEventKind {
-    fn trace_kind(self) -> u32 {
+    pub(super) fn trace_kind(self) -> u32 {
         match self {
             Self::Started { .. } => 1,
             Self::AdmissionRejected { .. } => 2,
@@ -257,6 +269,7 @@ impl ProcessEventKind {
             Self::Removed { .. } => 7,
             Self::Stopped { .. } => 8,
             Self::Sent { .. } => 9,
+            Self::SupervisorStarted { .. } => 10,
         }
     }
 }
@@ -286,8 +299,9 @@ pub enum ProcessError {
         owner: SupervisorId,
         actual: SupervisorId,
     },
-    NotARoot(SupervisorId),
     NotAProcess(TaskId),
+    /// A process handle used as a supervisor handle, or the reverse.
+    WrongMemberKind(MembershipId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -355,9 +369,9 @@ struct MemberRecord {
     restart: Restart,
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Current {
-    None,
+/// What runs for a membership: a process incarnation or a nested supervisor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Instance {
     Process(IncarnationId),
     Supervisor(SupervisorId),
 }
@@ -365,16 +379,17 @@ enum Current {
 struct Membership {
     supervisor: SupervisorId,
     member: MemberRecord,
-    current: Current,
-    last_incarnation: Option<IncarnationId>,
-    /// A `ManagedProcess` handle refers to this membership.
+    current: Option<Instance>,
+    last: Option<Instance>,
+    /// A `ManagedProcess` or `ManagedSupervisor` handle refers to this
+    /// membership.
     handle: bool,
 }
 
 /// What a handle keeps once its membership record is gone.
 #[derive(Clone, Copy, Debug)]
 struct Retired {
-    incarnation: IncarnationId,
+    last: Instance,
     /// The member ended on its own, so removing it is still announced. A
     /// member ended by its supervisor's stop or escalation is removed
     /// silently.
@@ -418,6 +433,9 @@ struct Supervision {
     dynamic: Vec<MembershipId>,
     restart_times: VecDeque<Instant>,
     state: SupervisorState,
+    /// A plan has taken the members to stop them. Another plan that reaches
+    /// this supervisor waits for it to retire instead of stopping it again.
+    members_taken: bool,
     /// Tasks parked in `Supervisor.wait` or a `stop` that has not finished.
     waiters: Vec<Waiter>,
 }
@@ -437,9 +455,12 @@ enum Step {
     StopMember(MembershipId),
     /// Shuts the incarnation down and waits for it to terminate.
     Await(IncarnationId),
+    /// Waits for a supervisor another plan is stopping to retire.
+    AwaitSupervisor(SupervisorId),
     Emit(ProcessEventKind),
-    DropSupervisor(SupervisorId),
-    FinishStop(SupervisorId),
+    /// Drops a stopped supervisor's record, answers its waiters, ends its
+    /// membership in its parent, and lets a draining owner finish.
+    Retire(SupervisorId),
     FinishEscalation(SupervisorId),
     FinishRemoval {
         membership: MembershipId,
@@ -464,6 +485,20 @@ impl<const N: usize> From<[Step; N]> for Plan {
     }
 }
 
+/// What a parked plan waits for.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Blocker {
+    Incarnation(IncarnationId),
+    Supervisor(SupervisorId),
+}
+
+/// Which kind of managed handle an operation takes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HandleKind {
+    Process,
+    Supervisor,
+}
+
 #[derive(Default)]
 pub(super) struct ProcessKernel {
     next_supervisor: u64,
@@ -475,7 +510,7 @@ pub(super) struct ProcessKernel {
     pub(super) incarnations: BTreeMap<IncarnationId, Incarnation>,
     names: BTreeMap<NameId, IncarnationId>,
     roots: Vec<SupervisorId>,
-    blocked: BTreeMap<IncarnationId, Vec<Plan>>,
+    blocked: BTreeMap<Blocker, Vec<Plan>>,
     program_terminated: bool,
     pub(super) events: Vec<ProcessEvent>,
     pub(super) release_message: Option<(MessageRelease, *mut c_void)>,
@@ -537,7 +572,8 @@ impl Scheduler {
     }
 
     /// Stops every running root that `task` started, newest first. Called
-    /// once the task's own child tasks have drained.
+    /// once the task is draining; each root that retires lets the task
+    /// finish once none is left (`owns_live_roots`).
     pub(super) fn stop_owned_supervisors(&mut self, task: TaskId) {
         let owned: Vec<_> = self
             .kernel
@@ -557,6 +593,59 @@ impl Scheduler {
         }
     }
 
+    /// True while a root that `task` started is running or stopping. An
+    /// escalated root terminates the program instead and does not count.
+    pub(super) fn owns_live_roots(&self, task: TaskId) -> bool {
+        self.kernel.roots.iter().any(|root| {
+            self.kernel.supervisors.get(root).is_some_and(|record| {
+                record.owner == Some(task)
+                    && matches!(
+                        record.state,
+                        SupervisorState::Running | SupervisorState::Stopping
+                    )
+            })
+        })
+    }
+
+    /// Admits a dynamic nested supervisor into `parent` and starts its
+    /// declared members. It takes one of the parent's slots. Fail-fast like
+    /// `start_process`; a member that cannot start rolls the nested
+    /// supervisor back and its error is returned. The handle is the
+    /// membership; `nested_supervisor` names its current supervisor.
+    pub fn start_nested_supervisor(
+        &mut self,
+        parent: SupervisorId,
+        policy: Policy,
+        restart: Restart,
+    ) -> Result<MembershipId, StartError> {
+        let member = MemberRecord {
+            kind: MemberKind::Supervisor(self.adopt_policy(policy)),
+            restart,
+        };
+        self.admit_handle(parent, member)
+    }
+
+    /// The supervisor currently running for a nested-supervisor membership.
+    /// It changes when the parent replaces the supervisor after a defect.
+    pub fn nested_supervisor(&self, membership: MembershipId) -> Result<SupervisorId, ProcessError> {
+        match self.last_instance(membership) {
+            Some(Instance::Supervisor(supervisor)) => Ok(supervisor),
+            Some(Instance::Process(_)) => Err(ProcessError::WrongMemberKind(membership)),
+            None => Err(ProcessError::UnknownMembership(membership)),
+        }
+    }
+
+    /// Consumes a dynamic nested-supervisor membership. Ensures, once
+    /// `Done`: its whole subtree has stopped and no replacement can start.
+    /// A membership that already ended is removed without stopping anything.
+    pub fn remove_supervisor(
+        &mut self,
+        supervisor: SupervisorId,
+        membership: MembershipId,
+    ) -> Result<Progress, ProcessError> {
+        self.remove_for(None, supervisor, membership, HandleKind::Supervisor)
+    }
+
     /// Admits a dynamic process. Fail-fast: a closed supervisor, a full one,
     /// or a held name is rejected with an admission event. The body first
     /// runs from the ready queue.
@@ -570,6 +659,15 @@ impl Scheduler {
             kind: MemberKind::Process(self.adopt_spec(spec)),
             restart,
         };
+        self.admit_handle(supervisor, member)
+    }
+
+    /// Admits a dynamic member that a managed handle will refer to.
+    fn admit_handle(
+        &mut self,
+        supervisor: SupervisorId,
+        member: MemberRecord,
+    ) -> Result<MembershipId, StartError> {
         match self.admit(supervisor, member, true) {
             Ok(membership) => {
                 self.kernel
@@ -589,18 +687,21 @@ impl Scheduler {
     /// A direct address pinned to the membership's current incarnation, or
     /// to its last one once it has ended (which stays unavailable).
     pub fn process_address(&self, membership: MembershipId) -> Result<Address, ProcessError> {
+        match self.last_instance(membership) {
+            Some(Instance::Process(incarnation)) => Ok(Address::Direct(incarnation)),
+            Some(Instance::Supervisor(_)) => Err(ProcessError::WrongMemberKind(membership)),
+            None => Err(ProcessError::UnknownMembership(membership)),
+        }
+    }
+
+    /// The membership's current or last instance, from its record or, once
+    /// that is gone, from what its handle kept.
+    fn last_instance(&self, membership: MembershipId) -> Option<Instance> {
         self.kernel
             .memberships
             .get(&membership)
-            .and_then(|entry| entry.last_incarnation)
-            .or_else(|| {
-                self.kernel
-                    .retired
-                    .get(&membership)
-                    .map(|retired| retired.incarnation)
-            })
-            .map(Address::Direct)
-            .ok_or(ProcessError::UnknownMembership(membership))
+            .and_then(|entry| entry.last)
+            .or_else(|| self.kernel.retired.get(&membership).map(|retired| retired.last))
     }
 
     /// Never parks. Accepted messages belong to the mailbox; a rejected
@@ -652,12 +753,13 @@ impl Scheduler {
         supervisor: SupervisorId,
         membership: MembershipId,
     ) -> Result<Progress, ProcessError> {
-        self.remove_process_for(None, supervisor, membership)
+        self.remove_for(None, supervisor, membership, HandleKind::Process)
     }
 
-    /// Stops a root supervisor's subtree: routing is removed for the whole
+    /// Stops a supervisor's subtree: routing is removed for the whole
     /// subtree first, then members stop newest dynamic first and declared in
-    /// reverse. A stopped supervisor is a no-op with no event.
+    /// reverse. A stopped supervisor is a no-op with no event. A nested
+    /// supervisor that is stopped ends its membership without a restart.
     pub fn stop_supervisor(&mut self, supervisor: SupervisorId) -> Result<Progress, ProcessError> {
         self.stop_for(None, supervisor)
     }
@@ -718,15 +820,25 @@ impl Scheduler {
 
     // ----- Request-facing operations --------------------------------------
 
-    pub(super) fn remove_process_for(
+    /// Consumes a managed handle of `kind`. The plan waits for the member's
+    /// incarnation or whole subtree to stop before the slot is released.
+    pub(super) fn remove_for(
         &mut self,
         requester: Option<Waiter>,
         supervisor: SupervisorId,
         membership: MembershipId,
+        kind: HandleKind,
     ) -> Result<Progress, ProcessError> {
-        if let Some(retired) = self.kernel.retired.remove(&membership) {
-            // If a stop is still forcing the last incarnation, wait for it.
-            let await_last = Step::Await(retired.incarnation);
+        if let Some(retired) = self.kernel.retired.get(&membership).copied() {
+            // If a stop is still ending the last instance, wait for it.
+            let await_last = match (kind, retired.last) {
+                (HandleKind::Process, Instance::Process(incarnation)) => Step::Await(incarnation),
+                (HandleKind::Supervisor, Instance::Supervisor(child)) => {
+                    Step::AwaitSupervisor(child)
+                }
+                _ => return Err(ProcessError::WrongMemberKind(membership)),
+            };
+            self.kernel.retired.remove(&membership);
             let plan = if retired.announce {
                 Plan::from([
                     await_last,
@@ -750,15 +862,40 @@ impl Scheduler {
                 actual: supervisor,
             });
         }
+        let kind_matches = match entry.member.kind {
+            MemberKind::Process(_) => kind == HandleKind::Process,
+            MemberKind::Supervisor(_) => kind == HandleKind::Supervisor,
+        };
+        if !kind_matches {
+            return Err(ProcessError::WrongMemberKind(membership));
+        }
         let finish = Step::FinishRemoval {
             membership,
             requester,
         };
         let plan = match entry.current {
-            Current::Process(incarnation) => Plan::from([Step::Await(incarnation), finish]),
-            Current::None | Current::Supervisor(_) => Plan::from([finish]),
+            Some(Instance::Process(incarnation)) => Plan::from([Step::Await(incarnation), finish]),
+            Some(Instance::Supervisor(child)) if self.stop_in_flight(child) => {
+                Plan::from([Step::AwaitSupervisor(child), finish])
+            }
+            Some(Instance::Supervisor(child)) => Plan::from([
+                Step::StopMembers(child),
+                Step::Emit(ProcessEventKind::Stopped { supervisor: child }),
+                Step::Retire(child),
+                finish,
+            ]),
+            None => Plan::from([finish]),
         };
         Ok(self.execute(plan))
+    }
+
+    /// True when a plan has already taken the supervisor's members to stop
+    /// them.
+    fn stop_in_flight(&self, supervisor: SupervisorId) -> bool {
+        self.kernel
+            .supervisors
+            .get(&supervisor)
+            .is_some_and(|record| record.members_taken)
     }
 
     pub(super) fn stop_for(
@@ -770,9 +907,6 @@ impl Scheduler {
             return Err(ProcessError::UnknownSupervisor(supervisor));
         };
         let record = self.kernel.supervisors.get_mut(&supervisor);
-        if record.as_ref().is_some_and(|record| record.parent.is_some()) {
-            return Err(ProcessError::NotARoot(supervisor));
-        }
         match state {
             SupervisorState::Stopped | SupervisorState::Escalated => {
                 if let Some(requester) = requester {
@@ -792,7 +926,7 @@ impl Scheduler {
                 let plan = Plan::from([
                     Step::StopMembers(supervisor),
                     Step::Emit(ProcessEventKind::Stopped { supervisor }),
-                    Step::FinishStop(supervisor),
+                    Step::Retire(supervisor),
                 ]);
                 Ok(self.execute(plan))
             }
@@ -1009,15 +1143,25 @@ impl Scheduler {
                 dynamic: Vec::new(),
                 restart_times: VecDeque::new(),
                 state: SupervisorState::Running,
+                members_taken: false,
                 waiters: Vec::new(),
             },
         );
+        self.emit_process(ProcessEventKind::SupervisorStarted {
+            supervisor,
+            parent: parent.map(|(parent, _)| parent),
+            membership: parent.map(|(_, membership)| membership),
+        });
         for member in policy.members.iter().cloned() {
             if let Err(error) = self.admit(supervisor, member, false) {
                 self.emit_process(ProcessEventKind::AdmissionRejected { supervisor, error });
                 // Every started member is still fresh, so the rollback never
-                // waits for a deadline.
-                let rolled_back = self.execute(Plan::from([Step::StopMembers(supervisor)]));
+                // waits for a deadline. The membership that would have held
+                // a nested supervisor is released by `admit`.
+                let rolled_back = self.execute(Plan::from([
+                    Step::StopMembers(supervisor),
+                    Step::Emit(ProcessEventKind::Stopped { supervisor }),
+                ]));
                 debug_assert_eq!(rolled_back, Progress::Done);
                 self.kernel.supervisors.remove(&supervisor);
                 return Err(error);
@@ -1056,8 +1200,8 @@ impl Scheduler {
             Membership {
                 supervisor,
                 member,
-                current: Current::None,
-                last_incarnation: None,
+                current: None,
+                last: None,
                 handle: false,
             },
         );
@@ -1102,8 +1246,8 @@ impl Scheduler {
                     .memberships
                     .get_mut(&membership)
                     .expect("membership record");
-                entry.current = Current::Process(incarnation);
-                entry.last_incarnation = Some(incarnation);
+                entry.current = Some(Instance::Process(incarnation));
+                entry.last = entry.current;
                 self.emit_process(ProcessEventKind::Started {
                     supervisor,
                     membership,
@@ -1114,11 +1258,13 @@ impl Scheduler {
             }
             MemberKind::Supervisor(policy) => {
                 let child = self.build_supervisor(policy, Some((supervisor, membership)))?;
-                self.kernel
+                let entry = self
+                    .kernel
                     .memberships
                     .get_mut(&membership)
-                    .expect("membership record")
-                    .current = Current::Supervisor(child);
+                    .expect("membership record");
+                entry.current = Some(Instance::Supervisor(child));
+                entry.last = entry.current;
             }
         }
         Ok(())
@@ -1197,7 +1343,7 @@ impl Scheduler {
         }
         let membership = record.membership;
         if let Some(entry) = self.kernel.memberships.get_mut(&membership) {
-            entry.current = Current::None;
+            entry.current = None;
         }
         let cause = terminal_cause(outcome, record.stopping);
         self.emit_process(ProcessEventKind::Terminated {
@@ -1208,7 +1354,11 @@ impl Scheduler {
         if record.stopping.is_none() {
             self.member_ended(membership, cause);
         }
-        for plan in self.kernel.blocked.remove(&incarnation).unwrap_or_default() {
+        self.resume_blocked(Blocker::Incarnation(incarnation));
+    }
+
+    fn resume_blocked(&mut self, blocker: Blocker) {
+        for plan in self.kernel.blocked.remove(&blocker).unwrap_or_default() {
             self.execute(plan);
         }
     }
@@ -1337,6 +1487,7 @@ impl Scheduler {
                     let Some(supervision) = self.kernel.supervisors.get_mut(&supervisor) else {
                         continue;
                     };
+                    supervision.members_taken = true;
                     let dynamic = std::mem::take(&mut supervision.dynamic);
                     let declared = std::mem::take(&mut supervision.declared);
                     // Shutdown order is newest dynamic first, then declared
@@ -1350,44 +1501,36 @@ impl Scheduler {
                         continue;
                     };
                     match entry.current {
-                        Current::Process(incarnation) => plan.steps.push_front(Step::Await(incarnation)),
-                        Current::Supervisor(child) => {
-                            plan.steps.push_front(Step::DropSupervisor(child));
+                        Some(Instance::Process(incarnation)) => {
+                            plan.steps.push_front(Step::Await(incarnation));
+                        }
+                        Some(Instance::Supervisor(child)) if self.stop_in_flight(child) => {
+                            plan.steps.push_front(Step::AwaitSupervisor(child));
+                        }
+                        Some(Instance::Supervisor(child)) => {
+                            plan.steps.push_front(Step::Retire(child));
                             plan.steps.push_front(Step::Emit(ProcessEventKind::Stopped {
                                 supervisor: child,
                             }));
                             plan.steps.push_front(Step::StopMembers(child));
                         }
-                        Current::None => {}
+                        None => {}
                     }
                 }
                 Step::Await(incarnation) => {
                     if !self.await_incarnation(incarnation) {
                         plan.steps.push_front(Step::Await(incarnation));
-                        plan.resumed = true;
-                        self.kernel
-                            .blocked
-                            .entry(incarnation)
-                            .or_default()
-                            .push(plan);
-                        return Progress::Pending;
+                        return self.block(Blocker::Incarnation(incarnation), plan);
+                    }
+                }
+                Step::AwaitSupervisor(supervisor) => {
+                    if self.kernel.supervisors.contains_key(&supervisor) {
+                        plan.steps.push_front(Step::AwaitSupervisor(supervisor));
+                        return self.block(Blocker::Supervisor(supervisor), plan);
                     }
                 }
                 Step::Emit(kind) => self.emit_process(kind),
-                Step::DropSupervisor(supervisor) => {
-                    self.kernel.supervisors.remove(&supervisor);
-                }
-                Step::FinishStop(supervisor) => {
-                    let record = self
-                        .kernel
-                        .supervisors
-                        .remove(&supervisor)
-                        .expect("stopping root");
-                    self.kernel.roots.retain(|root| *root != supervisor);
-                    for waiter in record.waiters {
-                        self.reply(waiter, super::RESPONSE_OK, front);
-                    }
-                }
+                Step::Retire(supervisor) => self.retire(supervisor, front),
                 Step::FinishEscalation(supervisor) => self.finish_escalation(supervisor),
                 Step::FinishRemoval {
                     membership,
@@ -1413,6 +1556,35 @@ impl Scheduler {
         Progress::Done
     }
 
+    fn block(&mut self, blocker: Blocker, mut plan: Plan) -> Progress {
+        plan.resumed = true;
+        self.kernel.blocked.entry(blocker).or_default().push(plan);
+        Progress::Pending
+    }
+
+    /// The supervisor has stopped: drop its record and answer its waiters.
+    /// A nested one ends its membership as a requested end, which never
+    /// restarts; a root lets its draining owner finish.
+    fn retire(&mut self, supervisor: SupervisorId, front: bool) {
+        let Some(record) = self.kernel.supervisors.remove(&supervisor) else {
+            return;
+        };
+        self.kernel.roots.retain(|root| *root != supervisor);
+        for waiter in record.waiters {
+            self.reply(waiter, super::RESPONSE_OK, front);
+        }
+        if let Some((_, membership)) = record.parent {
+            if let Some(entry) = self.kernel.memberships.get_mut(&membership) {
+                entry.current = None;
+            }
+            self.member_ended(membership, TerminalCause::Cancelled);
+        }
+        if let Some(owner) = record.owner {
+            self.finish_draining(owner);
+        }
+        self.resume_blocked(Blocker::Supervisor(supervisor));
+    }
+
     fn finish_escalation(&mut self, supervisor: SupervisorId) {
         let record = self
             .kernel
@@ -1429,11 +1601,19 @@ impl Scheduler {
                 self.terminate_program();
             }
             Some((_, membership)) => {
-                self.kernel.supervisors.remove(&supervisor);
+                let record = self
+                    .kernel
+                    .supervisors
+                    .remove(&supervisor)
+                    .expect("escalating supervisor");
+                for waiter in record.waiters {
+                    self.reply(waiter, super::RESPONSE_OK, false);
+                }
                 if let Some(entry) = self.kernel.memberships.get_mut(&membership) {
-                    entry.current = Current::None;
+                    entry.current = None;
                 }
                 self.member_ended(membership, TerminalCause::Defected);
+                self.resume_blocked(Blocker::Supervisor(supervisor));
             }
         }
     }
@@ -1454,11 +1634,19 @@ impl Scheduler {
             .copied()
             .collect();
         for membership in members {
-            match self.kernel.memberships.get(&membership).map(|e| e.current) {
-                Some(Current::Process(incarnation)) => self.unroute(incarnation),
-                Some(Current::Supervisor(child)) => self.close_and_unroute(child),
-                _ => {}
+            match self.kernel.memberships.get(&membership).and_then(|e| e.current) {
+                Some(Instance::Process(incarnation)) => self.unroute(incarnation),
+                Some(Instance::Supervisor(child)) => self.close_and_unroute(child),
+                None => {}
             }
+        }
+    }
+
+    /// A process body has ended: sends to it fail from now on, even while
+    /// it waits for supervisors it started to stop.
+    pub(super) fn unroute_task(&mut self, task: TaskId) {
+        if let Some(incarnation) = self.incarnation_of(task) {
+            self.unroute(incarnation);
         }
     }
 
@@ -1493,6 +1681,12 @@ impl Scheduler {
                 self.runnable.retain(|queued| *queued != task);
             }
             self.run(task);
+        }
+        let task = self.kernel.incarnations[&incarnation].task;
+        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) {
+            // The body has ended and waits for root supervisors it started;
+            // their members' deadlines bound the wait, so no timer is armed.
+            return false;
         }
         let now = self.clock.now();
         let record = self
@@ -1606,8 +1800,13 @@ impl Scheduler {
         };
         let task = record.task;
         let stopping = record.stopping.as_mut().expect("only stopping incarnations are forced");
-        stopping.forced = true;
         stopping.timer = None;
+        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) {
+            // The body finished its cleanup in time; only supervisors it
+            // started are still stopping, each under its own deadlines.
+            return;
+        }
+        stopping.forced = true;
         let task_record = self.tasks.get_mut(&task).expect("incarnation task");
         task_record.command = ChimiFiberCommand::Cancel;
         set_status(task_record.request, RESPONSE_FORCED, true);
@@ -1618,7 +1817,10 @@ impl Scheduler {
             self.runnable.push_front(task);
         }
         let terminated = self.await_incarnation(incarnation);
-        debug_assert!(terminated, "a forced incarnation always terminates");
+        debug_assert!(
+            terminated || matches!(self.tasks[&task].phase, TaskPhase::Draining(_)),
+            "a forced body always ends"
+        );
     }
 
     /// A forced body parked again. Its fiber cannot be destroyed while
@@ -1635,15 +1837,11 @@ impl Scheduler {
     fn forget(&mut self, membership: MembershipId, announce: bool) -> Option<Membership> {
         let entry = self.kernel.memberships.remove(&membership)?;
         if entry.handle
-            && let Some(incarnation) = entry.last_incarnation
+            && let Some(last) = entry.last
         {
-            self.kernel.retired.insert(
-                membership,
-                Retired {
-                    incarnation,
-                    announce,
-                },
-            );
+            self.kernel
+                .retired
+                .insert(membership, Retired { last, announce });
         }
         Some(entry)
     }
@@ -1750,6 +1948,15 @@ impl Scheduler {
                 trace.parent_supervisor = parent.map_or(0, |p| p.0);
             }
             ProcessEventKind::Removed { membership } => trace.membership = membership.0,
+            ProcessEventKind::SupervisorStarted {
+                supervisor,
+                parent,
+                membership,
+            } => {
+                trace.supervisor = supervisor.0;
+                trace.parent_supervisor = parent.map_or(0, |p| p.0);
+                trace.membership = membership.map_or(0, |m| m.0);
+            }
             ProcessEventKind::Sent {
                 address,
                 incarnation,
@@ -1777,14 +1984,30 @@ impl Scheduler {
     /// finished. Used when the scheduler is dropped.
     pub(super) fn tear_down_processes(&mut self) {
         self.shutdown_processes();
-        while let Some(incarnation) = self.kernel.blocked.keys().next().copied() {
-            if self.kernel.incarnations.contains_key(&incarnation) {
-                self.force(incarnation);
-            } else {
-                let plans = self.kernel.blocked.remove(&incarnation).unwrap_or_default();
-                for plan in plans {
-                    self.execute(plan);
+        // Force a lingering body whose plan waits on it; a body that already
+        // ended and waits only on supervisors it started cannot be forced.
+        // A plan whose blocker is already gone is resumed.
+        loop {
+            let next = self.kernel.blocked.keys().copied().find(|blocker| match blocker {
+                Blocker::Incarnation(incarnation) => self
+                    .kernel
+                    .incarnations
+                    .get(incarnation)
+                    .is_none_or(|record| {
+                        !matches!(self.tasks[&record.task].phase, TaskPhase::Draining(_))
+                    }),
+                Blocker::Supervisor(supervisor) => {
+                    !self.kernel.supervisors.contains_key(supervisor)
                 }
+            });
+            match next {
+                Some(Blocker::Incarnation(incarnation))
+                    if self.kernel.incarnations.contains_key(&incarnation) =>
+                {
+                    self.force(incarnation);
+                }
+                Some(blocker) => self.resume_blocked(blocker),
+                None => break,
             }
         }
         let leftover: Vec<_> = self.kernel.incarnations.keys().copied().collect();
@@ -1853,6 +2076,7 @@ fn can_park(kind: u32) -> bool {
             | super::REQUEST_CHANNEL_RECEIVE
             | super::REQUEST_TIMER_SLEEP_UNTIL
             | super::REQUEST_SUPERVISOR_REMOVE_PROCESS
+            | super::REQUEST_SUPERVISOR_REMOVE_SUPERVISOR
             | super::REQUEST_SUPERVISOR_STOP
             | super::REQUEST_SUPERVISOR_WAIT
     )

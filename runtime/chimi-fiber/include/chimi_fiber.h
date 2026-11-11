@@ -75,8 +75,17 @@ enum {
   CHIMI_REQUEST_SUPERVISOR_START_PROCESS = 17,
   CHIMI_REQUEST_SUPERVISOR_ADDRESS = 18,
   CHIMI_REQUEST_SUPERVISOR_REMOVE_PROCESS = 19,
+  /* `supervisor` is a root or a nested supervisor. Stopping a nested one
+     ends its membership without a restart. */
   CHIMI_REQUEST_SUPERVISOR_STOP = 20,
   CHIMI_REQUEST_SUPERVISOR_WAIT = 21,
+  /* `supervisor` is the parent, `policy` and `restart` describe the dynamic
+     nested supervisor. OK replies carry its handle in `membership` and the
+     nested supervisor's identity in `supervisor`. */
+  CHIMI_REQUEST_SUPERVISOR_START_SUPERVISOR = 22,
+  /* `supervisor` is the parent and `membership` the handle from
+     START_SUPERVISOR. Parks until the nested subtree has stopped. */
+  CHIMI_REQUEST_SUPERVISOR_REMOVE_SUPERVISOR = 23,
 };
 
 enum {
@@ -209,6 +218,9 @@ enum {
   CHIMI_PROCESS_TRACE_MEMBERSHIP_REMOVED = 7,
   CHIMI_PROCESS_TRACE_SUPERVISOR_STOPPED = 8,
   CHIMI_PROCESS_TRACE_SEND = 9,
+  /* `supervisor`; for a nested supervisor also `parent_supervisor` and
+     `membership` (0 for a root). Precedes its members' starts. */
+  CHIMI_PROCESS_TRACE_SUPERVISOR_STARTED = 10,
 };
 
 /* `cause` of a terminated event. */

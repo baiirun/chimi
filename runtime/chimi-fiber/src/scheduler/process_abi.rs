@@ -2,8 +2,8 @@
 //! configurable scheduler entry point. Layouts match `chimi_fiber.h`.
 
 use super::process::{
-    Address, IncarnationId, Member, MembershipId, NameId, Policy, ProcessSpec, Receipt, Restart,
-    Restarts, StartError, SupervisorId, SupervisorState, Waiter,
+    Address, HandleKind, IncarnationId, Member, MembershipId, NameId, Policy, ProcessSpec, Receipt,
+    Restart, Restarts, StartError, SupervisorId, SupervisorState, Waiter,
 };
 use super::{
     ClockMode, DEADLOCK_DEFECT_CODE, Idle, RESPONSE_CANCELLED, RESPONSE_CAPACITY_REACHED,
@@ -351,12 +351,50 @@ impl Scheduler {
                     _ => self.respond(waiter, RESPONSE_ERROR, |_| {}),
                 }
             }
-            super::REQUEST_SUPERVISOR_REMOVE_PROCESS => {
+            super::REQUEST_SUPERVISOR_START_SUPERVISOR => {
+                let parent = SupervisorId::from_raw(input.supervisor);
+                // SAFETY: the generated runtime passes a readable policy.
+                let policy = unsafe { read_policy(input.policy, 0) };
+                let (Some(policy), Some(restart), Some(_)) = (
+                    policy,
+                    restart(input.restart),
+                    self.supervisor_state(parent),
+                ) else {
+                    // SAFETY: as above; the request handed these contexts over.
+                    unsafe {
+                        visit_policy_contexts(input.policy, 0, &mut |context| {
+                            self.release_spec_context(context)
+                        })
+                    };
+                    return self.respond(waiter, RESPONSE_ERROR, |_| {});
+                };
+                match self.start_nested_supervisor(parent, policy, restart) {
+                    Ok(membership) => {
+                        let nested = self.nested_supervisor(membership);
+                        self.respond(waiter, RESPONSE_OK, |r| {
+                            r.membership = membership.get();
+                            r.supervisor = nested.map_or(0, SupervisorId::get);
+                        })
+                    }
+                    Err(error) => self.respond(waiter, start_status(error), |r| {
+                        if let StartError::NameTaken(name) = error {
+                            r.name = name.get();
+                        }
+                    }),
+                }
+            }
+            super::REQUEST_SUPERVISOR_REMOVE_PROCESS | super::REQUEST_SUPERVISOR_REMOVE_SUPERVISOR => {
                 self.write(waiter, RESPONSE_PENDING, |_| {});
-                let result = self.remove_process_for(
+                let kind = if input.kind == super::REQUEST_SUPERVISOR_REMOVE_PROCESS {
+                    HandleKind::Process
+                } else {
+                    HandleKind::Supervisor
+                };
+                let result = self.remove_for(
                     Some(waiter),
                     SupervisorId::from_raw(input.supervisor),
                     MembershipId::from_raw(input.membership),
+                    kind,
                 );
                 if let Err(error) = result {
                     let owner = match error {

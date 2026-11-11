@@ -290,8 +290,9 @@ ChimiFiberResult chimi_fixture_deadlocked_main(void *context) {
 
 #define LAYOUT(type, field) offsetof(type, field)
 
-/* Sizes and field offsets of the process ABI records, in a fixed order the
-   Rust test mirrors. Returns the number written. */
+/* Sizes and field offsets of the process ABI records, then the values of
+   the nested-supervisor request and trace kinds, in a fixed order the Rust
+   test mirrors. Returns the number written. */
 size_t chimi_fixture_process_layouts(size_t *out) {
   size_t values[] = {
       sizeof(ChimiProcessRequest),
@@ -344,6 +345,9 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       LAYOUT(ChimiSchedulerConfig, deadlock_context),
       sizeof(ChimiDeadlockWaiter),
       LAYOUT(ChimiDeadlockWaiter, request_kind),
+      CHIMI_REQUEST_SUPERVISOR_START_SUPERVISOR,
+      CHIMI_REQUEST_SUPERVISOR_REMOVE_SUPERVISOR,
+      CHIMI_PROCESS_TRACE_SUPERVISOR_STARTED,
   };
   size_t count = sizeof(values) / sizeof(*values);
   for (size_t index = 0; index < count; index += 1) out[index] = values[index];
