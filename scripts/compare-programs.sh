@@ -25,7 +25,9 @@
 #
 # Every run uses a fixed --execution-id. Timing fields (keys ending in _ns, _us,
 # _ms, or named elapsed*, duration*, timestamp, time) are replaced with 0 so
-# recordings compare across machines and runs.
+# recordings compare across machines and runs, and numeric ids and source
+# offsets in telemetry are replaced with 0 so recordings survive compiler
+# renumbering.
 set -u
 
 usage() { sed -n '7,9p' "$0" | sed 's/^# *//' >&2; exit 2; }
@@ -73,6 +75,15 @@ run cp "$bin/concurrency-pipeline" --chimi-runner --trace=full --execution-id=co
 
 for file in *.jsonl *.txt; do
   sed -E 's/("([a-z_]*_(ns|us|ms)|elapsed[a-z_]*|duration[a-z_]*|timestamp|time)":)[0-9.]+/\10/g' \
+    "$file" > "$file.normalized" && mv "$file.normalized" "$file"
+done
+# Trace events also carry compiler-internal numbering (symbol, node, origin,
+# semantic, and span ids, and source offsets) that shifts whenever the compiler
+# or the standard library gains a declaration. Behaviour is the event sequence,
+# operations, attributes, outcomes, and program output, so those numbers are
+# replaced with 0 in telemetry. Program stdout is compared exactly.
+for file in *.jsonl; do
+  sed -E 's/("([a-z_]+_id|source_start|source_end)":)[0-9]+/\10/g' \
     "$file" > "$file.normalized" && mv "$file.normalized" "$file"
 done
 
