@@ -45,6 +45,8 @@ append-only.
 | N6 | Tooling friction | Subagents cannot load the `code-quality` skill; every brief must name its sub-skills | Skill is user-invocable only | Workaround in briefs; candidate fix: make it model-invocable |
 | N7 | Coordinator context pressure | Final reports run 2–5k tokens each; context fills quickly | Reports carry full detail inline | Candidate: cap reports at a short summary plus a file path for details |
 | N8 | Decisions recorded in four places | `prog` logs, specs, `docs/decisions.md`, coordinator memory | No single owner for decision records | Ledger is the single list; `prog` logs should point to it |
+| N9 | Worktree agents cannot integrate their own work | The spec steward's sandbox refused every git command aimed at the main checkout, so it could not fast-forward `main`; its auto-created worktree also started from a stale base (`419d1e5` plus pre-squash PR copies), not `main` | Worktree isolation is enforced by the harness, and the worktree base follows the remote default branch, not local `main` | Coordinator integrates worktree branches; briefs tell worktree agents to reset to local `main` first |
+| N10 | Integrating into a dirty shared checkout collides with in-flight edits | Fast-forwarding the steward's spec changes refused because the compiler lane had an uncommitted 6-line edit in the same spec; the coordinator saved, merged, and reapplied it by hand, resolving one conflict | Agents leave work uncommitted between checkpoints in a tree others integrate into | Ask lanes to commit small and often; coordinator merges only when touched files are clean, otherwise saves and reapplies the in-flight diff |
 
 ## Run log
 
@@ -68,6 +70,7 @@ task notifications.
 | Test audit | review | 205k | 6.8 | ~90% behaviour-focused; key missing tests | — |
 | Prototype fixes | fix | 217k | 16.7 | 26 tests, 30/30 mutants caught | — |
 | Cross-spec review | review | 238k | 6.9 | 19 conflicts | — |
+| Spec steward (worktree) | fix | 130k | 8.0 | 19 resolutions, doc examples green | could not self-merge (N9); merge conflict with lane edit (N10) |
 
 ## Open hypotheses
 
