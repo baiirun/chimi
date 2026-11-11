@@ -6534,22 +6534,130 @@ impl ProjectTypeChecker {
             }
             facts[index] = Some(fact);
         }
-        for (index, argument) in arguments.iter().enumerate() {
-            if facts[index].is_some() {
-                continue;
-            }
+        // Literals whose parameter types the other arguments already fix go first,
+        // and each literal's inferred type binds the callee's parameters for the
+        // literals after it (`later(fn(m) { m.cents }, fn() { Money(4) })`).
+        let mut pending = (0..arguments.len())
+            .filter(|index| facts[*index].is_none())
+            .collect::<Vec<_>>();
+        while !pending.is_empty() {
+            let position = match &substitution {
+                Some(substitution) => pending
+                    .iter()
+                    .position(|index| {
+                        self.literal_parameters_are_known(inputs[*index], substitution)
+                    })
+                    .unwrap_or(0),
+                None => 0,
+            };
+            let index = pending.remove(position);
+            let argument = &arguments[index];
             let expected = match &mut substitution {
-                Some(substitution) => self.substitute_call_type(inputs[index], substitution),
+                Some(substitution) => self.literal_slot(inputs[index], substitution),
                 None => inputs[index],
             };
             self.seed_function_literal_parameters(module_id, &argument.value, expected, generics);
-            facts[index] =
-                Some(self.infer_expression(module_id, &argument.value, generics, bindings));
+            let fact = self.infer_expression(module_id, &argument.value, generics, bindings);
+            if let Some(substitution) = &mut substitution {
+                // Errors are reported when `infer_invocation` matches the call.
+                self.match_call_type(fact.success, inputs[index], substitution);
+            }
+            facts[index] = Some(fact);
         }
         facts
             .into_iter()
             .map(|fact| fact.expect("every argument is inferred"))
             .collect()
+    }
+
+    /// Whether every parameter type of the function slot `slot` is fixed by
+    /// `substitution`: no callee generic in them is unbound or bound only to an
+    /// open inference variable, and no callee row parameter in them is unbound.
+    fn literal_parameters_are_known(&self, slot: TypeId, substitution: &CallSubstitution) -> bool {
+        let slot = self.resolve_inference_type(slot);
+        let CanonicalType::Function(contract) = &self.types[slot.raw() as usize] else {
+            return true;
+        };
+        contract
+            .inputs
+            .iter()
+            .all(|input| self.type_is_known(*input, substitution, &mut HashSet::new()))
+    }
+
+    fn type_is_known(
+        &self,
+        type_id: TypeId,
+        substitution: &CallSubstitution,
+        visiting: &mut HashSet<TypeId>,
+    ) -> bool {
+        let type_id = self.resolve_inference_type(type_id);
+        if !visiting.insert(type_id) {
+            return true;
+        }
+        match &self.types[type_id.raw() as usize] {
+            CanonicalType::Generic(parameter) => {
+                let bound = substitution
+                    .values
+                    .get(parameter)
+                    .map(|bound| self.resolve_inference_type(*bound));
+                match bound {
+                    Some(bound) => !matches!(
+                        self.types[bound.raw() as usize],
+                        CanonicalType::InferenceVariable(_)
+                    ),
+                    None => substitution.failures.contains_key(parameter),
+                }
+            }
+            CanonicalType::Function(contract)
+            | CanonicalType::PolymorphicFunction { contract, .. } => {
+                self.failure_rows[contract.failures.raw() as usize]
+                    .parameters
+                    .iter()
+                    .all(|parameter| substitution.failures.contains_key(parameter))
+                    && self.needs_rows[contract.needs.raw() as usize]
+                        .parameters
+                        .iter()
+                        .all(|parameter| substitution.needs.contains_key(parameter))
+                    && contract
+                        .inputs
+                        .iter()
+                        .chain([&contract.success])
+                        .all(|input| self.type_is_known(*input, substitution, visiting))
+            }
+            CanonicalType::Named { arguments, .. } => arguments
+                .iter()
+                .all(|argument| self.type_is_known(*argument, substitution, visiting)),
+            CanonicalType::Record(fields) => fields
+                .iter()
+                .all(|field| self.type_is_known(field.type_id, substitution, visiting)),
+            CanonicalType::FailureSetValue(failures) => self.failure_rows[failures.raw() as usize]
+                .parameters
+                .iter()
+                .all(|parameter| substitution.failures.contains_key(parameter)),
+            CanonicalType::InferenceVariable(_) => false,
+            CanonicalType::Poison => true,
+        }
+    }
+
+    /// The callee input `input` as a function literal's parameters should see it.
+    /// A callee row parameter nothing has bound yet is read as empty: the literal
+    /// is monomorphic, so its parameter types must not name the callee's own row
+    /// parameters, and the empty row is a valid instantiation the call match can
+    /// still confirm. Fresh inference variables for unbound value generics are
+    /// kept in `substitution`, so later arguments share them.
+    fn literal_slot(&mut self, input: TypeId, substitution: &mut CallSubstitution) -> TypeId {
+        let mut closed = substitution.clone();
+        for parameter in self.type_row_parameters(input) {
+            if !substitution.failures.contains_key(&parameter)
+                && !substitution.needs.contains_key(&parameter)
+            {
+                closed.failures.insert(parameter, FailureRowId::new(0));
+                closed.needs.insert(parameter, NeedsRowId::new(0));
+            }
+        }
+        let slot = self.substitute_call_type(input, &mut closed);
+        substitution.values = closed.values;
+        slot
     }
 
     /// Gives each unannotated parameter of a function literal the matching
@@ -7246,8 +7354,17 @@ impl ProjectTypeChecker {
             ) => {
                 // The slot as instantiated so far. A row parameter of the callee
                 // still open in it must not bind the value's rows, or the
-                // callee's own parameter would leak into the caller.
-                let open = self.type_row_parameters(expected);
+                // callee's own parameter would leak into the caller. A bound one
+                // is not open even when its binding names the same symbol, as in
+                // a self-recursive call that passes its own `F` along.
+                let open = self
+                    .type_row_parameters(expected)
+                    .into_iter()
+                    .filter(|parameter| {
+                        !substitution.failures.contains_key(parameter)
+                            && !substitution.needs.contains_key(parameter)
+                    })
+                    .collect::<Vec<_>>();
                 let slot = self.substitute_call_type(expected, &mut substitution.clone());
                 let slot = self
                     .type_row_parameters(slot)

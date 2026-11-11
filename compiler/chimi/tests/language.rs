@@ -2632,6 +2632,75 @@ fn a_task_result_through_a_generic_wrapper_runs() {
     }
 }
 
+// ts-3af9ef: generic calls that the checker once rejected with T4203 or T4205.
+// Each is well typed, so each must run to the same outcome on both backends.
+#[test]
+fn generic_calls_with_function_arguments_bind_their_parameters_in_any_order() {
+    let declarations = concat!(
+        "enum Oops {\n",
+        "  Bad\n",
+        "}\n",
+        "struct Money {\n",
+        "  cents: Int\n",
+        "}\n",
+        "fn run<E>(operation: fn() -> Int errors E) -> Int { operation() }\n",
+        "fn failing() -> Int { Failure(Oops.Bad) }\n",
+        // A self-recursive call passes its own `F` to a row-polymorphic value.
+        "fn apply<F>(n: Int, f: fn(fn() -> Int errors F) -> Int errors F, op: fn() -> Int errors F) -> Int {\n",
+        "  case n {\n",
+        "    0 -> f(op)\n",
+        "    _ -> apply(n - 1, run, op)\n",
+        "  }\n",
+        "}\n",
+        "fn with_k<F>(k: fn(fn() -> Int errors F) -> Int errors F, op: fn() -> Int errors F) -> Int { k(op) }\n",
+        "fn compose<A, B>(a: A, f: fn(A) -> B, g: fn(B) -> Int) -> Int { g(f(a)) }\n",
+        "fn later<T>(op: fn(T) -> Int, make: fn() -> T) -> Int { op(make()) }\n",
+    );
+    let outcome = |name: &str, body: &str| {
+        run_both(
+            name,
+            &format!("{declarations}pub fn main() -> Int {{\n  {body}\n}}\n"),
+        )
+    };
+    let bad = "\"outcome\":\"expected_failure\",\"error\":{\"type\":\"Oops\",\"variant\":\"Bad\",\"fields\":{}}";
+    // The recursive call's slot keeps the row bound by `op`.
+    assert_eq!(outcome("recursive-row-slot", "apply(2, run, failing)"), bad);
+    // A lambda's parameter takes the row a later lambda binds, never the callee's `F`.
+    assert_eq!(
+        outcome(
+            "lambda-row-from-later-lambda",
+            "with_k(fn(g) { g() + 1 }, fn() { Failure(Oops.Bad) })"
+        ),
+        bad
+    );
+    assert_eq!(
+        outcome(
+            "lambda-row-handled",
+            "case with_k(fn(g) { g() + 1 }, fn() { Failure(Oops.Bad) }) {\n    Success(v) -> v\n    Failure(Bad) -> 9\n  }"
+        ),
+        "\"outcome\":\"success\",\"value\":9"
+    );
+    assert_eq!(
+        outcome("lambda-empty-row", "with_k(fn(g) { g() + 1 }, fn() { 5 })"),
+        "\"outcome\":\"success\",\"value\":6"
+    );
+    // One lambda's result types the next lambda's parameter, in either order.
+    assert_eq!(
+        outcome(
+            "lambda-result-forward",
+            "compose(3, fn(x) { Money(x) }, fn(m) { m.cents })"
+        ),
+        "\"outcome\":\"success\",\"value\":3"
+    );
+    assert_eq!(
+        outcome(
+            "lambda-result-backward",
+            "later(fn(m) { m.cents }, fn() { Money(4) })"
+        ),
+        "\"outcome\":\"success\",\"value\":4"
+    );
+}
+
 // ts-adec7a: a function value generic over a failure row takes the row of the
 // slot it fills, from a generic callee bound by another argument and from a
 // monomorphic slot. Before, its row was forced empty and the call gave T4203.
