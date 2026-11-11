@@ -436,6 +436,10 @@ struct Supervision {
     /// A plan has taken the members to stop them. Another plan that reaches
     /// this supervisor waits for it to retire instead of stopping it again.
     members_taken: bool,
+    /// A stop or removal reached this nested supervisor while an escalation
+    /// was stopping it. The escalation then ends its membership as a
+    /// requested end, which never restarts.
+    end_requested: bool,
     /// Tasks parked in `Supervisor.wait` or a `stop` that has not finished.
     waiters: Vec<Waiter>,
 }
@@ -876,6 +880,7 @@ impl Scheduler {
         let plan = match entry.current {
             Some(Instance::Process(incarnation)) => Plan::from([Step::Await(incarnation), finish]),
             Some(Instance::Supervisor(child)) if self.stop_in_flight(child) => {
+                self.request_end(child);
                 Plan::from([Step::AwaitSupervisor(child), finish])
             }
             Some(Instance::Supervisor(child)) => Plan::from([
@@ -898,6 +903,14 @@ impl Scheduler {
             .is_some_and(|record| record.members_taken)
     }
 
+    /// Marks a supervisor that is already stopping so that, if an
+    /// escalation is what stops it, its membership is not restarted.
+    fn request_end(&mut self, supervisor: SupervisorId) {
+        if let Some(record) = self.kernel.supervisors.get_mut(&supervisor) {
+            record.end_requested = true;
+        }
+    }
+
     pub(super) fn stop_for(
         &mut self,
         requester: Option<Waiter>,
@@ -915,8 +928,9 @@ impl Scheduler {
                 Ok(Progress::Done)
             }
             SupervisorState::Stopping => {
-                // Another stop is in flight; finish with it.
+                // Another stop or an escalation is in flight; finish with it.
                 let record = record.expect("a stopping supervisor has a record");
+                record.end_requested = true;
                 record.waiters.extend(requester);
                 Ok(Progress::Pending)
             }
@@ -1144,6 +1158,7 @@ impl Scheduler {
                 restart_times: VecDeque::new(),
                 state: SupervisorState::Running,
                 members_taken: false,
+                end_requested: false,
                 waiters: Vec::new(),
             },
         );
@@ -1595,8 +1610,14 @@ impl Scheduler {
             None => {
                 record.state = SupervisorState::Escalated;
                 let waiters = std::mem::take(&mut record.waiters);
+                let owner = record.owner;
                 for waiter in waiters {
                     self.reply(waiter, super::RESPONSE_DEFECTED, false);
+                }
+                // An escalated root no longer holds its owner in Draining,
+                // and `terminate_program` only defects tasks still running.
+                if let Some(owner) = owner {
+                    self.finish_draining(owner);
                 }
                 self.terminate_program();
             }
@@ -1612,7 +1633,12 @@ impl Scheduler {
                 if let Some(entry) = self.kernel.memberships.get_mut(&membership) {
                     entry.current = None;
                 }
-                self.member_ended(membership, TerminalCause::Defected);
+                let cause = if record.end_requested {
+                    TerminalCause::Cancelled
+                } else {
+                    TerminalCause::Defected
+                };
+                self.member_ended(membership, cause);
                 self.resume_blocked(Blocker::Supervisor(supervisor));
             }
         }

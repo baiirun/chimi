@@ -48,6 +48,8 @@ enum Msg {
     SpawnSleeper,
     /// Starts a root supervisor whose member lingers in cleanup.
     StartLingeringRoot,
+    /// Starts a root supervisor that escalates when `ESCALATOR` crashes.
+    StartEscalatingRoot,
     Overflow,
 }
 
@@ -338,6 +340,10 @@ unsafe extern "C" fn worker(context: *mut c_void) -> ChimiFiberResult {
             }
             Msg::StartLingeringRoot => {
                 let status = start_lingering_root();
+                log(|log| log.outcomes.push(status));
+            }
+            Msg::StartEscalatingRoot => {
+                let status = start_escalating_root();
                 log(|log| log.outcomes.push(status));
             }
             Msg::Overflow => {
@@ -3275,31 +3281,56 @@ fn sv10_a_wait_on_a_nested_supervisor_returns_when_its_parent_stops_it() {
 
 // ----- Structured stop: an owner drains until its supervisors stop -------
 
-/// Starts a root supervisor whose one member lingers in cleanup until its
-/// 5 s deadline; returns the request status.
-fn start_lingering_root() -> u32 {
-    let lingering = ChimiSupervisorMember {
+/// A restartable root member whose cleanup has a 5 s deadline; `name` 0 is
+/// unnamed.
+fn root_member(behavior: &'static Behavior, name: u64) -> ChimiSupervisorMember {
+    ChimiSupervisorMember {
         kind: MEMBER_PROCESS,
         restart: RESTART_ON_DEFECT,
         process: ChimiProcessSpec {
             entry: Some(worker),
-            context: behavior_context(&STUBBORN),
+            context: behavior_context(behavior),
             mailbox_capacity: 4,
             shutdown_within: 5_000_000_000,
-            name: 0,
+            name,
         },
         supervisor: ptr::null(),
-    };
+    }
+}
+
+/// Starts a root supervisor (restart limit 0) with `members`; returns the
+/// request status.
+fn start_root_of(members: &[ChimiSupervisorMember]) -> u32 {
     let policy = ChimiSupervisorPolicy {
-        members: &lingering,
-        member_count: 1,
-        capacity: 1,
+        members: members.as_ptr(),
+        member_count: members.len(),
+        capacity: members.len() as u32,
         restart_limit: 0,
         restart_within: 1_000_000_000,
     };
     let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_START);
     request.policy = &policy;
     supervisor_call(request).expect("not cancelled").status
+}
+
+/// Starts a root supervisor whose one member lingers in cleanup until its
+/// 5 s deadline; returns the request status.
+fn start_lingering_root() -> u32 {
+    start_root_of(&[root_member(&STUBBORN, 0)])
+}
+
+/// The name of the member of `start_escalating_root` that a crash makes
+/// its root escalate.
+const ESCALATOR: u64 = 77;
+
+/// Like `start_lingering_root`, plus a member named `ESCALATOR`: a crash
+/// there exceeds the limit, and the escalation then waits on the lingering
+/// member's cleanup.
+fn start_escalating_root() -> u32 {
+    start_root_of(&[
+        root_member(&STUBBORN, 0),
+        root_member(&PLAIN, ESCALATOR),
+    ])
 }
 
 /// Starts a lingering root, lets its member park, then returns.
@@ -3458,4 +3489,210 @@ fn es02_a_parent_stop_during_a_nested_escalation_waits_for_it_instead_of_stoppin
         )
     );
     assert!(lab.restarts().is_empty(), "a stopping parent does not replace it");
+}
+
+// ----- A stop or removal that meets a nested escalation -----------------
+
+/// A root (limit 1) holding a dynamic `OnDefect` nested supervisor (limit
+/// 0) with a lingering member and `COUNTER`. After the counter crashes, the
+/// nested escalation waits 5 s on the lingering member's cleanup.
+fn nested_escalation_in_flight(lab: &mut Lab) -> (SupervisorId, MembershipId, SupervisorId) {
+    let lingering = Member::Process(spec_with(&STUBBORN, None, 8), Restart::Never);
+    let root = lab.scheduler.start_supervisor(policy(vec![], 1)).unwrap();
+    let managed = lab
+        .scheduler
+        .start_nested_supervisor(
+            root,
+            policy(vec![lingering, counter_member(COUNTER)], 0),
+            Restart::OnDefect,
+        )
+        .unwrap();
+    let nested = nested_of(lab, managed);
+    lab.settle();
+    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.scheduler.drive();
+    assert_eq!(lab.scheduler.supervisor_state(nested), Some(SupervisorState::Stopping));
+    (root, managed, nested)
+}
+
+fn supervisors_started(lab: &Lab) -> Vec<SupervisorId> {
+    lab.lifecycle()
+        .into_iter()
+        .filter_map(|kind| match kind {
+            ProcessEventKind::SupervisorStarted { supervisor, .. } => Some(supervisor),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn sv10_removing_a_nested_supervisor_during_its_escalation_starts_no_replacement() {
+    let mut lab = Lab::new();
+    let (root, managed, nested) = nested_escalation_in_flight(&mut lab);
+    assert_eq!(lab.scheduler.remove_supervisor(root, managed), Ok(Progress::Pending));
+    lab.settle();
+    assert_eq!(supervisors_started(&lab), [root, nested], "no replacement started");
+    assert!(lab.restarts().is_empty());
+    assert_eq!(
+        lab.lifecycle().last(),
+        Some(&ProcessEventKind::Removed { membership: managed })
+    );
+    assert_eq!(
+        lab.scheduler.nested_supervisor(managed),
+        Err(ProcessError::UnknownMembership(managed)),
+        "the handle is consumed"
+    );
+    assert_eq!(
+        lab.scheduler.start_process(root, spec(None, 8), Restart::Never).map(|_| ()),
+        Ok(()),
+        "the removed membership's slot is free"
+    );
+    assert!(!lab.scheduler.has_blocked_plans());
+}
+
+#[test]
+fn sv10_stopping_a_nested_supervisor_during_its_escalation_does_not_restart_it() {
+    let mut lab = Lab::new();
+    let (root, managed, nested) = nested_escalation_in_flight(&mut lab);
+    assert_eq!(lab.scheduler.stop_supervisor(nested), Ok(Progress::Pending));
+    lab.settle();
+    assert_eq!(supervisors_started(&lab), [root, nested], "no replacement started");
+    assert!(lab.restarts().is_empty());
+    assert_eq!(lab.scheduler.supervisor_state(nested), Some(SupervisorState::Stopped));
+    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Running));
+    assert_eq!(lab.scheduler.remove_supervisor(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.lifecycle().last(),
+        Some(&ProcessEventKind::Removed { membership: managed }),
+        "a stopped nested supervisor's handle is still removed visibly"
+    );
+}
+
+#[test]
+fn sv10_a_wait_on_a_nested_supervisor_returns_when_it_escalates() {
+    let mut lab = Lab::new();
+    let root = lab.scheduler.start_supervisor(policy(vec![], 1)).unwrap();
+    let managed = lab
+        .scheduler
+        .start_nested_supervisor(root, policy(vec![counter_member(COUNTER)], 0), Restart::OnDefect)
+        .unwrap();
+    let nested = nested_of(&lab, managed);
+    let waiter = lab
+        .scheduler
+        .start_root_with_context(waits_on_supervisor, nested.get() as usize as *mut c_void)
+        .unwrap();
+    lab.scheduler.drive();
+    assert_eq!(lab.scheduler.result(None, waiter), Ok(TaskResult::Pending));
+    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.scheduler.drive();
+    assert_ne!(nested_of(&lab, managed), nested, "the parent replaced it");
+    assert_eq!(
+        lab.scheduler.result(None, waiter),
+        Ok(TaskResult::Ready(TaskOutcome::Succeeded(i64::from(RESPONSE_OK))))
+    );
+}
+
+#[test]
+fn sv10_a_retired_handle_is_still_kind_checked() {
+    let mut lab = Lab::new();
+    let root = lab.scheduler.start_supervisor(policy(vec![], 1)).unwrap();
+    let managed = lab
+        .scheduler
+        .start_nested_supervisor(root, policy(vec![counter_member(COUNTER)], 0), Restart::Never)
+        .unwrap();
+    let process = lab
+        .scheduler
+        .start_process(root, spec(Some(PEER), 8), Restart::Never)
+        .unwrap();
+    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.deliver(named(PEER), Msg::Return);
+    lab.settle();
+    assert_eq!(
+        lab.scheduler.supervisor_state(nested_of(&lab, managed)),
+        Some(SupervisorState::Stopped),
+        "it escalated and was not replaced"
+    );
+    assert_eq!(
+        lab.scheduler.remove_process(root, managed),
+        Err(ProcessError::WrongMemberKind(managed))
+    );
+    assert_eq!(
+        lab.scheduler.remove_supervisor(root, process),
+        Err(ProcessError::WrongMemberKind(process))
+    );
+    assert_eq!(lab.scheduler.remove_supervisor(root, managed), Ok(Progress::Done));
+    assert_eq!(lab.scheduler.remove_process(root, process), Ok(Progress::Done));
+    let removed: Vec<_> = lab
+        .lifecycle()
+        .into_iter()
+        .filter(|kind| matches!(kind, ProcessEventKind::Removed { .. }))
+        .collect();
+    assert_eq!(
+        removed,
+        [
+            ProcessEventKind::Removed { membership: managed },
+            ProcessEventKind::Removed { membership: process },
+        ],
+        "a wrong-kind attempt does not consume the handle"
+    );
+}
+
+// ----- An owner whose root escalates while the owner drains -------------
+
+/// An outer root holding process `COUNTER`, which starts an escalating root
+/// S2; `ESCALATOR` then crashes, so S2's escalation waits on its lingering
+/// member. Returns the outer root and the process membership.
+fn owner_of_an_escalating_root(lab: &mut Lab) -> (SupervisorId, MembershipId) {
+    let outer_root = lab.scheduler.start_supervisor(policy(vec![], 0)).unwrap();
+    let managed = lab
+        .scheduler
+        .start_process(outer_root, spec(Some(COUNTER), 8), Restart::Never)
+        .unwrap();
+    lab.deliver(named(COUNTER), Msg::StartEscalatingRoot);
+    lab.scheduler.drive();
+    assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_OK]);
+    lab.deliver(named(ESCALATOR), Msg::Crash);
+    lab.scheduler.drive();
+    (outer_root, managed)
+}
+
+#[test]
+fn removing_an_owner_whose_root_escalates_while_it_drains_finishes() {
+    let mut lab = Lab::new();
+    let (outer_root, managed) = owner_of_an_escalating_root(&mut lab);
+    assert_eq!(lab.scheduler.remove_process(outer_root, managed), Ok(Progress::Pending));
+    lab.settle();
+    assert!(lab.scheduler.program_terminated());
+    assert!(!lab.scheduler.has_blocked_plans(), "the removal finished");
+    let tail: Vec<_> = lab
+        .transcript()
+        .into_iter()
+        .filter(|line| !line.contains("process_send"))
+        .skip_while(|line| !line.contains("restart_limit_exceeded"))
+        .collect();
+    assert_eq!(
+        tail,
+        lines(
+            "@0s restart_limit_exceeded supervisor=S2
+             @5s process_terminated membership=M2 incarnation=I2 cause=forced
+             @5s supervisor_escalated supervisor=S2 parent=root
+             @5s process_terminated membership=M1 incarnation=I1 cause=cancelled
+             @5s membership_removed membership=M1
+             @5s supervisor_stopped supervisor=S1"
+        )
+    );
+}
+
+#[test]
+fn tearing_down_with_an_owner_draining_under_an_escalating_root_finishes_the_owner() {
+    let mut lab = Lab::new();
+    let (outer_root, managed) = owner_of_an_escalating_root(&mut lab);
+    assert_eq!(lab.scheduler.remove_process(outer_root, managed), Ok(Progress::Pending));
+    lab.scheduler.tear_down_processes();
+    assert!(lab.scheduler.kernel.incarnations.is_empty(), "no incarnation outlives teardown");
+    assert!(!lab.scheduler.has_blocked_plans());
+    assert!(
+        lab.lifecycle()
+            .contains(&ProcessEventKind::Removed { membership: managed })
+    );
 }
