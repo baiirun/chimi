@@ -128,11 +128,14 @@ struct ChimiControl {
   int64_t node;
 };
 
+/* The root task runs `entry` in the main heap. A child task gets its own heap and
+   adopts `captures`, a fragment holding its callable value and the requirements it
+   captured; the context is malloc'd and the child frees it. */
 struct ChimiTaskContext {
   ChimiRuntime *runtime;
   ChimiEnvironment *environment;
-  ChimiCallable *callable;
   ChimiNodeFn entry;
+  struct RuntimeFragment *captures;
   uint64_t span;
 };
 
@@ -1628,6 +1631,15 @@ static ChimiValue *channel_bundle_value(uint64_t channel, uint64_t owner, uint64
   return value;
 }
 
+/* Every scheduler request goes through here. A fiber resumes only by returning from
+   its request, so restoring the caller's heap here switches heaps on every resume. */
+static ChimiFiberCommand scheduler_request(void *request) {
+  RuntimeHeap *heap = current_heap;
+  ChimiFiberCommand command = chimi_fiber_request(request, NULL);
+  current_heap = heap;
+  return command;
+}
+
 typedef struct {
   ChimiValue **visited;
   size_t length;
@@ -1694,7 +1706,7 @@ static bool transfer_captured_capability(CapabilityTransfer *transfer, ChimiValu
     .owner = value->as.capability.owner,
     .token = value->as.capability.token,
   };
-  ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+  ChimiFiberCommand command = scheduler_request(&request);
   if (command == CHIMI_FIBER_CANCEL) {
     transfer->cancelled = true;
     return false;
@@ -2543,15 +2555,60 @@ static ChimiFiberResult task_fiber_result(ChimiControl *control) {
   };
 }
 
+/* A child's result outlives its heap as a fragment. The scheduler keeps it with the
+   task record, and every Task.result copies it into the caller's heap. The scheduler
+   can also hand a child's defect code to the root, so a child's result word carries
+   CHILD_RESULT_TAG to tell it from the root's own ChimiControl pointer. */
+enum { CHILD_RESULT_TAG = 1 };
+static ChimiFiberResult child_task_result(ChimiControl *control) {
+  if (control->kind == CONTROL_CANCEL) return task_fiber_result(control);
+  void *roots[] = {control};
+  AllocationKind kinds[] = {ALLOCATION_CONTROL};
+  RuntimeFragment *result = NULL;
+  if (fragment_copy(roots, kinds, 1, &result) != HEAP_OK) {
+    roots[0] = control = defect(FOREIGN_POINTER_DEFECT, -1);
+    if (fragment_copy(roots, kinds, 1, &result) != HEAP_OK) abort();
+  }
+  if (control->kind == CONTROL_DEFECT)
+    return (ChimiFiberResult){
+      .state = CHIMI_FIBER_DEFECTED,
+      .defect_code = (int64_t)(intptr_t)result | CHILD_RESULT_TAG,
+    };
+  return (ChimiFiberResult){
+    .state = CHIMI_FIBER_SUCCEEDED,
+    .value = (int64_t)(intptr_t)result | CHILD_RESULT_TAG,
+  };
+}
+
 static ChimiFiberResult chimi_task_entry(void *raw_context) {
   ChimiTaskContext *context = raw_context;
-  ChimiControl *control;
-  if (context->entry)
-    control = context->entry(context->runtime, context->environment, context->span);
-  else
-    control = invoke(context->runtime, context->callable, NULL, 0, context->span,
-                     UINT32_MAX, context->environment);
-  return task_fiber_result(control);
+  if (context->entry) {
+    current_heap = &main_heap;
+    return task_fiber_result(context->entry(context->runtime, context->environment, context->span));
+  }
+  ChimiRuntime *runtime = context->runtime;
+  uint64_t span = context->span;
+  RuntimeHeap *heap = heap_create();
+  current_heap = heap;
+  void *captures[FRAGMENT_ROOTS];
+  fragment_adopt(context->captures, captures);
+  free(context);
+  ChimiValue *callable = captures[0];
+  ChimiControl *control = invoke(runtime, callable->as.callable, NULL, 0, span, UINT32_MAX,
+                                 captures[1]);
+  ChimiFiberResult result = child_task_result(control);
+  heap_destroy(heap);
+  current_heap = NULL;
+  return result;
+}
+
+/* The control a task's result word names: the root's own control, or a copy of a
+   child's result fragment in the current heap. */
+static ChimiControl *task_reply(int64_t raw) {
+  if (!(raw & CHILD_RESULT_TAG)) return (ChimiControl *)(intptr_t)raw;
+  void *roots[FRAGMENT_ROOTS];
+  fragment_copy_into_current((RuntimeFragment *)(intptr_t)(raw & ~(int64_t)CHILD_RESULT_TAG), roots);
+  return roots[0];
 }
 
 static ChimiControl *map_values_node(ChimiRuntime *runtime, MapNode *node,
@@ -3026,23 +3083,32 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     case CHIMI_INTRINSIC_TASK_START: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_CALLABLE)
         return intrinsic_shape_defect(call_node);
-      ChimiTaskContext *context = allocate(1, sizeof(*context));
-      context->runtime = runtime;
-      context->environment = capture_requirements(environment);
-      context->callable = arguments[0]->as.callable;
-      context->entry = NULL;
-      context->span = span;
+      /* The child runs in its own heap, so it gets a copy of what it captured. */
+      void *roots[] = {arguments[0], capture_requirements(environment)};
+      AllocationKind kinds[] = {ALLOCATION_VALUE, ALLOCATION_ENVIRONMENT};
+      RuntimeFragment *captures = NULL;
+      if (fragment_copy(roots, kinds, 2, &captures) != HEAP_OK)
+        return defect(FOREIGN_POINTER_DEFECT, call_node);
+      ChimiTaskContext *context = malloc(sizeof(*context));
+      if (!context) exhausted_memory();
+      *context = (ChimiTaskContext){.runtime = runtime, .captures = captures, .span = span};
       ChimiSchedulerRequest request = {
         .kind = CHIMI_REQUEST_TASK_START,
         .entry = chimi_task_entry,
         .context = context,
       };
-      ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      if (request.status != CHIMI_RESPONSE_OK)
+      ChimiFiberCommand command = scheduler_request(&request);
+      if (request.status != CHIMI_RESPONSE_OK) {
+        fragment_free(captures);
+        free(context);
+        if (command == CHIMI_FIBER_CANCEL) return cancelled();
         return defect("Task.start scheduler request failed", call_node);
+      }
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      /* The child has not run yet: it adopts the fragment when it first runs, so the
+         transfer below rewrites the capabilities in the child's copy. */
       CapabilityTransfer transfer = {.child = request.task};
-      bool transferred = transfer_captured_value(&transfer, arguments[0], 0);
+      bool transferred = transfer_captured_value(&transfer, captures->roots[0], 0);
       free(transfer.visited);
       if (!transferred) {
         if (transfer.cancelled) return cancelled();
@@ -3058,14 +3124,13 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
           .kind = CHIMI_REQUEST_TASK_RESULT,
           .task = arguments[0]->as.task,
         };
-        ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+        ChimiFiberCommand command = scheduler_request(&request);
         if (command == CHIMI_FIBER_CANCEL) return cancelled();
         if (request.status == CHIMI_RESPONSE_PENDING) continue;
-        if (request.status == CHIMI_RESPONSE_SUCCEEDED)
-          return (ChimiControl *)(intptr_t)request.value;
+        if (request.status == CHIMI_RESPONSE_SUCCEEDED) return task_reply(request.value);
         if (request.status == CHIMI_RESPONSE_CANCELLED) return cancelled();
-        if (request.status == CHIMI_RESPONSE_DEFECTED && request.value != 0)
-          return (ChimiControl *)(intptr_t)request.value;
+        if (request.status == CHIMI_RESPONSE_DEFECTED && request.value > 0)
+          return task_reply(request.value);
         if (request.status == CHIMI_RESPONSE_STACK_OVERFLOW)
           return defect("Task stack overflow", call_node);
         return defect("Task.result scheduler request failed", call_node);
@@ -3078,7 +3143,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
         .kind = CHIMI_REQUEST_TASK_CANCEL,
         .task = arguments[0]->as.task,
       };
-      ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+      ChimiFiberCommand command = scheduler_request(&request);
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
       return request.status == CHIMI_RESPONSE_OK
         ? success(void_value())
@@ -3092,7 +3157,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
         .kind = CHIMI_REQUEST_CHANNEL_BOUNDED,
         .value = arguments[0]->as.integer,
       };
-      ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+      ChimiFiberCommand command = scheduler_request(&request);
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
       return request.status == CHIMI_RESPONSE_OK
         ? success(channel_bundle_value(request.channel, request.owner, request.token))
@@ -3101,18 +3166,28 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     case CHIMI_INTRINSIC_CHANNEL_SEND: {
       if (argument_count != 2 || arguments[0]->kind != VALUE_CHANNEL_SENDER)
         return intrinsic_shape_defect(call_node);
+      /* The message travels as a fragment. One the channel refuses comes back, and
+         the sender recovers its own original value instead. A fragment parked with a
+         cancelled send, or queued in a channel that is aborted, stays allocated until
+         the process exits: the scheduler reports neither. */
+      void *roots[] = {arguments[1]};
+      AllocationKind kinds[] = {ALLOCATION_VALUE};
+      RuntimeFragment *message = NULL;
+      if (fragment_copy(roots, kinds, 1, &message) != HEAP_OK)
+        return defect(FOREIGN_POINTER_DEFECT, call_node);
       for (;;) {
         ChimiSchedulerRequest request = {
           .kind = CHIMI_REQUEST_CHANNEL_SEND,
           .channel = arguments[0]->as.capability.channel,
-          .value = (int64_t)(intptr_t)arguments[1],
+          .value = (int64_t)(intptr_t)message,
         };
-        ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+        ChimiFiberCommand command = scheduler_request(&request);
         if (command == CHIMI_FIBER_CANCEL) return cancelled();
         if (request.status == CHIMI_RESPONSE_PENDING) continue;
         if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
-        ChimiValue *recovered = (ChimiValue *)(intptr_t)request.value;
-        ChimiValue *fields[] = {recovered};
+        if (request.status == CHIMI_RESPONSE_CLOSED || request.status == CHIMI_RESPONSE_ABORTED)
+          fragment_free((RuntimeFragment *)(intptr_t)request.value);
+        ChimiValue *fields[] = {arguments[1]};
         if (request.status == CHIMI_RESPONSE_CLOSED)
           return failure(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED, fields, 1));
         if (request.status == CHIMI_RESPONSE_ABORTED)
@@ -3131,11 +3206,13 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
           .owner = capability.owner,
           .token = capability.token,
         };
-        ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+        ChimiFiberCommand command = scheduler_request(&request);
         if (command == CHIMI_FIBER_CANCEL) return cancelled();
         if (request.status == CHIMI_RESPONSE_PENDING) continue;
         if (request.status == CHIMI_RESPONSE_SUCCEEDED) {
-          ChimiValue *fields[] = {(ChimiValue *)(intptr_t)request.value};
+          void *roots[FRAGMENT_ROOTS];
+          fragment_adopt((RuntimeFragment *)(intptr_t)request.value, roots);
+          ChimiValue *fields[] = {roots[0]};
           return success(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED, fields, 1));
         }
         if (request.status == CHIMI_RESPONSE_DRAINED)
@@ -3155,7 +3232,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
         .owner = capability.owner,
         .token = capability.token,
       };
-      ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+      ChimiFiberCommand command = scheduler_request(&request);
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
       return request.status == CHIMI_RESPONSE_OK
         ? success(void_value())
@@ -3171,7 +3248,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
         .owner = capability.owner,
         .token = capability.token,
       };
-      ChimiFiberCommand command = chimi_fiber_request(&request, NULL);
+      ChimiFiberCommand command = scheduler_request(&request);
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
       return request.status == CHIMI_RESPONSE_OK
         ? success(void_value())
@@ -3625,11 +3702,11 @@ NODE_WRAPPER(match, "match", {
    pass checks cancellation first and runs under this node's span, so pass operations
    are siblings.
 
-   Without a scheduler, a pass's allocations are reclaimed once it ends, keeping only
-   what the next state reaches. Values are immutable and the loop environment lives in
-   the enclosing scope, so the state is the only path from one pass to the next. With a
-   scheduler this is unsafe: Channel.send hands the scheduler an unmarked pointer, and
-   fibers share one current scope (prog show ts-da83af). */
+   A pass's allocations are reclaimed once it ends, keeping only what the next state
+   reaches. Values are immutable and the loop environment lives in the enclosing area,
+   so the state is the only path from one pass to the next. Under the scheduler each
+   task has its own heap, and values cross between tasks only as fragment copies, so a
+   pass never frees what another task can reach. */
 NODE_WRAPPER(loop, "loop", {
   const ChimiNode *node = &CHIMI_NODES[node_id];
   ChimiControl *initial = RUN(node->b);
@@ -3637,16 +3714,15 @@ NODE_WRAPPER(loop, "loop", {
   environment = clone_local_environment(incoming);
   uint32_t state_slot = environment_slot(node->a);
   ChimiValue *state = initial->value;
-  bool reclaims = !CHIMI_REQUIRES_SCHEDULER;
   AllocationScope passes;
-  if (reclaims) allocation_scope_begin(&passes);
+  allocation_scope_begin(&passes);
   for (;;) {
     if (runtime->cancel) { result = cancelled(); break; }
     environment->locals[state_slot] = state;
     ChimiControl *pass = RUN(node->c);
     if (pass->kind == CONTROL_SUCCESS) {
       state = pass->value;
-      if (reclaims && allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {
+      if (allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {
         result = defect(FOREIGN_POINTER_DEFECT, (int64_t)node_id);
         break;
       }
@@ -3659,7 +3735,7 @@ NODE_WRAPPER(loop, "loop", {
     }
     break;
   }
-  if (reclaims) result = end_measured_allocation_scope(runtime, &passes, result);
+  result = end_measured_allocation_scope(runtime, &passes, result);
 })
 NODE_WRAPPER(break, "break", {
   const ChimiNode *node = &CHIMI_NODES[node_id];
@@ -3794,11 +3870,12 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
   ChimiSchedulerOutcome outcome = chimi_scheduler_execute(
     chimi_task_entry, &context, 64u * 1024u, trace_mode,
     emit_scheduler_event, runtime);
+  current_heap = &main_heap;
   if (outcome.state == CHIMI_FIBER_SUCCEEDED)
-    return (ChimiControl *)(intptr_t)outcome.value;
+    return task_reply(outcome.value);
   if (outcome.state == CHIMI_FIBER_CANCELLED) return cancelled();
   if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code != 0)
-    return (ChimiControl *)(intptr_t)outcome.defect_code;
+    return task_reply(outcome.defect_code);
   if (outcome.state == CHIMI_FIBER_STACK_OVERFLOW)
     return defect("Task stack overflow", -1);
   return defect("Task scheduler failed to produce a terminal root", -1);

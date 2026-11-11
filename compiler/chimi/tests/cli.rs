@@ -2726,6 +2726,181 @@ fn execute_with_memory_report(executable: &Path, scratch: &Path) -> (String, Str
     )
 }
 
+/// The concurrency-pipeline forcing program with `jobs` jobs: the root sends each
+/// job and receives its result in a loop while a worker task loops over the jobs.
+fn pipeline_program(jobs: u64) -> String {
+    format!(
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{{Completion, Receiver, Receive, Sender}}\n",
+            "import std/task as Task\n",
+            "fn worker(jobs: Receiver<Int>, results: Sender<Int>, completion: Completion<Int>) -> Int {{\n",
+            "  loop processed = 0 {{\n",
+            "    let next = Channel.receive(jobs)\n",
+            "    case next {{\n",
+            "      Receive.Received(value) -> {{\n",
+            "        Channel.send(results, value + 10)\n",
+            "        processed + 1\n",
+            "      }}\n",
+            "      Receive.Drained -> {{\n",
+            "        Channel.close(completion)\n",
+            "        break processed\n",
+            "      }}\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+            "pub fn main() -> Int {{\n",
+            "  let jobs = Channel.bounded(1)\n",
+            "  let results = Channel.bounded(1)\n",
+            "  let job_sender = jobs.sender\n",
+            "  let job_receiver = jobs.receiver\n",
+            "  let job_completion = jobs.completion\n",
+            "  let result_sender = results.sender\n",
+            "  let result_receiver = results.receiver\n",
+            "  let result_completion = results.completion\n",
+            "  let child = Task.start(fn() -> Int {{ worker(job_receiver, result_sender, result_completion) }})\n",
+            "  let total = loop state = {{ next: 0, sum: 0 }} {{\n",
+            "    case state.next {{\n",
+            "      {jobs} -> break state.sum\n",
+            "      _ -> {{\n",
+            "        Channel.send(job_sender, state.next)\n",
+            "        let reply = Channel.receive(result_receiver)\n",
+            "        case reply {{\n",
+            "          Receive.Received(value) -> {{ next: state.next + 1, sum: state.sum + value }}\n",
+            "          Receive.Drained -> break state.sum\n",
+            "        }}\n",
+            "      }}\n",
+            "    }}\n",
+            "  }}\n",
+            "  Channel.close(job_completion)\n",
+            "  total + Task.result(child)\n",
+            "}}\n",
+        ),
+        jobs = jobs
+    )
+}
+
+// ts-6ccbc9 / ts-df67fb: with per-owner heaps, loops reclaim under the scheduler, so
+// the pipeline's memory does not grow with the number of jobs. Before, every pass's
+// allocations stayed live until exit once a program used tasks or channels.
+#[test]
+fn native_concurrency_pipeline_runs_in_flat_memory() {
+    let measure = |jobs: u64| {
+        let scratch = scratch_directory(&format!("native-pipeline-memory-{jobs}"));
+        let executable = build_native(&scratch, "pipeline", &pipeline_program(jobs));
+        let (outcome, report) = execute_with_memory_report(&executable, &scratch);
+        let expected = jobs * (jobs - 1) / 2 + 11 * jobs;
+        assert!(
+            outcome.contains(&format!("\"value\":{expected}")),
+            "{outcome}"
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
+        report
+    };
+    let small = measure(50);
+    let large = measure(5_000);
+    // Nothing a pass allocates outlives the program's loops.
+    assert_eq!(
+        json_u64_field(&large, "unscoped_allocated_bytes"),
+        json_u64_field(&small, "unscoped_allocated_bytes"),
+        "small {small}\nlarge {large}"
+    );
+    assert_eq!(
+        json_u64_field(&large, "scoped_retained_bytes"),
+        json_u64_field(&small, "scoped_retained_bytes"),
+        "small {small}\nlarge {large}"
+    );
+    assert!(json_u64_field(&large, "scoped_collections") >= 2 * 5_000);
+    // Every heap and every in-transit message together, headers included.
+    let small_peak = json_u64_field(&small, "peak_footprint_bytes");
+    let large_peak = json_u64_field(&large, "peak_footprint_bytes");
+    assert!(
+        large_peak <= small_peak + 4_096,
+        "peak footprint grew from {small_peak} to {large_peak} bytes"
+    );
+    assert!(
+        json_u64_field(&large, "peak_fragment_footprint_bytes")
+            <= json_u64_field(&small, "peak_fragment_footprint_bytes"),
+        "small {small}\nlarge {large}"
+    );
+}
+
+// Port requirement (Task.result adoption): a task handle can be read many times, and
+// each read inside a loop pass gets its own copy of the child's result, so a later
+// pass that reclaims one copy leaves the next read intact.
+#[test]
+fn native_task_result_can_be_read_on_every_pass_of_a_loop() {
+    let scratch = scratch_directory("native-task-result-every-pass");
+    let executable = build_native(
+        &scratch,
+        "task-result",
+        concat!(
+            "import std/task as Task\n",
+            "struct Answer {\n",
+            "  a: Int,\n",
+            "  b: Text,\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let child = Task.start(fn() -> Answer { Answer(40, \"two\") })\n",
+            "  loop state = { pass: 0, sum: 0 } {\n",
+            "    case state.pass {\n",
+            "      1000 -> break state.sum\n",
+            "      _ -> {\n",
+            "        let result = Task.result(child)\n",
+            "        let bonus = case result.b {\n",
+            "          \"two\" -> 2\n",
+            "          _ -> 0\n",
+            "        }\n",
+            "        { pass: state.pass + 1, sum: state.sum + result.a + bonus }\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let (outcome, _) = execute_with_memory_report(&executable, &scratch);
+    assert!(outcome.contains("\"value\":42000"), "{outcome}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Port requirement (Task.start captures): a child runs in its own heap on a copy of
+// what it captured, so a value built in one loop pass and captured by a task stays
+// intact after that pass ends and its own allocations are reclaimed.
+#[test]
+fn native_a_task_keeps_what_it_captured_after_the_parents_pass_ends() {
+    let scratch = scratch_directory("native-task-captures-pass-values");
+    let executable = build_native(
+        &scratch,
+        "task-captures",
+        concat!(
+            "import std/task as Task\n",
+            "pub fn main() -> Int {\n",
+            "  let first = Task.start(fn() -> Int { 0 })\n",
+            "  loop state = { pass: 0, sum: 0, task: first } {\n",
+            "    let previous = Task.result(state.task)\n",
+            "    case state.pass {\n",
+            "      200 -> break state.sum + previous\n",
+            "      _ -> {\n",
+            "        let captured = { value: state.pass + 1, label: \"pass\" }\n",
+            "        let next = Task.start(fn() -> Int {\n",
+            "          case captured.label {\n",
+            "            \"pass\" -> captured.value\n",
+            "            _ -> 1000000\n",
+            "          }\n",
+            "        })\n",
+            "        { pass: state.pass + 1, sum: state.sum + previous, task: next }\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let (outcome, _) = execute_with_memory_report(&executable, &scratch);
+    // 1 + 2 + ... + 200: each task returns the value its pass captured.
+    assert!(outcome.contains("\"value\":20100"), "{outcome}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // LP-08: draining a list that was built outside every loop frees each drain's window
 // copies, so draining it 8 times peaks at the same memory as draining it twice and
 // leaves nothing more behind. Copies that outlived the loop that made them used to
