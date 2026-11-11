@@ -3693,6 +3693,9 @@ impl ProjectTypeChecker {
             .map(|subject| subject.success)
             .collect::<Vec<_>>();
         let mut coverage = Vec::<Vec<MatchPattern>>::new();
+        if clauses.is_some() {
+            self.seed_generic_clause_parameters(module_id, subjects, arms, generics);
+        }
         // After each arm that added coverage: its index and the coverage length.
         let mut coverage_ends = Vec::<(usize, usize)>::new();
         // An arm whose pattern lost a `..` to L2021 does not mean what was written, so
@@ -3709,8 +3712,16 @@ impl ProjectTypeChecker {
                     clauses.is_some() && self.reject_outcome_parameter(module_id, pattern)
                 })
                 .collect::<Vec<_>>();
+            // So is a clause pattern that inspects a generic value (`T4230` below).
+            let inspects_generic = clauses.is_some()
+                && arm
+                    .patterns
+                    .iter()
+                    .zip(subjects)
+                    .any(|(pattern, subject)| self.inspects_generic(pattern, subject.success));
             let rejected = arm.patterns.iter().any(Pattern::has_rejected_rest)
-                || outcome_parameters.contains(&true);
+                || outcome_parameters.contains(&true)
+                || inspects_generic;
             rejected_arm |= rejected;
             if arm.patterns.len() != subjects.len() {
                 self.type_error_range(
@@ -3866,6 +3877,18 @@ impl ProjectTypeChecker {
         }
     }
 
+    /// Whether `pattern` tests a value of generic type `expected`, which no
+    /// clause can do: only a binding, `_`, or a typed binding may match it.
+    fn inspects_generic(&self, pattern: &Pattern, expected: TypeId) -> bool {
+        !matches!(
+            pattern,
+            Pattern::Wildcard { .. } | Pattern::Binding { .. } | Pattern::Typed { .. }
+        ) && matches!(
+            self.types[self.resolve_inference_type(expected).raw() as usize],
+            CanonicalType::Generic(_)
+        )
+    }
+
     fn normalize_pattern(
         &mut self,
         module_id: ModuleId,
@@ -3875,10 +3898,7 @@ impl ProjectTypeChecker {
         bindings: &mut HashMap<SymbolId, ValueBinding>,
     ) -> MatchPattern {
         if context.clause_head
-            && !matches!(
-                pattern,
-                Pattern::Wildcard { .. } | Pattern::Binding { .. } | Pattern::Typed { .. }
-            )
+            && self.inspects_generic(pattern, expected)
             && let CanonicalType::Generic(parameter) =
                 self.types[self.resolve_inference_type(expected).raw() as usize].clone()
         {
@@ -5150,6 +5170,44 @@ impl ProjectTypeChecker {
         };
         self.type_error_range(module_id, "T4284", expression_range(base), message);
         None
+    }
+
+    /// Gives a clause parameter the generic type that any clause names for it
+    /// (`_: T`), before any clause's patterns are checked, so a literal or
+    /// constructor against it is `T4230` whichever clause comes first.
+    fn seed_generic_clause_parameters(
+        &mut self,
+        module_id: ModuleId,
+        subjects: &[ExpressionFact],
+        arms: &[ModuleCaseArm],
+        generics: &HashMap<String, SymbolId>,
+    ) {
+        for arm in arms {
+            for (pattern, subject) in arm.patterns.iter().zip(subjects) {
+                let mut pattern = pattern;
+                while let Pattern::Alias { pattern: inner, .. } = pattern {
+                    pattern = inner;
+                }
+                let Pattern::Typed { type_use, .. } = pattern else {
+                    continue;
+                };
+                let subject_type = self.resolve_inference_type(subject.success);
+                if !matches!(
+                    self.types[subject_type.raw() as usize],
+                    CanonicalType::InferenceVariable(_)
+                ) {
+                    continue;
+                }
+                let annotated = self.lower_value_type(module_id, type_use, generics);
+                let annotated = self.resolve_inference_type(annotated);
+                if matches!(
+                    self.types[annotated.raw() as usize],
+                    CanonicalType::Generic(_)
+                ) {
+                    self.unify(subject_type, annotated);
+                }
+            }
+        }
     }
 
     /// `T4282`: a clause parameter never holds a live outcome, because callers

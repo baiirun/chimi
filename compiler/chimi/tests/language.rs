@@ -5494,6 +5494,28 @@ fn a_clause_cannot_inspect_a_generic_parameter() {
         "pub fn main() -> Int { f(1) }\n",
     ));
     assert!(codes.contains(&"T4230".to_owned()), "{codes:?}");
+    // In the reverse order the literal comes before the clause that names `T`;
+    // it is still T4230 on the literal, not a cross-clause T4281.
+    let reversed = concat!(
+        "fn f<T>(0) -> Int {\n",
+        "  1\n",
+        "}\n",
+        "fn f(_: T) {\n",
+        "  0\n",
+        "}\n",
+        "pub fn main() -> Int { f(1) }\n",
+    );
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", reversed))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let [literal] = report.diagnostics() else {
+        panic!("{:?}", report.diagnostics());
+    };
+    assert_eq!(literal.code(), "T4230");
+    assert_eq!(
+        literal.range().start() as usize,
+        reversed.find("(0)").unwrap() + 1
+    );
 }
 
 #[test]
