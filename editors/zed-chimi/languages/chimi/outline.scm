@@ -3,6 +3,11 @@
   "fn" @context
   name: (identifier) @name) @item
 
+(const_declaration
+  (visibility)? @context
+  "const" @context
+  name: (identifier) @name) @item
+
 (struct_declaration
   (visibility)? @context
   "struct" @context

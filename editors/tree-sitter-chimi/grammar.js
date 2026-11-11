@@ -8,14 +8,20 @@
  * compiler already reports.
  */
 
+// Loosest to tightest, matching the operator table in
+// docs/specification/core-data-and-operators.md.
 const PREC = {
   using: 1,
-  pipeline: 2,
-  comparison: 3,
-  additive: 4,
-  multiplicative: 5,
-  unary: 6,
-  postfix: 7,
+  or: 2,
+  and: 3,
+  not: 4,
+  pipeline: 5,
+  comparison: 6,
+  range: 7,
+  additive: 8,
+  multiplicative: 9,
+  unary: 10,
+  postfix: 11,
 };
 
 const commaSep1 = (rule) => seq(rule, repeat(seq(',', rule)), optional(','));
@@ -28,7 +34,7 @@ module.exports = grammar({
 
   word: ($) => $.identifier,
 
-  supertypes: ($) => [$._expression, $._type],
+  supertypes: ($) => [$._expression, $._type, $._pattern],
 
   rules: {
     source_file: ($) => repeat($._item),
@@ -40,6 +46,7 @@ module.exports = grammar({
         $.enum_declaration,
         $.interface_declaration,
         $.function_declaration,
+        $.const_declaration,
         $.let_binding,
         $._expression,
       ),
@@ -102,6 +109,8 @@ module.exports = grammar({
     generic_parameters: ($) =>
       seq('<', commaSep1(field('name', $.identifier)), '>'),
 
+    // Adjacent declarations with one name are the clauses of one function. A
+    // clause's guard comes after the contract and right before the body.
     function_declaration: ($) =>
       seq(
         optional($.visibility),
@@ -111,13 +120,25 @@ module.exports = grammar({
         field('parameters', $.parameters),
         optional(field('return_type', $.return_type)),
         optional($.requirement_clause),
+        optional(seq('if', field('guard', $._expression))),
         field('body', $.block),
+      ),
+
+    const_declaration: ($) =>
+      seq(
+        optional($.visibility),
+        'const',
+        field('name', $.identifier),
+        optional(seq(':', field('type', $._type))),
+        '=',
+        field('value', $._expression),
       ),
 
     parameters: ($) => seq('(', commaSep($.parameter), ')'),
 
-    parameter: ($) =>
-      seq(field('name', $.identifier), optional(seq(':', field('type', $._type)))),
+    // A parameter is a pattern, as in `fn area(Circle(radius))`. The plain
+    // `name` and `name: Type` forms keep their own fields.
+    parameter: ($) => choice(plainBinding($), field('pattern', $._pattern)),
 
     return_type: ($) => seq('->', $._type),
 
@@ -136,7 +157,7 @@ module.exports = grammar({
 
     // Types
 
-    _type: ($) => choice($.named_type, $.function_type, $.void_type),
+    _type: ($) => choice($.named_type, $.function_type, $.tuple_type, $.void_type),
 
     void_type: (_) => 'Void',
 
@@ -150,6 +171,9 @@ module.exports = grammar({
       ),
 
     type_arguments: ($) => seq('<', commaSep1($._type), '>'),
+
+    // Two or more elements; `(T)` and `()` are not tuple types.
+    tuple_type: ($) => seq('(', $._type, repeat1(seq(',', $._type)), optional(','), ')'),
 
     function_type: ($) =>
       prec.right(
@@ -167,8 +191,14 @@ module.exports = grammar({
 
     // Bindings and expressions
 
+    // `let` takes an irrefutable pattern, such as `(low, high)`.
     let_binding: ($) =>
-      seq('let', field('name', $.identifier), '=', field('value', $._expression)),
+      seq(
+        'let',
+        choice(plainBinding($), field('pattern', $._pattern)),
+        '=',
+        field('value', $._expression),
+      ),
 
     _expression: ($) =>
       choice(
@@ -176,13 +206,17 @@ module.exports = grammar({
         $.pipeline_expression,
         $.binary_expression,
         $.unary_expression,
+        $.range_expression,
         $.call_expression,
         $.member_expression,
         $.integer,
+        $.float,
         $.text,
         $.boolean,
+        $.void_value,
         $.identifier,
         $.parenthesized_expression,
+        $.tuple_expression,
         $.list_expression,
         $.record_expression,
         $.block,
@@ -204,11 +238,15 @@ module.exports = grammar({
         seq(field('value', $._expression), '|>', field('transform', $._expression)),
       ),
 
+    // Comparisons do not chain in the compiler (`S1006`); this grammar accepts
+    // a chain so the rest of the line still highlights.
     binary_expression: ($) => {
       const table = [
-        [PREC.comparison, choice('<', '<=', '>', '>=')],
+        [PREC.or, 'or'],
+        [PREC.and, 'and'],
+        [PREC.comparison, choice('==', '!=', '<', '<=', '>', '>=')],
         [PREC.additive, choice('+', '-')],
-        [PREC.multiplicative, choice('*', '/')],
+        [PREC.multiplicative, choice('*', '/', '%')],
       ];
       return choice(
         ...table.map(([precedence, operator]) =>
@@ -224,8 +262,25 @@ module.exports = grammar({
       );
     },
 
+    // `not` binds more loosely than `|>` and comparison: `not a == b` is
+    // `not (a == b)`.
     unary_expression: ($) =>
-      prec(PREC.unary, seq(field('operator', '-'), field('operand', $._expression))),
+      choice(
+        prec(PREC.unary, seq(field('operator', '-'), field('operand', $._expression))),
+        prec(PREC.not, seq(field('operator', 'not'), field('operand', $._expression))),
+      ),
+
+    // `start..end` is half-open and `start..=end` inclusive. Like comparisons,
+    // a chain is accepted here and rejected by the compiler.
+    range_expression: ($) =>
+      prec.left(
+        PREC.range,
+        seq(
+          field('start', $._expression),
+          field('operator', choice('..', '..=')),
+          field('end', $._expression),
+        ),
+      ),
 
     call_expression: ($) =>
       prec(PREC.postfix, seq(field('function', $._expression), field('arguments', $.arguments))),
@@ -243,9 +298,24 @@ module.exports = grammar({
 
     parenthesized_expression: ($) => seq('(', $._expression, ')'),
 
+    // Two or more elements; `(e)` is grouping, and `(e,)` and `()` are errors.
+    tuple_expression: ($) =>
+      seq('(', $._expression, repeat1(seq(',', $._expression)), optional(','), ')'),
+
     list_expression: ($) => seq('[', commaSep($._expression), ']'),
 
-    record_expression: ($) => seq('{', commaSep1($.record_field), '}'),
+    // A record update puts `..base` first: `{ ..config, jobs: jobs }`.
+    record_expression: ($) =>
+      seq(
+        '{',
+        choice(
+          seq($.record_spread, repeat(seq(',', $.record_field)), optional(',')),
+          commaSep1($.record_field),
+        ),
+        '}',
+      ),
+
+    record_spread: ($) => seq('..', field('base', $._expression)),
 
     record_field: ($) =>
       seq(field('name', $.identifier), ':', field('value', $._expression)),
@@ -272,8 +342,25 @@ module.exports = grammar({
         ),
       ),
 
-    _pattern: ($) => choice($.integer, $.text, $.boolean, $.constructor_pattern),
+    // Patterns
 
+    _pattern: ($) =>
+      choice(
+        $.integer,
+        $.float,
+        $.negative_literal,
+        $.text,
+        $.boolean,
+        $.void_value,
+        $.constructor_pattern,
+        $.typed_pattern,
+        $.tuple_pattern,
+        $.list_pattern,
+        $.alias_pattern,
+      ),
+
+    // A name, a wildcard `_`, or a variant or struct with positional payload
+    // patterns, such as `Value.Text(schema)`.
     constructor_pattern: ($) =>
       prec.right(
         seq(
@@ -282,10 +369,28 @@ module.exports = grammar({
         ),
       ),
 
+    negative_literal: ($) => seq('-', choice($.integer, $.float)),
+
+    // `error: FileError`. A colon in a pattern always introduces a type.
+    typed_pattern: ($) =>
+      prec(-1, seq(field('name', $.identifier), ':', field('type', $._type))),
+
+    tuple_pattern: ($) =>
+      seq('(', $._pattern, repeat1(seq(',', $._pattern)), optional(','), ')'),
+
+    list_pattern: ($) => seq('[', commaSep(choice($._pattern, $.rest_pattern)), ']'),
+
+    // `..rest` binds the remaining elements; a bare `..` ignores them.
+    rest_pattern: ($) => prec.right(seq('..', optional(field('name', $.identifier)))),
+
+    // `as` binds less tightly than every other pattern form.
+    alias_pattern: ($) =>
+      prec.left(seq(field('pattern', $._pattern), 'as', field('alias', $.identifier))),
+
     loop_expression: ($) =>
       seq(
         'loop',
-        field('state', $.identifier),
+        choice(plainState($), field('pattern', $._pattern)),
         '=',
         field('initial', $._expression),
         field('body', $.block),
@@ -306,22 +411,56 @@ module.exports = grammar({
 
     boolean: (_) => choice('True', 'False'),
 
-    integer: (_) => /[0-9][0-9_]*/,
+    // `Void` is both the type and its only value.
+    void_value: (_) => 'Void',
+
+    integer: (_) => token(choice(/0[xX][0-9a-fA-F_]+/, /0[bB][01_]+/, /[0-9][0-9_]*/)),
+
+    // A `.` starts a fraction only when a digit follows, so `0..10` stays a range.
+    float: (_) =>
+      token(
+        choice(
+          /[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?/,
+          /[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*/,
+        ),
+      ),
 
     text: ($) =>
       seq(
         '"',
-        repeat(choice(token.immediate(prec(1, /[^"\\\r\n]+/)), $.escape_sequence)),
+        repeat(choice($.text_content, $.escape_sequence, $.interpolation)),
         token.immediate('"'),
       ),
 
-    escape_sequence: (_) => token.immediate(/\\./),
+    // The run takes precedence so `//` inside text is not a comment. A `$` not
+    // followed by `{` is literal text; it has no precedence so the longer `${`
+    // wins.
+    text_content: (_) =>
+      choice(token.immediate(prec(1, /[^"\\$\r\n]+/)), token.immediate('$')),
+
+    escape_sequence: (_) => token.immediate(/\\(u\{[0-9a-fA-F]*\}|.)/),
+
+    // `${expression}`; the expression may hold braces and nested text.
+    interpolation: ($) => seq(token.immediate('${'), $._expression, '}'),
 
     identifier: (_) => /[A-Za-z_][A-Za-z0-9_]*/,
 
     comment: (_) => token(seq('//', /[^\r\n]*/)),
   },
 });
+
+// `name` or `name: Type`. It wins over the same text read as a pattern, so a
+// simple parameter or binding keeps its `name` and `type` fields.
+function plainBinding($) {
+  return prec(
+    1,
+    seq(field('name', $.identifier), optional(seq(':', field('type', $._type)))),
+  );
+}
+
+function plainState($) {
+  return prec(1, field('state', $.identifier));
+}
 
 function sep1(rule, separator) {
   return seq(rule, repeat(seq(separator, rule)));

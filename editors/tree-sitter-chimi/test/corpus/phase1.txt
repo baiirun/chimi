@@ -1,0 +1,642 @@
+==================
+Boolean keywords bind more loosely than pipelines and comparison
+==================
+
+items |> List.is_empty and not draining or a == b
+
+---
+
+(source_file
+  (binary_expression
+    (binary_expression
+      (pipeline_expression
+        (identifier)
+        (member_expression
+          (identifier)
+          (identifier)))
+      (unary_expression
+        (identifier)))
+    (binary_expression
+      (identifier)
+      (identifier))))
+
+==================
+Not wraps a whole comparison
+==================
+
+not a == b
+
+---
+
+(source_file
+  (unary_expression
+    (binary_expression
+      (identifier)
+      (identifier))))
+
+==================
+Equality, inequality, and remainder
+==================
+
+a % 2 != 0 and b == c
+
+---
+
+(source_file
+  (binary_expression
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (integer))
+      (integer))
+    (binary_expression
+      (identifier)
+      (identifier))))
+
+==================
+Ranges sit between arithmetic and comparison
+==================
+
+let indexes = 0..List.length(items)
+let dice = 1..=6
+let wide = a + 1..b * 2 == window
+
+---
+
+(source_file
+  (let_binding
+    (identifier)
+    (range_expression
+      (integer)
+      (call_expression
+        (member_expression
+          (identifier)
+          (identifier))
+        (arguments
+          (argument
+            (identifier))))))
+  (let_binding
+    (identifier)
+    (range_expression
+      (integer)
+      (integer)))
+  (let_binding
+    (identifier)
+    (binary_expression
+      (range_expression
+        (binary_expression
+          (identifier)
+          (integer))
+        (binary_expression
+          (identifier)
+          (integer)))
+      (identifier))))
+
+==================
+Hexadecimal, binary, and float literals
+==================
+
+let values = [0x1F, 0xFF_FF, 0b1010_0001, 1_000, 0.5, 1_000.25, 1e9, 2.5e-3, 6.02E23]
+
+---
+
+(source_file
+  (let_binding
+    (identifier)
+    (list_expression
+      (integer)
+      (integer)
+      (integer)
+      (integer)
+      (float)
+      (float)
+      (float)
+      (float)
+      (float))))
+
+==================
+Tuple expressions and grouping
+==================
+
+let pair = (1, "one",)
+let grouped = (1 + 2)
+let counts = Map.from([("ok", 3), ("failed", 1)])
+
+---
+
+(source_file
+  (let_binding
+    (identifier)
+    (tuple_expression
+      (integer)
+      (text
+        (text_content))))
+  (let_binding
+    (identifier)
+    (parenthesized_expression
+      (binary_expression
+        (integer)
+        (integer))))
+  (let_binding
+    (identifier)
+    (call_expression
+      (member_expression
+        (identifier)
+        (identifier))
+      (arguments
+        (argument
+          (list_expression
+            (tuple_expression
+              (text
+                (text_content))
+              (integer))
+            (tuple_expression
+              (text
+                (text_content))
+              (integer))))))))
+
+==================
+Tuple types
+==================
+
+fn min_and_max(values: List<Int>) -> (Int, Int) {
+  (0, 0)
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (named_type
+          (type_identifier)
+          (type_arguments
+            (named_type
+              (type_identifier))))))
+    (return_type
+      (tuple_type
+        (named_type
+          (type_identifier))
+        (named_type
+          (type_identifier))))
+    (block
+      (tuple_expression
+        (integer)
+        (integer)))))
+
+==================
+Void value and Never type
+==================
+
+fn reject(reason: Text) -> Never {
+  Failure(reason)
+}
+
+fn done() -> Void {
+  Void
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (named_type
+          (type_identifier))))
+    (return_type
+      (named_type
+        (type_identifier)))
+    (block
+      (call_expression
+        (identifier)
+        (arguments
+          (argument
+            (identifier))))))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (return_type
+      (void_type))
+    (block
+      (void_value))))
+
+==================
+List patterns with rest elements
+==================
+
+case items {
+  [] -> 0
+  [first, ..rest] -> first
+  [.., last] -> last
+  [_, ..] -> 1
+}
+
+---
+
+(source_file
+  (case_expression
+    (identifier)
+    (case_arm
+      (list_pattern)
+      (integer))
+    (case_arm
+      (list_pattern
+        (constructor_pattern
+          (identifier))
+        (rest_pattern
+          (identifier)))
+      (identifier))
+    (case_arm
+      (list_pattern
+        (rest_pattern)
+        (constructor_pattern
+          (identifier)))
+      (identifier))
+    (case_arm
+      (list_pattern
+        (constructor_pattern
+          (identifier))
+        (rest_pattern))
+      (integer))))
+
+==================
+Multi-clause function with patterns and a guard
+==================
+
+pub fn area(Circle(radius)) -> Int {
+  3 * radius * radius
+}
+fn area(Rectangle(width, height)) {
+  width * height
+}
+fn describe(count) if count < 0 {
+  "negative"
+}
+fn route(Get, ["orders", raw_id]) {
+  raw_id
+}
+
+---
+
+(source_file
+  (function_declaration
+    (visibility)
+    (identifier)
+    (parameters
+      (parameter
+        (constructor_pattern
+          (identifier)
+          (constructor_pattern
+            (identifier)))))
+    (return_type
+      (named_type
+        (type_identifier)))
+    (block
+      (binary_expression
+        (binary_expression
+          (integer)
+          (identifier))
+        (identifier))))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (constructor_pattern
+          (identifier)
+          (constructor_pattern
+            (identifier))
+          (constructor_pattern
+            (identifier)))))
+    (block
+      (binary_expression
+        (identifier)
+        (identifier))))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)))
+    (binary_expression
+      (identifier)
+      (integer))
+    (block
+      (text
+        (text_content))))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier))
+      (parameter
+        (list_pattern
+          (text
+            (text_content))
+          (constructor_pattern
+            (identifier)))))
+    (block
+      (identifier))))
+
+==================
+Typed bindings and failure-type patterns
+==================
+
+case outcome {
+  Failure(error: TraceError) -> error
+  Failure(LineTooLong(_, _) as error) -> error
+  Success(_: Int) -> 0
+}
+
+---
+
+(source_file
+  (case_expression
+    (identifier)
+    (case_arm
+      (constructor_pattern
+        (identifier)
+        (typed_pattern
+          (identifier)
+          (named_type
+            (type_identifier))))
+      (identifier))
+    (case_arm
+      (constructor_pattern
+        (identifier)
+        (alias_pattern
+          (constructor_pattern
+            (identifier)
+            (constructor_pattern
+              (identifier))
+            (constructor_pattern
+              (identifier)))
+          (identifier)))
+      (identifier))
+    (case_arm
+      (constructor_pattern
+        (identifier)
+        (typed_pattern
+          (identifier)
+          (named_type
+            (type_identifier))))
+      (integer))))
+
+==================
+Typed and destructuring let and loop bindings
+==================
+
+fn main() {
+  let count: Int = 0
+  let (low, high) = pair
+  loop (left, right) = (0, 1) {
+    break left
+  }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (let_binding
+        (identifier)
+        (named_type
+          (type_identifier))
+        (integer))
+      (let_binding
+        (tuple_pattern
+          (constructor_pattern
+            (identifier))
+          (constructor_pattern
+            (identifier)))
+        (identifier))
+      (loop_expression
+        (tuple_pattern
+          (constructor_pattern
+            (identifier))
+          (constructor_pattern
+            (identifier)))
+        (tuple_expression
+          (integer)
+          (integer))
+        (block
+          (break_expression
+            (identifier)))))))
+
+==================
+Alias patterns in parameters
+==================
+
+fn first([head, ..] as whole) {
+  head
+}
+fn keep(error: FileError as failure) {
+  failure
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (alias_pattern
+          (list_pattern
+            (constructor_pattern
+              (identifier))
+            (rest_pattern))
+          (identifier))))
+    (block
+      (identifier)))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (alias_pattern
+          (typed_pattern
+            (identifier)
+            (named_type
+              (type_identifier)))
+          (identifier))))
+    (block
+      (identifier))))
+
+==================
+Record update
+==================
+
+{ ..state, records: state.records + 1, line: state.line + 1 }
+
+---
+
+(source_file
+  (record_expression
+    (record_spread
+      (identifier))
+    (record_field
+      (identifier)
+      (binary_expression
+        (member_expression
+          (identifier)
+          (identifier))
+        (integer)))
+    (record_field
+      (identifier)
+      (binary_expression
+        (member_expression
+          (identifier)
+          (identifier))
+        (integer)))))
+
+==================
+Module constants
+==================
+
+pub const max_attempts = 5
+pub const default_backoff: Backoff = Backoff(Duration.seconds(1), 2)
+const greeting = "hello"
+
+---
+
+(source_file
+  (const_declaration
+    (visibility)
+    (identifier)
+    (integer))
+  (const_declaration
+    (visibility)
+    (identifier)
+    (named_type
+      (type_identifier))
+    (call_expression
+      (identifier)
+      (arguments
+        (argument
+          (call_expression
+            (member_expression
+              (identifier)
+              (identifier))
+            (arguments
+              (argument
+                (integer)))))
+        (argument
+          (integer)))))
+  (const_declaration
+    (identifier)
+    (text
+      (text_content))))
+
+==================
+Text escapes and interpolation
+==================
+
+"tab\t quote\" dollar\$ \u{1F600} cost $5 // not a comment"
+"-L ${line},${line}"
+"names: ${Text.join(names, ", ")} and ${ { ..a, b: 1 }.b }"
+
+---
+
+(source_file
+  (text
+    (text_content)
+    (escape_sequence)
+    (text_content)
+    (escape_sequence)
+    (text_content)
+    (escape_sequence)
+    (text_content)
+    (escape_sequence)
+    (text_content)
+    (text_content)
+    (text_content))
+  (text
+    (text_content)
+    (interpolation
+      (identifier))
+    (text_content)
+    (interpolation
+      (identifier)))
+  (text
+    (text_content)
+    (interpolation
+      (call_expression
+        (member_expression
+          (identifier)
+          (identifier))
+        (arguments
+          (argument
+            (identifier))
+          (argument
+            (text
+              (text_content))))))
+    (text_content)
+    (interpolation
+      (member_expression
+        (record_expression
+          (record_spread
+            (identifier))
+          (record_field
+            (identifier)
+            (integer)))
+        (identifier)))))
+
+==================
+Negative literal patterns
+==================
+
+fn sign(-1) -> Text {
+  "minus one"
+}
+fn scale(-2.5) {
+  "far"
+}
+
+case delta {
+  -1 -> "down"
+  _ -> "other"
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (negative_literal
+          (integer))))
+    (return_type
+      (named_type
+        (type_identifier)))
+    (block
+      (text
+        (text_content))))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (negative_literal
+          (float))))
+    (block
+      (text
+        (text_content))))
+  (case_expression
+    (identifier)
+    (case_arm
+      (negative_literal
+        (integer))
+      (text
+        (text_content)))
+    (case_arm
+      (constructor_pattern
+        (identifier))
+      (text
+        (text_content)))))
