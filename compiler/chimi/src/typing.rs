@@ -7867,6 +7867,23 @@ impl ProjectTypeChecker {
                 parameters,
                 contract,
             }) => (contract, parameters, Some(CallSubstitution::default())),
+            // A value whose type is still open, such as an unannotated parameter,
+            // becomes a function from this call: one input per argument, an
+            // open result, and no failures or needs.
+            Some(CanonicalType::InferenceVariable(_)) => {
+                let contract = CallableContract {
+                    inputs: arguments
+                        .iter()
+                        .map(|_| self.fresh_inference_type())
+                        .collect(),
+                    success: self.fresh_inference_type(),
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                };
+                let function = self.intern_type(CanonicalType::Function(contract.clone()));
+                self.unify(callee_type, function);
+                (contract, Vec::new(), None)
+            }
             _ => {
                 if callee_type != TypeId::new(0) {
                     self.type_error_range(module_id, "T4201", range, "expression is not callable");

@@ -8477,3 +8477,55 @@ fn a_constant_inclusive_range_ending_at_the_largest_int_warns_and_defects() {
         assert!(warning_codes(quiet).is_empty(), "{quiet}");
     }
 }
+
+// Patterns spec "Inference across clauses": a parameter's type unifies every use,
+// so an unannotated parameter used as a callee is inferred as a function.
+#[test]
+fn an_unannotated_parameter_called_in_the_body_is_inferred_as_a_function() {
+    let source = concat!(
+        "fn apply(f, x: Int) -> Int {\n",
+        "  f(x)\n",
+        "}\n",
+        "fn apply_loop(f, xs: List<Int>) -> Int {\n",
+        "  loop (left, n) = (xs, 0) {\n",
+        "    case left {\n",
+        "      [] -> break n\n",
+        "      [x, ..tail] -> (tail, n + f(x))\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  apply(fn(x) { x + 1 }, 1) + apply_loop(fn(x) { x * 10 }, [1, 2])\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("unannotated-callee", source),
+        "\"outcome\":\"success\",\"value\":32"
+    );
+}
+
+// The inferred function type stays generic where the body leaves it open.
+#[test]
+fn an_inferred_function_parameter_generalizes_over_its_types() {
+    let source = concat!(
+        "fn twice(f, x) {\n",
+        "  f(f(x))\n",
+        "}\n",
+        "pub fn main() -> Text {\n",
+        "  let tripled = twice(fn(n: Int) -> Int { n * 3 }, 2)\n",
+        "  let shouted = twice(fn(t: Text) -> Text { \"${t}!\" }, \"hi\")\n",
+        "  \"${tripled} ${shouted}\"\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("unannotated-callee-generic", source),
+        "\"outcome\":\"success\",\"value\":\"18 hi!!\""
+    );
+}
+
+// Every use of the parameter must agree: two calls with different arities do not.
+#[test]
+fn an_inferred_function_parameter_must_be_called_consistently() {
+    let source = concat!("fn both(f) -> Int {\n", "  f(1) + f(1, 2)\n", "}\n",);
+    assert_eq!(check_codes(source), ["T4202"]);
+}
