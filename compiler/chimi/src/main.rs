@@ -1,6 +1,6 @@
 use chimi::Compiler;
 use chimi::backend::native::build_application;
-use chimi::execution::ExecutionConfig;
+use chimi::execution::{ExecutionConfig, ExecutionOutcome};
 use chimi::project::LoadedProject;
 use std::env;
 use std::ffi::OsString;
@@ -335,12 +335,23 @@ fn run(input: Input) -> ExitCode {
     match Compiler::run_project(project.sources(), ExecutionConfig::for_process()) {
         Ok(report) => {
             print!("{}", report.render_json_lines());
-            ExitCode::SUCCESS
+            outcome_exit_code(&report.outcome)
         }
         Err(diagnostics) => {
             eprint!("{}", project.render_diagnostics(&diagnostics));
             ExitCode::FAILURE
         }
+    }
+}
+
+/// The process status a native runner exits with for the same outcome, per
+/// runtime-output-channels.md, so `chimi run` and a native build agree.
+fn outcome_exit_code(outcome: &ExecutionOutcome) -> ExitCode {
+    match outcome {
+        ExecutionOutcome::Success(_) => ExitCode::SUCCESS,
+        ExecutionOutcome::ExpectedFailure(_) => ExitCode::from(1),
+        ExecutionOutcome::Defect(_) => ExitCode::from(70),
+        ExecutionOutcome::Cancellation(_) => ExitCode::from(130),
     }
 }
 

@@ -74,6 +74,10 @@ An ordinary success exits zero, an expected failure exits 1, a defect exits 70,
 and cancellation exits 130. Sink failures exit 74 and invalid runner
 configuration exits 64. The terminal record remains available only through the
 outcome sink; exit status does not copy it into an application stream.
+`chimi run` on the reference interpreter writes its outcome record to stdout
+and exits with the same status for the same outcome (0, 1, 70, or 130), so a
+script sees one contract on both backends. A program that does not compile
+exits 1 with diagnostics on stderr and no outcome record.
 
 `--memory-report-file` is an optional runner-owned diagnostic sink. It writes
 one `chimi.runtime-memory.v1` record after execution and MUST be distinct from

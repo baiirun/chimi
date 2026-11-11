@@ -29,25 +29,39 @@ fn interpreter_outcome(source: &Path) -> String {
         .arg(source)
         .output()
         .expect("run the reference interpreter");
-    // `chimi run` reports every outcome, defects included, on stdout and exits
-    // 0; anything else means the compiler or interpreter itself failed.
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "interpreter did not complete: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
+    let outcome = stdout
         .lines()
         .last()
         .unwrap_or_else(|| {
             panic!(
-                "no interpreter outcome: {}",
+                "interpreter did not complete: {}",
                 String::from_utf8_lossy(&output.stderr)
             )
         })
-        .to_owned()
+        .to_owned();
+    // `chimi run` reports every outcome on stdout and exits as a native runner
+    // does for it; any other status means the compiler or interpreter failed.
+    assert_eq!(
+        output.status.code(),
+        Some(outcome_exit_code(&outcome)),
+        "interpreter exit does not match {outcome}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    outcome
+}
+
+/// The exit status runtime-output-channels.md assigns to an outcome record.
+fn outcome_exit_code(outcome: &str) -> i32 {
+    if outcome.contains("\"outcome\":\"success\"") {
+        0
+    } else if outcome.contains("\"outcome\":\"expected_failure\"") {
+        1
+    } else if outcome.contains("\"outcome\":\"cancellation\"") {
+        130
+    } else {
+        70
+    }
 }
 
 fn native_outcome(scratch: &Path, source: &Path) -> String {
@@ -82,18 +96,10 @@ fn native_outcome(scratch: &Path, source: &Path) -> String {
         .expect("native outcome file")
         .trim_end()
         .to_owned();
-    // The runner exits 0 on success, 1 on an expected failure, and 70 on a
-    // defect. A signal or any other code means the runtime itself crashed.
-    let expected_code = if outcome.contains("\"outcome\":\"success\"") {
-        0
-    } else if outcome.contains("\"outcome\":\"expected_failure\"") {
-        1
-    } else {
-        70
-    };
+    // A signal or any code but the outcome's means the runtime itself crashed.
     assert_eq!(
         execution.status.code(),
-        Some(expected_code),
+        Some(outcome_exit_code(&outcome)),
         "native runner exit does not match {outcome}: {}",
         String::from_utf8_lossy(&execution.stderr)
     );
