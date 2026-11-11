@@ -5603,6 +5603,33 @@ fn a_single_function_with_a_refutable_parameter_pattern_is_not_exhaustive() {
     assert!(messages[0].1.contains("`unwrap(None)`"), "{messages:?}");
 }
 
+// A function literal cannot gain a clause, so its gap points at the pattern and
+// suggests `case` instead.
+#[test]
+fn a_function_literal_with_a_refutable_parameter_suggests_case() {
+    let source = concat!(
+        "pub fn main() -> Int {\n",
+        "  let f = fn(Some(x)) { x }\n",
+        "  f(Some(1))\n",
+        "}\n",
+    );
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let [gap] = report.diagnostics() else {
+        panic!("{:?}", report.diagnostics());
+    };
+    assert_eq!(gap.code(), "T4231");
+    assert!(gap.message().contains("`fn(None)`"), "{}", gap.message());
+    assert!(gap.message().contains("`case`"), "{}", gap.message());
+    assert!(!gap.message().contains("Add a clause"), "{}", gap.message());
+    let range = gap.range();
+    assert_eq!(
+        &source[range.start() as usize..range.end() as usize],
+        "Some(x)"
+    );
+}
+
 #[test]
 fn recursion_through_clauses_refers_to_the_whole_group() {
     let source = concat!(

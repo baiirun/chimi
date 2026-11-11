@@ -1680,9 +1680,17 @@ impl ProjectLowerer {
                 let (parameters, subjects) = self.generated_parameters(parameter_nodes.len(), head);
                 let arm = self.lower_clause_arm(node, &parameter_nodes, head);
                 signature.parameters = parameters;
+                // A literal has no name; its coverage diagnostics point at the patterns.
+                let patterns = match (parameter_nodes.first(), parameter_nodes.last()) {
+                    (Some(first), Some(last)) => TextRange::new(
+                        significant_range(first).start() as usize,
+                        significant_range(last).end() as usize,
+                    ),
+                    _ => head,
+                };
                 let function = Name {
                     text: "fn".to_owned(),
-                    range: TextRange::empty(range.start() as usize),
+                    range: patterns,
                 };
                 ModuleExpression::Function {
                     semantic_id,

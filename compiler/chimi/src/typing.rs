@@ -3825,6 +3825,15 @@ impl ProjectTypeChecker {
                 .collect::<Vec<_>>()
                 .join(", ");
             match clauses {
+                // A function literal is a single clause and cannot gain another.
+                Some(clauses) if clauses.function == "fn" => self.type_error_range(
+                    module_id,
+                    "T4231",
+                    clauses.range,
+                    format!(
+                        "this function literal's parameter patterns do not cover every input; `fn({witness})` is not matched. A function literal cannot have more clauses: bind the parameter and match it with `case` in the body"
+                    ),
+                ),
                 Some(clauses) => self.type_error_range(
                     module_id,
                     "T4231",
