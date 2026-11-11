@@ -67,7 +67,7 @@ enum {
   /* ChimiSchedulerRequest: `value` is the deadline Instant. PENDING until it
      passes; reissue the request after every wake. */
   CHIMI_REQUEST_TIMER_SLEEP_UNTIL = 12,
-  /* The remaining kinds take a ChimiProcessRequest. */
+  /* Kinds 13 to 23 take a ChimiProcessRequest. */
   CHIMI_REQUEST_PROCESS_SELF = 13,
   CHIMI_REQUEST_PROCESS_SEND = 14,
   CHIMI_REQUEST_PROCESS_RECEIVE = 15,
@@ -86,6 +86,14 @@ enum {
   /* `supervisor` is the parent and `membership` the handle from
      START_SUPERVISOR. Parks until the nested subtree has stopped. */
   CHIMI_REQUEST_SUPERVISOR_REMOVE_SUPERVISOR = 23,
+  /* ChimiSchedulerRequest: `channel` is a channel id from
+     CHIMI_REQUEST_CHANNEL_BOUNDED. Any task may issue it, once, when the host
+     holds no reference to any of the channel's endpoints any more. Replies
+     OK. See ChimiValueRelease for what happens to the values the channel
+     holds; a task parked on it is answered as if the channel were aborted.
+     The id is invalid afterwards: any channel request naming it, a second
+     release included, is a contract violation that defects the caller. */
+  CHIMI_REQUEST_CHANNEL_RELEASE = 24,
 };
 
 enum {
@@ -355,9 +363,13 @@ typedef struct {
    the outcome carries is released, whether it was observed or not, after
    the root is terminal and before the call returns. A channel value is
    released when it is discarded: its parked send is cancelled, its channel
-   is aborted while it is queued, or the task it was handed to (a receiver,
-   or a refused sender) is cancelled before the reply is written. Any value
-   still held when the call returns is released then.
+   is aborted or released (CHIMI_REQUEST_CHANNEL_RELEASE) while it is
+   queued, or the task it was handed to (a receiver, or a refused sender) is
+   cancelled before the reply is written. A release request releases each
+   queued value before it replies; values already delivered are never
+   released. Releasing a channel answers a parked send ABORTED, which hands
+   its value back, and a parked receive ABORTED. Any value still held when
+   the call returns is released then.
 
    The hook runs on the thread that called the scheduler, on that thread's
    own stack: never inside a task fiber, and with no task
@@ -365,8 +377,20 @@ typedef struct {
    call back into the scheduler. */
 typedef void (*ChimiValueRelease)(void *context, int64_t value);
 
+/* Releases the `context` of a CHIMI_REQUEST_TASK_START whose task never runs
+   its entry.
+
+   The scheduler takes over the context when it replies OK to the start; a
+   reply of ERROR leaves it with the starter. Once the task's entry runs, the
+   context belongs to the entry. A task can end before its entry runs: it is
+   cancelled, or its owner ends, while it is still queued. Its fiber then
+   ends without calling the entry, and this hook receives the context once;
+   no entry ever sees it. A null context is never passed. The hook
+   runs under the same conditions as ChimiValueRelease. */
+typedef void (*ChimiTaskContextRelease)(void *context, void *task_context);
+
 /* The arguments of chimi_scheduler_execute_with_config. The release hooks
-   may be null; both receive `release_context`. */
+   may be null; all three receive `release_context`. */
 typedef struct {
   ChimiFiberEntry entry;
   void *context;
@@ -377,6 +401,7 @@ typedef struct {
   ChimiValueRelease release_task_value;
   ChimiValueRelease release_channel_value;
   void *release_context;
+  ChimiTaskContextRelease release_task_context;
 } ChimiSchedulerExecuteConfig;
 
 uint32_t chimi_fiber_abi_version(void);

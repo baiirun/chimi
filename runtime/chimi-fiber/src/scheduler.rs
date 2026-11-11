@@ -64,6 +64,7 @@ pub const REQUEST_SUPERVISOR_STOP: u32 = 20;
 pub const REQUEST_SUPERVISOR_WAIT: u32 = 21;
 pub const REQUEST_SUPERVISOR_START_SUPERVISOR: u32 = 22;
 pub const REQUEST_SUPERVISOR_REMOVE_SUPERVISOR: u32 = 23;
+pub const REQUEST_CHANNEL_RELEASE: u32 = 24;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -174,6 +175,10 @@ pub type SchedulerTraceSink = unsafe extern "C" fn(*mut c_void, *const Scheduler
 /// a value a task's fiber ended with, or a value a sender handed to a
 /// channel. See `ChimiValueRelease` in `include/chimi_fiber.h`.
 pub type ValueRelease = unsafe extern "C" fn(*mut c_void, i64);
+
+/// Releases the entry context of a started task whose entry never ran. See
+/// `ChimiTaskContextRelease` in `include/chimi_fiber.h`.
+pub type TaskContextRelease = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct TaskId(u64);
@@ -321,6 +326,9 @@ struct Task {
     /// Counts parks, so a delayed reply never reaches a later request.
     park: u64,
     ran: bool,
+    /// The context a `REQUEST_TASK_START` handed over, until the entry runs
+    /// and takes it; null otherwise.
+    entry_context: *mut c_void,
     /// The sleep timer this task is parked on.
     timer: Option<TimerId>,
 }
@@ -385,6 +393,9 @@ pub struct SchedulerOptions {
     /// Called once for every value the scheduler accepted from a sender and
     /// discards instead of delivering it or handing it back.
     pub release_channel_value: Option<ValueRelease>,
+    /// Called once for the context of every task a `REQUEST_TASK_START`
+    /// started whose entry never runs.
+    pub release_task_context: Option<TaskContextRelease>,
     pub release_context: *mut c_void,
 }
 
@@ -398,6 +409,7 @@ impl SchedulerOptions {
             release_spec_context: None,
             release_task_value: None,
             release_channel_value: None,
+            release_task_context: None,
             release_context: std::ptr::null_mut(),
         }
     }
@@ -438,6 +450,7 @@ pub struct Scheduler {
     kernel: ProcessKernel,
     release_task_value: Option<(ValueRelease, *mut c_void)>,
     release_channel_value: Option<(ValueRelease, *mut c_void)>,
+    release_task_context: Option<(TaskContextRelease, *mut c_void)>,
     /// The value each task's fiber ended with, kept only while
     /// `release_task_value` is set. `Task.result` copies a value without
     /// consuming it, so every one stays until the scheduler is dropped.
@@ -472,6 +485,7 @@ impl Scheduler {
             release_spec_context,
             release_task_value,
             release_channel_value,
+            release_task_context,
             release_context,
         } = options;
         let kernel = ProcessKernel::new(
@@ -500,6 +514,7 @@ impl Scheduler {
             kernel,
             release_task_value: release_task_value.map(|release| (release, release_context)),
             release_channel_value: release_channel_value.map(|release| (release, release_context)),
+            release_task_context: release_task_context.map(|release| (release, release_context)),
             task_values: BTreeMap::new(),
         }
     }
@@ -891,6 +906,25 @@ impl Scheduler {
         }
     }
 
+    /// Ends a channel the host holds no endpoint of any more, on behalf of
+    /// the parked `task`. Queued values are released, parked peers are
+    /// answered aborted, and the id becomes unknown. Naming an unknown id
+    /// defects `task`.
+    pub fn channel_release(
+        &mut self,
+        task: TaskId,
+        channel: ChannelId,
+    ) -> Result<(), SchedulerError> {
+        self.require_parked_task(task)?;
+        match self.channels.release_unreferenced(task, channel) {
+            Ok(transition) => {
+                self.apply_channel_transition(transition);
+                Ok(())
+            }
+            Err(error) => self.channel_violation(task, error),
+        }
+    }
+
     pub fn transfer_receiver(
         &mut self,
         task: TaskId,
@@ -1025,9 +1059,30 @@ impl Scheduler {
         }
     }
 
-    /// Releases every task value still kept and every value still held by a
-    /// channel. Runs once, when the scheduler is dropped.
+    fn release_task_context(&self, task_context: *mut c_void) {
+        if task_context.is_null() {
+            return;
+        }
+        if let Some((release, context)) = self.release_task_context {
+            // SAFETY: as for `release_channel_value`; a task's context is
+            // cleared when it is released or its entry runs, so it is
+            // released at most once and never after the entry took it.
+            unsafe { release(context, task_context) };
+        }
+    }
+
+    /// Releases every task value still kept, every value still held by a
+    /// channel, and the context of every task whose entry never ran. Runs
+    /// once, when the scheduler is dropped.
     fn release_held_values(&mut self) {
+        let unrun_contexts: Vec<_> = self
+            .tasks
+            .values_mut()
+            .map(|record| std::mem::replace(&mut record.entry_context, std::ptr::null_mut()))
+            .collect();
+        for task_context in unrun_contexts {
+            self.release_task_context(task_context);
+        }
         for value in self.channels.drain_held_values() {
             self.release_channel_value(value);
         }
@@ -1090,6 +1145,7 @@ impl Scheduler {
                 request: std::ptr::null_mut(),
                 park: 0,
                 ran: false,
+                entry_context: std::ptr::null_mut(),
                 timer: None,
             },
         );
@@ -1116,6 +1172,7 @@ impl Scheduler {
         let command = std::mem::replace(&mut record.command, ChimiFiberCommand::Resume);
         record.request = std::ptr::null_mut();
         record.ran = true;
+        record.entry_context = std::ptr::null_mut();
         let event = record
             .fiber
             .as_mut()
@@ -1225,6 +1282,10 @@ impl Scheduler {
                 };
                 match self.start(Some(owner), entry, request.context) {
                     Ok(task) => {
+                        self.tasks
+                            .get_mut(&task)
+                            .expect("started task")
+                            .entry_context = request.context;
                         request.task = task.get();
                         request.status = RESPONSE_OK;
                     }
@@ -1356,6 +1417,17 @@ impl Scheduler {
                 };
                 let _ = self.wake(owner);
             }
+            REQUEST_CHANNEL_RELEASE => {
+                request.status = if self
+                    .channel_release(owner, ChannelId::from_raw(request.channel))
+                    .is_ok()
+                {
+                    RESPONSE_OK
+                } else {
+                    RESPONSE_ERROR
+                };
+                let _ = self.wake(owner);
+            }
             REQUEST_CHANNEL_TRANSFER_RECEIVER => {
                 let receiver = Receiver::from_raw(request.channel, request.owner, request.token);
                 match self.transfer_receiver(owner, receiver, TaskId(request.task)) {
@@ -1441,7 +1513,10 @@ impl Scheduler {
                     TaskPhase::Draining(outcome);
             }
         }
-        self.tasks.get_mut(&task).expect("draining task").fiber = None;
+        let record = self.tasks.get_mut(&task).expect("draining task");
+        record.fiber = None;
+        let unrun_context = std::mem::replace(&mut record.entry_context, std::ptr::null_mut());
+        self.release_task_context(unrun_context);
 
         let children: Vec<_> = self
             .tasks
@@ -1701,6 +1776,7 @@ pub struct ChimiSchedulerExecuteConfig {
     pub release_task_value: Option<ValueRelease>,
     pub release_channel_value: Option<ValueRelease>,
     pub release_context: *mut c_void,
+    pub release_task_context: Option<TaskContextRelease>,
 }
 
 #[unsafe(no_mangle)]
@@ -1728,6 +1804,7 @@ pub unsafe extern "C" fn chimi_scheduler_execute(
         release_task_value: None,
         release_channel_value: None,
         release_context: std::ptr::null_mut(),
+        release_task_context: None,
     };
     // SAFETY: the config lives for the call, and the caller's guarantees
     // about the entry, context, and sink carry over unchanged.
@@ -1762,6 +1839,7 @@ pub unsafe extern "C" fn chimi_scheduler_execute_with_config(
     let mut scheduler = Scheduler::with_options(SchedulerOptions {
         release_task_value: config.release_task_value,
         release_channel_value: config.release_channel_value,
+        release_task_context: config.release_task_context,
         release_context: config.release_context,
         ..SchedulerOptions::new(config.stack_bytes, trace_mode, ClockMode::Real)
     });

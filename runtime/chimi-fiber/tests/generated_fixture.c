@@ -367,6 +367,8 @@ size_t chimi_fixture_execute_config_layout(size_t *out) {
       LAYOUT(ChimiSchedulerExecuteConfig, release_task_value),
       LAYOUT(ChimiSchedulerExecuteConfig, release_channel_value),
       LAYOUT(ChimiSchedulerExecuteConfig, release_context),
+      LAYOUT(ChimiSchedulerExecuteConfig, release_task_context),
+      CHIMI_REQUEST_CHANNEL_RELEASE,
   };
   size_t count = sizeof(values) / sizeof(*values);
   for (size_t index = 0; index < count; index += 1) out[index] = values[index];

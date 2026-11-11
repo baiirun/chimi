@@ -1,6 +1,8 @@
 //! Release hooks of `chimi_scheduler_execute_with_config`: every host word
 //! the scheduler takes over leaves it exactly once, by delivery, by return,
-//! as the outcome, or through a release hook.
+//! as the outcome, or through a release hook. The same holds for the entry
+//! context of a started task, which its entry or `release_task_context`
+//! consumes.
 
 use super::*;
 use crate::{ChimiFiberResult, chimi_fiber_request};
@@ -13,8 +15,11 @@ const STACK: usize = 64 * 1024;
 struct Log {
     tasks: Vec<i64>,
     channels: Vec<i64>,
-    /// Hook counts (task, channel) a fiber saw at a named point.
-    checkpoints: Vec<(&'static str, usize, usize)>,
+    contexts: Vec<usize>,
+    /// The contexts of started tasks a test expects to see released.
+    unrun_contexts: Vec<usize>,
+    /// Hook counts (task, channel, context) a fiber saw at a named point.
+    checkpoints: Vec<(&'static str, usize, usize, usize)>,
     /// The reply status and value a receiver found when resumed to cancel.
     cancelled_receives: Vec<(u32, i64)>,
 }
@@ -31,11 +36,15 @@ unsafe extern "C" fn release_channel(_context: *mut c_void, value: i64) {
     LOG.with(|log| log.borrow_mut().channels.push(value));
 }
 
+unsafe extern "C" fn release_context(_context: *mut c_void, task_context: *mut c_void) {
+    LOG.with(|log| log.borrow_mut().contexts.push(task_context as usize));
+}
+
 fn checkpoint(name: &'static str) {
     LOG.with(|log| {
         let mut log = log.borrow_mut();
-        let counts = (log.tasks.len(), log.channels.len());
-        log.checkpoints.push((name, counts.0, counts.1));
+        let counts = (log.tasks.len(), log.channels.len(), log.contexts.len());
+        log.checkpoints.push((name, counts.0, counts.1, counts.2));
     });
 }
 
@@ -51,6 +60,7 @@ fn execute(entry: ChimiFiberEntry) -> (SchedulerOutcome, Log) {
         release_task_value: Some(release_task),
         release_channel_value: Some(release_channel),
         release_context: ptr::null_mut(),
+        release_task_context: Some(release_context),
     };
     let outcome = unsafe { chimi_scheduler_execute_with_config(&config) };
     (
@@ -160,7 +170,7 @@ unsafe extern "C" fn child(context: *mut c_void) -> ChimiFiberResult {
                 });
                 return cancelled();
             }
-            0
+            i64::from(request.status)
         }
     };
     ChimiFiberResult {
@@ -179,11 +189,16 @@ fn cancelled() -> ChimiFiberResult {
 }
 
 fn start(behavior: Child) -> u64 {
+    start_with_context(behavior).0
+}
+
+/// Starts a child and returns it with the address of its entry context.
+fn start_with_context(behavior: Child) -> (u64, usize) {
     let mut request = blank(REQUEST_TASK_START);
     request.entry = Some(child);
     request.context = Box::into_raw(Box::new(behavior)).cast();
     call(&mut request);
-    request.task
+    (request.task, request.context as usize)
 }
 
 /// The status and value of a child's result, waiting for it to end; `None`
@@ -225,6 +240,13 @@ fn receive(channel: Channel) -> Option<(u32, i64)> {
     request.owner = channel.owner;
     request.token = channel.token;
     call(&mut request).then_some((request.status, request.value))
+}
+
+fn release(channel: Channel) -> u32 {
+    let mut request = blank(REQUEST_CHANNEL_RELEASE);
+    request.channel = channel.channel;
+    call(&mut request);
+    request.status
 }
 
 fn abort(channel: Channel) {
@@ -280,7 +302,7 @@ fn every_task_value_but_the_outcome_is_released_once_after_the_root_ends() {
     // Task.result copies without consuming, so the observed value is still
     // the scheduler's while the root runs; the root's own value passes to
     // the caller.
-    assert_eq!(log.checkpoints, vec![("after observing twice", 0, 0)]);
+    assert_eq!(log.checkpoints, vec![("after observing twice", 0, 0, 0)]);
     // 101 was observed twice and 202 never; each is released once.
     assert_eq!(sorted(log.tasks), vec![101, 202]);
     assert!(log.channels.is_empty());
@@ -358,7 +380,7 @@ fn a_cancelled_send_releases_its_parked_value_once_at_the_cancel() {
     assert_eq!(log.channels, vec![900]);
     assert_eq!(
         log.checkpoints,
-        vec![("after cancelling the parked sender", 0, 1)]
+        vec![("after cancelling the parked sender", 0, 1, 0)]
     );
 }
 
@@ -494,7 +516,148 @@ fn an_abort_releases_each_queued_value_once_and_hands_parked_sends_back() {
         (ChimiFiberState::Succeeded as u32, 0)
     );
     assert_eq!(sorted(log.channels), vec![960, 961]);
-    assert_eq!(log.checkpoints, vec![("after aborting", 0, 2)]);
+    assert_eq!(log.checkpoints, vec![("after aborting", 0, 2, 0)]);
+}
+
+// ----- Channel release ----------------------------------------------------
+
+unsafe extern "C" fn releases_a_channel_with_queued_values(
+    _context: *mut c_void,
+) -> ChimiFiberResult {
+    let channel = bounded(3);
+    send(channel, 980);
+    let delivered = receive(channel);
+    send(channel, 981);
+    send(channel, 982);
+    let status = release(channel);
+    checkpoint("after releasing");
+    succeeded(
+        if delivered == Some((RESPONSE_SUCCEEDED, 980)) && status == RESPONSE_OK {
+            0
+        } else {
+            -1
+        },
+    )
+}
+
+#[test]
+fn a_channel_release_frees_each_queued_value_once_at_the_release() {
+    let (outcome, log) = execute(releases_a_channel_with_queued_values);
+    assert_eq!(
+        (outcome.state, outcome.value),
+        (ChimiFiberState::Succeeded as u32, 0)
+    );
+    // 980 was delivered and is the receiver's; 981 and 982 are released by
+    // the request, not later at teardown.
+    assert_eq!(sorted(log.channels), vec![981, 982]);
+    assert_eq!(log.checkpoints, vec![("after releasing", 0, 2, 0)]);
+}
+
+unsafe extern "C" fn releases_channels_with_parked_peers(
+    _context: *mut c_void,
+) -> ChimiFiberResult {
+    let sent_on = bounded(0);
+    let sender = start(Child::Send {
+        channel: sent_on.channel,
+        value: 990,
+    });
+    let received_on = bounded(0);
+    let receiver = start_receiver(received_on);
+    let_queued_tasks_run();
+    release(sent_on);
+    release(received_on);
+    let aborted = Some((RESPONSE_SUCCEEDED, i64::from(RESPONSE_ABORTED)));
+    succeeded(
+        if result(sender) == aborted && result(receiver) == aborted {
+            0
+        } else {
+            -1
+        },
+    )
+}
+
+#[test]
+fn a_channel_release_answers_its_parked_peers_aborted() {
+    let (outcome, log) = execute(releases_channels_with_parked_peers);
+    assert_eq!(
+        (outcome.state, outcome.value),
+        (ChimiFiberState::Succeeded as u32, 0)
+    );
+    // The parked send's value went back to its sender with the reply.
+    assert!(log.channels.is_empty());
+}
+
+unsafe extern "C" fn sends_after_release(_context: *mut c_void) -> ChimiFiberResult {
+    let channel = bounded(1);
+    release(channel);
+    send(channel, 1);
+    succeeded(-1)
+}
+
+unsafe extern "C" fn receives_after_release(_context: *mut c_void) -> ChimiFiberResult {
+    let channel = bounded(1);
+    release(channel);
+    receive(channel);
+    succeeded(-1)
+}
+
+unsafe extern "C" fn releases_twice(_context: *mut c_void) -> ChimiFiberResult {
+    let channel = bounded(1);
+    release(channel);
+    release(channel);
+    succeeded(-1)
+}
+
+#[test]
+fn a_released_channel_id_defects_whoever_uses_it_again() {
+    for (name, entry) in [
+        ("send", sends_after_release as ChimiFiberEntry),
+        ("receive", receives_after_release),
+        ("release", releases_twice),
+    ] {
+        let (outcome, log) = execute(entry);
+        assert_eq!(
+            (outcome.state, outcome.origin, outcome.defect_code),
+            (
+                ChimiFiberState::Defected as u32,
+                1,
+                CHANNEL_CAPABILITY_VIOLATION_DEFECT_CODE
+            ),
+            "{name} after release"
+        );
+        assert!(log.channels.is_empty(), "{name} after release");
+    }
+}
+
+// ----- Entry contexts of tasks that never run -----------------------------
+
+unsafe extern "C" fn leaves_children_unrun(_context: *mut c_void) -> ChimiFiberResult {
+    start(Child::Return(1));
+    let_queued_tasks_run();
+    let (cancelled, cancelled_context) = start_with_context(Child::Return(2));
+    cancel(cancelled);
+    checkpoint("after cancelling the unrun child");
+    let (_, abandoned_context) = start_with_context(Child::Return(3));
+    LOG.with(|log| {
+        log.borrow_mut()
+            .unrun_contexts
+            .extend([cancelled_context, abandoned_context])
+    });
+    succeeded(0)
+}
+
+#[test]
+fn a_child_that_never_runs_releases_its_entry_context_once() {
+    let (outcome, log) = execute(leaves_children_unrun);
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    // The cancelled child's context is released at the cancel and the one
+    // the root leaves queued when it ends; the children that ran (the first
+    // and the marker) consumed theirs in their entry.
+    assert_eq!(
+        log.checkpoints,
+        vec![("after cancelling the unrun child", 0, 0, 1)]
+    );
+    assert_eq!(log.contexts, log.unrun_contexts);
 }
 
 unsafe extern "C" {
@@ -516,6 +679,8 @@ fn the_execute_config_matches_its_c_layout() {
         offset_of!(ChimiSchedulerExecuteConfig, release_task_value),
         offset_of!(ChimiSchedulerExecuteConfig, release_channel_value),
         offset_of!(ChimiSchedulerExecuteConfig, release_context),
+        offset_of!(ChimiSchedulerExecuteConfig, release_task_context),
+        REQUEST_CHANNEL_RELEASE as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
 }

@@ -61,12 +61,17 @@ the host. `CHIMI_REQUEST_TIMER_NOW` and `CHIMI_REQUEST_TIMER_SLEEP_UNTIL`
 expose the clock, and `chimi_scheduler_run` takes a `ChimiSchedulerConfig`
 with the clock mode and release hooks.
 `chimi_scheduler_execute` keeps its earlier behavior.
-`chimi_scheduler_execute_with_config` is `chimi_scheduler_execute` with two
+`chimi_scheduler_execute_with_config` is `chimi_scheduler_execute` with three
 release hooks: `release_task_value` for every value a task returned except
-the outcome's, and `release_channel_value` for every sent value the
-scheduler discards (a cancelled send, an aborted queue, a ready reply whose
-task is cancelled). `ChimiValueRelease` in `include/chimi_fiber.h` states the
-ownership contract.
+the outcome's, `release_channel_value` for every sent value the
+scheduler discards (a cancelled send, an aborted or released queue, a ready
+reply whose task is cancelled), and `release_task_context` for the context of
+a started task that ends before its entry runs. The host issues
+`CHIMI_REQUEST_CHANNEL_RELEASE` when it drops its last reference to a
+channel's endpoints; the channel's queued values are released then rather than
+when execution ends, and its id becomes invalid. `ChimiValueRelease` and
+`ChimiTaskContextRelease` in `include/chimi_fiber.h` state the ownership
+contract.
 
 Generated code suspends through `chimi_fiber_request` (or the lower-level
 `chimi_fiber_park`) with an optional linked `ChimiRootFrame`. Scheduler requests

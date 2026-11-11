@@ -25,6 +25,10 @@ fixes ts-9c0516 (a stop or removal that meets a nested escalation ends the
 membership without a restart) and ts-bb32bf (an escalated root releases its
 draining owner), and the guarantees that review found untested: the retired
 handle kind check and nested escalation answering `Supervisor.wait`.
+
+The mutants from "release request discards nothing" on guard
+CHIMI_REQUEST_CHANNEL_RELEASE (ts-3ef593) and the entry context of a task
+that never runs (ts-f6b0e4).
 """
 
 CRATE = "runtime/chimi-fiber"
@@ -358,5 +362,54 @@ MUTATIONS = [
         edits=[('            TaskOutcome::Defected { origin, code } => (origin, TaskValue::Defect(code)),', '            TaskOutcome::Defected { origin, code } => (root.max(origin).min(root), TaskValue::Defect(code)),')],
         targets=["lib"],
         filter='a_child_defect_code_carried_by_the_outcome',
+    ),
+    dict(
+        name='release request discards nothing',
+        file='src/channel.rs',
+        edits=[('        let transition = self.abort_channel(id, Some(task), ChannelEventKind::Released);', '        let transition = Transition::default();')],
+        targets=["lib"],
+        filter='a_channel_release_frees_each_queued_value',
+    ),
+    dict(
+        name='release request leaves parked peers waiting',
+        file='src/channel.rs',
+        edits=[('        let transition = self.abort_channel(id, Some(task), ChannelEventKind::Released);', '        let transition = Transition {\n            discarded: self.channels.get_mut(&id).unwrap().queue.drain(..).collect(),\n            ..Transition::default()\n        };')],
+        targets=["lib"],
+        filter='a_channel_release_answers_its_parked_peers',
+    ),
+    dict(
+        name='released channel id stays valid',
+        file='src/channel.rs',
+        edits=[('        self.channels.remove(&id);\n        for owner in owners', '        for owner in owners')],
+        targets=["lib"],
+        filter='a_released_channel_id_defects',
+    ),
+    dict(
+        name='released channel still indexed by its owner',
+        file='src/channel.rs',
+        edits=[('        for owner in owners.into_iter().flatten() {\n            self.refresh_owner_index(id, owner);\n        }', '        let _ = owners;')],
+        targets=["lib"],
+        filter='a_channel_release_frees_each_queued_value',
+    ),
+    dict(
+        name='started task context not kept',
+        file='src/scheduler.rs',
+        edits=[('                        self.tasks\n                            .get_mut(&task)\n                            .expect("started task")\n                            .entry_context = request.context;\n', '')],
+        targets=["lib"],
+        filter='a_child_that_never_runs',
+    ),
+    dict(
+        name='unrun task context not released',
+        file='src/scheduler.rs',
+        edits=[('        self.release_task_context(unrun_context);\n', '        let _ = unrun_context;\n')],
+        targets=["lib"],
+        filter='a_child_that_never_runs',
+    ),
+    dict(
+        name='task context released after its entry ran',
+        file='src/scheduler.rs',
+        edits=[('        record.ran = true;\n        record.entry_context = std::ptr::null_mut();\n', '        record.ran = true;\n')],
+        targets=["lib"],
+        filter='a_child_that_never_runs',
     ),
 ]

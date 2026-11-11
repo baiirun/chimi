@@ -154,6 +154,8 @@ pub enum ChannelEventKind {
     Aborted,
     ReceiverTransferred,
     CompletionTransferred,
+    /// The host released the channel; its id is no longer valid.
+    Released,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -571,7 +573,29 @@ impl ChannelRegistry {
             .get(&receiver.channel)
             .ok_or(ChannelError::UnknownChannel(receiver.channel))?;
         validate_receiver(channel, receiver, task)?;
-        Ok(self.abort_channel(receiver.channel, Some(task)))
+        Ok(self.abort_channel(receiver.channel, Some(task), ChannelEventKind::Aborted))
+    }
+
+    /// Ends a channel the host no longer references: it is aborted, which
+    /// discards its queue and answers its parked peers, and then forgotten,
+    /// so any later use of its id is an unknown channel.
+    pub fn release_unreferenced(
+        &mut self,
+        task: TaskId,
+        id: ChannelId,
+    ) -> Result<Transition, ChannelError> {
+        self.begin_operation(task)?;
+        let owners = self
+            .channels
+            .get(&id)
+            .map(|channel| [channel.receiver_owner, channel.completion_owner])
+            .ok_or(ChannelError::UnknownChannel(id))?;
+        let transition = self.abort_channel(id, Some(task), ChannelEventKind::Released);
+        self.channels.remove(&id);
+        for owner in owners.into_iter().flatten() {
+            self.refresh_owner_index(id, owner);
+        }
+        Ok(transition)
     }
 
     pub fn transfer_receiver(
@@ -755,7 +779,7 @@ impl ChannelRegistry {
                         && channel.lifecycle == Lifecycle::Open
             });
             if should_abort {
-                transition.merge(self.abort_channel(id, Some(task)));
+                transition.merge(self.abort_channel(id, Some(task), ChannelEventKind::Aborted));
             }
             let channel = self.channels.get_mut(&id).expect("owned channel");
             if channel.receiver_owner == Some(task) {
@@ -854,11 +878,18 @@ impl ChannelRegistry {
         transition
     }
 
-    fn abort_channel(&mut self, id: ChannelId, cause: Option<TaskId>) -> Transition {
+    /// Aborts the channel and records `summary` (Aborted or Released) for
+    /// it. Aborting an aborted channel again records nothing.
+    fn abort_channel(
+        &mut self,
+        id: ChannelId,
+        cause: Option<TaskId>,
+        summary: ChannelEventKind,
+    ) -> Transition {
         let observe_boundaries = self.observe_boundaries;
         let channel = self.channels.get_mut(&id).expect("known channel");
         let mut transition = Transition::default();
-        if channel.lifecycle == Lifecycle::Aborted {
+        if channel.lifecycle == Lifecycle::Aborted && summary == ChannelEventKind::Aborted {
             return transition;
         }
         channel.lifecycle = Lifecycle::Aborted;
@@ -907,7 +938,7 @@ impl ChannelRegistry {
             ChannelObservation {
                 channel: id,
                 task: cause,
-                kind: ChannelEventKind::Aborted,
+                kind: summary,
                 cause,
                 discard_count,
             },
