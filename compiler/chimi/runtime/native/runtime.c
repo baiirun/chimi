@@ -62,6 +62,10 @@ struct ListNode {
   void *slots[];
 };
 
+/* A persistent vector of `length` values. `root` is NULL until it outgrows one
+   leaf; `tail` is NULL only when empty. */
+typedef struct { ListNode *root; ListNode *tail; uint32_t length; } ListVector;
+
 struct MapNode {
   const char *key;
   ChimiValue *value;
@@ -92,8 +96,9 @@ struct ChimiValue {
     int64_t integer;
     const char *text;
     bool boolean;
-    /* `root` is NULL until the list exceeds one leaf; `tail` is NULL only when empty. */
-    struct { ListNode *root; ListNode *tail; uint32_t length; } list;
+    /* A List is the window [start, start + length) of a shared vector, so
+       slicing is O(1). A window keeps its whole vector reachable. */
+    struct { ListVector vector; uint32_t start; uint32_t length; } list;
     struct { RuntimeField *fields; uint32_t length; } record;
     struct { uint32_t constructor; const char *type_name; const char *variant_name;
              RuntimeField *fields; uint32_t length; } constructed;
@@ -316,76 +321,80 @@ static ListNode *list_node_copy(const ListNode *source, uint32_t count) {
   memcpy(node->slots, source->slots, kept * sizeof(node->slots[0]));
   return node;
 }
-static ChimiValue *list_value(ListNode *root, ListNode *tail, uint32_t length) {
-  ChimiValue *value = new_value(VALUE_LIST);
-  value->as.list.root = root; value->as.list.tail = tail; value->as.list.length = length;
-  return value;
-}
 /* Index of the first element stored in the tail rather than the trie. */
-static uint32_t list_tail_offset(uint32_t length) {
+static uint32_t vector_tail_offset(uint32_t length) {
   return length == 0 ? 0 : ((length - 1) >> LIST_BITS) << LIST_BITS;
 }
-static uint32_t list_length(const ChimiValue *list) { return list->as.list.length; }
-static ChimiValue *list_get(const ChimiValue *list, uint32_t index) {
-  if (index >= list->as.list.length) return NULL;
-  if (index >= list_tail_offset(list->as.list.length))
-    return list->as.list.tail->slots[index & LIST_MASK];
-  const ListNode *node = list->as.list.root;
+/* The leaf holding element `index`; the caller reads slot `index & LIST_MASK`. */
+static ListNode *vector_leaf(ListVector vector, uint32_t index) {
+  if (index >= vector_tail_offset(vector.length)) return vector.tail;
+  ListNode *node = vector.root;
   for (uint32_t height = node->height; height > 0; --height)
     node = node->slots[(index >> (height * LIST_BITS)) & LIST_MASK];
-  return node->slots[index & LIST_MASK];
+  return node;
 }
-static ListNode *list_new_path(uint32_t height, ListNode *leaf) {
+static ListNode *vector_new_path(uint32_t height, ListNode *leaf) {
   if (height == 0) return leaf;
   ListNode *node = list_node(height, 1);
-  node->slots[0] = list_new_path(height - 1, leaf);
+  node->slots[0] = vector_new_path(height - 1, leaf);
   return node;
 }
 /* Copies the path to the leaf that starts at element `first_index` and attaches `leaf`. */
-static ListNode *list_push_leaf(const ListNode *node, uint32_t first_index, ListNode *leaf) {
+static ListNode *vector_push_leaf(const ListNode *node, uint32_t first_index, ListNode *leaf) {
   uint32_t slot = (first_index >> (node->height * LIST_BITS)) & LIST_MASK;
   ListNode *copy = list_node_copy(node, slot + 1);
   if (node->height == 1) copy->slots[slot] = leaf;
-  else if (slot < node->count) copy->slots[slot] = list_push_leaf(node->slots[slot], first_index, leaf);
-  else copy->slots[slot] = list_new_path(node->height - 1, leaf);
+  else if (slot < node->count) copy->slots[slot] = vector_push_leaf(node->slots[slot], first_index, leaf);
+  else copy->slots[slot] = vector_new_path(node->height - 1, leaf);
   return copy;
 }
-/* Returns a new list with `item` appended; `list` is unchanged. Amortized O(1):
-   it copies at most one 32-slot tail plus one root-to-leaf path. Chimi code
-   reaches it once the standard-library mechanism (G1) exposes list building. */
-__attribute__((unused)) static ChimiValue *list_push(const ChimiValue *list, ChimiValue *item) {
-  uint32_t length = list->as.list.length;
-  if (length == UINT32_MAX) { fputs("Chimi runtime list length overflow\n", stderr); exit(70); }
-  uint32_t tail_length = length - list_tail_offset(length);
-  ListNode *tail = list->as.list.tail;
-  if (length == 0 || tail_length < LIST_WIDTH) {
-    ListNode *next = length == 0 ? list_node(0, 1) : list_node_copy(tail, tail_length + 1);
+/* Amortized O(1): copies at most one 32-slot tail plus one root-to-leaf path. */
+static ListVector vector_push(ListVector vector, ChimiValue *item) {
+  if (vector.length == UINT32_MAX) { fputs("Chimi runtime list length overflow\n", stderr); exit(70); }
+  uint32_t tail_length = vector.length - vector_tail_offset(vector.length);
+  if (vector.length == 0 || tail_length < LIST_WIDTH) {
+    ListNode *next = vector.length == 0 ? list_node(0, 1) : list_node_copy(vector.tail, tail_length + 1);
     next->slots[tail_length] = item;
-    return list_value(list->as.list.root, next, length + 1);
+    return (ListVector){vector.root, next, vector.length + 1};
   }
-  ListNode *root = list->as.list.root;
-  uint32_t first_index = length - LIST_WIDTH;
+  ListNode *root = vector.root;
+  uint32_t first_index = vector.length - LIST_WIDTH;
   if (!root) {
-    root = list_new_path(1, tail);
+    root = vector_new_path(1, vector.tail);
   } else if ((uint64_t)(first_index >> LIST_BITS) == (uint64_t)1 << (root->height * LIST_BITS)) {
     ListNode *grown = list_node(root->height + 1, 2);
-    grown->slots[0] = root; grown->slots[1] = list_new_path(root->height, tail);
+    grown->slots[0] = root; grown->slots[1] = vector_new_path(root->height, vector.tail);
     root = grown;
   } else {
-    root = list_push_leaf(root, first_index, tail);
+    root = vector_push_leaf(root, first_index, vector.tail);
   }
   ListNode *next = list_node(0, 1);
   next->slots[0] = item;
-  return list_value(root, next, length + 1);
+  return (ListVector){root, next, vector.length + 1};
 }
-/* Builds a list from `length` values in O(length) without intermediate versions. */
-static ChimiValue *list_from_values(ChimiValue *const *values, uint32_t length) {
-  if (length == 0) return list_value(NULL, NULL, 0);
-  uint32_t tail_offset = list_tail_offset(length);
+static ListNode *vector_set_node(const ListNode *node, uint32_t index, ChimiValue *item) {
+  ListNode *copy = list_node_copy(node, node->count);
+  if (node->height == 0) copy->slots[index & LIST_MASK] = item;
+  else {
+    uint32_t slot = (index >> (node->height * LIST_BITS)) & LIST_MASK;
+    copy->slots[slot] = vector_set_node(node->slots[slot], index, item);
+  }
+  return copy;
+}
+/* O(log32 n): copies the path to element `index`, which must exist. */
+static ListVector vector_set(ListVector vector, uint32_t index, ChimiValue *item) {
+  if (index >= vector_tail_offset(vector.length))
+    return (ListVector){vector.root, vector_set_node(vector.tail, index, item), vector.length};
+  return (ListVector){vector_set_node(vector.root, index, item), vector.tail, vector.length};
+}
+/* Builds a vector from `length` values in O(length) without intermediate versions. */
+static ListVector vector_from_values(ChimiValue *const *values, uint32_t length) {
+  if (length == 0) return (ListVector){NULL, NULL, 0};
+  uint32_t tail_offset = vector_tail_offset(length);
   ListNode *tail = list_node(0, length - tail_offset);
   memcpy(tail->slots, values + tail_offset, tail->count * sizeof(tail->slots[0]));
   uint32_t level_count = tail_offset >> LIST_BITS;
-  if (level_count == 0) return list_value(NULL, tail, length);
+  if (level_count == 0) return (ListVector){NULL, tail, length};
   ListNode **level = malloc(level_count * sizeof(*level));
   if (!level) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
   for (uint32_t index = 0; index < level_count; ++index) {
@@ -407,7 +416,42 @@ static ChimiValue *list_from_values(ChimiValue *const *values, uint32_t length) 
   }
   ListNode *root = level[0];
   free(level);
-  return list_value(root, tail, length);
+  return (ListVector){root, tail, length};
+}
+
+static ChimiValue *list_value(ListVector vector, uint32_t start, uint32_t length) {
+  ChimiValue *value = new_value(VALUE_LIST);
+  value->as.list.vector = vector; value->as.list.start = start; value->as.list.length = length;
+  return value;
+}
+static ChimiValue *list_from_values(ChimiValue *const *values, uint32_t length) {
+  return list_value(vector_from_values(values, length), 0, length);
+}
+static uint32_t list_length(const ChimiValue *list) { return list->as.list.length; }
+static ChimiValue *list_get(const ChimiValue *list, uint32_t index) {
+  if (index >= list->as.list.length) return NULL;
+  index += list->as.list.start;
+  return vector_leaf(list->as.list.vector, index)->slots[index & LIST_MASK];
+}
+/* The following primitives are reached from Chimi once the standard-library
+   mechanism (G1) and list patterns expose them; until then only tests call them. */
+
+/* Returns a new list with `item` appended; `list` is unchanged. A window that
+   ends before its vector does writes slot `end` into a path copy instead, so
+   the shared vector every other window sees is untouched. */
+__attribute__((unused)) static ChimiValue *list_push(const ChimiValue *list, ChimiValue *item) {
+  ListVector vector = list->as.list.vector;
+  uint32_t end = list->as.list.start + list->as.list.length;
+  vector = end == vector.length ? vector_push(vector, item) : vector_set(vector, end, item);
+  return list_value(vector, list->as.list.start, list->as.list.length + 1);
+}
+/* O(1) window [from, to) of `list`, sharing its vector. Requires from <= to <= length. */
+__attribute__((unused)) static ChimiValue *list_slice(const ChimiValue *list, uint32_t from, uint32_t to) {
+  if (from > to || to > list->as.list.length) {
+    fputs("Chimi runtime list slice out of range\n", stderr); exit(70);
+  }
+  if (from == to) return list_value((ListVector){NULL, NULL, 0}, 0, 0);
+  return list_value(list->as.list.vector, list->as.list.start + from, to - from);
 }
 
 static void mark_value(ChimiValue *value, uint64_t epoch);
@@ -470,8 +514,8 @@ static void mark_value(ChimiValue *value, uint64_t epoch) {
   switch (value->kind) {
     case VALUE_TEXT: mark_allocation((void *)value->as.text, epoch, ALLOCATION_BYTES); break;
     case VALUE_LIST:
-      mark_list_node(value->as.list.root, epoch);
-      mark_list_node(value->as.list.tail, epoch);
+      mark_list_node(value->as.list.vector.root, epoch);
+      mark_list_node(value->as.list.vector.tail, epoch);
       break;
     case VALUE_RECORD: mark_fields(value->as.record.fields, epoch); break;
     case VALUE_CONSTRUCTED: mark_fields(value->as.constructed.fields, epoch); break;

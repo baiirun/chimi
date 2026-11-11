@@ -59,7 +59,7 @@ static void test_push_and_get_across_trie_heights(void) {
   uint32_t length = 1100000;
   ChimiValue *list = push_sequence(list_from_values(NULL, 0), length, 0);
   expect_sequence(list, length, 0);
-  CHECK(list->as.list.root->height == 4, "root height %u", list->as.list.root->height);
+  CHECK(list->as.list.vector.root->height == 4, "root height %u", list->as.list.vector.root->height);
 }
 
 static void test_old_versions_are_unchanged(void) {
@@ -99,8 +99,8 @@ static void test_bulk_construction_matches_push(void) {
     /* Appending to a bulk-built list relies on the same trie shape as push. */
     expect_sequence(push_sequence(bulk, 2000, length), length + 2000, 0);
     ChimiValue *pushed = push_sequence(list_from_values(NULL, 0), length, 0);
-    uint32_t bulk_height = bulk->as.list.root ? bulk->as.list.root->height : 0;
-    uint32_t pushed_height = pushed->as.list.root ? pushed->as.list.root->height : 0;
+    uint32_t bulk_height = bulk->as.list.vector.root ? bulk->as.list.vector.root->height : 0;
+    uint32_t pushed_height = pushed->as.list.vector.root ? pushed->as.list.vector.root->height : 0;
     CHECK(bulk_height == pushed_height, "length %u: bulk height %u, push height %u", length,
           bulk_height, pushed_height);
   }
@@ -157,12 +157,92 @@ static void test_collection_keeps_shared_old_version(void) {
   allocation_scope_end(&scope);
 }
 
+/* Checks that `list` holds values[from], values[from + 1], ... for `length` elements. */
+static void expect_window(const ChimiValue *list, uint32_t from, uint32_t length) {
+  CHECK(list_length(list) == length, "window length %u, expected %u", list_length(list), length);
+  for (uint32_t index = 0; index < length; ++index)
+    CHECK(element(list, index) == (int64_t)(from + index), "window index %u", index);
+  CHECK(list_get(list, length) == NULL, "read past the end of a window");
+}
+
+static void test_slices_are_windows_over_the_original(void) {
+  uint32_t length = 33900;
+  ChimiValue *list = push_sequence(list_from_values(NULL, 0), length, 0);
+  static const uint32_t bounds[][2] = {{0, 0}, {0, 1}, {5, 5}, {0, 32}, {31, 33}, {32, 64},
+                                       {1000, 1100}, {1, 33900}, {0, 33899}, {33867, 33900}};
+  for (uint32_t which = 0; which < sizeof(bounds) / sizeof(bounds[0]); ++which) {
+    uint32_t from = bounds[which][0], to = bounds[which][1];
+    ChimiValue *window = list_slice(list, from, to);
+    expect_window(window, from, to - from);
+    /* A window of a window composes offsets. */
+    if (to - from >= 2) expect_window(list_slice(window, 1, to - from - 1), from + 1, to - from - 2);
+  }
+  expect_sequence(list, length, 0);
+}
+
+static void test_append_to_a_prefix_leaves_the_original_unchanged(void) {
+  /* `[..init, last]` then appending to `init`: the slot after the window
+     still holds `last` in the original. */
+  static const uint32_t lengths[] = {1, 2, 32, 33, 64, 65, 1057, 33825};
+  for (uint32_t which = 0; which < sizeof(lengths) / sizeof(lengths[0]); ++which) {
+    uint32_t length = lengths[which];
+    ChimiValue *list = push_sequence(list_from_values(NULL, 0), length, 0);
+    ChimiValue *init = list_slice(list, 0, length - 1);
+    ChimiValue *left = list_push(init, integer_value(-1));
+    ChimiValue *right = push_sequence(init, 70, -1000);
+    expect_sequence(list, length, 0);
+    expect_window(init, 0, length - 1);
+    CHECK(list_length(left) == length && element(left, length - 1) == -1, "left successor");
+    CHECK(list_length(right) == length + 69 && element(right, length - 1) == -1000 &&
+          element(right, length + 68) == -931, "right successor");
+    /* Appending to a suffix window extends the shared vector. */
+    ChimiValue *rest = list_slice(list, 1, length);
+    ChimiValue *extended = list_push(rest, integer_value((int64_t)length));
+    expect_window(extended, 1, length);
+    expect_sequence(list, length, 0);
+  }
+}
+
+/* Dropping the head one element at a time, as `[first, ..rest]` recursion does,
+   allocates one list header per step and never copies the elements. */
+static void test_drop_front_is_constant_cost(void) {
+  uint32_t length = 200000;
+  ChimiValue *list = push_sequence(list_from_values(NULL, 0), length, 0);
+  AllocationScope scope;
+  allocation_scope_begin(&scope);
+  ChimiValue *rest = list;
+  for (uint32_t index = 0; index < length; ++index) {
+    CHECK(element(rest, 0) == index, "head at step %u", index);
+    rest = list_slice(rest, 1, list_length(rest));
+  }
+  CHECK(list_length(rest) == 0, "drained");
+  double per_step = (double)scope.total_allocated_bytes / length;
+  printf("drop_front length=%u allocated_bytes_per_step=%.1f\n", length, per_step);
+  CHECK(per_step <= sizeof(ChimiValue), "%.1f bytes per drop", per_step);
+  allocation_scope_collect(&scope, NULL, NULL);
+  allocation_scope_end(&scope);
+}
+
+static void test_collection_keeps_a_window_readable(void) {
+  AllocationScope scope;
+  allocation_scope_begin(&scope);
+  ChimiValue *list = push_sequence(list_from_values(NULL, 0), 5000, 0);
+  ChimiValue *window = list_slice(list, 1234, 4321);
+  allocation_scope_collect(&scope, window, NULL);
+  expect_window(window, 1234, 4321 - 1234);
+  allocation_scope_end(&scope);
+}
+
 int main(void) {
   test_push_and_get_across_trie_heights();
   test_old_versions_are_unchanged();
   test_bulk_construction_matches_push();
   test_accumulation_is_linear_and_reclaimed();
   test_collection_keeps_shared_old_version();
+  test_slices_are_windows_over_the_original();
+  test_append_to_a_prefix_leaves_the_original_unchanged();
+  test_drop_front_is_constant_cost();
+  test_collection_keeps_a_window_readable();
   puts("ok");
   return 0;
 }
