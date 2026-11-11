@@ -5191,6 +5191,41 @@ fn a_clause_after_a_covering_clause_never_runs() {
         .expect("the second clause is unreachable");
     let start = source.find("describe(0)").unwrap();
     assert_eq!(unreachable.range().start() as usize, start);
+    let labelled = |source: &str, diagnostic: &chimi::diagnostic::Diagnostic| {
+        diagnostic
+            .labels()
+            .iter()
+            .map(|label| label.range().start() as usize)
+            .map(|start| source[start..].lines().next().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(labelled(source, unreachable), ["describe(count) -> Int {"]);
+    // Two clauses that cover it only together: the label is on the later one.
+    let joint = concat!(
+        "fn pick(True, _) -> Int {\n",
+        "  1\n",
+        "}\n",
+        "fn pick(False, _) {\n",
+        "  2\n",
+        "}\n",
+        "fn pick(_, 0) {\n",
+        "  3\n",
+        "}\n",
+        "pub fn main() -> Int { pick(True, 0) }\n",
+    );
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", joint))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let codes = report
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code())
+        .collect::<Vec<_>>();
+    assert_eq!(codes, ["T4232"]);
+    assert_eq!(
+        labelled(joint, &report.diagnostics()[0]),
+        ["pick(False, _) {"]
+    );
 }
 
 // PC-04

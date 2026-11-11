@@ -3686,6 +3686,8 @@ impl ProjectTypeChecker {
             .map(|subject| subject.success)
             .collect::<Vec<_>>();
         let mut coverage = Vec::<Vec<MatchPattern>>::new();
+        // After each arm that added coverage: its index and the coverage length.
+        let mut coverage_ends = Vec::<(usize, usize)>::new();
         // An arm whose pattern lost a `..` to L2021 does not mean what was written, so
         // it is neither checked for reachability nor counted as covering anything,
         // and with such an arm the case is not checked for exhaustiveness either.
@@ -3728,10 +3730,11 @@ impl ProjectTypeChecker {
             let rows = self.expand_failure_type_rows(module_id, &arm.patterns, normalized);
             let normalized = rows[0].clone();
             let useful_rows = rows
-                .into_iter()
+                .iter()
                 .filter(|row| {
                     rejected || self.pattern_row_is_useful(&coverage, row, &subject_types)
                 })
+                .cloned()
                 .collect::<Vec<_>>();
             let useful = !useful_rows.is_empty();
             if !useful {
@@ -3740,7 +3743,36 @@ impl ProjectTypeChecker {
                 } else {
                     "case arm is unreachable"
                 };
-                self.type_error_range(module_id, "T4232", arm.range, message);
+                let mut diagnostic = Diagnostic::error(
+                    DiagnosticStage::Type,
+                    "T4232",
+                    self.resolved.semantic.modules[module_id.raw() as usize]
+                        .source
+                        .file_id(),
+                    arm.range,
+                    message,
+                );
+                // The earliest arm that, with the arms before it, covers this one.
+                let covering = coverage_ends.iter().find(|(_, end)| {
+                    rows.iter().all(|row| {
+                        !self.pattern_row_is_useful(&coverage[..*end], row, &subject_types)
+                    })
+                });
+                if let Some((covering, _)) = covering {
+                    let label = if clauses.is_some() {
+                        "this clause, with the clauses before it, matches every input of the unreachable clause"
+                    } else {
+                        "this arm, with the arms before it, matches every value of the unreachable arm"
+                    };
+                    diagnostic = diagnostic.with_label(
+                        self.resolved.semantic.modules[module_id.raw() as usize]
+                            .source
+                            .file_id(),
+                        arms[*covering].range,
+                        label,
+                    );
+                }
+                self.push_type_diagnostic(diagnostic);
             }
             let unguarded = arm.guard.is_none();
             let catch_all = normalized
@@ -3756,6 +3788,7 @@ impl ProjectTypeChecker {
             }
             if unguarded && useful && !rejected && normalized.len() == subjects.len() {
                 coverage.extend(useful_rows);
+                coverage_ends.push((arm_index, coverage.len()));
             }
             if let Some(guard) = &arm.guard {
                 facts.push(self.infer_case_guard(module_id, guard, generics, &mut arm_bindings));
