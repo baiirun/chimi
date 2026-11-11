@@ -1187,6 +1187,8 @@ struct ClauseCase {
     function: String,
     /// The first clause's name, where coverage diagnostics point.
     range: TextRange,
+    /// Another group of the same name exists, so coverage is not checked.
+    separated: bool,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -3613,10 +3615,15 @@ impl ProjectTypeChecker {
             .iter()
             .map(|subject| self.infer_expression(module_id, subject, generics, bindings))
             .collect::<Vec<_>>();
-        if let CaseOrigin::Clauses { function } = origin {
+        if let CaseOrigin::Clauses {
+            function,
+            separated,
+        } = origin
+        {
             let clauses = ClauseCase {
                 function: function.text.clone(),
                 range: function.range,
+                separated: *separated,
             };
             return self.infer_ordinary_case(
                 module_id,
@@ -3815,7 +3822,8 @@ impl ProjectTypeChecker {
             facts.push(body);
         }
         let missing = vec![MatchPattern::Wildcard; subjects.len()];
-        let witness = (!rejected_arm)
+        let separated = clauses.is_some_and(|clauses| clauses.separated);
+        let witness = (!rejected_arm && !separated)
             .then(|| self.pattern_row_witness(&coverage, &missing, &subject_types))
             .flatten();
         if let Some(witness) = witness {

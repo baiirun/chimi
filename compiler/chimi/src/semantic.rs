@@ -5,6 +5,7 @@ use crate::syntax::{
     self, DeclarationSyntax, FileSyntax, FunctionDeclarationSyntax, NodeKind, ParseResult,
     StructDeclarationSyntax, SyntaxNode, SyntaxToken, TextEscape, TokenKind, TypedSyntaxNode,
 };
+use std::collections::HashSet;
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -885,6 +886,10 @@ pub(crate) enum CaseOrigin {
     /// arm's range is its clause head, `name(patterns)`.
     Clauses {
         function: Name,
+        /// Another group of the same name appears later or earlier
+        /// (`E_SEPARATED_FUNCTION_CLAUSES`), so this group alone is not checked
+        /// for exhaustiveness.
+        separated: bool,
     },
 }
 
@@ -987,6 +992,7 @@ impl ProjectLowerer {
         let mut declarations = Vec::new();
         let nodes = root.child_nodes();
         let mut clause_groups = Vec::<(String, TextRange)>::new();
+        let separated = separated_function_names(&nodes);
         let mut index = 0;
         while index < nodes.len() {
             let node = &nodes[index];
@@ -1026,7 +1032,10 @@ impl ProjectLowerer {
                 if let Some(name) = &name {
                     clause_groups.push((name.text.clone(), name.range));
                 }
-                if let Some(declaration) = lowerer.lower_function_group(&group) {
+                let is_separated = name
+                    .as_ref()
+                    .is_some_and(|name| separated.contains(&name.text));
+                if let Some(declaration) = lowerer.lower_function_group(&group, is_separated) {
                     declarations.push(declaration);
                 }
                 continue;
@@ -1175,7 +1184,11 @@ impl ProjectLowerer {
     /// names and the body a `case` over them with one arm per clause, in source order.
     /// Header items come from the first clause; a later clause that repeats one is
     /// `L2020`, and a clause with a different parameter count is `T4280` and is left out.
-    fn lower_function_group(&mut self, clauses: &[SyntaxNode<'_>]) -> Option<ModuleDeclaration> {
+    fn lower_function_group(
+        &mut self,
+        clauses: &[SyntaxNode<'_>],
+        separated: bool,
+    ) -> Option<ModuleDeclaration> {
         let first = clauses.first()?;
         if clauses.len() == 1 && !clause_has_patterns(first) {
             return self.lower_module_declaration(first);
@@ -1217,6 +1230,7 @@ impl ProjectLowerer {
             range: TextRange::new(name.range.start() as usize, last.end() as usize),
             origin: CaseOrigin::Clauses {
                 function: name.clone(),
+                separated,
             },
         };
         Some(ModuleDeclaration {
@@ -1700,7 +1714,10 @@ impl ProjectLowerer {
                         subjects,
                         arms: vec![arm],
                         range,
-                        origin: CaseOrigin::Clauses { function },
+                        origin: CaseOrigin::Clauses {
+                            function,
+                            separated: false,
+                        },
                     }),
                     range,
                 }
@@ -2450,6 +2467,27 @@ fn decode_text(chunk: &str) -> String {
 
 fn function_name(node: &SyntaxNode<'_>) -> Option<Name> {
     direct_token_after(node, TokenKind::Fn, TokenKind::Identifier).map(|token| name_from(&token))
+}
+
+/// Function names declared by more than one run of adjacent declarations.
+fn separated_function_names(nodes: &[SyntaxNode<'_>]) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    let mut separated = HashSet::new();
+    let mut previous: Option<String> = None;
+    for node in nodes {
+        let name = (node.kind() == NodeKind::FunctionDeclaration)
+            .then(|| function_name(node))
+            .flatten()
+            .map(|name| name.text);
+        if let Some(name) = &name
+            && previous.as_ref() != Some(name)
+            && !seen.insert(name.clone())
+        {
+            separated.insert(name.clone());
+        }
+        previous = name;
+    }
+    separated
 }
 
 fn clause_parameters<'tree>(node: &SyntaxNode<'tree>) -> Vec<SyntaxNode<'tree>> {

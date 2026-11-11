@@ -5401,7 +5401,7 @@ fn only_the_first_clause_states_the_header() {
 // PC-11
 #[test]
 fn clauses_separated_by_another_declaration_are_rejected() {
-    let codes = check_codes(concat!(
+    let source = concat!(
         "fn f(0) -> Int {\n",
         "  0\n",
         "}\n",
@@ -5412,8 +5412,22 @@ fn clauses_separated_by_another_declaration_are_rejected() {
         "  1\n",
         "}\n",
         "pub fn main() -> Int { f(1) }\n",
-    ));
-    assert_eq!(codes, ["E_SEPARATED_FUNCTION_CLAUSES", "T4231"]);
+    );
+    // The first group alone does not cover `Int`, but separated groups are not
+    // checked for coverage.
+    assert_eq!(check_codes(source), ["E_SEPARATED_FUNCTION_CLAUSES"]);
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let separated = &report.diagnostics()[0];
+    let at = |start: u32| start as usize;
+    assert_eq!(at(separated.range().start()), source.rfind("f(_)").unwrap());
+    let labels = separated
+        .labels()
+        .iter()
+        .map(|label| at(label.range().start()))
+        .collect::<Vec<_>>();
+    assert_eq!(labels, [source.find("f(0)").unwrap()]);
 }
 
 #[test]
