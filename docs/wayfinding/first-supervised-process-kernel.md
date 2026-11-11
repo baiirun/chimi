@@ -24,9 +24,21 @@ syntax; the forcing program validates the model but does not organize it.
 
 The current frontier is:
 
-- **Choose the native supervised-process representation** — `prog show ts-a6b43b`.
+- **Connect supervised processes to native execution** — `prog show ts-6ccbc9`.
+  Starts with porting per-owner heaps into the native runtime (including
+  small-message packing, `prog show ts-df67fb`) and needs `Duration`
+  (`prog show ts-f31a20`).
 
 ## Decisions So Far
+
+- **Choose the native supervised-process representation** — `prog show ts-a6b43b`.
+  Per-owner heaps with loop regions, copy-on-transfer fragments, owner-tagged
+  chunks, and supervisors as kernel data; see
+  [supervised-process runtime](../architecture/supervised-process-runtime.md).
+- **Design the supervised-process conformance lab** — `prog show ts-b9cbe1`.
+  131 scenarios unlocking in stages, exact virtual-time transcripts, and
+  performance gates; see
+  [supervised-process conformance](../specification/supervised-process-conformance.md).
 
 - **Specify process and supervisor static contracts** — `prog show ts-5961ee`.
   Positional functions, one `Supervisor.Member` type without the message type,
@@ -58,8 +70,6 @@ The current frontier is:
 
 | Decision or gate | `prog` pointer | Depends on |
 | --- | --- | --- |
-| Design the supervised-process conformance lab | `prog show ts-b9cbe1` | Static contracts and native representation |
-| Connect supervised processes to native execution | `prog show ts-6ccbc9` | Static contracts, native representation, and lab design |
 | Run supervised-process conformance and performance gates | `prog show ts-1765ba` | Connected implementation |
 
 The final forcing program is a small dynamic pool: one managed process defects
