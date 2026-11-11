@@ -12,6 +12,9 @@ removes a process sleeping in a handler. "time moves while runnable"
 which the test now arranges. "replacement before children drain" (ra07)
 cleared the incarnation's child set but still cancelled every child, so it
 did not change behaviour; it now leaves an incarnation's children running.
+
+The nested-supervisor and structured-stop mutants (from "nested supervisor
+outside parent capacity" on) guard the decisions of ts-b1a535 and ts-2e0451.
 """
 
 CRATE = "runtime/chimi-fiber"
@@ -135,5 +138,82 @@ MUTATIONS = [
         edits=[('                let rolled_back = self.execute(Plan::from([Step::StopMembers(supervisor)]));\n                debug_assert_eq!(rolled_back, Progress::Done);', '')],
         targets=["lib"],
         filter='rt06',
+    ),
+    dict(
+        name='nested supervisor outside parent capacity',
+        file='src/scheduler/process.rs',
+        edits=[('        if members >= supervision.policy.capacity.get() as usize {', '        if members >= supervision.policy.capacity.get() as usize && matches!(member.kind, MemberKind::Process(_)) {')],
+        targets=["lib"],
+        filter='sv10_a_dynamic_nested',
+    ),
+    dict(
+        name='removal leaves the nested subtree running',
+        file='src/scheduler/process.rs',
+        edits=[('            Some(Instance::Supervisor(child)) => Plan::from([\n                Step::StopMembers(child),\n                Step::Emit(ProcessEventKind::Stopped { supervisor: child }),\n                Step::Retire(child),\n                finish,\n            ]),', '            Some(Instance::Supervisor(_)) => Plan::from([finish]),')],
+        targets=["lib"],
+        filter='sv10_a_dynamic_nested',
+    ),
+    dict(
+        name='handle kind unchecked',
+        file='src/scheduler/process.rs',
+        edits=[('        if !kind_matches {', '        if false && !kind_matches {')],
+        targets=["lib"],
+        filter='sv10_a_dynamic_nested',
+    ),
+    dict(
+        name='supervisor_started without parent',
+        file='src/scheduler/process.rs',
+        edits=[('            parent: parent.map(|(parent, _)| parent),', '            parent: None,')],
+        targets=["lib"],
+        filter='sv10_a_dynamic_nested',
+    ),
+    dict(
+        name='stopped nested supervisor restarts',
+        file='src/scheduler/process.rs',
+        edits=[('            self.member_ended(membership, TerminalCause::Cancelled);', '            self.member_ended(membership, TerminalCause::Defected);')],
+        targets=["lib"],
+        filter='sv10_stopping',
+    ),
+    dict(
+        name='nested stop in flight expanded again',
+        file='src/scheduler/process.rs',
+        edits=[('                        Some(Instance::Supervisor(child)) if self.stop_in_flight(child) => {\n                            plan.steps.push_front(Step::AwaitSupervisor(child));', '                        Some(Instance::Supervisor(child)) if false && self.stop_in_flight(child) => {\n                            plan.steps.push_front(Step::AwaitSupervisor(child));')],
+        targets=["lib"],
+        filter='a_parent_stop',
+    ),
+    dict(
+        name='nested escalation strands waiting plans',
+        file='src/scheduler/process.rs',
+        edits=[('                self.member_ended(membership, TerminalCause::Defected);\n                self.resume_blocked(Blocker::Supervisor(supervisor));', '                self.member_ended(membership, TerminalCause::Defected);')],
+        targets=["lib"],
+        filter='es02_a_parent_stop',
+    ),
+    dict(
+        name='only root waiters answered',
+        file='src/scheduler/process.rs',
+        edits=[('        for waiter in record.waiters {\n            self.reply(waiter, super::RESPONSE_OK, front);\n        }', '        if record.parent.is_none() {\n            for waiter in record.waiters {\n                self.reply(waiter, super::RESPONSE_OK, front);\n            }\n        }')],
+        targets=["lib"],
+        filter='sv10_a_wait',
+    ),
+    dict(
+        name='owner terminal before its roots stop',
+        file='src/scheduler.rs',
+        edits=[('        if !record.children.is_empty() || self.owns_live_roots(task) {', '        if !record.children.is_empty() {')],
+        targets=["lib"],
+        filter='an_owner_task_stays',
+    ),
+    dict(
+        name='parent terminal before its draining child',
+        file='src/scheduler.rs',
+        edits=[('        if !record.children.is_empty() || self.owns_live_roots(task) {', '        if self.owns_live_roots(task) {')],
+        targets=["lib"],
+        filter='a_parent_task_stays',
+    ),
+    dict(
+        name='process owners not held',
+        file='src/scheduler.rs',
+        edits=[('        if !record.children.is_empty() || self.owns_live_roots(task) {', '        if !record.children.is_empty() || (record.process.is_none() && self.owns_live_roots(task)) {')],
+        targets=["lib"],
+        filter='removing_a_process_that_started',
     ),
 ]
