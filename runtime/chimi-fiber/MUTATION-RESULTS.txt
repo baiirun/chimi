@@ -1,0 +1,25 @@
+# Generated; do not edit. Reproduce from the repository root with:
+#   scripts/mutation/mutate.py --revision 192a81c41f2f5ebe1173546ace287835774197b1 scripts/mutation/fiber_mutations.py
+# Commit: 192a81c41f2f5ebe1173546ace287835774197b1
+# Each mutant must turn at least one test red (KILLED).
+# mutation run at 192a81c41f2f5ebe1173546ace287835774197b1
+# fiber_mutations.py: 17 mutants against runtime/chimi-fiber
+BASELINE ok (5s)
+KILLED       send reply resumes caller at tail [lib -- mb03] (1s)
+KILLED       unread messages not released [lib -- mb05] (1s)
+KILLED       window edge inside [lib -- ra04] (1s)
+KILLED       failed start uncharged [lib -- ra06] (1s)
+KILLED       stop order forward [lib -- sd01] (1s)
+KILLED       unroute member by member [lib -- sd06] (1s)
+KILLED       cleanup does not drain [lib -- mb08] (1s)
+KILLED       zero deadline drains [lib -- sd02] (1s)
+KILLED       remove does not wait [lib -- rr01] (1s)
+KILLED       returned removal silent [lib -- rr04] (1s)
+KILLED       sleep timer kept on cancel [lib -- cancelling_a_sleeper] (1s)
+KILLED       replacement before children drain [lib -- ra07] (1s)
+KILLED       time moves while runnable [lib -- virtual_time_advances] (1s)
+KILLED       forced fiber destroyed [lib -- sd04_the_c_entry] (1s)
+KILLED       name registered late [lib -- mb04] (1s)
+KILLED       restart limit per member [lib -- ra02] (2s)
+KILLED       rollback skipped [lib -- rt06] (1s)
+# result: every mutant killed

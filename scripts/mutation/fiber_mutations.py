@@ -5,11 +5,13 @@ Run: scripts/mutation/mutate.py scripts/mutation/fiber_mutations.py
 Each mutant runs the named unit test of the chimi-fiber library; it must turn
 it red.
 
-At 15cebc9 three mutants survived: "zero deadline drains" (sd02),
-"replacement before children drain" (ra07), and "time moves while runnable"
-(virtual_time_advances). Each named test exists and passes with the mutant
-applied, so either the test or the mutant no longer matches the ported
-scheduler.
+At 15cebc9 three mutants survived. "zero deadline drains" (sd02) only
+reached receives, where the receive itself checks the deadline; sd02 now also
+removes a process sleeping in a handler. "time moves while runnable"
+(virtual_time_advances) needed a timer pending while a task is runnable,
+which the test now arranges. "replacement before children drain" (ra07)
+cleared the incarnation's child set but still cancelled every child, so it
+did not change behaviour; it now leaves an incarnation's children running.
 """
 
 CRATE = "runtime/chimi-fiber"
@@ -60,7 +62,7 @@ MUTATIONS = [
     dict(
         name='cleanup does not drain',
         file='src/scheduler/process.rs',
-        edits=[('            Some(stopping) => match record.mailbox.pop_front() {', '            Some(stopping) => match None::<u64> {')],
+        edits=[('                stopping.pending = false;\n                match record.mailbox.pop_front() {', '                stopping.pending = false;\n                match None::<u64> {')],
         targets=["lib"],
         filter='mb08',
     ),
@@ -95,7 +97,7 @@ MUTATIONS = [
     dict(
         name='replacement before children drain',
         file='src/scheduler.rs',
-        edits=[('        for child in children {\n            self.begin_terminal(child, TaskOutcome::Cancelled, false);\n        }', '        if self.incarnation_of(task).is_some() { self.tasks.get_mut(&task).unwrap().children.clear(); }\n        for child in children {\n            if self.tasks.get(&child).is_some() { self.begin_terminal(child, TaskOutcome::Cancelled, false); }\n        }')],
+        edits=[('        for child in children {\n            self.begin_terminal(child, TaskOutcome::Cancelled, false);\n        }', '        if self.incarnation_of(task).is_some() {\n            self.tasks.get_mut(&task).unwrap().children.clear();\n        } else {\n            for child in children {\n                self.begin_terminal(child, TaskOutcome::Cancelled, false);\n            }\n        }')],
         targets=["lib"],
         filter='ra07',
     ),
