@@ -546,7 +546,10 @@ enum RuntimeCallable {
     Intrinsic(StandardFunction),
     Host(HostFunction),
     /// A constructor with fields named as a value; calling it constructs.
-    Constructor(SymbolId),
+    Constructor {
+        symbol: SymbolId,
+        name: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1011,7 +1014,10 @@ impl<'core> Evaluator<'core> {
                 },
             },
             CoreSymbolKind::Constructor => {
-                Control::Success(RuntimeValue::Callable(RuntimeCallable::Constructor(symbol)))
+                Control::Success(RuntimeValue::Callable(RuntimeCallable::Constructor {
+                    symbol,
+                    name: core_symbol.name.clone(),
+                }))
             }
             CoreSymbolKind::Other => Control::Defect {
                 message: format!("symbol {} is not a runtime value", core_symbol.name),
@@ -1136,7 +1142,7 @@ impl<'core> Evaluator<'core> {
             RuntimeCallable::Host(function) => {
                 self.invoke_host(function, arguments, span, call_node, call_environment)
             }
-            RuntimeCallable::Constructor(constructor) => self.construct(constructor, arguments),
+            RuntimeCallable::Constructor { symbol, .. } => self.construct(symbol, arguments),
         }
     }
 
@@ -2197,7 +2203,7 @@ fn callable_name(callable: &RuntimeCallable) -> &str {
         RuntimeCallable::Host(HostFunction::ProcessUtf8Lines) => "process_utf8_lines",
         RuntimeCallable::Host(HostFunction::WriteLine) => "write_line",
         RuntimeCallable::Host(HostFunction::WriteError) => "write_error",
-        RuntimeCallable::Constructor(_) => "constructor",
+        RuntimeCallable::Constructor { name, .. } => name,
     }
 }
 

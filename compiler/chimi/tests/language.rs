@@ -2111,3 +2111,25 @@ fn a_type_parameter_only_in_the_result_is_inferred_from_context() {
     );
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":4");
 }
+
+// A constructor value renders as its constructor's name on both paths, as a
+// standard function value renders as its function's name.
+#[test]
+fn a_constructor_value_result_renders_its_name() {
+    let outcome = run_both(
+        "constructor-value-result",
+        concat!(
+            "enum Shape {\n",
+            "  Circle(radius: Int)\n",
+            "  Dot\n",
+            "}\n",
+            "pub fn main() -> fn(Int) -> Shape {\n",
+            "  Circle\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":{\"callable\":\"Circle\"}"
+    );
+}
