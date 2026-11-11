@@ -1288,6 +1288,18 @@ fn malformed_number_literals_are_syntax_errors() {
 fn a_float_literal_that_rounds_to_infinity_is_rejected() {
     assert_eq!(check_codes("pub fn main() -> Float { 1e309 }\n"), ["S1003"]);
     assert!(check_codes("pub fn main() -> Float { 1e-400 }\n").is_empty());
+    // The range check applies to pattern literals too, besides T4313 for any Float
+    // pattern.
+    let mut codes = check_codes(concat!(
+        "pub fn main() -> Int {\n",
+        "  case 1.5 {\n",
+        "    1e309 -> 1\n",
+        "    _ -> 0\n",
+        "  }\n",
+        "}\n",
+    ));
+    codes.sort();
+    assert_eq!(codes, ["S1003", "T4313"]);
 }
 
 #[test]

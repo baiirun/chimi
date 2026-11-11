@@ -1845,7 +1845,12 @@ impl ProjectLowerer {
                 };
             }
             TokenKind::Integer => PatternLiteral::Integer(self.integer_literal(first, false)),
-            TokenKind::Float => PatternLiteral::Float,
+            TokenKind::Float => {
+                // Typing rejects every Float pattern (T4313), but the range check is
+                // a literal rule that applies in patterns too.
+                self.float_literal(first);
+                PatternLiteral::Float
+            }
             TokenKind::Text => PatternLiteral::Text(text_literal_value(first.text())),
             TokenKind::True | TokenKind::False => {
                 PatternLiteral::Boolean(first.kind() == TokenKind::True)
