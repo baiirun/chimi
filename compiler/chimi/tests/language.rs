@@ -5962,6 +5962,171 @@ fn a_typed_binding_of_another_type_is_rejected() {
     assert!(messages[0].1.contains("run time"), "{messages:?}");
 }
 
+// FP-08 (clause head): the annotation joins the cross-clause unification, so a
+// conflict is between clauses (T4281), not a typed-binding mismatch (T4283).
+#[test]
+fn a_typed_binding_of_another_type_in_a_clause_head_conflicts_between_clauses() {
+    let messages = coded_messages(concat!(
+        "fn describe(0) -> Int {\n",
+        "  0\n",
+        "}\n",
+        "fn describe(count: Text) {\n",
+        "  1\n",
+        "}\n",
+        "pub fn main() -> Int { describe(1) }\n",
+    ));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(messages[0].0, "T4281");
+}
+
+// Execution: a guard runs only for a clause whose patterns matched, in clause
+// order. `10 / n` would defect for `n == 0`, which the first clause takes.
+#[test]
+fn a_clause_guard_runs_only_after_its_patterns_match() {
+    let source = concat!(
+        "fn f(0) -> Int {\n",
+        "  100\n",
+        "}\n",
+        "fn f(n) if 10 / n > 1 {\n",
+        "  1\n",
+        "}\n",
+        "fn f(_) {\n",
+        "  2\n",
+        "}\n",
+        "pub fn main() -> List<Int> { [f(0), f(3), f(20)] }\n",
+    );
+    assert_eq!(
+        run_both("clause-guard-order", source),
+        "\"outcome\":\"success\",\"value\":[100,1,2]"
+    );
+}
+
+// Execution: a multi-clause function is one callable, so calling it traces one
+// `call` and one `match`, on both backends' full traces.
+#[test]
+fn a_clause_call_traces_one_call_and_one_match() {
+    let source = concat!(
+        "enum Shape {\n",
+        "  Circle(radius: Int)\n",
+        "  Rectangle(width: Int, height: Int)\n",
+        "}\n",
+        "fn area(Circle(radius)) -> Int {\n",
+        "  3 * radius * radius\n",
+        "}\n",
+        "fn area(Rectangle(width, height)) {\n",
+        "  width * height\n",
+        "}\n",
+        "pub fn main() -> Int { area(Rectangle(3, 4)) }\n",
+    );
+    let scratch = scratch_directory("clause-trace");
+    let path = scratch.join("main.chimi");
+    std::fs::write(&path, source).unwrap();
+    let interpreted = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .expect("run the reference interpreter");
+    let interpreted = String::from_utf8_lossy(&interpreted.stdout).into_owned();
+    let executable = scratch.join("program");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("build the native executable");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let telemetry = scratch.join("telemetry.jsonl");
+    Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=full")
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg("--")
+        .output()
+        .expect("execute the native program");
+    let native = std::fs::read_to_string(telemetry).unwrap();
+    for (backend, trace) in [("interpreter", &interpreted), ("native", &native)] {
+        let started = |operation: &str| {
+            trace
+                .lines()
+                .filter(|line| line.contains("\"event\":\"operation_started\""))
+                .filter(|line| line.contains(&format!("\"operation\":\"{operation}\"")))
+                .count()
+        };
+        assert_eq!(started("call"), 1, "{backend}: {trace}");
+        assert_eq!(started("match"), 1, "{backend}: {trace}");
+    }
+    assert!(interpreted.ends_with("\"outcome\":\"success\",\"value\":12}\n"));
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// PC-10: repeated generics and a repeated `needs` are L2020 too, each with its
+// own range in the later clause.
+#[test]
+fn a_later_clause_cannot_repeat_generics_or_needs() {
+    let source = concat!(
+        "interface Db {\n",
+        "  ping: fn() -> Bool\n",
+        "}\n",
+        "fn f<T>(Some(x: T)) -> Int needs { db: Db } {\n",
+        "  0\n",
+        "}\n",
+        "fn f<T>(None) needs { db: Db } {\n",
+        "  1\n",
+        "}\n",
+        "pub fn main() -> Int { 0 }\n",
+    );
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let repeated = report
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| {
+            let range = diagnostic.range();
+            (
+                diagnostic.code(),
+                &source[range.start() as usize..range.end() as usize],
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(repeated, [("L2020", "<T>"), ("L2020", "needs { db: Db }")]);
+}
+
+// The formatter keeps update fields in source order: order is evaluation order.
+#[test]
+fn formatting_keeps_update_fields_in_source_order() {
+    let source = concat!(
+        "struct Config {\n",
+        "  name: Text\n",
+        "  jobs: Int\n",
+        "}\n",
+        "pub fn main() -> Config {\n",
+        "  let base = Config(\"a\", 1)\n",
+        "  let updated = {   ..base,  name: \"b\",jobs: 2 }\n",
+        "  updated\n",
+        "}\n",
+    );
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(
+        formatted.text().contains("..base, name: \"b\", jobs: 2"),
+        "{}",
+        formatted.text()
+    );
+    let reordered = source.replace("name: \"b\",jobs: 2", "jobs: 2, name: \"b\"");
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", reordered.as_str()));
+    assert!(
+        formatted.text().contains("..base, jobs: 2, name: \"b\""),
+        "{}",
+        formatted.text()
+    );
+}
+
 // Failure-type patterns (patterns-and-function-clauses.md, "Typed bindings and
 // failure-type patterns").
 
