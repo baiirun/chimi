@@ -175,6 +175,7 @@ specifications and owns the resulting runtime processes.
 Restart policy is a source-visible transformation rather than an implicit
 property of every specification:
 
+<!-- chimi: fragment -->
 ```chimi
 let counter =
   fn() { Counter.start() }

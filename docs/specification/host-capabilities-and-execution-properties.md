@@ -76,6 +76,7 @@ failures rather than expected values produced by the program body.
 
 The first standard-library boundary remains explicit and module-qualified:
 
+<!-- chimi: check -->
 ```chimi
 import std/io as IO
 import std/io.{Console}
@@ -88,6 +89,7 @@ import std/io.{FileSystem}
 
 The scope-owning file operation has this conceptual contract:
 
+<!-- chimi: fragment -->
 ```chimi
 interface FileSystem {
   process_utf8_lines: fn<A, F, R>(

@@ -17,6 +17,7 @@ delivery guarantees, and a direct reference must never silently retarget.
 
 ## Example
 
+<!-- chimi: pending ts-6ccbc9 ts-f31a20 -->
 ```chimi
 import std/process as Process
 import std/process.{Address}

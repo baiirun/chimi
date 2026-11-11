@@ -52,9 +52,20 @@ effects effect-row
 
 The first source spelling places effects after needs:
 
+<!-- chimi: pending ts-facbbe -->
 ```chimi
+import std/io.{Path}
+
+enum LoadError {
+  Missing
+}
+
+interface Store {
+  load: fn(Path) -> Text errors LoadError effects { io },
+}
+
 fn load(path: Path) -> Text
-  needs { files: FileSystem }
+  needs { files: Store }
   effects { io } {
   files.load(path)
 }
@@ -65,7 +76,7 @@ needs, and effects annotations; the compiler infers those uniformly for public
 and private code. Function-value types and interface methods MAY state failure
 and effect rows. Empty rows are omitted from ordinary source and exposed as
 empty collections by inspection tools. In this example, tooling reports the
-`FileError` failure row inherited from `FileSystem.load`.
+`LoadError` failure row inherited from `Store.load`.
 
 `io` is a compiler-known effect identity, not a value, type, module, interface,
 dependency name, failure, or runner option. It does not require an import. The
@@ -74,6 +85,7 @@ silently creating user effects.
 
 Generic parameters used in effect position have effect-row kind:
 
+<!-- chimi: pending ts-facbbe -->
 ```chimi
 fn apply<A, B, E>(
   value: A,
@@ -172,6 +184,7 @@ dependencies or reinterpret effect names as providers.
 
 The first concrete standard-library surface is explicit and module-qualified:
 
+<!-- chimi: check -->
 ```chimi
 import std/io as IO
 import std/io.{Console}
@@ -189,6 +202,7 @@ The accepted general data-processing API is specified by
 ts-2ac2de`). The first filesystem boundary MUST own resource scope. Its contract
 is:
 
+<!-- chimi: fragment -->
 ```chimi
 interface FileSystem {
   process_utf8_lines: fn<A, F, R, X>(
@@ -265,6 +279,7 @@ operation follows its documented retry or `FileError`/`ConsoleError` policy.
 
 The first CLI root can expose the full shape directly:
 
+<!-- chimi: fragment -->
 ```chimi
 pub fn main(arguments: List<Text>) -> Void
   needs {
@@ -305,6 +320,7 @@ target native-cli cannot execute root effects { unsupported_effect }
 For example, supplying the dependency in this guard does not erase the
 operation's effect:
 
+<!-- chimi: pending ts-facbbe -->
 ```chimi
 interface FeatureFlags {
   enabled: fn(Text) -> Bool effects { io }
@@ -313,8 +329,8 @@ interface FeatureFlags {
 fn choose(value: Int, host_flags: FeatureFlags) -> Int
   needs { flags: FeatureFlags } {
   case value {
-    current if flags.enabled("new") using { flags: host_flags } -> current,
-    current -> current,
+    current if flags.enabled("new") using { flags: host_flags } -> current
+    current -> current
   }
 }
 ```

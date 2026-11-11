@@ -21,6 +21,7 @@ Related contracts:
 
 ## Example
 
+<!-- chimi: pending ts-6ccbc9 ts-f31a20 -->
 ```chimi
 import std/process as Process
 import std/supervisor as Supervisor

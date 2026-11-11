@@ -1,0 +1,14 @@
+# Default expectations for unannotated ```chimi blocks, keyed by document path
+# or directory prefix; the longest matching key wins. Statuses are the
+# annotation forms from tests/doc_examples.rs, plus `unreviewed`: compiled and
+# reported, never enforced.
+#
+# These documents are owned by other work in progress and are not yet
+# annotated. Remove an entry once its document's blocks carry annotations.
+[defaults]
+"docs/plans/standard-library-sketches/" = "unreviewed"
+"docs/specification/core-data-and-operators.md" = "unreviewed"
+"docs/specification/executable-kernel.md" = "unreviewed"
+"docs/specification/patterns-and-function-clauses.md" = "unreviewed"
+"docs/specification/standard-modules-and-constants.md" = "unreviewed"
+"docs/specification/time-and-outcomes.md" = "unreviewed"

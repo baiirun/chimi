@@ -18,6 +18,7 @@ restart, shutdown, and expected failure distinct.
 
 ## Example
 
+<!-- chimi: pending ts-6ccbc9 -->
 ```chimi
 import std/channel as Channel
 import std/channel.{Sender}
@@ -56,6 +57,7 @@ fn add(counter: Address<CounterMessage>, amount: Int) {
 
 The process is declared as an inert specification and owned by a supervisor:
 
+<!-- chimi: pending ts-6ccbc9 ts-f31a20 -->
 ```chimi
 let counting = Process.spec(counter, 64, Duration.seconds(5))
   |> Supervisor.process(Supervisor.Restart.OnDefect)

@@ -34,7 +34,11 @@ for a broader collections library.
 
 `Json.decode` MUST decode one complete JSON text into a closed `Value`:
 
+<!-- chimi: check -->
 ```chimi
+import std/json.{Number}
+import std/map.{Map}
+
 enum Value {
   Null
   Boolean(value: Bool)
@@ -67,6 +71,7 @@ The official keyed collection is spelled `Map<K, V>`, including the forcing
 program's `Map<Text, Int>` counts and JSON's `Map<Text, Value>` objects. The
 minimum behavior is equivalent to:
 
+<!-- chimi: fragment -->
 ```chimi
 Map.empty<K, V>() -> Map<K, V>
 Map.get<K, V>(Map<K, V>, K) -> Option<V>
@@ -103,6 +108,7 @@ uniquely owned storage, but that optimization is unobservable.
 The scope-owned filesystem operation is named `process_utf8_lines`. Its
 contract is equivalent to:
 
+<!-- chimi: fragment -->
 ```chimi
 interface FileSystem {
   process_utf8_lines: fn<A, F, R, X>(
@@ -140,6 +146,7 @@ capability contract. Raw streams and handles MUST NOT escape through this API.
 
 The minimum construction and encoding surface is:
 
+<!-- chimi: fragment -->
 ```chimi
 Json.decode(Text) -> Value errors DecodeError
 Json.encode(Value) -> Text
@@ -171,6 +178,7 @@ identity is application policy.
 
 The module origin remains explicit at use sites:
 
+<!-- chimi: check -->
 ```chimi
 import std/json as Json
 import std/json.{Value}
@@ -193,6 +201,7 @@ not inject behavior names into local scope.
 
 A representative processing boundary is:
 
+<!-- chimi: fragment -->
 ```chimi
 FileSystem.process_utf8_lines(path, Summary.empty(), fn(state, line) {
   let record = line |> Json.decode |> TraceRecord.decode

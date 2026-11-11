@@ -95,6 +95,7 @@ its finite buffer or directly hands it to a waiting receiver.
 
 Conceptually its expected failure channel is:
 
+<!-- chimi: fragment -->
 ```chimi
 enum Channel.SendError<T> {
   Closed(T)
@@ -114,6 +115,7 @@ waiter becomes runnable, so a newer send cannot take the slot.
 
 `receive(receiver)` returns an explicit channel result:
 
+<!-- chimi: fragment -->
 ```chimi
 enum Channel.Receive<T> {
   Received(T)

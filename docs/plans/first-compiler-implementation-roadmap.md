@@ -116,6 +116,7 @@ interfaces expensive to change.
 
 ### Minimum language slice
 
+<!-- chimi: check -->
 ```chimi
 struct Answer {
   value: Int
