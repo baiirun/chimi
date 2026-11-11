@@ -1,0 +1,15 @@
+# Native heap measurements
+# command: sh compiler/chimi/tests/fixtures/native-heap-measure.sh
+# commit: d07fbe8
+# machine: Darwin arm64, Apple clang version 21.0.0 (clang-2100.4.1.1)
+
+## Int message: sender copy, receiver adoption, and one receiver pass (no fiber switch)
+measure queued_int_messages=1000 fragment_footprint_bytes=168000
+measure int_message_ns=69.7 peak_footprint_bytes=256000 full_passes=11494
+
+## Concurrency pipeline memory by job count
+# jobs value unscoped_allocated_bytes scoped_retained_bytes scoped_peak_live_bytes peak_footprint_bytes peak_fragment_footprint_bytes scoped_collections scoped_full_collections
+50 1775 5176 160 6288 25528 1016 102 3
+500 130250 5176 160 6288 28872 1016 1002 26
+5000 12552500 5176 160 6288 29208 1016 10002 258
+50000 1250525000 5176 160 6288 29208 1016 100002 2575

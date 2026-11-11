@@ -409,7 +409,9 @@ after a failed member start emits `supervisor_stopped`.
 
 ## Mapping onto the native runtime
 
-`compiler/chimi/runtime/native/runtime.c` today allocates every value with a
+This section describes `compiler/chimi/runtime/native/runtime.c` as it was
+before the port. [The heap as built](#the-heap-as-built-in-runtimec) records
+what changed. Before the port, `runtime.c` allocated every value with a
 malloc header. Allocation is linked into one global `current_allocation_scope`.
 A `loop` reclaims per pass by marking from the new state, but only when
 `!CHIMI_REQUIRES_SCHEDULER`. Once a program uses tasks or channels, loop
@@ -524,6 +526,134 @@ requirement is broken, as the prototype tests do.
   survivors copies nothing, so only a scan counter exposes it. The port keeps
   both counters and both test bounds.
 
+### The heap as built in `runtime.c`
+
+Tickets `ts-6ccbc9` (heap part) and `ts-df67fb` ported the four mechanisms into
+`compiler/chimi/runtime/native/runtime.c`. Loops now reclaim each pass in every
+program, scheduler or not. The port departs from the prototype in the ways
+listed below. Each departure is a decision, and the mutation table after the
+list names the test that fails when it is broken.
+
+- **Non-moving generational collection instead of a Cheney copy.** `runtime.c`
+  is a tree-walking evaluator. Its C frames hold raw value pointers across
+  nodes. A moving pass would have to find and fix every one of them.
+  Collection therefore marks and sweeps in place. A region keeps a young area
+  for the current pass, a survivor area for what earlier passes kept, and the
+  areas of fragments adopted since the last pass. A minor pass marks from the
+  state through young allocations only, promotes what it marks, and frees the
+  rest. Older survivors are never walked, so the pass-cost contract holds: a
+  pass costs O(allocations this pass + young survivors). The counters are
+  `scanned_allocations` and `promoted_bytes`, which correspond to the
+  prototype's `scanned_values` and `copied_bytes`.
+- **Areas instead of 64 KiB chunks.** Each allocation keeps its malloc'd
+  block, and its header names its area. An area belongs to one heap, to one
+  fragment, or to the static constants. The owner check reads the header, so
+  it is exact. Static program data needs no address-range test, because
+  module constants live in the static area and other static strings are
+  never traced. Heap teardown is therefore O(allocations), not O(chunks).
+- **Small messages need no slab.** A fragment is one record (`RuntimeFragment`)
+  and its own allocations. Adoption links the record's area into the
+  receiver's region in O(1) and touches no allocation. Freed blocks of up to
+  256 bytes go on per-size free lists. Each list holds at most 4,096 blocks,
+  and `HeapTotals.cached_bytes` reports them. AddressSanitizer builds skip the
+  lists, so a use after free is still reported.
+- **Full-pass trigger.** A full pass runs when the survivors reach twice the
+  baseline and have grown by at least `REGION_FULL_MIN_GROWTH` (4 KiB). The
+  baseline is set at the first promotion and again after each full pass. The
+  minimum is 4 KiB, not a chunk (64 KiB), because the dead survivors that
+  accumulate before a full pass count as live memory. A 64 KiB minimum broke
+  the existing native budgets: a 16 KiB peak for a counting loop, and a
+  50,000-byte peak for the trace-summary callback. The work stays amortized.
+  Below the doubling threshold the survivors are under 4 KiB, so a full pass
+  costs O(4 KiB) and runs at most once per 4 KiB of promotion.
+- **Frame environments are a kind, not a separate stack.** An environment
+  that nodes write after creating it (`new_environment`, `clone_environment`,
+  `clone_local_environment`, `clone_requirement_environment`) is allocated as
+  `ALLOCATION_FRAME_ENVIRONMENT`. Marking and copying check the kind of every
+  allocation they reach. A value that points to a frame environment
+  therefore aborts with "allocation graph is inconsistent", in every build,
+  not only debug ones. A constant closure's environment is filled once at
+  decode time, so it is a captured environment.
+- **The heap switch lives in `runtime.c`.** Every scheduler request goes
+  through `scheduler_request`, which restores the caller's heap when the
+  request returns. A fiber resumes only by returning from a request, so this
+  switches heaps on every resume, and `chimi-fiber` needs no change.
+- **Task results.** The root task runs in the main heap and returns its own
+  `ChimiControl`. A child copies its result into a fragment and then
+  destroys its heap. The fragment pointer carries a tag bit
+  (`CHILD_RESULT_TAG`), because the scheduler can hand a child's defect code
+  to the root as the root's outcome. `chimi_scheduler_execute` has no hook
+  that reports a released task record, so result fragments live until exit.
+  Their number is bounded by the number of tasks.
+- **Channel messages.** A send copies the message once, before its first
+  request. A fragment refused as `Closed` or `Aborted` comes back and is
+  freed, and the sender recovers its original value. `release_message`
+  exists only in `chimi_scheduler_run` (process mailboxes), so a fragment
+  parked by a cancelled send, or discarded when a channel is aborted, stays
+  allocated until exit.
+- **Capability transfer rewrites the child's copy.** `Task.start` copies the
+  callable and the captured requirements into one fragment. The exclusive
+  capability transfer then updates owners and tokens in that copy, which the
+  child adopts when it first runs. The parent's original keeps the old
+  tokens. The type checker already rejects any later use of them.
+- **List compaction allocates into the list's own area.** When `list_slice`
+  compacts a list in place, the new vector goes into the area that holds the
+  list, so a survivor never points to a young vector. This replaces the
+  earlier window-copy tagging, which only existed to stop every pass from
+  marking surviving copies again. Survivors are no longer marked by minor
+  passes, so the tagging is no longer needed.
+
+The memory report (`--memory-report-file`, schema `chimi.runtime-memory.v1`)
+adds three fields. `scoped_full_collections` counts full passes.
+`peak_footprint_bytes` is the peak of all heap and in-transit allocations,
+headers and fragment records included, with static constants excluded.
+`peak_fragment_footprint_bytes` is the peak of in-transit fragments alone.
+
+**Evidence.** `compiler/chimi/tests/fixtures/native-heap.c` reproduces every
+scenario of the prototype's `tests/heap.rs` and `c/stress.c` against
+`runtime.c`. It also covers the port requirements above that Chimi programs
+cannot observe directly: copies that do not consume their fragment, copies
+that compact List windows, and queued small messages. `cli.rs` runs it under
+AddressSanitizer. The native end-to-end tests in `cli.rs` are
+`native_concurrency_pipeline_runs_in_flat_memory`,
+`native_task_result_can_be_read_on_every_pass_of_a_loop`, and
+`native_a_task_keeps_what_it_captured_after_the_parents_pass_ends`.
+[`native-heap-results.txt`](../../compiler/chimi/tests/fixtures/native-heap-results.txt)
+holds the measurements, with the command that regenerates them.
+
+The mutants are in
+[`native-heap-mutants.py`](../../compiler/chimi/tests/fixtures/native-heap-mutants.py),
+which applies each one to `runtime.c` on its own, runs the guarding tests, and
+restores the file. Every mutant was killed. One kill is a timeout.
+
+| Decision | Mutant | Test that fails |
+| --- | --- | --- |
+| A minor pass does not walk old survivors | the minor pass marks survivors | `native-heap.c` pass-cost check (`scanned_allocations`) |
+| Full-pass trigger: doubling plus a minimum growth | a full pass on every pass; no minimum growth | pass-cost check; million-pass check (499,999 full passes of 1,000,000) |
+| Memory depends on live state, not uptime | never run a full pass | million-pass peak-footprint check |
+| Adopted messages join the innermost region | adopt into the base area | adopted-fragment check |
+| Region exit hands survivors to the enclosing region | release the survivors at exit | inner/outer region check (AddressSanitizer use after free) |
+| A pointer into another heap is reported | a pass ignores foreign pointers; a copy ignores them | foreign-pointer check |
+| A copy keeps sharing | no forwarding-table lookup | harness timeout (exponential copy) |
+| A window copy rebuilds only the window | copy the whole vector | window-copy check (9.8 MB for 10 elements) |
+| Small messages cost their size (`ts-df67fb`) | a 64 KiB fragment record | window-copy and queued-message checks |
+| Teardown frees every allocation | heap destroy skips adopted areas | teardown check (4 allocations leaked) |
+| Compaction allocates in the list's own area | compact into the current area | `native_list_matches_a_model_under_random_operations` (AddressSanitizer) |
+| `Task.result` copies without consuming | adopt the result fragment | `native_task_result_can_be_read_on_every_pass_of_a_loop` |
+| A child runs on a copy of its captures | the child gets the parent's callable | `native_a_task_keeps_what_it_captured_after_the_parents_pass_ends` |
+| A message crosses as a copy | the fragment carries the sender's value | `native_a_queued_message_survives_the_senders_later_passes` |
+| The heap follows the resumed fiber | no restore in `scheduler_request` | `native_task_result_preserves_expected_failure_values` and others |
+| Loops reclaim under the scheduler | skip passes when the scheduler is linked | `native_concurrency_pipeline_runs_in_flat_memory` |
+| Reused small blocks are zeroed | drop the `memset` | `native-heap.c` without AddressSanitizer |
+
+Before this port, at commit `b5c399e`, the pipeline test failed. Its
+unscoped bytes were 176,600 at 50 jobs and 17,046,200 at 5,000 jobs. After
+the port, both job counts report 5,176 unscoped bytes. The peak footprint
+stays between 25 KB and 29 KB from 50 to 50,000 jobs. 1,000 queued Int
+messages hold 168,000 bytes, against about 64 MiB in the prototype. An Int
+message's copy, adoption, and passes take about 70 ns, against the
+prototype's 138 ns for the same steps.
+
 ### Trace ABI additions
 
 `ChimiSchedulerTraceEvent` has a process family,
@@ -578,14 +708,18 @@ The supervisor code is the only addition that processes bring.
 
 ### Performance
 
-- **Fragment density.** Every fragment reserves a full 64 KiB chunk, so 64
+- **Fragment density** (resolved in `runtime.c`: a fragment is one record
+  plus its own allocations; see [the heap as built](#the-heap-as-built-in-runtimec)).
+  In the prototype, every fragment reserves a full 64 KiB chunk, so 64
   queued Int messages hold 4 MiB. On macOS and Linux, untouched pages stay
   virtual, so resident memory is one or two pages per fragment, but address
   space and the thread chunk cache scale with queue depth. Mitigation: carve
   small fragments from a shared per-thread fragment chunk and give each
   fragment a sub-chunk owner slot. Owner lookup would then need a second
   level, or would treat 0 as "detached".
-- **Per-thread chunk cache.** Up to 64 empty chunks (4 MiB) per thread stay
+- **Per-thread chunk cache** (in `runtime.c`, the bounded small-block free
+  lists take its place, and `HeapTotals.cached_bytes` reports them). In the
+  prototype, up to 64 empty chunks (4 MiB) per thread stay
   out of the allocator to keep per-message cost near 300 ns. Without the
   cache, each message pays an aligned 64 KiB allocation and release. The
   cache is not released when a thread exits, and `chimi_chunk_stats` does not

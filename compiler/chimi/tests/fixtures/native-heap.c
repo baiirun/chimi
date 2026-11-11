@@ -61,6 +61,8 @@ static RuntimeHeap *enter(RuntimeHeap *heap) {
   return previous;
 }
 static RuntimeHeap *owner_of(const void *value) { return allocation_header(value)->area->heap; }
+/* Starts a new peak, so a check sees this test's memory, not an earlier test's. */
+static void reset_peak(void) { heap_totals.peak_footprint_bytes = heap_totals.footprint_bytes; }
 
 static RuntimeFragment *copy_value(ChimiValue *value) {
   void *roots[] = {value};
@@ -123,6 +125,7 @@ static void test_pass_cost_does_not_grow_with_state_that_already_survived(void) 
    trigger: a small state replaced on every pass must not run a full pass on every
    other pass. */
 static void test_a_million_passes_keep_peak_memory_flat(void) {
+  reset_peak();
   RuntimeHeap *heap = heap_create();
   RuntimeHeap *previous = enter(heap);
   AllocationScope region;
@@ -198,6 +201,7 @@ static void test_inner_passes_keep_outer_values_and_exit_hands_survivors_out(voi
   /* The inner survivors now belong to the outer region, whose passes must keep them
      while the state reaches them and reuse the memory of the garbage. */
   outer_state = pair(inner_state, outer_state);
+  reset_peak();
   size_t peak_at_warmup = 0;
   for (int pass = 0; pass < 2000; ++pass) {
     char text[4097];
@@ -230,6 +234,7 @@ static void test_adopted_fragments_join_the_innermost_region_and_are_reclaimed(v
   enter(receiver);
   AllocationScope region;
   allocation_scope_begin(&region);
+  reset_peak();
   size_t peak_at_warmup = 0;
   for (int round = 0; round < 10000; ++round) {
     enter(sender);
@@ -258,9 +263,11 @@ static void test_adopted_fragments_join_the_innermost_region_and_are_reclaimed(v
 static void test_copying_preserves_sharing(void) {
   RuntimeHeap *heap = heap_create(), *receiver = heap_create();
   RuntimeHeap *previous = enter(heap);
-  /* Each level points twice to the level below: 2^40 paths, 41 distinct values. */
+  /* Each level points twice to the level below: 2^20 paths, 21 distinct values. A
+     copy that follows paths instead of values makes a million copies and fails the
+     size check below instead of running for hours (the prototype used 2^40). */
   ChimiValue *value = int_value(1);
-  for (int level = 0; level < 40; ++level) value = pair(value, value);
+  for (int level = 0; level < 20; ++level) value = pair(value, value);
   RuntimeFragment *fragment = copy_value(value);
   enter(receiver);
   ChimiValue *copied = adopt_value(fragment);
@@ -509,12 +516,24 @@ static double seconds_now(void) {
   return (double)now.tv_sec + (double)now.tv_nsec * 1e-9;
 }
 
-/* Prints the cost of one Int message: the sender's copy, adoption, and one receiver
-   pass, the same steps the prototype's 316 ns/message figure covers minus its fiber
-   switch. Not a check: timings depend on the machine. */
+/* Prints the footprint of 1,000 queued Int messages, and the cost of one Int message:
+   the sender's copy and pass, adoption, and one receiver pass. These are the steps
+   of the prototype's 138 ns "copy cost per message" row for an Int. Its 316 ns
+   figure adds a fiber switch. Not a check: timings depend on the machine. */
 static void measure_messages(void) {
+  reset_peak();
   RuntimeHeap *sender = heap_create(), *receiver = heap_create();
-  RuntimeHeap *previous = enter(receiver);
+  RuntimeHeap *previous = enter(sender);
+  RuntimeFragment *queue[1000];
+  size_t before = heap_totals.fragment_footprint_bytes;
+  for (int index = 0; index < 1000; ++index) queue[index] = copy_value(int_value(index));
+  printf("measure queued_int_messages=1000 fragment_footprint_bytes=%zu\n",
+         heap_totals.fragment_footprint_bytes - before);
+  for (int index = 0; index < 1000; ++index) fragment_free(queue[index]);
+  /* Both sides run in a loop region, as a sending and a receiving loop would. */
+  AllocationScope sending;
+  allocation_scope_begin(&sending);
+  enter(receiver);
   AllocationScope region;
   allocation_scope_begin(&region);
   ChimiValue *state = int_value(0);
@@ -523,6 +542,7 @@ static void measure_messages(void) {
   for (int index = 0; index < MESSAGES; ++index) {
     enter(sender);
     RuntimeFragment *fragment = copy_value(int_value(index));
+    allocation_scope_collect(&sending, NULL, NULL);
     enter(receiver);
     ChimiValue *message = adopt_value(fragment);
     state = int_value(integer(state) + integer(message));
@@ -533,6 +553,8 @@ static void measure_messages(void) {
          elapsed * 1e9 / MESSAGES, heap_totals.peak_footprint_bytes,
          (unsigned long long)region.full_collections);
   allocation_scope_end(&region, NULL, NULL);
+  enter(sender);
+  allocation_scope_end(&sending, NULL, NULL);
   enter(previous);
   heap_destroy(receiver);
   heap_destroy(sender);

@@ -2901,6 +2901,62 @@ fn native_a_task_keeps_what_it_captured_after_the_parents_pass_ends() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// A message crosses to the receiver as a copy, so the sender's later passes may
+// reclaim the original while the message still waits in the channel. Here every
+// message is sent from its own pass and read only after the sender has run all
+// of its passes.
+#[test]
+fn native_a_queued_message_survives_the_senders_later_passes() {
+    let scratch = scratch_directory("native-queued-message-survives");
+    let executable = build_native(
+        &scratch,
+        "queued-message",
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Completion, Receiver, Receive, Sender}\n",
+            "import std/task as Task\n",
+            "struct Message {\n",
+            "  value: Int,\n",
+            "  label: Text,\n",
+            "}\n",
+            "fn drain(messages: Receiver<Message>) -> Int {\n",
+            "  loop sum = 0 {\n",
+            "    let next = Channel.receive(messages)\n",
+            "    case next {\n",
+            "      Receive.Received(message) -> case message.label {\n",
+            "        \"job\" -> sum + message.value\n",
+            "        _ -> sum + 1000000\n",
+            "      }\n",
+            "      Receive.Drained -> break sum\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(100)\n",
+            "  let sender = channel.sender\n",
+            "  let receiver = channel.receiver\n",
+            "  let completion = channel.completion\n",
+            "  let sent = loop count = 0 {\n",
+            "    case count {\n",
+            "      100 -> break count\n",
+            "      _ -> {\n",
+            "        Channel.send(sender, Message(count + 1, \"job\"))\n",
+            "        count + 1\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "  Channel.close(completion)\n",
+            "  let reader = Task.start(fn() -> Int { drain(receiver) })\n",
+            "  Task.result(reader) + sent - sent\n",
+            "}\n",
+        ),
+    );
+    let (outcome, _) = execute_with_memory_report(&executable, &scratch);
+    // 1 + 2 + ... + 100, and no message read back as anything but a job.
+    assert!(outcome.contains("\"value\":5050"), "{outcome}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // LP-08: draining a list that was built outside every loop frees each drain's window
 // copies, so draining it 8 times peaks at the same memory as draining it twice and
 // leaves nothing more behind. Copies that outlived the loop that made them used to
