@@ -647,8 +647,11 @@ fn unpinned_channel_element_in_a_failure_row_reports_diagnostics() {
     assert_eq!(codes, ["T4222"]);
 }
 
+// The element types of both channels are never constrained, so they are erased
+// (ts-fff274) and the send succeeds. Before bcf1885 this program crashed the
+// checker's fixed point; native-only because the interpreter has no channels.
 #[test]
-fn unpinned_channel_element_in_a_propagated_failure_is_an_incomplete_type() {
+fn unpinned_channel_element_in_a_propagated_failure_runs() {
     let scratch = scratch_directory("unpinned-propagated-failure");
     let path = scratch.join("main.chimi");
     std::fs::write(
@@ -664,14 +667,11 @@ fn unpinned_channel_element_in_a_propagated_failure_is_an_incomplete_type() {
         ),
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .arg("check")
-        .arg(&path)
-        .output()
-        .expect("run chimi check");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert!(stderr.contains("error[E5006]"), "{stderr}");
+    let outcome = native_outcome(&scratch, &path);
+    assert!(
+        outcome.ends_with("\"outcome\":\"success\",\"value\":1}"),
+        "{outcome}"
+    );
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
@@ -2153,6 +2153,84 @@ fn a_type_parameter_only_in_the_result_is_inferred_from_context() {
         ),
     );
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":4");
+}
+
+// ts-fff274: a type parameter that no constraint ever reaches is erased. The
+// only values of `Option<T>` that never pin `T` are values like `None`, so the
+// program runs instead of failing execution setup with E5006.
+#[test]
+fn a_never_constrained_type_parameter_passed_to_a_generic_callee_runs() {
+    let outcome = run_both(
+        "never-constrained-argument",
+        concat!(
+            "fn nothing<T>() -> Option<T> { None }\n",
+            "fn is_none<T>(option: Option<T>) -> Bool {\n",
+            "  case option {\n",
+            "    Some(_) -> False\n",
+            "    None -> True\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Bool {\n",
+            "  is_none(nothing())\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":true");
+}
+
+// ts-fff274: two unconstrained instantiations, one through a local binding.
+#[test]
+fn never_constrained_type_parameters_through_a_binding_run() {
+    let outcome = run_both(
+        "never-constrained-binding",
+        concat!(
+            "fn nothing<T>() -> Option<T> { None }\n",
+            "fn count<T>(option: Option<T>) -> Int {\n",
+            "  case option {\n",
+            "    Some(_) -> 1\n",
+            "    None -> 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let none = nothing()\n",
+            "  count(none) + count(nothing()) + 2\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":2");
+}
+
+// ts-fff274: an unused empty map has never-constrained key and value types.
+#[test]
+fn an_unused_empty_map_runs() {
+    let outcome = run_both(
+        "unused-empty-map",
+        concat!(
+            "import std/map as Map\n",
+            "pub fn main() -> Int {\n",
+            "  let unused = Map.empty()\n",
+            "  1\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":1");
+}
+
+// ts-fff274: a callee's needs row parameter left unbound by a type error is
+// not reported again as an unresolved row on `main`.
+#[test]
+fn a_callee_row_parameter_left_by_a_type_error_is_not_reported_on_main() {
+    let codes = check_codes(concat!(
+        "import std/map as Map\n",
+        "fn build() {\n",
+        "  Map.update(Map.empty(), \"a\", 3)\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  let built = build()\n",
+        "  1\n",
+        "}\n",
+    ));
+    assert_eq!(codes, ["T4203"]);
 }
 
 // A constructor value renders as its constructor's name on both paths, as a

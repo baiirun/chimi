@@ -206,6 +206,18 @@ failure set: the ordinary position denotes its error-value union and the
 identity with two compile-time projections, not two independently inferred
 parameters.
 
+A call instantiates each generic parameter of its callee. When no argument,
+result context, or later use ever constrains an instantiation, as in
+`is_none(nothing())` with `fn nothing<T>() -> Option<T> { None }` or an unused
+`Map.empty()`, the instantiation is erased rather than rejected. This is the
+ambiguous-type rule. It is sound because values are uniform at run time and
+every type-directed operation (arithmetic, field access, literal and
+constructor patterns) constrains the type or reports a type error, so no
+evaluated operation depends on the erased type. Its only inhabitants
+are values that never mention it, such as `None` or an empty collection.
+Execution setup MUST NOT report a missing type fact (`E5006`) for an erased
+instantiation.
+
 The first kernel supports declaration-scoped parametric polymorphism. It does
 not require higher-rank types, explicit kind annotations, specialization
 syntax, or user-defined variance.

@@ -369,7 +369,16 @@ impl TypedProject {
                     ),
                 ));
             }
-            for parameter in row.parameters {
+            let root = self.resolved.symbol(symbol);
+            let (root_module, root_declaration) = (root.module_id, root.semantic_id);
+            // A callee's row parameter reaches `main` only when a type error kept
+            // it from binding; that error is the report. Execution setup still
+            // rejects any parameter left on the contract (E5005).
+            let declared = row.parameters.into_iter().filter(|parameter| {
+                let parameter = self.resolved.symbol(*parameter);
+                parameter.module_id == root_module && parameter.semantic_id == root_declaration
+            });
+            for parameter in declared.collect::<Vec<_>>() {
                 self.diagnostics.push(Diagnostic::error(
                     DiagnosticStage::ExecutionSetup,
                     "E5002",

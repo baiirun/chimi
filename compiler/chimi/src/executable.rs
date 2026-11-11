@@ -957,7 +957,13 @@ fn type_is_nonpoisoned(
         return true;
     }
     match resolved_type(typed, type_id) {
-        CanonicalType::Poison | CanonicalType::InferenceVariable(_) => false,
+        CanonicalType::Poison => false,
+        // A variable that no constraint ever reached is erased: values are
+        // uniform at run time, and every type-directed operation (arithmetic,
+        // field access, pattern tests) would have bound it or reported a type
+        // error. Its only inhabitants are values that never mention it, such as
+        // `None` or an empty collection. See executable-kernel.md "Generics".
+        CanonicalType::InferenceVariable(_) => true,
         CanonicalType::Named { arguments, .. } => arguments
             .iter()
             .all(|argument| type_is_nonpoisoned(typed, *argument, seen)),
