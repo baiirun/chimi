@@ -124,7 +124,9 @@ fn format_parse(parsed: &ParseResult) -> String {
             TokenKind::Newline => {
                 if saw_newline && !joining_clauses {
                     writer.blank_line();
-                } else if !should_join_line(previous, next) || writer.line_is_empty() {
+                } else if !should_join_line(previous, next_significant_token(&tokens, index + 1))
+                    || writer.line_is_empty()
+                {
                     writer.flush();
                 } else {
                     writer.space();
@@ -311,13 +313,40 @@ fn clause_group_joints(parsed: &ParseResult) -> Vec<u32> {
         .collect()
 }
 
-fn should_join_line(previous: Option<TokenKind>, next: Option<TokenKind>) -> bool {
-    matches!(next, Some(TokenKind::Needs))
-        || next == Some(TokenKind::LeftBrace)
+/// Whether the line break before `next` is soft: a continued `needs` clause, or the
+/// body brace of a header split across lines. A `{` that starts a block item is
+/// never joined, because the line break is what ends the item before it.
+fn should_join_line(previous: Option<TokenKind>, next: Option<SyntaxToken<'_>>) -> bool {
+    let Some(next) = next else {
+        return false;
+    };
+    next.kind() == TokenKind::Needs
+        || next.kind() == TokenKind::LeftBrace
             && matches!(
                 previous,
                 Some(TokenKind::RightParen | TokenKind::RightBrace)
             )
+            && !starts_block_item(&next)
+}
+
+fn starts_block_item(token: &SyntaxToken<'_>) -> bool {
+    let mut node = Some(token.parent());
+    while let Some(current) = node {
+        if current.kind() == NodeKind::BlockItem {
+            return current
+                .descendant_tokens()
+                .iter()
+                .find(|candidate| {
+                    !matches!(
+                        candidate.kind(),
+                        TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment
+                    )
+                })
+                .is_some_and(|first| first.range() == token.range());
+        }
+        node = current.parent();
+    }
+    false
 }
 
 fn is_requirement_syntax(token: &SyntaxToken<'_>) -> bool {

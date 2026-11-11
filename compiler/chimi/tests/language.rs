@@ -6710,6 +6710,34 @@ fn an_update_copies_the_base_and_replaces_named_fields() {
     assert!(outcome.contains("x: 1, y: 5"), "{outcome}");
 }
 
+// A line break ends a block item, so an update on the line after a call or a
+// record is a new item; formatting must not join it onto the line before.
+#[test]
+fn an_update_on_the_line_after_a_call_or_record_is_its_own_item() {
+    let source = format!(
+        "{CONFIG}{}",
+        concat!(
+            "fn after_call() -> Config {\n",
+            "  let base = Config(\"a\", 1, False)\n",
+            "  { ..base, jobs: 2 }\n",
+            "}\n",
+            "fn after_record(base: Config) -> Config {\n",
+            "  let changed = { ..base, jobs: 30 }\n",
+            "  { ..changed, verbose: True }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let record = after_record(Config(\"b\", 1, False))\n",
+            "  after_call().jobs + record.jobs\n",
+            "}\n",
+        )
+    );
+    // run_both also runs the formatted source and requires the same outcome.
+    assert!(
+        run_both("update-after-call", &source).contains("\"value\":32"),
+        "update-after-call"
+    );
+}
+
 // RU-02
 #[test]
 fn an_update_cannot_name_an_unknown_field() {
