@@ -5430,7 +5430,7 @@ impl ProjectTypeChecker {
             };
             slot.2 = Some(index);
             let declared = slot.1;
-            if !self.field_value_fits(fact.success, declared) {
+            if !self.value_fits(fact.success, declared) {
                 let expected = self.type_display_name(declared);
                 let found = self.type_display_name(fact.success);
                 self.type_error_range(
@@ -6958,10 +6958,11 @@ impl ProjectTypeChecker {
             .collect()
     }
 
-    /// Whether `actual` may be stored in a struct or record field of type
-    /// `expected`: the `using` provider rule, so a function value may expose
-    /// fewer failures and needs than the field's type declares.
-    fn field_value_fits(&mut self, actual: TypeId, expected: TypeId) -> bool {
+    /// Whether `actual` may be stored in a struct or record field, or passed as
+    /// a call argument, of type `expected`: the `using` provider rule, so a
+    /// function value may expose fewer failures and needs than `expected`
+    /// declares.
+    fn value_fits(&mut self, actual: TypeId, expected: TypeId) -> bool {
         self.provider_member_conformance_error(actual, expected)
             .is_none()
     }
@@ -7697,20 +7698,8 @@ impl ProjectTypeChecker {
                         "call argument has an incompatible type",
                     );
                 }
-            } else if self.both_functions(argument.success, expected) {
-                if self
-                    .provider_member_conformance_error(argument.success, expected)
-                    .is_some()
-                {
-                    self.type_error_range(
-                        module_id,
-                        "T4203",
-                        range,
-                        "call argument has an incompatible type",
-                    );
-                }
-            } else if constructs_struct {
-                if !self.field_value_fits(argument.success, expected) {
+            } else if constructs_struct || self.both_functions(argument.success, expected) {
+                if !self.value_fits(argument.success, expected) {
                     self.type_error_range(
                         module_id,
                         "T4203",
