@@ -1260,6 +1260,9 @@ fn malformed_number_literals_are_syntax_errors() {
             "S1001 a binary literal needs digits 0 and 1 after `0b`",
         ),
         ("017", LEADING_ZERO),
+        ("0_17", LEADING_ZERO),
+        ("0_0_7", LEADING_ZERO),
+        ("0_1", LEADING_ZERO),
     ] {
         let source = format!("pub fn main() -> Int {{ {literal} }}\n");
         let module = ProjectSource::new(

@@ -1151,7 +1151,8 @@ fn lex_number(bytes: &[u8], start: usize) -> (TokenKind, usize, Option<&'static 
         return (TokenKind::Integer, offset, problem);
     }
     digits(&mut offset, &mut problem, |byte| byte.is_ascii_digit());
-    if bytes[start] == b'0' && offset > start + 1 && bytes[start + 1].is_ascii_digit() {
+    // `0_17` is as much a leading zero as `017`: any digit after the first counts.
+    if bytes[start] == b'0' && bytes[start + 1..offset].iter().any(u8::is_ascii_digit) {
         problem
             .get_or_insert("a decimal literal cannot start with `0`; Chimi has no octal literals");
     }
