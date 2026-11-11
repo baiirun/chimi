@@ -2512,15 +2512,18 @@ mod tests {
         let root = result.root();
 
         assert_eq!(result.diagnostics(), []);
-        for kind in [
-            NodeKind::UsingExpression,
-            NodeKind::PipelineExpression,
-            NodeKind::RecordExpression,
-            NodeKind::AdditiveExpression,
-            NodeKind::MultiplicativeExpression,
-        ] {
-            assert!(contains_node(&root, kind), "missing {kind:?}");
-        }
+        // `using` applies to the whole pipeline, and `*` groups inside `+`.
+        let using = find_node(&root, NodeKind::UsingExpression).expect("using node");
+        let pipeline = find_node(&using, NodeKind::PipelineExpression).expect("pipeline in using");
+        assert!(!contains_node(&pipeline, NodeKind::UsingExpression));
+        assert!(!contains_node(&pipeline, NodeKind::RecordExpression));
+        let additive = find_node(&root, NodeKind::AdditiveExpression).expect("additive node");
+        let product =
+            find_node(&additive, NodeKind::MultiplicativeExpression).expect("product in sum");
+        assert_eq!(
+            source[product.range().start() as usize..product.range().end() as usize].trim(),
+            "2 * 3"
+        );
     }
 
     #[test]
