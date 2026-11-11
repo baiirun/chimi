@@ -120,6 +120,30 @@ fn format_parse(parsed: &ParseResult) -> String {
                 _ => {}
             }
         }
+        // A member import is written tight on one line: `import std/io.{A, B}`.
+        if token_has_ancestor(token, &[NodeKind::ImportMembers]) {
+            match kind {
+                TokenKind::Newline => {
+                    previous = Some(kind);
+                    continue;
+                }
+                TokenKind::Comma if next == Some(TokenKind::RightBrace) => continue,
+                TokenKind::LeftBrace | TokenKind::RightBrace => {
+                    writer.trim_space();
+                    writer.write(token.text());
+                    previous = Some(kind);
+                    saw_newline = false;
+                    continue;
+                }
+                TokenKind::Identifier if previous == Some(TokenKind::LeftBrace) => {
+                    writer.write(token.text());
+                    previous = Some(kind);
+                    saw_newline = false;
+                    continue;
+                }
+                _ => {}
+            }
+        }
         // A record type is written on one line, like the type it sits in, and so
         // is a short record or record update.
         if is_record_type_syntax(token) || in_short_record(token) {

@@ -5961,6 +5961,37 @@ fn tuple_and_record_types_nest_in_type_positions() {
     );
 }
 
+// Formatting a member import keeps it tight and keeps it a member import.
+#[test]
+fn a_formatted_member_import_stays_tight_and_still_checks() {
+    let source = concat!(
+        "import std/map.{Map}\n",
+        "import std/io.{ FileError,\n  Utf8Error }\n",
+        "fn size(map: Map<Int, Int>) -> Int { 0 }\n",
+        "fn fail(error: FileError, other: Utf8Error) -> Int { 0 }\n",
+        "pub fn main() -> Int { 0 }\n",
+    );
+    assert!(check_codes(source).is_empty(), "{:?}", check_codes(source));
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(
+        !formatted.is_blocked(),
+        "{}",
+        formatted.render_diagnostics()
+    );
+    assert!(
+        formatted
+            .text()
+            .starts_with("import std/map.{Map}\nimport std/io.{FileError, Utf8Error}\n"),
+        "{}",
+        formatted.text()
+    );
+    assert!(
+        check_codes(formatted.text()).is_empty(),
+        "{:?}",
+        check_codes(formatted.text())
+    );
+}
+
 // ts-65f575: `chimi run` holds as deep a recursion as a native build does.
 #[test]
 fn deep_runtime_recursion_completes_on_both_backends() {
