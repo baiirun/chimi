@@ -505,47 +505,76 @@ mod tests {
         }
     }
 
-    // Guards: `[first, ..rest]` recursion shares the vector while the window is
-    // at least a quarter of it, then copies, so draining stays linear and a
-    // drained window stops retaining the original elements.
+    /// A list of `length` elements whose liveness the caller can observe: element
+    /// `index` holds `index`, and the returned `Weak` dies once no list holds it.
+    fn tracked(length: usize) -> (PersistentList<Arc<usize>>, Vec<std::sync::Weak<usize>>) {
+        let elements = (0..length).map(Arc::new).collect::<Vec<_>>();
+        let weak = elements.iter().map(Arc::downgrade).collect();
+        (elements.into_iter().collect(), weak)
+    }
+
+    fn alive(weak: &[std::sync::Weak<usize>], range: std::ops::Range<usize>) -> Vec<usize> {
+        range
+            .filter(|&index| weak[index].upgrade().is_some())
+            .collect()
+    }
+
+    // Guards: `[first, ..rest]` recursion stays linear, and a drained window keeps
+    // alive at most four times its own length of elements, so the dropped
+    // front of a long list is freed. A copy per view would make this quadratic
+    // (about 2 * 10^10 element copies at this length).
     #[test]
-    fn dropping_the_front_shares_the_vector_until_a_quarter_remains() {
+    fn a_drained_window_frees_the_dropped_elements() {
         let length = 200_000;
-        let list = pushed(length);
-        let mut rest = list.clone();
-        let mut copied = 0;
+        let (mut rest, weak) = tracked(length);
+        let started = std::time::Instant::now();
         for expected in 0..length {
-            assert_eq!(rest.first(), Some(&expected));
-            let next = rest.slice(1..rest.len()).unwrap();
-            if !Arc::ptr_eq(&next.vector.tail, &rest.vector.tail) {
+            assert_eq!(rest.first().map(|value| **value), Some(expected));
+            rest = rest.slice(1..rest.len()).unwrap();
+            let remaining = rest.len();
+            if remaining % 1_000 == 0 && remaining > 0 {
+                let alive = alive(&weak, 0..length);
                 assert!(
-                    next.len() * RETAINED_FRACTION < rest.vector.length,
-                    "copied a window of {} over {}",
-                    next.len(),
-                    rest.vector.length
+                    alive.len() <= 4 * remaining && alive.ends_with(&[length - 1]),
+                    "{} elements alive for a window of {remaining}",
+                    alive.len()
                 );
-                assert_eq!(
-                    next.vector.length,
-                    next.len(),
-                    "a copy holds only the window"
-                );
-                copied += next.len();
+                assert_eq!(alive.first(), Some(&(length - alive.len())));
             }
-            rest = next;
         }
-        assert_eq!(rest.len(), 0);
-        assert!(copied < length / 3, "draining copied {copied} elements");
+        let elapsed = started.elapsed();
+        assert!(elapsed.as_secs() < 10, "draining took {elapsed:?}");
+        assert!(alive(&weak, 0..length).is_empty());
     }
 
     #[test]
     fn a_small_window_does_not_retain_its_source() {
-        let list = pushed(10_000);
+        let (list, weak) = tracked(10_000);
         let small = list.slice(5_000..5_100).unwrap();
-        assert_window(&small, 5_000, 100);
-        assert_eq!(small.vector.length, 100);
-        let large = list.slice(1_000..9_000).unwrap();
-        assert_window(&large, 1_000, 8_000);
-        assert!(Arc::ptr_eq(&large.vector.tail, &list.vector.tail));
+        drop(list);
+        assert_eq!(alive(&weak, 0..10_000), (5_000..5_100).collect::<Vec<_>>());
+        assert_eq!(
+            small.iter().map(|value| **value).collect::<Vec<_>>(),
+            (5_000..5_100).collect::<Vec<_>>()
+        );
+    }
+
+    // Guards: a window of at least a quarter of its vector shares that vector
+    // instead of copying, so the elements outside it stay alive with it.
+    #[test]
+    fn a_window_of_at_least_a_quarter_shares_its_source() {
+        for (from, to) in [(1_000, 9_000), (5_000, 7_500)] {
+            let (list, weak) = tracked(10_000);
+            let window = list.slice(from..to).unwrap();
+            drop(list);
+            assert_eq!(alive(&weak, 0..10_000), (0..10_000).collect::<Vec<_>>());
+            assert_eq!(
+                window.iter().map(|value| **value).collect::<Vec<_>>(),
+                (from..to).collect::<Vec<_>>()
+            );
+            drop(window);
+            assert_eq!(alive(&weak, 0..10_000), Vec::<usize>::new());
+        }
     }
 
     // Guards: pushing onto a prefix window whose end lies inside the trie (not
