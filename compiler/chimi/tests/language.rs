@@ -6567,6 +6567,74 @@ fn an_update_evaluates_the_base_then_each_value_in_order() {
     );
 }
 
+// RU-10, the spec example: a method whose interface declares `errors` takes a
+// value that fails with fewer variants (or none), as a `using` provider does,
+// and an ignored `_` parameter lowers on both paths.
+#[test]
+fn an_update_of_a_fallible_provider_method_accepts_a_narrower_row() {
+    let source = concat!(
+        "enum PaymentError {\n",
+        "  Offline\n",
+        "  Declined\n",
+        "}\n",
+        "interface Payment {\n",
+        "  charge: fn(Int) -> Bool errors PaymentError\n",
+        "}\n",
+        "fn attempt(payment: Payment) -> Text {\n",
+        "  case payment.charge(3) {\n",
+        "    Success(True) -> \"paid\"\n",
+        "    Success(False) -> \"refused\"\n",
+        "    Failure(Offline) -> \"offline\"\n",
+        "    Failure(Declined) -> \"declined\"\n",
+        "  }\n",
+        "}\n",
+        "fn declined() -> List<Text> needs { payment: Payment } {\n",
+        "  let failing = { ..payment, charge: fn(_) { Failure(PaymentError.Offline) } }\n",
+        "  let refusing = { ..payment, charge: fn(_amount: Int) { False } }\n",
+        "  [attempt(payment), attempt(failing), attempt(refusing)]\n",
+        "}\n",
+        "pub fn main() -> List<Text> {\n",
+        "  declined() using { payment: { charge: fn(_amount: Int) { True } } }\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("update-fallible-provider", source),
+        "\"outcome\":\"success\",\"value\":[\"paid\",\"offline\",\"refused\"]"
+    );
+}
+
+// Struct construction and update use the same rule for a function field.
+#[test]
+fn a_function_field_accepts_a_value_with_fewer_failures() {
+    let source = concat!(
+        "enum E {\n",
+        "  A\n",
+        "}\n",
+        "struct Hooks {\n",
+        "  run: fn() -> Int errors E\n",
+        "  n: Int\n",
+        "}\n",
+        "fn total(hooks: Hooks) -> Int {\n",
+        "  case hooks.run() {\n",
+        "    Success(v) -> v + hooks.n\n",
+        "    Failure(_) -> 0\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<Int> {\n",
+        "  let quiet = Hooks(fn() { 1 }, 2)\n",
+        "  let failing = Hooks(fn() { Failure(E.A) }, 2)\n",
+        "  [total(quiet), total(failing), total({ ..quiet, run: fn() { 5 } })]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("function-field-narrower-row", source),
+        "\"outcome\":\"success\",\"value\":[3,0,7]"
+    );
+    let widened = source.replace("fn() { 5 }", "fn() { Failure(Unexpected.Value) }");
+    let widened = format!("enum Unexpected {{\n  Value\n}}\n{widened}");
+    assert_eq!(check_codes(&widened), ["T4203"]);
+}
+
 // RU-10: updating one method of a provider value keeps the interface type.
 #[test]
 fn an_update_of_a_provider_keeps_the_interface_type() {

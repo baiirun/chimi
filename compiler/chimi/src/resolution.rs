@@ -2386,6 +2386,18 @@ impl ProjectResolver {
         scope: &mut Scope,
     ) {
         if name.text == "_" {
+            // An ignored parameter is still a slot the callee receives, so
+            // lowering needs its symbol; it is never in scope.
+            if kind == ProjectSymbolKind::Parameter {
+                self.add_symbol(
+                    Some(self.semantic.modules[module_index].id),
+                    Some(semantic_id),
+                    Namespace::Value,
+                    kind,
+                    &name.text,
+                    false,
+                );
+            }
             return;
         }
         if scope.values.contains_key(&name.text) {

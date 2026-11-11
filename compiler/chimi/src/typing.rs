@@ -4996,7 +4996,7 @@ impl ProjectTypeChecker {
             };
             slot.2 = Some(index);
             let declared = slot.1;
-            if !self.unify(fact.success, declared) {
+            if !self.field_value_fits(fact.success, declared) {
                 let expected = self.type_display_name(declared);
                 let found = self.type_display_name(fact.success);
                 self.type_error_range(
@@ -6416,6 +6416,14 @@ impl ProjectTypeChecker {
             .collect()
     }
 
+    /// Whether `actual` may be stored in a struct or record field of type
+    /// `expected`: the `using` provider rule, so a function value may expose
+    /// fewer failures and needs than the field's type declares.
+    fn field_value_fits(&mut self, actual: TypeId, expected: TypeId) -> bool {
+        self.provider_member_conformance_error(actual, expected)
+            .is_none()
+    }
+
     fn provider_member_conformance_error(
         &mut self,
         actual: TypeId,
@@ -7096,9 +7104,21 @@ impl ProjectTypeChecker {
                 CanonicalType::PolymorphicFunction { .. }
             )
         });
+        let constructs_struct = callee_symbol.is_some_and(|symbol| {
+            self.resolved.symbol(symbol).kind == ProjectSymbolKind::StructConstructor
+        });
         for (argument, expected) in ordered {
             if let Some(substitution) = &mut substitution {
                 if !self.match_call_type(argument.success, expected, substitution) {
+                    self.type_error_range(
+                        module_id,
+                        "T4203",
+                        range,
+                        "call argument has an incompatible type",
+                    );
+                }
+            } else if constructs_struct {
+                if !self.field_value_fits(argument.success, expected) {
                     self.type_error_range(
                         module_id,
                         "T4203",
