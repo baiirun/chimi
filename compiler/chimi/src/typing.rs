@@ -1107,6 +1107,7 @@ struct ClauseCase {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum MatchTag {
+    /// An enum variant, or the one constructor of a struct.
     EnumVariant(SymbolId),
     Boolean(bool),
     Integer(i64),
@@ -3844,12 +3845,12 @@ impl ProjectTypeChecker {
         let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
             return MatchPattern::Wildcard;
         };
-        if !self.is_enum_constructor(constructor) {
+        if !self.is_constructor_symbol(constructor) {
             self.type_error_range(
                 module_id,
                 "T4230",
                 range,
-                "ordinary patterns require a value binding, literal, list, or enum variant",
+                "ordinary patterns require a value binding, literal, list, enum variant, or struct",
             );
             return MatchPattern::Wildcard;
         }
@@ -4699,6 +4700,18 @@ impl ProjectTypeChecker {
             return None;
         };
         let symbol_kind = self.resolved.symbol(symbol).kind;
+        if symbol_kind == ProjectSymbolKind::Struct {
+            // A struct has one shape: its constructor is its whole domain.
+            let declaration = self.resolved.symbol(symbol);
+            let constructor = self.find_symbol(
+                declaration.module_id?,
+                declaration.semantic_id,
+                ProjectSymbolKind::StructConstructor,
+                &declaration.name.clone(),
+            )?;
+            let fields = self.instantiate_pattern_constructor(constructor, type_id)?;
+            return Some(vec![(MatchTag::EnumVariant(constructor), fields)]);
+        }
         if symbol_kind == ProjectSymbolKind::BuiltinType
             && self.resolved.symbol(symbol).name == "Bool"
         {
@@ -5101,7 +5114,7 @@ impl ProjectTypeChecker {
                 let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
                     return;
                 };
-                if !self.is_enum_constructor(constructor) {
+                if !self.is_constructor_symbol(constructor) {
                     return;
                 }
                 let contract = self.contracts[&constructor].clone();

@@ -1815,6 +1815,9 @@ impl ProjectResolver {
         let Some(name) = path.last() else {
             return;
         };
+        if self.private_struct_pattern(module_index, semantic_id, path) {
+            return;
+        }
         let qualified_owner = match path {
             [_, owner, member] => Some((
                 owner,
@@ -1954,6 +1957,68 @@ impl ProjectResolver {
                 ),
             ));
         }
+        true
+    }
+
+    /// Reports a struct pattern for a struct of another module, which is valid only
+    /// where its fields are visible: `E_PRIVATE_STRUCT_CONSTRUCTOR`, as for external
+    /// construction. Returns whether `path` named such a struct.
+    fn private_struct_pattern(
+        &mut self,
+        module_index: usize,
+        semantic_id: SemanticId,
+        path: &[Name],
+    ) -> bool {
+        let (target, member) = match path {
+            [owner, member] => match self.modules[module_index].aliases.get(&owner.text) {
+                Some(AliasBinding::Module(target)) => (*target, member),
+                _ => return false,
+            },
+            [member] if !self.modules[module_index].values.contains_key(&member.text) => {
+                let imported_struct = self.modules[module_index]
+                    .imported_types
+                    .get(&member.text)
+                    .and_then(|ids| ids.first())
+                    .map(|id| &self.symbols[id.raw() as usize])
+                    .filter(|symbol| symbol.kind == ProjectSymbolKind::Struct);
+                match imported_struct.and_then(|symbol| symbol.module_id) {
+                    Some(target) => (target, member),
+                    None => return false,
+                }
+            }
+            _ => return false,
+        };
+        let constructor = self.modules[target.raw() as usize]
+            .values
+            .get(&member.text)
+            .into_iter()
+            .flatten()
+            .copied()
+            .find(|id| {
+                self.symbols[id.raw() as usize].kind == ProjectSymbolKind::StructConstructor
+            });
+        let Some(constructor) = constructor else {
+            return false;
+        };
+        self.reference(
+            module_index,
+            semantic_id,
+            Namespace::Value,
+            member,
+            ReferenceResolution::Inaccessible(constructor),
+        );
+        let module = &self.semantic.modules[module_index];
+        let target_path = &self.semantic.modules[target.raw() as usize].path;
+        self.diagnostics.push(name_error(
+            module,
+            "E_PRIVATE_STRUCT_CONSTRUCTOR",
+            member.range,
+            format!(
+                "{}.{} has module-private fields, so only its own module can match it; use the module's public functions",
+                module_name(target_path),
+                member.text
+            ),
+        ));
         true
     }
 

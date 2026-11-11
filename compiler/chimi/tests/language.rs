@@ -4600,3 +4600,220 @@ fn inspecting_any_clause_reports_the_group_and_the_clause_position() {
         );
     }
 }
+
+// Struct, alias, and literal patterns (patterns-and-function-clauses.md, "Patterns").
+
+#[test]
+fn a_struct_pattern_destructures_fields_by_position() {
+    let source = concat!(
+        "struct Money {\n",
+        "  cents: Int\n",
+        "  currency: Text\n",
+        "}\n",
+        "fn cents(Money(amount, _)) -> Int {\n",
+        "  amount\n",
+        "}\n",
+        "fn label(money: Money) -> Text {\n",
+        "  case money {\n",
+        "    Money(0, currency) -> currency\n",
+        "    Money(_, _) -> \"some\"\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<Text> {\n",
+        "  let total = cents(Money(250, \"EUR\")) + cents(Money(5, \"EUR\"))\n",
+        "  let doubled = fn(Money(amount, _)) { amount * 2 }\n",
+        "  [Int.to_text(total + doubled(Money(10, \"EUR\"))), label(Money(0, \"USD\")), label(Money(1, \"USD\"))]\n",
+        "}\n",
+    );
+    let source = format!("import std/int as Int\n{source}");
+    assert_eq!(
+        run_both("struct-patterns", &source),
+        "\"outcome\":\"success\",\"value\":[\"275\",\"USD\",\"some\"]"
+    );
+}
+
+#[test]
+fn a_struct_pattern_with_the_wrong_field_count_is_a_type_error() {
+    let codes = check_codes(concat!(
+        "struct Money {\n",
+        "  cents: Int\n",
+        "}\n",
+        "fn cents(money: Money) -> Int {\n",
+        "  case money {\n",
+        "    Money(a, b) -> a\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { cents(Money(1)) }\n",
+    ));
+    assert_eq!(codes, ["T4230"]);
+}
+
+#[test]
+fn a_refutable_field_makes_a_struct_pattern_refutable() {
+    let messages = coded_messages(concat!(
+        "struct Money {\n",
+        "  cents: Int\n",
+        "}\n",
+        "fn free(Money(0)) -> Bool {\n",
+        "  True\n",
+        "}\n",
+        "pub fn main() -> Bool { free(Money(0)) }\n",
+    ));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(messages[0].0, "T4231");
+    assert!(messages[0].1.contains("`free(Money(_))`"), "{messages:?}");
+}
+
+// TP-04
+#[test]
+fn a_struct_pattern_outside_its_module_is_private() {
+    let money = ProjectSource::new(
+        "money",
+        SourceSnapshot::from_text(
+            "money.chimi",
+            concat!(
+                "pub struct Money {\n",
+                "  cents: Int\n",
+                "}\n",
+                "pub fn zero() -> Money { Money(0) }\n",
+            ),
+        ),
+    )
+    .expect("valid module path");
+    for pattern in ["Money.Money(cents)", "Money(cents)"] {
+        let main = ProjectSource::new(
+            "main",
+            SourceSnapshot::from_text(
+                "main.chimi",
+                format!(
+                    concat!(
+                        "import money as Money\n",
+                        "import money.{{Money}}\n",
+                        "fn cents(value: Money) -> Int {{\n",
+                        "  case value {{\n",
+                        "    {} -> cents\n",
+                        "  }}\n",
+                        "}}\n",
+                        "pub fn main() -> Int {{ cents(Money.zero()) }}\n",
+                    ),
+                    pattern
+                ),
+            ),
+        )
+        .expect("valid module path");
+        let codes = Compiler::type_project(vec![money.clone(), main])
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| diagnostic.code().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(codes, ["E_PRIVATE_STRUCT_CONSTRUCTOR"], "{pattern}");
+    }
+}
+
+// TP-05
+#[test]
+fn a_labelled_pattern_is_a_syntax_error_about_positional_patterns() {
+    let messages = coded_messages(concat!(
+        "struct Money {\n",
+        "  cents: Int\n",
+        "}\n",
+        "fn free(money: Money) -> Bool {\n",
+        "  case money {\n",
+        "    Money(cents: 2500) -> True\n",
+        "    _ -> False\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Bool { free(Money(0)) }\n",
+    ));
+    assert!(
+        messages
+            .iter()
+            .any(|(code, message)| code == "S1001" && message.contains("positional")),
+        "{messages:?}"
+    );
+}
+
+// TP-06
+#[test]
+fn a_negative_literal_pattern_matches_negative_one() {
+    let source = concat!(
+        "fn sign(-1) -> Text {\n",
+        "  \"minus one\"\n",
+        "}\n",
+        "fn sign(_) {\n",
+        "  \"other\"\n",
+        "}\n",
+        "fn sign_case(value: Int) -> Text {\n",
+        "  case value {\n",
+        "    -1 -> \"minus one\"\n",
+        "    _ -> \"other\"\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<Text> { [sign(-1), sign(1), sign_case(-1), sign_case(1)] }\n",
+    );
+    assert_eq!(
+        run_both("negative-literal-pattern", source),
+        "\"outcome\":\"success\",\"value\":[\"minus one\",\"other\",\"minus one\",\"other\"]"
+    );
+}
+
+// TP-07
+#[test]
+fn text_patterns_match_bytes_without_normalization() {
+    let source = concat!(
+        "fn accent(\"\u{e9}\") -> Bool {\n",
+        "  True\n",
+        "}\n",
+        "fn accent(_) {\n",
+        "  False\n",
+        "}\n",
+        "pub fn main() -> List<Bool> { [accent(\"e\u{301}\"), accent(\"\u{e9}\")] }\n",
+    );
+    assert_eq!(
+        run_both("text-pattern-bytes", source),
+        "\"outcome\":\"success\",\"value\":[false,true]"
+    );
+}
+
+#[test]
+fn an_alias_binds_the_whole_matched_value() {
+    let source = concat!(
+        "fn outer(Some([first, ..]) as whole) -> Option<List<Int>> {\n",
+        "  case first > 0 {\n",
+        "    True -> whole\n",
+        "    False -> None\n",
+        "  }\n",
+        "}\n",
+        "fn outer(_) {\n",
+        "  None\n",
+        "}\n",
+        "pub fn main() -> List<Option<List<Int>>> {\n",
+        "  [outer(Some([1, 2])), outer(Some([0])), outer(None)]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("alias-pattern", source),
+        concat!(
+            "\"outcome\":\"success\",\"value\":[",
+            "{\"type\":\"Option\",\"variant\":\"Some\",\"fields\":{\"value\":[1,2]}},",
+            "{\"type\":\"Option\",\"variant\":\"None\",\"fields\":{}},",
+            "{\"type\":\"Option\",\"variant\":\"None\",\"fields\":{}}]"
+        )
+    );
+}
+
+// FP-08 (ordinary position): a typed binding is an annotation, never a type test.
+#[test]
+fn a_typed_binding_of_another_type_is_rejected() {
+    let messages = coded_messages(concat!(
+        "fn describe(value: Int) -> Int {\n",
+        "  case value {\n",
+        "    count: Text -> 0\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { describe(1) }\n",
+    ));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(messages[0].0, "T4283");
+    assert!(messages[0].1.contains("run time"), "{messages:?}");
+}
