@@ -6533,6 +6533,15 @@ fn a_positional_or_misplaced_update_is_a_syntax_error() {
             .any(|(code, message)| code == "S1001" && message.contains("`{ ..base, jobs: jobs }`")),
         "{messages:?}"
     );
+    // Only a lowercase identifier can name a field; anything else gets a placeholder.
+    let messages = coded_messages(&format!(
+        "{CONFIG}fn change(base: Config) -> Config {{\n  Config(..base, 4, True)\n}}\npub fn main() -> Int {{ 0 }}\n"
+    ));
+    assert!(
+        messages.iter().any(|(code, message)| code == "S1001"
+            && message.contains("`{ ..base, field: 4, field: True }`")),
+        "{messages:?}"
+    );
     let messages = coded_messages(&format!(
         "{CONFIG}fn change(base: Config) -> Config {{\n  {{ jobs: 1, ..base }}\n}}\npub fn main() -> Int {{ 0 }}\n"
     ));

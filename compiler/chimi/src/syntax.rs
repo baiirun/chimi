@@ -2196,7 +2196,11 @@ impl<'source> Parser<'source> {
         for part in parts.iter().skip(1).filter(|part| !part.is_empty()) {
             let is_name = part
                 .chars()
-                .all(|character| character.is_alphanumeric() || character == '_');
+                .next()
+                .is_some_and(|first| first.is_ascii_lowercase())
+                && part
+                    .chars()
+                    .all(|character| character.is_alphanumeric() || character == '_');
             if is_name {
                 suggestion.push_str(&format!(", {part}: {part}"));
             } else {
