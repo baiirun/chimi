@@ -2023,7 +2023,14 @@ impl ProjectTypeChecker {
         // `declaration_count + 1` passes. Failing to settle means a body
         // contributes a fresh fact on every pass, a checker defect that must
         // surface as a diagnostic rather than a crash or a silent cut-off.
+        // Body diagnostics come from the settled pass only. An earlier pass can
+        // see a callee declared later whose inferred contract is still open
+        // (`konst(3)(True)` before `fn konst`), so its errors may not hold.
+        let (diagnostics_before_bodies, warnings_before_bodies) =
+            (self.diagnostics.len(), self.warnings.len());
         for pass in 0..=declaration_count {
+            self.diagnostics.truncate(diagnostics_before_bodies);
+            self.warnings.truncate(warnings_before_bodies);
             let mut last_changed = None;
             for module_id in order
                 .iter()

@@ -2260,6 +2260,25 @@ fn a_local_binding_shadows_an_enum_of_the_same_name_in_a_selection() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":134");
 }
 
+// ts-50dfc3: a caller declared before a callee whose return type is inferred
+// sees the callee's settled contract; declaration order does not matter.
+#[test]
+fn a_caller_may_precede_a_callee_with_an_inferred_return_type() {
+    let outcome = run_both(
+        "caller-before-inferred-callee",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  let constant = konst(3)\n",
+            "  constant(True) + constant(\"x\")\n",
+            "}\n",
+            "fn konst<T, U>(value: T) {\n",
+            "  fn(ignored: U) { value }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":6");
+}
+
 // A constructor value renders as its constructor's name on both paths, as a
 // standard function value renders as its function's name.
 #[test]
