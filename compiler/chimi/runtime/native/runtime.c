@@ -781,6 +781,7 @@ static void json_string(FILE *output, const char *value) {
 }
 
 static void json_value(FILE *output, const ChimiValue *value);
+static void json_map(FILE *output, const MapNode *map);
 static void float_text(double value, char *output);
 static void json_fields(FILE *output, const RuntimeField *fields, uint32_t length) {
   fputc('{', output);
@@ -815,7 +816,7 @@ static void json_value(FILE *output, const ChimiValue *value) {
     case VALUE_CALLABLE:
       fputs("{\"callable\":", output); json_string(output, value->as.callable->name);
       fputc('}', output); break;
-    case VALUE_MAP: fputs("{\"map\":\"opaque\"}", output); break;
+    case VALUE_MAP: json_map(output, value->as.map); break;
     case VALUE_JSON_NUMBER: json_string(output, value->as.json_number); break;
     case VALUE_TASK: fprintf(output, "{\"task\":%" PRIu64 "}", value->as.task); break;
     case VALUE_CHANNEL_SENDER:
@@ -1363,6 +1364,30 @@ static MapEntries map_entries(const MapNode *root) {
     nodes[length++] = node; node = node->right;
   }
   return (MapEntries){nodes, length};
+}
+
+/* A map value in an outcome record is an object of its entries in key order, as the
+   interpreter writes it: a Text key is the member name, and any other key's member
+   name is that key's own JSON encoding. */
+static void json_map(FILE *output, const MapNode *map) {
+  MapEntries entries = map_entries(map);
+  fputc('{', output);
+  for (size_t index = 0; index < entries.length; ++index) {
+    const MapNode *entry = entries.nodes[index];
+    if (index) fputc(',', output);
+    if (entry->key->kind == VALUE_TEXT) json_string(output, entry->key->as.text);
+    else {
+      char *name = NULL; size_t name_length = 0;
+      FILE *buffer = open_memstream(&name, &name_length);
+      if (buffer == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+      json_value(buffer, entry->key); fclose(buffer);
+      json_string(output, name); free(name);
+    }
+    fputc(':', output);
+    json_value(output, entry->value);
+  }
+  fputc('}', output);
+  free(entries.nodes);
 }
 
 static uint32_t constructor_ordinal(uint32_t symbol) {

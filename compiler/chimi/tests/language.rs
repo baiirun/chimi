@@ -3871,6 +3871,24 @@ fn int_keyed_maps_store_and_find_entries() {
     );
 }
 
+// Runtime output channels: the native outcome record writes a map's entries as the
+// interpreter does, with Text keys as names and other keys JSON-encoded.
+#[test]
+fn map_outcomes_render_their_entries_on_both_backends() {
+    let source = concat!(
+        "import std/map as Map\n",
+        "import std/map.{Map}\n",
+        "pub fn main() -> List<Map<Int, Map<Text, Int>>> {\n",
+        "  let inner = Map.put(Map.put(Map.empty(), \"b\", 2), \"a\", 1)\n",
+        "  [Map.put(Map.put(Map.empty(), 10, inner), 2, Map.empty()), Map.empty()]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("map-outcome", source),
+        r#""outcome":"success","value":[{"2":{},"10":{"a":1,"b":2}},{}]"#
+    );
+}
+
 // Structured keys through the constants table and the debug format: a constant
 // map keeps value keys on both backends, and `Debug.render` writes each key in
 // the debug format, in one order on both paths whatever the insertion order.
