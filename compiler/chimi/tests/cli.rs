@@ -2878,6 +2878,159 @@ fn native_concurrency_pipeline_runs_in_flat_memory() {
     );
 }
 
+/// A Chimi function `payload()` returning a Text of about 16 KiB, so a message
+/// that leaks shows up in the fragment footprint.
+const PAYLOAD_FUNCTION: &str = concat!(
+    "fn payload() -> Text {\n",
+    "  loop state = { text: \"1\", left: 13 } {\n",
+    "    case state.left {\n",
+    "      0 -> break state.text\n",
+    "      _ -> { text: Text.append(Text.append(state.text, \",\"), state.text), left: state.left - 1 }\n",
+    "    }\n",
+    "  }\n",
+    "}\n",
+);
+
+/// Builds `source` and returns the memory report of one run with `runner` options
+/// and `rounds` application arguments.
+fn memory_report_over_rounds(name: &str, source: &str, runner: &[&str], rounds: usize) -> String {
+    let scratch = scratch_directory(&format!("{name}-{rounds}"));
+    let executable = build_native(&scratch, name, source);
+    let memory_report = scratch.join("memory.json");
+    let execution = Command::new(&executable)
+        .arg("--chimi-runner")
+        .args(runner)
+        .arg(format!("--memory-report-file={}", memory_report.display()))
+        .arg("--")
+        .args(std::iter::repeat_n("round", rounds))
+        .output()
+        .expect("run native program with a memory report");
+    assert!(
+        execution.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+    let report = std::fs::read_to_string(memory_report).unwrap();
+    std::fs::remove_dir_all(scratch).unwrap();
+    report
+}
+
+fn assert_flat_fragment_peak(small: &str, large: &str) {
+    assert_eq!(
+        json_u64_field(large, "peak_fragment_footprint_bytes"),
+        json_u64_field(small, "peak_fragment_footprint_bytes"),
+        "small {small}\nlarge {large}"
+    );
+}
+
+// Guards: a child's result fragment was never freed, so every execution kept its
+// children's results until the process exited. The scheduler now releases them
+// when the execution ends, and the benchmark runner's repeats stay flat.
+#[test]
+fn native_task_results_are_freed_when_the_execution_ends() {
+    let source = format!(
+        concat!(
+            "import std/task as Task\n",
+            "{payload}",
+            "pub fn main() -> Int {{\n",
+            "  let child = Task.start(fn() -> Text {{ payload() }})\n",
+            "  let first = Task.result(child)\n",
+            "  let second = Task.result(child)\n",
+            "  2\n",
+            "}}\n",
+        ),
+        payload = PAYLOAD_FUNCTION
+    );
+    let measure = |repeats: usize| {
+        let option = format!("--benchmark-repeats={repeats}");
+        memory_report_over_rounds("task-result-release", &source, &[option.as_str()], 0)
+    };
+    assert_flat_fragment_peak(&measure(2), &measure(20));
+}
+
+// Guards: a message parked by a send whose task is cancelled stayed allocated until
+// exit, so a loop that cancels a blocked producer each round grew without bound.
+#[test]
+fn native_cancelled_sends_free_their_messages() {
+    let source = format!(
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{{Receive, Sender}}\n",
+            "import std/task as Task\n",
+            "{payload}",
+            "fn spam(out: Sender<Text>, message: Text) -> Int {{\n",
+            "  loop sent = 0 {{\n",
+            "    Channel.send(out, message)\n",
+            "    sent + 1\n",
+            "  }}\n",
+            "}}\n",
+            "pub fn main(arguments: List<Text>) -> Int {{\n",
+            "  let message = payload()\n",
+            "  let rounds = List.length(arguments)\n",
+            "  loop state = {{ round: 0, received: 0 }} {{\n",
+            "    case state.round < rounds {{\n",
+            "      False -> break state.received\n",
+            "      True -> {{\n",
+            "        let channel = Channel.bounded(0)\n",
+            "        let sender = channel.sender\n",
+            "        let receiver = channel.receiver\n",
+            "        let producer = Task.start(fn() -> Int {{ spam(sender, message) }})\n",
+            "        let got = Channel.receive(receiver)\n",
+            "        let received = case got {{\n",
+            "          Receive.Received(_) -> 1\n",
+            "          Receive.Drained -> 0\n",
+            "        }}\n",
+            "        Task.cancel(producer)\n",
+            "        {{ round: state.round + 1, received: state.received + received }}\n",
+            "      }}\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+        ),
+        payload = PAYLOAD_FUNCTION
+    );
+    let measure = |rounds| memory_report_over_rounds("cancelled-send", &source, &[], rounds);
+    assert_flat_fragment_peak(&measure(2), &measure(40));
+}
+
+// Guards: messages queued in a channel that is aborted stayed allocated until exit.
+#[test]
+fn native_aborting_a_channel_frees_its_queued_messages() {
+    let source = format!(
+        concat!(
+            "import std/channel as Channel\n",
+            "{payload}",
+            "pub fn main(arguments: List<Text>) -> Int {{\n",
+            "  let message = payload()\n",
+            "  let rounds = List.length(arguments)\n",
+            "  loop round = 0 {{\n",
+            "    case round < rounds {{\n",
+            "      False -> break round\n",
+            "      True -> {{\n",
+            "        let channel = Channel.bounded(4)\n",
+            "        Channel.send(channel.sender, message)\n",
+            "        Channel.send(channel.sender, message)\n",
+            "        Channel.send(channel.sender, message)\n",
+            "        Channel.abort(channel.receiver)\n",
+            "        round + 1\n",
+            "      }}\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+        ),
+        payload = PAYLOAD_FUNCTION
+    );
+    let measure = |rounds| memory_report_over_rounds("aborted-channel", &source, &[], rounds);
+    let (small, large) = (measure(2), measure(40));
+    assert_flat_fragment_peak(&small, &large);
+    let small_peak = json_u64_field(&small, "peak_footprint_bytes");
+    let large_peak = json_u64_field(&large, "peak_footprint_bytes");
+    assert!(
+        large_peak <= small_peak + 16_384,
+        "peak footprint grew from {small_peak} to {large_peak} bytes"
+    );
+}
+
 // Port requirement (Task.result adoption): a task handle can be read many times, and
 // each read inside a loop pass gets its own copy of the child's result, so a later
 // pass that reclaims one copy leaves the next read intact.

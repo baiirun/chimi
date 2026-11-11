@@ -582,15 +582,20 @@ list names the test that fails when it is broken.
   `ChimiControl`. A child copies its result into a fragment and then
   destroys its heap. The fragment pointer carries a tag bit
   (`CHILD_RESULT_TAG`), because the scheduler can hand a child's defect code
-  to the root as the root's outcome. `chimi_scheduler_execute` has no hook
-  that reports a released task record, so result fragments live until exit.
-  Their number is bounded by the number of tasks.
+  to the root as the root's outcome. `Task.result` copies a fragment without
+  consuming it, so the scheduler keeps every result until the execution ends
+  and then passes each one to the runtime's `release_task_value` hook, which
+  frees it. The root frees the fragment its outcome carries after copying it.
 - **Channel messages.** A send copies the message once, before its first
   request. A fragment refused as `Closed` or `Aborted` comes back and is
-  freed, and the sender recovers its original value. `release_message`
-  exists only in `chimi_scheduler_run` (process mailboxes), so a fragment
-  parked by a cancelled send, or discarded when a channel is aborted, stays
-  allocated until exit.
+  freed, and the sender recovers its original value. The scheduler passes a
+  fragment it discards (a cancelled parked send, a queued message of an
+  aborted channel, or one still held at the end) to the runtime's
+  `release_channel_value` hook, which frees it. A fiber cancelled while its
+  last reply still carries a message frees that message itself. A message
+  still queued in a channel the program no longer reaches stays until the
+  execution ends, because the native runtime does not release channels
+  while it runs.
 - **Capability transfer rewrites the child's copy.** `Task.start` copies the
   callable and the captured requirements into one fragment. The exclusive
   capability transfer then updates owners and tokens in that copy, which the

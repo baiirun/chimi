@@ -25,15 +25,9 @@ __attribute__((weak)) ChimiFiberCommand chimi_fiber_request(
   abort();
 }
 
-__attribute__((weak)) ChimiSchedulerOutcome chimi_scheduler_execute(
-  ChimiFiberEntry entry, void *context, size_t stack_bytes, uint32_t trace_mode,
-  ChimiSchedulerTraceSink trace_sink, void *trace_context) {
-  (void)entry;
-  (void)context;
-  (void)stack_bytes;
-  (void)trace_mode;
-  (void)trace_sink;
-  (void)trace_context;
+__attribute__((weak)) ChimiSchedulerOutcome chimi_scheduler_execute_with_config(
+  const ChimiSchedulerExecuteConfig *config) {
+  (void)config;
   return (ChimiSchedulerOutcome){.state = CHIMI_FIBER_DEFECTED};
 }
 
@@ -2660,6 +2654,21 @@ static ChimiControl *task_reply(int64_t raw) {
   return roots[0];
 }
 
+/* The scheduler's release hooks. It calls them on the host stack with no task
+   running, so they free fragments without touching current_heap. A task word is
+   a child's tagged result fragment or the root's own control, which lives in the
+   main heap and is not the scheduler's to free. */
+static void release_task_word(void *context, int64_t word) {
+  (void)context;
+  if (word & CHILD_RESULT_TAG)
+    fragment_free((RuntimeFragment *)(intptr_t)(word & ~(int64_t)CHILD_RESULT_TAG));
+}
+
+static void release_channel_word(void *context, int64_t word) {
+  (void)context;
+  fragment_free((RuntimeFragment *)(intptr_t)word);
+}
+
 static ChimiControl *map_values_node(ChimiRuntime *runtime, MapNode *node,
                                      ChimiCallable *callback, MapNode **output,
                                      uint64_t span, uint32_t call_node,
@@ -3215,10 +3224,10 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     case CHIMI_INTRINSIC_CHANNEL_SEND: {
       if (argument_count != 2 || arguments[0]->kind != VALUE_CHANNEL_SENDER)
         return intrinsic_shape_defect(call_node);
-      /* The message travels as a fragment. One the channel refuses comes back, and
-         the sender recovers its own original value instead. A fragment parked with a
-         cancelled send, or queued in a channel that is aborted, stays allocated until
-         the process exits: the scheduler reports neither. */
+      /* The message travels as a fragment. Once the channel accepts it, the
+         scheduler owns it and releases it if it is discarded. One the channel
+         refuses comes back, and the sender frees it and recovers its own original
+         value instead. */
       void *roots[] = {arguments[1]};
       AllocationKind kinds[] = {ALLOCATION_VALUE};
       RuntimeFragment *message = NULL;
@@ -3231,11 +3240,18 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
           .value = (int64_t)(intptr_t)message,
         };
         ChimiFiberCommand command = scheduler_request(&request);
+        /* The scheduler takes the message on OK or PENDING and hands it back on
+           CLOSED or ABORTED; any other reply leaves it with the sender. Either way
+           the sender frees it, even when it is being cancelled. */
+        bool taken = request.status == CHIMI_RESPONSE_OK ||
+                     request.status == CHIMI_RESPONSE_PENDING;
+        bool returned = request.status == CHIMI_RESPONSE_CLOSED ||
+                        request.status == CHIMI_RESPONSE_ABORTED;
+        if (returned) fragment_free((RuntimeFragment *)(intptr_t)request.value);
+        else if (!taken) fragment_free(message);
         if (command == CHIMI_FIBER_CANCEL) return cancelled();
         if (request.status == CHIMI_RESPONSE_PENDING) continue;
         if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
-        if (request.status == CHIMI_RESPONSE_CLOSED || request.status == CHIMI_RESPONSE_ABORTED)
-          fragment_free((RuntimeFragment *)(intptr_t)request.value);
         ChimiValue *fields[] = {arguments[1]};
         if (request.status == CHIMI_RESPONSE_CLOSED)
           return failure(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED, fields, 1));
@@ -3256,7 +3272,11 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
           .token = capability.token,
         };
         ChimiFiberCommand command = scheduler_request(&request);
-        if (command == CHIMI_FIBER_CANCEL) return cancelled();
+        if (command == CHIMI_FIBER_CANCEL) {
+          if (request.status == CHIMI_RESPONSE_SUCCEEDED)
+            fragment_free((RuntimeFragment *)(intptr_t)request.value);
+          return cancelled();
+        }
         if (request.status == CHIMI_RESPONSE_PENDING) continue;
         if (request.status == CHIMI_RESPONSE_SUCCEEDED) {
           void *roots[FRAGMENT_ROOTS];
@@ -3930,11 +3950,28 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .entry = entry,
     .span = 1,
   };
-  uint32_t trace_mode = runtime->silent ? 0 : (runtime->full_trace ? 2 : 1);
-  ChimiSchedulerOutcome outcome = chimi_scheduler_execute(
-    chimi_task_entry, &context, 64u * 1024u, trace_mode,
-    emit_scheduler_event, runtime);
+  ChimiSchedulerExecuteConfig config = {
+    .entry = chimi_task_entry,
+    .context = &context,
+    .stack_bytes = 64u * 1024u,
+    .trace_mode = runtime->silent ? 0 : (runtime->full_trace ? 2 : 1),
+    .trace_sink = emit_scheduler_event,
+    .trace_context = runtime,
+    .release_task_value = release_task_word,
+    .release_channel_value = release_channel_word,
+    .release_context = runtime,
+  };
+  ChimiSchedulerOutcome outcome = chimi_scheduler_execute_with_config(&config);
   current_heap = &main_heap;
+  /* The outcome's word is ours: copy a child's result fragment, then free it. */
+  if (outcome.state == CHIMI_FIBER_SUCCEEDED || outcome.state == CHIMI_FIBER_DEFECTED) {
+    int64_t word = outcome.state == CHIMI_FIBER_SUCCEEDED ? outcome.value : outcome.defect_code;
+    if (word > 0 && (word & CHILD_RESULT_TAG)) {
+      ChimiControl *control = task_reply(word);
+      release_task_word(runtime, word);
+      return control;
+    }
+  }
   if (outcome.state == CHIMI_FIBER_SUCCEEDED)
     return task_reply(outcome.value);
   if (outcome.state == CHIMI_FIBER_CANCELLED) return cancelled();
