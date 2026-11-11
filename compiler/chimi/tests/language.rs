@@ -2508,6 +2508,159 @@ fn a_constructor_value_result_renders_its_name() {
             "}\n",
             "pub fn main() -> fn(Int) -> Shape {\n",
             "  Circle\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":{\"callable\":\"Circle\"}"
+    );
+}
+
+// Source enum variants resolve qualified by their type, bare and called, in
+// expressions and patterns, as standard ones do (ts-7d6bce).
+#[test]
+fn qualified_source_enum_variants_resolve_in_expressions_and_patterns() {
+    let outcome = run_both(
+        "qualified-source-variants",
+        concat!(
+            "enum Status {\n",
+            "  Pending\n",
+            "  Done\n",
+            "}\n",
+            "enum Shape {\n",
+            "  Circle(radius: Int)\n",
+            "  Dot\n",
+            "}\n",
+            "fn rank(status: Status) -> Int {\n",
+            "  case status {\n",
+            "    Status.Pending -> 1\n",
+            "    Status.Done -> 2\n",
+            "  }\n",
+            "}\n",
+            "fn size(shape: Shape) -> Int {\n",
+            "  case shape {\n",
+            "    Shape.Circle(radius) -> radius\n",
+            "    Shape.Dot -> 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  rank(Done) * 1000 + rank(Status.Done) * 100 + rank(Status.Pending) * 10\n",
+            "  + size(Shape.Circle(7)) + size(Shape.Dot)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":2217");
+}
+
+#[test]
+fn qualified_variants_of_an_imported_enum_resolve() {
+    let shapes = ProjectSource::new(
+        "shapes",
+        SourceSnapshot::from_text(
+            "shapes.chimi",
+            "pub enum Shape {\n  Circle(radius: Int)\n  Dot\n}\n",
+        ),
+    )
+    .expect("valid module path");
+    let main = ProjectSource::new(
+        "main",
+        SourceSnapshot::from_text(
+            "main.chimi",
+            concat!(
+                "import shapes.{Shape}\n",
+                "fn size(shape: Shape) -> Int {\n",
+                "  case shape {\n",
+                "    Shape.Circle(radius) -> radius\n",
+                "    Shape.Dot -> 0\n",
+                "  }\n",
+                "}\n",
+                "pub fn main() -> Int { size(Shape.Circle(7)) + size(Shape.Dot) }\n",
+            ),
+        ),
+    )
+    .expect("valid module path");
+    let codes = Compiler::type_project(vec![shapes, main])
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code().to_owned())
+        .collect::<Vec<_>>();
+    assert!(codes.is_empty(), "unexpected diagnostics: {codes:?}");
+}
+
+#[test]
+fn an_unknown_qualified_variant_is_unresolved() {
+    let codes = check_codes(concat!(
+        "enum Status {\n",
+        "  Pending\n",
+        "}\n",
+        "pub fn main() -> Status { Status.Done }\n",
+    ));
+    assert_eq!(codes, ["E_UNRESOLVED_MEMBER"]);
+}
+
+// Publishing a struct exposes its type, not its fields (ts-9c6abd): the
+// declaring module reads them, another module gets E_PRIVATE_STRUCT_FIELD,
+// pointed at the published accessor when one exists. A published function with
+// the field's name that does not take the struct is not an accessor.
+fn money_diagnostics(reader: &str) -> Vec<(String, String)> {
+    let money = ProjectSource::new(
+        "money",
+        SourceSnapshot::from_text(
+            "money.chimi",
+            concat!(
+                "pub struct Money {\n",
+                "  cents: Int\n",
+                "  currency: Text\n",
+                "}\n",
+                "pub fn make(cents: Int) -> Money { Money(cents, \"USD\") }\n",
+                "pub fn cents(money: Money) -> Int { money.cents }\n",
+                // Named like a field but not an accessor: it takes no Money.
+                "pub fn currency(code: Text) -> Text { code }\n",
+            ),
+        ),
+    )
+    .expect("valid module path");
+    let main = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", reader))
+        .expect("valid module path");
+    Compiler::type_project(vec![money, main])
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic.code().to_owned(),
+                diagnostic.message().to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn struct_fields_are_private_to_their_declaring_module() {
+    let reader = |body: &str| {
+        format!(
+            "import money as Money\nimport money.{{Money}}\n\
+             fn size(_text: Text) -> Int {{ 1 }}\n\
+             pub fn main() -> Int {{ {body} }}\n"
+        )
+    };
+    assert_eq!(money_diagnostics(&reader("Money.cents(Money.make(5))")), []);
+    assert_eq!(
+        money_diagnostics(&reader("Money.make(5).cents")),
+        [(
+            "E_PRIVATE_STRUCT_FIELD".to_owned(),
+            "field cents of Money is module-private; use Money.cents(Money.make(5))".to_owned()
+        )]
+    );
+    assert_eq!(
+        money_diagnostics(&reader("size(Money.make(5).currency)")),
+        [(
+            "E_PRIVATE_STRUCT_FIELD".to_owned(),
+            "field currency of Money is module-private".to_owned()
+        )]
+    );
+}
+
 /// Runs a multi-module project rooted at a scratch directory on both execution paths.
 /// `modules` pairs a module path such as `app/main` with its source; the first is the entry.
 fn run_both_project(name: &str, modules: &[(&str, &str)]) -> String {
@@ -2669,152 +2822,6 @@ fn constants_of_every_representable_kind_load_the_built_value() {
     );
     assert_eq!(
         outcome,
-        "\"outcome\":\"success\",\"value\":{\"callable\":\"Circle\"}"
-    );
-}
-
-// Source enum variants resolve qualified by their type, bare and called, in
-// expressions and patterns, as standard ones do (ts-7d6bce).
-#[test]
-fn qualified_source_enum_variants_resolve_in_expressions_and_patterns() {
-    let outcome = run_both(
-        "qualified-source-variants",
-        concat!(
-            "enum Status {\n",
-            "  Pending\n",
-            "  Done\n",
-            "}\n",
-            "enum Shape {\n",
-            "  Circle(radius: Int)\n",
-            "  Dot\n",
-            "}\n",
-            "fn rank(status: Status) -> Int {\n",
-            "  case status {\n",
-            "    Status.Pending -> 1\n",
-            "    Status.Done -> 2\n",
-            "  }\n",
-            "}\n",
-            "fn size(shape: Shape) -> Int {\n",
-            "  case shape {\n",
-            "    Shape.Circle(radius) -> radius\n",
-            "    Shape.Dot -> 0\n",
-            "  }\n",
-            "}\n",
-            "pub fn main() -> Int {\n",
-            "  rank(Done) * 1000 + rank(Status.Done) * 100 + rank(Status.Pending) * 10\n",
-            "  + size(Shape.Circle(7)) + size(Shape.Dot)\n",
-            "}\n",
-        ),
-    );
-    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":2217");
-}
-
-#[test]
-fn qualified_variants_of_an_imported_enum_resolve() {
-    let shapes = ProjectSource::new(
-        "shapes",
-        SourceSnapshot::from_text(
-            "shapes.chimi",
-            "pub enum Shape {\n  Circle(radius: Int)\n  Dot\n}\n",
-        ),
-    )
-    .expect("valid module path");
-    let main = ProjectSource::new(
-        "main",
-        SourceSnapshot::from_text(
-            "main.chimi",
-            concat!(
-                "import shapes.{Shape}\n",
-                "fn size(shape: Shape) -> Int {\n",
-                "  case shape {\n",
-                "    Shape.Circle(radius) -> radius\n",
-                "    Shape.Dot -> 0\n",
-                "  }\n",
-                "}\n",
-                "pub fn main() -> Int { size(Shape.Circle(7)) + size(Shape.Dot) }\n",
-            ),
-        ),
-    )
-    .expect("valid module path");
-    let codes = Compiler::type_project(vec![shapes, main])
-        .diagnostics()
-        .iter()
-        .map(|diagnostic| diagnostic.code().to_owned())
-        .collect::<Vec<_>>();
-    assert!(codes.is_empty(), "unexpected diagnostics: {codes:?}");
-}
-
-#[test]
-fn an_unknown_qualified_variant_is_unresolved() {
-    let codes = check_codes(concat!(
-        "enum Status {\n",
-        "  Pending\n",
-        "}\n",
-        "pub fn main() -> Status { Status.Done }\n",
-    ));
-    assert_eq!(codes, ["E_UNRESOLVED_MEMBER"]);
-}
-
-// Publishing a struct exposes its type, not its fields (ts-9c6abd): the
-// declaring module reads them, another module gets E_PRIVATE_STRUCT_FIELD,
-// pointed at the published accessor when one exists. A published function with
-// the field's name that does not take the struct is not an accessor.
-fn money_diagnostics(reader: &str) -> Vec<(String, String)> {
-    let money = ProjectSource::new(
-        "money",
-        SourceSnapshot::from_text(
-            "money.chimi",
-            concat!(
-                "pub struct Money {\n",
-                "  cents: Int\n",
-                "  currency: Text\n",
-                "}\n",
-                "pub fn make(cents: Int) -> Money { Money(cents, \"USD\") }\n",
-                "pub fn cents(money: Money) -> Int { money.cents }\n",
-                // Named like a field but not an accessor: it takes no Money.
-                "pub fn currency(code: Text) -> Text { code }\n",
-            ),
-        ),
-    )
-    .expect("valid module path");
-    let main = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", reader))
-        .expect("valid module path");
-    Compiler::type_project(vec![money, main])
-        .diagnostics()
-        .iter()
-        .map(|diagnostic| {
-            (
-                diagnostic.code().to_owned(),
-                diagnostic.message().to_owned(),
-            )
-        })
-        .collect()
-}
-
-#[test]
-fn struct_fields_are_private_to_their_declaring_module() {
-    let reader = |body: &str| {
-        format!(
-            "import money as Money\nimport money.{{Money}}\n\
-             fn size(_text: Text) -> Int {{ 1 }}\n\
-             pub fn main() -> Int {{ {body} }}\n"
-        )
-    };
-    assert_eq!(money_diagnostics(&reader("Money.cents(Money.make(5))")), []);
-    assert_eq!(
-        money_diagnostics(&reader("Money.make(5).cents")),
-        [(
-            "E_PRIVATE_STRUCT_FIELD".to_owned(),
-            "field cents of Money is module-private; use Money.cents(Money.make(5))".to_owned()
-        )]
-    );
-    assert_eq!(
-        money_diagnostics(&reader("size(Money.make(5).currency)")),
-        [(
-            "E_PRIVATE_STRUCT_FIELD".to_owned(),
-            "field currency of Money is module-private".to_owned()
-        )]
-    );
         concat!(
             "\"outcome\":\"success\",\"value\":{\"a\":167,\"b\":\"hello world!\",",
             "\"c\":true,\"d\":0.5,\"e\":45,\"f\":{\"type\":\"Value\",\"variant\":\"Number\",",
@@ -2834,7 +2841,7 @@ fn a_public_constant_is_used_qualified_from_another_module() {
                 concat!(
                     "import lib/duration as Duration\n",
                     "pub fn main() -> Int {\n",
-                    "  Duration.zero.nanoseconds + Duration.seconds(2).nanoseconds\n",
+                    "  Duration.nanoseconds(Duration.zero) + Duration.nanoseconds(Duration.seconds(2))\n",
                     "}\n",
                 ),
             ),
@@ -2848,6 +2855,9 @@ fn a_public_constant_is_used_qualified_from_another_module() {
                     "const scale = 1_000_000_000\n",
                     "pub fn seconds(count: Int) -> Duration {\n",
                     "  Duration(count * scale)\n",
+                    "}\n",
+                    "pub fn nanoseconds(duration: Duration) -> Int {\n",
+                    "  duration.nanoseconds\n",
                     "}\n",
                 ),
             ),

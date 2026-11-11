@@ -492,7 +492,7 @@ fn constant_value(
                     .map(|symbol| symbol.id)
                     .ok_or_else(|| format!("the operation `{}`", function.name()))?,
             ),
-            RuntimeCallable::Constructor(symbol) => ConstantFunction::Constructor(*symbol),
+            RuntimeCallable::Constructor { symbol, .. } => ConstantFunction::Constructor(*symbol),
             RuntimeCallable::Declared { .. }
             | RuntimeCallable::Closure { .. }
             | RuntimeCallable::Dependency { .. }
@@ -565,7 +565,10 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
                 Some(StandardSymbol::Function(function)) => RuntimeCallable::Intrinsic(function),
                 _ => unreachable!("constant intrinsic names a standard function"),
             },
-            ConstantFunction::Constructor(symbol) => RuntimeCallable::Constructor(*symbol),
+            ConstantFunction::Constructor(symbol) => RuntimeCallable::Constructor {
+                symbol: *symbol,
+                name: core.symbol(*symbol).name.clone(),
+            },
             ConstantFunction::Closure { node, captures } => {
                 let CoreOperation::Closure {
                     parameters, body, ..

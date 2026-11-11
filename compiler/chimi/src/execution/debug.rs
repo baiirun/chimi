@@ -120,7 +120,7 @@ impl Renderer<'_> {
             RuntimeValue::Callable(callable) => {
                 let name = match callable {
                     RuntimeCallable::Declared { symbol, .. }
-                    | RuntimeCallable::Constructor(symbol) => {
+                    | RuntimeCallable::Constructor { symbol, .. } => {
                         Some(self.core.symbol(*symbol).name.clone())
                     }
                     RuntimeCallable::Dependency { name, .. } => Some(name.clone()),
