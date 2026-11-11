@@ -4360,10 +4360,6 @@ impl ProjectTypeChecker {
             ValueProperty::Equatable => "T4300",
             ValueProperty::Ordered => "T4301",
         };
-        let advice = match check.property {
-            ValueProperty::Equatable => "",
-            ValueProperty::Ordered => "; order it with a comparator and `List.sort_by`",
-        };
         let file_id = self.resolved.semantic.modules[check.module_id.raw() as usize]
             .source
             .file_id();
@@ -4374,7 +4370,7 @@ impl ProjectTypeChecker {
                 file_id,
                 *range,
                 format!(
-                    "`{operator}` needs an {property} type, but `{found}` is not {property}: {}{advice}",
+                    "`{operator}` needs an {property} type, but `{found}` is not {property}: {}",
                     lack.describe()
                 ),
             ),
@@ -4392,7 +4388,7 @@ impl ProjectTypeChecker {
                         file_id,
                         *range,
                         format!(
-                            "`{callee}` needs `{parameter_name}` to be {property}, but `{found}` is not {property}: {}{advice}",
+                            "`{callee}` needs `{parameter_name}` to be {property}, but `{found}` is not {property}: {}",
                             lack.describe()
                         ),
                     ),
@@ -4502,7 +4498,50 @@ impl ProjectTypeChecker {
                 "function".to_owned()
             }
             CanonicalType::Record(_) => "record".to_owned(),
+            CanonicalType::FailureSetValue(failures) => self.format_failure_set(*failures),
             _ => "this type".to_owned(),
+        }
+    }
+
+    /// A failure set as source writes it: whole enums by name, a part of an
+    /// enum by its variants, and row parameters, joined with ` | `.
+    fn format_failure_set(&self, failures: FailureRowId) -> String {
+        let row = &self.failure_rows[failures.raw() as usize];
+        let mut members = row
+            .parameters
+            .iter()
+            .map(|parameter| self.resolved.symbol(*parameter).name.clone())
+            .collect::<Vec<_>>();
+        let mut owners = Vec::<SymbolId>::new();
+        for variant in &row.variants {
+            match self.enum_owner_for_variant(*variant) {
+                Some(owner) if !owners.contains(&owner) => owners.push(owner),
+                Some(_) => {}
+                None => members.push(self.resolved.symbol(*variant).name.clone()),
+            }
+        }
+        for owner in owners {
+            let name = self.resolved.symbol(owner).name.clone();
+            let variants = self.enum_variant_symbols(owner);
+            if variants
+                .iter()
+                .all(|variant| row.variants.contains(variant))
+            {
+                members.push(name);
+            } else {
+                members.extend(
+                    variants
+                        .iter()
+                        .filter(|variant| row.variants.contains(variant))
+                        .map(|variant| format!("{name}.{}", self.resolved.symbol(*variant).name)),
+                );
+            }
+        }
+        members.sort();
+        if members.is_empty() {
+            "Never".to_owned()
+        } else {
+            members.join(" | ")
         }
     }
 

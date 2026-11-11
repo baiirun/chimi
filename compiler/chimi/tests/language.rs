@@ -4158,6 +4158,42 @@ fn failure_set_values_of_different_enums_are_never_equal() {
     );
 }
 
+// Diagnostics name a failure set by its members, and T4301 suggests nothing
+// that does not exist yet (`List.sort_by` is not in `std/list`).
+#[test]
+fn comparison_diagnostics_render_failure_sets_and_no_missing_helpers() {
+    let source = concat!(
+        "enum E {\n  A\n}\n",
+        "enum F {\n  C\n}\n",
+        "fn fail(x: Int) -> Int {\n",
+        "  case x {\n",
+        "    0 -> Failure(E.A)\n",
+        "    _ -> Failure(F.C)\n",
+        "  }\n",
+        "}\n",
+        "fn check(x: Int) -> List<Bool> {\n",
+        "  case fail(x) {\n",
+        "    Failure(e) -> [e == 1, e < e]\n",
+        "    Success(_) -> []\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Bool { { a: 1 } < { a: 2 } }\n",
+    );
+    let diagnostics = coded_messages(source);
+    assert_eq!(diagnostics.len(), 3, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].0, "T4302");
+    assert!(
+        diagnostics[0].1.contains("found `E | F` and `Int`"),
+        "{diagnostics:?}"
+    );
+    assert_eq!(diagnostics[1].0, "T4301");
+    assert!(diagnostics[1].1.contains("`E | F`"), "{diagnostics:?}");
+    for (_, message) in &diagnostics {
+        assert!(!message.contains("this type"), "{message}");
+        assert!(!message.contains("sort_by"), "{message}");
+    }
+}
+
 // A member value widens to its failure set for `==`, on either side.
 #[test]
 fn a_failure_set_value_compares_with_a_member_value() {
