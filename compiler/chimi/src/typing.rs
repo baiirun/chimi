@@ -3694,7 +3694,16 @@ impl ProjectTypeChecker {
         let mut rejected_arm = false;
         for (arm_index, arm) in arms.iter().enumerate() {
             let mut arm_bindings = bindings.clone();
-            let rejected = arm.patterns.iter().any(Pattern::has_rejected_rest);
+            // A clause parameter written as an outcome (`T4282`) is rejected the same way.
+            let outcome_parameters = arm
+                .patterns
+                .iter()
+                .map(|pattern| {
+                    clauses.is_some() && self.reject_outcome_parameter(module_id, pattern)
+                })
+                .collect::<Vec<_>>();
+            let rejected = arm.patterns.iter().any(Pattern::has_rejected_rest)
+                || outcome_parameters.contains(&true);
             rejected_arm |= rejected;
             if arm.patterns.len() != subjects.len() {
                 self.type_error_range(
@@ -3708,16 +3717,15 @@ impl ProjectTypeChecker {
                     ),
                 );
             }
-            if clauses.is_some() {
-                for pattern in &arm.patterns {
-                    self.reject_outcome_parameter(module_id, pattern);
-                }
-            }
             let normalized = arm
                 .patterns
                 .iter()
                 .zip(subjects)
-                .map(|(pattern, subject)| {
+                .zip(&outcome_parameters)
+                .map(|((pattern, subject), outcome)| {
+                    if *outcome {
+                        return MatchPattern::Wildcard;
+                    }
                     self.normalize_pattern(
                         module_id,
                         pattern,
@@ -3778,7 +3786,7 @@ impl ProjectTypeChecker {
             let catch_all = normalized
                 .iter()
                 .all(|pattern| matches!(pattern, MatchPattern::Wildcard));
-            if unguarded && catch_all && arm_index + 1 < arms.len() {
+            if unguarded && catch_all && !rejected && arm_index + 1 < arms.len() {
                 let message = if clauses.is_some() {
                     "a clause whose patterns all match anything must be the last clause"
                 } else {
@@ -5129,10 +5137,10 @@ impl ProjectTypeChecker {
 
     /// `T4282`: a clause parameter never holds a live outcome, because callers
     /// evaluate arguments first and a failing argument has already left the caller.
-    fn reject_outcome_parameter(&mut self, module_id: ModuleId, pattern: &Pattern) {
-        if self.pattern_is_builtin(module_id, pattern, "Success")
-            || self.pattern_is_builtin(module_id, pattern, "Failure")
-        {
+    fn reject_outcome_parameter(&mut self, module_id: ModuleId, pattern: &Pattern) -> bool {
+        let outcome = self.pattern_is_builtin(module_id, pattern, "Success")
+            || self.pattern_is_builtin(module_id, pattern, "Failure");
+        if outcome {
             self.type_error_range(
                 module_id,
                 "T4282",
@@ -5140,6 +5148,7 @@ impl ProjectTypeChecker {
                 "a parameter is a value, never an outcome: the caller evaluates the argument first, and a failing argument has already left through the caller's failure channel. Match the operation with `case` at the call site, or pass a thunk to a recovery function",
             );
         }
+        outcome
     }
 
     /// `T4281`: two clauses need different types for one parameter position.

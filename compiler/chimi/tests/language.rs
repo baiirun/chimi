@@ -5517,6 +5517,19 @@ fn a_clause_parameter_is_never_an_outcome() {
             .any(|(code, message)| code == "T4282" && message.contains("`case`")),
         "{messages:?}"
     );
+    // The outcome pattern is rejected: no pattern-shape error, and it neither
+    // counts as a catch-all nor covers the next clause.
+    let codes = messages
+        .iter()
+        .map(|(code, _)| code.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(codes, ["T4282"]);
+    for single in [
+        "fn f(Failure(e)) -> Int {\n  0\n}\npub fn main() -> Int { f(1) }\n",
+        "pub fn main() -> Int {\n  let g = fn(Failure(e)) { 0 }\n  g(1)\n}\n",
+    ] {
+        assert_eq!(check_codes(single), ["T4282"], "{single}");
+    }
 }
 
 // PC-15
