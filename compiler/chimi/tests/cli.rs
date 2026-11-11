@@ -2087,6 +2087,99 @@ fn golden_and_recovery_corpus_reaches_the_real_check_path() {
     }
 }
 
+/// One `error[...]` line from `chimi check`, with its span resolved to source text.
+fn check_errors(root: &Path, entry: &str) -> Vec<(String, String, String)> {
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .args(["check", "--root"])
+        .arg(root)
+        .arg(entry)
+        .output()
+        .expect("run chimi check");
+    assert!(!output.status.success(), "{entry} was accepted");
+    let source = std::fs::read_to_string(root.join(format!("{entry}.chimi"))).unwrap();
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .map(|line| {
+            // `<path>:<start>..<end>: error[<code>] <stage>: <message>`
+            let (location, rest) = line
+                .split_once(": error[")
+                .unwrap_or_else(|| panic!("unexpected diagnostic line: {line}"));
+            let (code, rest) = rest.split_once("] ").unwrap();
+            let (stage, _message) = rest.split_once(": ").unwrap();
+            let (path, span) = location.rsplit_once(':').unwrap();
+            assert!(
+                path.ends_with(&format!("{entry}.chimi")),
+                "{entry}: diagnostic outside the fixture: {line}"
+            );
+            let (start, end) = span.split_once("..").unwrap();
+            let text =
+                source[start.parse::<usize>().unwrap()..end.parse::<usize>().unwrap()].to_owned();
+            (stage.to_owned(), code.to_owned(), text)
+        })
+        .collect()
+}
+
+// Each negative golden fixture is rejected for the reason it exists, at the
+// construct it names, and for nothing else.
+//
+// Not listed, because the fixture does not reach its EXPECT-DIAGNOSTIC:
+// - ignored_value: Chimi has no discarded-value rule yet, and the fixture
+//   names the type `Money` without importing it.
+// - missing_dependency, interface_shape_mismatch: `Checkout`, `cart`,
+//   `Stripe`, `Warehouse`, and `Receipt` are undefined, so name resolution
+//   fails first.
+// - private_struct_field_access: the compiler accepts `money.cents` from
+//   another module, although the kernel spec makes struct fields private.
+#[test]
+fn negative_golden_fixtures_are_rejected_with_their_diagnostic() {
+    let cases: [(&str, &str, &str, &str); 4] = [
+        (
+            "non_exhaustive_case",
+            "type",
+            "T4231",
+            "case state {\n    Empty -> True\n    Ready -> True\n  }",
+        ),
+        (
+            "non_exhaustive_outcome_case",
+            "type",
+            "T4223",
+            "case payment.charge(total) {\n    Success(receipt) -> receipt\n  }",
+        ),
+        (
+            "observable_case_guard",
+            "type",
+            "T4234",
+            "risk.check(candidate)",
+        ),
+        (
+            "private_struct_construction",
+            "name",
+            "E_PRIVATE_STRUCT_CONSTRUCTOR",
+            "Money.Money(-100)",
+        ),
+    ];
+    for (fixture, stage, code, span) in cases {
+        let root = scratch_directory(&format!("golden-{fixture}"));
+        std::fs::create_dir_all(root.join("modules")).unwrap();
+        std::fs::copy(
+            repository_path("prototypes/golden/valid/modules/money.chimi"),
+            root.join("modules/money.chimi"),
+        )
+        .unwrap();
+        std::fs::copy(
+            repository_path(format!("prototypes/golden/invalid/{fixture}.chimi")),
+            root.join(format!("{fixture}.chimi")),
+        )
+        .unwrap();
+        assert_eq!(
+            check_errors(&root, fixture),
+            [(stage.to_owned(), code.to_owned(), span.to_owned())],
+            "fixture {fixture}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 fn build_native(scratch: &Path, name: &str, source_text: &str) -> PathBuf {
     let source = scratch.join(format!("{name}.chimi"));
     let executable = scratch.join(name);
