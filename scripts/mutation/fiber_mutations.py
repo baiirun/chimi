@@ -15,6 +15,12 @@ did not change behaviour; it now leaves an incarnation's children running.
 
 The nested-supervisor and structured-stop mutants (from "nested supervisor
 outside parent capacity" on) guard the decisions of ts-b1a535 and ts-2e0451.
+
+The mutants from "removal in flight expanded again" on guard the review
+fixes ts-9c0516 (a stop or removal that meets a nested escalation ends the
+membership without a restart) and ts-bb32bf (an escalated root releases its
+draining owner), and the guarantees that review found untested: the retired
+handle kind check and nested escalation answering `Supervisor.wait`.
 """
 
 CRATE = "runtime/chimi-fiber"
@@ -215,5 +221,61 @@ MUTATIONS = [
         edits=[('        if !record.children.is_empty() || self.owns_live_roots(task) {', '        if !record.children.is_empty() || (record.process.is_none() && self.owns_live_roots(task)) {')],
         targets=["lib"],
         filter='removing_a_process_that_started',
+    ),
+    dict(
+        name='removal in flight expanded again',
+        file='src/scheduler/process.rs',
+        edits=[('            Some(Instance::Supervisor(child)) if self.stop_in_flight(child) => {\n                self.request_end(child);', '            Some(Instance::Supervisor(child)) if false && self.stop_in_flight(child) => {\n                self.request_end(child);')],
+        targets=["lib"],
+        filter='sv10_removing_a_nested_supervisor_during_its_escalation',
+    ),
+    dict(
+        name='removal during escalation not recorded',
+        file='src/scheduler/process.rs',
+        edits=[('                self.request_end(child);\n', '')],
+        targets=["lib"],
+        filter='sv10_removing_a_nested_supervisor_during_its_escalation',
+    ),
+    dict(
+        name='stop during escalation not recorded',
+        file='src/scheduler/process.rs',
+        edits=[('                record.end_requested = true;\n', '')],
+        targets=["lib"],
+        filter='sv10_stopping_a_nested_supervisor_during_its_escalation',
+    ),
+    dict(
+        name='nested escalation ignores a requested end',
+        file='src/scheduler/process.rs',
+        edits=[('                let cause = if record.end_requested {', '                let cause = if false && record.end_requested {')],
+        targets=["lib"],
+        filter='during_its_escalation',
+    ),
+    dict(
+        name='retired handle kind unchecked',
+        file='src/scheduler/process.rs',
+        edits=[('                _ => return Err(ProcessError::WrongMemberKind(membership)),', '                _ => Step::Reply(None),')],
+        targets=["lib"],
+        filter='sv10_a_retired_handle_is_still_kind_checked',
+    ),
+    dict(
+        name='nested escalation leaves waiters parked',
+        file='src/scheduler/process.rs',
+        edits=[('                for waiter in record.waiters {\n                    self.reply(waiter, super::RESPONSE_OK, false);\n                }', '                let _ = record.waiters;')],
+        targets=["lib"],
+        filter='sv10_a_wait_on_a_nested_supervisor_returns_when_it_escalates',
+    ),
+    dict(
+        name='escalated root strands its draining owner',
+        file='src/scheduler/process.rs',
+        edits=[('                if let Some(owner) = owner {\n                    self.finish_draining(owner);\n                }', '                let _ = owner;')],
+        targets=["lib"],
+        filter='removing_an_owner_whose_root_escalates',
+    ),
+    dict(
+        name='escalated root strands its draining owner at teardown',
+        file='src/scheduler/process.rs',
+        edits=[('                if let Some(owner) = owner {\n                    self.finish_draining(owner);\n                }', '                let _ = owner;')],
+        targets=["lib"],
+        filter='tearing_down_with_an_owner_draining',
     ),
 ]

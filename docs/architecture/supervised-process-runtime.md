@@ -348,8 +348,10 @@ that includes cleanup that lingers to its deadline. Its `CleanupCompleted`
 and `Terminal` events therefore come after its members' terminal events. A
 parent task likewise stays draining until its draining children are
 terminal. A process body that starts a root is held the same way, and a
-removal of that process waits for the root. A root started by the host
-through `Scheduler::start_supervisor` has no owner.
+removal of that process waits for the root. A root that escalates instead
+of stopping also releases its draining owner, so the owner's terminal and
+any removal waiting on it still complete while the program terminates. A
+root started by the host through `Scheduler::start_supervisor` has no owner.
 
 | Rule | Test | Mutant |
 | --- | --- | --- |
@@ -357,6 +359,7 @@ through `Scheduler::start_supervisor` has no owner.
 | A parent's terminal follows a child that is still draining | `a_parent_task_stays_draining_until_a_child_waiting_on_its_supervisor_is_terminal` | parent terminal before its draining child |
 | A process body that owns a root is held until the root stops | `removing_a_process_that_started_a_root_waits_for_that_root_to_stop` | process owners not held |
 | An owner that ends with nothing lingering stops its root before it is terminal | `a_root_supervisor_stops_when_the_task_that_started_it_ends` | None |
+| A draining owner whose root escalates still finishes, also at teardown (`ts-bb32bf`) | `removing_an_owner_whose_root_escalates_while_it_drains_finishes`, `tearing_down_with_an_owner_draining_under_an_escalating_root_finishes_the_owner` | escalated root strands its draining owner; escalated root strands its draining owner at teardown |
 
 ### Nested supervisors
 
@@ -371,13 +374,17 @@ the parent replaces it after an escalation. Removal is `Done` only when the
 whole subtree has stopped. The trace then shows the members' terminations,
 `supervisor_stopped`, and `membership_removed`. `stop` works on a nested
 supervisor too. It ends the membership as a requested end, which frees the
-slot and never restarts.
+slot and never restarts. A stop or removal that meets an escalation already
+stopping the nested supervisor marks it `end_requested`. When the
+escalation finishes, the membership then ends as a requested end, not as a
+defect, so the parent starts no replacement (`ts-9c0516`).
 
 A stop, removal, or escalation is a plan. Plans can now block on a
 supervisor as well as on an incarnation. A plan that reaches a nested
 supervisor whose members another plan has already taken waits for that
 supervisor to retire. It does not stop the supervisor a second time.
-Retiring a supervisor answers every task in `Supervisor.wait` on it.
+Retiring a supervisor, or a nested escalation finishing, answers every
+task in `Supervisor.wait` on it.
 
 `supervisor_started` (trace kind 10) is emitted before a supervisor's
 declared members start. It carries `supervisor`, and for a nested
@@ -390,11 +397,15 @@ after a failed member start emits `supervisor_stopped`.
 | --- | --- | --- |
 | A dynamic nested supervisor takes a parent slot, and admission is fail-fast | `sv10_a_dynamic_nested_supervisor_takes_a_parent_slot_and_removal_stops_its_subtree`, `sv10_the_request_abi_starts_a_nested_supervisor_and_removal_parks_until_its_subtree_stops` | nested supervisor outside parent capacity |
 | Removal stops the subtree, then releases the slot; handles are checked by kind and consumed | same two tests | removal leaves the nested subtree running; handle kind unchecked |
+| A handle whose member already ended is still checked by kind, and a wrong-kind attempt does not consume it | `sv10_a_retired_handle_is_still_kind_checked` | retired handle kind unchecked |
 | `supervisor_started` names the parent and membership | `sv10_a_dynamic_nested_supervisor_takes_a_parent_slot_and_removal_stops_its_subtree` | supervisor_started without parent |
 | A stopped nested supervisor is not restarted | `sv10_stopping_a_nested_supervisor_ends_its_membership_without_a_restart` | stopped nested supervisor restarts |
 | A parent stop waits for a nested stop or escalation already in flight | `sv10_a_parent_stop_waits_for_a_nested_stop_already_in_flight_and_stops_it_once`, `es02_a_parent_stop_during_a_nested_escalation_waits_for_it_instead_of_stopping_it_again` | nested stop in flight expanded again; nested escalation strands waiting plans |
+| A removal during a nested escalation waits for it, and no replacement starts once it is `Done` | `sv10_removing_a_nested_supervisor_during_its_escalation_starts_no_replacement` | removal in flight expanded again; removal during escalation not recorded; nested escalation ignores a requested end |
+| A stop during a nested escalation ends the membership without a restart | `sv10_stopping_a_nested_supervisor_during_its_escalation_does_not_restart_it` | stop during escalation not recorded; nested escalation ignores a requested end |
 | A dynamic nested supervisor escalates to its parent, which replaces it or escalates in turn | `sv10_a_dynamic_nested_supervisor_escalates_to_its_parent_which_replaces_it` | None |
 | A wait on a nested supervisor returns when it retires | `sv10_a_wait_on_a_nested_supervisor_returns_when_its_parent_stops_it` | only root waiters answered |
+| A wait on a nested supervisor returns when it escalates | `sv10_a_wait_on_a_nested_supervisor_returns_when_it_escalates` | nested escalation leaves waiters parked |
 
 ## Mapping onto the native runtime
 
