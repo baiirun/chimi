@@ -3781,6 +3781,93 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
             .collect()
     }
 
+    /// A module whose `main` decodes `2^doublings` JSON ones and passes them to `run`.
+    fn large_list_loop(doublings: u32, run: &str) -> String {
+        format!(
+            concat!(
+                "import std/json as Json\n",
+                "import std/json.{{Value}}\n",
+                "fn ones(doublings: Int) -> Text {{\n",
+                "  loop state = {{ text: \"1\", left: doublings }} {{\n",
+                "    case state.left {{\n",
+                "      0 -> break state.text\n",
+                "      _ -> {{ text: Text.append(Text.append(state.text, \",\"), state.text), left: state.left - 1 }}\n",
+                "    }}\n",
+                "  }}\n",
+                "}}\n",
+                "{run}",
+                "pub fn main() -> Int {{\n",
+                "  let decoded = Json.decode(Text.append(Text.append(\"[\", ones({doublings})), \"]\"))\n",
+                "  case decoded {{\n",
+                "    Value.Array(values) -> run(values)\n",
+                "    _ -> -1\n",
+                "  }}\n",
+                "}}\n",
+            ),
+            doublings = doublings,
+            run = run
+        )
+    }
+
+    // LP-07 in the interpreter: `[.., last]` reads one element, so 10,000 matches of
+    // a 1,048,576-element list stay fast. A copy per match would copy about 10^10
+    // elements.
+    #[test]
+    fn interpreter_last_element_pattern_does_not_copy_a_large_list() {
+        let source = large_list_loop(
+            20,
+            concat!(
+                "fn run(values: List<Value>) -> Int {\n",
+                "  loop state = { left: 10000, found: 0 } {\n",
+                "    case state.left {\n",
+                "      0 -> break state.found\n",
+                "      _ -> case values {\n",
+                "        [.., Value.Number(_)] -> { left: state.left - 1, found: state.found + 1 }\n",
+                "        _ -> { left: state.left - 1, found: state.found }\n",
+                "      }\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+        );
+        let started = std::time::Instant::now();
+        let report = run_loop(&source, TraceMode::Off);
+        let elapsed = started.elapsed();
+        assert_eq!(
+            report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Integer(10_000))
+        );
+        assert!(elapsed.as_secs() < 30, "10,000 matches took {elapsed:?}");
+    }
+
+    // LP-08 in the interpreter: each `rest` view is O(1) amortized, so draining
+    // 131,072 elements stays linear. A copy per view would copy about 8.6 * 10^9.
+    #[test]
+    fn interpreter_draining_loop_takes_constant_time_per_rest_view() {
+        let source = large_list_loop(
+            17,
+            concat!(
+                "fn run(values: List<Value>) -> Int {\n",
+                "  loop state = { rest: values, total: 0 } {\n",
+                "    case state.rest {\n",
+                "      [] -> break state.total\n",
+                "      [Value.Number(_), ..rest] -> { rest: rest, total: state.total + 1 }\n",
+                "      [_, ..rest] -> { rest: rest, total: state.total }\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+        );
+        let started = std::time::Instant::now();
+        let report = run_loop(&source, TraceMode::Off);
+        let elapsed = started.elapsed();
+        assert_eq!(
+            report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Integer(1 << 17))
+        );
+        assert!(elapsed.as_secs() < 30, "draining took {elapsed:?}");
+    }
+
     // Guards: unbounded repetition must not grow the host stack with the pass count.
     #[test]
     fn loop_runs_many_passes_without_growing_the_stack() {
