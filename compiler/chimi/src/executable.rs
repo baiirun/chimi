@@ -363,8 +363,11 @@ pub(crate) struct CoreConstructor {
     pub(crate) variant_name: Option<String>,
     pub(crate) fields: Vec<String>,
     pub(crate) outcome_success: Option<bool>,
-    /// Position among the variants of its type in declaration order, which the
-    /// derived order follows. A struct's only constructor is 0.
+    /// The constructor's place in one order over every constructor in the
+    /// program. A type's constructors are contiguous and in declaration order,
+    /// which the derived order follows; distinct types never share an ordinal,
+    /// so values of two enums in one failure set are never equal. The order
+    /// between types is internal: types are numbered by first symbol.
     pub(crate) ordinal: u32,
 }
 
@@ -2038,7 +2041,7 @@ impl CoreLowerer {
 
     fn reference(&self, symbol: SymbolId) -> CoreOperation {
         if is_core_constructor(&self.typed, symbol) {
-            let shape = lower_core_constructor(&self.typed, symbol);
+            let (shape, _) = lower_core_constructor(&self.typed, symbol);
             if shape.outcome_success.is_none() && shape.fields.is_empty() {
                 return CoreOperation::Construct {
                     constructor: symbol,
@@ -2081,8 +2084,17 @@ impl CoreLowerer {
     }
 }
 
+/// The type a constructor builds, which decides where its ordinal starts.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+enum OwningType {
+    Standard(crate::standard::StandardType),
+    Outcome,
+    Struct(SymbolId),
+    Enum(ModuleId, usize),
+}
+
 fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
-    typed
+    let mut symbols = typed
         .resolved
         .symbols
         .iter()
@@ -2120,24 +2132,68 @@ fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
                 }
                 _ => CoreSymbolKind::Other,
             };
-            CoreSymbol {
+            let (constructor, owner) = if kind == CoreSymbolKind::Constructor {
+                let (constructor, owner) = lower_core_constructor(typed, symbol.id);
+                (Some(constructor), Some(owner))
+            } else {
+                (None, None)
+            };
+            let symbol = CoreSymbol {
                 id: symbol.id,
                 name: symbol.name.clone(),
                 kind,
-                constructor: (kind == CoreSymbolKind::Constructor)
-                    .then(|| lower_core_constructor(typed, symbol.id)),
+                constructor,
                 standard: typed.resolved.standard_symbol(symbol.id),
-            }
+            };
+            (symbol, owner)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    number_constructors_across_types(&mut symbols);
+    symbols.into_iter().map(|(symbol, _)| symbol).collect()
 }
 
-fn lower_core_constructor(typed: &TypedProject, constructor: SymbolId) -> CoreConstructor {
+/// Turns each constructor's position within its type into its program-wide
+/// ordinal: each type gets a block as wide as its largest position, in order of
+/// the type's first constructor symbol.
+fn number_constructors_across_types(symbols: &mut [(CoreSymbol, Option<OwningType>)]) {
+    let mut widths = HashMap::<OwningType, u32>::new();
+    let mut owners = Vec::new();
+    for (symbol, owner) in symbols.iter() {
+        let (Some(constructor), Some(owner)) = (&symbol.constructor, owner) else {
+            continue;
+        };
+        let width = widths.entry(*owner).or_insert_with(|| {
+            owners.push(*owner);
+            0
+        });
+        *width = (*width).max(constructor.ordinal + 1);
+    }
+    let mut starts = HashMap::new();
+    let mut next = 0_u32;
+    for owner in owners {
+        starts.insert(owner, next);
+        next = next
+            .checked_add(widths[&owner])
+            .expect("constructor count fits u32");
+    }
+    for (symbol, owner) in symbols.iter_mut() {
+        if let (Some(constructor), Some(owner)) = (&mut symbol.constructor, owner) {
+            constructor.ordinal += starts[owner];
+        }
+    }
+}
+
+/// The constructor's shape, with its position within its own type as the
+/// ordinal, and the type it builds.
+fn lower_core_constructor(
+    typed: &TypedProject,
+    constructor: SymbolId,
+) -> (CoreConstructor, OwningType) {
     let symbol = typed.resolved.symbol(constructor);
-    if let Some(StandardSymbol::Constructor(constructor)) =
-        typed.resolved.standard_symbol(constructor)
+    if let Some(StandardSymbol::Constructor(standard)) = typed.resolved.standard_symbol(constructor)
     {
-        return CoreConstructor {
+        let constructor = standard;
+        let shape = CoreConstructor {
             type_name: constructor.type_kind().name().to_owned(),
             variant_name: Some(constructor.name().to_owned()),
             fields: constructor
@@ -2148,15 +2204,17 @@ fn lower_core_constructor(typed: &TypedProject, constructor: SymbolId) -> CoreCo
             outcome_success: None,
             ordinal: constructor.ordinal(),
         };
+        return (shape, OwningType::Standard(constructor.type_kind()));
     }
     if symbol.kind == ProjectSymbolKind::BuiltinValue {
-        return CoreConstructor {
+        let shape = CoreConstructor {
             type_name: "Outcome".to_owned(),
             variant_name: Some(symbol.name.clone()),
             fields: vec!["value".to_owned()],
             outcome_success: Some(symbol.name == "Success"),
             ordinal: 0,
         };
+        return (shape, OwningType::Outcome);
     }
     let fields = typed
         .fields
@@ -2166,13 +2224,14 @@ fn lower_core_constructor(typed: &TypedProject, constructor: SymbolId) -> CoreCo
         .map(|field| field.name.clone())
         .collect();
     if symbol.kind == ProjectSymbolKind::StructConstructor {
-        return CoreConstructor {
+        let shape = CoreConstructor {
             type_name: symbol.name.clone(),
             variant_name: None,
             fields,
             outcome_success: None,
             ordinal: 0,
         };
+        return (shape, OwningType::Struct(constructor));
     }
     let module_id = symbol
         .module_id
@@ -2180,10 +2239,12 @@ fn lower_core_constructor(typed: &TypedProject, constructor: SymbolId) -> CoreCo
     let semantic_id = symbol
         .semantic_id
         .expect("enum constructor has semantic identity");
-    let declaration = typed.resolved.semantic.modules[module_id.raw() as usize]
+    let (declaration_index, declaration) = typed.resolved.semantic.modules
+        [module_id.raw() as usize]
         .declarations
         .iter()
-        .find(|declaration| {
+        .enumerate()
+        .find(|(_, declaration)| {
             declaration.kind == ModuleDeclarationKind::Enum
                 && declaration
                     .variants
@@ -2196,13 +2257,14 @@ fn lower_core_constructor(typed: &TypedProject, constructor: SymbolId) -> CoreCo
         .iter()
         .position(|variant| variant.semantic_id == semantic_id)
         .expect("verified enum constructor is one of its enum's variants");
-    CoreConstructor {
+    let shape = CoreConstructor {
         type_name: declaration.name.text.clone(),
         variant_name: Some(symbol.name.clone()),
         fields,
         outcome_success: None,
         ordinal: u32::try_from(ordinal).expect("variant count fits u32"),
-    }
+    };
+    (shape, OwningType::Enum(module_id, declaration_index))
 }
 
 fn is_core_constructor(typed: &TypedProject, symbol: SymbolId) -> bool {

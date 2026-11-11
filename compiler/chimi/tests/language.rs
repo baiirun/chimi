@@ -4103,6 +4103,61 @@ fn equality_is_structural_and_inequality_is_its_negation() {
     );
 }
 
+// E2 across a failure set: enum values are equal only within one enum type, so
+// variants of two enums at the same declaration position, with equal payloads,
+// differ, and stay distinct as Map keys.
+#[test]
+fn failure_set_values_of_different_enums_are_never_equal() {
+    let source = concat!(
+        "import std/map as Map\n",
+        "enum E {\n  A(n: Int)\n  B\n}\n",
+        "enum F {\n  C(m: Int)\n  D\n}\n",
+        "fn fail(x: Int) -> Int {\n",
+        "  case x {\n",
+        "    0 -> Failure(E.A(1))\n",
+        "    1 -> Failure(F.C(1))\n",
+        "    2 -> Failure(E.B)\n",
+        "    _ -> Failure(F.D)\n",
+        "  }\n",
+        "}\n",
+        "fn same(x: Int, y: Int) -> Bool {\n",
+        "  case fail(x) {\n",
+        "    Failure(e) -> case fail(y) {\n",
+        "      Failure(f) -> e == f\n",
+        "      Success(_) -> False\n",
+        "    }\n",
+        "    Success(_) -> False\n",
+        "  }\n",
+        "}\n",
+        "fn keys() -> List<Bool> {\n",
+        "  case fail(0) {\n",
+        "    Failure(a) -> case fail(1) {\n",
+        "      Failure(c) -> {\n",
+        "        let table = Map.empty() |> Map.put(a, 1) |> Map.put(c, 2)\n",
+        "        [Map.get(table, a) == Some(1), Map.get(table, c) == Some(2)]\n",
+        "      }\n",
+        "      Success(_) -> []\n",
+        "    }\n",
+        "    Success(_) -> []\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<List<Bool>> {\n",
+        "  [\n",
+        "    [same(0, 1), same(2, 3), same(2, 1), same(0, 3)],\n",
+        "    [same(0, 0), same(1, 1), same(3, 3), same(0, 2)],\n",
+        "    keys(),\n",
+        "  ]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("failure-set-enum-identity", source),
+        concat!(
+            "\"outcome\":\"success\",\"value\":",
+            "[[false,false,false,false],[true,true,true,false],[true,true]]"
+        )
+    );
+}
+
 // E5: maps compare by entries, whatever their insertion order.
 #[test]
 fn maps_built_in_different_orders_are_equal() {
