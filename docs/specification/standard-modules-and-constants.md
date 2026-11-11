@@ -556,7 +556,7 @@ pub fn main() -> Text {
 
 - `${` opens an interpolation and the matching `}` closes it. The lexer
   counts braces and lexes nested text literals, so
-  `"names: ${Text.join(names, ", ")}"` is valid.
+  `"names: ${Text.join(names, ", ")}"` is valid once `std/text` provides `Text.join` (phase 2).
 - `\$` writes a literal `$`. A `$` not followed by `{` is literal text.
 - An interpolation MUST contain an expression (`S1101` for `${}`). Text
   literals cannot span lines, and an interpolation MUST NOT contain a line
@@ -722,7 +722,7 @@ chosen to avoid codes in use (`S1001`–`S1002`, `L2001`, `N3001`–`N3002`,
 | `T4322` | type | A constant initializer with a non-empty needs row |
 | `T4323` | type | A constant whose type is not constant-representable; names the field or capture |
 | `T4324` | type | A constant whose type is not fully determined |
-| `T4325` | type | An interpolated expression whose type is neither `Text` nor `Int` |
+| `T4325` | type | An interpolated expression whose type is not `Text`, `Int`, or `Float` |
 | `E5201` | execution setup | Constant evaluation reached a `runtime` or `host` operation; names the operation and call chain |
 | `E5202` | execution setup | A defect during constant evaluation |
 | `E5203` | execution setup | Constant evaluation exceeded its operation or size budget |
@@ -752,7 +752,7 @@ chosen to avoid codes in use (`S1001`–`S1002`, `L2001`, `N3001`–`N3002`,
 | `const jobs = Channel.bounded(8)` | `T4323` naming `Sender` |
 | `const total` whose block calls `Channel.bounded(1)` and then returns `5` | `E5201` naming `std/channel.bounded` |
 | `const first = first_or_defect([])`, where the function defects on an empty list | `E5202` with the defect span |
-| `const a = b` and `const b = a` in two modules | `E5205` listing both |
+| `const a = f()` with `fn f() -> Int { a }` | `E5205` listing `a -> f -> a` (two modules cannot name each other's constants, because their imports would form an import cycle, which the project loader rejects first) |
 | `const nothing = None` | `T4324` |
 | `const caches = [primary_cache, backup_cache]` over `process name` declarations | compiles; sends through `caches` route by name |
 | `Process.register(spec, caches_first)` where `caches_first` is a constant | `T4262` |
