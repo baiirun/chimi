@@ -9,9 +9,10 @@ tuples, the `Void` value, the `Never` type, and integer ranges
 the [language completion plan](../plans/language-completion-plan.md), and sets
 the representation expectations for L2 (`Decimal`).
 
-Nothing in this document is implemented yet unless the text says so. Checked
-`Int` arithmetic with overflow and division-by-zero defects already exists in
-`compiler/chimi/src/execution.rs`. Chimi remains free to break. This is an
+Implementation status (Phase 1, epic `ep-a6f138`): boolean logic is
+implemented (`ts-fd46b6`). The other sections are implementation targets
+tracked by `ts-95bffa` (equality, hashing, ordering), `ts-a28bb7` (numbers),
+and `ts-5be727` (tuples, `Void`, `Never`, ranges); `Decimal` is phase 2. Chimi remains free to break. This is an
 implementation target.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. Examples
