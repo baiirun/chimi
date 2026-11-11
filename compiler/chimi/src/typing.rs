@@ -5690,6 +5690,12 @@ impl ProjectTypeChecker {
                 let actual = self.instantiate_function_value(&parameters, contract);
                 self.match_call_type(actual, expected, substitution)
             }
+            // An open argument type (an unannotated lambda parameter) takes the
+            // instantiated parameter type, never the callee's own generics.
+            (CanonicalType::InferenceVariable(_), _) => {
+                let expected = self.substitute_call_type(expected, substitution);
+                self.unify(actual, expected)
+            }
             _ => self.unify(actual, expected),
         }
     }

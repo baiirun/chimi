@@ -2279,6 +2279,33 @@ fn a_caller_may_precede_a_callee_with_an_inferred_return_type() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":6");
 }
 
+// An unannotated lambda parameter matched against a generic callee's parameter
+// takes the instantiated type. Before, it took the callee's own `T`, which a
+// second fixed-point pass (from the inferred return type) then rejected.
+#[test]
+fn a_lambda_argument_to_a_generic_callee_checks_in_an_inferred_body() {
+    let outcome = run_both(
+        "lambda-into-generic-inferred-body",
+        concat!(
+            "import std/map as Map\n",
+            "fn apply<T>(operation: fn(Option<T>) -> T) -> T { operation(None) }\n",
+            "fn seven() {\n",
+            "  apply(fn(_ignored) { 7 })\n",
+            "}\n",
+            "fn counts() {\n",
+            "  Map.update(Map.empty(), \"a\", fn(_current) { 2 })\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  case Map.get(counts(), \"a\") {\n",
+            "    Some(count) -> count + seven()\n",
+            "    None -> 0\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":9");
+}
+
 // A constructor value renders as its constructor's name on both paths, as a
 // standard function value renders as its function's name.
 #[test]
