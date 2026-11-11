@@ -69,6 +69,10 @@ or supervisor specification. The owning supervisor—not the function—performs
 replacement, serializes it with removal and shutdown, and charges its shared
 rolling budget.
 
+> Historical note: the candidates below were written when `|>` was
+> unary-only and `Retry.with(...)` returned a wrapper. Under the current
+> first-argument rule, `x |> Retry.with(p)` means `Retry.with(x, p)`.
+
 ## Candidate B: ordinary retry around each lifecycle
 
 ```chimi

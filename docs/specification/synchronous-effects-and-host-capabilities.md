@@ -102,7 +102,7 @@ needs-row rules.
 ## Composition Rules
 
 Calling a function unions the callee's effect row into the caller's inferred
-row. Blocks, pipelines, partial application, returned functions, and ordinary
+row. Blocks, pipelines, returned functions, and ordinary
 function composition preserve the same relationship. Duplicate effects
 normalize to one stable identity.
 

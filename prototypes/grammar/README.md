@@ -21,12 +21,12 @@ Both forms must be nonempty, so `{}` is rejected. `Void` is recognized only as
 an explicit type for successful completion without data; it is not a literal
 or nullable value.
 
-The pipeline operator composes ordinary unary functions. `value |> transform`
-means `transform(value)`, so a configured call such as `Retry.with(...)` must
-itself produce the unary transformation. The parser does not give retry or any
-other API special treatment. Pipability follows from the unary function type;
-Chimi does not automatically partially apply missing arguments or insert the
-left value into a multi-argument call.
+The pipeline operator passes its left operand as the first argument.
+`value |> transform` means `transform(value)`, and `value |> combine(other)`
+means `combine(value, other)`. The parser does not give retry or any other API
+special treatment, and Chimi does not partially apply missing arguments. (This
+prototype originally specified unary-only pipelines; the executable kernel's
+Pipelines section supersedes that.)
 
 `operation using { dependency: provider }` is a postfix expression that may
 supply any subset of an operation's dependency needs before the runtime root.

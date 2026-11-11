@@ -43,7 +43,8 @@ go -C prototypes/type-contracts run . --check
   variants bubble automatically; ordinary enum cases remain exhaustive.
 - Higher-order transformations can change success while preserving unknown
   failure and requirement rows.
-- `Retry.with(...)` is a unary transformation. It preserves the operation's
+- `Retry.with(...)` (historical; now `Retry.run(operation, policy)` in the
+  time-and-outcomes spec) is a unary transformation. It preserves the operation's
   final expected failures and adds requirements used by its policy, such as
   `Clock`.
 - Requirement rows use lexical names and interface types. Composition unions

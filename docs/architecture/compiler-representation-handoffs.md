@@ -348,7 +348,7 @@ meaning rather than layout.
 ### Standard-library operations
 
 Retry is not a language-core node merely because the forcing example uses it.
-`Retry.with(...)` is an ordinary higher-order standard-library function. A
+`Retry.run(operation, policy)` is an ordinary higher-order standard-library function. A
 future implementation MAY lower selected official-library operations to
 runtime intrinsics, but such recognition must pass through a separately
 specified intrinsic interface keyed by stable symbols, never source spelling.

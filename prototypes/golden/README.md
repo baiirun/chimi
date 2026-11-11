@@ -30,13 +30,11 @@ can be judged in complete programs instead of prose.
   generic.
 - Applying a function constructs an invocation. It executes only as part of a
   runtime root; ordinary calls inside a function compose in direct style.
-- `value |> transform` applies a unary transformation to `value`. The right
-  side is an ordinary function value, so `operation |> Retry.with(policy: ...)`
-  is equivalent to `Retry.with(policy: ...)(operation)`: retry configuration is
-  partially applied and the operation is not a distinguished argument field.
-  Every type-compatible unary function is pipeable. Multi-argument calls do
-  not gain automatic partial application or a special pipeline argument slot;
-  an API intended for pipelines explicitly returns a unary function.
+- `value |> transform` means `transform(value)`, and a call on the right
+  receives the left operand as its first argument: `operation |> Retry.with(policy)`
+  is `Retry.with(operation, policy)`. (Earlier drafts treated the right side as
+  a unary function value; the executable kernel's Pipelines section supersedes
+  that.) Missing arguments are never partially applied.
 - Every expression and function has separate inferred success, expected-error,
   requirement, and effect types. This separation is part of the semantic model
   and tooling shape; it is not mandatory surface annotation.

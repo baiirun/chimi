@@ -180,8 +180,10 @@ soft_breaks    = { HSPACE | COMMENT | NEWLINE } ;
    are IDENT ":". Otherwise it is a block. Empty braces are invalid. This is a
    parser lookahead rule, not a separate lexical distinction. *)
 
-(* Pipelines are left-associative unary application: x |> f |> g means
-   g(f(x)). A call on the right constructs the unary function before applying
-   it, so x |> f(a) means f(a)(x), not f(x, a). *)
+(* Pipelines are left-associative: x |> f |> g means g(f(x)). A call written
+   directly on the right receives the left operand as its first argument, so
+   x |> f(a) means f(x, a). A parenthesized right side is applied as a unary
+   function: x |> (f(a)) means f(a)(x). See the executable kernel's Pipelines
+   section. *)
 
 (* No standalone if-expression exists. "if" is recognized only in case_arm. *)
