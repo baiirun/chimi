@@ -37,7 +37,9 @@ pub(crate) struct GenericRequirement {
 pub(crate) struct RequirementOrigin {
     pub(crate) module_id: ModuleId,
     pub(crate) range: TextRange,
-    pub(crate) operator: &'static str,
+    /// What the use at `range` is: an operator such as `==`, or the standard
+    /// function, such as `Order.compare`, whose call created the requirement.
+    pub(crate) operation: String,
 }
 
 /// A property a type must have, checked once the body that needs it has been
@@ -4222,9 +4224,22 @@ impl ProjectTypeChecker {
                 PropertySite::Operator { range, operator } => Some(RequirementOrigin {
                     module_id: check.module_id,
                     range: *range,
-                    operator,
+                    operation: (*operator).to_owned(),
                 }),
-                PropertySite::Instantiation { requirement, .. } => requirement.origin.clone(),
+                // A requirement with no origin starts in a standard function,
+                // so this call is the use that creates it in the caller.
+                PropertySite::Instantiation {
+                    requirement,
+                    range,
+                    callee,
+                    ..
+                } => requirement.origin.clone().or_else(|| {
+                    Some(RequirementOrigin {
+                        module_id: check.module_id,
+                        range: *range,
+                        operation: callee.clone(),
+                    })
+                }),
             };
             for generic in derivation
                 .generics
@@ -4314,7 +4329,7 @@ impl ProjectTypeChecker {
                             origin.range,
                             format!(
                                 "`{parameter_name}` must be {property} because `{}` uses `{}` here",
-                                callee, origin.operator
+                                callee, origin.operation
                             ),
                         );
                         if let Some((module_id, range)) = self.generic_parameter_range(*parameter) {

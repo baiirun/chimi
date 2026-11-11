@@ -4575,6 +4575,44 @@ fn instantiating_a_requirement_with_a_function_is_t4305() {
     }
 }
 
+// E13 when the requirement starts in a standard function: the caller of the user
+// generic gets T4305, labelled at the standard call inside the callee.
+#[test]
+fn a_requirement_from_a_standard_function_labels_the_call_in_the_callee() {
+    let source = concat!(
+        "import std/order as Order\n",
+        "import std/order.{Ordering}\n",
+        "fn cmp<T>(a: T, b: T) -> Ordering { Order.compare(a, b) }\n",
+        "pub fn main() -> Ordering { cmp({ a: 1 }, { a: 2 }) }\n",
+    );
+    let report = type_report(source);
+    let diagnostics = report.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{}", report.render_diagnostics());
+    let diagnostic = &diagnostics[0];
+    assert_eq!(
+        diagnostic.code(),
+        "T4305",
+        "{}",
+        report.render_diagnostics()
+    );
+    let range = diagnostic.range();
+    assert_eq!(
+        &source[range.start() as usize..range.end() as usize],
+        "cmp({ a: 1 }, { a: 2 })"
+    );
+    let labels = diagnostic
+        .labels()
+        .iter()
+        .map(|label| {
+            let text = &source[label.range().start() as usize..label.range().end() as usize];
+            (text, label.message())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(labels[0].0, "Order.compare(a, b)", "{labels:?}");
+    assert!(labels[0].1.contains("`Order.compare`"), "{labels:?}");
+    assert_eq!(labels[1].0, "T", "{labels:?}");
+}
+
 // E13 for a generic function used as a value: passing it where a function type
 // fixes its parameter is an instantiation too, so the requirement is checked
 // there, for a user function and for a standard one.
