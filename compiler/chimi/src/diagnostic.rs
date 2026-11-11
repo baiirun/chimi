@@ -1,6 +1,8 @@
 use crate::ids::{FileId, TextRange};
+use crate::line_index::{LineIndex, PositionEncoding};
 use crate::source::SourceSnapshot;
 use std::fmt;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DiagnosticStage {
@@ -197,13 +199,22 @@ impl Diagnostic {
         self
     }
 
+    /// The human form: `path:line:column: severity[code] stage: message`, with a
+    /// one-based line and a one-based column counted in characters (UTF-16 code
+    /// units, as editors count them). Machine output keeps byte ranges.
     pub fn render(&self, source: &SourceSnapshot) -> String {
         debug_assert_eq!(self.file_id, source.file_id());
+        let start = self.range.start();
+        let location = if source.text().is_char_boundary(start as usize) {
+            let position =
+                LineIndex::new(Arc::from(source.text())).position(start, PositionEncoding::Utf16);
+            format!("{}:{}", position.line + 1, position.character + 1)
+        } else {
+            format!("{start}..{}", self.range.end())
+        };
         format!(
-            "{}:{}..{}: {}[{}] {}: {}",
+            "{}:{location}: {}[{}] {}: {}",
             source.path().display(),
-            self.range.start(),
-            self.range.end(),
             self.severity,
             self.code,
             self.stage,

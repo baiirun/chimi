@@ -144,6 +144,42 @@ fn format_returns_malformed_source_unchanged_with_syntax_diagnostics() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("error[S1001] syntax"));
 }
 
+/// Human diagnostics point at `path:line:column` (one-based, the column in
+/// characters); `--json` keeps byte offsets.
+#[test]
+fn check_prints_line_and_column_for_humans_and_byte_offsets_for_json() {
+    let scratch = scratch_directory("check-line-column");
+    let source = scratch.join("main.chimi");
+    // `é` is two bytes and one character, so the column is not a byte count.
+    let text = concat!(
+        "fn take(a: Text, b: Int) -> Int {\n",
+        "  b\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  take(\"é\", \"x\")\n",
+        "}\n",
+    );
+    std::fs::write(&source, text).unwrap();
+    let human = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("check")
+        .arg(&source)
+        .output()
+        .expect("check the program");
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    let expected = format!("{}:5:13: error[T4203]", source.display());
+    assert!(stderr.starts_with(&expected), "{stderr}");
+    let json = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("check")
+        .arg("--json")
+        .arg(&source)
+        .output()
+        .expect("check the program as JSON");
+    let report = String::from_utf8_lossy(&json.stdout);
+    let start = text.find("\"x\"").unwrap();
+    assert!(report.contains(&format!("\"start\":{start},")), "{report}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn run_executes_source_and_prints_structured_events_and_outcome() {
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
@@ -2277,36 +2313,53 @@ fn golden_and_recovery_corpus_reaches_the_real_check_path() {
     }
 }
 
-/// One `error[...]` line from `chimi check`, with its span resolved to source text.
+/// Each error `chimi check --json` reports, as (stage, code, the source text of
+/// its primary span). The human output names only a line and column.
 fn check_errors(root: &Path, entry: &str) -> Vec<(String, String, String)> {
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .args(["check", "--root"])
+        .args(["check", "--json", "--root"])
         .arg(root)
         .arg(entry)
         .output()
         .expect("run chimi check");
     assert!(!output.status.success(), "{entry} was accepted");
     let source = std::fs::read_to_string(root.join(format!("{entry}.chimi"))).unwrap();
-    String::from_utf8_lossy(&output.stderr)
-        .lines()
-        .map(|line| {
-            // `<path>:<start>..<end>: error[<code>] <stage>: <message>`
-            let (location, rest) = line
-                .split_once(": error[")
-                .unwrap_or_else(|| panic!("unexpected diagnostic line: {line}"));
-            let (code, rest) = rest.split_once("] ").unwrap();
-            let (stage, _message) = rest.split_once(": ").unwrap();
-            let (path, span) = location.rsplit_once(':').unwrap();
-            assert!(
-                path.ends_with(&format!("{entry}.chimi")),
-                "{entry}: diagnostic outside the fixture: {line}"
-            );
-            let (start, end) = span.split_once("..").unwrap();
-            let text =
-                source[start.parse::<usize>().unwrap()..end.parse::<usize>().unwrap()].to_owned();
-            (stage.to_owned(), code.to_owned(), text)
-        })
-        .collect()
+    let report = String::from_utf8_lossy(&output.stdout).into_owned();
+    // Fields of the first `"key":value` after `from`: a string's text or a number.
+    fn field<'report>(report: &'report str, from: usize, key: &str) -> (&'report str, usize) {
+        let pattern = format!("\"{key}\":");
+        let at = from + report[from..].find(&pattern).unwrap() + pattern.len();
+        let rest = &report[at..];
+        let value = match rest.strip_prefix('"') {
+            Some(text) => &text[..text.find('"').unwrap()],
+            None => &rest[..rest.find([',', '}']).unwrap()],
+        };
+        (value, at)
+    }
+    let mut errors = Vec::new();
+    let mut cursor = 0;
+    while let Some(offset) = report[cursor..].find("{\"stage\":") {
+        let start_of = cursor + offset;
+        let (stage, _) = field(&report, start_of, "stage");
+        let (code, _) = field(&report, start_of, "code");
+        let (severity, _) = field(&report, start_of, "severity");
+        let (_, primary) = field(&report, start_of, "primary");
+        let (path, _) = field(&report, primary, "path");
+        let (start, _) = field(&report, primary, "start");
+        let (end, after) = field(&report, primary, "end");
+        cursor = after;
+        if severity != "error" {
+            continue;
+        }
+        assert!(
+            path.ends_with(&format!("{entry}.chimi")),
+            "{entry}: diagnostic outside the fixture: {report}"
+        );
+        let text =
+            source[start.parse::<usize>().unwrap()..end.parse::<usize>().unwrap()].to_owned();
+        errors.push((stage.to_owned(), code.to_owned(), text));
+    }
+    errors
 }
 
 // Each negative golden fixture is rejected for the reason it exists, at the
