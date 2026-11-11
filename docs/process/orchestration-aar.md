@@ -93,6 +93,24 @@ task notifications.
 | Verification tools import | tooling | 146k | 4.3 (after reset) | list fuzz, heap stress, mutation runner, program parity in repo; runner found 3 surviving scheduler mutants on first use | — |
 | Scheduler review fixes | fix | 288k | 89.8 | 9 findings fixed, each test red before fix; 95 tests; 17/17 mutants killed (coordinator verified tests and results file) | — |
 
+## Is parallel faster than one agent?
+
+Assessment at 2026-11-11, after about 20 completed agents:
+
+- Elapsed time: roughly 5.2 agent-hours of non-lane work (plus the long-running
+  compiler lane) landed in a few wall-clock hours, an estimated 2-3x speedup.
+  Soft: start and end times were not recorded precisely.
+- Tokens: about 4M+ across agents; a single agent would have spent less, with no
+  briefs, reports, or the ~450k-token spec reconciliation.
+- The larger benefits were not speed: context isolation (a single session could
+  not hold a 5k-line port or 1.1k-line specs and still coordinate) and
+  independent review (every serious defect came from an agent that did not write
+  the code).
+- Costs: coordination effort, conflicts created by splitting shared design, the
+  usage cap reached faster and stopping all agents at once, late visibility.
+- Working conclusion: parallelize implementation and review; keep cross-cutting
+  design in one owner; size concurrency to the remaining usage window.
+
 ## Open hypotheses
 
 - Publishing cross-cutting conventions before a fan-out will cut spec conflicts
