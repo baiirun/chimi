@@ -70,35 +70,46 @@ The prototype runs every supervision path on real `chimi-fiber` fibers
 ### Tests
 
 `cargo test --release --manifest-path prototypes/supervised-process-runtime/Cargo.toml`
-runs 19 tests. All pass, in release and debug builds. Each test guards one
-decision. Before keeping each test, the guarded mechanism was broken on
-purpose and the test was confirmed to fail.
+runs 26 tests. All pass, in release and debug builds. Each test guards one
+decision. Every break listed below was applied on its own, and at least one
+test failed under it (a crash or abort counts as a failure). Rows marked
+"not run" have no recorded mutation check.
 
 | Decision | Test | Break used to confirm the test fails |
 | --- | --- | --- |
-| A pass does not re-walk older survivors | `pass_cost_does_not_grow_with_state_that_already_survived` | Run a full collection on every pass |
+| A pass does not re-walk older survivors | `pass_cost_does_not_grow_with_state_that_already_survived` (copied bytes and `scanned_values`) | Run a full collection on every pass; rescan every survivor on every pass |
 | Memory depends on live state, not uptime | `a_million_passes_keep_peak_memory_flat` (value bytes and chunks) | Never run a full collection |
-| Values from before the loop stay valid | `values_allocated_before_the_loop_survive_its_collections` | |
-| A copy preserves sharing | `copying_preserves_sharing` (a graph with 2^40 paths and 41 values) | |
+| Values from before the loop stay valid | `values_allocated_before_the_loop_survive_its_collections` | Not run |
+| An inner loop's passes never move the enclosing region's values; exit hands survivors to the enclosing region | `inner_passes_never_move_values_of_the_enclosing_region_and_exit_hands_survivors_out` | Drop the region check in `evacuate`; tag spliced chunks as base; drop the inner survivors at exit |
+| Adopted messages join the innermost region and are reclaimed by its passes | `adopted_fragments_join_the_innermost_region_and_its_passes_reclaim_them` | Adopt into the base area |
+| A copy preserves sharing | `copying_preserves_sharing` (a graph with 2^40 paths and 41 values) | Not run |
 | A pointer into another heap is reported, not followed | `a_pointer_into_another_heap_is_reported_not_followed` | Ignore the owner tag |
-| Teardown frees every chunk | `destroying_heaps_and_unadopted_fragments_frees_every_chunk` | |
+| Teardown frees every chunk | `destroying_heaps_and_unadopted_fragments_frees_every_chunk` | Free an unadopted fragment without releasing its chunks |
 | A defect restarts only its member, with the exact transcript | `a_defect_restarts_only_that_member_and_the_peer_keeps_its_state` | Keep the name after termination |
-| Exceeding the limit stops peers and escalates from the root | `exceeding_the_restart_limit_stops_peers_and_escalates_from_the_root` | Do not stop peers; charge the restart after it starts |
+| Exceeding the limit stops peers in shutdown order and escalates from the root, with the exact transcript | `exceeding_the_restart_limit_stops_peers_in_shutdown_order_and_escalates_from_the_root` | Do not stop peers; charge the restart after it starts; stop declared members in forward order |
 | The restart window rolls | `defects_further_apart_than_the_window_do_not_accumulate` | Never prune the window |
-| A name follows the replacement; a direct address does not | `names_follow_the_replacement_and_direct_addresses_stay_unavailable` | |
-| A send never parks; FIFO delivery | `a_full_mailbox_returns_the_message_and_delivery_is_fifo`, `a_send_from_a_body_never_parks_and_reports_a_full_mailbox` | Ignore mailbox capacity |
+| A name follows the replacement; a direct address does not | `names_follow_the_replacement_and_direct_addresses_stay_unavailable` | Do not update the handle's incarnation on restart |
+| A send never parks; FIFO delivery | `a_full_mailbox_returns_the_message_and_delivery_is_fifo`, `a_send_from_a_body_never_parks_and_reports_a_full_mailbox` | Ignore mailbox capacity; park a full send until the receiver drains |
 | Shutdown order; unread messages are freed | `stop_runs_newest_dynamic_first_then_declared_in_reverse_and_frees_unread_messages` | Stop declared members in forward order |
-| A missed deadline is forced | `cleanup_that_misses_its_deadline_is_forced` | |
-| Admission fails fast; removal releases the name | `admission_fails_fast_and_removal_releases_the_name` | |
-| A failed start rolls back | `a_failed_root_start_stops_the_members_it_already_started` | |
-| A nested escalation is restarted by its parent | `a_nested_supervisor_that_exceeds_its_limit_is_restarted_by_its_parent` | |
-| A panicking body is a contained defect | `a_panicking_body_is_a_contained_defect` | |
-| A long-lived process keeps flat memory | `a_process_handles_a_million_messages_in_flat_memory` (heap peak and chunks) | |
+| A missed deadline is forced | `cleanup_that_misses_its_deadline_is_forced` | Report a forced end as cancelled |
+| Cleanup drains accepted messages, then receive returns `Cancelled` without parking | `cleanup_receives_messages_accepted_before_cancellation_then_cancelled_without_parking` | Cancel without delivering queued messages; park a receive after cancellation; force cleanup work inside the deadline |
+| Removal cancels a process parked in `receive` and releases its name | `removing_a_process_parked_in_receive_cancels_it_and_releases_its_name` | Remove without shutting down |
+| A direct send to a stopping incarnation is `Unavailable` during its cleanup | `a_send_to_a_stopping_incarnation_is_unavailable_during_its_cleanup` | Keep accepting during cleanup |
+| A handle outlives a stop or escalation of its supervisor | `a_handle_outlives_a_stop_and_an_escalation_of_its_supervisor` | Look up the membership record unconditionally (the pre-fix code) |
+| Membership bookkeeping is bounded by live slots and outstanding handles | `membership_bookkeeping_does_not_grow_with_ended_removed_or_rebuilt_members` | Keep ended records; keep removed records |
+| Admission fails fast; removal releases the name | `admission_fails_fast_and_removal_releases_the_name` | Skip the capacity check |
+| A failed start rolls back | `a_failed_root_start_stops_the_members_it_already_started` | Do not stop started members on failure |
+| A nested escalation is restarted by its parent | `a_nested_supervisor_that_exceeds_its_limit_is_restarted_by_its_parent` | Treat a nested escalation as a root one |
+| A panicking body is a contained defect | `a_panicking_body_is_a_contained_defect` | Treat a panic as a return |
+| A long-lived process keeps flat memory | `a_process_handles_a_million_messages_in_flat_memory` (heap peak and chunks) | Adopt messages into the base area |
 
 ### Measurements
 
 Command: `cargo run --release --example measure`. Machine: Apple M1, rustc
-1.97.1, one thread. Byte counts are exact; times are from a single run.
+1.97.1, one thread. Byte counts are exact; times are from a single run. A
+rerun after the review fixes, on the same machine under load from other work,
+reproduced every byte count and collection count. Its times ranged from 0.7x
+to 2.5x of the original run, so the times below are from the original run.
 
 **Per-pass cost against retained state.** Each pass allocates three garbage
 values and keeps a list of N Ints as its state.
@@ -125,7 +136,16 @@ and 500,000 full collections, each copying 16 bytes.
 messages in batches of 64 at 316 ns per message. That time covers the host's
 copy, mailbox acceptance, a fiber switch, adoption, and one pass. The process
 heap peaks at 80 value bytes and stays there. Thread chunk memory peaks at
-4.4 MiB, almost all of it the 64 queued fragments of 64 KiB each (see risks).
+4.4 MiB, almost all of it the 64 queued fragments: each queued Int message
+holds 65,536 chunk bytes for 16 value bytes (see risks).
+
+**Resident memory.** The whole measure run peaks at 141 MiB RSS. Two items
+dominate, and neither is per-process cost. The 1M-Int retained state of the
+per-pass table is about 24 MB and exists twice during its first full
+collection. The kernel's in-memory event transcript holds 1,000,001 events
+(38 MiB) after the 1M-message run. That transcript is a test fixture. The
+native runtime emits the same events to the trace ABI and keeps none. The
+prototype does not measure RSS per process.
 
 **Copy cost per message.** Each row is a copy into a fragment, adoption, and
 one receiver pass.
@@ -157,17 +177,21 @@ distinct value, most of it in forwarding-table probes and growth.
 
 These choices refine the contracts without changing them.
 
-- **Forced termination unwinds from the parked call.** A parked `chimi-fiber`
+- **Forced termination unwinds from the pending kernel call.** A parked `chimi-fiber`
   fiber cannot simply be destroyed. Destruction resumes it with `Cancel`. If
   the body parks again, `corosensei` force-unwinds the coroutine through the
   `extern "C"` `chimi_fiber_request` frame, and the process aborts. At the
-  deadline, the kernel therefore resumes the fiber with a *forced* reply, and
-  the runtime side of the parked call unwinds the body to the fiber entry. In
-  the native runtime this becomes a cancellation control value that every
-  generated call propagates without running further user code.
-- **Cleanup never receives.** A `receive` made after cancellation parks until
-  the deadline and never delivers a message. The routing contract says
-  cleanup never processes the mailbox, so this keeps the two consistent.
+  deadline, the kernel therefore answers the body's pending kernel call with a
+  *forced* reply, and the runtime side of that call unwinds the body to the
+  fiber entry. In the native runtime this becomes a cancellation control value
+  that every generated call propagates without running further user code.
+- **Cleanup drains, then never parks.** After cancellation, the mailbox
+  accepts no new messages. `receive` returns the messages accepted before the
+  cancellation, oldest first, and then returns `Cancelled` immediately on
+  every call. A body that drains and returns ends `Cancelled`. Because
+  cleanup can no longer park, the prototype models slow cleanup with
+  `ProcessContext::work(duration)`, which consumes virtual time and is forced
+  at the deadline. Full drain semantics for the language come with G22.
 - **The first body run is scheduled.** A new incarnation is registered and
   routable at creation, and its body first runs from the ready queue. An early
   message waits in the mailbox.
@@ -181,6 +205,21 @@ These choices refine the contracts without changing them.
   `RestartAttempted`.
 - **A `Full` send event names no incarnation.** The trace contract records the
   incarnation that *accepted* a message. `Full` and `Unavailable` record none.
+- **One root per program.** A root escalation sets the program terminated and
+  stops that root's subtree. The prototype assumes a single root supervisor,
+  so it does not stop other roots. A runtime that allows several roots must
+  stop all of them on a root escalation.
+- **Bookkeeping follows the slot.** A membership record is freed when its slot
+  is released: on removal, on an end without restart, and on stop or
+  escalation. A `ManagedProcess` handle whose record is gone keeps only its
+  last incarnation, so `address` returns a direct address that stays
+  `Unavailable`, and `remove_process` of an ended membership returns without
+  an event. In the native runtime the handle value should carry the last
+  incarnation, so nothing outlives a collected handle. In the prototype, a
+  handle that is dropped without `remove_process` leaves one entry behind.
+- **The event transcript is test-only.** `Kernel::events` grows with every
+  event, so it is unbounded by design. The native runtime emits each event to
+  the trace ABI and keeps no transcript.
 
 ## Mapping onto the native runtime
 
@@ -198,7 +237,7 @@ reclamation is switched off, because fibers share the one current scope and
 | `allocation_scope_begin` / `_collect` / `_end` in the `loop` node | `chimi_region_enter` / `chimi_region_pass(&state)` / `chimi_region_exit`. The pass cost moves from O(values allocated in the scope) mark-and-sweep to O(young survivors). |
 | `reclaims = !CHIMI_REQUIRES_SCHEDULER` | Always reclaim. The scheduler switches the current heap on every resume, so a pass collects only its own owner's values. |
 | `Task.start` transfers captures by walking and marking exclusive capabilities (`transfer_captured_value`) | The same walk plus a fragment copy of the captured environment into the child's new heap. Shareable capabilities (addresses, `Running`) are plain integers and copy as-is. |
-| `Task.result` returns the child's `ChimiControl *` | The child's result is copied into a fragment when the child ends. The parent adopts it on `Task.result`. The child's heap is then destroyed in O(chunks). |
+| `Task.result` returns the child's `ChimiControl *` | The child's result is copied into a fragment when the child ends, and the child's heap is destroyed in O(chunks). Each `Task.result` copies the fragment into the caller's current heap without consuming it (see the port requirements below). |
 | `Channel.send` passes `(intptr_t)value` in `ChimiSchedulerRequest.value` | The sender copies into a fragment before the request. The request carries the fragment, and receive adopts it. `Closed` and `Aborted` hand the fragment back, and the sender keeps its original value. |
 | No processes | `Process.send` and `Process.receive` are new request kinds, alongside the `CHIMI_REQUEST_TASK_*` and `CHIMI_REQUEST_CHANNEL_*` ones. `Supervisor.*` operations are request kinds handled by the scheduler's supervisor records. |
 
@@ -213,7 +252,91 @@ The design keeps these properties:
 - A dependency provider snapshotted by `Process.spec` is held by the
   supervisor record as a detached fragment, because supervisors have no heap.
   It is copied into each incarnation's heap at start, so a restart never
-  shares mutable runtime state with the incarnation it replaces.
+  shares mutable runtime state with the incarnation it replaces. That copy
+  must leave the source fragment intact, which needs a new heap operation
+  (below).
+
+### Requirements for the `runtime.c` port
+
+The prototype heap has three value shapes, each with an inline payload. The
+values in `runtime.c` break several of the prototype's assumptions. The port
+must meet these requirements, and each one needs a test that fails when the
+requirement is broken, as the prototype tests do.
+
+- **Out-of-line payloads.** A `runtime.c` `ChimiValue` is a fixed header
+  whose payload points to separately allocated objects:
+  - `ListNode` tries for `List`;
+  - `MapNode` trees for `Map`, whose `key` points to text;
+  - `RuntimeField` arrays for records and constructed values;
+  - `ChimiCallable` records, which point to a `ChimiEnvironment` and an
+    `inner` callable;
+  - `ChimiEnvironment` slot arrays, which clones can share (for example,
+    `clone_local_environment` shares `requirements`).
+
+  Each of these must become a heap object that the Cheney scan and the
+  fragment copy can parse (kind and size in a header) and trace. Each must be
+  allocated in the owner heap of the value that points to it.
+- **Pointers outside every heap.** Field names, type and variant names, and
+  literal text point into static program data (`CHIMI_STRINGS`). The owner
+  check masks a pointer to find its chunk header, which is undefined for a
+  pointer that is not in a chunk. Static data therefore needs its own tag, or
+  an address-range check that runs before the mask.
+- **List windows.** Since commit 1621c42, a `List` is the window
+  `[start, start + length)` over a persistent vector that other lists share.
+  A fragment copy must rebuild a compact vector from the window's values. It
+  must not copy the whole shared trie, or sending a 10-element slice of a
+  1M-element list would copy 1M values. Inside a region, a window keeps its
+  whole vector reachable, so a small slice that survives a pass retains the
+  whole trie. That cost matches the current runtime, but it is now paid per
+  process heap.
+- **Environments are written after allocation.** `sequence` and pattern
+  binding (`match_plain`) write `environment->locals[slot]` after the
+  environment is cloned. `provision` writes `requirements` slots. `loop`
+  rebinds its state slot before every pass. In each case an older object
+  points to a newer value, which breaks the rule that the pass relies on.
+  The port keeps this safe by splitting environments in two:
+  - *Frame environments* are the ones these nodes clone and write. They are
+    not heap values. They are allocated outside every region (a frame stack,
+    or allocations freed at node exit) and are never moved. No heap value
+    may point to one. At a pass boundary, the only frame slot that points
+    into the region is the loop's state slot. The loop overwrites it before
+    the next pass reads it, and it is never read after the loop exits.
+  - *Captured environments* are the ones `capture_closure_environment` and
+    `capture_requirements` build. They are filled at creation from values
+    that already exist, and they are never written again. They are ordinary
+    immutable heap values.
+
+  A debug build should check that no traced heap value points to a frame
+  environment.
+- **`Task.result` adoption.** A task handle is a shareable integer, so
+  `Task.result` can be called more than once, and it can be called inside a
+  loop pass. A consuming adopt would work only once. It would also leave the
+  result in the region of the first caller's pass, which a later pass can
+  reclaim. The scheduler therefore keeps the child's result fragment until
+  the task record is released, and every `Task.result` copies it into the
+  caller's innermost region. The cost is O(result) per call.
+- **Copy a fragment into a heap without consuming it.** Both the `Task.result`
+  requirement and the provider snapshots above need
+  `chimi_fragment_copy_into_current(const ChimiFragment *)`. It copies a
+  fragment's graph into the current heap's innermost region, keeps sharing,
+  and leaves the source intact. The prototype has only the consuming
+  `chimi_fragment_adopt`.
+- **Full-collection trigger.** The prototype triggers a full collection when
+  the survivors reach twice their size at the last full collection, with a
+  baseline of 0. The first pass that promotes anything therefore runs a full
+  collection, and a small state that is replaced every pass runs one on every
+  other pass (500,000 of 1,000,000 passes). The port must set the baseline
+  at the first promotion and require a minimum growth, for example
+  `bytes >= 2 * last && bytes - last >= CHUNK_BYTES`. A test must bound
+  `full_collections` for a small replaced state.
+- **Small messages share chunks** (`prog show ts-df67fb`). Each queued Int
+  message holds a 64 KiB chunk (measured: 65,536 chunk bytes per queued
+  message). The port carves small fragments from shared slabs, as decided on
+  ts-a6b43b.
+- **Scan work is part of the pass-cost contract.** `ChimiHeapStats` reports
+  `scanned_values` as well as `copied_bytes`. A pass that rescans old
+  survivors copies nothing, so only a scan counter exposes it. The port keeps
+  both counters and both test bounds.
 
 ### Trace ABI additions
 
@@ -273,15 +396,18 @@ The supervisor code is the only addition that processes bring.
 - **Per-thread chunk cache.** Up to 64 empty chunks (4 MiB) per thread stay
   out of the allocator to keep per-message cost near 300 ns. Without the
   cache, each message pays an aligned 64 KiB allocation and release. The
-  cache is not released when a thread exits.
+  cache is not released when a thread exits, and `chimi_chunk_stats` does not
+  report it. The port needs a thread-exit destructor (or an explicit drain)
+  and cache counts in the stats, so leak tests can see the cache.
 - **Graph copy constant.** About 13 ns per distinct value, dominated by
   forwarding-table work. A cheaper first pass could copy a tree without a
   table and fall back to the table on the first revisit. Large flat lists are
   also a case for a chunked representation (the runtime's list nodes) rather
   than one item array.
-- **Full-collection cadence.** A state that is replaced each pass triggers a
-  full collection every other pass. This is correct and cheap while the state
-  is small. A large state rebuilt each pass costs O(state) per pass, as it
+- **Full-collection cadence.** In the prototype, a state that is replaced
+  each pass triggers a full collection every other pass. This is correct and
+  cheap while the state is small, and the port's trigger requirement above
+  removes it. A large state rebuilt each pass costs O(state) per pass, as it
   must. A small change to a large persistent structure promotes only the new
   path.
 - **No incremental full collection.** A full collection of a large region is

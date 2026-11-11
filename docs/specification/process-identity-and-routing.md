@@ -82,8 +82,9 @@ fn finish_exactly(managed: ManagedProcess<CounterMessage>) {
 - Every send is either accepted by exactly one incarnation or returned to the
   sender as `Full(message)` or `Unavailable(message)`. A message accepted just
   before a defect is lost with that incarnation's mailbox.
-- Sends are rejected as soon as shutdown begins because cleanup never processes
-  the mailbox; a message accepted then would be discarded unread.
+- Sends are rejected as soon as shutdown begins because cleanup accepts no new
+  messages; it may drain messages already accepted, and the rest are
+  discarded unread.
 - Old and new incarnations never overlap: the owning supervisor releases the
   name before it starts a replacement.
 

@@ -82,8 +82,8 @@ let counting = Process.spec(counter, 64, Duration.seconds(5))
   maximum number of accepted but unreceived messages. Rendezvous delivery uses
   `Channel.bounded(0)` instead.
 - A capacity below 1 is a programming error, not an expected condition. A
-  literal is rejected at compile time; any other value is a defect when the
-  specification is started.
+  literal is rejected at compile time; a computed value below 1 is a defect at
+  the `Process.spec` call.
 - Delivery is strict FIFO in acceptance order across all senders.
 - `Process.receive` returns the oldest accepted message. There is
   no selective receive; an exhaustive `case` over the single message type
@@ -97,7 +97,7 @@ let counting = Process.spec(counter, 64, Duration.seconds(5))
 | Operation | Parks? | Outcomes |
 | --- | --- | --- |
 | `Process.spec(body, mailbox_capacity, shutdown_within)` | No | An inert specification. No runtime work starts. |
-| `Process.receive(inbox)` | Only while the mailbox is empty | The oldest accepted message. A stop request wakes a parked receive with cancellation. |
+| `Process.receive(inbox)` | Only while the mailbox is empty and no stop is pending | The oldest accepted message. A stop request wakes a parked receive with cancellation. After a stop request, receive never parks: it returns messages accepted before the request until the mailbox is empty, then cancellation. |
 | `Process.send(address, message)` | Never | `Success`, `Failure(SendError.Full(message))` when the mailbox is at capacity, or `Failure(SendError.Unavailable(message))` once the incarnation has terminated. |
 
 - `Process.send` never parks, so a full mailbox cannot block a
@@ -131,6 +131,10 @@ let counting = Process.spec(counter, 64, Duration.seconds(5))
   It wakes a parked `Process.receive`, runs cleanup within the specification's
   `shutdown_within`, and discards unread messages unless the body drains them
   first. It never triggers defect restart.
+- From the stop request on, the mailbox accepts no new messages. Each
+  `Process.receive` returns the oldest message accepted before the request,
+  and once the mailbox is empty it returns cancellation immediately, every time
+  it is called, without parking.
 
 ## Out of scope
 
