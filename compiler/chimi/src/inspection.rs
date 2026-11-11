@@ -191,6 +191,7 @@ pub struct InspectionReport {
     reference: Option<ReferenceInspection>,
     inferred_type: Option<String>,
     callable: Option<CallableInspection>,
+    instantiated_callable: Option<CallableInspection>,
     executable_origin: Option<u32>,
     diagnostics: Vec<Diagnostic>,
     semantic_id: Option<SemanticId>,
@@ -236,6 +237,12 @@ impl InspectionReport {
 
     pub const fn callable(&self) -> Option<&CallableInspection> {
         self.callable.as_ref()
+    }
+
+    /// The callee's contract with the types this call fixed, when the cursor
+    /// is on a call to a generic function. `callable` stays the declared one.
+    pub const fn instantiated_callable(&self) -> Option<&CallableInspection> {
+        self.instantiated_callable.as_ref()
     }
 
     pub const fn executable_origin(&self) -> Option<u32> {
@@ -359,6 +366,10 @@ pub(crate) fn inspect(
         semantic_id.and_then(|semantic_id| typed.expression_facts.get(&(module.id, semantic_id)));
     let inferred_type = expression_fact.map(|fact| typed.format_type(fact.success));
     let target_symbol = reference.and_then(reference_target);
+    let instantiated_callable = semantic_id
+        .and_then(|semantic_id| typed.callee_instantiations.get(&(module.id, semantic_id)))
+        .and_then(|type_id| typed.callable_contract_for_type(*type_id))
+        .map(|contract| inspect_callable(typed, contract));
     let callable_contract = target_symbol
         .and_then(|symbol| typed.contracts.get(&symbol))
         .or_else(|| {
@@ -377,6 +388,7 @@ pub(crate) fn inspect(
         reference: reference.map(|reference| inspect_reference(typed, reference)),
         inferred_type,
         callable: callable_contract.map(|contract| inspect_callable(typed, contract)),
+        instantiated_callable,
         executable_origin: None,
         diagnostics: typed.diagnostics.clone(),
         semantic_id,

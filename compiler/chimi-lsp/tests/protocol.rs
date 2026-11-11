@@ -115,3 +115,65 @@ fn editor_session_publishes_diagnostics_and_formats() {
     handle.join().unwrap().unwrap();
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Guards the wire shape of cursor queries: advertised capabilities, Markdown
+/// hover contents, and a definition location whose URI names the target file.
+#[test]
+fn hover_and_definition_answer_over_the_protocol() {
+    let root = scratch("queries");
+    fs::write(
+        root.join("app.chimi"),
+        "import lib as Lib\npub fn main() -> Int { Lib.value() }\n",
+    )
+    .unwrap();
+    fs::write(root.join("lib.chimi"), "pub fn value() -> Int { 1 }\n").unwrap();
+    let uri = format!("file://{}", root.join("app.chimi").display());
+    let (server, client) = Connection::memory();
+    let handle = thread::spawn(move || chimi_lsp::server::run(&server).map_err(|e| e.to_string()));
+
+    let initialized = request(
+        &client,
+        1,
+        "initialize",
+        json!({
+            "capabilities": {"general": {"positionEncodings": ["utf-8"]}},
+            "workspaceFolders": [{"uri": format!("file://{}", root.display()), "name": "fixture"}],
+            "initializationOptions": {"projects": [{"root": ".", "entry": "app"}]},
+        }),
+    );
+    assert_eq!(initialized["capabilities"]["hoverProvider"], true);
+    assert_eq!(initialized["capabilities"]["definitionProvider"], true);
+    notify(&client, "initialized", json!({}));
+    notify(
+        &client,
+        "textDocument/didOpen",
+        json!({"textDocument": {"uri": uri, "languageId": "chimi", "version": 1,
+            "text": "import lib as Lib\npub fn main() -> Int { Lib.value() }\n"}}),
+    );
+    next_diagnostics(&client);
+
+    let position = json!({"textDocument": {"uri": uri}, "position": {"line": 1, "character": 28}});
+    let hover = request(&client, 2, "textDocument/hover", position.clone());
+    assert_eq!(hover["contents"]["kind"], "markdown");
+    let definition = request(&client, 3, "textDocument/definition", position);
+    assert_eq!(
+        definition["uri"],
+        format!("file://{}", root.join("lib.chimi").display())
+    );
+    assert_eq!(
+        definition["range"]["start"],
+        json!({"line": 0, "character": 7})
+    );
+    let nothing = request(
+        &client,
+        4,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": uri}, "position": {"line": 0, "character": 0}}),
+    );
+    assert_eq!(nothing, Value::Null);
+
+    request(&client, 5, "shutdown", Value::Null);
+    notify(&client, "exit", Value::Null);
+    handle.join().unwrap().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
