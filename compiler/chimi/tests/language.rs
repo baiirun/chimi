@@ -506,6 +506,95 @@ fn boolean_operators_format_canonically() {
     );
 }
 
+// B1: the rows the truth-table test above leaves out. An exclusive `or`
+// passes that test but fails `True or True`; an `and` that is really Bool
+// equality fails `False and False`. `True or False and False` is False if
+// the operators group left to right.
+#[test]
+fn boolean_operators_cover_the_remaining_truth_table_rows() {
+    let outcome = run_both(
+        "boolean-remaining-rows",
+        concat!(
+            "pub fn main() -> List<Bool> {\n",
+            "  [True or True, False and False, True or False and False]\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":[true,false,true]"
+    );
+}
+
+// B2: `not` binds more tightly than `and`; `not (False and False)` would be True.
+#[test]
+fn not_binds_more_tightly_than_and() {
+    let outcome = run_both(
+        "boolean-not-and-precedence",
+        "pub fn main() -> Bool { not False and False }\n",
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":false");
+}
+
+// Operator precedence table, levels 2-4 and 7: each value differs under the
+// wrong grouping: `(1 + 2) * 3`, `10 - (3 - 2)`, `-(2 + 3)`, `20 / (2 / 5)`,
+// `2 * (3 + 4) * 2`, or `1 + (3 |> double)`. The source is deliberately not
+// in canonical form, so run_both also runs the formatter's output.
+#[test]
+fn arithmetic_follows_the_precedence_table() {
+    let outcome = run_both(
+        "arithmetic-precedence",
+        concat!(
+            "fn double(value: Int) -> Int { value * 2 }\n",
+            "pub fn main() -> List<Int> {\n",
+            "  [1+2*3, 10 - 3-2, -2*3, -2+3, 20 / 2 / 5, 2*3+4*2,\n",
+            "   1+3\n",
+            "   |> double]\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":[7,5,-6,1,2,14,8]"
+    );
+}
+
+// Precedence table, levels 4, 6, 7, 8, and 10: comparison takes whole sums,
+// `not` takes a whole pipeline, and `or`/`and` take whole pipelines. The
+// wrong groupings `1 + (1 < 3)`, `(not 0) |> positive`, and
+// `0 |> (positive or True)` do not type-check.
+#[test]
+fn comparisons_and_pipelines_bind_inside_boolean_operators() {
+    let outcome = run_both(
+        "boolean-comparison-pipeline-precedence",
+        concat!(
+            "fn positive(value: Int) -> Bool { value > 0 }\n",
+            "pub fn main() -> List<Bool> {\n",
+            "  [1 + 1 < 3, 2 * 3 > 5 and 1 > 2, not 0 |> positive, 0 |> positive or True]\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":[true,false,true,true]"
+    );
+}
+
+// `and`, `or`, and `not` are reserved words, so they cannot name a binding.
+#[test]
+fn boolean_keywords_cannot_name_bindings() {
+    for keyword in ["and", "or", "not"] {
+        let codes = check_codes(&format!(
+            "pub fn main() -> Int {{\n  let {keyword} = 1\n  1\n}}\n"
+        ));
+        assert_eq!(
+            codes.first().map(String::as_str),
+            Some("S1001"),
+            "`let {keyword} = 1`: {codes:?}"
+        );
+    }
+}
+
 // ts-8cf7db: a body whose failure row carries a type nothing pins used to
 // grow its contract on every inference pass until the checker panicked.
 #[test]
