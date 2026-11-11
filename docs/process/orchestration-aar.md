@@ -90,6 +90,8 @@ task notifications.
 | Spec steward (worktree) | fix | 130k | 8.0 | 19 resolutions, doc examples green | could not self-merge (N9); merge conflict with lane edit (N10) |
 | Scheduler kernel port | implement | 385k | 36.2 | 84 chimi-fiber tests green (verified by coordinator rerun); 20 mutants caught; reported a latent use-after-free in existing code | review found 2 P1 (UAF reproduced as SIGSEGV; shutdown leaves wake sources armed), 3 P2, 1 surviving claimed mutant; ticket closed before logged decisions were implemented |
 | Scheduler kernel review | review | 177k | 9.5 | 7 confirmed findings with repro tests | — |
+| Verification tools import | tooling | 146k | 4.3 (after reset) | list fuzz, heap stress, mutation runner, program parity in repo; runner found 3 surviving scheduler mutants on first use | — |
+| Scheduler review fixes | fix | 288k | 89.8 | 9 findings fixed, each test red before fix; 95 tests; 17/17 mutants killed (coordinator verified tests and results file) | — |
 
 ## Open hypotheses
 
