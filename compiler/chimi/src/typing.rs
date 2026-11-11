@@ -2815,6 +2815,109 @@ impl ProjectTypeChecker {
         }
     }
 
+    /// `contract` with each unbound inference variable replaced by a fresh one,
+    /// the same fresh variable for every occurrence of one variable (`opened`).
+    fn instantiate_open_contract(
+        &mut self,
+        contract: CallableContract,
+        opened: &mut HashMap<TypeId, TypeId>,
+    ) -> CallableContract {
+        let failures = {
+            let mut row = self.failure_rows[contract.failures.raw() as usize].clone();
+            for arguments in &mut row.variant_arguments {
+                for argument in &mut arguments.arguments {
+                    *argument = self.instantiate_open_type(*argument, opened);
+                }
+            }
+            self.intern_failure_row(row)
+        };
+        let needs = {
+            let row = self.needs_rows[contract.needs.raw() as usize].clone();
+            let entries = row
+                .entries
+                .into_iter()
+                .map(|need| Need {
+                    interface: self.instantiate_open_type(need.interface, opened),
+                    ..need
+                })
+                .collect();
+            self.intern_needs_row(NeedsRow {
+                entries,
+                parameters: row.parameters,
+            })
+        };
+        CallableContract {
+            inputs: contract
+                .inputs
+                .into_iter()
+                .map(|input| self.instantiate_open_type(input, opened))
+                .collect(),
+            success: self.instantiate_open_type(contract.success, opened),
+            failures,
+            needs,
+        }
+    }
+
+    fn instantiate_open_type(
+        &mut self,
+        type_id: TypeId,
+        opened: &mut HashMap<TypeId, TypeId>,
+    ) -> TypeId {
+        let type_id = self.resolve_inference_type(type_id);
+        match self.types[type_id.raw() as usize].clone() {
+            CanonicalType::InferenceVariable(_) => {
+                if let Some(fresh) = opened.get(&type_id) {
+                    *fresh
+                } else {
+                    let fresh = self.fresh_inference_type();
+                    opened.insert(type_id, fresh);
+                    fresh
+                }
+            }
+            CanonicalType::Named { symbol, arguments } => {
+                let arguments = arguments
+                    .into_iter()
+                    .map(|argument| self.instantiate_open_type(argument, opened))
+                    .collect();
+                self.intern_type(CanonicalType::Named { symbol, arguments })
+            }
+            CanonicalType::Record(fields) => {
+                let fields = fields
+                    .into_iter()
+                    .map(|field| StructuralField {
+                        name: field.name,
+                        type_id: self.instantiate_open_type(field.type_id, opened),
+                    })
+                    .collect();
+                self.intern_type(CanonicalType::Record(fields))
+            }
+            CanonicalType::Tuple(elements) => {
+                let elements = elements
+                    .into_iter()
+                    .map(|element| self.instantiate_open_type(element, opened))
+                    .collect();
+                self.intern_type(CanonicalType::Tuple(elements))
+            }
+            CanonicalType::Function(contract) => {
+                let contract = self.instantiate_open_contract(contract, opened);
+                self.intern_type(CanonicalType::Function(contract))
+            }
+            CanonicalType::PolymorphicFunction {
+                parameters,
+                contract,
+            } => {
+                let contract = self.instantiate_open_contract(contract, opened);
+                self.intern_type(CanonicalType::PolymorphicFunction {
+                    parameters,
+                    contract,
+                })
+            }
+            CanonicalType::FailureSetValue(_)
+            | CanonicalType::Generic(_)
+            | CanonicalType::Poison => type_id,
+        }
+    }
+
     fn close_inferred_contract(&mut self, contract: CallableContract) -> CallableContract {
         CallableContract {
             inputs: contract
@@ -7910,6 +8013,14 @@ impl ProjectTypeChecker {
     }
 
     fn callable_type_for_symbol(&mut self, symbol: SymbolId, contract: CallableContract) -> TypeId {
+        // A type the function's body leaves open is generic in its inferred
+        // contract: each reference gets its own copy, so one caller cannot fix
+        // it for another (executable-kernel, "Generics").
+        let contract = if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Function {
+            self.instantiate_open_contract(contract, &mut HashMap::new())
+        } else {
+            contract
+        };
         let parameters = self.callable_generic_parameters(symbol);
         if parameters.is_empty() {
             self.intern_type(CanonicalType::Function(contract))

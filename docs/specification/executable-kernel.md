@@ -238,6 +238,14 @@ are values that never mention it, such as `None` or an empty collection.
 Execution setup MUST NOT report a missing type fact (`E5006`) for an erased
 instantiation.
 
+An inferred contract is generic in each type its body leaves open, as if the
+declaration named a generic parameter there. With `fn wrapper() { nothing() }`,
+`wrapper` returns `Option<T>` for any `T`, so `count(wrapper())` and
+`flag(wrapper())` may use it at `Option<Int>` and `Option<Bool>`; with
+`fn pass(value) { value }`, each call returns its argument's type. Each
+reference instantiates the open types afresh, and an instantiation nothing
+constrains is erased by the ambiguous-type rule.
+
 The first kernel supports declaration-scoped parametric polymorphism. It does
 not require higher-rank types, explicit kind annotations, specialization
 syntax, or user-defined variance.

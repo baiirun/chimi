@@ -2615,6 +2615,89 @@ fn never_constrained_type_parameters_through_a_binding_run() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":2");
 }
 
+// ts-fd591d: a type an inferred contract never constrains is generic in that
+// contract, so each caller instantiates it at its own type.
+#[test]
+fn an_inferred_contract_is_generic_in_the_types_its_body_leaves_open() {
+    let outcome = run_both(
+        "inferred-contract-generic",
+        concat!(
+            "fn nothing<T>() -> Option<T> { None }\n",
+            "fn wrapper() { nothing() }\n",
+            "fn pass(value) { value }\n",
+            "fn count(o: Option<Int>) -> Int {\n",
+            "  case o {\n",
+            "    Some(v) -> v\n",
+            "    None -> 0\n",
+            "  }\n",
+            "}\n",
+            "fn flag(o: Option<Bool>) -> Int {\n",
+            "  case o {\n",
+            "    Some(_) -> 1\n",
+            "    None -> 2\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  count(wrapper()) + flag(wrapper()) + count(pass(Some(40))) + flag(pass(Some(True)))\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":43");
+}
+
+// An open type inside a tuple is generalized like one inside a record.
+#[test]
+fn an_inferred_contract_is_generic_in_an_open_tuple_element() {
+    let outcome = run_both(
+        "inferred-contract-tuple",
+        concat!(
+            "fn pair(value) { (value, 1) }\n",
+            "pub fn main() -> Int {\n",
+            "  let (n, a) = pair(40)\n",
+            "  let (flag, b) = pair(True)\n",
+            "  case flag {\n",
+            "    True -> n + a + b\n",
+            "    False -> 0\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":42");
+}
+
+// Each caller's instantiation is still checked: one shared open variable
+// keeps input and result tied together.
+#[test]
+fn an_inferred_generic_contract_keeps_its_input_and_result_tied() {
+    assert_eq!(
+        check_codes(concat!(
+            "fn pass(value) { value }\n",
+            "fn count(o: Option<Int>) -> Int {\n",
+            "  case o {\n",
+            "    Some(v) -> v\n",
+            "    None -> 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int { count(pass(Some(True))) }\n",
+        )),
+        ["T4203"]
+    );
+    // A recursive call sees the result type its body settles on.
+    assert_eq!(
+        check_codes(concat!(
+            "fn needs_text(t: Text) -> Int { 0 }\n",
+            "fn f(b: Bool) {\n",
+            "  case b {\n",
+            "    True -> 1\n",
+            "    False -> needs_text(f(True))\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int { f(False) }\n",
+        )),
+        ["T4203"]
+    );
+}
+
 // ts-fff274: an unused empty map has never-constrained key and value types.
 #[test]
 fn an_unused_empty_map_runs() {
