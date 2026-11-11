@@ -1548,14 +1548,25 @@ static bool json_hex(char value, uint32_t *digit) {
   else return false;
   return true;
 }
+/* Each decode error carries the message and byte offset that the reference
+   interpreter's parser (compiler/chimi/src/json.rs) reports for the same input,
+   so DecodeError.InvalidJson is identical on both backends. */
+static void *json_fail(JsonParser *parser, size_t offset, const char *message) {
+  parser->offset = offset; parser->message = message; return NULL;
+}
+/* Reads four hex digits; on failure leaves the offset at the first digit. */
 static bool json_code_unit(JsonParser *parser, uint32_t *value) {
-  if (parser->offset + 4 > parser->length) return false;
+  size_t start = parser->offset;
+  if (start + 4 > parser->length) { json_fail(parser, start, "incomplete JSON Unicode escape"); return false; }
   *value = 0;
   for (uint32_t index = 0; index < 4; ++index) {
     uint32_t digit;
-    if (!json_hex(parser->source[parser->offset++], &digit)) return false;
+    if (!json_hex(parser->source[start + index], &digit)) {
+      json_fail(parser, start, "invalid JSON Unicode escape"); return false;
+    }
     *value = *value * 16 + digit;
   }
+  parser->offset = start + 4;
   return true;
 }
 static void buffer_utf8(TextBuffer *buffer, uint32_t value) {
@@ -1574,11 +1585,12 @@ static char *json_parse_string(JsonParser *parser) {
   if (parser->offset >= parser->length || parser->source[parser->offset++] != '"') return NULL;
   TextBuffer buffer = {0};
   while (parser->offset < parser->length) {
-    unsigned char value = (unsigned char)parser->source[parser->offset++];
+    unsigned char value = (unsigned char)parser->source[parser->offset];
+    if (value < 0x20) return json_fail(parser, parser->offset, "unescaped control character in JSON string");
+    ++parser->offset;
     if (value == '"') return buffer.data ? buffer.data : allocate(1, 1);
-    if (value < 0x20) { parser->message = "unescaped control character"; return NULL; }
     if (value != '\\') { buffer_char(&buffer, (char)value); continue; }
-    if (parser->offset >= parser->length) break;
+    if (parser->offset >= parser->length) return json_fail(parser, parser->offset, "unterminated JSON escape");
     char escaped = parser->source[parser->offset++];
     switch (escaped) {
       case '"': case '\\': case '/': buffer_char(&buffer, escaped); break;
@@ -1586,25 +1598,27 @@ static char *json_parse_string(JsonParser *parser) {
       case 'n': buffer_char(&buffer, '\n'); break; case 'r': buffer_char(&buffer, '\r'); break;
       case 't': buffer_char(&buffer, '\t'); break;
       case 'u': {
+        static const char *const unpaired = "high surrogate must be followed by a low surrogate";
         uint32_t code;
-        if (!json_code_unit(parser, &code)) { parser->message = "invalid Unicode escape"; return NULL; }
+        if (!json_code_unit(parser, &code)) return NULL;
         if (code >= 0xd800 && code <= 0xdbff) {
-          if (parser->offset + 2 > parser->length || parser->source[parser->offset] != '\\' ||
-              parser->source[parser->offset + 1] != 'u') { parser->message = "missing low surrogate"; return NULL; }
+          if (parser->offset >= parser->length || parser->source[parser->offset] != '\\')
+            return json_fail(parser, parser->offset, unpaired);
+          if (parser->offset + 1 >= parser->length || parser->source[parser->offset + 1] != 'u')
+            return json_fail(parser, parser->offset + 1, unpaired);
           parser->offset += 2; uint32_t low;
-          if (!json_code_unit(parser, &low) || low < 0xdc00 || low > 0xdfff) {
-            parser->message = "invalid low surrogate"; return NULL;
-          }
+          if (!json_code_unit(parser, &low)) return NULL;
+          if (low < 0xdc00 || low > 0xdfff) return json_fail(parser, parser->offset, unpaired);
           code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
         } else if (code >= 0xdc00 && code <= 0xdfff) {
-          parser->message = "unexpected low surrogate"; return NULL;
+          return json_fail(parser, parser->offset, "isolated low surrogate in JSON string");
         }
         buffer_utf8(&buffer, code); break;
       }
-      default: parser->message = "invalid string escape"; return NULL;
+      default: return json_fail(parser, parser->offset, "invalid JSON escape");
     }
   }
-  parser->message = "unterminated string"; return NULL;
+  return json_fail(parser, parser->offset, "unterminated JSON string");
 }
 
 static ChimiValue *json_parse_value(JsonParser *parser, uint32_t depth);
@@ -1621,9 +1635,10 @@ static ChimiValue *json_parse_array(JsonParser *parser, uint32_t depth) {
       allocation_kind(items, ALLOCATION_VALUE_POINTERS);
     }
     items[length++] = item; json_skip_space(parser);
-    if (parser->offset >= parser->length) { parser->message = "unterminated array"; return NULL; }
-    char separator = parser->source[parser->offset++]; if (separator == ']') break;
-    if (separator != ',') { parser->message = "expected comma in array"; return NULL; }
+    char separator = parser->offset < parser->length ? parser->source[parser->offset] : '\0';
+    if (separator != ']' && separator != ',')
+      return json_fail(parser, parser->offset, "expected `,` or `]` in JSON array");
+    ++parser->offset; if (separator == ']') break;
     json_skip_space(parser);
   }
   ChimiValue *fields[] = {list_from_values(items, length)};
@@ -1633,20 +1648,28 @@ static ChimiValue *json_parse_object(JsonParser *parser, uint32_t depth) {
   ++parser->offset; json_skip_space(parser); MapNode *map = NULL;
   if (parser->offset < parser->length && parser->source[parser->offset] == '}') ++parser->offset;
   else for (;;) {
-    if (parser->offset >= parser->length || parser->source[parser->offset] != '"') {
-      parser->message = "expected object key"; return NULL;
-    }
-    char *key_text = json_parse_string(parser); if (!key_text) return NULL; json_skip_space(parser);
+    if (parser->offset >= parser->length || parser->source[parser->offset] != '"')
+      return json_fail(parser, parser->offset, "expected a string key in JSON object");
+    size_t key_offset = parser->offset;
+    char *key_text = json_parse_string(parser); if (!key_text) return NULL;
     ChimiValue *key = text_value(key_text);
-    if (parser->offset >= parser->length || parser->source[parser->offset++] != ':') {
-      parser->message = "expected colon after object key"; return NULL;
+    if (map_get_node(map, key)) {
+      TextBuffer message = {0};
+      static const char prefix[] = "duplicate JSON object key `";
+      buffer_bytes(&message, prefix, sizeof(prefix) - 1);
+      buffer_bytes(&message, key_text, strlen(key_text)); buffer_char(&message, '`');
+      return json_fail(parser, key_offset, message.data);
     }
-    if (map_get_node(map, key)) { parser->message = "duplicate object key"; return NULL; }
+    json_skip_space(parser);
+    if (parser->offset >= parser->length || parser->source[parser->offset] != ':')
+      return json_fail(parser, parser->offset, "expected `:` after JSON object key");
+    ++parser->offset;
     ChimiValue *item = json_parse_value(parser, depth + 1); if (!item) return NULL;
     map = map_put_node(map, key, item); json_skip_space(parser);
-    if (parser->offset >= parser->length) { parser->message = "unterminated object"; return NULL; }
-    char separator = parser->source[parser->offset++]; if (separator == '}') break;
-    if (separator != ',') { parser->message = "expected comma in object"; return NULL; }
+    char separator = parser->offset < parser->length ? parser->source[parser->offset] : '\0';
+    if (separator != '}' && separator != ',')
+      return json_fail(parser, parser->offset, "expected `,` or `}` in JSON object");
+    ++parser->offset; if (separator == '}') break;
     json_skip_space(parser);
   }
   ChimiValue *fields_value = map_value(map); ChimiValue *fields[] = {fields_value};
@@ -1655,29 +1678,33 @@ static ChimiValue *json_parse_object(JsonParser *parser, uint32_t depth) {
 static ChimiValue *json_parse_number(JsonParser *parser) {
   size_t start = parser->offset;
   if (parser->source[parser->offset] == '-') ++parser->offset;
-  if (parser->offset >= parser->length) { parser->message = "invalid number"; return NULL; }
-  if (parser->source[parser->offset] == '0') ++parser->offset;
-  else if (parser->source[parser->offset] >= '1' && parser->source[parser->offset] <= '9')
+  if (parser->offset >= parser->length) return json_fail(parser, parser->offset, "expected digits in JSON number");
+  if (parser->source[parser->offset] == '0') {
+    ++parser->offset;
+    if (parser->offset < parser->length && parser->source[parser->offset] >= '0' && parser->source[parser->offset] <= '9')
+      return json_fail(parser, parser->offset, "JSON numbers cannot contain leading zeroes");
+  } else if (parser->source[parser->offset] >= '1' && parser->source[parser->offset] <= '9')
     while (parser->offset < parser->length && parser->source[parser->offset] >= '0' && parser->source[parser->offset] <= '9') ++parser->offset;
-  else { parser->message = "invalid number"; return NULL; }
+  else return json_fail(parser, parser->offset, "expected digits in JSON number");
   if (parser->offset < parser->length && parser->source[parser->offset] == '.') {
     ++parser->offset; size_t digits = parser->offset;
     while (parser->offset < parser->length && parser->source[parser->offset] >= '0' && parser->source[parser->offset] <= '9') ++parser->offset;
-    if (digits == parser->offset) { parser->message = "invalid fraction"; return NULL; }
+    if (digits == parser->offset) return json_fail(parser, parser->offset, "expected digits after JSON decimal point");
   }
   if (parser->offset < parser->length && (parser->source[parser->offset] == 'e' || parser->source[parser->offset] == 'E')) {
     ++parser->offset; if (parser->offset < parser->length && (parser->source[parser->offset] == '+' || parser->source[parser->offset] == '-')) ++parser->offset;
     size_t digits = parser->offset;
     while (parser->offset < parser->length && parser->source[parser->offset] >= '0' && parser->source[parser->offset] <= '9') ++parser->offset;
-    if (digits == parser->offset) { parser->message = "invalid exponent"; return NULL; }
+    if (digits == parser->offset) return json_fail(parser, parser->offset, "expected digits in JSON exponent");
   }
   size_t length = parser->offset - start; char *number = allocate(length + 1, 1);
   memcpy(number, parser->source + start, length); ChimiValue *raw = json_number_value(number);
   ChimiValue *fields[] = {raw}; return standard_value(CHIMI_CONSTRUCTOR_JSON_NUMBER, fields, 1);
 }
 static ChimiValue *json_parse_value(JsonParser *parser, uint32_t depth) {
-  if (depth > 128) { parser->message = "JSON nesting limit exceeded"; return NULL; }
-  json_skip_space(parser); if (parser->offset >= parser->length) { parser->message = "expected JSON value"; return NULL; }
+  json_skip_space(parser);
+  if (depth > 128) return json_fail(parser, parser->offset, "JSON nesting exceeds the configured limit");
+  if (parser->offset >= parser->length) return json_fail(parser, parser->offset, "expected a JSON value");
   char value = parser->source[parser->offset];
   if (value == 'n' && parser->length - parser->offset >= 4 && memcmp(parser->source + parser->offset, "null", 4) == 0) {
     parser->offset += 4; return standard_value(CHIMI_CONSTRUCTOR_JSON_NULL, NULL, 0);
@@ -1692,7 +1719,8 @@ static ChimiValue *json_parse_value(JsonParser *parser, uint32_t depth) {
   if (value == '[') return json_parse_array(parser, depth);
   if (value == '{') return json_parse_object(parser, depth);
   if (value == '-' || (value >= '0' && value <= '9')) return json_parse_number(parser);
-  parser->message = "expected JSON value"; return NULL;
+  if (value == 'n' || value == 't' || value == 'f') return json_fail(parser, parser->offset, "invalid JSON literal");
+  return json_fail(parser, parser->offset, "expected a JSON value");
 }
 
 static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
@@ -2270,9 +2298,9 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     case CHIMI_INTRINSIC_JSON_DECODE: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
       JsonParser parser = {arguments[0]->as.text, strlen(arguments[0]->as.text), 0, NULL};
-      ChimiValue *value = json_parse_value(&parser, 0); json_skip_space(&parser);
+      ChimiValue *value = json_parse_value(&parser, 0); if (value) json_skip_space(&parser);
       if (value && parser.offset == parser.length) return success(value);
-      if (!parser.message) parser.message = "unexpected trailing JSON input";
+      if (!parser.message) parser.message = "unexpected characters after JSON value";
       ChimiValue *fields[] = {text_value(parser.message), integer_value((int64_t)parser.offset)};
       return failure(standard_value(CHIMI_CONSTRUCTOR_DECODE_INVALID_JSON, fields, 2));
     }

@@ -3541,6 +3541,78 @@ fn malformed_text_escapes_are_syntax_errors() {
     assert!(codes("\"a\\\n\"").contains(&"S1001".to_owned()));
 }
 
+// Json.decode reports the same DecodeError message and offset on both backends for
+// every kind of malformed input.
+#[test]
+fn malformed_json_reports_the_same_decode_error_on_both_backends() {
+    let inputs = [
+        "",
+        "{1: 2}",
+        "{\"a\" 1}",
+        "{\"a\": 1 \"b\"}",
+        "{\"a\": 1, \"a\": 2}",
+        "[1 2]",
+        "[1,",
+        "01",
+        "-",
+        "1.",
+        "1e ",
+        "nul",
+        "\"ab",
+        "\"a\tb\"",
+        "\"\\q\"",
+        "\"\\",
+        "\"\\u12\"",
+        "\"\\u12zz\"",
+        "\"\\ud800x\"",
+        "\"\\ud800\\x\"",
+        "\"\\ud800\\u0041\"",
+        "\"\\udc00\"",
+        "1 x",
+    ];
+    let literal = |input: &str| {
+        let mut quoted = String::from("\"");
+        for character in input.chars() {
+            match character {
+                '"' => quoted.push_str("\\\""),
+                '\\' => quoted.push_str("\\\\"),
+                '\t' => quoted.push_str("\\t"),
+                other => quoted.push(other),
+            }
+        }
+        quoted.push('"');
+        quoted
+    };
+    let calls = inputs
+        .iter()
+        .map(|input| format!("    error_of({}),\n", literal(input)))
+        .collect::<String>();
+    let source = format!(
+        concat!(
+            "import std/json as Json\n",
+            "import std/debug as Debug\n",
+            "fn error_of(source: Text) -> Text {{\n",
+            "  case Json.decode(source) {{\n",
+            "    Success(_) -> \"decoded\"\n",
+            "    Failure(error) -> Debug.render(error)\n",
+            "  }}\n",
+            "}}\n",
+            "pub fn main() -> List<Text> {{\n  [\n{}  ]\n}}\n",
+        ),
+        calls
+    );
+    let outcome = run_both("json-decode-errors", &source);
+    assert_eq!(
+        outcome.matches("DecodeError.InvalidJson").count(),
+        inputs.len(),
+        "{outcome}"
+    );
+    assert!(
+        outcome.contains(r#"message: \"expected a string key in JSON object\", offset: 1"#),
+        "{outcome}"
+    );
+}
+
 fn json_text(text: &str) -> String {
     let mut quoted = String::from("\"");
     for character in text.chars() {
