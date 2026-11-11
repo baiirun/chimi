@@ -107,6 +107,27 @@ fn assert_formatter_round_trips(source: &str) {
     assert_eq!(second.text(), first.text(), "formatting is not idempotent");
 }
 
+/// The formatted program must mean the same thing: it runs to the same outcome
+/// on the interpreter. The native path is not rebuilt for the formatted text.
+fn assert_formatting_preserves_the_outcome(path: &Path, source: &str, expected: &str) {
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(
+        !formatted.is_blocked(),
+        "{}",
+        formatted.render_diagnostics()
+    );
+    if formatted.text() == source {
+        return;
+    }
+    std::fs::write(path, formatted.text()).unwrap();
+    assert_eq!(
+        interpreter_outcome(path),
+        expected,
+        "formatting changed the outcome; formatted source:\n{}",
+        formatted.text()
+    );
+}
+
 fn assert_inspection_survives_every_offset(source: &str) {
     for offset in 0..=source.len() {
         if !source.is_char_boundary(offset) {
@@ -129,6 +150,7 @@ fn run_both(name: &str, source: &str) -> String {
     let interpreted = interpreter_outcome(&path);
     let native = native_outcome(&scratch, &path);
     assert_eq!(interpreted, native, "execution paths disagree for {name}");
+    assert_formatting_preserves_the_outcome(&path, source, &interpreted);
     assert_formatter_round_trips(source);
     assert_inspection_survives_every_offset(source);
     std::fs::remove_dir_all(scratch).unwrap();
