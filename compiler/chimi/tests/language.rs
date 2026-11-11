@@ -3780,6 +3780,25 @@ fn maps_built_in_different_orders_are_equal() {
     );
 }
 
+// Collections and JSON: an `Int` key, which once failed natively with "invalid
+// runtime shapes", stores and finds entries on both backends.
+#[test]
+fn int_keyed_maps_store_and_find_entries() {
+    let source = concat!(
+        "import std/map as Map\n",
+        "import std/debug as Debug\n",
+        "pub fn main() -> List<Text> {\n",
+        "  let single = Map.put(Map.empty(), 10, \"x\")\n",
+        "  let both = Map.put(single, 2, \"y\") |> Map.put(10, \"z\")\n",
+        "  [Debug.render(Map.get(single, 10)), Debug.render(Map.get(both, 3)), Debug.render(both)]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("int-map-keys", source),
+        r#""outcome":"success","value":["Some(\"x\")","None","Map { 2: \"y\", 10: \"z\" }"]"#
+    );
+}
+
 // Structured keys through the constants table and the debug format: a constant
 // map keeps value keys on both backends, and `Debug.render` writes each key in
 // the debug format, in one order on both paths whatever the insertion order.
