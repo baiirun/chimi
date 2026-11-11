@@ -241,6 +241,15 @@ impl BackendValueProfile {
                 }
             }
             CorePattern::Outcome { value, .. } => self.record_pattern_nodes(value),
+            CorePattern::List {
+                prefix,
+                rest,
+                suffix,
+            } => {
+                for element in prefix.iter().chain(rest.as_deref()).chain(suffix) {
+                    self.record_pattern_nodes(element);
+                }
+            }
             CorePattern::Wildcard | CorePattern::Binding(_) => {}
         }
     }
@@ -252,6 +261,17 @@ fn pattern_depth(pattern: &CorePattern) -> usize {
             fields.iter().map(pattern_depth).max().unwrap_or(0)
         }
         CorePattern::Outcome { value, .. } => pattern_depth(value),
+        CorePattern::List {
+            prefix,
+            rest,
+            suffix,
+        } => prefix
+            .iter()
+            .chain(rest.as_deref())
+            .chain(suffix)
+            .map(pattern_depth)
+            .max()
+            .unwrap_or(0),
         CorePattern::Wildcard | CorePattern::Binding(_) | CorePattern::Literal(_) => 0,
     }
 }

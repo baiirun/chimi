@@ -48,6 +48,8 @@ pub(crate) enum TokenKind {
     Colon,
     Comma,
     Dot,
+    /// `..`, the rest marker inside a list pattern.
+    DotDot,
     Slash,
     Less,
     LessEqual,
@@ -111,6 +113,7 @@ impl TokenKind {
             Self::Colon => "colon",
             Self::Comma => "comma",
             Self::Dot => "dot",
+            Self::DotDot => "dot_dot",
             Self::Slash => "slash",
             Self::Less => "less",
             Self::LessEqual => "less_equal",
@@ -172,6 +175,7 @@ impl TokenKind {
             Self::Colon => "`:`",
             Self::Comma => "`,`",
             Self::Dot => "`.`",
+            Self::DotDot => "`..`",
             Self::Slash => "`/`",
             Self::Less => "`<`",
             Self::LessEqual => "`<=`",
@@ -813,6 +817,10 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                 offset += 1;
                 diagnostics.push(symbolic_logic_diagnostic(source, start, offset, "not"));
                 emit(TokenKind::Bang, start, offset, &mut tokens);
+            }
+            b'.' if offset + 1 < bytes.len() && bytes[offset + 1] == b'.' => {
+                offset += 2;
+                emit(TokenKind::DotDot, start, offset, &mut tokens);
             }
             b'<' if offset + 1 < bytes.len() && bytes[offset + 1] == b'=' => {
                 offset += 2;
@@ -2027,9 +2035,39 @@ impl<'source> Parser<'source> {
                     self.expect(TokenKind::RightParen);
                 }
             }
+            TokenKind::LeftBracket => self.parse_list_pattern_elements(),
             _ => self.missing(TokenKind::Identifier, "pattern"),
         }
         self.finish();
+    }
+
+    /// Parses the bracketed elements of a list pattern such as `[first, ..rest]`.
+    /// Ensures: each element is a `Pattern` node; a rest element is a `Pattern` node that
+    /// starts with `..` and holds at most one binding name. The parser accepts any number
+    /// of rest elements so lowering can report `L2021` with the whole pattern in view.
+    fn parse_list_pattern_elements(&mut self) {
+        self.bump();
+        self.skip_newlines();
+        while !self.at(TokenKind::RightBracket) && !self.at(TokenKind::End) {
+            if self.at(TokenKind::DotDot) {
+                self.start(NodeKind::Pattern);
+                self.bump();
+                self.accept(TokenKind::Identifier);
+                self.finish();
+            } else {
+                let before = self.position;
+                self.parse_pattern();
+                if self.position == before {
+                    break;
+                }
+            }
+            if !self.accept(TokenKind::Comma) {
+                break;
+            }
+            self.skip_newlines();
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::RightBracket);
     }
 
     fn parse_function_expression(&mut self) {
@@ -2333,8 +2371,8 @@ mod tests {
     // N11: a `.` starts a fraction only when a digit follows it.
     #[test]
     fn a_dot_after_digits_starts_a_fraction_only_before_a_digit() {
-        use super::TokenKind::{Dot, End, Float, Identifier, Integer};
-        assert_eq!(token_kinds("0..10"), [Integer, Dot, Dot, Integer, End]);
+        use super::TokenKind::{Dot, DotDot, End, Float, Identifier, Integer};
+        assert_eq!(token_kinds("0..10"), [Integer, DotDot, Integer, End]);
         assert_eq!(token_kinds("1.x"), [Integer, Dot, Identifier, End]);
         assert_eq!(token_kinds("1.5"), [Float, End]);
         assert_eq!(

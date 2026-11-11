@@ -148,6 +148,10 @@ enum {
   CHIMI_PATTERN_LITERAL,
   CHIMI_PATTERN_CONSTRUCTOR,
   CHIMI_PATTERN_OUTCOME,
+  /* `a` counts the prefix patterns; `integer` is 1 when a rest pattern follows them.
+     The ids at `offset` are the prefix, then the rest pattern if present, then the
+     suffix, `length` in all. */
+  CHIMI_PATTERN_LIST,
 };
 
 typedef struct {

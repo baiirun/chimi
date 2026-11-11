@@ -619,17 +619,19 @@ impl CapabilityChecker<'_> {
         pattern: &Pattern,
         environment: &mut FlowEnvironment,
     ) {
-        if let Some(name) = pattern.path.last()
+        if let Pattern::Binding {
+            semantic_id, name, ..
+        } = pattern
             && let Some(symbol) = self.typed.resolved.source_symbol(
                 module_id,
-                pattern.semantic_id,
+                *semantic_id,
                 ProjectSymbolKind::PatternBinding,
                 &name.text,
             )
             && let Some(type_id) = self
                 .typed
                 .pattern_binding_types
-                .get(&(module_id, pattern.semantic_id))
+                .get(&(module_id, *semantic_id))
         {
             environment.insert(
                 symbol,
@@ -640,8 +642,8 @@ impl CapabilityChecker<'_> {
                 },
             );
         }
-        for argument in &pattern.arguments {
-            self.add_pattern_bindings(module_id, argument, environment);
+        for child in pattern.children() {
+            self.add_pattern_bindings(module_id, child, environment);
         }
     }
 

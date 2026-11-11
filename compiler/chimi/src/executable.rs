@@ -313,6 +313,15 @@ fn touch_pattern(pattern: &CorePattern) {
             let _ = success;
             touch_pattern(value);
         }
+        CorePattern::List {
+            prefix,
+            rest,
+            suffix,
+        } => {
+            for element in prefix.iter().chain(rest.as_deref()).chain(suffix) {
+                touch_pattern(element);
+            }
+        }
     }
 }
 
@@ -468,6 +477,16 @@ pub(crate) enum CorePattern {
     Outcome {
         success: bool,
         value: Box<CorePattern>,
+    },
+    /// Matches a list by its length, then `prefix` against the first elements and
+    /// `suffix` against the last ones, each by one indexed read. Without `rest` the
+    /// length must equal `prefix.len()`; with it the length must be at least
+    /// `prefix.len() + suffix.len()` and `rest` matches the O(1) view of the elements
+    /// between them.
+    List {
+        prefix: Vec<CorePattern>,
+        rest: Option<Box<CorePattern>>,
+        suffix: Vec<CorePattern>,
     },
 }
 
@@ -1284,59 +1303,65 @@ impl CoreLowerer {
     }
 
     fn pattern(&self, module_id: ModuleId, pattern: &Pattern) -> CorePattern {
-        if let Some(literal) = &pattern.literal {
-            return CorePattern::Literal(match literal {
+        match pattern {
+            Pattern::Wildcard { .. } => CorePattern::Wildcard,
+            Pattern::Literal { literal, .. } => CorePattern::Literal(match literal {
                 PatternLiteral::Integer(value) => CoreLiteral::Integer(*value),
                 PatternLiteral::Text(value) => CoreLiteral::Text(value.clone()),
                 PatternLiteral::Boolean(value) => CoreLiteral::Boolean(*value),
                 PatternLiteral::Float => unreachable!("typing rejects Float literal patterns"),
-            });
-        }
-        let Some(name) = pattern.path.last() else {
-            return CorePattern::Wildcard;
-        };
-        if name.text == "_" {
-            return CorePattern::Wildcard;
-        }
-        let symbol = self
-            .value_symbol(module_id, pattern.semantic_id)
-            .or_else(|| {
-                self.local_symbol(
-                    module_id,
-                    pattern.semantic_id,
-                    ProjectSymbolKind::PatternBinding,
-                )
-            })
-            .expect("verified pattern resolves");
-        let resolved = self.typed.resolved.symbol(symbol);
-        if resolved.module_id.is_none()
-            && resolved.kind == ProjectSymbolKind::BuiltinValue
-            && matches!(resolved.name.as_str(), "Success" | "Failure")
-        {
-            let [value] = pattern.arguments.as_slice() else {
-                unreachable!("verified outcome patterns have one argument")
-            };
-            CorePattern::Outcome {
-                success: resolved.name == "Success",
-                value: Box::new(self.pattern(module_id, value)),
+            }),
+            Pattern::Binding { semantic_id, .. } => CorePattern::Binding(
+                self.local_symbol(module_id, *semantic_id, ProjectSymbolKind::PatternBinding)
+                    .expect("verified pattern binding resolves"),
+            ),
+            Pattern::List {
+                prefix,
+                rest,
+                suffix,
+                ..
+            } => CorePattern::List {
+                prefix: self.patterns(module_id, prefix),
+                rest: rest
+                    .as_deref()
+                    .map(|rest| Box::new(self.pattern(module_id, rest))),
+                suffix: self.patterns(module_id, suffix),
+            },
+            Pattern::Constructor {
+                semantic_id,
+                arguments,
+                ..
+            } => {
+                let symbol = self
+                    .value_symbol(module_id, *semantic_id)
+                    .expect("verified constructor pattern resolves");
+                let resolved = self.typed.resolved.symbol(symbol);
+                if resolved.module_id.is_none()
+                    && resolved.kind == ProjectSymbolKind::BuiltinValue
+                    && matches!(resolved.name.as_str(), "Success" | "Failure")
+                {
+                    let [value] = arguments.as_slice() else {
+                        unreachable!("verified outcome patterns have one argument")
+                    };
+                    CorePattern::Outcome {
+                        success: resolved.name == "Success",
+                        value: Box::new(self.pattern(module_id, value)),
+                    }
+                } else {
+                    CorePattern::Constructor {
+                        symbol,
+                        fields: self.patterns(module_id, arguments),
+                    }
+                }
             }
-        } else if resolved.kind == ProjectSymbolKind::EnumConstructor
-            || matches!(
-                self.typed.resolved.standard_symbol(symbol),
-                Some(StandardSymbol::Constructor(_))
-            )
-        {
-            CorePattern::Constructor {
-                symbol,
-                fields: pattern
-                    .arguments
-                    .iter()
-                    .map(|field| self.pattern(module_id, field))
-                    .collect(),
-            }
-        } else {
-            CorePattern::Binding(symbol)
         }
+    }
+
+    fn patterns(&self, module_id: ModuleId, patterns: &[Pattern]) -> Vec<CorePattern> {
+        patterns
+            .iter()
+            .map(|pattern| self.pattern(module_id, pattern))
+            .collect()
     }
 
     fn push_node(

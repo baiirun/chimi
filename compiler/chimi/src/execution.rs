@@ -1887,12 +1887,23 @@ impl<'core> Evaluator<'core> {
         }
         for arm in arms {
             let mut arm_environment = environment.clone();
-            if !arm
-                .patterns
-                .iter()
-                .zip(&values)
-                .all(|(pattern, value)| match_pattern(pattern, value, &mut arm_environment.locals))
-            {
+            let mut matched = true;
+            for (pattern, value) in arm.patterns.iter().zip(&values) {
+                match match_pattern(pattern, value, &mut arm_environment.locals) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        matched = false;
+                        break;
+                    }
+                    Err(message) => {
+                        return Control::Defect {
+                            message: message.to_owned(),
+                            node: Some(node_id),
+                        };
+                    }
+                }
+            }
+            if !matched {
                 continue;
             }
             if let Some(guard) = arm.guard {
@@ -1985,11 +1996,13 @@ enum MatchValue {
     Failure(RuntimeValue),
 }
 
+/// Matches `value` against `pattern`, binding into `bindings`. `Err` is a defect: a
+/// verified pattern asked for a list element or view the value does not have.
 fn match_pattern(
     pattern: &CorePattern,
     value: &MatchValue,
     bindings: &mut HashMap<SymbolId, RuntimeValue>,
-) -> bool {
+) -> Result<bool, &'static str> {
     match pattern {
         CorePattern::Outcome {
             success: expected,
@@ -1998,11 +2011,11 @@ fn match_pattern(
             (true, MatchValue::Success(value)) | (false, MatchValue::Failure(value)) => {
                 match_plain_pattern(pattern, value, bindings)
             }
-            _ => false,
+            _ => Ok(false),
         },
         _ => match value {
             MatchValue::Plain(value) => match_plain_pattern(pattern, value, bindings),
-            MatchValue::Success(_) | MatchValue::Failure(_) => false,
+            MatchValue::Success(_) | MatchValue::Failure(_) => Ok(false),
         },
     }
 }
@@ -2011,14 +2024,14 @@ fn match_plain_pattern(
     pattern: &CorePattern,
     value: &RuntimeValue,
     bindings: &mut HashMap<SymbolId, RuntimeValue>,
-) -> bool {
+) -> Result<bool, &'static str> {
     match pattern {
-        CorePattern::Wildcard => true,
+        CorePattern::Wildcard => Ok(true),
         CorePattern::Binding(symbol) => {
             bindings.insert(*symbol, value.clone());
-            true
+            Ok(true)
         }
-        CorePattern::Literal(literal) => literal_matches(literal, value),
+        CorePattern::Literal(literal) => Ok(literal_matches(literal, value)),
         CorePattern::Constructor { symbol, fields } => {
             let RuntimeValue::Constructed {
                 constructor,
@@ -2026,16 +2039,76 @@ fn match_plain_pattern(
                 ..
             } = value
             else {
-                return false;
+                return Ok(false);
             };
-            constructor == symbol
-                && fields.len() == values.len()
-                && fields
-                    .iter()
-                    .zip(values)
-                    .all(|(pattern, field)| match_plain_pattern(pattern, &field.value, bindings))
+            if constructor != symbol || fields.len() != values.len() {
+                return Ok(false);
+            }
+            for (pattern, field) in fields.iter().zip(values) {
+                if !match_plain_pattern(pattern, &field.value, bindings)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
         }
-        CorePattern::Outcome { .. } => false,
+        CorePattern::List {
+            prefix,
+            rest,
+            suffix,
+        } => {
+            let RuntimeValue::List(values) = value else {
+                return Ok(false);
+            };
+            match_list_pattern(prefix, rest.as_deref(), suffix, values, bindings)
+        }
+        CorePattern::Outcome { .. } => Ok(false),
+    }
+}
+
+/// Checks the length first, then reads each fixed element by index; `rest` receives an
+/// O(1) view of the elements between the prefix and the suffix.
+fn match_list_pattern(
+    prefix: &[CorePattern],
+    rest: Option<&CorePattern>,
+    suffix: &[CorePattern],
+    values: &PersistentList<RuntimeValue>,
+    bindings: &mut HashMap<SymbolId, RuntimeValue>,
+) -> Result<bool, &'static str> {
+    let length = values.len();
+    let fits = match rest {
+        None => length == prefix.len() && suffix.is_empty(),
+        Some(_) => length >= prefix.len() + suffix.len(),
+    };
+    if !fits {
+        return Ok(false);
+    }
+    let suffix_start = length - suffix.len();
+    let fixed = prefix
+        .iter()
+        .enumerate()
+        .chain(
+            suffix
+                .iter()
+                .enumerate()
+                .map(|(offset, pattern)| (suffix_start + offset, pattern)),
+        )
+        .map(|(index, pattern)| (pattern, index));
+    for (pattern, index) in fixed {
+        let element = values
+            .get(index)
+            .ok_or("verified list pattern read past the end of its list")?;
+        if !match_plain_pattern(pattern, element, bindings)? {
+            return Ok(false);
+        }
+    }
+    match rest {
+        None | Some(CorePattern::Wildcard) => Ok(true),
+        Some(rest) => {
+            let view = values
+                .slice(prefix.len()..suffix_start)
+                .ok_or("verified list pattern took a view outside its list")?;
+            match_plain_pattern(rest, &RuntimeValue::List(view), bindings)
+        }
     }
 }
 

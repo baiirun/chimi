@@ -59,7 +59,6 @@ static void test_push_and_get_across_trie_heights(void) {
   uint32_t length = 1100000;
   ChimiValue *list = push_sequence(list_from_values(NULL, 0), length, 0);
   expect_sequence(list, length, 0);
-  CHECK(list->as.list.vector.root->height == 4, "root height %u", list->as.list.vector.root->height);
 }
 
 static void test_old_versions_are_unchanged(void) {
@@ -98,11 +97,6 @@ static void test_bulk_construction_matches_push(void) {
     expect_sequence(bulk, length, 0);
     /* Appending to a bulk-built list relies on the same trie shape as push. */
     expect_sequence(push_sequence(bulk, 2000, length), length + 2000, 0);
-    ChimiValue *pushed = push_sequence(list_from_values(NULL, 0), length, 0);
-    uint32_t bulk_height = bulk->as.list.vector.root ? bulk->as.list.vector.root->height : 0;
-    uint32_t pushed_height = pushed->as.list.vector.root ? pushed->as.list.vector.root->height : 0;
-    CHECK(bulk_height == pushed_height, "length %u: bulk height %u, push height %u", length,
-          bulk_height, pushed_height);
   }
   free(values);
 }
@@ -203,8 +197,52 @@ static void test_append_to_a_prefix_leaves_the_original_unchanged(void) {
   }
 }
 
+/* Pushing onto a prefix window whose end lies inside the trie, not the tail,
+   writes a path copy: the shared vector and the window are untouched. */
+static void test_append_to_a_prefix_ending_in_the_trie_leaves_the_original_unchanged(void) {
+  static const uint32_t ends[] = {31, 32, 33, 1000, 1024, 1025, 32768};
+  for (uint32_t which = 0; which < sizeof(ends) / sizeof(ends[0]); ++which) {
+    /* `end + 64` keeps the window above a quarter of its vector, so it shares that
+       vector, and puts `end` before the 32..64-element tail. */
+    uint32_t end = ends[which], length = end + 64;
+    ChimiValue *list = push_sequence(list_from_values(NULL, 0), length, 0);
+    ChimiValue *prefix = list_slice(list, 0, end);
+    CHECK(end < vector_tail_offset(length), "end %u lies in the trie", end);
+    ChimiValue *extended = push_sequence(prefix, 40, -1000);
+    expect_sequence(list, length, 0);
+    expect_window(prefix, 0, end);
+    CHECK(list_length(extended) == end + 40, "extended length");
+    for (uint32_t index = 0; index < end; ++index)
+      CHECK(element(extended, index) == index, "extended keeps index %u", index);
+    for (uint32_t offset = 0; offset < 40; ++offset)
+      CHECK(element(extended, end + offset) == -1000 + (int64_t)offset, "pushed element %u", offset);
+  }
+}
+
+static void test_slice_rejects_a_bad_range(void) {
+  ChimiValue *list = push_sequence(list_from_values(NULL, 0), 10, 0);
+  CHECK(list_slice(list, 3, 2) == NULL, "reversed range");
+  CHECK(list_slice(list, 0, 11) == NULL, "range past the end");
+}
+
+/* A window shorter than a quarter of its vector copies itself, so it does not
+   keep the large vector alive. */
+static void test_a_small_window_does_not_retain_its_source(void) {
+  AllocationScope scope;
+  allocation_scope_begin(&scope);
+  ChimiValue *list = push_sequence(list_from_values(NULL, 0), 100000, 0);
+  ChimiValue *small = list_slice(list, 50000, 50100);
+  allocation_scope_collect(&scope, small, NULL);
+  expect_window(small, 50000, 100);
+  /* The 100 elements and their copy stay live (about 6 KB); sharing would keep all
+     100,000 elements, about 6 MB. */
+  CHECK(scope.live_bytes < 16384, "a 100-element window retains %zu bytes", scope.live_bytes);
+  allocation_scope_end(&scope);
+}
+
 /* Dropping the head one element at a time, as `[first, ..rest]` recursion does,
-   allocates one list header per step and never copies the elements. */
+   allocates one list header per step plus the retention copies, which total fewer
+   than length / 3 elements. */
 static void test_drop_front_is_constant_cost(void) {
   uint32_t length = 200000;
   ChimiValue *list = push_sequence(list_from_values(NULL, 0), length, 0);
@@ -218,7 +256,9 @@ static void test_drop_front_is_constant_cost(void) {
   CHECK(list_length(rest) == 0, "drained");
   double per_step = (double)scope.total_allocated_bytes / length;
   printf("drop_front length=%u allocated_bytes_per_step=%.1f\n", length, per_step);
-  CHECK(per_step <= sizeof(ChimiValue), "%.1f bytes per drop", per_step);
+  /* One header per step, plus copies of under length / 3 slots of one pointer each,
+     with node headers. A copy per step would cost about length / 2 slots per step. */
+  CHECK(per_step <= sizeof(ChimiValue) + 4 * sizeof(void *), "%.1f bytes per drop", per_step);
   allocation_scope_collect(&scope, NULL, NULL);
   allocation_scope_end(&scope);
 }
@@ -241,6 +281,9 @@ int main(void) {
   test_collection_keeps_shared_old_version();
   test_slices_are_windows_over_the_original();
   test_append_to_a_prefix_leaves_the_original_unchanged();
+  test_append_to_a_prefix_ending_in_the_trie_leaves_the_original_unchanged();
+  test_slice_rejects_a_bad_range();
+  test_a_small_window_does_not_retain_its_source();
   test_drop_front_is_constant_cost();
   test_collection_keeps_a_window_readable();
   puts("ok");

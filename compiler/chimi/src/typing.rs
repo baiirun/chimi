@@ -943,6 +943,124 @@ enum MatchPattern {
         tag: MatchTag,
         fields: Vec<MatchPattern>,
     },
+    /// A list pattern. `suffix` is `None` for an exact-length pattern and holds the
+    /// patterns after `..` otherwise.
+    List {
+        prefix: Vec<MatchPattern>,
+        suffix: Option<Vec<MatchPattern>>,
+    },
+}
+
+/// The length classes coverage splits one list column into: each exact length below
+/// `open`, plus "at least `open`". `open` exceeds every exact-length row and is at least
+/// `prefix + suffix`, so every row with `..` matches the whole open class, which is
+/// represented by its first `prefix` and last `suffix` elements.
+#[derive(Clone, Copy, Debug)]
+struct ListColumn {
+    open: usize,
+    prefix: usize,
+    suffix: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ListClass {
+    Exact(usize),
+    AtLeastOpen,
+}
+
+impl ListColumn {
+    /// Returns `None` when neither `candidate` nor any row of `matrix` starts with a
+    /// list pattern, so ordinary specialization applies.
+    fn of(matrix: &[Vec<MatchPattern>], candidate: &MatchPattern) -> Option<Self> {
+        let mut column = None::<Self>;
+        for head in matrix
+            .iter()
+            .filter_map(|row| row.first())
+            .chain([candidate])
+        {
+            let MatchPattern::List { prefix, suffix } = head else {
+                continue;
+            };
+            let current = column.get_or_insert(Self {
+                open: 0,
+                prefix: 0,
+                suffix: 0,
+            });
+            match suffix {
+                None => current.open = current.open.max(prefix.len() + 1),
+                Some(suffix) => {
+                    current.prefix = current.prefix.max(prefix.len());
+                    current.suffix = current.suffix.max(suffix.len());
+                }
+            }
+        }
+        column.map(|mut column| {
+            column.open = column.open.max(column.prefix + column.suffix);
+            column
+        })
+    }
+
+    fn classes(self) -> impl Iterator<Item = ListClass> {
+        (0..self.open)
+            .map(ListClass::Exact)
+            .chain([ListClass::AtLeastOpen])
+    }
+
+    fn arity(self, class: ListClass) -> usize {
+        match class {
+            ListClass::Exact(length) => length,
+            ListClass::AtLeastOpen => self.prefix + self.suffix,
+        }
+    }
+
+    /// The fields `head` contributes to `class`, or `None` when `head` matches no list
+    /// of that class.
+    fn specialize(self, head: &MatchPattern, class: ListClass) -> Option<Vec<MatchPattern>> {
+        let arity = self.arity(class);
+        match head {
+            MatchPattern::Wildcard => Some(vec![MatchPattern::Wildcard; arity]),
+            MatchPattern::List {
+                prefix,
+                suffix: None,
+            } => (class == ListClass::Exact(prefix.len())).then(|| prefix.clone()),
+            MatchPattern::List {
+                prefix,
+                suffix: Some(suffix),
+            } => {
+                let fixed = prefix.len() + suffix.len();
+                let gap = match class {
+                    ListClass::Exact(length) if length < fixed => return None,
+                    ListClass::Exact(length) => length - fixed,
+                    ListClass::AtLeastOpen => arity - fixed,
+                };
+                let mut fields = prefix.clone();
+                fields.extend(std::iter::repeat_n(MatchPattern::Wildcard, gap));
+                fields.extend_from_slice(suffix);
+                Some(fields)
+            }
+            MatchPattern::Constructor { .. } => None,
+        }
+    }
+
+    /// Rebuilds a witness list from the `arity(class)` entries of `fields`. An open
+    /// witness spells out `open` elements, such as `[_, _, ..]` for "at least two".
+    fn witness(self, class: ListClass, mut fields: Vec<MatchPattern>) -> MatchPattern {
+        match class {
+            ListClass::Exact(_) => MatchPattern::List {
+                prefix: fields,
+                suffix: None,
+            },
+            ListClass::AtLeastOpen => {
+                let suffix = fields.split_off(self.prefix);
+                let padding = self.open - self.prefix - self.suffix;
+                fields.extend(std::iter::repeat_n(MatchPattern::Wildcard, padding));
+                MatchPattern::List {
+                    prefix: fields,
+                    suffix: Some(suffix),
+                }
+            }
+        }
+    }
 }
 
 impl ProjectTypeChecker {
@@ -3088,8 +3206,18 @@ impl ProjectTypeChecker {
             facts.push(body);
         }
         let missing = vec![MatchPattern::Wildcard; subjects.len()];
-        if self.pattern_row_is_useful(&coverage, &missing, &subject_types) {
-            self.type_error_range(module_id, "T4231", range, "case is not exhaustive");
+        if let Some(witness) = self.pattern_row_witness(&coverage, &missing, &subject_types) {
+            let witness = witness
+                .iter()
+                .map(|pattern| self.render_witness(pattern))
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.type_error_range(
+                module_id,
+                "T4231",
+                range,
+                format!("case is not exhaustive; `{witness}` is not matched"),
+            );
         }
         ExpressionFact {
             success: success.unwrap_or(TypeId::new(0)),
@@ -3105,50 +3233,113 @@ impl ProjectTypeChecker {
         expected: TypeId,
         bindings: &mut HashMap<SymbolId, ValueBinding>,
     ) -> MatchPattern {
-        if let Some(literal) = &pattern.literal {
-            let (literal_type, tag) = match literal {
-                PatternLiteral::Integer(value) => {
-                    (self.builtin_type("Int"), MatchTag::Integer(*value))
+        match pattern {
+            Pattern::Wildcard { .. } => MatchPattern::Wildcard,
+            Pattern::Literal { literal, range, .. } => {
+                let (literal_type, tag) = match literal {
+                    PatternLiteral::Integer(value) => {
+                        (self.builtin_type("Int"), MatchTag::Integer(*value))
+                    }
+                    PatternLiteral::Text(value) => {
+                        (self.builtin_type("Text"), MatchTag::Text(value.clone()))
+                    }
+                    PatternLiteral::Boolean(value) => {
+                        (self.builtin_type("Bool"), MatchTag::Boolean(*value))
+                    }
+                    PatternLiteral::Float => {
+                        self.reject_float_pattern(module_id, *range);
+                        (
+                            self.builtin_type("Float"),
+                            MatchTag::Rejected(pattern.semantic_id()),
+                        )
+                    }
+                };
+                if !self.unify(expected, literal_type) {
+                    self.type_error_range(
+                        module_id,
+                        "T4230",
+                        *range,
+                        "literal pattern does not match the subject type",
+                    );
                 }
-                PatternLiteral::Text(value) => {
-                    (self.builtin_type("Text"), MatchTag::Text(value.clone()))
+                MatchPattern::Constructor {
+                    tag,
+                    fields: Vec::new(),
                 }
-                PatternLiteral::Boolean(value) => {
-                    (self.builtin_type("Bool"), MatchTag::Boolean(*value))
-                }
-                PatternLiteral::Float => {
-                    self.reject_float_pattern(module_id, pattern.range);
-                    (
-                        self.builtin_type("Float"),
-                        MatchTag::Rejected(pattern.semantic_id),
-                    )
-                }
-            };
-            if !self.unify(expected, literal_type) {
-                self.type_error_range(
-                    module_id,
-                    "T4230",
-                    pattern.range,
-                    "literal pattern does not match the subject type",
-                );
             }
-            return MatchPattern::Constructor {
-                tag,
-                fields: Vec::new(),
-            };
+            Pattern::Binding { semantic_id, .. } => {
+                if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
+                    self.pattern_binding_types
+                        .insert((module_id, *semantic_id), expected);
+                    bindings.insert(
+                        binding,
+                        ValueBinding {
+                            type_id: expected,
+                            need: None,
+                        },
+                    );
+                }
+                MatchPattern::Wildcard
+            }
+            Pattern::List {
+                prefix,
+                rest,
+                suffix,
+                range,
+                ..
+            } => {
+                let element = self.list_pattern_element_type(expected).unwrap_or_else(|| {
+                    self.type_error_range(
+                        module_id,
+                        "T4230",
+                        *range,
+                        "list pattern does not match the subject type",
+                    );
+                    self.intern_type(CanonicalType::Poison)
+                });
+                let mut normalize_all = |checker: &mut Self, patterns: &[Pattern]| {
+                    patterns
+                        .iter()
+                        .map(|element_pattern| {
+                            checker.normalize_pattern(module_id, element_pattern, element, bindings)
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let prefix = normalize_all(self, prefix);
+                let suffix = normalize_all(self, suffix);
+                if let Some(rest) = rest {
+                    self.normalize_pattern(module_id, rest, expected, bindings);
+                }
+                MatchPattern::List {
+                    prefix,
+                    suffix: rest.as_ref().map(|_| suffix),
+                }
+            }
+            Pattern::Constructor {
+                arguments, range, ..
+            } => self.normalize_constructor_pattern(
+                module_id, pattern, arguments, *range, expected, bindings,
+            ),
         }
-        if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
-            self.pattern_binding_types
-                .insert((module_id, pattern.semantic_id), expected);
-            bindings.insert(
-                binding,
-                ValueBinding {
-                    type_id: expected,
-                    need: None,
-                },
-            );
-            return MatchPattern::Wildcard;
-        }
+    }
+
+    /// Unifies `expected` with `List<T>` for a fresh `T` and returns `T`, or `None`
+    /// when the subject cannot be a list.
+    fn list_pattern_element_type(&mut self, expected: TypeId) -> Option<TypeId> {
+        let element = self.fresh_inference_type();
+        let list = self.builtin_type_with_arguments("List", vec![element]);
+        self.unify(expected, list).then_some(element)
+    }
+
+    fn normalize_constructor_pattern(
+        &mut self,
+        module_id: ModuleId,
+        pattern: &Pattern,
+        arguments: &[Pattern],
+        range: TextRange,
+        expected: TypeId,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> MatchPattern {
         let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
             return MatchPattern::Wildcard;
         };
@@ -3156,8 +3347,8 @@ impl ProjectTypeChecker {
             self.type_error_range(
                 module_id,
                 "T4230",
-                pattern.range,
-                "ordinary patterns require a value binding, literal, or enum variant",
+                range,
+                "ordinary patterns require a value binding, literal, list, or enum variant",
             );
             return MatchPattern::Wildcard;
         }
@@ -3165,7 +3356,7 @@ impl ProjectTypeChecker {
             self.type_error_range(
                 module_id,
                 "T4230",
-                pattern.range,
+                range,
                 format!(
                     "pattern `{}` does not match the subject type",
                     self.resolved.symbol(constructor).name
@@ -3173,16 +3364,16 @@ impl ProjectTypeChecker {
             );
             return MatchPattern::Wildcard;
         };
-        if pattern.arguments.len() != inputs.len() {
+        if arguments.len() != inputs.len() {
             self.type_error_range(
                 module_id,
                 "T4230",
-                pattern.range,
+                range,
                 format!(
                     "pattern `{}` expects {} fields, found {}",
                     self.resolved.symbol(constructor).name,
                     inputs.len(),
-                    pattern.arguments.len()
+                    arguments.len()
                 ),
             );
         }
@@ -3190,8 +3381,7 @@ impl ProjectTypeChecker {
             .iter()
             .enumerate()
             .map(|(index, input)| {
-                pattern
-                    .arguments
+                arguments
                     .get(index)
                     .map_or(MatchPattern::Wildcard, |argument| {
                         self.normalize_pattern(module_id, argument, *input, bindings)
@@ -3490,27 +3680,47 @@ impl ProjectTypeChecker {
         candidate: &[MatchPattern],
         types: &[TypeId],
     ) -> bool {
-        if candidate.is_empty() {
-            return matrix.is_empty();
-        }
-        let Some(first_type) = types.first().copied() else {
-            return true;
+        self.pattern_row_witness(matrix, candidate, types).is_some()
+    }
+
+    /// Returns a row of value shapes that `candidate` matches and no row of `matrix`
+    /// matches, or `None` when `candidate` is useless after `matrix`. The witness has
+    /// one entry per candidate column; `_` stands for any value.
+    fn pattern_row_witness(
+        &mut self,
+        matrix: &[Vec<MatchPattern>],
+        candidate: &[MatchPattern],
+        types: &[TypeId],
+    ) -> Option<Vec<MatchPattern>> {
+        let Some((head, tail)) = candidate.split_first() else {
+            return matrix.is_empty().then(Vec::new);
         };
-        let tail_types = &types[1..];
-        match &candidate[0] {
+        let Some((&first_type, tail_types)) = types.split_first() else {
+            return Some(candidate.to_vec());
+        };
+        if let Some(column) = ListColumn::of(matrix, head) {
+            return self.list_row_witness(matrix, candidate, column, first_type, tail_types);
+        }
+        match head {
             MatchPattern::Constructor { tag, fields } => {
                 let field_types = self
                     .pattern_constructor_field_types(tag, first_type)
                     .unwrap_or_else(|| vec![TypeId::new(0); fields.len()]);
                 let specialized = specialize_pattern_matrix(matrix, tag, field_types.len());
                 let mut specialized_candidate = fields.clone();
-                specialized_candidate.extend_from_slice(&candidate[1..]);
+                specialized_candidate.extend_from_slice(tail);
                 let mut specialized_types = field_types;
                 specialized_types.extend_from_slice(tail_types);
-                self.pattern_row_is_useful(&specialized, &specialized_candidate, &specialized_types)
+                let witness = self.pattern_row_witness(
+                    &specialized,
+                    &specialized_candidate,
+                    &specialized_types,
+                )?;
+                Some(constructor_witness(tag, fields.len(), witness))
             }
             MatchPattern::Wildcard => {
-                if let Some(domain) = self.complete_pattern_domain(first_type) {
+                let domain = self.complete_pattern_domain(first_type);
+                if let Some(domain) = &domain {
                     let present = matrix
                         .iter()
                         .filter_map(|row| match row.first() {
@@ -3519,24 +3729,123 @@ impl ProjectTypeChecker {
                         })
                         .collect::<Vec<_>>();
                     if domain.iter().all(|(tag, _)| present.contains(&tag)) {
-                        return domain.into_iter().any(|(tag, field_types)| {
+                        return domain.iter().find_map(|(tag, field_types)| {
                             let specialized =
-                                specialize_pattern_matrix(matrix, &tag, field_types.len());
+                                specialize_pattern_matrix(matrix, tag, field_types.len());
                             let mut specialized_candidate =
                                 vec![MatchPattern::Wildcard; field_types.len()];
-                            specialized_candidate.extend_from_slice(&candidate[1..]);
-                            let mut specialized_types = field_types;
+                            specialized_candidate.extend_from_slice(tail);
+                            let mut specialized_types = field_types.clone();
                             specialized_types.extend_from_slice(tail_types);
-                            self.pattern_row_is_useful(
+                            self.pattern_row_witness(
                                 &specialized,
                                 &specialized_candidate,
                                 &specialized_types,
                             )
+                            .map(|witness| constructor_witness(tag, field_types.len(), witness))
                         });
                     }
                 }
                 let default = default_pattern_matrix(matrix);
-                self.pattern_row_is_useful(&default, &candidate[1..], tail_types)
+                let mut witness = self.pattern_row_witness(&default, tail, tail_types)?;
+                let missing = domain.and_then(|domain| {
+                    let present = matrix
+                        .iter()
+                        .filter_map(|row| match row.first() {
+                            Some(MatchPattern::Constructor { tag, .. }) => Some(tag.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    domain
+                        .into_iter()
+                        .find(|(tag, _)| !present.contains(tag))
+                        .map(|(tag, field_types)| MatchPattern::Constructor {
+                            tag,
+                            fields: vec![MatchPattern::Wildcard; field_types.len()],
+                        })
+                });
+                witness.insert(0, missing.unwrap_or(MatchPattern::Wildcard));
+                Some(witness)
+            }
+            MatchPattern::List { .. } => unreachable!("list columns are split by length class"),
+        }
+    }
+
+    /// Usefulness for a column that holds list patterns: the candidate is useful when it
+    /// is useful within one of the length classes it matches.
+    fn list_row_witness(
+        &mut self,
+        matrix: &[Vec<MatchPattern>],
+        candidate: &[MatchPattern],
+        column: ListColumn,
+        list_type: TypeId,
+        tail_types: &[TypeId],
+    ) -> Option<Vec<MatchPattern>> {
+        let element = self.list_element_type(list_type);
+        column.classes().find_map(|class| {
+            let mut specialized_candidate = column.specialize(&candidate[0], class)?;
+            specialized_candidate.extend_from_slice(&candidate[1..]);
+            let specialized = matrix
+                .iter()
+                .filter_map(|row| {
+                    let (head, tail) = row.split_first()?;
+                    let mut fields = column.specialize(head, class)?;
+                    fields.extend_from_slice(tail);
+                    Some(fields)
+                })
+                .collect::<Vec<_>>();
+            let arity = column.arity(class);
+            let mut specialized_types = vec![element; arity];
+            specialized_types.extend_from_slice(tail_types);
+            let mut witness =
+                self.pattern_row_witness(&specialized, &specialized_candidate, &specialized_types)?;
+            let rest = witness.split_off(arity);
+            let mut row = vec![column.witness(class, witness)];
+            row.extend(rest);
+            Some(row)
+        })
+    }
+
+    fn list_element_type(&self, list_type: TypeId) -> TypeId {
+        let list_type = self.resolve_inference_type(list_type);
+        match &self.types[list_type.raw() as usize] {
+            CanonicalType::Named { arguments, .. } if arguments.len() == 1 => arguments[0],
+            _ => TypeId::new(0),
+        }
+    }
+
+    /// Renders a coverage witness in pattern syntax, such as `[]` or `Some(_)`.
+    fn render_witness(&self, pattern: &MatchPattern) -> String {
+        let join = |patterns: &[MatchPattern]| {
+            patterns
+                .iter()
+                .map(|pattern| self.render_witness(pattern))
+                .collect::<Vec<_>>()
+        };
+        match pattern {
+            MatchPattern::Wildcard => "_".to_owned(),
+            MatchPattern::Constructor { tag, fields } => {
+                let name = match tag {
+                    MatchTag::EnumVariant(symbol) => self.resolved.symbol(*symbol).name.clone(),
+                    MatchTag::Boolean(true) => "True".to_owned(),
+                    MatchTag::Boolean(false) => "False".to_owned(),
+                    MatchTag::Integer(value) => value.to_string(),
+                    MatchTag::Text(value) => format!("{value:?}"),
+                    MatchTag::Rejected(_) => "_".to_owned(),
+                };
+                if fields.is_empty() {
+                    name
+                } else {
+                    format!("{name}({})", join(fields).join(", "))
+                }
+            }
+            MatchPattern::List { prefix, suffix } => {
+                let mut elements = join(prefix);
+                if let Some(suffix) = suffix {
+                    elements.push("..".to_owned());
+                    elements.extend(join(suffix));
+                }
+                format!("[{}]", elements.join(", "))
             }
         }
     }
@@ -3698,7 +4007,7 @@ impl ProjectTypeChecker {
                     }
                 }
             } else {
-                let pattern_range = pattern.path.last().map_or(range, |name| name.range);
+                let pattern_range = pattern.head_range();
                 self.type_error_range(
                     module_id,
                     "T4222",
@@ -3780,11 +4089,9 @@ impl ProjectTypeChecker {
         module_id: ModuleId,
         pattern: &'pattern Pattern,
     ) -> Option<&'pattern Pattern> {
-        if pattern.arguments.len() != 1 {
-            let range = pattern
-                .path
-                .last()
-                .map_or(TextRange::empty(0), |name| name.range);
+        let arguments = pattern.constructor_arguments();
+        if arguments.len() != 1 {
+            let range = pattern.head_range();
             self.type_error_range(
                 module_id,
                 "T4222",
@@ -3793,7 +4100,7 @@ impl ProjectTypeChecker {
             );
             None
         } else {
-            pattern.arguments.first()
+            arguments.first()
         }
     }
 
@@ -3809,10 +4116,7 @@ impl ProjectTypeChecker {
             && self.is_enum_constructor(symbol)
         {
             if !self.failure_row_may_contain(failures, symbol) {
-                let range = pattern
-                    .path
-                    .last()
-                    .map_or(TextRange::empty(0), |name| name.range);
+                let range = pattern.head_range();
                 self.type_error_range(
                     module_id,
                     "T4224",
@@ -3837,11 +4141,8 @@ impl ProjectTypeChecker {
                 true,
             );
         }
-        if symbol.is_some() || pattern.path.is_empty() {
-            let range = pattern
-                .path
-                .last()
-                .map_or(TextRange::empty(0), |name| name.range);
+        if symbol.is_some() || matches!(pattern, Pattern::Literal { .. } | Pattern::List { .. }) {
+            let range = pattern.head_range();
             self.type_error_range(
                 module_id,
                 "T4222",
@@ -3859,85 +4160,115 @@ impl ProjectTypeChecker {
         expected: TypeId,
         bindings: &mut HashMap<SymbolId, ValueBinding>,
     ) {
-        if let Some(literal) = &pattern.literal {
-            let literal_type = self.builtin_type(match literal {
-                PatternLiteral::Integer(_) => "Int",
-                PatternLiteral::Text(_) => "Text",
-                PatternLiteral::Boolean(_) => "Bool",
-                PatternLiteral::Float => {
-                    self.reject_float_pattern(module_id, pattern.range);
+        match pattern {
+            Pattern::Wildcard { .. } => {}
+            Pattern::Literal { literal, range, .. } => {
+                let literal_type = self.builtin_type(match literal {
+                    PatternLiteral::Integer(_) => "Int",
+                    PatternLiteral::Text(_) => "Text",
+                    PatternLiteral::Boolean(_) => "Bool",
+                    PatternLiteral::Float => {
+                        self.reject_float_pattern(module_id, *range);
+                        return;
+                    }
+                });
+                if !self.unify(expected, literal_type) {
+                    self.type_error_range(
+                        module_id,
+                        "T4222",
+                        *range,
+                        "nested outcome pattern does not match its value type",
+                    );
+                }
+            }
+            Pattern::Binding { semantic_id, .. } => {
+                if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
+                    self.pattern_binding_types
+                        .insert((module_id, *semantic_id), expected);
+                    bindings.insert(
+                        binding,
+                        ValueBinding {
+                            type_id: expected,
+                            need: None,
+                        },
+                    );
+                }
+            }
+            Pattern::List {
+                prefix,
+                rest,
+                suffix,
+                range,
+                ..
+            } => {
+                let Some(element) = self.list_pattern_element_type(expected) else {
+                    self.type_error_range(
+                        module_id,
+                        "T4222",
+                        *range,
+                        "nested outcome pattern does not match its value type",
+                    );
+                    return;
+                };
+                for element_pattern in prefix.iter().chain(suffix) {
+                    self.bind_value_pattern(module_id, element_pattern, element, bindings);
+                }
+                if let Some(rest) = rest {
+                    self.bind_value_pattern(module_id, rest, expected, bindings);
+                }
+            }
+            Pattern::Constructor {
+                path, arguments, ..
+            } => {
+                let Some(name) = path.last() else {
+                    return;
+                };
+                let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
+                    return;
+                };
+                if !self.is_enum_constructor(constructor) {
                     return;
                 }
-            });
-            if !self.unify(expected, literal_type) {
-                self.type_error_range(
-                    module_id,
-                    "T4222",
-                    pattern.range,
-                    "nested outcome pattern does not match its value type",
-                );
+                let contract = self.contracts[&constructor].clone();
+                let mut substitution = CallSubstitution::default();
+                let expected = self.resolve_inference_type(expected);
+                let matches = match self.types[expected.raw() as usize].clone() {
+                    CanonicalType::FailureSetValue(failures) => {
+                        self.failure_row_may_contain(failures, constructor)
+                    }
+                    _ => self.match_call_type(expected, contract.success, &mut substitution),
+                };
+                if !matches {
+                    self.type_error_range(
+                        module_id,
+                        "T4222",
+                        name.range,
+                        format!("pattern `{}` does not match the subject type", name.text),
+                    );
+                    return;
+                }
+                if arguments.len() != contract.inputs.len() {
+                    self.type_error_range(
+                        module_id,
+                        "T4222",
+                        name.range,
+                        format!(
+                            "pattern `{}` expects {} fields, found {}",
+                            name.text,
+                            contract.inputs.len(),
+                            arguments.len()
+                        ),
+                    );
+                }
+                let inputs = contract
+                    .inputs
+                    .iter()
+                    .map(|input| self.substitute_call_type(*input, &mut substitution))
+                    .collect::<Vec<_>>();
+                for (argument, input) in arguments.iter().zip(inputs) {
+                    self.bind_value_pattern(module_id, argument, input, bindings);
+                }
             }
-            return;
-        }
-        let Some(name) = pattern.path.last() else {
-            return;
-        };
-        if let Some(binding) = self.pattern_binding_symbol(module_id, pattern) {
-            self.pattern_binding_types
-                .insert((module_id, pattern.semantic_id), expected);
-            bindings.insert(
-                binding,
-                ValueBinding {
-                    type_id: expected,
-                    need: None,
-                },
-            );
-            return;
-        }
-        let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
-            return;
-        };
-        if !self.is_enum_constructor(constructor) {
-            return;
-        }
-        let contract = self.contracts[&constructor].clone();
-        let mut substitution = CallSubstitution::default();
-        let expected = self.resolve_inference_type(expected);
-        let matches = match self.types[expected.raw() as usize].clone() {
-            CanonicalType::FailureSetValue(failures) => {
-                self.failure_row_may_contain(failures, constructor)
-            }
-            _ => self.match_call_type(expected, contract.success, &mut substitution),
-        };
-        if !matches {
-            self.type_error_range(
-                module_id,
-                "T4222",
-                name.range,
-                format!("pattern `{}` does not match the subject type", name.text),
-            );
-            return;
-        }
-        if pattern.arguments.len() != contract.inputs.len() {
-            self.type_error_range(
-                module_id,
-                "T4222",
-                name.range,
-                format!(
-                    "pattern `{}` expects {} fields, found {}",
-                    name.text,
-                    contract.inputs.len(),
-                    pattern.arguments.len()
-                ),
-            );
-        }
-        let inputs = contract
-            .inputs
-            .iter()
-            .map(|input| self.substitute_call_type(*input, &mut substitution))
-            .collect::<Vec<_>>();
-        for (argument, input) in pattern.arguments.iter().zip(inputs) {
-            self.bind_value_pattern(module_id, argument, input, bindings);
         }
     }
 
@@ -3947,17 +4278,23 @@ impl ProjectTypeChecker {
     }
 
     fn pattern_binding_symbol(&self, module_id: ModuleId, pattern: &Pattern) -> Option<SymbolId> {
+        let Pattern::Binding {
+            semantic_id, name, ..
+        } = pattern
+        else {
+            return None;
+        };
         self.find_symbol(
             module_id,
-            Some(pattern.semantic_id),
+            Some(*semantic_id),
             ProjectSymbolKind::PatternBinding,
-            &pattern.path.last()?.text,
+            &name.text,
         )
     }
 
     fn resolved_pattern_symbol(&self, module_id: ModuleId, pattern: &Pattern) -> Option<SymbolId> {
         self.resolved
-            .reference_resolution(module_id, pattern.semantic_id, Namespace::Value)
+            .reference_resolution(module_id, pattern.semantic_id(), Namespace::Value)
             .and_then(|resolution| match resolution {
                 ReferenceResolution::Resolved(symbol) => Some(symbol),
                 ReferenceResolution::Unresolved
@@ -6046,10 +6383,25 @@ fn specialize_pattern_matrix(
                     specialized.extend_from_slice(tail);
                     Some(specialized)
                 }
-                MatchPattern::Constructor { .. } => None,
+                MatchPattern::Constructor { .. } | MatchPattern::List { .. } => None,
             }
         })
         .collect()
+}
+
+/// Rebuilds a constructor witness from the first `arity` entries of `witness`.
+fn constructor_witness(
+    tag: &MatchTag,
+    arity: usize,
+    mut witness: Vec<MatchPattern>,
+) -> Vec<MatchPattern> {
+    let tail = witness.split_off(arity.min(witness.len()));
+    let mut row = vec![MatchPattern::Constructor {
+        tag: tag.clone(),
+        fields: witness,
+    }];
+    row.extend(tail);
+    row
 }
 
 fn default_pattern_matrix(matrix: &[Vec<MatchPattern>]) -> Vec<Vec<MatchPattern>> {

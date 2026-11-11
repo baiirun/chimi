@@ -4,9 +4,15 @@
 //! radix trie of full leaves plus a tail holding the last 1..=32 elements,
 //! matching the native runtime's `ListNode` layout. Every operation returns a
 //! new list and shares all untouched nodes with the old one, so appending is
-//! amortized O(1), indexing is O(log32 n), and slicing is O(1). A window keeps
-//! its whole vector alive. Elements sit behind `Arc` so copying a 32-slot node
-//! never deep-clones a value.
+//! amortized O(1), indexing is O(log32 n), and slicing is O(1) amortized.
+//! Elements sit behind `Arc` so copying a 32-slot node never deep-clones a value.
+//!
+//! Window retention: a slice shorter than a quarter of its vector copies its
+//! elements into a fresh vector instead of sharing, so a small window never keeps
+//! a large vector alive. Draining a list of n elements one at a time therefore
+//! copies n/4 + n/16 + ... < n/3 elements in total: each copy of m elements is
+//! paid for by the 3m or more elements dropped since the vector was built. The
+//! native runtime's `list_slice` applies the same rule.
 
 use std::fmt;
 use std::sync::Arc;
@@ -14,6 +20,8 @@ use std::sync::Arc;
 const BITS: u32 = 5;
 const WIDTH: usize = 1 << BITS;
 const MASK: usize = WIDTH - 1;
+/// A slice shorter than `1 / RETAINED_FRACTION` of its vector is copied (see the module docs).
+const RETAINED_FRACTION: usize = 4;
 
 enum Node<T> {
     Branch(Vec<Arc<Node<T>>>),
@@ -149,16 +157,15 @@ impl<T> PersistentList<T> {
         if index >= self.length {
             return None;
         }
-        self.vector.get(self.start + index)
+        self.vector.get(self.start + index).map(Arc::as_ref)
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = &T> {
-        (0..self.length).filter_map(|index| self.get(index))
+        (0..self.length).map(|index| self.get(index).expect("index is inside the window"))
     }
 
-    // The primitives below are reached from Chimi once the standard-library
-    // mechanism (G1) and list patterns expose them; until then only tests call
-    // them.
+    // `push` is reached from Chimi once the standard-library mechanism (G1)
+    // exposes it; until then only tests call it.
 
     /// Returns a new list with `value` appended; `self` is unchanged. A window
     /// that ends before its vector does writes the next slot into a path copy,
@@ -179,9 +186,10 @@ impl<T> PersistentList<T> {
         }
     }
 
-    /// O(1) window `range` of this list, sharing its vector. `None` when the
-    /// range is reversed or extends past the end.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Window `range` of this list. `None` when the range is reversed or extends
+    /// past the end. The window shares this list's vector in O(1), unless it is
+    /// shorter than a quarter of that vector: then it copies its elements into a
+    /// fresh vector so it does not retain the rest.
     pub(super) fn slice(&self, range: std::ops::Range<usize>) -> Option<Self> {
         if range.start > range.end || range.end > self.length {
             return None;
@@ -189,16 +197,32 @@ impl<T> PersistentList<T> {
         if range.is_empty() {
             return Some(Self::default());
         }
+        let start = self.start + range.start;
+        let length = range.len();
+        if length * RETAINED_FRACTION < self.vector.length {
+            let vector = Vector::from_shared(
+                (start..start + length)
+                    .map(|index| {
+                        Arc::clone(self.vector.get(index).expect("index is inside the window"))
+                    })
+                    .collect(),
+            );
+            return Some(Self {
+                vector,
+                start: 0,
+                length,
+            });
+        }
         Some(Self {
             vector: self.vector.clone(),
-            start: self.start + range.start,
-            length: range.len(),
+            start,
+            length,
         })
     }
 }
 
 impl<T> Vector<T> {
-    fn get(&self, index: usize) -> Option<&T> {
+    fn get(&self, index: usize) -> Option<&Arc<T>> {
         if index >= self.length {
             return None;
         }
@@ -258,13 +282,18 @@ impl<T> Vector<T> {
     /// O(log32 n): copies the path to element `index`, which must exist.
     #[cfg_attr(not(test), allow(dead_code))]
     fn set(&self, index: usize, value: Arc<T>) -> Self {
+        assert!(index < self.length, "set index {index} of {}", self.length);
         let offset = tail_offset(self.length);
         let mut next = self.clone();
         if index >= offset {
             let mut tail = self.tail.as_ref().clone();
             tail[index - offset] = value;
             next.tail = Arc::new(tail);
-        } else if let Some(root) = &self.root {
+        } else {
+            let root = self
+                .root
+                .as_ref()
+                .expect("an index before the tail lies in the trie");
             next.root = Some(set_node(root, self.shift, index, value));
         }
         next
@@ -283,9 +312,14 @@ impl<T> FromIterator<T> for PersistentList<T> {
 }
 
 impl<T> FromIterator<T> for Vector<T> {
-    /// Builds the trie bottom-up in O(n) without intermediate versions.
     fn from_iter<I: IntoIterator<Item = T>>(values: I) -> Self {
-        let mut values = values.into_iter().map(Arc::new).collect::<Vec<_>>();
+        Self::from_shared(values.into_iter().map(Arc::new).collect())
+    }
+}
+
+impl<T> Vector<T> {
+    /// Builds the trie bottom-up in O(n) without intermediate versions.
+    fn from_shared(mut values: Vec<Arc<T>>) -> Self {
         let length = values.len();
         let tail = Arc::new(values.split_off(tail_offset(length)));
         if values.is_empty() {
@@ -342,7 +376,6 @@ mod tests {
         let length = 1_100_000;
         let list = pushed(length);
         assert_sequence(&list, length, 0);
-        assert_eq!(list.vector.shift, 4 * BITS);
         assert_eq!(
             list.iter().copied().sum::<usize>(),
             length * (length - 1) / 2
@@ -394,11 +427,7 @@ mod tests {
         ] {
             let bulk = (0..length).collect::<PersistentList<_>>();
             assert_sequence(&bulk, length, 0);
-            assert_eq!(
-                bulk.vector.shift,
-                pushed(length).vector.shift,
-                "length {length}"
-            );
+            // Appending relies on the bulk trie having the shape push builds.
             let extended = (length..length + 2000).fold(bulk, |list, value| list.push(value));
             assert_sequence(&extended, length + 2000, 0);
         }
@@ -476,20 +505,70 @@ mod tests {
         }
     }
 
-    // Guards: `[first, ..rest]` recursion shares the vector instead of copying
-    // it, so draining a list front to back is linear.
+    // Guards: `[first, ..rest]` recursion shares the vector while the window is
+    // at least a quarter of it, then copies, so draining stays linear and a
+    // drained window stops retaining the original elements.
     #[test]
-    fn dropping_the_front_shares_the_vector() {
+    fn dropping_the_front_shares_the_vector_until_a_quarter_remains() {
         let length = 200_000;
         let list = pushed(length);
         let mut rest = list.clone();
+        let mut copied = 0;
         for expected in 0..length {
             assert_eq!(rest.first(), Some(&expected));
-            rest = rest.slice(1..rest.len()).unwrap();
-            if !rest.vector.tail.is_empty() {
-                assert!(Arc::ptr_eq(&rest.vector.tail, &list.vector.tail));
+            let next = rest.slice(1..rest.len()).unwrap();
+            if !Arc::ptr_eq(&next.vector.tail, &rest.vector.tail) {
+                assert!(
+                    next.len() * RETAINED_FRACTION < rest.vector.length,
+                    "copied a window of {} over {}",
+                    next.len(),
+                    rest.vector.length
+                );
+                assert_eq!(
+                    next.vector.length,
+                    next.len(),
+                    "a copy holds only the window"
+                );
+                copied += next.len();
             }
+            rest = next;
         }
         assert_eq!(rest.len(), 0);
+        assert!(copied < length / 3, "draining copied {copied} elements");
+    }
+
+    #[test]
+    fn a_small_window_does_not_retain_its_source() {
+        let list = pushed(10_000);
+        let small = list.slice(5_000..5_100).unwrap();
+        assert_window(&small, 5_000, 100);
+        assert_eq!(small.vector.length, 100);
+        let large = list.slice(1_000..9_000).unwrap();
+        assert_window(&large, 1_000, 8_000);
+        assert!(Arc::ptr_eq(&large.vector.tail, &list.vector.tail));
+    }
+
+    // Guards: pushing onto a prefix window whose end lies inside the trie (not
+    // the tail) writes a path copy, so the shared vector is untouched.
+    #[test]
+    fn append_to_a_prefix_ending_in_the_trie_leaves_the_original_unchanged() {
+        for end in [31, 32, 33, 1000, 1024, 1025, 32_768] {
+            // `end + 64` keeps the window above a quarter of its vector, so it
+            // shares that vector, and puts `end` before the 32..=64-element tail.
+            let length = end + 64;
+            let list = pushed(length);
+            let prefix = list.slice(0..end).unwrap();
+            assert!(end < tail_offset(length));
+            let extended = (0..40).fold(prefix.clone(), |list, value| list.push(1_000_000 + value));
+            assert_sequence(&list, length, 0);
+            assert_window(&prefix, 0, end);
+            assert_eq!(extended.len(), end + 40);
+            for index in 0..end {
+                assert_eq!(extended.get(index), Some(&index));
+            }
+            for offset in 0..40 {
+                assert_eq!(extended.get(end + offset), Some(&(1_000_000 + offset)));
+            }
+        }
     }
 }

@@ -363,6 +363,20 @@ fn significant_tokens<'tree>(node: &SyntaxNode<'tree>) -> Vec<SyntaxToken<'tree>
         .collect()
 }
 
+/// A node's own tokens, without trivia or tokens the parser reported as missing.
+fn significant_child_tokens<'tree>(node: &SyntaxNode<'tree>) -> Vec<SyntaxToken<'tree>> {
+    node.child_tokens()
+        .into_iter()
+        .filter(|token| {
+            !token.is_missing()
+                && !matches!(
+                    token.kind(),
+                    TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment
+                )
+        })
+        .collect()
+}
+
 fn matches_kinds(tokens: &[SyntaxToken<'_>], kinds: &[TokenKind]) -> bool {
     tokens.len() == kinds.len()
         && tokens
@@ -491,14 +505,98 @@ pub(crate) enum RequirementTermUse {
     },
 }
 
+/// One pattern form per variant, so that impossible shapes such as a literal with
+/// payload patterns cannot be represented. Every variant carries the semantic id that
+/// resolution and typing key their facts on.
 #[derive(Clone, Debug)]
-pub(crate) struct Pattern {
-    pub(crate) semantic_id: SemanticId,
-    pub(crate) path: Vec<Name>,
-    pub(crate) literal: Option<PatternLiteral>,
-    pub(crate) applied: bool,
-    pub(crate) arguments: Vec<Pattern>,
-    pub(crate) range: TextRange,
+pub(crate) enum Pattern {
+    /// `_`, or a pattern the parser already reported as missing.
+    Wildcard {
+        semantic_id: SemanticId,
+        range: TextRange,
+    },
+    /// A lowercase name, which always introduces a binding.
+    Binding {
+        semantic_id: SemanticId,
+        name: Name,
+        range: TextRange,
+    },
+    Literal {
+        semantic_id: SemanticId,
+        literal: PatternLiteral,
+        range: TextRange,
+    },
+    /// `None`, `Circle(radius)`, or `Value.Text(schema)`: a constructor path and its
+    /// payload patterns by position.
+    Constructor {
+        semantic_id: SemanticId,
+        path: Vec<Name>,
+        arguments: Vec<Pattern>,
+        range: TextRange,
+    },
+    /// `[p1, ..., pk, ..rest, q1, ..., qm]`. `rest` is `None` for an exact-length
+    /// pattern; otherwise it is the `Binding` or `Wildcard` that receives the
+    /// remaining elements, and `suffix` holds the patterns after it.
+    List {
+        semantic_id: SemanticId,
+        prefix: Vec<Pattern>,
+        rest: Option<Box<Pattern>>,
+        suffix: Vec<Pattern>,
+        range: TextRange,
+    },
+}
+
+impl Pattern {
+    pub(crate) fn semantic_id(&self) -> SemanticId {
+        match self {
+            Self::Wildcard { semantic_id, .. }
+            | Self::Binding { semantic_id, .. }
+            | Self::Literal { semantic_id, .. }
+            | Self::Constructor { semantic_id, .. }
+            | Self::List { semantic_id, .. } => *semantic_id,
+        }
+    }
+
+    pub(crate) fn range(&self) -> TextRange {
+        match self {
+            Self::Wildcard { range, .. }
+            | Self::Binding { range, .. }
+            | Self::Literal { range, .. }
+            | Self::Constructor { range, .. }
+            | Self::List { range, .. } => *range,
+        }
+    }
+
+    /// The range a diagnostic about this pattern's head points at: a constructor's
+    /// name, or the whole pattern for other forms.
+    pub(crate) fn head_range(&self) -> TextRange {
+        match self {
+            Self::Constructor { path, range, .. } => path.last().map_or(*range, |name| name.range),
+            other => other.range(),
+        }
+    }
+
+    /// Payload patterns of a constructor pattern; empty for every other form.
+    pub(crate) fn constructor_arguments(&self) -> &[Pattern] {
+        match self {
+            Self::Constructor { arguments, .. } => arguments,
+            _ => &[],
+        }
+    }
+
+    /// Direct sub-patterns in source order, for passes that visit every binding.
+    pub(crate) fn children(&self) -> Vec<&Pattern> {
+        match self {
+            Self::Wildcard { .. } | Self::Binding { .. } | Self::Literal { .. } => Vec::new(),
+            Self::Constructor { arguments, .. } => arguments.iter().collect(),
+            Self::List {
+                prefix,
+                rest,
+                suffix,
+                ..
+            } => prefix.iter().chain(rest.as_deref()).chain(suffix).collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1596,39 +1694,117 @@ impl ProjectLowerer {
     }
 
     fn lower_pattern(&mut self, node: &SyntaxNode<'_>) -> Pattern {
-        let arguments = node
+        let semantic_id = self.allocate_semantic_id();
+        let range = significant_range(node);
+        let tokens = significant_child_tokens(node);
+        let children = node
             .child_nodes()
             .into_iter()
             .filter(|child| child.kind() == NodeKind::Pattern)
-            .map(|child| self.lower_pattern(&child))
-            .collect();
-        let literal = node.child_tokens().into_iter().find_map(|token| {
-            let literal = match token.kind() {
-                TokenKind::Integer => PatternLiteral::Integer(self.integer_literal(&token, false)),
-                TokenKind::Float => PatternLiteral::Float,
-                TokenKind::Text => PatternLiteral::Text(text_literal_value(token.text())),
-                TokenKind::True | TokenKind::False => {
-                    PatternLiteral::Boolean(token.kind() == TokenKind::True)
-                }
-                _ => return None,
-            };
-            Some(literal)
-        });
-        Pattern {
-            semantic_id: self.allocate_semantic_id(),
-            path: node
-                .child_tokens()
-                .into_iter()
-                .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
-                .map(|token| name_from(&token))
-                .collect(),
+            .collect::<Vec<_>>();
+        let Some(first) = tokens.first() else {
+            return Pattern::Wildcard { semantic_id, range };
+        };
+        let identifiers = tokens
+            .iter()
+            .filter(|token| token.kind() == TokenKind::Identifier)
+            .map(name_from)
+            .collect::<Vec<_>>();
+        let literal = match first.kind() {
+            TokenKind::LeftBracket => {
+                return self.lower_list_pattern(semantic_id, &children, range);
+            }
+            TokenKind::DotDot => {
+                return match identifiers.into_iter().next() {
+                    Some(name) if name.text != "_" => Pattern::Binding {
+                        semantic_id,
+                        name,
+                        range,
+                    },
+                    _ => Pattern::Wildcard { semantic_id, range },
+                };
+            }
+            TokenKind::Integer => PatternLiteral::Integer(self.integer_literal(first, false)),
+            TokenKind::Float => PatternLiteral::Float,
+            TokenKind::Text => PatternLiteral::Text(text_literal_value(first.text())),
+            TokenKind::True | TokenKind::False => {
+                PatternLiteral::Boolean(first.kind() == TokenKind::True)
+            }
+            _ => {
+                let applied = tokens
+                    .iter()
+                    .any(|token| token.kind() == TokenKind::LeftParen);
+                return match identifiers.as_slice() {
+                    [] => Pattern::Wildcard { semantic_id, range },
+                    [name] if !applied && name.text == "_" => {
+                        Pattern::Wildcard { semantic_id, range }
+                    }
+                    [name] if !applied && !name.text.starts_with(char::is_uppercase) => {
+                        Pattern::Binding {
+                            semantic_id,
+                            name: name.clone(),
+                            range,
+                        }
+                    }
+                    _ => Pattern::Constructor {
+                        semantic_id,
+                        path: identifiers,
+                        arguments: children
+                            .iter()
+                            .map(|child| self.lower_pattern(child))
+                            .collect(),
+                        range,
+                    },
+                };
+            }
+        };
+        Pattern::Literal {
+            semantic_id,
             literal,
-            applied: node
-                .child_tokens()
-                .iter()
-                .any(|token| token.kind() == TokenKind::LeftParen),
-            arguments,
-            range: significant_range(node),
+            range,
+        }
+    }
+
+    /// Splits list elements around the first rest element. A further rest is `L2021`;
+    /// it is dropped so the elements after it still type-check as the suffix.
+    fn lower_list_pattern(
+        &mut self,
+        semantic_id: SemanticId,
+        elements: &[SyntaxNode<'_>],
+        range: TextRange,
+    ) -> Pattern {
+        let mut prefix = Vec::new();
+        let mut rest = None;
+        let mut suffix = Vec::new();
+        for element in elements {
+            let is_rest = significant_child_tokens(element)
+                .first()
+                .is_some_and(|token| token.kind() == TokenKind::DotDot);
+            if is_rest && rest.is_some() {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Lowering,
+                    "L2021",
+                    FileId::new(0),
+                    significant_range(element),
+                    "a list pattern can contain at most one `..`",
+                ));
+                continue;
+            }
+            let lowered = self.lower_pattern(element);
+            if is_rest {
+                rest = Some(Box::new(lowered));
+            } else if rest.is_some() {
+                suffix.push(lowered);
+            } else {
+                prefix.push(lowered);
+            }
+        }
+        Pattern::List {
+            semantic_id,
+            prefix,
+            rest,
+            suffix,
+            range,
         }
     }
 

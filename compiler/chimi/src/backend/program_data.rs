@@ -69,6 +69,28 @@ impl ProgramData {
                 let child = self.pattern(value);
                 (4, u32::from(*success), child, 1, 0)
             }
+            // Children are prefix, then the rest pattern when present, then suffix;
+            // `a` counts the prefix and `integer` is 1 when a rest pattern is present.
+            CorePattern::List {
+                prefix,
+                rest,
+                suffix,
+            } => {
+                let children = prefix
+                    .iter()
+                    .chain(rest.as_deref())
+                    .chain(suffix)
+                    .map(|element| self.pattern(element))
+                    .collect::<Vec<_>>();
+                let (offset, length) = self.ids(children);
+                (
+                    5,
+                    prefix.len() as u32,
+                    offset,
+                    length,
+                    i64::from(rest.is_some()),
+                )
+            }
         };
         index
     }

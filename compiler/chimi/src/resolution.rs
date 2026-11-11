@@ -1687,79 +1687,93 @@ impl ProjectResolver {
     }
 
     fn resolve_pattern(&mut self, module_index: usize, pattern: &Pattern, scope: &mut Scope) {
-        if let Some(name) = pattern.path.last() {
-            if pattern.applied || starts_upper(&name.text) {
-                let resolution = if let [owner, member] = pattern.path.as_slice() {
-                    let owner_resolution = resolve_local(
-                        self.modules[module_index].types.get(&owner.text),
-                        self.modules[module_index].imported_types.get(&owner.text),
-                        self.builtin_types.get(&owner.text).copied(),
-                    );
-                    self.reference(
-                        module_index,
-                        pattern.semantic_id,
-                        Namespace::Type,
-                        owner,
-                        owner_resolution,
-                    );
-                    match owner_resolution {
-                        ReferenceResolution::Resolved(owner) => self
-                            .standard_type_members
-                            .get(&(owner, member.text.clone()))
-                            .copied()
-                            .map(ReferenceResolution::Resolved)
-                            .unwrap_or(ReferenceResolution::Unresolved),
-                        ReferenceResolution::Ambiguous => ReferenceResolution::Ambiguous,
-                        _ => ReferenceResolution::Unresolved,
-                    }
-                } else if self.modules[module_index]
-                    .ambiguous_values
-                    .contains(&name.text)
-                {
-                    ReferenceResolution::Ambiguous
-                } else {
-                    resolve_local(
-                        self.modules[module_index].values.get(&name.text),
-                        self.modules[module_index].imported_values.get(&name.text),
-                        self.prelude_values.get(&name.text).copied(),
-                    )
-                };
-                self.reference(
-                    module_index,
-                    pattern.semantic_id,
-                    Namespace::Value,
-                    name,
-                    resolution,
-                );
-                if resolution == ReferenceResolution::Unresolved {
-                    let module = &self.semantic.modules[module_index];
-                    self.diagnostics.push(name_error(
-                        module,
-                        "E_UNRESOLVED_CONSTRUCTOR",
-                        name.range,
-                        format!("cannot resolve constructor {}", name.text),
-                    ));
-                } else if resolution == ReferenceResolution::Ambiguous {
-                    let module = &self.semantic.modules[module_index];
-                    self.diagnostics.push(name_error(
-                        module,
-                        "E_AMBIGUOUS_CONSTRUCTOR",
-                        name.range,
-                        format!("multiple constructors are named {}", name.text),
-                    ));
-                }
-            } else {
-                self.define_local(
-                    module_index,
-                    pattern.semantic_id,
-                    name,
-                    ProjectSymbolKind::PatternBinding,
-                    scope,
-                );
-            }
+        match pattern {
+            Pattern::Binding {
+                semantic_id, name, ..
+            } => self.define_local(
+                module_index,
+                *semantic_id,
+                name,
+                ProjectSymbolKind::PatternBinding,
+                scope,
+            ),
+            Pattern::Constructor {
+                semantic_id, path, ..
+            } => self.resolve_pattern_constructor(module_index, *semantic_id, path),
+            Pattern::Wildcard { .. } | Pattern::Literal { .. } | Pattern::List { .. } => {}
         }
-        for argument in &pattern.arguments {
-            self.resolve_pattern(module_index, argument, scope);
+        for child in pattern.children() {
+            self.resolve_pattern(module_index, child, scope);
+        }
+    }
+
+    fn resolve_pattern_constructor(
+        &mut self,
+        module_index: usize,
+        semantic_id: SemanticId,
+        path: &[Name],
+    ) {
+        let Some(name) = path.last() else {
+            return;
+        };
+        let resolution = if let [owner, member] = path {
+            let owner_resolution = resolve_local(
+                self.modules[module_index].types.get(&owner.text),
+                self.modules[module_index].imported_types.get(&owner.text),
+                self.builtin_types.get(&owner.text).copied(),
+            );
+            self.reference(
+                module_index,
+                semantic_id,
+                Namespace::Type,
+                owner,
+                owner_resolution,
+            );
+            match owner_resolution {
+                ReferenceResolution::Resolved(owner) => self
+                    .standard_type_members
+                    .get(&(owner, member.text.clone()))
+                    .copied()
+                    .map(ReferenceResolution::Resolved)
+                    .unwrap_or(ReferenceResolution::Unresolved),
+                ReferenceResolution::Ambiguous => ReferenceResolution::Ambiguous,
+                _ => ReferenceResolution::Unresolved,
+            }
+        } else if self.modules[module_index]
+            .ambiguous_values
+            .contains(&name.text)
+        {
+            ReferenceResolution::Ambiguous
+        } else {
+            resolve_local(
+                self.modules[module_index].values.get(&name.text),
+                self.modules[module_index].imported_values.get(&name.text),
+                self.prelude_values.get(&name.text).copied(),
+            )
+        };
+        self.reference(
+            module_index,
+            semantic_id,
+            Namespace::Value,
+            name,
+            resolution,
+        );
+        if resolution == ReferenceResolution::Unresolved {
+            let module = &self.semantic.modules[module_index];
+            self.diagnostics.push(name_error(
+                module,
+                "E_UNRESOLVED_CONSTRUCTOR",
+                name.range,
+                format!("cannot resolve constructor {}", name.text),
+            ));
+        } else if resolution == ReferenceResolution::Ambiguous {
+            let module = &self.semantic.modules[module_index];
+            self.diagnostics.push(name_error(
+                module,
+                "E_AMBIGUOUS_CONSTRUCTOR",
+                name.range,
+                format!("multiple constructors are named {}", name.text),
+            ));
         }
     }
 
@@ -2165,10 +2179,6 @@ fn resolve_external(
     } else {
         ReferenceResolution::Inaccessible(id)
     }
-}
-
-fn starts_upper(name: &str) -> bool {
-    name.chars().next().is_some_and(char::is_uppercase)
 }
 
 fn module_name(path: &str) -> String {

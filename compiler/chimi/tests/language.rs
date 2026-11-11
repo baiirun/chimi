@@ -1608,3 +1608,418 @@ fn a_map_keyed_by_zero_finds_negative_zero() {
         "\"outcome\":\"success\",\"value\":{\"type\":\"Option\",\"variant\":\"Some\",\"fields\":{\"value\":1}}"
     );
 }
+
+// ---- List patterns (G15), docs/specification/patterns-and-function-clauses.md ----
+
+fn coded_messages(source: &str) -> Vec<(String, String)> {
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    Compiler::type_project(vec![module])
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic.code().to_owned(),
+                diagnostic.message().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// A `case` over a `List<Int>` parameter with the given arms, called from `main`.
+fn list_case(arms: &[&str]) -> String {
+    format!(
+        "fn f(values: List<Int>) -> Int {{\n  case values {{\n{}  }}\n}}\npub fn main() -> Int {{ f([1]) }}\n",
+        arms.iter()
+            .map(|arm| format!("    {arm}\n"))
+            .collect::<String>()
+    )
+}
+
+// LP-01, LP-03, and the coverage examples: these arm sets are exhaustive and
+// every arm is reachable.
+#[test]
+fn list_patterns_cover_every_length_class() {
+    for arms in [
+        &["[] -> 0", "[first, ..rest] -> first"][..],
+        &["[] -> 0", "[_] -> 1", "[_, _, ..] -> 2"],
+        &["[] -> 0", "[a] -> a", "[.., last] -> last"],
+        &["[] -> 0", "[first, .., last] -> first + last", "[x] -> x"],
+    ] {
+        assert_eq!(
+            check_codes(&list_case(arms)),
+            Vec::<String>::new(),
+            "{arms:?}"
+        );
+    }
+}
+
+// LP-02 and T4231 witness rendering: the message names a missing length class.
+#[test]
+fn a_non_exhaustive_list_case_names_a_missing_list() {
+    for (arms, witness) in [
+        (&["[_, ..] -> 0"][..], "`[]`"),
+        (&["[] -> 0", "[x] -> x"], "`[_, _, ..]`"),
+        (&["[] -> 0", "[first, .., last] -> first + last"], "`[_]`"),
+        (
+            &["[a, b] -> a + b", "[] -> 0", "[_, _, _, ..] -> 0"],
+            "`[_]`",
+        ),
+    ] {
+        let messages = coded_messages(&list_case(arms));
+        assert_eq!(messages.len(), 1, "{arms:?}: {messages:?}");
+        assert_eq!(messages[0].0, "T4231");
+        assert!(messages[0].1.contains(witness), "{arms:?}: {messages:?}");
+    }
+}
+
+#[test]
+fn a_non_exhaustive_enum_case_names_a_missing_variant() {
+    let messages = coded_messages(concat!(
+        "fn f(value: Option<List<Int>>) -> Int {\n",
+        "  case value {\n",
+        "    Some([]) -> 0\n",
+        "    None -> 1\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { f(Some([1])) }\n",
+    ));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(messages[0].0, "T4231");
+    assert!(messages[0].1.contains("`Some([_, ..])`"), "{messages:?}");
+}
+
+// `[a]` then `[.., last]` keeps both reachable; an arm after `[]` and `[_, ..]` is not.
+#[test]
+fn a_list_arm_after_full_coverage_is_unreachable() {
+    assert_eq!(
+        check_codes(&list_case(&["[] -> 0", "[_, ..] -> 1", "[_] -> 2"])),
+        ["T4232"]
+    );
+}
+
+// LP-04
+#[test]
+fn a_list_pattern_with_two_rests_is_rejected() {
+    let codes = check_codes(&list_case(&["[a, ..x, ..y] -> a", "[] -> 0"]));
+    assert_eq!(codes, ["L2021"]);
+}
+
+#[test]
+fn a_list_pattern_against_a_non_list_is_a_type_error() {
+    let codes = check_codes(concat!(
+        "fn f(value: Int) -> Int {\n",
+        "  case value {\n",
+        "    [x] -> x\n",
+        "    _ -> 0\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { f(1) }\n",
+    ));
+    assert_eq!(codes, ["T4230"]);
+}
+
+// LP-05
+#[test]
+fn an_exact_list_pattern_binds_elements_by_position() {
+    let outcome = run_both(
+        "list-pattern-exact",
+        concat!(
+            "fn route(segments: List<Text>) -> List<Text> {\n",
+            "  case segments {\n",
+            "    [a, b] -> [b, a]\n",
+            "    _ -> []\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> List<Text> { route([\"orders\", \"7\"]) }\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":[\"7\",\"orders\"]"
+    );
+}
+
+// LP-06
+#[test]
+fn the_rest_of_a_one_element_list_is_empty() {
+    let outcome = run_both(
+        "list-pattern-empty-rest",
+        concat!(
+            "fn tail(values: List<Int>) -> List<Int> {\n",
+            "  case values {\n",
+            "    [] -> [-1]\n",
+            "    [_, ..rest] -> rest\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> List<Int> { tail([5]) }\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[]");
+}
+
+#[test]
+fn prefix_rest_and_suffix_bind_their_parts() {
+    let outcome = run_both(
+        "list-pattern-parts",
+        concat!(
+            "fn parts(values: List<Int>) -> List<Int> {\n",
+            "  case values {\n",
+            "    [first, ..inner, last] -> [last, List.length(inner), first]\n",
+            "    _ -> []\n",
+            "  }\n",
+            "}\n",
+            "fn inner(values: List<Int>) -> List<Int> {\n",
+            "  case values {\n",
+            "    [_, ..inner, _] -> inner\n",
+            "    _ -> []\n",
+            "  }\n",
+            "}\n",
+            "fn last_two(values: List<Int>) -> List<Int> {\n",
+            "  case values {\n",
+            "    [.., a, b] -> [b, a]\n",
+            "    _ -> []\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> List<List<Int>> {\n",
+            "  [parts([1, 2, 3, 4]), inner([1, 2, 3, 4]), last_two([1, 2, 3]), parts([9])]\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":[[4,2,1],[2,3],[3,2],[]]"
+    );
+}
+
+#[test]
+fn list_patterns_nest_inside_and_around_constructor_patterns() {
+    let outcome = run_both(
+        "list-pattern-nesting",
+        concat!(
+            "enum Slot { Full(value: Int), Hole(width: Int) }\n",
+            "fn score(values: List<Slot>) -> Int {\n",
+            "  case values {\n",
+            "    [Full(first), .., Full(last)] -> first * 10 + last\n",
+            "    [Hole(width), ..rest] -> 100 * width + List.length(rest)\n",
+            "    _ -> 0\n",
+            "  }\n",
+            "}\n",
+            "fn head(value: Option<List<Int>>) -> Int {\n",
+            "  case value {\n",
+            "    Some([first, ..]) -> first\n",
+            "    Some([]) -> -1\n",
+            "    None -> -2\n",
+            "  }\n",
+            "}\n",
+            "fn rest_of(values: List<Int>) -> List<Int> {\n",
+            "  case values {\n",
+            "    [_, ..rest] -> rest\n",
+            "    [] -> values\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> List<Int> {\n",
+            "  [score([Full(1), Full(5), Full(2)]), score([Hole(3), Full(3), Full(4)]), score([Full(7)]),\n",
+            "    head(Some([9, 8])), head(Some(rest_of([1])))]\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[12,302,0,9,-1]");
+}
+
+#[test]
+fn list_patterns_match_inside_outcome_patterns() {
+    let outcome = run_both(
+        "list-pattern-outcome",
+        concat!(
+            "import std/json as Json\n",
+            "import std/json.{Value}\n",
+            "fn count(source: Text) -> Int {\n",
+            "  case Json.decode(source) {\n",
+            "    Success(Value.Array([])) -> 0\n",
+            "    Success(Value.Array([_, ..rest])) -> 1 + List.length(rest)\n",
+            "    Success(_) -> -1\n",
+            "    Failure(error) -> -2\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> List<Int> { [count(\"[]\"), count(\"[1, 2, 3]\"), count(\"7\"), count(\"[\")] }\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[0,3,-1,-2]");
+}
+
+// The loops below bind their record state with `let` first: the formatter splits
+// `loop state = { a: 1 } {` into a form that no longer parses (pre-existing).
+//
+// Window retention: draining by `[x, ..rest]` copies a window once it falls below
+// a quarter of its vector. A position-weighted sum checks that every element is
+// read once, in order, across those copies and across 32-element leaves.
+#[test]
+fn draining_a_list_reads_every_element_in_order_across_window_copies() {
+    let length = 70;
+    let elements = (1..=length)
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        concat!(
+            "fn weighted(values: List<Int>) -> Int {{\n",
+            "  let start = {{ rest: values, position: 1, total: 0 }}\n",
+            "  loop state = start {{\n",
+            "    case state.rest {{\n",
+            "      [] -> break state.total\n",
+            "      [x, ..rest] -> {{ rest: rest, position: state.position + 1, total: state.total + state.position * x }}\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+            "pub fn main() -> Int {{ weighted([{elements}]) }}\n",
+        ),
+        elements = elements
+    );
+    let expected: i64 = (1..=length).map(|value: i64| value * value).sum();
+    assert_eq!(
+        run_both("list-pattern-drain", &source),
+        format!("\"outcome\":\"success\",\"value\":{expected}")
+    );
+}
+
+/// A module that decodes `2^doublings` JSON ones into `values: List<Value>`.
+/// Chimi has no list-building primitive yet, so large lists come from doubling a
+/// text and decoding it, which is linear in the final length.
+fn large_list_module(doublings: u32, rest: &str) -> String {
+    format!(
+        concat!(
+            "import std/json as Json\n",
+            "import std/json.{{Value}}\n",
+            "fn ones(doublings: Int) -> Text {{\n",
+            "  let start = {{ text: \"1\", left: doublings }}\n",
+            "  loop state = start {{\n",
+            "    case state.left {{\n",
+            "      0 -> break state.text\n",
+            "      _ -> {{ text: Text.append(Text.append(state.text, \",\"), state.text), left: state.left - 1 }}\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+            "{rest}",
+            "pub fn main() -> Int {{\n",
+            "  let decoded = Json.decode(Text.append(Text.append(\"[\", ones({doublings})), \"]\"))\n",
+            "  case decoded {{\n",
+            "    Value.Array(values) -> run(values)\n",
+            "    _ -> -1\n",
+            "  }}\n",
+            "}}\n",
+        ),
+        doublings = doublings,
+        rest = rest
+    )
+}
+
+/// LP-07's program: `[.., last]` read `repeats` times from one list.
+fn last_element_program(doublings: u32, repeats: u32) -> String {
+    large_list_module(
+        doublings,
+        &format!(
+            concat!(
+                "fn run(values: List<Value>) -> Int {{\n",
+                "  let start = {{ left: {repeats}, found: 0 }}\n",
+                "  loop state = start {{\n",
+                "    case state.left {{\n",
+                "      0 -> break state.found\n",
+                "      _ -> case values {{\n",
+                "        [.., Value.Number(_)] -> {{ left: state.left - 1, found: state.found + 1 }}\n",
+                "        _ -> {{ left: state.left - 1, found: state.found }}\n",
+                "      }}\n",
+                "    }}\n",
+                "  }}\n",
+                "}}\n",
+            ),
+            repeats = repeats
+        ),
+    )
+}
+
+/// LP-08's program: the `loop` that sums a list by rebinding `[x, ..rest]`.
+fn draining_sum_program(doublings: u32) -> String {
+    large_list_module(
+        doublings,
+        concat!(
+            "fn run(values: List<Value>) -> Int {\n",
+            "  let start = { rest: values, total: 0 }\n",
+            "  loop state = start {\n",
+            "    case state.rest {\n",
+            "      [] -> break state.total\n",
+            "      [Value.Number(_), ..rest] -> { rest: rest, total: state.total + 1 }\n",
+            "      [_, ..rest] -> { rest: rest, total: state.total }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+}
+
+// LP-07 on both paths. The reference interpreter records a full trace of every
+// operation, so this runs at 2^14 elements; `tests/cli.rs` checks the
+// 1,000,000-element row natively, where allocation is measurable.
+#[test]
+fn the_last_element_pattern_reads_one_element_of_a_large_list() {
+    let outcome = run_both("list-pattern-last", &last_element_program(14, 200));
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":200");
+}
+
+// LP-08 on both paths, at 2^14 elements for the same reason as LP-07.
+#[test]
+fn a_loop_drains_a_large_list_by_rebinding_the_rest() {
+    let outcome = run_both("list-pattern-sum", &draining_sum_program(14));
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":16384");
+}
+
+#[test]
+fn list_patterns_format_canonically() {
+    let source = concat!(
+        "fn f(values: List<Int>) -> Int {\n",
+        "  case values {\n",
+        "    [ ] -> 0\n",
+        "    [first,..rest,last] -> first\n",
+        "    [ .. , last ] -> last\n",
+        "  }\n",
+        "}\n",
+    );
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(
+        !formatted.is_blocked(),
+        "{}",
+        formatted.render_diagnostics()
+    );
+    assert_eq!(
+        formatted.text(),
+        concat!(
+            "fn f(values: List<Int>) -> Int {\n",
+            "  case values {\n",
+            "    [] -> 0\n",
+            "    [first, ..rest, last] -> first\n",
+            "    [.., last] -> last\n",
+            "  }\n",
+            "}\n",
+        )
+    );
+}
+
+#[test]
+fn hovering_a_list_pattern_binding_reports_its_type() {
+    let source = concat!(
+        "fn f(values: List<Int>) -> Int {\n",
+        "  case values {\n",
+        "    [] -> 0\n",
+        "    [first, ..rest] -> first + List.length(rest)\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { f([1]) }\n",
+    );
+    for (name, expected) in [("first,", "Int"), ("rest]", "List<Int>")] {
+        let offset = source.find(name).unwrap();
+        let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+            .expect("valid module path");
+        let inspection = Compiler::inspect_project(vec![module], "main", offset).unwrap();
+        assert_eq!(inspection.inferred_type(), Some(expected), "{name}");
+    }
+}

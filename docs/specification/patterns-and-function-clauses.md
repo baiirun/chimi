@@ -5,9 +5,11 @@
 This is the normative contract for multi-clause functions (`L1`), list
 patterns (`G15`), tuple, literal, and struct patterns, failure-type patterns
 (`G26`), and record update (`G8`). The design ticket is `prog show ts-be39c0`.
-Nothing here is implemented yet. Today a module allows one function per name
-(`E_DUPLICATE_SYMBOL`), and patterns are limited to bindings, `_`, literals,
-and enum variants.
+List patterns (`G15`) are implemented, including list coverage, the `T4231`
+witness, `L2021`, and the cost model below (`prog show ts-553107`). Nothing
+else here is implemented yet. Today a module allows one function per name
+(`E_DUPLICATE_SYMBOL`), and other patterns are limited to bindings, `_`,
+literals, and enum variants.
 
 The words MUST, MUST NOT, SHOULD, and MAY are normative. Examples use
 positional construction. Examples that call standard-library modules beyond
@@ -420,12 +422,20 @@ Over the persistent vector (`L3`), matching MUST stay within these bounds:
 - The length check is O(1) and happens before any element access.
 - Each matched element costs one indexed read, which is O(log n) with a wide
   branching factor and effectively constant for realistic sizes.
-- Binding `..rest` MUST be O(1) in time and allocation. The binding is a view
-  that shares the source vector's storage, holding an offset and a length. It
-  MUST NOT copy elements.
-- A view keeps its source's storage alive. Code that keeps a small `rest` of a
-  very large list retains the large list. Copying the elements into a new list
-  releases it.
+- Binding `..rest` MUST be O(1) amortized in time and allocation. The binding
+  is a view that shares the source vector's storage, holding an offset and a
+  length, while the view holds at least a quarter of that vector's elements.
+- A view shorter than a quarter of its vector MUST instead copy its elements
+  into a new vector, so a small `rest` never keeps a large list alive. Both
+  execution paths apply the same rule.
+- Draining a list of `n` elements one at a time, as the `loop` example does,
+  therefore copies fewer than `n / 3` elements in total (`n/4 + n/16 + ...`):
+  each copy of `m` elements follows at least `3m` dropped ones, so every
+  `rest` costs O(1) amortized. A program that repeatedly takes a short view of
+  one long-lived large window pays O(view length) per view; that is the cost
+  of not retaining the large vector.
+- Matching a pattern without `..rest`, such as `[.., last]`, MUST NOT allocate
+  list storage.
 
 The `L3` representation therefore MUST support constant-time slicing views.
 
@@ -722,8 +732,8 @@ specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2022`:
 | LP-04 | `[a, ..x, ..y]` | `L2021` |
 | LP-05 | `[a, b]` against `["orders", "7"]` | Runtime: binds `a = "orders"`, `b = "7"` |
 | LP-06 | `[first, ..rest]` against a one-element list | Runtime: `rest` is `[]` |
-| LP-07 | `[.., last]` against a 1,000,000-element list | Runtime: one indexed read; no copy |
-| LP-08 | `sum` over 10,000,000 elements with the `loop` example | Runtime: constant stack; `rest` views allocate O(1) each |
+| LP-07 | `[.., last]` against a 1,000,000-element list | Runtime: one indexed read; no list storage allocated |
+| LP-08 | `sum` over 10,000,000 elements with the `loop` example | Runtime: constant stack; `rest` views allocate O(1) each, amortized over window copies |
 | LP-09 | `Some([("id", Json.Number(id)), ..])` | Compiles; nested match binds `id` |
 | TP-01 | `let (name, port) = parse_address(raw)` | Compiles |
 | TP-02 | `let Some(value) = lookup(key)` | `T4231`; witness `None` |

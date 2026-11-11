@@ -2534,3 +2534,134 @@ fn native_boolean_operand_parks_on_receive_then_succeeds() {
     );
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+/// A program that decodes 2^20 = 1,048,576 JSON ones into `values` and passes them to
+/// `run`. Chimi has no list-building primitive yet, so a large list comes from
+/// doubling a text and decoding it, which is linear in the final length.
+fn million_element_list_program(run: &str) -> String {
+    format!(
+        concat!(
+            "import std/json as Json\n",
+            "import std/json.{{Value}}\n",
+            "fn ones(doublings: Int) -> Text {{\n",
+            "  loop state = {{ text: \"1\", left: doublings }} {{\n",
+            "    case state.left {{\n",
+            "      0 -> break state.text\n",
+            "      _ -> {{ text: Text.append(Text.append(state.text, \",\"), state.text), left: state.left - 1 }}\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+            "{run}",
+            "pub fn main() -> Int {{\n",
+            "  let decoded = Json.decode(Text.append(Text.append(\"[\", ones(20)), \"]\"))\n",
+            "  case decoded {{\n",
+            "    Value.Array(values) -> run(values)\n",
+            "    _ -> -1\n",
+            "  }}\n",
+            "}}\n",
+        ),
+        run = run
+    )
+}
+
+/// Runs `executable` and returns its outcome line and memory report.
+fn execute_with_memory_report(executable: &Path, scratch: &Path) -> (String, String) {
+    let outcome = scratch.join("outcome.jsonl");
+    let memory_report = scratch.join("memory.json");
+    let execution = Command::new(executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--outcome-file={}", outcome.display()))
+        .arg(format!("--memory-report-file={}", memory_report.display()))
+        .arg("--")
+        .output()
+        .expect("run native program with a memory report");
+    assert!(
+        execution.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+    (
+        std::fs::read_to_string(outcome).unwrap(),
+        std::fs::read_to_string(memory_report).unwrap(),
+    )
+}
+
+// LP-07: `[.., last]` checks the length and reads one element, so matching a
+// 1,048,576-element list 10,000 times allocates no list storage. A copy per match
+// would allocate about 8 MB of list nodes each time.
+#[test]
+fn native_last_element_pattern_does_not_copy_a_large_list() {
+    let scratch = scratch_directory("native-list-pattern-last");
+    let executable = build_native(
+        &scratch,
+        "list-pattern-last",
+        &million_element_list_program(concat!(
+            "fn run(values: List<Value>) -> Int {\n",
+            "  loop state = { left: 10000, found: 0 } {\n",
+            "    case state.left {\n",
+            "      0 -> break state.found\n",
+            "      _ -> case values {\n",
+            "        [.., Value.Number(_)] -> { left: state.left - 1, found: state.found + 1 }\n",
+            "        _ -> { left: state.left - 1, found: state.found }\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        )),
+    );
+    let (outcome, memory_report) = execute_with_memory_report(&executable, &scratch);
+    assert_eq!(
+        outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":10000}\n"
+    );
+    assert_eq!(
+        json_u64_field(&memory_report, "list_nodes"),
+        0,
+        "{memory_report}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// LP-08: a `loop` that sums a list by rebinding `[x, ..rest]` runs its passes in
+// constant stack and allocates O(1) per `rest` view. The spec row says 10,000,000
+// elements; this uses 2^20 because each decoded JSON element costs about 100 bytes
+// of setup, and the per-element bound below already separates a constant cost per
+// view (hundreds of bytes) from a copy per view (megabytes per pass at this size).
+#[test]
+fn native_draining_loop_allocates_a_constant_amount_per_rest_view() {
+    let scratch = scratch_directory("native-list-pattern-drain");
+    let executable = build_native(
+        &scratch,
+        "list-pattern-drain",
+        &million_element_list_program(concat!(
+            "fn run(values: List<Value>) -> Int {\n",
+            "  loop state = { rest: values, total: 0 } {\n",
+            "    case state.rest {\n",
+            "      [] -> break state.total\n",
+            "      [Value.Number(_), ..rest] -> { rest: rest, total: state.total + 1 }\n",
+            "      [_, ..rest] -> { rest: rest, total: state.total }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        )),
+    );
+    let started = std::time::Instant::now();
+    let (outcome, memory_report) = execute_with_memory_report(&executable, &scratch);
+    let elapsed = started.elapsed();
+    let elements = 1_u64 << 20;
+    assert_eq!(
+        outcome,
+        format!(
+            "{{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":{elements}}}\n"
+        )
+    );
+    let per_element = json_u64_field(&memory_report, "scoped_total_allocated_bytes") / elements;
+    assert!(
+        per_element < 2048,
+        "{per_element} bytes per pass: {memory_report}"
+    );
+    // Re-marking the whole list on each pass's collection took minutes at this size.
+    assert!(elapsed.as_secs() < 60, "draining took {elapsed:?}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}

@@ -2,7 +2,7 @@ use crate::diagnostic::Diagnostic;
 use crate::ids::{ModuleId, SemanticId, SymbolId, TextRange};
 use crate::json::write_json_string;
 use crate::resolution::{ProjectReference, ReferenceResolution};
-use crate::semantic::{ModuleBlockItem, ModuleExpression, SemanticModule};
+use crate::semantic::{ModuleBlockItem, ModuleExpression, Pattern, SemanticModule};
 use crate::syntax::ParseResult;
 use crate::typing::{CallableContract, TypedProject};
 use std::fmt::{self, Write};
@@ -354,7 +354,13 @@ pub(crate) fn inspect(
         .or_else(|| expression.map(ModuleExpression::semantic_id));
     let expression_fact =
         semantic_id.and_then(|semantic_id| typed.expression_facts.get(&(module.id, semantic_id)));
-    let inferred_type = expression_fact.map(|fact| typed.format_type(fact.success));
+    let pattern_binding_type = expression
+        .and_then(|expression| pattern_binding_at(expression, offset))
+        .and_then(|semantic_id| typed.pattern_binding_types.get(&(module.id, semantic_id)));
+    let inferred_type = pattern_binding_type
+        .copied()
+        .or_else(|| expression_fact.map(|fact| fact.success))
+        .map(|type_id| typed.format_type(type_id));
     let target_symbol = reference.and_then(reference_target);
     let instantiated_callable = semantic_id
         .and_then(|semantic_id| typed.callee_instantiations.get(&(module.id, semantic_id)))
@@ -615,6 +621,29 @@ fn expression_children(expression: &ModuleExpression) -> Vec<&ModuleExpression> 
             )
             .collect(),
     }
+}
+
+/// The binding pattern under `offset` in an arm of `expression`, when it is a `case`
+/// whose patterns, not its subjects or bodies, hold `offset`.
+fn pattern_binding_at(expression: &ModuleExpression, offset: usize) -> Option<SemanticId> {
+    fn binding_in(pattern: &Pattern, offset: usize) -> Option<SemanticId> {
+        if !range_contains(pattern.range(), offset) {
+            return None;
+        }
+        match pattern {
+            Pattern::Binding { semantic_id, .. } => Some(*semantic_id),
+            _ => pattern
+                .children()
+                .into_iter()
+                .find_map(|child| binding_in(child, offset)),
+        }
+    }
+    let ModuleExpression::Case { arms, .. } = expression else {
+        return None;
+    };
+    arms.iter()
+        .flat_map(|arm| &arm.patterns)
+        .find_map(|pattern| binding_in(pattern, offset))
 }
 
 fn range_contains(range: TextRange, offset: usize) -> bool {

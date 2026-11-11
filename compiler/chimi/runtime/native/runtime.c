@@ -102,7 +102,7 @@ struct ChimiValue {
     const char *text;
     bool boolean;
     /* A List is the window [start, start + length) of a shared vector, so
-       slicing is O(1). A window keeps its whole vector reachable. */
+       slicing is O(1) amortized; see list_slice for when a window copies. */
     struct { ListVector vector; uint32_t start; uint32_t length; } list;
     struct { RuntimeField *fields; uint32_t length; } record;
     struct { uint32_t constructor; const char *type_name; const char *variant_name;
@@ -167,14 +167,16 @@ struct ChimiRuntime {
 };
 
 typedef struct AllocationHeader AllocationHeader;
+typedef struct AllocationScope AllocationScope;
 struct AllocationHeader {
   AllocationHeader *next;
   size_t bytes;
   uint64_t mark_epoch;
   AllocationKind kind;
+  /* The scope whose list holds this allocation; NULL outside every scope. */
+  AllocationScope *scope;
 };
 
-typedef struct AllocationScope AllocationScope;
 struct AllocationScope {
   AllocationScope *parent;
   AllocationHeader *allocations;
@@ -186,6 +188,11 @@ struct AllocationScope {
 };
 
 static AllocationScope *current_allocation_scope;
+/* The scope allocation_scope_collect is marking. Marking stops at allocations outside
+   it: they were made before the scope began and values never change, so they cannot
+   reach the scope's allocations, and traversing them would make every collection cost
+   the size of long-lived data such as a large list a loop drains. */
+static AllocationScope *collecting_scope;
 static uint64_t next_mark_epoch = 1;
 
 static void *allocate(size_t count, size_t size) {
@@ -200,6 +207,7 @@ static void *allocate(size_t count, size_t size) {
   AllocationHeader *header = calloc(1, sizeof(*header) + bytes);
   if (header == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
   header->bytes = bytes;
+  header->scope = current_allocation_scope;
   if (current_allocation_scope) {
     header->next = current_allocation_scope->allocations;
     current_allocation_scope->allocations = header;
@@ -438,8 +446,8 @@ static ChimiValue *list_get(const ChimiValue *list, uint32_t index) {
   index += list->as.list.start;
   return vector_leaf(list->as.list.vector, index)->slots[index & LIST_MASK];
 }
-/* The following primitives are reached from Chimi once the standard-library
-   mechanism (G1) and list patterns expose them; until then only tests call them. */
+/* list_push is reached from Chimi once the standard-library mechanism (G1)
+   exposes it; until then only tests call it. */
 
 /* Returns a new list with `item` appended; `list` is unchanged. A window that
    ends before its vector does writes slot `end` into a path copy instead, so
@@ -450,13 +458,45 @@ __attribute__((unused)) static ChimiValue *list_push(const ChimiValue *list, Chi
   vector = end == vector.length ? vector_push(vector, item) : vector_set(vector, end, item);
   return list_value(vector, list->as.list.start, list->as.list.length + 1);
 }
-/* O(1) window [from, to) of `list`, sharing its vector. Requires from <= to <= length. */
-__attribute__((unused)) static ChimiValue *list_slice(const ChimiValue *list, uint32_t from, uint32_t to) {
-  if (from > to || to > list->as.list.length) {
-    fputs("Chimi runtime list slice out of range\n", stderr); exit(70);
-  }
+/* The innermost scope among a vector's root and tail. Live scopes form a stack, so a
+   later allocation sits in the same scope as an earlier one or in a nested one; this
+   scope therefore holds the vector's youngest node, and its elements are no younger.
+   NULL (outside every scope) encloses every scope. */
+static AllocationScope *vector_scope(ListVector vector) {
+  AllocationScope *root = vector.root ? allocation_header(vector.root)->scope : NULL;
+  AllocationScope *tail = vector.tail ? allocation_header(vector.tail)->scope : NULL;
+  if (!root) return tail;
+  for (AllocationScope *scope = tail; scope; scope = scope->parent)
+    if (scope == root) return tail;
+  return root;
+}
+/* A window shorter than 1/LIST_RETAINED_FRACTION of its vector is copied. */
+enum { LIST_RETAINED_FRACTION = 4 };
+/* Window [from, to) of `list`, or NULL when the range is reversed or past the end.
+   The window shares the vector in O(1) unless it is shorter than a quarter of it;
+   then it copies its elements into a fresh vector so a small window does not keep a
+   large vector alive. Draining n elements one at a time copies fewer than n/3 in
+   total (n/4 + n/16 + ...), because each copy of m elements follows at least 3m
+   dropped ones. The interpreter's PersistentList::slice applies the same rule. */
+static ChimiValue *list_slice(const ChimiValue *list, uint32_t from, uint32_t to) {
+  if (from > to || to > list->as.list.length) return NULL;
   if (from == to) return list_value((ListVector){NULL, NULL, 0}, 0, 0);
-  return list_value(list->as.list.vector, list->as.list.start + from, to - from);
+  uint32_t length = to - from;
+  if ((uint64_t)length * LIST_RETAINED_FRACTION < list->as.list.vector.length) {
+    ChimiValue **values = malloc((size_t)length * sizeof(*values));
+    if (!values) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+    for (uint32_t index = 0; index < length; ++index) values[index] = list_get(list, from + index);
+    /* The copy joins the scope of the vector it replaces. Its elements are no younger
+       than that vector, so the copy breaks no scope invariant, and a loop draining a
+       list built before the loop does not re-mark each copy on every pass. */
+    AllocationScope *current = current_allocation_scope;
+    current_allocation_scope = vector_scope(list->as.list.vector);
+    ChimiValue *copy = list_from_values(values, length);
+    current_allocation_scope = current;
+    free(values);
+    return copy;
+  }
+  return list_value(list->as.list.vector, list->as.list.start + from, length);
 }
 
 static void mark_value(ChimiValue *value, uint64_t epoch);
@@ -467,7 +507,7 @@ static bool mark_allocation(void *value, uint64_t epoch, AllocationKind expected
   if (header->kind != expected_kind) {
     fputs("Chimi runtime allocation graph is inconsistent\n", stderr); exit(70);
   }
-  if (header->mark_epoch == epoch) return false;
+  if (header->scope != collecting_scope || header->mark_epoch == epoch) return false;
   header->mark_epoch = epoch;
   return true;
 }
@@ -556,8 +596,10 @@ static void allocation_scope_collect(AllocationScope *scope, ChimiValue *value,
   if (next_mark_epoch == 0) {
     fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); exit(70);
   }
+  collecting_scope = scope;
   mark_value(value, epoch);
   mark_control(control, epoch);
+  collecting_scope = NULL;
   AllocationHeader **cursor = &scope->allocations;
   while (*cursor) {
     AllocationHeader *header = *cursor;
@@ -574,6 +616,8 @@ static void allocation_scope_collect(AllocationScope *scope, ChimiValue *value,
 
 static void allocation_scope_end(AllocationScope *scope) {
   current_allocation_scope = scope->parent;
+  for (AllocationHeader *header = scope->allocations; header; header = header->next)
+    header->scope = scope->parent;
   if (!scope->parent || !scope->allocations) return;
   size_t nested_peak = scope->parent->live_bytes + scope->peak_live_bytes;
   if (nested_peak > scope->parent->peak_live_bytes)
@@ -2263,37 +2307,64 @@ static bool literal_matches(const ChimiPattern *pattern, const ChimiValue *value
   if (pattern->a == CHIMI_LITERAL_TEXT) return value->kind == VALUE_TEXT && strcmp(value->as.text, CHIMI_STRINGS[pattern->offset]) == 0;
   return value->kind == VALUE_BOOLEAN && value->as.boolean == (pattern->integer != 0);
 }
-static bool match_plain(uint32_t pattern_id, ChimiValue *value, ChimiEnvironment *environment) {
+/* The binding pass of a match. `view_failed` records a list view that could not be
+   taken, which the match reports as a defect. */
+typedef struct { ChimiEnvironment *environment; bool view_failed; } PatternBinder;
+
+static bool match_plain(uint32_t pattern_id, ChimiValue *value, PatternBinder *binder);
+/* Checks the length first, then reads each fixed element by index. In the binding
+   pass a named rest receives the view between the prefix and the suffix. */
+static bool match_list(const ChimiPattern *pattern, ChimiValue *value, PatternBinder *binder) {
+  if (value->kind != VALUE_LIST) return false;
+  uint32_t length = list_length(value), prefix = pattern->a, has_rest = pattern->integer != 0;
+  uint32_t suffix = pattern->length - prefix - has_rest;
+  if (has_rest ? length < prefix + suffix : length != prefix) return false;
+  uint32_t suffix_start = length - suffix;
+  for (uint32_t index = 0; index < prefix; ++index)
+    if (!match_plain(CHIMI_IDS[pattern->offset + index], list_get(value, index), binder)) return false;
+  for (uint32_t index = 0; index < suffix; ++index)
+    if (!match_plain(CHIMI_IDS[pattern->offset + prefix + has_rest + index],
+                     list_get(value, suffix_start + index), binder))
+      return false;
+  if (!has_rest || !binder) return true;
+  uint32_t rest_id = CHIMI_IDS[pattern->offset + prefix];
+  if (CHIMI_PATTERNS[rest_id].kind == CHIMI_PATTERN_WILDCARD) return true;
+  ChimiValue *view = list_slice(value, prefix, suffix_start);
+  if (!view) { binder->view_failed = true; return false; }
+  return match_plain(rest_id, view, binder);
+}
+static bool match_plain(uint32_t pattern_id, ChimiValue *value, PatternBinder *binder) {
   const ChimiPattern *pattern = &CHIMI_PATTERNS[pattern_id];
   switch (pattern->kind) {
     case CHIMI_PATTERN_WILDCARD: return true;
     case CHIMI_PATTERN_BINDING:
-      if (environment) environment->locals[environment_slot(pattern->a)] = value;
+      if (binder) binder->environment->locals[environment_slot(pattern->a)] = value;
       return true;
     case CHIMI_PATTERN_LITERAL: return literal_matches(pattern, value);
     case CHIMI_PATTERN_CONSTRUCTOR:
       if (value->kind != VALUE_CONSTRUCTED || value->as.constructed.constructor != pattern->a ||
           value->as.constructed.length != pattern->length) return false;
       for (uint32_t i = 0; i < pattern->length; ++i)
-        if (!match_plain(CHIMI_IDS[pattern->offset + i], value->as.constructed.fields[i].value, environment)) return false;
+        if (!match_plain(CHIMI_IDS[pattern->offset + i], value->as.constructed.fields[i].value, binder)) return false;
       return true;
     case CHIMI_PATTERN_OUTCOME: return false;
+    case CHIMI_PATTERN_LIST: return match_list(pattern, value, binder);
   }
   return false;
 }
-static bool match_value(uint32_t pattern_id, MatchValue value, ChimiEnvironment *environment) {
+static bool match_value(uint32_t pattern_id, MatchValue value, PatternBinder *binder) {
   const ChimiPattern *pattern = &CHIMI_PATTERNS[pattern_id];
   if (pattern->kind == CHIMI_PATTERN_OUTCOME) {
     MatchKind expected = pattern->a ? MATCH_SUCCESS : MATCH_FAILURE;
-    return value.kind == expected && match_plain(pattern->offset, value.value, environment);
+    return value.kind == expected && match_plain(pattern->offset, value.value, binder);
   }
-  return value.kind == MATCH_PLAIN && match_plain(pattern_id, value.value, environment);
+  return value.kind == MATCH_PLAIN && match_plain(pattern_id, value.value, binder);
 }
 static bool pattern_binds(uint32_t pattern_id) {
   const ChimiPattern *pattern = &CHIMI_PATTERNS[pattern_id];
   if (pattern->kind == CHIMI_PATTERN_BINDING) return true;
   if (pattern->kind == CHIMI_PATTERN_OUTCOME) return pattern_binds(pattern->offset);
-  if (pattern->kind != CHIMI_PATTERN_CONSTRUCTOR) return false;
+  if (pattern->kind != CHIMI_PATTERN_CONSTRUCTOR && pattern->kind != CHIMI_PATTERN_LIST) return false;
   for (uint32_t index = 0; index < pattern->length; ++index)
     if (pattern_binds(CHIMI_IDS[pattern->offset + index])) return true;
   return false;
@@ -2323,11 +2394,14 @@ NODE_WRAPPER(match, "match", {
     for (uint32_t subject = 0; subject < node->length; ++subject)
       if (pattern_binds(CHIMI_IDS[arm->patterns_offset + subject])) { binds = true; break; }
     ChimiEnvironment *arm_environment = binds ? clone_local_environment(environment) : environment;
-    if (binds)
-      for (uint32_t subject = 0; subject < node->length; ++subject)
-        if (!match_value(CHIMI_IDS[arm->patterns_offset + subject], values[subject], arm_environment)) {
-          fputs("verified pattern changed while binding\n", stderr); exit(70);
-        }
+    PatternBinder binder = {arm_environment, false};
+    for (uint32_t subject = 0; binds && subject < node->length; ++subject)
+      if (!match_value(CHIMI_IDS[arm->patterns_offset + subject], values[subject], &binder)) {
+        result = defect(binder.view_failed ? "verified list pattern took a view outside its list"
+                                           : "verified pattern changed while binding", node_id);
+        stopped = true; break;
+      }
+    if (stopped) break;
     if (arm->guard != UINT32_MAX) {
       ChimiControl *guard = run_node(arm->guard, runtime, arm_environment, span);
       if (guard->kind != CONTROL_SUCCESS) { result = guard; stopped = true; break; }
