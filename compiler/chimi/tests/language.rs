@@ -685,7 +685,9 @@ fn an_expression_at_file_scope_is_a_syntax_error() {
     assert_eq!(codes, ["S1001"]);
 }
 
-// ts-5b02a8: a line break after a field's `errors` row separates fields.
+// ts-5b02a8: a line break after a field's `errors` row separates fields. A
+// `needs` row on the next line continues a function type, and a
+// function-typed parameter ends at the comma of a multi-line parameter list.
 #[test]
 fn line_breaks_separate_interface_fields_with_failure_rows() {
     let outcome = run_both(
@@ -703,17 +705,27 @@ fn line_breaks_separate_interface_fields_with_failure_rows() {
             "fn copy(from: Text, to: Text) -> Int needs { files: Files } {\n",
             "  files.write(to, files.read(from) + files.size(from))\n",
             "}\n",
+            "fn twice(\n",
+            "  step: fn(Int) -> Int errors FileFault\n",
+            "    needs { files: Files },\n",
+            "  value: Int,\n",
+            ") -> Int needs { files: Files } {\n",
+            "  step(step(value))\n",
+            "}\n",
+            "fn grow(value: Int) -> Int needs { files: Files } {\n",
+            "  value + files.size(\"x\")\n",
+            "}\n",
             "let fake = {\n",
             "  read: fn(_path) { 40 },\n",
             "  write: fn(_path, value) { value },\n",
             "  size: fn(_path) { 2 },\n",
             "}\n",
             "pub fn main() -> Int {\n",
-            "  copy(\"a\", \"b\") using { files: fake }\n",
+            "  twice(grow, copy(\"a\", \"b\")) using { files: fake }\n",
             "}\n",
         ),
     );
-    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":42");
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":46");
 }
 
 // ts-cdc536: standard failure enums denote their variants in failure rows.
