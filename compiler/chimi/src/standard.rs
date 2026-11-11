@@ -8,10 +8,11 @@ pub(crate) enum StandardModule {
     Int,
     Float,
     Debug,
+    Order,
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Channel,
         Self::Io,
         Self::Json,
@@ -20,6 +21,7 @@ impl StandardModule {
         Self::Int,
         Self::Float,
         Self::Debug,
+        Self::Order,
     ];
 
     pub(crate) const fn path(self) -> &'static str {
@@ -32,6 +34,7 @@ impl StandardModule {
             Self::Int => "std/int",
             Self::Float => "std/float",
             Self::Debug => "std/debug",
+            Self::Order => "std/order",
         }
     }
 
@@ -69,6 +72,7 @@ pub(crate) enum StandardType {
     IntParseError,
     FloatParseError,
     FloatConversionError,
+    Ordering,
 }
 
 impl StandardType {
@@ -110,6 +114,7 @@ impl StandardType {
             Self::Task => "Task",
             Self::IntParseError | Self::FloatParseError => "ParseError",
             Self::FloatConversionError => "ConversionError",
+            Self::Ordering => "Ordering",
         }
     }
 
@@ -139,7 +144,8 @@ impl StandardType {
             | Self::ChannelError
             | Self::IntParseError
             | Self::FloatParseError
-            | Self::FloatConversionError => StandardProperties::Structural,
+            | Self::FloatConversionError
+            | Self::Ordering => StandardProperties::Structural,
         }
     }
 
@@ -214,10 +220,13 @@ pub(crate) enum StandardFunction {
     DebugRender,
     /// `std/debug.render_indented`: the debug format with one part per line.
     DebugRenderIndented,
+    OrderCompare,
+    OrderMin,
+    OrderMax,
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 40] = [
+    pub(crate) const ALL: [Self; 43] = [
         Self::DebugRender,
         Self::DebugRenderIndented,
         Self::IntParse,
@@ -236,6 +245,9 @@ impl StandardFunction {
         Self::FloatToInt,
         Self::FloatToText,
         Self::FloatParse,
+        Self::OrderCompare,
+        Self::OrderMin,
+        Self::OrderMax,
         Self::IoPath,
         Self::MapEmpty,
         Self::MapGet,
@@ -297,6 +309,7 @@ impl StandardFunction {
             | Self::FloatToText
             | Self::FloatParse => Some(StandardModule::Float),
             Self::DebugRender | Self::DebugRenderIndented => Some(StandardModule::Debug),
+            Self::OrderCompare | Self::OrderMin | Self::OrderMax => Some(StandardModule::Order),
             Self::ListFirst | Self::ListLength | Self::TextAppend | Self::TextEqual => None,
         }
     }
@@ -345,6 +358,9 @@ impl StandardFunction {
             Self::FloatToInt => "to_int",
             Self::DebugRender => "render",
             Self::DebugRenderIndented => "render_indented",
+            Self::OrderCompare => "compare",
+            Self::OrderMin => "min",
+            Self::OrderMax => "max",
         }
     }
 
@@ -390,10 +406,13 @@ pub(crate) enum StandardConstructor {
     FloatParseOutOfRange,
     FloatNotInteger,
     FloatOutOfRange,
+    OrderingLess,
+    OrderingEqual,
+    OrderingGreater,
 }
 
 impl StandardConstructor {
-    pub(crate) const ALL: [Self; 30] = [
+    pub(crate) const ALL: [Self; 33] = [
         Self::IntParseEmpty,
         Self::IntParseInvalidDigit,
         Self::IntParseOutOfRange,
@@ -402,6 +421,9 @@ impl StandardConstructor {
         Self::FloatParseOutOfRange,
         Self::FloatNotInteger,
         Self::FloatOutOfRange,
+        Self::OrderingLess,
+        Self::OrderingEqual,
+        Self::OrderingGreater,
         Self::ConsoleWriteFailed,
         Self::FileClose,
         Self::FileLineTooLong,
@@ -452,6 +474,9 @@ impl StandardConstructor {
                 StandardType::FloatParseError
             }
             Self::FloatNotInteger | Self::FloatOutOfRange => StandardType::FloatConversionError,
+            Self::OrderingLess | Self::OrderingEqual | Self::OrderingGreater => {
+                StandardType::Ordering
+            }
         }
     }
 
@@ -463,6 +488,7 @@ impl StandardConstructor {
         }
         match self.type_kind() {
             StandardType::IntParseError => Some(StandardModule::Int),
+            StandardType::Ordering => Some(StandardModule::Order),
             StandardType::FloatParseError | StandardType::FloatConversionError => {
                 Some(StandardModule::Float)
             }
@@ -520,6 +546,9 @@ impl StandardConstructor {
                 "OutOfRange"
             }
             Self::FloatNotInteger => "NotInteger",
+            Self::OrderingLess => "Less",
+            Self::OrderingEqual => "Equal",
+            Self::OrderingGreater => "Greater",
         }
     }
 
@@ -563,7 +592,10 @@ impl StandardConstructor {
             | Self::FloatParseInvalid
             | Self::FloatParseOutOfRange
             | Self::FloatNotInteger
-            | Self::FloatOutOfRange => &[],
+            | Self::FloatOutOfRange
+            | Self::OrderingLess
+            | Self::OrderingEqual
+            | Self::OrderingGreater => &[],
         }
     }
 
@@ -623,10 +655,13 @@ pub(crate) enum StandardGeneric {
     ChannelValue,
     DebugRenderValue,
     DebugRenderIndentedValue,
+    OrderCompareValue,
+    OrderMinValue,
+    OrderMaxValue,
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 27] = [
+    pub(crate) const ALL: [Self; 30] = [
         Self::DebugRenderValue,
         Self::DebugRenderIndentedValue,
         Self::FileState,
@@ -654,6 +689,9 @@ impl StandardGeneric {
         Self::TaskFailures,
         Self::TaskNeeds,
         Self::ChannelValue,
+        Self::OrderCompareValue,
+        Self::OrderMinValue,
+        Self::OrderMaxValue,
     ];
 
     /// The name shown in contracts and diagnostics. Names repeat across
@@ -686,6 +724,7 @@ impl StandardGeneric {
             Self::TaskNeeds => "R",
             Self::ChannelValue => "T",
             Self::DebugRenderValue | Self::DebugRenderIndentedValue => "T",
+            Self::OrderCompareValue | Self::OrderMinValue | Self::OrderMaxValue => "A",
         }
     }
 

@@ -319,7 +319,7 @@ or an order over a type that is not ordered.
 
 ```chimi
 import std/order as Order
-import std/order.{Ordering}
+import std/order.{Equal, Ordering}
 
 struct User {
   name: Text,

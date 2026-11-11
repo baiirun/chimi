@@ -571,6 +571,7 @@ impl ProjectResolver {
             (StandardType::IntParseError, StandardModule::Int),
             (StandardType::FloatParseError, StandardModule::Float),
             (StandardType::FloatConversionError, StandardModule::Float),
+            (StandardType::Ordering, StandardModule::Order),
         ] {
             let symbol = self.add_symbol(
                 None,
@@ -698,6 +699,18 @@ impl ProjectResolver {
                     StandardGeneric::MapValuesFailures,
                     StandardGeneric::MapValuesNeeds,
                 ],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::OrderCompare),
+                vec![StandardGeneric::OrderCompareValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::OrderMin),
+                vec![StandardGeneric::OrderMinValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::OrderMax),
+                vec![StandardGeneric::OrderMaxValue],
             ),
             (
                 self.standard_constructor_symbol(StandardConstructor::OptionSome),

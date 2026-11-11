@@ -3760,3 +3760,85 @@ fn a_generic_struct_instantiated_with_data_is_equatable() {
     );
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[true,false]");
 }
+
+fn ordering(variant: &str) -> String {
+    format!("{{\"type\":\"Ordering\",\"variant\":\"{variant}\",\"fields\":{{}}}}")
+}
+
+// O8 and comparators: `Order.compare` is the structural order as an `Ordering`,
+// and it is an ordinary function value that fits a comparator parameter.
+#[test]
+fn order_compare_returns_the_structural_ordering() {
+    let source = concat!(
+        "import std/order as Order\n",
+        "import std/order.{Equal, Ordering}\n",
+        "struct User { name: Text, age: Int }\n",
+        "fn by_age_then_name(left: User, right: User) -> Ordering {\n",
+        "  case Order.compare(left.age, right.age) {\n",
+        "    Equal -> Order.compare(left.name, right.name)\n",
+        "    other -> other\n",
+        "  }\n",
+        "}\n",
+        "fn apply(comparator: fn(Int, Int) -> Ordering) -> Ordering { comparator(1, 0) }\n",
+        "pub fn main() -> List<Ordering> {\n",
+        "  [\n",
+        "    Order.compare(3, 3),\n",
+        "    Order.compare([1], [1, 0]),\n",
+        "    by_age_then_name(User(\"b\", 30), User(\"a\", 30)),\n",
+        "    by_age_then_name(User(\"a\", 30), User(\"b\", 31)),\n",
+        "    apply(Order.compare),\n",
+        "  ]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("order-compare", source),
+        format!(
+            "\"outcome\":\"success\",\"value\":[{},{},{},{},{}]",
+            ordering("Equal"),
+            ordering("Less"),
+            ordering("Greater"),
+            ordering("Less"),
+            ordering("Greater")
+        )
+    );
+}
+
+// O17: `Order.min` and `Order.max` return the left operand when the two are
+// equal; `-0.0` and `0.0` are equal but render differently, so the pick shows.
+#[test]
+fn order_min_and_max_keep_the_left_operand_on_ties() {
+    let outcome = run_both(
+        "order-min-max",
+        concat!(
+            "import std/order as Order\n",
+            "pub fn main() -> List<Float> {\n",
+            "  [Order.min(-0.0, 0.0), Order.min(0.0, -0.0), Order.max(-0.0, 0.0),\n",
+            "   Order.min(2.5, 1.5), Order.max(1.5, 2.5)]\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":[-0.0,0.0,-0.0,1.5,2.5]"
+    );
+}
+
+// T4301 for `Order.compare`: its argument type must be ordered.
+#[test]
+fn order_compare_rejects_an_unordered_argument() {
+    let diagnostics = coded_messages(concat!(
+        "import std/order as Order\n",
+        "import std/order.{Ordering}\n",
+        "fn compare_records() -> Ordering { Order.compare({ a: 1 }, { a: 2 }) }\n",
+        "pub fn main() -> Int { 1 }\n",
+    ));
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].0, "T4301");
+    assert!(
+        diagnostics[0]
+            .1
+            .contains("`Order.compare` needs `A` to be ordered"),
+        "{}",
+        diagnostics[0].1
+    );
+}

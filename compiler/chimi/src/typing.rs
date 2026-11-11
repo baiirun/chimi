@@ -1603,6 +1603,43 @@ impl ProjectTypeChecker {
                 float_parse_failure,
             ),
         ];
+        let ordering = self.standard_named_type(StandardType::Ordering, Vec::new());
+        for (function, generic, returns_ordering) in [
+            (
+                StandardFunction::OrderCompare,
+                StandardGeneric::OrderCompareValue,
+                true,
+            ),
+            (
+                StandardFunction::OrderMin,
+                StandardGeneric::OrderMinValue,
+                false,
+            ),
+            (
+                StandardFunction::OrderMax,
+                StandardGeneric::OrderMaxValue,
+                false,
+            ),
+        ] {
+            let value = self.standard_generic_type(generic);
+            let symbol = self.standard_function_symbol(function);
+            self.contracts.insert(
+                symbol,
+                CallableContract {
+                    inputs: vec![value, value],
+                    success: if returns_ordering { ordering } else { value },
+                    failures: pure.0,
+                    needs: pure.1,
+                },
+            );
+            self.generic_requirements.insert(
+                self.resolved.standard_generic(generic),
+                GenericRequirement {
+                    property: ValueProperty::Ordered,
+                    origin: None,
+                },
+            );
+        }
         for (function, inputs, success, failures) in numeric_contracts {
             let symbol = self.standard_function_symbol(function);
             self.contracts.insert(
@@ -2013,7 +2050,10 @@ impl ProjectTypeChecker {
             | StandardConstructor::FloatParseInvalid
             | StandardConstructor::FloatParseOutOfRange
             | StandardConstructor::FloatNotInteger
-            | StandardConstructor::FloatOutOfRange => (
+            | StandardConstructor::FloatOutOfRange
+            | StandardConstructor::OrderingLess
+            | StandardConstructor::OrderingEqual
+            | StandardConstructor::OrderingGreater => (
                 Vec::new(),
                 self.standard_named_type(constructor.type_kind(), Vec::new()),
             ),

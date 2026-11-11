@@ -2106,6 +2106,20 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       if (argument_count != 1 || arguments[0]->kind != VALUE_LIST)
         return intrinsic_shape_defect(call_node);
       return success(integer_value((int64_t)list_length(arguments[0])));
+    case CHIMI_INTRINSIC_ORDER_COMPARE: {
+      if (argument_count != 2) return intrinsic_shape_defect(call_node);
+      int order = chimi_value_compare(arguments[0], arguments[1]);
+      uint32_t constructor = order < 0 ? CHIMI_CONSTRUCTOR_ORDERING_LESS
+                           : order > 0 ? CHIMI_CONSTRUCTOR_ORDERING_GREATER : CHIMI_CONSTRUCTOR_ORDERING_EQUAL;
+      return success(standard_value(constructor, NULL, 0));
+    }
+    /* Both return the left operand when the two are equal. */
+    case CHIMI_INTRINSIC_ORDER_MIN:
+      if (argument_count != 2) return intrinsic_shape_defect(call_node);
+      return success(chimi_value_compare(arguments[0], arguments[1]) > 0 ? arguments[1] : arguments[0]);
+    case CHIMI_INTRINSIC_ORDER_MAX:
+      if (argument_count != 2) return intrinsic_shape_defect(call_node);
+      return success(chimi_value_compare(arguments[0], arguments[1]) < 0 ? arguments[1] : arguments[0]);
     case CHIMI_INTRINSIC_MAP_EMPTY:
       return argument_count == 0 ? success(map_value(NULL)) : intrinsic_shape_defect(call_node);
     case CHIMI_INTRINSIC_MAP_GET: {

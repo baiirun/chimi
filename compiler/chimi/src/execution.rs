@@ -1630,6 +1630,28 @@ impl<'core> Evaluator<'core> {
                     Err(_) => self.standard_value(StandardConstructor::OptionNone, Vec::new()),
                 })
             }
+            StandardFunction::OrderCompare
+            | StandardFunction::OrderMin
+            | StandardFunction::OrderMax => {
+                let [left, right] = arguments.as_slice() else {
+                    return self.intrinsic_shape_defect(function, call_node);
+                };
+                let order = self.structural_order(left, right);
+                Control::Success(match function {
+                    StandardFunction::OrderCompare => self.standard_value(
+                        match order {
+                            Comparison::Less => StandardConstructor::OrderingLess,
+                            Comparison::Equal => StandardConstructor::OrderingEqual,
+                            Comparison::Greater => StandardConstructor::OrderingGreater,
+                        },
+                        Vec::new(),
+                    ),
+                    // Both return the left operand when the two are equal.
+                    StandardFunction::OrderMin if order.is_gt() => right.clone(),
+                    StandardFunction::OrderMax if order.is_lt() => right.clone(),
+                    _ => left.clone(),
+                })
+            }
             StandardFunction::IntModulo => {
                 let [RuntimeValue::Integer(value), RuntimeValue::Integer(modulus)] =
                     arguments.as_slice()
