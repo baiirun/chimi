@@ -2350,6 +2350,60 @@ fn a_lambda_body_reads_a_field_of_a_parameter_typed_by_the_callee() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":43");
 }
 
+// ts-702c4c: a task passed through a user generic wrapper keeps its failure
+// set, both for an infallible and a failing task. Native only: the interpreter
+// has no task runtime.
+#[test]
+fn a_task_result_through_a_generic_wrapper_runs() {
+    for (index, (body, expected)) in [
+        (
+            concat!(
+                "fn work() -> Int { 42 }\n",
+                "fn wait<T, E>(task: Task<T, E>) { Task.result(task) }\n",
+                "fn wait_declared<T, E>(task: Task<T, E>) -> T { Task.result(task) }\n",
+                "pub fn main() -> Int {\n",
+                "  let named = Task.start(work)\n",
+                "  wait(named) + wait_declared(Task.start(work)) + 1\n",
+                "}\n",
+            ),
+            85,
+        ),
+        (
+            concat!(
+                "enum Oops {\n",
+                "  Bad\n",
+                "}\n",
+                "fn work() -> Int { Failure(Bad) }\n",
+                "fn wait<T, E>(task: Task<T, E>) { Task.result(task) }\n",
+                "pub fn main() -> Int {\n",
+                "  case wait(Task.start(work)) {\n",
+                "    Success(value) -> value\n",
+                "    Failure(Bad) -> 3\n",
+                "  }\n",
+                "}\n",
+            ),
+            3,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let scratch = scratch_directory(&format!("task-generic-wrapper-{index}"));
+        let path = scratch.join("main.chimi");
+        std::fs::write(
+            &path,
+            format!("import std/task as Task\nimport std/task.{{Task}}\n{body}"),
+        )
+        .unwrap();
+        let outcome = native_outcome(&scratch, &path);
+        assert!(
+            outcome.ends_with(&format!("\"outcome\":\"success\",\"value\":{expected}}}")),
+            "{outcome}"
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+}
+
 // A constructor value renders as its constructor's name on both paths, as a
 // standard function value renders as its function's name.
 #[test]

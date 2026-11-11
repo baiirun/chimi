@@ -4903,13 +4903,40 @@ impl ProjectTypeChecker {
                             self.constrain_generic(module_id, symbol, GenericKind::Value, name);
                             self.intern_type(CanonicalType::Generic(symbol))
                         } else {
-                            let arguments = arguments
+                            let lowered = arguments
                                 .iter()
                                 .map(|argument| {
                                     self.lower_value_type(module_id, argument, generics)
                                 })
-                                .collect();
-                            self.intern_type(CanonicalType::Named { symbol, arguments })
+                                .collect::<Vec<_>>();
+                            // `E` in `Task<T, E>` is a failure set: a generic
+                            // there also denotes the task's failure row.
+                            if matches!(
+                                self.resolved.standard_symbol(symbol),
+                                Some(StandardSymbol::Type(StandardType::Task))
+                            ) && let Some(TypeUse::Named {
+                                semantic_id: failures_id,
+                                path: failures_path,
+                                ..
+                            }) = arguments.get(1)
+                                && let (Some(name), Some(failures)) = (
+                                    failures_path.last(),
+                                    self.resolved_type_symbol(module_id, *failures_id),
+                                )
+                                && self.resolved.symbol(failures).kind
+                                    == ProjectSymbolKind::GenericParameter
+                            {
+                                self.constrain_generic(
+                                    module_id,
+                                    failures,
+                                    GenericKind::FailureRow,
+                                    name,
+                                );
+                            }
+                            self.intern_type(CanonicalType::Named {
+                                symbol,
+                                arguments: lowered,
+                            })
                         }
                     }
                     _ => TypeId::new(0),
