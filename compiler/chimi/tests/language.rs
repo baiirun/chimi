@@ -7529,6 +7529,34 @@ fn void_is_a_value_and_a_pattern() {
     );
 }
 
+// `Void` is ordered (it equals itself), `_` matches it, and V2: a `loop` over
+// `Void` state whose body yields `Void` to continue type-checks and runs.
+#[test]
+fn void_is_ordered_matches_a_wildcard_and_can_be_loop_state() {
+    let source = concat!(
+        "fn ignore(value: Void) -> Int {\n",
+        "  case value {\n",
+        "    _ -> 7\n",
+        "  }\n",
+        "}\n",
+        "fn settle(limit: Int) -> Int {\n",
+        "  loop _ = Void {\n",
+        "    case limit > 0 {\n",
+        "      True -> break limit\n",
+        "      False -> Void\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<Bool> {\n",
+        "  [Void <= Void, Void >= Void, Void < Void, ignore(Void) == 7, settle(3) == 3]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("void-order-and-state", source),
+        "\"outcome\":\"success\",\"value\":[true,true,false,true,true]"
+    );
+}
+
 // V3: `Void` is the outcome value itself, rendered as the `Void` record.
 #[test]
 fn void_is_a_success_value() {
@@ -7785,20 +7813,49 @@ fn a_tuple_of_shareable_parts_is_shareable() {
     );
 }
 
-// LP-09: tuple patterns nest inside list and enum patterns.
+// T8, negative: a tuple is shareable only when every part is, so a tuple
+// holding a parent-local `Task` cannot cross a channel.
+#[test]
+fn a_tuple_holding_a_task_is_not_shareable() {
+    assert_eq!(
+        check_codes(concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Sender}\n",
+            "import std/task.{Task}\n",
+            "enum WorkError {\n  Bad\n}\n",
+            "fn forward(sender: Sender<(Int, Task<Int, WorkError>)>, child: Task<Int, WorkError>) -> Void {\n",
+            "  Channel.send(sender, (1, child))\n",
+            "}\n",
+        )),
+        ["T4243"]
+    );
+}
+
+// LP-09: tuple patterns nest inside list and enum patterns, and the nested
+// match binds `id`.
 #[test]
 fn tuple_patterns_nest_inside_list_and_variant_patterns() {
-    assert!(
-        check_codes(concat!(
-            "import std/json.{Value}\n",
-            "fn id(fields: Option<List<(Text, Value)>>) -> Int {\n",
-            "  case fields {\n",
-            "    Some([(\"id\", Value.Number(id)), ..]) -> 1\n",
-            "    _ -> 0\n",
-            "  }\n",
-            "}\n",
-        ))
-        .is_empty()
+    let source = concat!(
+        "import std/json as Json\n",
+        "import std/json.{Value}\n",
+        "fn id(fields: Option<List<(Text, Value)>>) -> Int {\n",
+        "  case fields {\n",
+        "    Some([(\"id\", Value.Number(id)), ..]) -> Json.number_to_int(id)\n",
+        "    _ -> -1\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<Int> {\n",
+        "  [\n",
+        "    id(Some([(\"id\", Json.int(41)), (\"x\", Json.int(2))])),\n",
+        "    id(Some([(\"name\", Json.int(1))])),\n",
+        "    id(Some([])),\n",
+        "    id(None),\n",
+        "  ]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("nested-tuple-pattern", source),
+        "\"outcome\":\"success\",\"value\":[41,-1,-1,-1]"
     );
 }
 
@@ -8052,6 +8109,8 @@ fn ranges_normalize_and_answer_std_range_queries() {
         "    0..3 == 0..=2,\n",
         "    5..2 != 4..2,\n",
         "    0..3 < 0..4,\n",
+        // Order compares the start bound first, even between two empty ranges.
+        "    4..2 < 5..2,\n",
         "    Range.length(5..2) == 0,\n",
         "    Range.length(dice) == 6,\n",
         "    width(0..n + 1) == 3,\n",
@@ -8064,7 +8123,7 @@ fn ranges_normalize_and_answer_std_range_queries() {
     );
     assert_eq!(
         run_both("range-queries", source),
-        "\"outcome\":\"success\",\"value\":[true,true,true,true,true,true,true,true,true,true]"
+        "\"outcome\":\"success\",\"value\":[true,true,true,true,true,true,true,true,true,true,true]"
     );
 }
 
