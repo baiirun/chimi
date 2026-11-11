@@ -62,6 +62,8 @@ Problems are recorded only when observed, against these dimensions:
 | N9 | Worktree agents cannot integrate their own work | The spec steward's sandbox refused every git command aimed at the main checkout, so it could not fast-forward `main`; its auto-created worktree also started from a stale base (`419d1e5` plus pre-squash PR copies), not `main` | Worktree isolation is enforced by the harness, and the worktree base follows the remote default branch, not local `main` | Coordinator integrates worktree branches; briefs tell worktree agents to reset to local `main` first |
 | N10 | Integrating into a dirty shared checkout collides with in-flight edits | Fast-forwarding the steward's spec changes refused because the compiler lane had an uncommitted 6-line edit in the same spec; the coordinator saved, merged, and reapplied it by hand, resolving one conflict | Agents leave work uncommitted between checkpoints in a tree others integrate into | Ask lanes to commit small and often; coordinator merges only when touched files are clean, otherwise saves and reapplies the in-flight diff |
 | N11 | Staging during another agent's merge joins that merge | The coordinator's `git add` of the AAR during the lane's `origin/main` merge staged it into the pending merge commit; caught and unstaged before the commit. Other agents' commits fail while `MERGE_HEAD` exists | A shared index: any writer's `git add` lands in whatever commit is next, including someone else's merge | Agents check for `MERGE_HEAD` before staging; mergers stage only merge files and verify `git diff --cached` before committing |
+| N12 | Usage limit stopped every agent at once | All running agents (lane coordinator, two worktree implementers, tools importer) terminated mid-step at the 5-hour limit; work survived in worktrees and the checkout, and agents were resumed by message after reset | Many concurrent long-running agents share one usage budget, so parallelism converts directly into hitting the cap | Resume by message, never restart; consider budgeting concurrency against the remaining window |
+| N13 | An agent closed its ticket before coordinator decisions on its open questions were implemented | ts-3d5b38 marked done at commit time; decisions logged one minute later were never built; found only by the independent review | Agent reports open questions and finishes; nothing holds the ticket open for the answers | Tickets with open questions stay in progress until the coordinator answers; reviewer checks logged decisions against code |
 
 ## Run log
 
@@ -86,7 +88,8 @@ task notifications.
 | Prototype fixes | fix | 217k | 16.7 | 26 tests, 30/30 mutants caught | — |
 | Cross-spec review | review | 238k | 6.9 | 19 conflicts | — |
 | Spec steward (worktree) | fix | 130k | 8.0 | 19 resolutions, doc examples green | could not self-merge (N9); merge conflict with lane edit (N10) |
-| Scheduler kernel port | implement | 385k | 36.2 | 84 chimi-fiber tests green (verified by coordinator rerun); 20 mutants caught; reported a latent use-after-free in existing code | review pending |
+| Scheduler kernel port | implement | 385k | 36.2 | 84 chimi-fiber tests green (verified by coordinator rerun); 20 mutants caught; reported a latent use-after-free in existing code | review found 2 P1 (UAF reproduced as SIGSEGV; shutdown leaves wake sources armed), 3 P2, 1 surviving claimed mutant; ticket closed before logged decisions were implemented |
+| Scheduler kernel review | review | 177k | 9.5 | 7 confirmed findings with repro tests | — |
 
 ## Open hypotheses
 
