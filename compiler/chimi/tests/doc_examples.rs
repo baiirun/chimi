@@ -176,7 +176,8 @@ fn project(document: &str, source: &str) -> Vec<ProjectSource> {
 }
 
 /// A compiler panic is reported as the pseudo-code `compiler-panic`, so one
-/// crashing example does not hide the rest.
+/// crashing example does not hide the rest. It fails the example under every
+/// expectation, `pending` and unreviewed included.
 fn compile(document: &str, source: &str) -> Compilation {
     std::panic::catch_unwind(|| compile_unguarded(document, source)).unwrap_or_else(|payload| {
         Compilation::Diagnostics {
@@ -184,6 +185,10 @@ fn compile(document: &str, source: &str) -> Compilation {
             rendered: panic_message(payload.as_ref()),
         }
     })
+}
+
+fn is_panic(codes: &[String]) -> bool {
+    codes.iter().any(|code| code == PANIC_CODE)
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -262,6 +267,7 @@ fn evaluate(document: &str, block: &Block, expectation: &Expectation) -> Option<
         },
         Expectation::Fails(expected) => match compile(document, &block.source) {
             Compilation::Clean => Some(format!("expected {expected:?}, but it compiles cleanly")),
+            Compilation::Diagnostics { codes, rendered } if is_panic(&codes) => Some(rendered),
             Compilation::Diagnostics { codes, .. } if &codes == expected => None,
             Compilation::Diagnostics { codes, rendered } => {
                 Some(format!("expected {expected:?}, got {codes:?}:\n{rendered}"))
@@ -277,6 +283,7 @@ fn evaluate(document: &str, block: &Block, expectation: &Expectation) -> Option<
                 "pending on {}, but it now compiles cleanly; annotate it `check`",
                 tickets.join(" ")
             )),
+            Compilation::Diagnostics { codes, rendered } if is_panic(&codes) => Some(rendered),
             Compilation::Diagnostics { .. } => None,
         },
         Expectation::Unreviewed => None,
@@ -360,6 +367,10 @@ fn documentation_examples_match_their_annotations() {
                 }
                 Expectation::Unreviewed => match compile(&document, &block.source) {
                     Compilation::Clean => tally.unreviewed_clean.push(location),
+                    // Not reviewing an example never excuses a compiler crash.
+                    Compilation::Diagnostics { codes, rendered } if is_panic(&codes) => {
+                        failures.push(format!("{location}: {rendered}"));
+                    }
                     Compilation::Diagnostics { codes, .. } => tally
                         .unreviewed_failing
                         .push(format!("{location} {}", codes.join(" "))),
