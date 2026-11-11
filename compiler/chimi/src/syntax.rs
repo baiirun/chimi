@@ -2155,14 +2155,12 @@ impl<'source> Parser<'source> {
         self.finish();
     }
 
-    /// Reports `Config(..base, jobs)` as `S1001`. Updates name the fields they change,
-    /// so the message suggests the braced form, labelling each plain-name argument with
-    /// its own name. The `..` is consumed so `base` parses as an ordinary argument.
-    fn reject_positional_update(&mut self) {
-        let start = self.current().range.start();
-        let mut position = self.position + 1;
+    /// The source ranges of the comma-separated parts of a bracketed list whose
+    /// first part starts at significant `position`, and the closing bracket's
+    /// position (or the end of input).
+    fn bracketed_parts(&self, mut position: usize) -> (Vec<TextRange>, usize) {
         let mut parts = Vec::new();
-        let mut current = String::new();
+        let mut current: Option<TextRange> = None;
         let mut depth = 0_u32;
         loop {
             let kind = self.kind_at(position);
@@ -2175,25 +2173,48 @@ impl<'source> Parser<'source> {
                 {
                     depth -= 1;
                 }
-                TokenKind::RightParen | TokenKind::End => break,
+                TokenKind::RightParen
+                | TokenKind::RightBracket
+                | TokenKind::RightBrace
+                | TokenKind::End => break,
                 TokenKind::Comma if depth == 0 => {
-                    parts.push(std::mem::take(&mut current));
+                    parts.extend(current.take());
                     position += 1;
                     continue;
                 }
                 _ => {}
             }
             if kind != TokenKind::Newline {
-                if !current.is_empty() {
-                    current.push(' ');
-                }
-                current.push_str(&self.tokens[self.significant[position]].text);
+                let range = self.tokens[self.significant[position]].range;
+                current = Some(current.map_or(range, |current| {
+                    TextRange::new(current.start() as usize, range.end() as usize)
+                }));
             }
             position += 1;
         }
-        parts.push(current);
+        parts.extend(current);
+        (parts, position)
+    }
+
+    fn source_slice(&self, range: TextRange) -> &str {
+        &self.source.text()[range.start() as usize..range.end() as usize]
+    }
+
+    /// Reports `Config(..base, jobs)` as `S1001`. Updates name the fields they change,
+    /// so the message suggests the braced form, labelling each plain-name argument with
+    /// its own name, and when every argument is a plain name the fix rewrites the call
+    /// to that form. The `..` is consumed so `base` parses as an ordinary argument;
+    /// lowering then drops the call, so it adds no type errors.
+    fn reject_positional_update(&mut self) {
+        let start = self.current().range.start();
+        let (parts, close) = self.bracketed_parts(self.position + 1);
+        let parts = parts
+            .into_iter()
+            .map(|range| self.source_slice(range).to_owned())
+            .collect::<Vec<_>>();
         let mut suggestion = format!("{{ ..{}", parts.first().map_or("", String::as_str));
-        for part in parts.iter().skip(1).filter(|part| !part.is_empty()) {
+        let mut all_names = true;
+        for part in parts.iter().skip(1) {
             let is_name = part
                 .chars()
                 .next()
@@ -2204,12 +2225,13 @@ impl<'source> Parser<'source> {
             if is_name {
                 suggestion.push_str(&format!(", {part}: {part}"));
             } else {
+                all_names = false;
                 suggestion.push_str(&format!(", field: {part}"));
             }
         }
         suggestion.push_str(" }");
         let range = TextRange::new(start as usize, self.current().range.end() as usize);
-        self.diagnostics.push(Diagnostic::error(
+        let mut diagnostic = Diagnostic::error(
             DiagnosticStage::Syntax,
             "S1001",
             self.source.file_id(),
@@ -2217,7 +2239,29 @@ impl<'source> Parser<'source> {
             format!(
                 "a record update names the fields it changes and is not a call; write `{suggestion}`"
             ),
-        ));
+        );
+        // The callee is the name (or dotted path) right before `(`.
+        let callee_end = self.position.saturating_sub(2);
+        let mut callee = callee_end;
+        while callee >= 2
+            && self.kind_at(callee - 1) == TokenKind::Dot
+            && self.kind_at(callee - 2) == TokenKind::Identifier
+        {
+            callee -= 2;
+        }
+        if all_names
+            && parts.len() > 1
+            && self.kind_at(self.position.saturating_sub(1)) == TokenKind::LeftParen
+            && self.kind_at(callee_end) == TokenKind::Identifier
+            && self.kind_at(close) == TokenKind::RightParen
+        {
+            let call = TextRange::new(
+                self.tokens[self.significant[callee]].range.start() as usize,
+                self.tokens[self.significant[close]].range.end() as usize,
+            );
+            diagnostic = diagnostic.with_fix(call, suggestion);
+        }
+        self.diagnostics.push(diagnostic);
         self.bump();
     }
 
@@ -2297,8 +2341,10 @@ impl<'source> Parser<'source> {
     /// `S1001` and is still parsed as a `RecordSpread` so lowering sees the base.
     fn parse_record(&mut self) {
         self.start(NodeKind::RecordExpression);
+        let open = self.position;
         self.expect(TokenKind::LeftBrace);
         self.skip_newlines();
+        let mut spread_fix = self.spread_first_fix(open);
         if self.at(TokenKind::DotDot) {
             self.parse_record_spread();
         } else {
@@ -2310,9 +2356,17 @@ impl<'source> Parser<'source> {
                 break;
             }
             if self.at(TokenKind::DotDot) {
-                self.error_at_current(
+                let mut diagnostic = Diagnostic::error(
+                    DiagnosticStage::Syntax,
+                    "S1001",
+                    self.source.file_id(),
+                    self.current().range,
                     "`..base` must come first in a record update and appear once; move it to the start",
                 );
+                if let Some((range, replacement)) = spread_fix.take() {
+                    diagnostic = diagnostic.with_fix(range, replacement);
+                }
+                self.diagnostics.push(diagnostic);
                 self.parse_record_spread();
             } else {
                 self.parse_record_field();
@@ -2321,6 +2375,39 @@ impl<'source> Parser<'source> {
         self.skip_newlines();
         self.expect(TokenKind::RightBrace);
         self.finish();
+    }
+
+    /// For a record whose `{` is at significant `open` and that holds exactly one
+    /// `..base`, not first: the edit that rewrites the record with the spread first
+    /// and the other parts in their order.
+    fn spread_first_fix(&self, open: usize) -> Option<(TextRange, String)> {
+        let (parts, close) = self.bracketed_parts(open + 1);
+        if self.kind_at(close) != TokenKind::RightBrace {
+            return None;
+        }
+        let parts = parts
+            .into_iter()
+            .map(|range| self.source_slice(range))
+            .collect::<Vec<_>>();
+        let spreads = parts.iter().filter(|part| part.starts_with("..")).count();
+        let spread = parts.iter().position(|part| part.starts_with(".."))?;
+        if spreads != 1 || spread == 0 {
+            return None;
+        }
+        let ordered = std::iter::once(parts[spread])
+            .chain(
+                parts
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != spread)
+                    .map(|(_, part)| *part),
+            )
+            .collect::<Vec<_>>();
+        let range = TextRange::new(
+            self.tokens[self.significant[open]].range.start() as usize,
+            self.tokens[self.significant[close]].range.end() as usize,
+        );
+        Some((range, format!("{{ {} }}", ordered.join(", "))))
     }
 
     fn parse_record_spread(&mut self) {

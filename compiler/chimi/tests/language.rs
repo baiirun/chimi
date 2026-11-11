@@ -6564,6 +6564,38 @@ fn a_positional_or_misplaced_update_is_a_syntax_error() {
             .any(|(code, message)| code == "S1001" && message.contains("must come first")),
         "{messages:?}"
     );
+    // Each error carries the fix that applies its advice, and adds no type error.
+    for (wrong, fixed) in [
+        ("Config(..base, jobs)", "{ ..base, jobs: jobs }"),
+        ("{ jobs: 1, ..base }", "{ ..base, jobs: 1 }"),
+    ] {
+        let source = format!(
+            "{CONFIG}fn change(base: Config, jobs: Int) -> Config {{\n  {wrong}\n}}\npub fn main() -> Int {{ 0 }}\n"
+        );
+        let module = ProjectSource::new(
+            "main",
+            SourceSnapshot::from_text("main.chimi", source.as_str()),
+        )
+        .expect("valid module path");
+        let report = Compiler::type_project(vec![module]);
+        let diagnostics = report.diagnostics();
+        let codes = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code())
+            .collect::<Vec<_>>();
+        assert_eq!(codes, ["S1001"], "{wrong}");
+        let [fix] = diagnostics[0].fixes() else {
+            panic!("one fix for {wrong}: {:?}", diagnostics[0].fixes());
+        };
+        let range = fix.range();
+        let mut applied = source.clone();
+        applied.replace_range(
+            range.start() as usize..range.end() as usize,
+            fix.replacement(),
+        );
+        assert_eq!(applied, source.replace(wrong, fixed));
+        assert!(check_codes(&applied).is_empty(), "{applied}");
+    }
 }
 
 // RU-09: the base evaluates first, then the values left to right; a failure stops

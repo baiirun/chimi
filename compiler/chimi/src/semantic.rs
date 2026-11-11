@@ -1809,6 +1809,18 @@ impl ProjectLowerer {
                         };
                     }
                 }
+                NodeKind::CallSuffix
+                    if significant_child_tokens(&suffix)
+                        .iter()
+                        .any(|token| token.kind() == TokenKind::DotDot) =>
+                {
+                    // `Config(..base, jobs)` is already S1001; typing it as a call
+                    // would only add argument errors.
+                    expression = ModuleExpression::Empty {
+                        semantic_id: suffix_semantic_id,
+                        range: significant_range(node),
+                    };
+                }
                 NodeKind::CallSuffix => {
                     let arguments = suffix
                         .child_nodes()
