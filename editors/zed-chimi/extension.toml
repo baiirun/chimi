@@ -10,7 +10,7 @@ repository = "https://github.com/baiirun/chimi"
 # Zed checks out this revision and builds `src/parser.c` under `path`.
 # For local development, point `repository` at this checkout with `file://`.
 repository = "https://github.com/baiirun/chimi"
-rev = "fc3e7cadad9d9feb0ee2c760db23d359abb17bce"
+rev = "2702dbc85a768ff8ae17b2635854f05fb2c2a0d1"
 path = "editors/tree-sitter-chimi"
 
 [language_servers.chimi-lsp]
