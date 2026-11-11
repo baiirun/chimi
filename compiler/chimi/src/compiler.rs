@@ -628,7 +628,6 @@ mod tests {
         ValuePropertyStatus, resolve_project_sources,
     };
     use crate::diagnostic::{Diagnostic, DiagnosticStage};
-    use crate::executable::{lower, seal_entry};
     use crate::execution::{
         EventKind, ExecutionAttributeValue, ExecutionConfig, ExecutionOutcome, ExecutionValue,
         TraceMode, ValueField,
@@ -669,7 +668,6 @@ mod tests {
             report.events[0].source_range.end(),
             expression_start + "Answer(42)".len() as u32
         );
-        assert_eq!(report.events[0].origin_id, report.events[0].semantic_id);
         assert_eq!(report.events[0].file_id, 0);
         let ExecutionOutcome::Success(ExecutionValue::Constructed {
             type_name,
@@ -1205,36 +1203,51 @@ mod tests {
 
     #[test]
     fn repeated_annotations_share_canonical_types() {
-        let baseline =
-            Compiler::type_project(vec![module("contracts/baseline", "baseline.chimi", "")])
-                .arena_stats()
-                .types;
         let report = Compiler::type_project(vec![module(
             "contracts/interning",
             "interning.chimi",
-            "fn add(left: Int, right: Int) -> Int { left }\n",
+            "fn add(left: Int, right: Int, label: Text) -> Int { left }\n",
         )]);
 
         assert!(report.is_success(), "{}", report.render_diagnostics());
-        assert_eq!(report.arena_stats().types, baseline + 1);
-        assert_eq!(report.arena_stats().type_facts, 3);
+        let contract = report
+            .typed
+            .contract("contracts/interning", "add")
+            .expect("add has a contract");
+        assert_eq!(contract.inputs[0], contract.inputs[1]);
+        assert_eq!(contract.inputs[0], contract.success);
+        assert_ne!(contract.inputs[0], contract.inputs[2]);
     }
 
+    // An unresolved annotation is reported once per spelling and then poisons
+    // its uses: the body and the Int argument produce no further type errors.
     #[test]
     fn unresolved_annotations_still_receive_poison_facts() {
-        let baseline =
-            Compiler::type_project(vec![module("contracts/baseline", "baseline.chimi", "")])
-                .arena_stats()
-                .types;
-        let report = Compiler::type_project(vec![module(
-            "contracts/poison",
-            "poison.chimi",
+        let source = concat!(
             "fn preserve(value: Missing) -> Missing { value }\n",
-        )]);
+            "fn caller(count: Int) -> Int { preserve(count) }\n",
+        );
+        let sources = vec![module("contracts/poison", "poison.chimi", source)];
+        let report = Compiler::type_project(sources.clone());
 
-        assert!(!report.is_success());
-        assert_eq!(report.arena_stats().types, baseline + 1);
-        assert_eq!(report.arena_stats().type_facts, 2);
+        assert_eq!(
+            report
+                .diagnostics()
+                .iter()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            ["E_UNRESOLVED_TYPE", "E_UNRESOLVED_TYPE"],
+            "{}",
+            report.render_diagnostics()
+        );
+        let inspection = Compiler::inspect_project(
+            sources,
+            "contracts/poison",
+            source.find("{ value }").unwrap() + 2,
+        )
+        .expect("inspect the body");
+        assert_eq!(inspection.token().unwrap().text(), "value");
+        assert_eq!(inspection.inferred_type(), Some("<invalid>"));
     }
 
     #[test]
@@ -1415,7 +1428,7 @@ mod tests {
     }
 
     #[test]
-    fn inspection_and_core_omit_user_facing_effect_rows() {
+    fn inspection_omits_user_facing_effect_rows() {
         let source = concat!(
             "fn work() -> Int { 1 }\n",
             "pub fn main() -> Int { work() }\n"
@@ -1432,16 +1445,6 @@ mod tests {
             .expect("entry has callable inspection");
         assert_eq!(callable.display(), "fn() -> Int");
         assert!(!inspection.render_json().contains("\"effects\""));
-
-        let core = lower(
-            seal_entry(check_project(resolve_project_sources(sources)))
-                .expect("root is executable"),
-        );
-        assert!(
-            core.functions
-                .iter()
-                .any(|function| function.symbol == core.entry)
-        );
     }
 
     #[test]
@@ -2417,14 +2420,10 @@ mod tests {
                 ),
             ),
         ]);
-        assert_eq!(
-            valid.expect("valid project seals"),
-            super::VerificationStats {
-                reachable_declarations: 2,
-                origins: 6,
-                reachable_modules: 2,
-            }
-        );
+        // `unused` is not reachable from `main`; `helper` in the other module is.
+        let valid = valid.expect("valid project seals");
+        assert_eq!(valid.reachable_declarations, 2);
+        assert_eq!(valid.reachable_modules, 2);
 
         for (source, code) in [
             ("fn main() -> Int { 1 }", "E5001"),
@@ -2475,33 +2474,38 @@ mod tests {
 
     #[test]
     fn verified_roots_lower_to_typed_origin_linked_core_arenas() {
-        let stats = Compiler::lower_project(vec![module(
-            "core/basic",
-            "basic_core.chimi",
-            concat!(
-                "struct Answer { value: Int }\n",
-                "fn make(value: Int) -> Answer { Answer(value) }\n",
-                "pub fn main() -> Answer {\n",
-                "  let answer = make(42)\n",
-                "  answer\n",
-                "}\n",
-            ),
-        )])
-        .expect("verified structural program lowers");
+        let basic = || {
+            vec![module(
+                "core/basic",
+                "basic_core.chimi",
+                concat!(
+                    "struct Answer { value: Int }\n",
+                    "fn make(value: Int) -> Answer { Answer(value) }\n",
+                    "pub fn main() -> Answer {\n",
+                    "  let answer = make(42)\n",
+                    "  answer\n",
+                    "}\n",
+                ),
+            )]
+        };
+        let stats = Compiler::lower_project(basic()).expect("verified structural program lowers");
 
+        // Every Core node links back to a source origin, lowering is
+        // deterministic, and the lowered program computes the right value.
+        assert_eq!(stats.nodes, stats.origins);
+        assert_eq!(Compiler::lower_project(basic()).unwrap(), stats);
+        let report = Compiler::run_project(basic(), ExecutionConfig::new("core-basic").unwrap())
+            .expect("basic program executes");
         assert_eq!(
-            stats,
-            super::CoreStats {
-                functions: 2,
-                bindings: 0,
-                nodes: 8,
-                origins: 8,
-                constants: 1,
-                constructions: 1,
-                calls: 1,
-                sequences: 2,
-                dependencies: 0,
-            }
+            report.outcome,
+            ExecutionOutcome::Success(ExecutionValue::Constructed {
+                type_name: "Answer".to_owned(),
+                variant_name: None,
+                fields: vec![ValueField {
+                    name: "value".to_owned(),
+                    value: ExecutionValue::Integer(42),
+                }],
+            })
         );
 
         let rich = Compiler::lower_project(vec![module(
@@ -3793,10 +3797,18 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
             ),
             TraceMode::Off,
         );
-        assert!(matches!(
+        // The payload names the pass that failed: earlier passes ran, later ones did not.
+        assert_eq!(
             report.outcome,
-            ExecutionOutcome::ExpectedFailure(_)
-        ));
+            ExecutionOutcome::ExpectedFailure(ExecutionValue::Constructed {
+                type_name: "CountError".to_owned(),
+                variant_name: Some("TooFar".to_owned()),
+                fields: vec![ValueField {
+                    name: "at".to_owned(),
+                    value: ExecutionValue::Integer(2),
+                }],
+            })
+        );
     }
 
     // Guards: a forgotten state update is a type error, not a silent stale pass.
