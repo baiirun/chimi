@@ -202,7 +202,14 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
             let (offset, length) = data.ids(field_ids);
             let outcome = shape.outcome_success.map_or(-1, i32::from);
             let index = constructors.len() as u32;
-            constructors.push((type_name, variant_name, offset, length, outcome));
+            constructors.push((
+                type_name,
+                variant_name,
+                offset,
+                length,
+                outcome,
+                shape.ordinal,
+            ));
             index
         } else {
             u32::MAX
@@ -464,7 +471,7 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         &mut output,
         "const ChimiConstructor CHIMI_CONSTRUCTORS[]",
         &constructors,
-        |r| format!("{{{}, {}, {}, {}, {}}}", r.0, r.1, r.2, r.3, r.4),
+        |r| format!("{{{}, {}, {}, {}, {}, {}}}", r.0, r.1, r.2, r.3, r.4, r.5),
     );
     render_array(
         &mut output,
@@ -663,8 +670,9 @@ const fn binary_operator(operator: BinaryOperator) -> u32 {
         BinaryOperator::Greater => 6,
         BinaryOperator::GreaterEqual => 7,
         BinaryOperator::Remainder => 8,
-        BinaryOperator::And | BinaryOperator::Or => {
-            panic!("Core lowers `and` and `or` to a Bool match")
+        BinaryOperator::Equal => 9,
+        BinaryOperator::And | BinaryOperator::Or | BinaryOperator::NotEqual => {
+            panic!("Core lowers `and`, `or`, and `!=` to a Bool match")
         }
     }
 }

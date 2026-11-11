@@ -171,6 +171,21 @@ impl Diagnostic {
         self
     }
 
+    /// Attaches a secondary span, such as the declaration that explains the error.
+    pub(crate) fn with_label(
+        mut self,
+        file_id: FileId,
+        range: TextRange,
+        message: impl Into<String>,
+    ) -> Self {
+        self.labels.push(DiagnosticLabel {
+            file_id,
+            range,
+            message: message.into(),
+        });
+        self
+    }
+
     pub(crate) fn with_file_id(mut self, file_id: FileId) -> Self {
         self.file_id = file_id;
         for label in &mut self.labels {

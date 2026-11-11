@@ -2437,6 +2437,46 @@ fn native_list_is_a_persistent_vector() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// E18 on the native path: structural comparison of a list nested a million levels
+// deep keeps its work stack on the heap. Chimi programs cannot build such a value
+// in reasonable time yet, so this drives chimi_value_compare directly.
+#[test]
+fn native_structural_comparison_handles_deep_nesting_and_exact_json_numbers() {
+    let scratch = scratch_directory("native-structural-compare");
+    let executable = scratch.join("native-structural-compare");
+    let compilation = Command::new("cc")
+        .arg("-std=c11")
+        .arg("-O2")
+        .arg("-I")
+        .arg(repository_path("compiler/chimi/runtime/native"))
+        .arg("-I")
+        .arg(repository_path("runtime/chimi-fiber/include"))
+        .arg(format!(
+            "{}/tests/fixtures/native-structural-compare.c",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("compile native structural compare test");
+    assert!(
+        compilation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compilation.stderr)
+    );
+    let run = Command::new(&executable)
+        .output()
+        .expect("run native structural compare test");
+    let stdout = String::from_utf8(run.stdout).unwrap();
+    assert!(
+        run.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(stdout, "ok\n");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // Guards: native list literals, decoded JSON arrays, and List.first/length agree
 // past the 32-element boundary where the persistent vector leaves its tail.
 #[test]

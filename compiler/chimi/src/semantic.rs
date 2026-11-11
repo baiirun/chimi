@@ -811,6 +811,10 @@ pub(crate) enum BinaryOperator {
     LessEqual,
     Greater,
     GreaterEqual,
+    /// Structural equality over an equatable type.
+    Equal,
+    /// `a != b`; Core lowers it to `not (a == b)`, so it never reaches Core.
+    NotEqual,
     /// Short-circuit conjunction. Core lowering turns it into a `Match`, so it never reaches Core.
     And,
     /// Short-circuit disjunction. Core lowering turns it into a `Match`, so it never reaches Core.
@@ -1458,6 +1462,8 @@ impl ProjectLowerer {
                     TokenKind::LessEqual => Some(BinaryOperator::LessEqual),
                     TokenKind::Greater => Some(BinaryOperator::Greater),
                     TokenKind::GreaterEqual => Some(BinaryOperator::GreaterEqual),
+                    TokenKind::EqualEqual => Some(BinaryOperator::Equal),
+                    TokenKind::BangEqual => Some(BinaryOperator::NotEqual),
                     TokenKind::Pipe => None,
                     TokenKind::And | TokenKind::AmpersandAmpersand => Some(BinaryOperator::And),
                     TokenKind::Or | TokenKind::BarBar => Some(BinaryOperator::Or),

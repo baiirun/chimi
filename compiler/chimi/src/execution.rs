@@ -1,6 +1,7 @@
 mod constants;
 mod debug;
 mod persistent_list;
+mod structural;
 
 use crate::executable::{
     CoreArm, CoreLiteral, CoreOperation, CorePattern, CoreProgram, CoreStep, CoreSymbolKind,
@@ -384,6 +385,25 @@ impl RuntimeMap {
     fn put(&self, key: String, value: RuntimeValue) -> Self {
         Self {
             root: Some(map_insert(self.root.clone(), key, value)),
+        }
+    }
+
+    /// Entries in key order, borrowed. The walk keeps its own stack; the tree is
+    /// balanced, so it never holds more than the tree height.
+    fn entry_refs(&self) -> Vec<(&String, &RuntimeValue)> {
+        let mut entries = Vec::new();
+        let mut pending = Vec::new();
+        let mut node = self.root.as_deref();
+        loop {
+            while let Some(current) = node {
+                pending.push(current);
+                node = current.left.as_deref();
+            }
+            let Some(current) = pending.pop() else {
+                return entries;
+            };
+            entries.push((&current.key, &current.value));
+            node = current.right.as_deref();
         }
     }
 
@@ -1845,6 +1865,16 @@ impl<'core> Evaluator<'core> {
         }
     }
 
+    fn structural_order(&self, left: &RuntimeValue, right: &RuntimeValue) -> Comparison {
+        structural::structural_order(left, right, &|constructor| {
+            self.core
+                .symbol(constructor)
+                .constructor
+                .as_ref()
+                .map_or(0, |shape| shape.ordinal)
+        })
+    }
+
     fn eval_binary(
         &self,
         node: CoreNodeId,
@@ -1856,35 +1886,32 @@ impl<'core> Evaluator<'core> {
             message,
             node: Some(node),
         };
-        let ordering = match (left, right) {
-            (RuntimeValue::Integer(left), RuntimeValue::Integer(right)) => {
-                if let Some(arithmetic) = ArithmeticOperator::from_binary(operator) {
-                    return match integer_binary(arithmetic, left, right) {
+        if let Some(arithmetic) = ArithmeticOperator::from_binary(operator) {
+            return match (left, right) {
+                (RuntimeValue::Integer(left), RuntimeValue::Integer(right)) => {
+                    match integer_binary(arithmetic, left, right) {
                         Ok(value) => Control::Success(RuntimeValue::Integer(value)),
                         Err(message) => defect(message),
-                    };
+                    }
                 }
-                left.cmp(&right)
-            }
-            (RuntimeValue::Float(left), RuntimeValue::Float(right)) => {
-                if let Some(arithmetic) = ArithmeticOperator::from_binary(operator) {
-                    return match float_binary(arithmetic, left, right) {
+                (RuntimeValue::Float(left), RuntimeValue::Float(right)) => {
+                    match float_binary(arithmetic, left, right) {
                         Ok(value) => Control::Success(RuntimeValue::Float(value)),
                         Err(message) => defect(message),
-                    };
+                    }
                 }
-                // Finite values are totally ordered; `-0.0` and `0.0` compare equal.
-                left.partial_cmp(&right).expect("Float values are finite")
-            }
-            _ => return defect("verified binary operands are not numbers".to_owned()),
-        };
+                _ => defect("verified binary operands are not numbers".to_owned()),
+            };
+        }
+        let ordering = self.structural_order(&left, &right);
         let result = match operator {
             BinaryOperator::Less => ordering.is_lt(),
             BinaryOperator::LessEqual => ordering.is_le(),
             BinaryOperator::Greater => ordering.is_gt(),
             BinaryOperator::GreaterEqual => ordering.is_ge(),
-            BinaryOperator::And | BinaryOperator::Or => {
-                unreachable!("Core lowers `and` and `or` to a Bool match")
+            BinaryOperator::Equal => ordering.is_eq(),
+            BinaryOperator::And | BinaryOperator::Or | BinaryOperator::NotEqual => {
+                unreachable!("Core lowers `and`, `or`, and `!=` to a Bool match")
             }
             BinaryOperator::Add
             | BinaryOperator::Subtract

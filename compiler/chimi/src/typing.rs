@@ -18,6 +18,53 @@ use std::sync::Arc;
 
 mod constants;
 
+mod properties;
+
+pub(crate) use properties::ValueProperty;
+use properties::{PropertyLack, TypeView};
+
+/// A property a generic parameter must have, inferred from its uses.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GenericRequirement {
+    pub(crate) property: ValueProperty,
+    /// The operator use that created the requirement, even when it reached this
+    /// parameter through calls. `None` for a standard function's parameter.
+    pub(crate) origin: Option<RequirementOrigin>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RequirementOrigin {
+    pub(crate) module_id: ModuleId,
+    pub(crate) range: TextRange,
+    pub(crate) operator: &'static str,
+}
+
+/// A property a type must have, checked once the body that needs it has been
+/// inferred, so that later unification can still solve the type.
+#[derive(Clone, Debug)]
+struct PropertyCheck {
+    module_id: ModuleId,
+    type_id: TypeId,
+    property: ValueProperty,
+    site: PropertySite,
+}
+
+#[derive(Clone, Debug)]
+enum PropertySite {
+    /// An operand of `==`, `!=`, `<`, `<=`, `>`, or `>=`.
+    Operator {
+        range: TextRange,
+        operator: &'static str,
+    },
+    /// A call instantiating `parameter`, which carries `requirement`.
+    Instantiation {
+        range: TextRange,
+        callee: String,
+        parameter: SymbolId,
+        requirement: GenericRequirement,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TypeFact {
     Known(TypeId),
@@ -281,6 +328,7 @@ pub(crate) struct TypedProject {
     pub(crate) expression_value_properties: HashMap<(ModuleId, SemanticId), ValueProperties>,
     pub(crate) fields: HashMap<SymbolId, Vec<FieldShape>>,
     pub(crate) generic_kinds: HashMap<SymbolId, GenericKind>,
+    pub(crate) generic_requirements: HashMap<SymbolId, GenericRequirement>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     /// Warnings never block compilation, so they stay out of `diagnostics`.
     pub(crate) warnings: Vec<Diagnostic>,
@@ -298,8 +346,22 @@ const fn binary_operator_symbol(operator: BinaryOperator) -> &'static str {
         BinaryOperator::LessEqual => "<=",
         BinaryOperator::Greater => ">",
         BinaryOperator::GreaterEqual => ">=",
+        BinaryOperator::Equal => "==",
+        BinaryOperator::NotEqual => "!=",
         BinaryOperator::And => "and",
         BinaryOperator::Or => "or",
+    }
+}
+
+/// The property a comparison operator needs of its operands, if `operator` is one.
+const fn comparison_property(operator: BinaryOperator) -> Option<ValueProperty> {
+    match operator {
+        BinaryOperator::Equal | BinaryOperator::NotEqual => Some(ValueProperty::Equatable),
+        BinaryOperator::Less
+        | BinaryOperator::LessEqual
+        | BinaryOperator::Greater
+        | BinaryOperator::GreaterEqual => Some(ValueProperty::Ordered),
+        _ => None,
     }
 }
 
@@ -435,7 +497,92 @@ impl TypedProject {
             .map(|input| self.format_type(*input))
             .collect::<Vec<_>>()
             .join(", ");
-        format!("fn({inputs}) -> {}", self.format_contract_result(contract))
+        let mut generics = Vec::new();
+        for type_id in contract.inputs.iter().chain([&contract.success]) {
+            self.collect_generics(*type_id, &mut generics);
+        }
+        let requirements = generics
+            .into_iter()
+            .filter_map(|generic| {
+                self.generic_requirements.get(&generic).map(|requirement| {
+                    format!(
+                        "{}: {}",
+                        self.resolved.symbol(generic).name,
+                        requirement.property.name()
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let requirements = if requirements.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", requirements.join(", "))
+        };
+        format!(
+            "fn{requirements}({inputs}) -> {}",
+            self.format_contract_result(contract)
+        )
+    }
+
+    /// The generic parameters `id` mentions, in first-mention order.
+    fn collect_generics(&self, id: TypeId, generics: &mut Vec<SymbolId>) {
+        match &self.types[self.resolve_type_id(id).raw() as usize] {
+            CanonicalType::Generic(symbol) => {
+                if !generics.contains(symbol) {
+                    generics.push(*symbol);
+                }
+            }
+            CanonicalType::Named { arguments, .. } => {
+                for argument in arguments {
+                    self.collect_generics(*argument, generics);
+                }
+            }
+            CanonicalType::Record(fields) => {
+                for field in fields {
+                    self.collect_generics(field.type_id, generics);
+                }
+            }
+            CanonicalType::Function(contract)
+            | CanonicalType::PolymorphicFunction { contract, .. } => {
+                for input in contract.inputs.iter().chain([&contract.success]) {
+                    self.collect_generics(*input, generics);
+                }
+            }
+            CanonicalType::FailureSetValue(_)
+            | CanonicalType::InferenceVariable(_)
+            | CanonicalType::Poison => {}
+        }
+    }
+
+    /// Whether `id` is equatable or ordered. A generic parameter has the
+    /// property when it carries it as an inferred requirement; otherwise the
+    /// answer depends on the instantiation.
+    pub(crate) fn derived_property(
+        &self,
+        id: TypeId,
+        property: ValueProperty,
+    ) -> PropertyDerivation {
+        let derivation = TypeView {
+            resolved: &self.resolved,
+            types: &self.types,
+            fields: &self.fields,
+            failure_rows: &self.failure_rows,
+            inference_bindings: &self.inference_bindings,
+        }
+        .derive(id, property);
+        if derivation.lack.is_some() {
+            return PropertyDerivation::Never;
+        }
+        let required = derivation.generics.iter().all(|generic| {
+            self.generic_requirements
+                .get(generic)
+                .is_some_and(|requirement| requirement.property >= property)
+        });
+        if derivation.unknown || !required {
+            PropertyDerivation::ValueDependent
+        } else {
+            PropertyDerivation::Always
+        }
     }
 
     pub(crate) fn generic_kind(
@@ -912,6 +1059,9 @@ struct ProjectTypeChecker {
     expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
     fields: HashMap<SymbolId, Vec<FieldShape>>,
     generic_kinds: HashMap<SymbolId, GenericKind>,
+    generic_requirements: HashMap<SymbolId, GenericRequirement>,
+    /// Checks the body being inferred has queued; settled at its end.
+    property_checks: Vec<PropertyCheck>,
     diagnostics: Vec<Diagnostic>,
     warnings: Vec<Diagnostic>,
     /// Values of `Int` expressions folded from literals, for `T4312`.
@@ -1096,6 +1246,8 @@ impl ProjectTypeChecker {
             expression_facts: HashMap::new(),
             fields: HashMap::new(),
             generic_kinds: HashMap::new(),
+            generic_requirements: HashMap::new(),
+            property_checks: Vec::new(),
             diagnostics,
             warnings: Vec::new(),
             integer_constants: HashMap::new(),
@@ -1235,6 +1387,21 @@ impl ProjectTypeChecker {
         for (function, contract) in map_contracts {
             let symbol = self.standard_function_symbol(function);
             self.contracts.insert(symbol, contract);
+        }
+        for key in [
+            StandardGeneric::MapEmptyKey,
+            StandardGeneric::MapGetKey,
+            StandardGeneric::MapPutKey,
+            StandardGeneric::MapUpdateKey,
+            StandardGeneric::MapValuesKey,
+        ] {
+            self.generic_requirements.insert(
+                self.resolved.standard_generic(key),
+                GenericRequirement {
+                    property: ValueProperty::Equatable,
+                    origin: None,
+                },
+            );
         }
         for (function, contract) in [
             (
@@ -1985,6 +2152,13 @@ impl ProjectTypeChecker {
                 .filter(|(symbol, _)| !affected_symbols.contains(symbol))
                 .map(|(symbol, kind)| (*symbol, *kind))
                 .collect(),
+            generic_requirements: previous
+                .generic_requirements
+                .iter()
+                .filter(|(symbol, _)| !affected_symbols.contains(symbol))
+                .map(|(symbol, requirement)| (*symbol, requirement.clone()))
+                .collect(),
+            property_checks: Vec::new(),
             diagnostics: resolved
                 .diagnostics
                 .iter()
@@ -2100,6 +2274,7 @@ impl ProjectTypeChecker {
             expression_value_properties: HashMap::new(),
             fields: self.fields,
             generic_kinds: self.generic_kinds,
+            generic_requirements: self.generic_requirements,
             diagnostics: self.diagnostics,
             warnings: self.warnings,
             inference_bindings: self.inference_bindings,
@@ -2260,9 +2435,11 @@ impl ProjectTypeChecker {
                 };
                 let previous = contract.clone();
                 let mut bindings = self.signature_bindings(module_id, signature, &contract);
+                self.property_checks.clear();
                 let body_fact =
                     self.infer_expression(module_id, body, &generic_symbols, &mut bindings);
                 self.unify_expression_result(module_id, body, body_fact.success, contract.success);
+                let requirements_changed = self.settle_property_checks(&generic_symbols);
                 let mut inferred = contract;
                 inferred.success = self.resolve_inference_type(inferred.success);
                 inferred.failures =
@@ -2271,10 +2448,11 @@ impl ProjectTypeChecker {
                 inferred.failures = self.close_failure_row(inferred.failures);
                 inferred.needs = self.close_needs_row(inferred.needs);
                 self.contracts.insert(function_symbol, inferred);
-                self.contracts[&function_symbol] != previous
+                self.contracts[&function_symbol] != previous || requirements_changed
             }
             ModuleDeclarationKind::Constant => {
                 let mut bindings = HashMap::new();
+                self.property_checks.clear();
                 let fact = self.infer_expression(module_id, body, &generic_symbols, &mut bindings);
                 let Some(symbol) = self.declaration_symbol(module_id, declaration) else {
                     return false;
@@ -2287,6 +2465,7 @@ impl ProjectTypeChecker {
                 } else {
                     fact.success
                 };
+                self.settle_property_checks(&generic_symbols);
                 // A constant is not generic: only its own initializer and annotation may
                 // determine its type, so a use elsewhere must not bind what is left open.
                 let success = self.resolve_inference_type(success);
@@ -2738,10 +2917,27 @@ impl ProjectTypeChecker {
             } => {
                 let fact = self.infer_expression(module_id, operand, generics, bindings);
                 let float = self.builtin_type("Float");
-                let success = if self.resolve_inference_type(fact.success) == float {
+                let int = self.builtin_type("Int");
+                let operand_type = self.resolve_inference_type(fact.success);
+                let known_other = operand_type != int
+                    && operand_type != float
+                    && operand_type != TypeId::new(0)
+                    && !matches!(
+                        self.types[operand_type.raw() as usize],
+                        CanonicalType::InferenceVariable(_)
+                    );
+                let success = if operand_type == float {
                     float
+                } else if known_other {
+                    let found = self.type_display_name(operand_type);
+                    self.type_error_range(
+                        module_id,
+                        "T4303",
+                        *range,
+                        format!("unary `-` needs an `Int` or `Float` operand, found `{found}`"),
+                    );
+                    TypeId::new(0)
                 } else {
-                    let int = self.builtin_type("Int");
                     self.unify_at(module_id, *range, fact.success, int, "unary operand");
                     if let Some(value) = self.integer_constant(module_id, operand) {
                         match crate::numeric::integer_negate(value) {
@@ -2804,7 +3000,14 @@ impl ProjectTypeChecker {
             } => {
                 let left = self.infer_expression(module_id, left_operand, generics, bindings);
                 let right = self.infer_expression(module_id, right_operand, generics, bindings);
-                {
+                if let Some(property) = comparison_property(*operator) {
+                    self.infer_comparison(module_id, *operator, property, *range, left, right);
+                    ExpressionFact {
+                        success: self.builtin_type("Bool"),
+                        failures: self.union_failure_rows([left.failures, right.failures]),
+                        needs: self.union_needs_rows([left.needs, right.needs]),
+                    }
+                } else {
                     let operand_type =
                         self.numeric_operand_type(module_id, *operator, *range, left, right);
                     if let (Some(arithmetic), Some(left), Some(right)) = (
@@ -2818,17 +3021,7 @@ impl ProjectTypeChecker {
                         }
                     }
                     ExpressionFact {
-                        success: if matches!(
-                            operator,
-                            BinaryOperator::Less
-                                | BinaryOperator::LessEqual
-                                | BinaryOperator::Greater
-                                | BinaryOperator::GreaterEqual
-                        ) {
-                            self.builtin_type("Bool")
-                        } else {
-                            operand_type
-                        },
+                        success: operand_type,
                         failures: self.union_failure_rows([left.failures, right.failures]),
                         needs: self.union_needs_rows([left.needs, right.needs]),
                     }
@@ -3571,15 +3764,13 @@ impl ProjectTypeChecker {
         )
     }
 
-    /// Requires an operand of `and`, `or`, or `not` to be `Bool`, reporting `T4304` otherwise.
-    ///
-    /// Returns the `Bool` type, which is the operator's result type either way.
-    /// Chooses the one numeric type that both operands of an arithmetic or comparison
-    /// operator share; there are no implicit conversions.
+    /// Chooses the one numeric type that both operands of an arithmetic operator
+    /// share; there are no implicit conversions.
     ///
     /// Ensures: an operand with a known type decides the other; two open operands
-    /// default to `Int`; mixed known types are `T4302`, and a non-numeric arithmetic
-    /// operand is `T4303`, both returning poison so later stages stay quiet.
+    /// default to `Int`; a non-numeric operand on either side is `T4303`, which
+    /// wins over `T4302` for mixed known types; both return poison so later
+    /// stages stay quiet.
     fn numeric_operand_type(
         &mut self,
         module_id: ModuleId,
@@ -3593,36 +3784,21 @@ impl ProjectTypeChecker {
         let poison = TypeId::new(0);
         let left_type = self.resolve_inference_type(left.success);
         let right_type = self.resolve_inference_type(right.success);
-        let open = |checker: &Self, id: TypeId| {
-            id == poison
-                || matches!(
-                    checker.types[id.raw() as usize],
-                    CanonicalType::InferenceVariable(_)
-                )
-        };
-        let operand_type = if !open(self, left_type) {
-            left_type
-        } else if !open(self, right_type) {
-            right_type
-        } else {
-            int
+        if left_type == poison || right_type == poison {
+            return poison;
+        }
+        let known = |checker: &Self, id: TypeId| {
+            !matches!(
+                checker.types[id.raw() as usize],
+                CanonicalType::InferenceVariable(_)
+            )
         };
         let symbol = binary_operator_symbol(operator);
-        let comparison = matches!(
-            operator,
-            BinaryOperator::Less
-                | BinaryOperator::LessEqual
-                | BinaryOperator::Greater
-                | BinaryOperator::GreaterEqual
-        );
-        if operand_type != int && operand_type != float {
-            if comparison {
-                // Ordering beyond numbers belongs to the equality and ordering work.
-                self.unify_at(module_id, range, left.success, int, "binary left operand");
-                self.unify_at(module_id, range, right.success, int, "binary right operand");
-                return int;
-            }
-            let found = self.type_display_name(operand_type);
+        if let Some(found) = [left_type, right_type]
+            .into_iter()
+            .find(|id| known(self, *id) && *id != int && *id != float)
+        {
+            let found = self.type_display_name(found);
             let help = if operator == BinaryOperator::Add && found == "Text" {
                 "; join text with `Text.append`"
             } else {
@@ -3636,11 +3812,62 @@ impl ProjectTypeChecker {
             );
             return poison;
         }
-        if !open(self, left_type) && !open(self, right_type) && left_type != right_type {
+        if known(self, left_type) && known(self, right_type) && left_type != right_type {
             let (left_name, right_name) = (
                 self.type_display_name(left_type),
                 self.type_display_name(right_type),
             );
+            self.type_error_range(
+                module_id,
+                "T4302",
+                range,
+                format!(
+                    "`{symbol}` needs operands of one type, found `{left_name}` and `{right_name}`; \
+                     convert one side with `Float.from_int` or `Float.to_int`"
+                ),
+            );
+            return poison;
+        }
+        let operand_type = if known(self, left_type) {
+            left_type
+        } else if known(self, right_type) {
+            right_type
+        } else {
+            int
+        };
+        self.unify(left.success, operand_type);
+        self.unify(right.success, operand_type);
+        operand_type
+    }
+
+    /// Types `==`, `!=`, `<`, `<=`, `>`, and `>=`: both operands share one type,
+    /// which must have `property`. The property check waits for the end of the
+    /// body, so later uses can still solve an open operand type.
+    fn infer_comparison(
+        &mut self,
+        module_id: ModuleId,
+        operator: BinaryOperator,
+        property: ValueProperty,
+        range: TextRange,
+        left: ExpressionFact,
+        right: ExpressionFact,
+    ) {
+        let poison = TypeId::new(0);
+        let symbol = binary_operator_symbol(operator);
+        let (left_type, right_type) = (
+            self.resolve_inference_type(left.success),
+            self.resolve_inference_type(right.success),
+        );
+        if left_type == poison || right_type == poison {
+            return;
+        }
+        if !self.unify(left.success, right.success) {
+            let (left_name, right_name) = (
+                self.type_display_name(left_type),
+                self.type_display_name(right_type),
+            );
+            let int = self.builtin_type("Int");
+            let float = self.builtin_type("Float");
             let numeric = [left_type, right_type]
                 .iter()
                 .all(|id| *id == int || *id == float);
@@ -3657,11 +3884,213 @@ impl ProjectTypeChecker {
                     "`{symbol}` needs operands of one type, found `{left_name}` and `{right_name}`{help}"
                 ),
             );
-            return poison;
+            return;
         }
-        self.unify(left.success, operand_type);
-        self.unify(right.success, operand_type);
-        operand_type
+        self.property_checks.push(PropertyCheck {
+            module_id,
+            type_id: left.success,
+            property,
+            site: PropertySite::Operator {
+                range,
+                operator: symbol,
+            },
+        });
+    }
+
+    fn type_view(&self) -> TypeView<'_> {
+        TypeView {
+            resolved: &self.resolved,
+            types: &self.types,
+            fields: &self.fields,
+            failure_rows: &self.failure_rows,
+            inference_bindings: &self.inference_bindings,
+        }
+    }
+
+    /// Settles the property checks the body just inferred queued. A check that
+    /// depends on one of the declaration's own generic parameters becomes an
+    /// inferred requirement on it; any other lack is reported.
+    ///
+    /// Returns whether a requirement was added, which changes the contract.
+    fn settle_property_checks(&mut self, generics: &HashMap<String, SymbolId>) -> bool {
+        let own = generics.values().copied().collect::<HashSet<_>>();
+        let mut changed = false;
+        for check in std::mem::take(&mut self.property_checks) {
+            let derivation = self.type_view().derive(check.type_id, check.property);
+            if let Some(lack) = derivation.lack {
+                self.report_property_lack(&check, &lack);
+                continue;
+            }
+            let origin = match &check.site {
+                PropertySite::Operator { range, operator } => Some(RequirementOrigin {
+                    module_id: check.module_id,
+                    range: *range,
+                    operator,
+                }),
+                PropertySite::Instantiation { requirement, .. } => requirement.origin.clone(),
+            };
+            for generic in derivation
+                .generics
+                .into_iter()
+                .filter(|id| own.contains(id))
+            {
+                let stronger = self
+                    .generic_requirements
+                    .get(&generic)
+                    .is_none_or(|existing| existing.property < check.property);
+                if stronger {
+                    self.generic_requirements.insert(
+                        generic,
+                        GenericRequirement {
+                            property: check.property,
+                            origin: origin.clone(),
+                        },
+                    );
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    fn report_property_lack(&mut self, check: &PropertyCheck, lack: &PropertyLack) {
+        let found = self.format_checked_type(check.type_id);
+        let property = check.property.name();
+        let code = match check.property {
+            ValueProperty::Equatable => "T4300",
+            ValueProperty::Ordered => "T4301",
+        };
+        let advice = match check.property {
+            ValueProperty::Equatable => "",
+            ValueProperty::Ordered => "; order it with a comparator and `List.sort_by`",
+        };
+        let file_id = self.resolved.semantic.modules[check.module_id.raw() as usize]
+            .source
+            .file_id();
+        let diagnostic = match &check.site {
+            PropertySite::Operator { range, operator } => Diagnostic::error(
+                DiagnosticStage::Type,
+                code,
+                file_id,
+                *range,
+                format!(
+                    "`{operator}` needs an {property} type, but `{found}` is not {property}: {}{advice}",
+                    lack.describe()
+                ),
+            ),
+            PropertySite::Instantiation {
+                range,
+                callee,
+                parameter,
+                requirement,
+            } => {
+                let parameter_name = self.resolved.symbol(*parameter).name.clone();
+                match &requirement.origin {
+                    None => Diagnostic::error(
+                        DiagnosticStage::Type,
+                        code,
+                        file_id,
+                        *range,
+                        format!(
+                            "`{callee}` needs `{parameter_name}` to be {property}, but `{found}` is not {property}: {}{advice}",
+                            lack.describe()
+                        ),
+                    ),
+                    Some(origin) => {
+                        let mut diagnostic = Diagnostic::error(
+                            DiagnosticStage::Type,
+                            "T4305",
+                            file_id,
+                            *range,
+                            format!(
+                                "this call instantiates `{parameter_name}` of `{callee}` with `{found}`, \
+                                 which is not {property}: {}",
+                                lack.describe()
+                            ),
+                        );
+                        let origin_file = self.resolved.semantic.modules
+                            [origin.module_id.raw() as usize]
+                            .source
+                            .file_id();
+                        diagnostic = diagnostic.with_label(
+                            origin_file,
+                            origin.range,
+                            format!(
+                                "`{parameter_name}` must be {property} because `{}` uses `{}` here",
+                                callee, origin.operator
+                            ),
+                        );
+                        if let Some((module_id, range)) = self.generic_parameter_range(*parameter) {
+                            let parameter_file = self.resolved.semantic.modules
+                                [module_id.raw() as usize]
+                                .source
+                                .file_id();
+                            diagnostic = diagnostic.with_label(
+                                parameter_file,
+                                range,
+                                format!("`{parameter_name}` is declared here"),
+                            );
+                        }
+                        diagnostic
+                    }
+                }
+            }
+        };
+        self.push_type_diagnostic(diagnostic);
+    }
+
+    /// Where a source generic parameter is declared.
+    fn generic_parameter_range(&self, parameter: SymbolId) -> Option<(ModuleId, TextRange)> {
+        let symbol = self.resolved.symbol(parameter);
+        let module_id = symbol.module_id?;
+        let semantic_id = symbol.semantic_id?;
+        self.resolved.semantic.modules[module_id.raw() as usize]
+            .declarations
+            .iter()
+            .find(|declaration| declaration.semantic_id == semantic_id)?
+            .generic_parameters
+            .iter()
+            .find(|name| name.text == symbol.name)
+            .map(|name| (module_id, name.range))
+    }
+
+    fn format_checked_type(&self, type_id: TypeId) -> String {
+        let id = self.resolve_inference_type(type_id);
+        match &self.types[id.raw() as usize] {
+            CanonicalType::Named { symbol, arguments } if !arguments.is_empty() => format!(
+                "{}<{}>",
+                self.resolved.symbol(*symbol).name,
+                arguments
+                    .iter()
+                    .map(|argument| self.format_checked_type(*argument))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CanonicalType::Record(fields) => format!(
+                "{{ {} }}",
+                fields
+                    .iter()
+                    .map(|field| format!(
+                        "{}: {}",
+                        field.name,
+                        self.format_checked_type(field.type_id)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CanonicalType::Function(contract)
+            | CanonicalType::PolymorphicFunction { contract, .. } => format!(
+                "fn({}) -> {}",
+                contract
+                    .inputs
+                    .iter()
+                    .map(|input| self.format_checked_type(*input))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                self.format_checked_type(contract.success)
+            ),
+            _ => self.type_display_name(id),
+        }
     }
 
     fn type_display_name(&self, id: TypeId) -> String {
@@ -3731,6 +4160,9 @@ impl ProjectTypeChecker {
         );
     }
 
+    /// Requires an operand of `and`, `or`, or `not` to be `Bool`, reporting `T4304` otherwise.
+    ///
+    /// Returns the `Bool` type, which is the operator's result type either way.
     fn require_boolean_operand(
         &mut self,
         module_id: ModuleId,
@@ -5467,6 +5899,28 @@ impl ProjectTypeChecker {
                     }
                 }
             }
+            for parameter in &parameters {
+                let (Some(requirement), Some(argument)) = (
+                    self.generic_requirements.get(parameter).cloned(),
+                    substitution.values.get(parameter).copied(),
+                ) else {
+                    continue;
+                };
+                self.property_checks.push(PropertyCheck {
+                    module_id,
+                    type_id: argument,
+                    property: requirement.property,
+                    site: PropertySite::Instantiation {
+                        range,
+                        callee: callee_symbol.map_or_else(
+                            || "this function".to_owned(),
+                            |symbol| self.callable_display_name(symbol),
+                        ),
+                        parameter: *parameter,
+                        requirement,
+                    },
+                });
+            }
             let unresolved = self.unresolved_call_parameters(&parameters, substitution);
             // A copy, so recording the instantiation cannot bind parameters
             // the call left open.
@@ -5504,6 +5958,18 @@ impl ProjectTypeChecker {
                     .chain(arguments.iter().map(|argument| argument.needs))
                     .chain(std::iter::once(contract_needs)),
             ),
+        }
+    }
+
+    /// `Map.put` for a standard function, the declared name otherwise.
+    fn callable_display_name(&self, symbol: SymbolId) -> String {
+        let name = self.resolved.symbol(symbol).name.clone();
+        match self.resolved.standard_symbol(symbol) {
+            Some(StandardSymbol::Function(function)) => match function.module() {
+                Some(module) => format!("{}.{name}", module.qualifier()),
+                None => name,
+            },
+            _ => name,
         }
     }
 
@@ -6945,21 +7411,27 @@ impl ProjectTypeChecker {
         let file_id = self.resolved.semantic.modules[module_id.raw() as usize]
             .source
             .file_id();
-        if self.diagnostics.iter().any(|diagnostic| {
-            diagnostic.stage() == DiagnosticStage::Type
-                && diagnostic.code() == code
-                && diagnostic.file_id() == file_id
-                && diagnostic.range() == range
-        }) {
-            return;
-        }
-        self.diagnostics.push(Diagnostic::error(
+        self.push_type_diagnostic(Diagnostic::error(
             DiagnosticStage::Type,
             code,
             file_id,
             range,
             message,
         ));
+    }
+
+    /// Records a type diagnostic once: body inference runs to a fixed point, so
+    /// the same finding recurs on every pass.
+    fn push_type_diagnostic(&mut self, diagnostic: Diagnostic) {
+        if self.diagnostics.iter().any(|existing| {
+            existing.stage() == DiagnosticStage::Type
+                && existing.code() == diagnostic.code()
+                && existing.file_id() == diagnostic.file_id()
+                && existing.range() == diagnostic.range()
+        }) {
+            return;
+        }
+        self.diagnostics.push(diagnostic);
     }
 }
 

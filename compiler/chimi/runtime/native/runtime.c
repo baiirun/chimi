@@ -1154,6 +1154,177 @@ static ChimiValue *map_get_node(MapNode *node, const char *key) {
   return NULL;
 }
 
+/* Structural order: the one comparison behind `==`, `<`, `Order.compare`, and Map
+   keys. For ordered types it is the source-level order; for types that are only
+   equatable (records, maps, Json.Value) it is an internal total order consistent
+   with equality. It mirrors execution/structural.rs. The walk keeps its own work
+   stack on the heap, so nesting depth never costs host stack. */
+typedef struct { const ChimiValue *left; const ChimiValue *right; int decided; } CompareStep;
+typedef struct { CompareStep *steps; size_t length; size_t capacity; } CompareStack;
+
+static void compare_push(CompareStack *stack, const ChimiValue *left, const ChimiValue *right, int decided) {
+  if (stack->length == stack->capacity) {
+    size_t capacity = stack->capacity ? stack->capacity * 2 : 64;
+    CompareStep *steps = realloc(stack->steps, capacity * sizeof(*steps));
+    if (steps == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+    stack->steps = steps; stack->capacity = capacity;
+  }
+  stack->steps[stack->length++] = (CompareStep){left, right, decided};
+}
+/* A step with no values decides the comparison when every step above it was equal,
+   such as the length rule after the shared prefix of two lists. */
+static void compare_decide(CompareStack *stack, int decided) { compare_push(stack, NULL, NULL, decided); }
+static int order_of(int64_t left, int64_t right) { return (left > right) - (left < right); }
+
+/* A JSON number as sign x 0.digits x 10^exponent with no leading or trailing zeros
+   in digits; zero has sign 0. Written exponents clamp at 2^60, like json.rs. */
+typedef struct { int sign; const char *digits; size_t length; int64_t exponent; char *owned; } CanonicalNumber;
+static CanonicalNumber canonical_number(const char *text) {
+  CanonicalNumber number = {0};
+  bool negative = *text == '-'; if (negative) ++text;
+  size_t mantissa = strcspn(text, "eE"); int64_t exponent = 0;
+  if (text[mantissa]) {
+    const char *written = text + mantissa + 1; bool negative_exponent = *written == '-';
+    if (*written == '-' || *written == '+') ++written;
+    for (; *written; ++written) {
+      exponent = exponent * 10 + (*written - '0');
+      if (exponent > ((int64_t)1 << 60)) exponent = (int64_t)1 << 60;
+    }
+    if (negative_exponent) exponent = -exponent;
+  }
+  size_t point = strcspn(text, ".eE"); if (point > mantissa) point = mantissa;
+  number.owned = malloc(mantissa + 1);
+  if (number.owned == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  size_t length = 0;
+  for (size_t index = 0; index < mantissa; ++index)
+    if (text[index] != '.') number.owned[length++] = text[index];
+  size_t leading = 0; while (leading < length && number.owned[leading] == '0') ++leading;
+  while (length > leading && number.owned[length - 1] == '0') --length;
+  if (length == leading) return number;
+  number.sign = negative ? -1 : 1; number.digits = number.owned + leading; number.length = length - leading;
+  number.exponent = (int64_t)point - (int64_t)leading + exponent;
+  return number;
+}
+static int json_number_compare(const char *left_text, const char *right_text) {
+  CanonicalNumber left = canonical_number(left_text), right = canonical_number(right_text);
+  int order = order_of(left.sign, right.sign);
+  if (order == 0 && left.sign != 0) {
+    order = order_of(left.exponent, right.exponent);
+    if (order == 0) {
+      size_t shared = left.length < right.length ? left.length : right.length;
+      int digits = memcmp(left.digits, right.digits, shared);
+      order = digits != 0 ? (digits > 0) - (digits < 0) : order_of((int64_t)left.length, (int64_t)right.length);
+    }
+    if (left.sign < 0) order = -order;
+  }
+  free(left.owned); free(right.owned);
+  return order;
+}
+
+static int field_name_order(const void *left, const void *right) {
+  return strcmp((*(const RuntimeField *const *)left)->name, (*(const RuntimeField *const *)right)->name);
+}
+/* Records have no declaration order; name order is a fixed order both sides share. */
+static const RuntimeField **fields_by_name(const RuntimeField *fields, uint32_t length) {
+  const RuntimeField **sorted = malloc((length ? length : 1) * sizeof(*sorted));
+  if (sorted == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  for (uint32_t index = 0; index < length; ++index) sorted[index] = &fields[index];
+  qsort(sorted, length, sizeof(*sorted), field_name_order);
+  return sorted;
+}
+
+typedef struct { const MapNode **nodes; size_t length; } MapEntries;
+/* In key order, so equal maps yield equal sequences whatever their insertion history.
+   The tree is balanced, so the pending stack never exceeds its height. */
+static MapEntries map_entries(const MapNode *root) {
+  size_t capacity = 16, length = 0, pending_length = 0;
+  const MapNode **nodes = malloc(capacity * sizeof(*nodes)); const MapNode *pending[64];
+  if (nodes == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  const MapNode *node = root;
+  for (;;) {
+    while (node) { pending[pending_length++] = node; node = node->left; }
+    if (pending_length == 0) break;
+    node = pending[--pending_length];
+    if (length == capacity) {
+      capacity *= 2; const MapNode **grown = realloc(nodes, capacity * sizeof(*nodes));
+      if (grown == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+      nodes = grown;
+    }
+    nodes[length++] = node; node = node->right;
+  }
+  return (MapEntries){nodes, length};
+}
+
+static uint32_t constructor_ordinal(uint32_t symbol) {
+  return CHIMI_CONSTRUCTORS[CHIMI_SYMBOLS[symbol].constructor].ordinal;
+}
+
+/* Requires: both values have the same equatable type. Returns -1, 0, or 1. */
+static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *right_root) {
+  CompareStack stack = {0}; int order = 0;
+  compare_push(&stack, left_root, right_root, 0);
+  while (order == 0 && stack.length != 0) {
+    CompareStep step = stack.steps[--stack.length];
+    if (step.left == NULL) { order = step.decided; continue; }
+    const ChimiValue *left = step.left, *right = step.right;
+    if (left == right) continue;
+    if (left->kind != right->kind) { order = order_of(left->kind, right->kind); continue; }
+    switch (left->kind) {
+      case VALUE_VOID: break;
+      case VALUE_INTEGER: order = order_of(left->as.integer, right->as.integer); break;
+      /* Finite, so total; -0.0 and 0.0 are equal. */
+      case VALUE_FLOAT: order = (left->as.floating > right->as.floating) - (left->as.floating < right->as.floating); break;
+      case VALUE_BOOLEAN: order = order_of(left->as.boolean, right->as.boolean); break;
+      case VALUE_TEXT: { int bytes = strcmp(left->as.text, right->as.text); order = (bytes > 0) - (bytes < 0); break; }
+      case VALUE_JSON_NUMBER: order = json_number_compare(left->as.json_number, right->as.json_number); break;
+      case VALUE_LIST: {
+        uint32_t left_length = list_length(left), right_length = list_length(right);
+        uint32_t shared = left_length < right_length ? left_length : right_length;
+        compare_decide(&stack, order_of(left_length, right_length));
+        for (uint32_t index = shared; index-- > 0;)
+          compare_push(&stack, list_get(left, index), list_get(right, index), 0);
+        break;
+      }
+      case VALUE_RECORD: {
+        uint32_t length = left->as.record.length < right->as.record.length ? left->as.record.length : right->as.record.length;
+        const RuntimeField **left_fields = fields_by_name(left->as.record.fields, length);
+        const RuntimeField **right_fields = fields_by_name(right->as.record.fields, length);
+        for (uint32_t index = length; index-- > 0;)
+          compare_push(&stack, left_fields[index]->value, right_fields[index]->value, 0);
+        free(left_fields); free(right_fields);
+        break;
+      }
+      case VALUE_CONSTRUCTED: {
+        order = order_of(constructor_ordinal(left->as.constructed.constructor),
+                         constructor_ordinal(right->as.constructed.constructor));
+        if (order != 0) break;
+        uint32_t length = left->as.constructed.length;
+        for (uint32_t index = length; index-- > 0;)
+          compare_push(&stack, left->as.constructed.fields[index].value, right->as.constructed.fields[index].value, 0);
+        break;
+      }
+      case VALUE_MAP: {
+        MapEntries left_entries = map_entries(left->as.map), right_entries = map_entries(right->as.map);
+        size_t shared = left_entries.length < right_entries.length ? left_entries.length : right_entries.length;
+        compare_decide(&stack, order_of((int64_t)left_entries.length, (int64_t)right_entries.length));
+        for (size_t index = shared; index-- > 0;) {
+          compare_push(&stack, left_entries.nodes[index]->value, right_entries.nodes[index]->value, 0);
+          int key = strcmp(left_entries.nodes[index]->key, right_entries.nodes[index]->key);
+          compare_decide(&stack, (key > 0) - (key < 0));
+        }
+        free(left_entries.nodes); free(right_entries.nodes);
+        break;
+      }
+      /* Typing admits no comparison of these; identity keeps the order total. */
+      case VALUE_CALLABLE: case VALUE_TASK: case VALUE_CHANNEL_SENDER:
+      case VALUE_CHANNEL_RECEIVER: case VALUE_CHANNEL_COMPLETION:
+        order = order_of((int64_t)(uintptr_t)left, (int64_t)(uintptr_t)right); break;
+    }
+  }
+  free(stack.steps);
+  return order;
+}
+
 static uint32_t standard_constructor_symbol(uint32_t standard_constructor) {
   for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)
     if (CHIMI_SYMBOLS[symbol].standard_constructor == standard_constructor) return symbol;
@@ -2522,19 +2693,18 @@ NODE_WRAPPER(binary, "binary", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiControl *left = RUN(node->b);
   if (left->kind != CONTROL_SUCCESS) { result = left; break; }
   ChimiControl *right = RUN(node->c); if (right->kind != CONTROL_SUCCESS) { result = right; break; }
-  int order;
-  if (left->value->kind == VALUE_INTEGER && right->value->kind == VALUE_INTEGER) {
-    int64_t l = left->value->as.integer, r = right->value->as.integer;
-    if (is_arithmetic(node->a)) { result = integer_arithmetic(node->a, l, r, node_id); break; }
-    order = (l > r) - (l < r);
-  } else if (left->value->kind == VALUE_FLOAT && right->value->kind == VALUE_FLOAT) {
-    double l = left->value->as.floating, r = right->value->as.floating;
-    if (is_arithmetic(node->a)) { result = float_arithmetic(node->a, l, r, node_id); break; }
-    order = (l > r) - (l < r); /* finite, so total; -0.0 and 0.0 are equal */
-  } else {
-    result = defect("verified binary operands are not numbers", node_id); break;
+  if (is_arithmetic(node->a)) {
+    if (left->value->kind == VALUE_INTEGER && right->value->kind == VALUE_INTEGER)
+      result = integer_arithmetic(node->a, left->value->as.integer, right->value->as.integer, node_id);
+    else if (left->value->kind == VALUE_FLOAT && right->value->kind == VALUE_FLOAT)
+      result = float_arithmetic(node->a, left->value->as.floating, right->value->as.floating, node_id);
+    else
+      result = defect("verified binary operands are not numbers", node_id);
+    break;
   }
+  int order = chimi_value_compare(left->value, right->value);
   switch (node->a) {
+    case CHIMI_BINARY_EQUAL: result = success(boolean_value(order == 0)); break;
     case CHIMI_BINARY_LESS: result = success(boolean_value(order < 0)); break;
     case CHIMI_BINARY_LESS_EQUAL: result = success(boolean_value(order <= 0)); break;
     case CHIMI_BINARY_GREATER: result = success(boolean_value(order > 0)); break;

@@ -3,14 +3,14 @@ use crate::diagnostic::Diagnostic;
 use crate::executable::{lower, lower_legacy, seal_entry, seal_legacy_entry};
 use crate::execution::{ExecutionConfig, ExecutionReport, execute, execute_legacy};
 use crate::formatter::FormatReport;
-use crate::ids::SymbolId;
+use crate::ids::{SymbolId, TypeId};
 use crate::inspection::{InspectionError, InspectionReport, inspect};
 use crate::resolution::{ReferenceResolution, ResolvedProject, resolve, resolve_project};
 use crate::semantic;
 use crate::source::SourceSnapshot;
 use crate::syntax::ParseResult;
 use crate::typing::{
-    CapabilityClass, GenericKind, PropertyDerivation, TypedProject, ValueProperties, check,
+    CapabilityClass, GenericKind, PropertyDerivation, TypedProject, ValueProperty, check,
     check_project,
 };
 use std::sync::Arc;
@@ -233,6 +233,8 @@ pub struct ValuePropertyReport {
     pub transferable: ValuePropertyStatus,
     pub shareable: ValuePropertyStatus,
     pub capability: ValueCapabilityClass,
+    pub equatable: ValuePropertyStatus,
+    pub ordered: ValuePropertyStatus,
 }
 
 #[derive(Debug)]
@@ -303,7 +305,7 @@ impl TypeReport {
             .contract(module_path, function_name)?
             .inputs
             .get(input)?;
-        Some(value_property_report(self.typed.value_properties(type_id)))
+        Some(value_property_report(&self.typed, type_id))
     }
 
     pub fn function_success_value_properties(
@@ -312,7 +314,7 @@ impl TypeReport {
         function_name: &str,
     ) -> Option<ValuePropertyReport> {
         let type_id = self.typed.contract(module_path, function_name)?.success;
-        Some(value_property_report(self.typed.value_properties(type_id)))
+        Some(value_property_report(&self.typed, type_id))
     }
 
     pub fn render_diagnostics(&self) -> String {
@@ -320,7 +322,8 @@ impl TypeReport {
     }
 }
 
-fn value_property_report(properties: ValueProperties) -> ValuePropertyReport {
+fn value_property_report(typed: &TypedProject, type_id: TypeId) -> ValuePropertyReport {
+    let properties = typed.value_properties(type_id);
     let property = |value| match value {
         PropertyDerivation::Always => ValuePropertyStatus::Always,
         PropertyDerivation::Never => ValuePropertyStatus::Never,
@@ -334,6 +337,8 @@ fn value_property_report(properties: ValueProperties) -> ValuePropertyReport {
             CapabilityClass::Exclusive => ValueCapabilityClass::Exclusive,
             CapabilityClass::ParentLocal => ValueCapabilityClass::ParentLocal,
         },
+        equatable: property(typed.derived_property(type_id, ValueProperty::Equatable)),
+        ordered: property(typed.derived_property(type_id, ValueProperty::Ordered)),
     }
 }
 
@@ -2816,7 +2821,7 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
         );
         assert_eq!(
             put.callable().unwrap().display(),
-            "fn(Map<K, V>, K, V) -> Map<K, V>"
+            "fn<K: equatable>(Map<K, V>, K, V) -> Map<K, V>"
         );
         let same = inspect_at("same(1)");
         assert_eq!(
@@ -3335,6 +3340,8 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
                 transferable: always,
                 shareable: always,
                 capability: ordinary,
+                equatable: always,
+                ordered: always,
             }
         );
         assert_eq!(
@@ -3343,6 +3350,8 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
                 transferable: always,
                 shareable: always,
                 capability: ordinary,
+                equatable: never,
+                ordered: never,
             }
         );
         for function in ["receiver", "completion", "wrapped", "consumer"] {
@@ -3352,6 +3361,8 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
                     transferable: always,
                     shareable: never,
                     capability: exclusive,
+                    equatable: never,
+                    ordered: never,
                 },
                 "{function}"
             );
@@ -3362,6 +3373,8 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
                 transferable: never,
                 shareable: never,
                 capability: parent_local,
+                equatable: never,
+                ordered: never,
             }
         );
         assert_eq!(
@@ -3370,6 +3383,8 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
                 transferable: dependent,
                 shareable: dependent,
                 capability: ordinary,
+                equatable: never,
+                ordered: never,
             }
         );
     }

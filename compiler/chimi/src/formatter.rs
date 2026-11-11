@@ -181,6 +181,8 @@ fn format_parse(parsed: &ParseResult) -> String {
             | TokenKind::LessEqual
             | TokenKind::Greater
             | TokenKind::GreaterEqual
+            | TokenKind::EqualEqual
+            | TokenKind::BangEqual
             | TokenKind::And
             | TokenKind::Or => {
                 writer.space();

@@ -246,12 +246,12 @@ fn boolean_operators_follow_their_truth_tables() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":369");
 }
 
-// B2: `not` binds more loosely than comparison; `(not 3) < 2` would not type-check.
+// B2: `not` binds more loosely than `==`; `(not 1) == 2` would not type-check.
 #[test]
 fn not_applies_to_a_whole_comparison() {
     let outcome = run_both(
         "boolean-not-precedence",
-        "pub fn main() -> Bool { not 3 < 2 }\n",
+        "pub fn main() -> Bool { not 1 == 2 }\n",
     );
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":true");
 }
@@ -1603,7 +1603,6 @@ fn int_modulo_takes_the_sign_of_the_modulus() {
 
 // N13
 #[test]
-#[ignore = "needs == (ts-95bffa)"]
 fn float_addition_rounds_so_point_one_plus_point_two_is_not_point_three() {
     let outcome = run_both(
         "float-rounding-equality",
@@ -1614,7 +1613,6 @@ fn float_addition_rounds_so_point_one_plus_point_two_is_not_point_three() {
 
 // N16 (equality half)
 #[test]
-#[ignore = "needs == (ts-95bffa)"]
 fn negative_zero_equals_zero() {
     let outcome = run_both(
         "float-negative-zero-equality",
@@ -1625,7 +1623,6 @@ fn negative_zero_equals_zero() {
 
 // E11
 #[test]
-#[ignore = "needs == (ts-95bffa)"]
 fn int_and_float_are_never_equal_operands() {
     assert_eq!(
         check_codes("pub fn main() -> Bool { 1 == 1.0 }\n"),
@@ -3350,4 +3347,345 @@ fn equal_values_render_to_the_same_text() {
         outcome,
         format!("\"outcome\":\"success\",\"value\":[{expected}]")
     );
+}
+
+// ---- Equality and ordering (G2/G3), docs/specification/core-data-and-operators.md ----
+
+const MONEY_STATUS: &str =
+    "struct Money { cents: Int }\nenum Status {\n  Pending\n  Paid(amount: Money)\n}\n";
+
+// E1, E2, E3, E4, E19: equal payloads, different variants, separately built
+// lists, and records written in another field order; `!=` negates each.
+#[test]
+fn equality_is_structural_and_inequality_is_its_negation() {
+    let pairs = [
+        ("Paid(Money(5))", "Paid(Money(5))", true),
+        ("Paid(Money(5))", "Paid(Money(6))", false),
+        ("Paid(Money(5))", "Status.Pending", false),
+        ("pair()", "[1, 2]", true),
+        ("pair()", "[1, 2, 3]", false),
+        ("{ a: 1, b: \"x\" }", "{ b: \"x\", a: 1 }", true),
+        ("{ a: 1, b: \"x\" }", "{ b: \"y\", a: 1 }", false),
+    ];
+    let equal = pairs
+        .iter()
+        .map(|(left, right, _)| format!("{left} == {right}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let not_equal = pairs
+        .iter()
+        .map(|(left, right, _)| format!("{left} != {right}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "{MONEY_STATUS}fn pair() -> List<Int> {{ [1, 2] }}\n\
+         pub fn main() -> List<List<Bool>> {{ [[{equal}], [{not_equal}]] }}\n"
+    );
+    let expected = pairs
+        .iter()
+        .map(|(_, _, equal)| equal.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let negated = pairs
+        .iter()
+        .map(|(_, _, equal)| (!equal).to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        run_both("structural-equality", &source),
+        format!("\"outcome\":\"success\",\"value\":[[{expected}],[{negated}]]")
+    );
+}
+
+// E5: maps compare by entries, whatever their insertion order.
+#[test]
+fn maps_built_in_different_orders_are_equal() {
+    let source = concat!(
+        "import std/map as Map\n",
+        "pub fn main() -> List<Bool> {\n",
+        "  let forward = Map.empty() |> Map.put(\"a\", 1) |> Map.put(\"b\", 2) |> Map.put(\"c\", 3)\n",
+        "  let backward = Map.empty() |> Map.put(\"c\", 3) |> Map.put(\"b\", 2) |> Map.put(\"a\", 1)\n",
+        "  let changed = backward |> Map.put(\"b\", 4)\n",
+        "  [forward == backward, forward == changed, forward != changed]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("map-equality", source),
+        "\"outcome\":\"success\",\"value\":[true,false,true]"
+    );
+}
+
+// E15, E16: JSON numbers compare by the exact number, not by spelling or `f64`.
+// Text literals have no escapes yet, so E16 nests arrays instead of an object;
+// object equality is map equality, covered above.
+#[test]
+fn json_values_compare_numbers_by_exact_value() {
+    let source = concat!(
+        "import std/json as Json\n",
+        "pub fn main() -> List<Bool> {\n",
+        "  [\n",
+        "    Json.decode(\"1.0\") == Json.decode(\"1\"),\n",
+        "    Json.decode(\"[1, [2, 30]]\") == Json.decode(\"[1.0, [2, 3e1]]\"),\n",
+        "    Json.decode(\"0.1\") == Json.decode(\"0.10000000000000000001\"),\n",
+        "  ]\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("json-number-equality", source),
+        "\"outcome\":\"success\",\"value\":[true,true,false]"
+    );
+}
+
+// E17: text equality is by UTF-8 bytes, with no normalization.
+#[test]
+fn text_equality_does_not_normalize() {
+    let outcome = run_both(
+        "text-equality-bytes",
+        "pub fn main() -> List<Bool> { [\"é\" == \"e\u{301}\", \"é\" == \"é\"] }\n",
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[false,true]");
+}
+
+// E18 end to end: the deepest value Chimi builds in a few seconds today. Both
+// paths are bounded by construction, not comparison: the interpreter's value
+// `Drop` recurses near 10,000 levels, and native loop collection is quadratic in
+// nesting depth. The million-level rows are the unit and C runtime tests.
+#[test]
+fn deeply_nested_values_compare_equal() {
+    let source = concat!(
+        "enum Nest {\n  Leaf\n  Wrap(children: List<Nest>)\n}\n",
+        "struct Build { depth: Int, nest: Nest }\n",
+        "fn nested(depth: Int) -> Nest {\n",
+        "  let start = Build(depth, Leaf)\n",
+        "  loop state = start {\n",
+        "    case state.depth {\n",
+        "      0 -> break state.nest\n",
+        "      _ -> Build(state.depth - 1, Wrap([state.nest]))\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<Bool> { [nested(5000) == nested(5000), nested(5000) == nested(4999)] }\n",
+    );
+    assert_eq!(
+        run_both("deep-equality", source),
+        "\"outcome\":\"success\",\"value\":[true,false]"
+    );
+}
+
+// O1, O3, O4, O5, O6, O7: declaration-order structs and enums, list prefixes,
+// `None` before `Some`, `False` before `True`, and text by UTF-8 bytes. Each
+// pair is also checked the other way round, which a constant answer would fail.
+#[test]
+fn ordering_is_structural_in_declaration_order() {
+    let pairs = [
+        ("Version(1, 9, 7)", "Version(1, 10, 0)"),
+        ("[1, 2]", "[1, 2, 0]"),
+        ("[1, 2, 0]", "[1, 3]"),
+        ("None", "Some(0)"),
+        ("Some(-1)", "Some(0)"),
+        ("False", "True"),
+        ("Level.Low", "Level.High"),
+        ("Below(1)", "Above(0)"),
+        ("\"Z\"", "\"a\""),
+        ("\"a\"", "\"é\""),
+        ("-0.5", "0.25"),
+    ];
+    let comparisons = pairs
+        .iter()
+        .map(|(low, high)| {
+            format!("[{low} < {high}, {high} > {low}, {high} < {low}, {high} >= {high}]")
+        })
+        .collect::<Vec<_>>()
+        .join(",\n    ");
+    let source = format!(
+        "struct Version {{ major: Int, minor: Int, patch: Int }}\n\
+         enum Level {{\n  Low\n  High\n}}\n\
+         enum Rank {{\n  Above(by: Int)\n  Below(by: Int)\n}}\n\
+         pub fn main() -> List<List<Bool>> {{\n  [\n    {comparisons}\n  ]\n}}\n"
+    );
+    let outcome = run_both("structural-ordering", &source);
+    // `Rank` declares `Above` first, so `Below(1) < Above(0)` is false.
+    let rows = pairs
+        .iter()
+        .map(|(low, _)| {
+            if *low == "Below(1)" {
+                "[false,false,true,true]"
+            } else {
+                "[true,true,false,true]"
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        outcome,
+        format!("\"outcome\":\"success\",\"value\":[{rows}]")
+    );
+}
+
+// E8, E9, E10, O13, O14, O15: the diagnostic names the component that lacks
+// the property.
+#[test]
+fn comparing_values_without_the_property_names_the_offending_component() {
+    let cases = [
+        (
+            "struct Route { path: Text, handler: fn() -> Int }\n\
+             fn same(a: Route, b: Route) -> Bool { a == b }\n",
+            "T4300",
+            "field `handler` of `Route` is a function",
+        ),
+        (
+            "import std/channel.{Receiver}\n\
+             fn same(a: Receiver<Int>, b: Receiver<Int>) -> Bool { a == b }\n",
+            "T4300",
+            "a channel capability",
+        ),
+        (
+            "import std/map as Map\nimport std/map.{Map}\n\
+             fn keyed() -> Map<fn() -> Int, Int> { Map.empty() }\n",
+            "T4300",
+            "`Map.empty` needs `K` to be equatable",
+        ),
+        (
+            "fn less() -> Bool { { a: 1 } < { a: 2 } }\n",
+            "T4301",
+            "a record, which has no declaration order",
+        ),
+        (
+            "import std/map.{Map}\n\
+             fn less(a: Map<Text, Int>, b: Map<Text, Int>) -> Bool { a < b }\n",
+            "T4301",
+            "`Map`, which has no order",
+        ),
+        (
+            "import std/json.{Value}\n\
+             fn less(a: List<Value>, b: List<Value>) -> Bool { a < b }\n",
+            "T4301",
+            "element of `List`",
+        ),
+    ];
+    for (declarations, code, fragment) in cases {
+        let source = format!("{declarations}pub fn main() -> Int {{ 1 }}\n");
+        let diagnostics = coded_messages(&source);
+        assert_eq!(diagnostics.len(), 1, "{source}: {diagnostics:?}");
+        assert_eq!(diagnostics[0].0, code, "{source}");
+        assert!(
+            diagnostics[0].1.contains(fragment),
+            "{source}: {}",
+            diagnostics[0].1
+        );
+    }
+}
+
+// E11, O16, E12: operands must share a type, and comparisons do not chain.
+#[test]
+fn mismatched_and_chained_comparisons_are_rejected() {
+    assert_eq!(
+        check_codes("pub fn main() -> Bool { 1 == \"1\" }\n"),
+        ["T4302"]
+    );
+    assert_eq!(
+        check_codes("pub fn main() -> Bool { \"a\" < 1 }\n"),
+        ["T4302"]
+    );
+    for chained in ["1 < 2 < 3", "1 == 1 == True"] {
+        let codes = check_codes(&format!("pub fn main() -> Bool {{ {chained} }}\n"));
+        assert_eq!(
+            codes.first().map(String::as_str),
+            Some("S1006"),
+            "{chained}"
+        );
+    }
+}
+
+// G5 sweep: a non-numeric arithmetic operand is T4303 on either side, and so is
+// unary `-`, with no cascade.
+#[test]
+fn a_non_numeric_arithmetic_operand_is_t4303_on_either_side() {
+    for expression in ["\"a\" + 1", "1 + \"a\"", "-\"a\""] {
+        assert_eq!(
+            check_codes(&format!("pub fn main() -> Int {{ {expression} }}\n")),
+            ["T4303"],
+            "{expression}"
+        );
+    }
+}
+
+fn type_report(source: &str) -> chimi::TypeReport {
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    Compiler::type_project(vec![module])
+}
+
+// Generic code: `==` on a parameter infers `T: equatable`, shown in the contract
+// and carried through calls.
+#[test]
+fn equality_on_a_generic_parameter_becomes_part_of_the_contract() {
+    let report = type_report(concat!(
+        "fn same<T>(left: T, right: T) -> Bool { left == right }\n",
+        "fn same_again<U>(left: U, right: U) -> Bool { same(left, right) }\n",
+        "fn smaller<T>(left: T, right: T) -> Bool { left < right }\n",
+        "fn first<T>(left: T, right: T) -> T { left }\n",
+        "pub fn main() -> Bool { same(1, 1) }\n",
+    ));
+    assert!(report.is_success(), "{}", report.render_diagnostics());
+    assert_eq!(
+        report.contract("main", "same").unwrap(),
+        "fn<T: equatable>(T, T) -> Bool"
+    );
+    assert_eq!(
+        report.contract("main", "same_again").unwrap(),
+        "fn<U: equatable>(U, U) -> Bool"
+    );
+    assert_eq!(
+        report.contract("main", "smaller").unwrap(),
+        "fn<T: ordered>(T, T) -> Bool"
+    );
+    assert_eq!(report.contract("main", "first").unwrap(), "fn(T, T) -> T");
+}
+
+// E13: the call that instantiates the requirement with a function is T4305; it
+// labels the operator use in the callee and the parameter, even through calls.
+#[test]
+fn instantiating_a_requirement_with_a_function_is_t4305() {
+    let source = concat!(
+        "fn same<T>(left: T, right: T) -> Bool { left == right }\n",
+        "fn same_again<U>(left: U, right: U) -> Bool { same(left, right) }\n",
+        "fn one() -> Int { 1 }\n",
+        "pub fn main() -> List<Bool> { [same(one, one), same_again(one, one)] }\n",
+    );
+    let report = type_report(source);
+    let diagnostics = report.diagnostics();
+    assert_eq!(diagnostics.len(), 2, "{}", report.render_diagnostics());
+    for diagnostic in diagnostics {
+        assert_eq!(diagnostic.code(), "T4305");
+        assert!(
+            diagnostic.message().contains("it is a function"),
+            "{}",
+            diagnostic.message()
+        );
+        let labelled = diagnostic
+            .labels()
+            .iter()
+            .map(|label| {
+                let range = label.range();
+                &source[range.start() as usize..range.end() as usize]
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(labelled[0], "left == right", "{labelled:?}");
+        assert!(["T", "U"].contains(&labelled[1]), "{labelled:?}");
+    }
+}
+
+// E14: a generic struct is equatable per instantiation.
+#[test]
+fn a_generic_struct_instantiated_with_data_is_equatable() {
+    let outcome = run_both(
+        "generic-equality",
+        concat!(
+            "struct Box<T> { value: T }\n",
+            "fn same<T>(left: T, right: T) -> Bool { left == right }\n",
+            "pub fn main() -> List<Bool> { [same(Box(1), Box(1)), same(Box(1), Box(2))] }\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[true,false]");
 }

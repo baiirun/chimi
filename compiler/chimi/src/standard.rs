@@ -34,6 +34,15 @@ impl StandardModule {
             Self::Debug => "std/debug",
         }
     }
+
+    /// The conventional import alias, as in `import std/map as Map`.
+    pub(crate) fn qualifier(self) -> String {
+        let name = self.path().trim_start_matches("std/");
+        let mut characters = name.chars();
+        characters.next().map_or_else(String::new, |first| {
+            first.to_ascii_uppercase().to_string() + characters.as_str()
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -104,6 +113,36 @@ impl StandardType {
         }
     }
 
+    /// The equatable and ordered properties this module publishes for the type.
+    /// Its private representation grants neither silently.
+    pub(crate) const fn properties(self) -> StandardProperties {
+        match self {
+            Self::Console | Self::FileSystem => StandardProperties::Opaque("a provider"),
+            Self::Task => StandardProperties::Opaque("a `Task` capability"),
+            Self::ChannelSender | Self::ChannelReceiver | Self::ChannelCompletion => {
+                StandardProperties::Opaque("a channel capability")
+            }
+            Self::Map => StandardProperties::Unordered,
+            Self::JsonValue => StandardProperties::EquatableOnly(
+                "`Value`, which is not ordered because an `Object` holds a `Map`",
+            ),
+            Self::Path => StandardProperties::EquatableOnly("`Path`, which is not ordered"),
+            Self::JsonNumber
+            | Self::Option
+            | Self::ConsoleError
+            | Self::FileError
+            | Self::Utf8Error
+            | Self::DecodeError
+            | Self::NumberError
+            | Self::ChannelSendError
+            | Self::ChannelReceive
+            | Self::ChannelError
+            | Self::IntParseError
+            | Self::FloatParseError
+            | Self::FloatConversionError => StandardProperties::Structural,
+        }
+    }
+
     #[cfg(any(
         feature = "embedded-bytecode-prototype",
         feature = "native-backend",
@@ -112,6 +151,19 @@ impl StandardType {
     pub(crate) const fn runtime_id(self) -> u32 {
         self as u32
     }
+}
+
+/// How a standard type has the equatable and ordered properties.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StandardProperties {
+    /// Both, whenever every type argument has them, like a source enum.
+    Structural,
+    /// Equatable when its key and value types are; never ordered (`Map`).
+    Unordered,
+    /// Always equatable, never ordered, for the stated reason.
+    EquatableOnly(&'static str),
+    /// Neither; the text says what the value is.
+    Opaque(&'static str),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -468,6 +520,22 @@ impl StandardConstructor {
                 "OutOfRange"
             }
             Self::FloatNotInteger => "NotInteger",
+        }
+    }
+
+    /// Position among its type's variants in declaration order, which the derived
+    /// order follows. `std/option` declares `None` before `Some`, unlike this
+    /// enum's discriminants; every other type lists its variants here in order.
+    pub(crate) fn ordinal(self) -> u32 {
+        match self {
+            Self::OptionNone => 0,
+            Self::OptionSome => 1,
+            _ => Self::ALL
+                .iter()
+                .filter(|other| {
+                    other.type_kind() == self.type_kind() && (**other as u32) < self as u32
+                })
+                .count() as u32,
         }
     }
 

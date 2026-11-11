@@ -193,8 +193,11 @@ impl CoreProgram {
                 right,
             } => {
                 debug_assert!(
-                    !matches!(operator, BinaryOperator::And | BinaryOperator::Or),
-                    "`and` and `or` lower to a match"
+                    !matches!(
+                        operator,
+                        BinaryOperator::And | BinaryOperator::Or | BinaryOperator::NotEqual
+                    ),
+                    "`and`, `or`, and `!=` lower to a match"
                 );
                 debug_assert!(node_exists(*left));
                 debug_assert!(node_exists(*right));
@@ -356,6 +359,9 @@ pub(crate) struct CoreConstructor {
     pub(crate) variant_name: Option<String>,
     pub(crate) fields: Vec<String>,
     pub(crate) outcome_success: Option<bool>,
+    /// Position among the variants of its type in declaration order, which the
+    /// derived order follows. A struct's only constructor is 0.
+    pub(crate) ordinal: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -1253,6 +1259,22 @@ impl CoreLowerer {
                 let when_false = self.expression(module_id, right);
                 boolean_match(subject, when_true, when_false)
             }
+            ModuleExpression::Binary {
+                operator: BinaryOperator::NotEqual,
+                left,
+                right,
+                ..
+            } => {
+                let equal = CoreOperation::Binary {
+                    operator: BinaryOperator::Equal,
+                    left: self.expression(module_id, left),
+                    right: self.expression(module_id, right),
+                };
+                let subject = self.push_node(module_id, expression, equal);
+                let when_true = self.boolean_constant(module_id, expression, false);
+                let when_false = self.boolean_constant(module_id, expression, true);
+                boolean_match(subject, when_true, when_false)
+            }
             ModuleExpression::Unary {
                 operator, operand, ..
             } => CoreOperation::Unary {
@@ -1864,6 +1886,7 @@ fn lower_core_constructor(typed: &TypedProject, constructor: SymbolId) -> CoreCo
                 .map(|name| (*name).to_owned())
                 .collect(),
             outcome_success: None,
+            ordinal: constructor.ordinal(),
         };
     }
     if symbol.kind == ProjectSymbolKind::BuiltinValue {
@@ -1872,6 +1895,7 @@ fn lower_core_constructor(typed: &TypedProject, constructor: SymbolId) -> CoreCo
             variant_name: Some(symbol.name.clone()),
             fields: vec!["value".to_owned()],
             outcome_success: Some(symbol.name == "Success"),
+            ordinal: 0,
         };
     }
     let fields = typed
@@ -1887,6 +1911,7 @@ fn lower_core_constructor(typed: &TypedProject, constructor: SymbolId) -> CoreCo
             variant_name: None,
             fields,
             outcome_success: None,
+            ordinal: 0,
         };
     }
     let module_id = symbol
@@ -1895,7 +1920,7 @@ fn lower_core_constructor(typed: &TypedProject, constructor: SymbolId) -> CoreCo
     let semantic_id = symbol
         .semantic_id
         .expect("enum constructor has semantic identity");
-    let type_name = typed.resolved.semantic.modules[module_id.raw() as usize]
+    let declaration = typed.resolved.semantic.modules[module_id.raw() as usize]
         .declarations
         .iter()
         .find(|declaration| {
@@ -1905,15 +1930,18 @@ fn lower_core_constructor(typed: &TypedProject, constructor: SymbolId) -> CoreCo
                     .iter()
                     .any(|variant| variant.semantic_id == semantic_id)
         })
-        .expect("verified enum constructor belongs to an enum")
-        .name
-        .text
-        .clone();
+        .expect("verified enum constructor belongs to an enum");
+    let ordinal = declaration
+        .variants
+        .iter()
+        .position(|variant| variant.semantic_id == semantic_id)
+        .expect("verified enum constructor is one of its enum's variants");
     CoreConstructor {
-        type_name,
+        type_name: declaration.name.text.clone(),
         variant_name: Some(symbol.name.clone()),
         fields,
         outcome_success: None,
+        ordinal: u32::try_from(ordinal).expect("variant count fits u32"),
     }
 }
 

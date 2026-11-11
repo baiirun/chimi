@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 11
+#define CHIMI_RUNTIME_ABI_VERSION 12
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -142,6 +142,7 @@ enum {
   CHIMI_BINARY_GREATER,
   CHIMI_BINARY_GREATER_EQUAL,
   CHIMI_BINARY_REMAINDER,
+  CHIMI_BINARY_EQUAL,
 };
 
 enum {
@@ -231,6 +232,8 @@ typedef struct {
   uint32_t fields_offset;
   uint32_t fields_length;
   int32_t outcome_success;
+  /* Position among the type's variants in declaration order; derived order follows it. */
+  uint32_t ordinal;
 } ChimiConstructor;
 
 typedef struct {

@@ -71,6 +71,8 @@ pub(crate) enum TokenKind {
     Star,
     Percent,
     Equal,
+    EqualEqual,
+    BangEqual,
     Arrow,
     Pipe,
     /// `&&`, recognized only to report `S1004`; the parser treats it as `and`.
@@ -141,6 +143,8 @@ impl TokenKind {
             Self::Star => "star",
             Self::Percent => "percent",
             Self::Equal => "equal",
+            Self::EqualEqual => "equal_equal",
+            Self::BangEqual => "bang_equal",
             Self::Arrow => "arrow",
             Self::Pipe => "pipe",
             Self::AmpersandAmpersand => "ampersand_ampersand",
@@ -207,6 +211,8 @@ impl TokenKind {
             Self::Star => "`*`",
             Self::Percent => "`%`",
             Self::Equal => "`=`",
+            Self::EqualEqual => "`==`",
+            Self::BangEqual => "`!=`",
             Self::Arrow => "`->`",
             Self::Pipe => "`|>`",
             Self::AmpersandAmpersand => "`&&`",
@@ -852,7 +858,15 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                 diagnostics.push(symbolic_logic_diagnostic(source, start, offset, "or"));
                 emit(TokenKind::BarBar, start, offset, &mut tokens);
             }
-            // `!=` is reserved for inequality, so only a `!` without `=` is the symbolic `not`.
+            b'!' if offset + 1 < bytes.len() && bytes[offset + 1] == b'=' => {
+                offset += 2;
+                emit(TokenKind::BangEqual, start, offset, &mut tokens);
+            }
+            b'=' if offset + 1 < bytes.len() && bytes[offset + 1] == b'=' => {
+                offset += 2;
+                emit(TokenKind::EqualEqual, start, offset, &mut tokens);
+            }
+            // Only a `!` without `=` is the symbolic `not`.
             b'!' if offset + 1 >= bytes.len() || bytes[offset + 1] != b'=' => {
                 offset += 1;
                 diagnostics.push(symbolic_logic_diagnostic(source, start, offset, "not"));
@@ -1779,21 +1793,35 @@ impl<'source> Parser<'source> {
         )
     }
 
+    /// Equality and ordering operators are non-associative: one operator per
+    /// comparison. A second one, as in `a < b < c`, is `S1006`; the parser still
+    /// consumes it so the rest of the expression recovers.
     fn parse_comparison(&mut self) {
-        let marker = self.placeholder();
-        self.parse_additive();
-        let mut wrapped = false;
-        while self.after_any_newlines(&[
+        const COMPARISONS: [TokenKind; 6] = [
             TokenKind::Less,
             TokenKind::LessEqual,
             TokenKind::Greater,
             TokenKind::GreaterEqual,
-        ]) {
-            if !wrapped {
+            TokenKind::EqualEqual,
+            TokenKind::BangEqual,
+        ];
+        let marker = self.placeholder();
+        self.parse_additive();
+        let mut wrapped = false;
+        while self.after_any_newlines(&COMPARISONS) {
+            self.skip_newlines();
+            if wrapped {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Syntax,
+                    "S1006",
+                    self.source.file_id(),
+                    self.current().range,
+                    "comparisons do not chain; write `a < b and b < c`",
+                ));
+            } else {
                 self.complete(marker, NodeKind::ComparisonExpression);
                 wrapped = true;
             }
-            self.skip_newlines();
             self.bump();
             self.skip_newlines();
             self.parse_additive();

@@ -352,9 +352,122 @@ impl JsonParser<'_> {
     }
 }
 
+/// A JSON number in canonical decimal form: `sign × 0.digits × 10^exponent`, with
+/// no leading or trailing zeros in `digits`. Zero has sign 0 and empty digits.
+struct CanonicalNumber {
+    sign: i8,
+    digits: Vec<u8>,
+    exponent: i64,
+}
+
+/// Written exponents are clamped to this magnitude; two numbers that differ only
+/// beyond it compare equal. No program can build such numbers by arithmetic.
+const EXPONENT_LIMIT: i64 = 1 << 60;
+
+fn canonical_number(text: &str) -> CanonicalNumber {
+    let bytes = text.as_bytes();
+    let (negative, rest) = match bytes.split_first() {
+        Some((b'-', rest)) => (true, rest),
+        _ => (false, bytes),
+    };
+    let mantissa_end = rest
+        .iter()
+        .position(|byte| matches!(byte, b'e' | b'E'))
+        .unwrap_or(rest.len());
+    let (mantissa, exponent_part) = rest.split_at(mantissa_end);
+    let mut exponent: i64 = 0;
+    if let Some((_, written)) = exponent_part.split_first() {
+        let (negative_exponent, digits) = match written.split_first() {
+            Some((b'-', digits)) => (true, digits),
+            Some((b'+', digits)) => (false, digits),
+            _ => (false, written),
+        };
+        for digit in digits {
+            exponent = (exponent * 10 + i64::from(digit - b'0')).min(EXPONENT_LIMIT);
+        }
+        if negative_exponent {
+            exponent = -exponent;
+        }
+    }
+    let point = mantissa
+        .iter()
+        .position(|byte| *byte == b'.')
+        .unwrap_or(mantissa.len());
+    let mut digits = mantissa
+        .iter()
+        .filter(|byte| byte.is_ascii_digit())
+        .copied()
+        .collect::<Vec<_>>();
+    let leading = digits.iter().take_while(|digit| **digit == b'0').count();
+    digits.drain(..leading);
+    while digits.last() == Some(&b'0') {
+        digits.pop();
+    }
+    if digits.is_empty() {
+        return CanonicalNumber {
+            sign: 0,
+            digits,
+            exponent: 0,
+        };
+    }
+    CanonicalNumber {
+        sign: if negative { -1 } else { 1 },
+        digits,
+        exponent: point as i64 - leading as i64 + exponent,
+    }
+}
+
+/// Orders two JSON number texts by the exact numbers they denote, never through
+/// `f64`: `1`, `1.0`, and `10e-1` are equal, and `-0` equals `0`.
+///
+/// Requires: both texts match the JSON number grammar.
+pub(crate) fn compare_numbers(left: &str, right: &str) -> std::cmp::Ordering {
+    let (left, right) = (canonical_number(left), canonical_number(right));
+    left.sign.cmp(&right.sign).then_with(|| {
+        let magnitude = left
+            .exponent
+            .cmp(&right.exponent)
+            .then_with(|| left.digits.cmp(&right.digits));
+        if left.sign < 0 {
+            magnitude.reverse()
+        } else {
+            magnitude
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{JsonData, decode_json, write_json_data, write_json_string};
+    use super::{JsonData, compare_numbers, decode_json, write_json_data, write_json_string};
+
+    #[test]
+    fn numbers_compare_by_the_exact_value_they_denote() {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        let cases = [
+            ("1", "1.0", Equal),
+            ("1", "10e-1", Equal),
+            ("100", "1E2", Equal),
+            ("0.5", "5e-1", Equal),
+            ("1.5", "1.50", Equal),
+            ("-0", "0", Equal),
+            ("0.000", "-0e5", Equal),
+            ("2", "10", Less),
+            ("0.25", "0.3", Less),
+            ("-2", "-10", Greater),
+            ("-1", "0", Less),
+            ("1e400", "1e399", Greater),
+            ("12345678901234567890123", "12345678901234567890124", Less),
+            ("0.1", "0.09999999999999999999", Greater),
+        ];
+        for (left, right, expected) in cases {
+            assert_eq!(compare_numbers(left, right), expected, "{left} vs {right}");
+            assert_eq!(
+                compare_numbers(right, left),
+                expected.reverse(),
+                "{right} vs {left}"
+            );
+        }
+    }
 
     #[test]
     fn strings_escape_json_control_characters() {
