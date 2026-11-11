@@ -88,6 +88,9 @@ impl StandardType {
                 | Self::NumberError
                 | Self::ChannelSendError
                 | Self::ChannelError
+                | Self::IntParseError
+                | Self::FloatParseError
+                | Self::FloatConversionError
         )
     }
 

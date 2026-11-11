@@ -4490,6 +4490,9 @@ impl ProjectTypeChecker {
                     | StandardType::ChannelSendError
                     | StandardType::ChannelReceive
                     | StandardType::ChannelError
+                    | StandardType::IntParseError
+                    | StandardType::FloatParseError
+                    | StandardType::FloatConversionError
             ))
         );
         if symbol_kind != ProjectSymbolKind::Enum && !standard_enum {

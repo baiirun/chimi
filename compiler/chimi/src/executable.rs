@@ -899,7 +899,14 @@ fn collect_reachable_expression(
                         matches!(reference.resolution, ReferenceResolution::Resolved(_))
                     })
                 })
-                && matches!(receiver.as_ref(), ModuleExpression::Name { .. });
+                && match receiver.as_ref() {
+                    ModuleExpression::Name { .. } => true,
+                    // `Alias.Type.Variant`, resolved as a whole to the variant.
+                    ModuleExpression::Select { receiver, .. } => {
+                        matches!(receiver.as_ref(), ModuleExpression::Name { .. })
+                    }
+                    _ => false,
+                };
             let dependency_receiver =
                 referenced_expression_symbol(references, module.source.file_id(), receiver)
                     .is_some_and(|symbol| {

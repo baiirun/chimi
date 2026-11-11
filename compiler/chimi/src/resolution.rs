@@ -1500,6 +1500,27 @@ impl ProjectResolver {
                 member,
                 range,
             } => {
+                if let ModuleExpression::Select {
+                    semantic_id: owner_id,
+                    receiver: alias,
+                    member: owner,
+                    ..
+                } = receiver.as_ref()
+                    && let ModuleExpression::Name {
+                        semantic_id: alias_id,
+                        name: alias,
+                    } = alias.as_ref()
+                    && self.resolve_qualified_variant(
+                        module_index,
+                        [
+                            (*alias_id, alias),
+                            (*owner_id, owner),
+                            (*semantic_id, member),
+                        ],
+                    )
+                {
+                    return;
+                }
                 if let ModuleExpression::Name {
                     semantic_id: base_id,
                     name: base,
@@ -1764,12 +1785,24 @@ impl ProjectResolver {
         let Some(name) = path.last() else {
             return;
         };
-        let resolution = if let [owner, member] = path {
-            let owner_resolution = resolve_local(
-                self.modules[module_index].types.get(&owner.text),
-                self.modules[module_index].imported_types.get(&owner.text),
-                self.builtin_types.get(&owner.text).copied(),
-            );
+        let qualified_owner = match path {
+            [_, owner, member] => Some((
+                owner,
+                member,
+                self.resolve_qualified_type(module_index, &path[..2]),
+            )),
+            [owner, member] => Some((
+                owner,
+                member,
+                resolve_local(
+                    self.modules[module_index].types.get(&owner.text),
+                    self.modules[module_index].imported_types.get(&owner.text),
+                    self.builtin_types.get(&owner.text).copied(),
+                ),
+            )),
+            _ => None,
+        };
+        let resolution = if let Some((owner, member, owner_resolution)) = qualified_owner {
             self.reference(
                 module_index,
                 semantic_id,
@@ -1823,6 +1856,75 @@ impl ProjectResolver {
                 format!("multiple constructors are named {}", name.text),
             ));
         }
+    }
+
+    /// Resolves `Alias.Type.Variant`, a variant of a type that the module aliased as
+    /// `Alias` exports, such as `Float.ParseError.OutOfRange`. Returns false, leaving
+    /// the expression to ordinary selection, unless `Alias` is a module alias that
+    /// exports `Type`.
+    fn resolve_qualified_variant(
+        &mut self,
+        module_index: usize,
+        [(alias_id, alias), (owner_id, owner), (variant_id, variant)]: [(SemanticId, &Name); 3],
+    ) -> bool {
+        let module = match self.modules[module_index].aliases.get(&alias.text).copied() {
+            Some(AliasBinding::Module(target)) => {
+                self.symbols
+                    .iter()
+                    .find(|symbol| {
+                        symbol.kind == ProjectSymbolKind::Module && symbol.module_id == Some(target)
+                    })
+                    .expect("every module has a symbol")
+                    .id
+            }
+            Some(AliasBinding::Standard(target)) => self.standard_modules[&target].module,
+            Some(AliasBinding::Ambiguous) | None => return false,
+        };
+        let owner_resolution =
+            self.resolve_qualified_type(module_index, &[alias.clone(), owner.clone()]);
+        let ReferenceResolution::Resolved(owner_symbol) = owner_resolution else {
+            return false;
+        };
+        let resolution = self
+            .type_members
+            .get(&(owner_symbol, variant.text.clone()))
+            .copied()
+            .map(ReferenceResolution::Resolved)
+            .unwrap_or(ReferenceResolution::Unresolved);
+        self.reference(
+            module_index,
+            alias_id,
+            Namespace::Module,
+            alias,
+            ReferenceResolution::Resolved(module),
+        );
+        self.reference(
+            module_index,
+            owner_id,
+            Namespace::Type,
+            owner,
+            owner_resolution,
+        );
+        self.reference(
+            module_index,
+            variant_id,
+            Namespace::Value,
+            variant,
+            resolution,
+        );
+        if resolution == ReferenceResolution::Unresolved {
+            let current = &self.semantic.modules[module_index];
+            self.diagnostics.push(name_error(
+                current,
+                "E_UNRESOLVED_MEMBER",
+                variant.range,
+                format!(
+                    "{}.{} has no variant {}",
+                    alias.text, owner.text, variant.text
+                ),
+            ));
+        }
+        true
     }
 
     fn resolve_module_select(

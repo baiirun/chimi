@@ -1510,6 +1510,57 @@ fn float_parse_rejects_text_outside_the_finite_literal_grammar() {
     }
 }
 
+// The std/int and std/float failure types are module members: a program names
+// them through the module alias in types, `errors` rows, expressions, and
+// patterns, and they are closed enums for coverage.
+#[test]
+fn std_number_failure_types_are_named_through_their_module() {
+    assert_eq!(
+        std_outcome(
+            "number-failure-types",
+            concat!(
+                "fn parse_with(parse: fn(Text) -> Float errors Float.ParseError, text: Text) -> Text {\n",
+                "  case parse(text) {\n",
+                "    Success(_) -> \"ok\"\n",
+                "    Failure(Float.ParseError.OutOfRange) -> \"range\"\n",
+                "    Failure(_) -> \"other\"\n",
+                "  }\n",
+                "}\n",
+                "fn describe(error: Int.ParseError) -> Text {\n",
+                "  case error {\n",
+                "    Int.ParseError.Empty -> \"empty\"\n",
+                "    Int.ParseError.InvalidDigit -> \"digit\"\n",
+                "    Int.ParseError.OutOfRange -> \"range\"\n",
+                "  }\n",
+                "}\n",
+                "fn to_int(value: Float) -> Text {\n",
+                "  case Float.to_int(value) {\n",
+                "    Success(_) -> \"int\"\n",
+                "    Failure(Float.ConversionError.NotInteger) -> \"fraction\"\n",
+                "    Failure(Float.ConversionError.OutOfRange) -> \"range\"\n",
+                "  }\n",
+                "}\n",
+                "pub fn main() -> List<Text> {\n",
+                "  let empty = Int.ParseError.Empty\n",
+                "  [parse_with(Float.parse, \"1e400\"), parse_with(Float.parse, \"x\"),\n",
+                "   describe(empty), describe(Int.ParseError.InvalidDigit), to_int(2.5)]\n",
+                "}",
+            )
+        ),
+        "\"outcome\":\"success\",\"value\":[\"range\",\"other\",\"empty\",\"digit\",\"fraction\"]"
+    );
+    assert_eq!(
+        check_codes(concat!(
+            "import std/float as Float\n",
+            "pub fn main() -> Int {\n",
+            "  let error = Float.ParseError.Missing\n",
+            "  0\n",
+            "}\n",
+        )),
+        ["E_UNRESOLVED_MEMBER"]
+    );
+}
+
 // N21
 #[test]
 fn float_to_int_requires_an_already_rounded_value_inside_int() {
