@@ -190,7 +190,7 @@ MUTATIONS = [
     dict(
         name='nested escalation strands waiting plans',
         file='src/scheduler/process.rs',
-        edits=[('                self.member_ended(membership, TerminalCause::Defected);\n                self.resume_blocked(Blocker::Supervisor(supervisor));', '                self.member_ended(membership, TerminalCause::Defected);')],
+        edits=[('                self.member_ended(membership, cause);\n                self.resume_blocked(Blocker::Supervisor(supervisor));', '                self.member_ended(membership, cause);')],
         targets=["lib"],
         filter='es02_a_parent_stop',
     ),
