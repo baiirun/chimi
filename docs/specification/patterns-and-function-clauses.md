@@ -360,6 +360,11 @@ General rules:
 
 - `Int` literals use the expression literal syntax, including `_` separators.
   A negative literal pattern is `-` immediately followed by an integer literal.
+  A line that starts with `-` and a number and has `->` later on that line,
+  outside brackets, starts a new case arm. It does not continue a subtraction
+  in the previous arm's body, because `- 1 ... ->` cannot complete an
+  expression. Any other line that starts with `-` continues the expression
+  before it, as a line break before a binary operator does elsewhere.
 - `Text` literals match by exact UTF-8 byte equality. This is the derived
   structural equality for `Text`. Matching performs no Unicode normalization.
 - `True` and `False` form the complete `Bool` domain.

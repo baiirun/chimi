@@ -1978,7 +1978,9 @@ impl<'source> Parser<'source> {
         let marker = self.placeholder();
         self.parse_multiplicative();
         let mut wrapped = false;
-        while self.after_any_newlines(&[TokenKind::Plus, TokenKind::Minus]) {
+        while self.after_any_newlines(&[TokenKind::Plus, TokenKind::Minus])
+            && !self.next_line_starts_negative_arm()
+        {
             if !wrapped {
                 self.complete(marker, NodeKind::AdditiveExpression);
                 wrapped = true;
@@ -2009,6 +2011,50 @@ impl<'source> Parser<'source> {
         }
         if wrapped {
             self.finish();
+        }
+    }
+
+    /// Whether a line break comes next and the following line is a case arm whose
+    /// first pattern is a negative number: `-`, a number, then `->` later on that
+    /// line outside brackets. Such a line starts a new arm instead of continuing a
+    /// subtraction, because `- 1 ... ->` could never complete the expression.
+    fn next_line_starts_negative_arm(&self) -> bool {
+        let mut position = self.position;
+        if self.kind_at(position) != TokenKind::Newline {
+            return false;
+        }
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        if self.kind_at(position) != TokenKind::Minus
+            || !matches!(
+                self.kind_at(position + 1),
+                TokenKind::Integer | TokenKind::Float
+            )
+        {
+            return false;
+        }
+        let mut depth = 0_u32;
+        position += 2;
+        loop {
+            match self.kind_at(position) {
+                TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => {
+                    depth += 1;
+                }
+                TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace
+                    if depth > 0 =>
+                {
+                    depth -= 1;
+                }
+                TokenKind::Arrow if depth == 0 => return true,
+                TokenKind::Newline if depth == 0 => return false,
+                TokenKind::RightParen
+                | TokenKind::RightBracket
+                | TokenKind::RightBrace
+                | TokenKind::End => return false,
+                _ => {}
+            }
+            position += 1;
         }
     }
 

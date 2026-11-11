@@ -5901,6 +5901,28 @@ fn a_negative_literal_pattern_matches_negative_one() {
     );
 }
 
+// TP-06 in a later arm: a line starting `-1 ->` begins a new arm, not
+// `10 - 1`; a `-` line without `->` still continues a subtraction.
+#[test]
+fn a_negative_literal_pattern_may_follow_another_arm() {
+    let source = concat!(
+        "fn sign(value: Int) -> Int {\n",
+        "  case value {\n",
+        "    0 -> 10\n",
+        "    -1 -> 20\n",
+        "    -2 if value < 0 -> 30\n",
+        "    _ -> 40\n",
+        "      - 1\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<Int> { [sign(0), sign(-1), sign(-2), sign(5)] }\n",
+    );
+    assert_eq!(
+        run_both("negative-literal-later-arm", source),
+        "\"outcome\":\"success\",\"value\":[10,20,30,39]"
+    );
+}
+
 // TP-07
 #[test]
 fn text_patterns_match_bytes_without_normalization() {
