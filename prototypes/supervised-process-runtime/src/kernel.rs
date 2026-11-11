@@ -7,9 +7,13 @@
 //!   one mailbox until it is received (adopted) or discarded (freed).
 //! - Incarnations of one membership never overlap, and a name maps to at most
 //!   one live incarnation.
-//! - Time is virtual. The kernel only moves it forward inside `advance` and
-//!   when a blocking operation must reach a shutdown deadline, so every run is
-//!   deterministic and `events` is an exact transcript.
+//! - Time is virtual. Only `advance` and a body's `work` move it forward, so
+//!   every run is deterministic and `events` is an exact transcript.
+//! - `events` is an in-memory transcript for tests and grows with every event.
+//!   The native runtime emits the same events to the trace ABI instead.
+//! - A membership record lives while its slot does. A `ManagedProcess` handle
+//!   whose record is gone keeps only its last incarnation, until
+//!   `remove_process` consumes the handle.
 //!
 //! The host-side API stands in for intrinsic calls from a root task; bodies
 //! reach the kernel through `ProcessContext`, which parks on fiber requests.
@@ -179,7 +183,9 @@ pub struct ProcessContext {
 pub enum Received {
     /// The oldest message, adopted into this incarnation's heap.
     Message(*mut Value),
-    /// A stop or removal was requested; the body should clean up and return.
+    /// A stop or removal was requested and every message accepted before it
+    /// has been received. Every later `receive` returns this immediately; the
+    /// body should clean up and return.
     Cancelled,
 }
 
@@ -193,11 +199,14 @@ pub enum SendFailure {
 enum Request {
     Receive,
     Send { address: Address, message: Fragment },
+    Work(Duration),
 }
 
 enum Reply {
     Message(Fragment),
     Sent(Result<(), SendFailure>),
+    Cancelled,
+    Worked,
     /// Cleanup missed its deadline; the body unwinds from its kernel call.
     Forced,
 }
@@ -214,12 +223,25 @@ struct Exchange {
 struct ForcedTermination;
 
 impl ProcessContext {
-    /// Ensures: parks only while the mailbox is empty; FIFO across senders.
+    /// Ensures: parks only while the mailbox is empty and no cancellation is
+    /// pending; FIFO across senders. After cancellation it never parks: it
+    /// returns already-accepted messages until the mailbox is empty, then
+    /// `Cancelled`.
     pub fn receive(&mut self) -> Received {
         match self.call(Request::Receive) {
             (_, Some(Reply::Message(message))) => Received::Message(message.adopt()),
-            (ChimiFiberCommand::Cancel, None) => Received::Cancelled,
+            (_, Some(Reply::Cancelled)) => Received::Cancelled,
             _ => panic!("kernel resumed a receive without a message or cancellation"),
+        }
+    }
+
+    /// Stands in for work that takes `duration` of virtual time, such as a slow
+    /// host operation during cleanup. Never parks. During cleanup, work that
+    /// would run past the shutdown deadline is forced at the deadline.
+    pub fn work(&mut self, duration: Duration) {
+        match self.call(Request::Work(duration)) {
+            (_, Some(Reply::Worked)) => {}
+            _ => panic!("kernel resumed work without its outcome"),
         }
     }
 
@@ -284,8 +306,6 @@ enum Wait {
     Fresh,
     /// Parked in `receive` on an empty mailbox.
     Receiving,
-    /// Cancelled, and parked again instead of returning.
-    CleanupParked,
 }
 
 struct Incarnation {
@@ -295,7 +315,8 @@ struct Incarnation {
     mailbox: VecDeque<Fragment>,
     /// False once shutdown begins or the body ends; sends then fail.
     accepting: bool,
-    cancelling: bool,
+    /// Set when shutdown begins: the virtual time cleanup must finish by.
+    deadline: Option<Duration>,
     wait: Wait,
     queued: bool,
     heap: Heap,
@@ -323,7 +344,8 @@ struct Membership {
     member: Member,
     current: Current,
     last_incarnation: Option<IncarnationId>,
-    removed: bool,
+    /// A `ManagedProcess` handle refers to this membership.
+    handle: bool,
 }
 
 impl Membership {
@@ -352,6 +374,8 @@ pub struct Kernel {
     program_terminated: bool,
     supervisors: HashMap<SupervisorId, Supervision>,
     memberships: HashMap<MembershipId, Membership>,
+    /// Last incarnation of each handle whose membership record is gone.
+    retired: HashMap<MembershipId, IncarnationId>,
     incarnations: HashMap<IncarnationId, Incarnation>,
     names: HashMap<NameId, IncarnationId>,
     ready: VecDeque<IncarnationId>,
@@ -368,6 +392,7 @@ impl Kernel {
             program_terminated: false,
             supervisors: HashMap::new(),
             memberships: HashMap::new(),
+            retired: HashMap::new(),
             incarnations: HashMap::new(),
             names: HashMap::new(),
             ready: VecDeque::new(),
@@ -392,7 +417,10 @@ impl Kernel {
     ) -> Result<ManagedProcess, StartError> {
         let Running(supervisor) = running;
         match self.admit(supervisor, Member::Process(spec, restart), true) {
-            Ok(membership) => Ok(ManagedProcess(membership)),
+            Ok(membership) => {
+                self.memberships.get_mut(&membership).expect("just admitted").handle = true;
+                Ok(ManagedProcess(membership))
+            }
             Err(error) => {
                 self.events.push(LifecycleEvent::AdmissionRejected { supervisor, error });
                 Err(error)
@@ -400,12 +428,14 @@ impl Kernel {
         }
     }
 
-    /// Ensures: a direct address pinned to the current incarnation.
+    /// Ensures: a direct address pinned to the current incarnation, or to the
+    /// last one once the membership has ended, which stays `Unavailable`.
     pub fn address(&self, managed: &ManagedProcess) -> Address {
-        let incarnation = self.memberships[&managed.0]
-            .last_incarnation
-            .expect("a process membership always has had an incarnation");
-        Address::Direct(incarnation)
+        let incarnation = match self.memberships.get(&managed.0) {
+            Some(entry) => entry.last_incarnation,
+            None => self.retired.get(&managed.0).copied(),
+        };
+        Address::Direct(incarnation.expect("a handle's membership always has had an incarnation"))
     }
 
     /// Host-side send for tests. Same outcomes as `ProcessContext::send`.
@@ -414,16 +444,20 @@ impl Kernel {
     }
 
     /// Ensures: on return no incarnation of the membership runs and no pending
-    /// restart can create one.
+    /// restart can create one. A membership that already ended, including by
+    /// a stop or escalation of its supervisor, is removed without an event.
     pub fn remove_process(&mut self, running: Running, managed: ManagedProcess) {
         let membership = managed.0;
-        let entry = self.memberships.get_mut(&membership).expect("membership record");
+        if self.retired.remove(&membership).is_some() {
+            return;
+        }
+        let entry = &self.memberships[&membership];
         assert_eq!(entry.supervisor, running.0, "removed through a different supervisor");
-        entry.removed = true;
         if let Current::Process(incarnation) = entry.current {
             self.shut_down(incarnation);
         }
         self.release_slot(membership);
+        self.memberships.remove(&membership);
         self.events.push(LifecycleEvent::Removed { membership });
     }
 
@@ -451,7 +485,6 @@ impl Kernel {
                     incarnation.exchange.reply = Some(Reply::Message(message));
                     self.step(id, ChimiFiberCommand::Resume);
                 }
-                Wait::CleanupParked => {}
             }
         }
     }
@@ -468,6 +501,13 @@ impl Kernel {
     /// True once a restart-limit escalation has reached the root.
     pub fn program_terminated(&self) -> bool {
         self.program_terminated
+    }
+
+    /// Membership bookkeeping the kernel holds: one record per occupied slot,
+    /// plus one retired incarnation per handle not yet passed to
+    /// `remove_process`. It does not grow with restarts or ended members.
+    pub fn membership_records(&self) -> usize {
+        self.memberships.len() + self.retired.len()
     }
 
     /// Heap statistics of the incarnation an address currently reaches.
@@ -569,7 +609,7 @@ impl Kernel {
                 member,
                 current: Current::None,
                 last_incarnation: None,
-                removed: false,
+                handle: false,
             },
         );
         let supervision = self.supervisors.get_mut(&supervisor).expect("checked above");
@@ -645,7 +685,7 @@ impl Kernel {
                 fiber,
                 mailbox: VecDeque::new(),
                 accepting: true,
-                cancelling: false,
+                deadline: None,
                 wait: Wait::Fresh,
                 queued: true,
                 heap: Heap::new(id.0),
@@ -666,9 +706,10 @@ impl Kernel {
             let event = unsafe { chimi_fiber_resume(incarnation.fiber, command as u32) };
             unsafe { chimi_heap_switch(previous) };
             command = ChimiFiberCommand::Resume;
+            let cancelling = incarnation.deadline.is_some();
             if event.state != ChimiFiberState::Parked as u32 {
-                let cause = terminal_cause(event.state, event.value, incarnation.cancelling);
-                let natural = !incarnation.cancelling;
+                let cause = terminal_cause(event.state, event.value, cancelling);
+                let natural = !cancelling;
                 let membership = self.terminate(id, cause);
                 if natural {
                     self.member_ended(membership, cause);
@@ -684,17 +725,28 @@ impl Kernel {
                     let incarnation = self.incarnations.get_mut(&id).expect("live incarnation");
                     incarnation.exchange.reply = Some(Reply::Sent(result));
                 }
-                Some(Request::Receive) if incarnation.cancelling => {
-                    incarnation.wait = Wait::CleanupParked;
-                    return;
-                }
                 Some(Request::Receive) => match incarnation.mailbox.pop_front() {
                     Some(message) => incarnation.exchange.reply = Some(Reply::Message(message)),
+                    None if cancelling => incarnation.exchange.reply = Some(Reply::Cancelled),
                     None => {
                         incarnation.wait = Wait::Receiving;
                         return;
                     }
                 },
+                Some(Request::Work(duration)) => {
+                    let finish = self.now + duration;
+                    let reply = match incarnation.deadline {
+                        Some(deadline) if finish > deadline => {
+                            self.now = self.now.max(deadline);
+                            Reply::Forced
+                        }
+                        _ => {
+                            self.now = finish;
+                            Reply::Worked
+                        }
+                    };
+                    incarnation.exchange.reply = Some(reply);
+                }
                 None => panic!("a body parked without a kernel request"),
             }
         }
@@ -717,7 +769,9 @@ impl Kernel {
         membership
     }
 
-    /// Requested shutdown: unroute, cancel, then force at the deadline.
+    /// Requested shutdown: unroute, then cancel and run cleanup to its end.
+    /// Cleanup cannot park (receive answers at once after cancellation), so it
+    /// ends by returning, by defecting, or by `work` reaching the deadline.
     fn shut_down(&mut self, id: IncarnationId) {
         let Some(incarnation) = self.incarnations.get_mut(&id) else { return };
         if let Some(name) = incarnation.spec.name
@@ -726,33 +780,41 @@ impl Kernel {
             self.names.remove(&name);
         }
         incarnation.accepting = false;
-        incarnation.cancelling = true;
-        let deadline = self.now + incarnation.spec.shutdown_within;
-        self.step(id, ChimiFiberCommand::Cancel);
-        let Some(incarnation) = self.incarnations.get_mut(&id) else { return };
-        self.now = self.now.max(deadline);
-        incarnation.exchange.reply = Some(Reply::Forced);
+        incarnation.deadline = Some(self.now + incarnation.spec.shutdown_within);
+        if incarnation.wait == Wait::Receiving {
+            let reply = incarnation.mailbox.pop_front().map_or(Reply::Cancelled, Reply::Message);
+            incarnation.exchange.reply = Some(reply);
+        }
         self.step(id, ChimiFiberCommand::Cancel);
         assert!(
             !self.incarnations.contains_key(&id),
-            "a forced body caught its termination unwind"
+            "cleanup parked, or a forced body caught its termination unwind"
         );
     }
 
-    /// Reacts to a body ending on its own: restart a defect, or free the slot.
+    /// Reacts to a body ending on its own: restart a defect, or free the slot
+    /// and the membership record.
     fn member_ended(&mut self, membership: MembershipId, cause: TerminalCause) {
-        let entry = &self.memberships[&membership];
+        let Some(entry) = self.memberships.get(&membership) else { return };
         let supervisor = entry.supervisor;
         let open = self.supervisors.get(&supervisor).is_some_and(|s| !s.closed);
-        if cause == TerminalCause::Defected
-            && entry.restart() == Restart::OnDefect
-            && !entry.removed
-            && open
-        {
+        if cause == TerminalCause::Defected && entry.restart() == Restart::OnDefect && open {
             self.restart(supervisor, membership);
-        } else if open {
+        } else {
             self.release_slot(membership);
+            self.forget(membership);
         }
+    }
+
+    /// Drops a membership record, keeping only what a live handle needs.
+    fn forget(&mut self, membership: MembershipId) -> Option<Membership> {
+        let entry = self.memberships.remove(&membership)?;
+        if entry.handle
+            && let Some(incarnation) = entry.last_incarnation
+        {
+            self.retired.insert(membership, incarnation);
+        }
+        Some(entry)
     }
 
     /// Charges the rolling limit before the replacement starts.
@@ -780,7 +842,9 @@ impl Kernel {
         }
     }
 
-    /// The supervisor stops its members and defects to its parent.
+    /// The supervisor stops its members and defects to its parent. A root
+    /// escalation terminates the program; the prototype assumes one root
+    /// supervisor per program, so it does not stop other roots.
     fn escalate(&mut self, supervisor: SupervisorId) {
         self.events.push(LifecycleEvent::RestartLimitExceeded { supervisor });
         self.stop_members(supervisor);
@@ -806,7 +870,7 @@ impl Kernel {
         order.reverse();
         order.extend(std::mem::take(&mut supervision.declared).into_iter().rev());
         for membership in order {
-            let Some(entry) = self.memberships.remove(&membership) else { continue };
+            let Some(entry) = self.forget(membership) else { continue };
             match entry.current {
                 Current::Process(incarnation) => self.shut_down(incarnation),
                 Current::Supervisor(child) => {

@@ -199,21 +199,35 @@ fn million_messages() {
         .start(policy(vec![Member::Process(spec(Some(name)), Restart::Never)], 1, 0))
         .expect("started");
     let mut peak_chunks = 0;
+    let mut queued_chunk_bytes = 0;
     let started = Instant::now();
     for _ in 0..15_625 {
+        let before = chunk_stats();
         for _ in 0..64 {
             kernel.send(Address::Named(name), host.message(1)).expect("accepted");
         }
-        peak_chunks = peak_chunks.max(chunk_stats().live_chunk_bytes);
+        let after = chunk_stats();
+        queued_chunk_bytes = after.live_chunk_bytes - before.live_chunk_bytes;
+        peak_chunks = peak_chunks.max(after.live_chunk_bytes);
         kernel.run_until_idle();
     }
     let elapsed = started.elapsed();
     let stats = kernel.heap_stats(Address::Named(name)).expect("running");
     println!(
-        "- {:.0} ns/message (host copy, send, fiber switch, adopt, pass); process peak value bytes {}; thread peak chunk bytes {} (includes 64 queued fragments)",
+        "- {:.0} ns/message (host copy, send, fiber switch, adopt, pass); process peak value bytes {}; thread peak chunk bytes {}",
         elapsed.as_nanos() as f64 / 1e6,
         stats.peak_live_bytes,
         peak_chunks
+    );
+    println!(
+        "- chunk bytes held per queued Int message: {} ({} for 64 queued)",
+        queued_chunk_bytes / 64,
+        queued_chunk_bytes
+    );
+    println!(
+        "- test-only event transcript: {} events, {} MiB (native runtime emits these to the trace ABI instead)",
+        kernel.events().len(),
+        std::mem::size_of_val(kernel.events()) / (1024 * 1024)
     );
     println!();
 }

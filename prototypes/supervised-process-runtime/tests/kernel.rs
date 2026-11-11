@@ -17,6 +17,7 @@ thread_local! {
     static TOTALS: RefCell<HashMap<IncarnationId, i64>> = RefCell::new(HashMap::new());
     static ORDER: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
     static RELAYED: RefCell<Vec<Result<(), SendFailure>>> = const { RefCell::new(Vec::new()) };
+    static DRAINED: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
 }
 
 fn total(incarnation: IncarnationId) -> i64 {
@@ -49,22 +50,55 @@ fn counter(context: &mut ProcessContext) -> BodyEnd {
     end
 }
 
-/// Ignores cancellation and keeps waiting, so shutdown must force it.
+/// Its cleanup keeps working past any deadline, so shutdown must force it.
 fn stubborn(context: &mut ProcessContext) -> BodyEnd {
+    while let Received::Message(_) = context.receive() {}
     loop {
-        let _ = context.receive();
+        context.work(Duration::from_secs(1));
     }
 }
 
-/// Forwards every message to PEER from inside its own fiber and records the
-/// outcome. Cancellation returns.
+/// Records every message. On cancellation it spends one second of cleanup,
+/// receives again to confirm the mailbox is drained, and returns.
+fn drainer(context: &mut ProcessContext) -> BodyEnd {
+    loop {
+        match context.receive() {
+            Received::Message(message) => {
+                let value = unsafe { (*message).as_.integer };
+                DRAINED.with(|drained| drained.borrow_mut().push(value));
+            }
+            Received::Cancelled => {
+                context.work(Duration::from_secs(1));
+                return match context.receive() {
+                    Received::Cancelled => BodyEnd::Returned,
+                    Received::Message(_) => BodyEnd::Defected,
+                };
+            }
+        }
+    }
+}
+
+/// During cleanup, sends to its own direct address and records the outcome.
+fn self_sender(context: &mut ProcessContext) -> BodyEnd {
+    while let Received::Message(_) = context.receive() {}
+    let own = Address::Direct(context.incarnation());
+    let message = unsafe { chimi_value_int(1) };
+    let outcome = unsafe { context.send(own, message) };
+    RELAYED.with(|relayed| relayed.borrow_mut().push(outcome));
+    BodyEnd::Returned
+}
+
+/// Forwards every message to PEER twice, back to back inside one resume, and
+/// records both outcomes. Cancellation returns.
 fn relay(context: &mut ProcessContext) -> BodyEnd {
     loop {
         match context.receive() {
             Received::Cancelled => return BodyEnd::Returned,
             Received::Message(message) => {
-                let outcome = unsafe { context.send(Address::Named(PEER), message) };
-                RELAYED.with(|relayed| relayed.borrow_mut().push(outcome));
+                for _ in 0..2 {
+                    let outcome = unsafe { context.send(Address::Named(PEER), message) };
+                    RELAYED.with(|relayed| relayed.borrow_mut().push(outcome));
+                }
             }
         }
     }
@@ -189,21 +223,70 @@ fn a_defect_restarts_only_that_member_and_the_peer_keeps_its_state() {
     ), "{cycle:?}");
 }
 
+/// The latest incarnation started for each membership, in start order.
+fn latest_incarnations(kernel: &Kernel) -> Vec<(MembershipId, IncarnationId)> {
+    let mut latest: Vec<(MembershipId, IncarnationId)> = Vec::new();
+    for (membership, incarnation) in started(kernel) {
+        match latest.iter_mut().find(|(m, _)| *m == membership) {
+            Some(entry) => entry.1 = incarnation,
+            None => latest.push((membership, incarnation)),
+        }
+    }
+    latest
+}
+
+fn last_send_index(kernel: &Kernel) -> usize {
+    kernel
+        .events()
+        .iter()
+        .rposition(|event| matches!(event, LifecycleEvent::Sent { .. }))
+        .expect("a send")
+}
+
 #[test]
-fn exceeding_the_restart_limit_stops_peers_and_escalates_from_the_root() {
+fn exceeding_the_restart_limit_stops_peers_in_shutdown_order_and_escalates_from_the_root() {
     let host = Host::new();
     let mut kernel = Kernel::new(STACK);
-    kernel
-        .start(policy(vec![named_counter(COUNTER), named_counter(PEER)], 1))
+    let third = Member::Process(spec(counter, None, 8), Restart::OnDefect);
+    let root = kernel
+        .start(policy(vec![named_counter(COUNTER), named_counter(PEER), third], 1))
         .expect("started");
-    for _ in 0..2 {
-        send(&mut kernel, &host, Address::Named(COUNTER), 0);
-        kernel.run_until_idle();
-    }
-    let events = kernel.events();
-    assert!(events.iter().any(|e| matches!(e, LifecycleEvent::RestartLimitExceeded { .. })));
-    assert!(events.iter().any(|e| matches!(e, LifecycleEvent::Escalated { parent: None, .. })));
-    assert!(terminations(&kernel).iter().any(|(_, cause)| *cause == TerminalCause::Cancelled));
+    kernel.start_process(root, spec(counter, None, 8), Restart::Never).expect("dynamic");
+    kernel.run_until_idle();
+    send(&mut kernel, &host, Address::Named(COUNTER), 0);
+    kernel.run_until_idle();
+    send(&mut kernel, &host, Address::Named(COUNTER), 0);
+    kernel.run_until_idle();
+
+    let [(counter, _), (peer, peer_run), (third, third_run), (dynamic, dynamic_run)] =
+        latest_incarnations(&kernel)[..]
+    else {
+        panic!("expected four members: {:?}", kernel.events());
+    };
+    let (_, restarted) = *started(&kernel).last().expect("one restart");
+    let Some(LifecycleEvent::Started { supervisor, .. }) = kernel.events().first().copied() else {
+        panic!("first event is a start")
+    };
+    let cancelled = |membership, incarnation| LifecycleEvent::Terminated {
+        membership,
+        incarnation,
+        cause: TerminalCause::Cancelled,
+    };
+    // No RestartAttempted or Started for the refused attempt; peers stop
+    // newest dynamic first, then declared in reverse.
+    let expected = [
+        LifecycleEvent::Terminated {
+            membership: counter,
+            incarnation: restarted,
+            cause: TerminalCause::Defected,
+        },
+        LifecycleEvent::RestartLimitExceeded { supervisor },
+        cancelled(dynamic, dynamic_run),
+        cancelled(third, third_run),
+        cancelled(peer, peer_run),
+        LifecycleEvent::Escalated { supervisor, parent: None },
+    ];
+    assert_eq!(kernel.events()[last_send_index(&kernel) + 1..], expected);
     assert!(kernel.program_terminated());
 }
 
@@ -300,6 +383,121 @@ fn cleanup_that_misses_its_deadline_is_forced() {
 }
 
 #[test]
+fn cleanup_receives_messages_accepted_before_cancellation_then_cancelled_without_parking() {
+    let host = Host::new();
+    let mut kernel = Kernel::new(STACK);
+    let root = kernel.start(policy(vec![], 2)).expect("started");
+    let managed =
+        kernel.start_process(root, spec(drainer, None, 8), Restart::Never).expect("admitted");
+    kernel.run_until_idle();
+    DRAINED.with(|drained| drained.borrow_mut().clear());
+    let direct = kernel.address(&managed);
+    for value in [1, 2, 3] {
+        send(&mut kernel, &host, direct, value);
+    }
+    // Accepted but not yet received when the removal cancels the process.
+    kernel.remove_process(root, managed);
+
+    assert_eq!(DRAINED.with(|drained| drained.borrow().clone()), vec![1, 2, 3]);
+    assert_eq!(terminations(&kernel), [(started(&kernel)[0].0, TerminalCause::Cancelled)]);
+}
+
+#[test]
+fn removing_a_process_parked_in_receive_cancels_it_and_releases_its_name() {
+    let host = Host::new();
+    let mut kernel = Kernel::new(STACK);
+    let root = kernel.start(policy(vec![], 2)).expect("started");
+    let managed = kernel
+        .start_process(root, spec(counter, Some(COUNTER), 8), Restart::OnDefect)
+        .expect("admitted");
+    send(&mut kernel, &host, Address::Named(COUNTER), 5);
+    kernel.run_until_idle();
+    let [(membership, incarnation)] = started(&kernel)[..] else { panic!() };
+    assert_eq!(total(incarnation), 5, "parked in receive after its first message");
+
+    kernel.remove_process(root, managed);
+    let tail = &kernel.events()[kernel.events().len() - 2..];
+    assert_eq!(tail, [
+        LifecycleEvent::Terminated { membership, incarnation, cause: TerminalCause::Cancelled },
+        LifecycleEvent::Removed { membership },
+    ]);
+    assert!(matches!(
+        kernel.send(Address::Named(COUNTER), host.message(1)),
+        Err(SendError::Unavailable(_))
+    ));
+    kernel.start_process(root, spec(counter, Some(COUNTER), 8), Restart::Never).expect("name free");
+}
+
+#[test]
+fn a_send_to_a_stopping_incarnation_is_unavailable_during_its_cleanup() {
+    let mut kernel = Kernel::new(STACK);
+    let root = kernel.start(policy(vec![], 2)).expect("started");
+    let managed =
+        kernel.start_process(root, spec(self_sender, None, 8), Restart::Never).expect("admitted");
+    kernel.run_until_idle();
+    RELAYED.with(|relayed| relayed.borrow_mut().clear());
+    kernel.remove_process(root, managed);
+    assert_eq!(RELAYED.with(|relayed| relayed.borrow().clone()), vec![Err(
+        SendFailure::Unavailable
+    )]);
+    assert_eq!(terminations(&kernel)[0].1, TerminalCause::Cancelled);
+}
+
+#[test]
+fn a_handle_outlives_a_stop_and_an_escalation_of_its_supervisor() {
+    let host = Host::new();
+    for escalate in [false, true] {
+        let mut kernel = Kernel::new(STACK);
+        let root = kernel.start(policy(vec![named_counter(COUNTER)], 0)).expect("started");
+        let managed =
+            kernel.start_process(root, spec(counter, None, 8), Restart::Never).expect("admitted");
+        let direct = kernel.address(&managed);
+        if escalate {
+            send(&mut kernel, &host, Address::Named(COUNTER), 0);
+            kernel.run_until_idle();
+            assert!(kernel.program_terminated());
+        } else {
+            kernel.stop(root);
+        }
+        assert_eq!(kernel.address(&managed), direct, "still the last incarnation");
+        assert!(matches!(kernel.send(direct, host.message(1)), Err(SendError::Unavailable(_))));
+        let events = kernel.events().len();
+        kernel.remove_process(root, managed);
+        assert_eq!(kernel.events().len(), events, "removing an ended membership records nothing");
+    }
+}
+
+#[test]
+fn membership_bookkeeping_does_not_grow_with_ended_removed_or_rebuilt_members() {
+    let host = Host::new();
+    let mut kernel = Kernel::new(STACK);
+    // A nested supervisor whose escalations rebuild its members, next to a
+    // member that ends for good, so records churn without handles.
+    let ends = Member::Process(spec(counter, Some(PEER), 8), Restart::Never);
+    let nested = policy(vec![named_counter(COUNTER), ends], 0);
+    let root = kernel
+        .start(policy(vec![Member::Supervisor(nested, Restart::OnDefect)], 1_000_000))
+        .expect("started");
+    let baseline = kernel.membership_records();
+    for _ in 0..500 {
+        send(&mut kernel, &host, Address::Named(PEER), 0);
+        kernel.run_until_idle();
+        send(&mut kernel, &host, Address::Named(COUNTER), 0);
+        kernel.run_until_idle();
+        let removed =
+            kernel.start_process(root, spec(counter, None, 8), Restart::Never).expect("admitted");
+        let ended =
+            kernel.start_process(root, spec(counter, Some(NameId(3)), 8), Restart::Never).unwrap();
+        send(&mut kernel, &host, Address::Named(NameId(3)), 0);
+        kernel.run_until_idle();
+        kernel.remove_process(root, removed);
+        kernel.remove_process(root, ended);
+    }
+    assert!(!kernel.program_terminated());
+    assert_eq!(kernel.membership_records(), baseline);
+}
+
+#[test]
 fn admission_fails_fast_and_removal_releases_the_name() {
     let mut kernel = Kernel::new(STACK);
     let root = kernel.start(policy(vec![named_counter(COUNTER)], 0)).expect("started");
@@ -381,10 +579,10 @@ fn a_send_from_a_body_never_parks_and_reports_a_full_mailbox() {
     kernel.start(policy(vec![relaying, receiving], 0)).expect("started");
     kernel.run_until_idle();
     RELAYED.with(|relayed| relayed.borrow_mut().clear());
-    // Both reach the relay before the receiver runs, so its one slot is taken
-    // by the first and the second relay send must fail rather than park.
+    // The relay's two sends run without parking in between, so the receiver
+    // cannot drain its one slot between them whatever the scheduling order. A
+    // send that parked on Full would let it drain, and both would succeed.
     send(&mut kernel, &host, Address::Named(COUNTER), 6);
-    send(&mut kernel, &host, Address::Named(COUNTER), 9);
     kernel.run_until_idle();
 
     let outcomes = RELAYED.with(|relayed| relayed.borrow().clone());
