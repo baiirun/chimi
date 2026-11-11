@@ -545,6 +545,9 @@ pub(crate) enum Pattern {
         prefix: Vec<Pattern>,
         rest: Option<Box<Pattern>>,
         suffix: Vec<Pattern>,
+        /// A further `..` was reported as `L2021` and dropped, so this pattern does
+        /// not mean what was written; coverage leaves it out.
+        rejected_rest: bool,
         range: TextRange,
     },
 }
@@ -588,6 +591,17 @@ impl Pattern {
     }
 
     /// Direct sub-patterns in source order, for passes that visit every binding.
+    /// Whether this pattern or one nested in it lost a `..` to `L2021`.
+    pub(crate) fn has_rejected_rest(&self) -> bool {
+        matches!(
+            self,
+            Self::List {
+                rejected_rest: true,
+                ..
+            }
+        ) || self.children().into_iter().any(Self::has_rejected_rest)
+    }
+
     pub(crate) fn children(&self) -> Vec<&Pattern> {
         match self {
             Self::Wildcard { .. } | Self::Binding { .. } | Self::Literal { .. } => Vec::new(),
@@ -1891,7 +1905,8 @@ impl ProjectLowerer {
     }
 
     /// Splits list elements around the first rest element. A further rest is `L2021`;
-    /// it is dropped so the elements after it still type-check as the suffix.
+    /// it is dropped so the elements after it still type-check as the suffix, and the
+    /// pattern is marked so coverage does not read the remainder as written.
     fn lower_list_pattern(
         &mut self,
         semantic_id: SemanticId,
@@ -1901,6 +1916,7 @@ impl ProjectLowerer {
         let mut prefix = Vec::new();
         let mut rest = None;
         let mut suffix = Vec::new();
+        let mut rejected_rest = false;
         for element in elements {
             let is_rest = significant_child_tokens(element)
                 .first()
@@ -1913,6 +1929,7 @@ impl ProjectLowerer {
                     significant_range(element),
                     "a list pattern can contain at most one `..`",
                 ));
+                rejected_rest = true;
                 continue;
             }
             let lowered = self.lower_pattern(element);
@@ -1929,6 +1946,7 @@ impl ProjectLowerer {
             prefix,
             rest,
             suffix,
+            rejected_rest,
             range,
         }
     }

@@ -3488,8 +3488,14 @@ impl ProjectTypeChecker {
             .map(|subject| subject.success)
             .collect::<Vec<_>>();
         let mut coverage = Vec::<Vec<MatchPattern>>::new();
+        // An arm whose pattern lost a `..` to L2021 does not mean what was written, so
+        // it is neither checked for reachability nor counted as covering anything,
+        // and with such an arm the case is not checked for exhaustiveness either.
+        let mut rejected_arm = false;
         for (arm_index, arm) in arms.iter().enumerate() {
             let mut arm_bindings = bindings.clone();
+            let rejected = arm.patterns.iter().any(Pattern::has_rejected_rest);
+            rejected_arm |= rejected;
             if arm.patterns.len() != subjects.len() {
                 self.type_error_range(
                     module_id,
@@ -3510,7 +3516,8 @@ impl ProjectTypeChecker {
                     self.normalize_pattern(module_id, pattern, subject.success, &mut arm_bindings)
                 })
                 .collect::<Vec<_>>();
-            let useful = self.pattern_row_is_useful(&coverage, &normalized, &subject_types);
+            let useful =
+                rejected || self.pattern_row_is_useful(&coverage, &normalized, &subject_types);
             if !useful {
                 self.type_error_range(module_id, "T4232", arm.range, "case arm is unreachable");
             }
@@ -3526,7 +3533,7 @@ impl ProjectTypeChecker {
                     "an unguarded catch-all must be the final case arm",
                 );
             }
-            if unguarded && useful && normalized.len() == subjects.len() {
+            if unguarded && useful && !rejected && normalized.len() == subjects.len() {
                 coverage.push(normalized);
             }
             if let Some(guard) = &arm.guard {
@@ -3541,7 +3548,10 @@ impl ProjectTypeChecker {
             facts.push(body);
         }
         let missing = vec![MatchPattern::Wildcard; subjects.len()];
-        if let Some(witness) = self.pattern_row_witness(&coverage, &missing, &subject_types) {
+        let witness = (!rejected_arm)
+            .then(|| self.pattern_row_witness(&coverage, &missing, &subject_types))
+            .flatten();
+        if let Some(witness) = witness {
             let witness = witness
                 .iter()
                 .map(|pattern| self.render_witness(pattern))

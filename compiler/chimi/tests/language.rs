@@ -1796,11 +1796,18 @@ fn a_list_arm_after_full_coverage_is_unreachable() {
     );
 }
 
-// LP-04
+// LP-04. The rejected pattern does not count toward coverage, so a later
+// catch-all is not unreachable and a case with no other arm is not reported
+// as missing lists.
 #[test]
 fn a_list_pattern_with_two_rests_is_rejected() {
-    let codes = check_codes(&list_case(&["[a, ..x, ..y] -> a", "[] -> 0"]));
-    assert_eq!(codes, ["L2021"]);
+    for arms in [
+        &["[a, ..x, ..y] -> a", "[] -> 0"][..],
+        &["[.., ..] -> 1", "_ -> 0"],
+        &["[.., ..] -> 1"],
+    ] {
+        assert_eq!(check_codes(&list_case(arms)), ["L2021"], "{arms:?}");
+    }
 }
 
 #[test]
