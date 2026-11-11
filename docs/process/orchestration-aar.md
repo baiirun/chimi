@@ -94,7 +94,8 @@ task notifications.
 | Scheduler kernel port | implement | 385k | 36.2 | 84 chimi-fiber tests green (verified by coordinator rerun); 20 mutants caught; reported a latent use-after-free in existing code | review found 2 P1 (UAF reproduced as SIGSEGV; shutdown leaves wake sources armed), 3 P2, 1 surviving claimed mutant; ticket closed before logged decisions were implemented |
 | Scheduler kernel review | review | 177k | 9.5 | 7 confirmed findings with repro tests | — |
 | Verification tools import | tooling | 146k | 4.3 (after reset) | list fuzz, heap stress, mutation runner, program parity in repo; runner found 3 surviving scheduler mutants on first use | — |
-| Nested supervisors + structured stop | implement | 323k | 21.3 | 105 fiber tests, 28/28 mutants killed; fixed a pre-existing panic | review running (Sonnet trial) |
+| Nested supervisors + structured stop | implement | 323k | 21.3 | 105 fiber tests, 28/28 mutants killed; fixed a pre-existing panic | review found 2 HIGH bugs (leaked replacement supervisor; draining-owner hang) and 3 untested claims |
+| Nested supervisor review (Sonnet) | review | n/a | n/a | 2 reachable HIGH bugs reproduced as tests, 3 surviving mutants of claimed guarantees, no noise findings | first Sonnet data point: comparable signal to Opus reviews on this task |
 | Scheduler review fixes | fix | 288k | 89.8 | 9 findings fixed, each test red before fix; 95 tests; 17/17 mutants killed (coordinator verified tests and results file) | — |
 
 ## Is parallel faster than one agent?
