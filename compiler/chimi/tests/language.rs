@@ -495,3 +495,34 @@ fn an_expression_at_file_scope_is_a_syntax_error() {
     ));
     assert_eq!(codes, ["S1001"]);
 }
+
+// ts-5b02a8: a line break after a field's `errors` row separates fields.
+#[test]
+fn line_breaks_separate_interface_fields_with_failure_rows() {
+    let outcome = run_both(
+        "interface-failure-row-fields",
+        concat!(
+            "enum FileFault {\n",
+            "  Missing(path: Text)\n",
+            "}\n",
+            "interface Files {\n",
+            "  read: fn(Text) -> Int errors FileFault\n",
+            "  write: fn(Text, Int) -> Int errors FileFault\n",
+            "  size: fn(Text) -> Int\n",
+            "    errors FileFault\n",
+            "}\n",
+            "fn copy(from: Text, to: Text) -> Int needs { files: Files } {\n",
+            "  files.write(to, files.read(from) + files.size(from))\n",
+            "}\n",
+            "let fake = {\n",
+            "  read: fn(_path) { 40 },\n",
+            "  write: fn(_path, value) { value },\n",
+            "  size: fn(_path) { 2 },\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  copy(\"a\", \"b\") using { files: fake }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":42");
+}

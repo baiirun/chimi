@@ -1333,13 +1333,15 @@ impl<'source> Parser<'source> {
         self.expect(TokenKind::Arrow);
         self.skip_newlines();
         self.parse_type();
-        self.skip_newlines();
-        if self.accept(TokenKind::Errors) {
+        // The contract may continue on the next line, but a line break that is
+        // not followed by `errors` or `needs` ends the type, so it can still
+        // separate fields and parameters.
+        if self.accept_after_newlines(TokenKind::Errors) {
             self.skip_newlines();
             self.parse_type();
-            self.skip_newlines();
         }
-        if self.at(TokenKind::Needs) {
+        if self.at_after_newlines(TokenKind::Needs) {
+            self.skip_newlines();
             self.parse_requirement_clause();
         }
         self.finish();
@@ -2026,12 +2028,16 @@ impl<'source> Parser<'source> {
         consumed
     }
 
-    fn accept_after_newlines(&mut self, kind: TokenKind) -> bool {
+    fn at_after_newlines(&self, kind: TokenKind) -> bool {
         let mut position = self.position;
         while self.kind_at(position) == TokenKind::Newline {
             position += 1;
         }
-        if self.kind_at(position) != kind {
+        self.kind_at(position) == kind
+    }
+
+    fn accept_after_newlines(&mut self, kind: TokenKind) -> bool {
+        if !self.at_after_newlines(kind) {
             return false;
         }
         self.skip_newlines();

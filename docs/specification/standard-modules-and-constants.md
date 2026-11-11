@@ -221,7 +221,7 @@ program.
 A `host` operation MUST be private (`N3106`). Its module exposes it only
 through a private constant that holds a provider record:
 
-<!-- chimi: pending ts-975ca3 ts-5b02a8 ep-a6f138 -->
+<!-- chimi: pending ts-975ca3 ep-a6f138 -->
 ```chimi
 // std/io.chimi
 pub interface Console {
