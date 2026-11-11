@@ -70,10 +70,19 @@ The prototype runs every supervision path on real `chimi-fiber` fibers
 ### Tests
 
 `cargo test --release --manifest-path prototypes/supervised-process-runtime/Cargo.toml`
-runs 26 tests. All pass, in release and debug builds. Each test guards one
+runs 27 tests. All pass, in release and debug builds. Each test guards one
 decision. Every break listed below was applied on its own, and at least one
 test failed under it (a crash or abort counts as a failure). Rows marked
 "not run" have no recorded mutation check.
+
+The breaks are mutants in `scripts/mutation/heap_mutations.py` and
+`scripts/mutation/kernel_mutations.py`. The latest run, with its commit, is
+[`MUTATION-RESULTS.txt`](../../prototypes/supervised-process-runtime/MUTATION-RESULTS.txt).
+Reproduce it from the repository root with:
+
+```sh
+scripts/mutation/mutate.py scripts/mutation/heap_mutations.py scripts/mutation/kernel_mutations.py
+```
 
 | Decision | Test | Break used to confirm the test fails |
 | --- | --- | --- |
@@ -84,6 +93,7 @@ test failed under it (a crash or abort counts as a failure). Rows marked
 | Adopted messages join the innermost region and are reclaimed by its passes | `adopted_fragments_join_the_innermost_region_and_its_passes_reclaim_them` | Adopt into the base area |
 | A copy preserves sharing | `copying_preserves_sharing` (a graph with 2^40 paths and 41 values) | Not run |
 | A pointer into another heap is reported, not followed | `a_pointer_into_another_heap_is_reported_not_followed` | Ignore the owner tag |
+| Regions, adoption, and minor and full passes compose without moving outer values, changing adopted copies, or leaking chunks | `heap_survives_mixed_regions_fragments_and_collections` (`tests/stress.rs`, `c/stress.c`) | Run on its own: full collection on every pass; never run a full collection; drop the region check in `evacuate`; adopt into the base area; drop the inner survivors at exit |
 | Teardown frees every chunk | `destroying_heaps_and_unadopted_fragments_frees_every_chunk` | Free an unadopted fragment without releasing its chunks |
 | A defect restarts only its member, with the exact transcript | `a_defect_restarts_only_that_member_and_the_peer_keeps_its_state` | Keep the name after termination |
 | Exceeding the limit stops peers in shutdown order and escalates from the root, with the exact transcript | `exceeding_the_restart_limit_stops_peers_in_shutdown_order_and_escalates_from_the_root` | Do not stop peers; charge the restart after it starts; stop declared members in forward order |

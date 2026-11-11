@@ -1,0 +1,42 @@
+# Generated; do not edit. Reproduce from the repository root with:
+#   scripts/mutation/mutate.py scripts/mutation/heap_mutations.py scripts/mutation/kernel_mutations.py
+# Commit: ddb84673638d9667957d3edc3312e26e93302466
+# Each mutant must turn at least one test red (KILLED).
+# mutation run at ddb84673638d9667957d3edc3312e26e93302466
+# heap_mutations.py: 9 mutants against prototypes/supervised-process-runtime
+BASELINE ok (12s)
+KILLED       full collection on every pass [heap stress] (16s)
+KILLED       never run a full collection [heap stress] (3s)
+KILLED       rescan all survivors every pass [heap stress] (8s)
+KILLED       drop region check in evacuate [heap stress] (3s)
+KILLED       adopt into base area [heap stress] (4s)
+KILLED       exit tags spliced chunks as base [heap stress -- inner_passes] (4s)
+KILLED       exit drops inner survivors [heap stress -- inner_passes] (3s)
+KILLED       ignore the owner tag [heap stress -- another_heap] (3s)
+KILLED       unadopted fragment keeps its chunks [heap stress] (3s)
+# kernel_mutations.py: 22 mutants against prototypes/supervised-process-runtime
+BASELINE ok (6s)
+KILLED       keep the name after termination [kernel] (1s)
+KILLED       do not stop peers on escalation [kernel] (2s)
+KILLED       charge the restart after it starts [kernel] (2s)
+KILLED       never prune the restart window [kernel] (2s)
+KILLED       do not update the handle's incarnation on restart [kernel] (2s)
+KILLED       park a full send until the receiver drains [kernel] (2s)
+KILLED       ignore mailbox capacity [kernel] (2s)
+KILLED       stop declared members in forward order [kernel] (2s)
+KILLED       report a forced end as cancelled [kernel] (2s)
+KILLED       skip the admission capacity check [kernel] (2s)
+KILLED       do not roll back a failed start [kernel] (3s)
+KILLED       treat a nested escalation as a root one [kernel] (3s)
+KILLED       treat a body panic as a return [kernel] (3s)
+KILLED       adopt messages into the base area [kernel] (11s)
+KILLED       cancel without delivering queued messages [kernel] (4s)
+KILLED       park a receive after cancellation (old behaviour) [kernel] (1s)
+KILLED       force all cleanup work [kernel] (2s)
+KILLED       remove without shutting down [kernel] (2s)
+KILLED       keep accepting during cleanup [kernel] (2s)
+KILLED       handle lookups require the record (pre-fix) [kernel] (2s)
+KILLED       keep ended membership records [kernel] (2s)
+KILLED       keep removed membership records [kernel] (2s)
+# result: every mutant killed
+# exit status: 0
