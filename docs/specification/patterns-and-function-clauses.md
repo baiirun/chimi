@@ -106,7 +106,7 @@ fn route(_, _) {
 A clause MAY have a guard. The guard follows the parameter list and any
 contract, and it comes immediately before the body:
 
-<!-- chimi: check -->
+<!-- chimi: pending ts-0ba63e -->
 ```chimi
 import std/int as Int
 import std/text as Text
