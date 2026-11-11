@@ -1533,13 +1533,17 @@ fn float_text_is_the_canonical_shortest_form() {
             concat!(
                 "pub fn main() -> List<Text> {\n",
                 "  [Float.to_text(-0.0), Float.to_text(0.0 - 0.0), Float.to_text(5e-324),\n",
-                "   Float.to_text(1.7976931348623157e308), Float.to_text(100.0), Float.to_text(0.1)]\n",
+                "   Float.to_text(1.7976931348623157e308), Float.to_text(100.0), Float.to_text(0.1),\n",
+                // Each value lies exactly halfway between its two shortest texts that
+                // parse back; the spec picks the larger.
+                "   Float.to_text(0.000221729278564453125), Float.to_text(9499534713890.8125)]\n",
                 "}",
             )
         ),
         concat!(
             "\"outcome\":\"success\",\"value\":[\"-0.0\",\"0.0\",\"5e-324\",",
-            "\"1.7976931348623157e308\",\"100.0\",\"0.1\"]"
+            "\"1.7976931348623157e308\",\"100.0\",\"0.1\",",
+            "\"0.00022172927856445313\",\"9499534713890.813\"]"
         )
     );
 }
