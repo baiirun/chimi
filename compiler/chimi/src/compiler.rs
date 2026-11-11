@@ -1353,7 +1353,7 @@ mod tests {
                 concat!(
                     "import lib/partial as Partial\n",
                     "fn operation() -> Int { 1 }\n",
-                    "let configured = operation |> Partial.with()\n",
+                    "let configured = operation |> (Partial.with())\n",
                     "pub fn main() -> Int { configured() }\n",
                 ),
             ),

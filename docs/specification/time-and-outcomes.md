@@ -54,12 +54,12 @@ process mailboxes (G27); drain deadlines for services (G22).
 | --- | --- |
 | `std/duration` | `Duration`, `ParseError`, constructors, arithmetic, text form |
 | `std/clock` | `Clock` interface, `Instant`, `Timestamp`, `now`, `since`, `sleep`, `starting_at` |
-| `std/task` | adds `timeout`, `with_timeout`, `deadline`, `with_deadline`, `all`, `results`, `race`, `Timeout` |
+| `std/task` | adds `timeout`, `deadline`, `all`, `results`, `race`, `Timeout` |
 | `std/select` | `Event`, `first`, `receive`, `inbox`, `task`, `after`, `at` |
 | `std/result` | `Result`, `capture`, `get` |
-| `std/cause` | `Cause`, `context`, `with_context`, `of`, read functions, `to_text` |
+| `std/cause` | `Cause`, `context`, `of`, read functions, `to_text` |
 | `std/schedule` | `Schedule`, `immediate`, `fixed`, `exponential`, `delay` |
-| `std/retry` | `Policy`, `policy`, `run`, `with` |
+| `std/retry` | `Policy`, `policy`, `run` |
 
 ## Example
 
@@ -115,10 +115,10 @@ let backoff = Retry.policy(
 )
 
 fn process(job: Job) -> Void needs { payments: Payments, clock: Clock } {
-  let attempt = fn() { payments.charge(job.payload) }
-    |> Task.with_timeout(Duration.seconds(2))
-    |> Retry.with(backoff)
-  Cause.context(Text.append("charging job ", Int.to_text(job.id)), attempt)
+  let charge = fn() { payments.charge(job.payload) }
+  let attempt = fn() { charge |> Task.timeout(Duration.seconds(2)) }
+  let retried = fn() { attempt |> Retry.run(backoff) }
+  retried |> Cause.context(Text.append("charging job ", Int.to_text(job.id)))
 }
 
 fn worker(
@@ -251,6 +251,12 @@ enum ParseError {
 - A fraction that is not an exact number of nanoseconds, such as `1.5ns`, is
   `Invalid`. Parsing MUST NOT round.
 - A value outside the range is `OutOfRange`.
+- When the argument is a `Text` literal or a module constant, the compiler
+  parses it at build time. Text that would fail is a compile error (`T4349`).
+  Valid text compiles and draws a warning (`T4350`) that suggests the
+  equivalent constructor expression, because a constructor cannot fail and
+  needs no failure handling. Neither check applies to a non-constant argument.
+  These checks land with `Duration` itself (phase 3).
 - Debug rendering (G10) of a `Duration` MUST use the canonical text form.
 
 ## Time sources
@@ -399,12 +405,12 @@ timer firing order, and the same trace event order.
 
 ```text
 Task.timeout:
-  fn<T, F, R>(Duration, fn() -> T errors F needs R)
+  fn<T, F, R>(fn() -> T errors F needs R, Duration)
     -> T errors F | Timeout
     needs R + { clock: Clock }
 
 Task.deadline:
-  fn<T, F, R>(Instant, fn() -> T errors F needs R)
+  fn<T, F, R>(fn() -> T errors F needs R, Instant)
     -> T errors F | Timeout
     needs R + { clock: Clock }
 ```
@@ -415,8 +421,8 @@ enum Timeout {
 }
 ```
 
-`Task.timeout(d, operation)` is `Task.deadline(Clock.add(Clock.now(), d),
-operation)` except that `TimedOut` carries `d`. `Task.deadline` carries the
+`Task.timeout(operation, d)` is `Task.deadline(operation,
+Clock.add(Clock.now(), d))` except that `TimedOut` carries `d`. `Task.deadline` carries the
 duration from the call to the deadline.
 
 ### Semantics
@@ -458,31 +464,29 @@ Rules:
   cancellation point, and the received value is not lost: if the operation
   returns before that point, the operation's result stands.
 
-### Pipeline forms and naming convention
+### Argument order
 
-Chimi has no partial application, so a combinator that wraps a thunk needs
-two forms: one that runs now and one that returns the wrapper for `|>`. Std
-names them by one rule:
+`|>` inserts its left operand as the first argument of the call on its right
+([executable kernel](executable-kernel.md#pipelines)), so every combinator
+that wraps an operation takes that operation first and its configuration
+after it:
 
-- `M.x(config..., operation)` runs `operation` now and returns its outcome.
-  The configuration comes first and the thunk comes last, so an inline
-  `fn() { ... }` reads at the end of the call.
-- `M.with_x(config...)` returns
-  `fn(operation) { fn() { M.x(config..., operation) } }`. It MUST be exactly
-  equivalent to that expression in contract and behavior.
-- When the module name is itself the behavior, the running form is `M.run`
-  and the pipeline form is `M.with`: `Retry.run` and `Retry.with`.
+- `M.x(operation, config...)` runs `operation` now and returns its outcome,
+  so `operation |> M.x(config...)` reads in the order the work happens.
+- A configured operation that runs later is an ordinary thunk:
+  `fn() { operation |> M.x(config...) }`. Wrappers nest by wrapping that
+  thunk again.
 
-| Running form | Pipeline form |
+| Call | Pipeline |
 | --- | --- |
-| `Task.timeout(d, op)` | `op \|> Task.with_timeout(d)` |
-| `Task.deadline(at, op)` | `op \|> Task.with_deadline(at)` |
-| `Cause.context(text, op)` | `op \|> Cause.with_context(text)` |
-| `Retry.run(policy, op)` | `op \|> Retry.with(policy)` |
+| `Task.timeout(op, d)` | `op \|> Task.timeout(d)` |
+| `Task.deadline(op, at)` | `op \|> Task.deadline(at)` |
+| `Cause.context(op, text)` | `op \|> Cause.context(text)` |
+| `Retry.run(op, policy)` | `op \|> Retry.run(policy)` |
 
-Std MUST NOT introduce a pair that breaks this rule. The linter (T3) SHOULD
-check user modules that define both forms. The first open question below
-proposes a pipeline rule that would remove the pipeline forms altogether.
+Std MUST NOT define a second, function-returning form of a combinator (such as
+`with_timeout` or `Retry.with`) only to make it pipeable. Earlier drafts did,
+because the kernel then allowed only unary pipelines.
 
 ## Choosing among events
 
@@ -491,7 +495,7 @@ proposes a pipeline rule that would remove the pipeline forms altogether.
 Waiting on several sources is a std function, `Select.first`, over event
 values. It is not syntax. A library form keeps the language small (principle
 3), lets programs build the event list from data, and composes with `case`.
-Its cost is one mapping function per event. The second open question asks
+Its cost is one mapping function per event. The first open question asks
 the user to confirm this.
 
 `Select` cannot be built from `Task.race`. A race between two receiving tasks
@@ -799,11 +803,10 @@ not search for an enclosing handler.
 ### Adding context
 
 ```text
-Cause.context:      fn<T, E, R>(Text, fn() -> T errors E needs R) -> T errors E needs R
-Cause.with_context: fn<T, E, R>(Text) -> fn(fn() -> T errors E needs R) -> fn() -> T errors E needs R
+Cause.context: fn<T, E, R>(fn() -> T errors E needs R, Text) -> T errors E needs R
 ```
 
-`Cause.context(text, operation)` runs the operation. On success it returns
+`Cause.context(operation, text)` runs the operation. On success it returns
 the value. When the operation terminates with an expected failure, a defect,
 or a cancellation, the runtime appends a frame to that outcome's cause and
 passes the outcome on unchanged. The failure row, the variant, and the value
@@ -900,10 +903,8 @@ against shared services SHOULD use it.
 
 ```text
 Retry.policy: fn<E>(Schedule, fn(E) -> Bool) -> Retry.Policy<E>
-Retry.run:    fn<T, E, R>(Retry.Policy<E>, fn() -> T errors E needs R)
+Retry.run:    fn<T, E, R>(fn() -> T errors E needs R, Retry.Policy<E>)
                 -> T errors E needs R + { clock: Clock }
-Retry.with:   fn<T, E, R>(Retry.Policy<E>)
-                -> fn(fn() -> T errors E needs R) -> fn() -> T errors E needs R + { clock: Clock }
 ```
 
 A policy always has a predicate. Std provides no retry-everything policy,
@@ -918,7 +919,7 @@ type error rather than a silent rethrow.
 `Retry.run` is ordinary Chimi:
 
 ```chimi
-pub fn run<T, E, R>(policy: Policy<E>, operation: fn() -> T errors E needs R) {
+pub fn run<T, E, R>(operation: fn() -> T errors E needs R, policy: Policy<E>) {
   loop attempt = 1 {
     case operation() {
       Success(value) -> break value
@@ -949,11 +950,11 @@ pub fn run<T, E, R>(policy: Policy<E>, operation: fn() -> T errors E needs R) {
 Timeouts compose per attempt or over the whole retry:
 
 ```chimi
-let each_attempt = fn() { client.post(url, body) }
-  |> Task.with_timeout(Duration.seconds(2))
-  |> Retry.with(policy)
+let post = fn() { client.post(url, body) }
+let attempt = fn() { post |> Task.timeout(Duration.seconds(2)) }
+let each_attempt = fn() { attempt |> Retry.run(policy) }
 
-let overall = Task.timeout(Duration.seconds(30), each_attempt)
+let overall = each_attempt |> Task.timeout(Duration.seconds(30))
 ```
 
 `policy` here has type `Retry.Policy<HttpError | Timeout>`.
@@ -983,6 +984,8 @@ contracts already name:
 | `T4346` | type | A failure-set value flows into a set that lacks some of its members, such as a retry predicate that does not cover the operation's failures. The diagnostic lists the missing variants. |
 | `T4347` | type | A literal attempt count below 1 in a `Schedule` constructor. |
 | `T4348` | type | A `Duration` constructor whose constant argument overflows the range. The compiler SHOULD report it when it folds the constant, and MUST NOT report it for a non-constant argument. |
+| `T4349` | type | `Duration.parse` applied to a `Text` literal or a module constant whose text the grammar above rejects, or whose value is out of range. A constant argument is known at build time, so the failure would be certain; the compiler MUST report it instead of compiling a call that always fails. It MUST NOT report it for a non-constant argument. |
+| `T4350` | type (warning) | `Duration.parse` applied to a valid `Text` literal or module constant. The warning names the equivalent constructor expression, such as `Duration.seconds(5)` for `"5s"` or `Duration.add(Duration.hours(1), Duration.minutes(30))` for `"1h30m"`, because a constructor needs no failure handling. It does not block the build. |
 
 Existing codes cover the remaining static checks: `T4240` and `T4243` for an
 event that escapes its task, `T4241` for an event used after its receiver was
@@ -1006,12 +1009,13 @@ deadlock under virtual time.
 | Virtual time | Two sleepers of 5 s and 2 s wake in deadline order after zero wall time. `Clock.since` reports exactly 5 s. The run repeats identically. |
 | Virtual deadlock | A task parked on a receive with no other work defects the root with a deadlock cause naming that receive. |
 | Starting timestamp | `Clock.starting_at` under `using` pins `Clock.timestamp` and leaves `Clock.now` unchanged. |
-| Timeout fires | `Task.timeout(1s, sleep 5s)` returns `TimedOut(1s)` at virtual 1 s, and child tasks inside the scope are drained. |
+| Timeout fires | `Task.timeout(sleep 5s, 1s)` returns `TimedOut(1s)` at virtual 1 s, and child tasks inside the scope are drained. |
 | Timeout passes | An operation that finishes first returns its own success, failure, or defect unchanged. |
 | Timeout scope | An outer `Task.cancel` and an outer timeout pass through an inner timeout unconverted. |
 | Receive and timeout | A receive that linearizes before the deadline keeps its value. A timeout that wins delivers nothing. |
-| Non-positive timeout | `Task.timeout(Duration.zero, op)` never starts `op`. |
-| Pipeline forms | `op \|> Task.with_timeout(d)` and `fn() { Task.timeout(d, op) }` have identical contracts and traces. |
+| Non-positive timeout | `Task.timeout(op, Duration.zero)` never starts `op`. |
+| Argument order | `op \|> Task.timeout(d)` and `Task.timeout(op, d)` have identical contracts and traces. No std module exports a `with_` twin of a combinator. |
+| Constant parse | `Duration.parse("5x")` reports `T4349`. `Duration.parse("1h30m")` compiles, warns `T4350`, and suggests a constructor expression. `Duration.parse(name)` with a non-constant `name` reports neither. |
 | Select commit | With two ready channels, only the first in list order delivers. The other keeps its value. |
 | Select cancellation | Cancelling a parked `Select.first` leaves every channel unchanged. |
 | Select timer | `Select.after` measures from the `Select.first` call. A user `Clock` timer works through its `sleep_until`. |
@@ -1041,8 +1045,9 @@ deadlock under virtual time.
 - **Typing (`typing.rs`).** Represent failure-set types as normalized variant
   sets with subset subtyping. Allow the value projection of failure-set
   generics as type arguments. Infer variance of data type parameters. Apply
-  the join rules, and emit `T4341`, `T4346`, `T4344`, `T4345`, `T4347`, and
-  `T4348`. Extend exhaustiveness to failure-set values.
+  the join rules, and emit `T4341`, `T4346`, `T4344`, `T4345`, `T4347`,
+  `T4348`, `T4349`, and `T4350`. Check constant `Duration.parse` arguments with
+  the same parser the runtime uses, so the two cannot disagree. Extend exhaustiveness to failure-set values.
 - **Capability checking (`capability.rs`).** Classify `Select.Event` as
   task-local, and track receiver references held by events for `T4241`.
 - **Lowering (`executable.rs`).** Lower `Failure(...)` inside a failure arm
@@ -1117,24 +1122,13 @@ These follow from this contract and are left to the owners of those files:
 
 ## Open questions
 
-1. **Should `|>` insert its left side as the first argument?** Today the
-   kernel forbids choosing a pipeline slot, which forces the `with_` pairs
-   above for every wrapper. The supervisor examples already write
-   `spec |> Process.register(counter)` against a two-argument
-   `Process.register(spec, name)`, which works only under first-argument
-   insertion. Gleam uses that rule without partial application:
-   `a |> f(b)` means `f(a, b)`.
-   *Recommendation:* adopt first-argument insertion. Every `with_` form then
-   disappears, and running forms take the operation or subject first, as
-   `Task.timeout(op, d)`. It changes a kernel rule, so it needs the user's
-   decision. Until then, this contract's convention applies.
-2. **Should choice be syntax?** This contract makes `Select.first` a library
+1. **Should choice be syntax?** This contract makes `Select.first` a library
    function. A `select { ... }` form would remove the mapping functions and
    the intermediate enum, but it would add syntax that can only list a fixed
    set of events.
    *Recommendation:* keep the library form, and revisit it if the phase 3
    forcing program shows that the mapping noise hurts readability.
-3. **May a stored `Err` carry hidden cause metadata?** The alternative is an
+2. **May a stored `Err` carry hidden cause metadata?** The alternative is an
    explicit `Cause.Caught<E>` that holds `error` and `cause`, which every
    caller would have to unwrap.
    *Recommendation:* keep the metadata outside the value, excluded from

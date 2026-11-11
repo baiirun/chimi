@@ -249,22 +249,40 @@ their observable semantics.
 
 ```chimi
 value |> transform
+value |> combine(other, more)
 ```
 
-is exactly:
+are exactly:
 
 ```chimi
 transform(value)
+combine(value, other, more)
 ```
 
-Every type-compatible unary function is pipeable. Chimi MUST NOT automatically
-partially apply missing arguments or select a pipeline slot in a multi-argument
-call. An API intended for configured pipeline use explicitly returns a unary
-function:
+The rule is syntactic. When the right side of `|>` is written as a call,
+`callee(arguments...)`, the left operand becomes that call's first argument.
+Any other right side, such as a name, a member path, or a parenthesized
+expression, is a unary function applied to the left operand. Chimi MUST NOT
+fall back from one reading to the other: `value |> make(config)` is always
+`make(value, config)`, even when `make(config)` would return a function. To
+apply a function that a call returns, parenthesize the call:
 
 ```chimi
-operation |> Retry.with(policy, delay)
+value |> (make(config))
 ```
+
+Chimi has no partial application, and `|>` does not create one. APIs that take
+a subject put it first, so a value flows through a chain of ordinary calls:
+
+```chimi
+orders
+|> List.filter(is_open)
+|> List.map(summarize)
+|> Text.join(", ")
+```
+
+Lowering rewrites each pipeline to the call it denotes, so the call's argument
+evaluation order, arity checks, and diagnostics apply unchanged.
 
 ### Case expressions
 

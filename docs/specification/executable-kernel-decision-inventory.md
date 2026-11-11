@@ -75,9 +75,13 @@ Evidence: [golden corpus](../../prototypes/golden/README.md),
   diagnostics.
 - `if` is available only as a case-arm guard. Guards MUST be proven free of
   dependencies or other observable execution.
-- A pipeline is ordinary unary function application. `value |> transform`
-  means `transform(value)`. The language MUST NOT automatically partially apply
-  missing arguments or choose a distinguished slot in a multi-argument call.
+- A pipeline is ordinary function application with the left operand as the
+  first argument. `value |> transform` means `transform(value)`, and
+  `value |> combine(other)` means `combine(value, other)`. The rule is
+  syntactic and never falls back to applying a returned function. The language
+  MUST NOT automatically partially apply missing arguments. (Amended
+  2026-11-11: the user chose first-argument insertion, superseding the earlier
+  unary-only rule.)
 
 Evidence: [grammar prototype](../../prototypes/grammar/README.md),
 [semantic-lowering prototype](../../prototypes/semantic-lowering/README.md), and

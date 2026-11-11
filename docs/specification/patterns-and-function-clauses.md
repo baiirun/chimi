@@ -243,8 +243,9 @@ let labels = List.map(counts, describe)
 let label = count |> describe
 ```
 
-The pipeline rule is unchanged: `count |> describe` is `describe(count)`, and
-only unary functions are pipeable.
+The pipeline rule applies to multi-clause functions unchanged:
+`count |> describe` is `describe(count)`, and `count |> describe(style)` is
+`describe(count, style)` ([pipelines](executable-kernel.md#pipelines)).
 
 ### Anonymous functions
 

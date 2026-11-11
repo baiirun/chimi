@@ -9,15 +9,14 @@ pub fn once() -> Policy {
 }
 
 pub fn with<A, E, R>(
+  operation: fn() -> A errors E needs R,
   policy: Policy,
-) -> fn(fn() -> A errors E needs R) -> fn() -> A errors E needs R {
+) -> fn() -> A errors E needs R {
   case policy {
-    Once -> fn(operation: fn() -> A errors E needs R) {
-      fn() {
-        case operation() {
-          Success(value) -> value
-          Failure(_error) -> operation()
-        }
+    Once -> fn() {
+      case operation() {
+        Success(value) -> value
+        Failure(_error) -> operation()
       }
     }
   }

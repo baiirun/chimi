@@ -9,16 +9,17 @@ Run from the repository root:
 cargo run -q -p chimi -- run --root prototypes/retry-composition app/main
 ```
 
-The program pipes a failing thunk through a partially applied `Retry.with`
-function. The library calls the thunk once, handles its expected failure, and
+The program pipes a failing thunk into `Retry.with`; the pipeline inserts the
+thunk as the first argument, so `operation |> Retry.with(Retry.once())` is
+`Retry.with(operation, Retry.once())`. The library calls the thunk once, handles its expected failure, and
 calls the same thunk again. The final expected failure proves exhaustion
 without introducing retry syntax, compiler behavior, or a runtime intrinsic.
 
 ## Verdict
 
-Retry itself is ordinary composition. `Retry.with(Retry.once())` remains
-polymorphic until the pipe supplies an operation, then returns a thunk with the
-operation's success, failure, and `needs` channels. Full tracing shows the
+Retry itself is ordinary composition. `Retry.with` is generic over the
+operation it receives and returns a thunk with the operation's success,
+failure, and `needs` channels. Full tracing shows the
 original operation's required dependency called twice.
 
 This prototype does not define a generic selective-retry predicate. In the

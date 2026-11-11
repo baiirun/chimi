@@ -1265,16 +1265,27 @@ impl ProjectLowerer {
         let last_operator = operators.len().saturating_sub(1);
         let mut left = self.lower_expression(&first);
         for (index, (operator, right)) in operators.into_iter().zip(operands).enumerate() {
-            left = ModuleExpression::Binary {
-                semantic_id: if index == last_operator {
-                    semantic_id
-                } else {
-                    self.allocate_semantic_id()
+            let semantic_id = if index == last_operator {
+                semantic_id
+            } else {
+                self.allocate_semantic_id()
+            };
+            let right = self.lower_expression(&right);
+            let range = significant_range(node);
+            left = match (operator, right) {
+                (
+                    BinaryOperator::Pipe,
+                    ModuleExpression::Call {
+                        callee, arguments, ..
+                    },
+                ) => insert_pipeline_subject(semantic_id, left, *callee, arguments, range),
+                (operator, right) => ModuleExpression::Binary {
+                    semantic_id,
+                    operator,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    range,
                 },
-                operator,
-                left: Box::new(left),
-                right: Box::new(self.lower_expression(&right)),
-                range: significant_range(node),
             };
         }
         left
@@ -1570,6 +1581,32 @@ fn direct_expression_child<'tree>(node: &SyntaxNode<'tree>) -> Option<SyntaxNode
     node.child_nodes()
         .into_iter()
         .find(|child| is_expression_kind(child.kind()))
+}
+
+/// Lowers `subject |> callee(arguments)` to `callee(subject, arguments)`.
+///
+/// The pipeline rule is syntactic: only a call written directly on the right of
+/// `|>` receives the subject as its first argument. Any other right-hand side,
+/// including a parenthesized call, is applied to the subject as a unary function.
+fn insert_pipeline_subject(
+    semantic_id: SemanticId,
+    subject: ModuleExpression,
+    callee: ModuleExpression,
+    arguments: Vec<CallArgument>,
+    range: TextRange,
+) -> ModuleExpression {
+    let mut piped = Vec::with_capacity(arguments.len() + 1);
+    piped.push(CallArgument {
+        label: None,
+        value: subject,
+    });
+    piped.extend(arguments);
+    ModuleExpression::Call {
+        semantic_id,
+        callee: Box::new(callee),
+        arguments: piped,
+        range,
+    }
 }
 
 fn direct_expression_children<'tree>(node: &SyntaxNode<'tree>) -> Vec<SyntaxNode<'tree>> {
