@@ -6121,6 +6121,113 @@ fn a_defect_bypasses_failure_type_arms() {
     assert!(outcome.starts_with("\"outcome\":\"defect\""), "{outcome}");
 }
 
+// A value narrowed by `Failure(E.A as err)` joins a whole-enum value as the
+// whole enum, so a case arm or list element cannot smuggle `E.B` out under a
+// row that only lists `E.A`.
+#[test]
+fn joining_a_narrowed_failure_with_its_enum_widens_the_row() {
+    let source = concat!(
+        "enum E {\n",
+        "  A\n",
+        "  B\n",
+        "}\n",
+        "fn op() -> Int {\n",
+        "  Failure(E.A)\n",
+        "}\n",
+        "fn by_case(flag: Bool) -> Int {\n",
+        "  case op() {\n",
+        "    Failure(E.A as err) -> {\n",
+        "      let chosen = case flag {\n",
+        "        True -> err\n",
+        "        False -> E.B\n",
+        "      }\n",
+        "      Failure(chosen)\n",
+        "    }\n",
+        "    Success(v) -> v\n",
+        "  }\n",
+        "}\n",
+        "fn by_list() -> Int {\n",
+        "  case op() {\n",
+        "    Failure(E.A as err) -> case [err, E.B] {\n",
+        "      [_, second, ..] -> Failure(second)\n",
+        "      _ -> 0\n",
+        "    }\n",
+        "    Success(v) -> v\n",
+        "  }\n",
+        "}\n",
+        "fn label(run: fn() -> Int errors E) -> Int {\n",
+        "  case run() {\n",
+        "    Failure(E.A) -> 1\n",
+        "    Failure(E.B) -> 2\n",
+        "    Success(v) -> v\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> List<Int> {\n",
+        "  [label(fn() { by_case(True) }), label(fn() { by_case(False) }), label(by_list)]\n",
+        "}\n",
+    );
+    for function in ["by_case", "by_list"] {
+        let (codes, contract) = type_contract(source, function);
+        assert!(codes.is_empty(), "{codes:?}");
+        let expected = if function == "by_case" {
+            "fn(Bool) -> Int errors E"
+        } else {
+            "fn() -> Int errors E"
+        };
+        assert_eq!(contract.as_deref(), Some(expected), "{function}");
+    }
+    assert_eq!(
+        run_both("narrowed-failure-join", source),
+        "\"outcome\":\"success\",\"value\":[1,2,2]"
+    );
+}
+
+// The narrowing is one-way: a whole-enum value is not accepted where only
+// the narrowed variants are known to flow.
+#[test]
+fn a_whole_enum_value_does_not_narrow_to_a_failure_set() {
+    let source = concat!(
+        "enum E {\n",
+        "  A\n",
+        "  B\n",
+        "}\n",
+        "fn op() -> Int {\n",
+        "  Failure(E.A)\n",
+        "}\n",
+        "fn only_a(flag: Bool) -> Int {\n",
+        "  case op() {\n",
+        "    Failure(E.A as err) -> {\n",
+        "      let chosen = case flag {\n",
+        "        True -> err\n",
+        "        False -> E.B\n",
+        "      }\n",
+        "      case chosen {\n",
+        "        A -> 1\n",
+        "      }\n",
+        "    }\n",
+        "    Success(v) -> v\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { only_a(False) }\n",
+    );
+    assert_eq!(check_codes(source), ["T4231"]);
+    // An inference variable that met the narrowed value first widens to the enum.
+    let through_parameter = source.replace(
+        concat!(
+            "      let chosen = case flag {\n",
+            "        True -> err\n",
+            "        False -> E.B\n",
+            "      }\n",
+        ),
+        concat!(
+            "      let pick = fn(x) { x }\n",
+            "      let chosen = pick(err)\n",
+            "      let other = pick(E.B)\n",
+        ),
+    );
+    assert_eq!(check_codes(&through_parameter), ["T4231"]);
+}
+
 // ts-8c488d: an unguarded `Failure(_)` arm handles every variant of the row.
 #[test]
 fn a_wildcard_failure_arm_handles_every_failure() {

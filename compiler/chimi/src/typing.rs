@@ -2973,11 +2973,11 @@ impl ProjectTypeChecker {
                     .iter()
                     .map(|element| self.infer_expression(module_id, element, generics, bindings))
                     .collect::<Vec<_>>();
-                let element_type = facts
+                let mut element_type = facts
                     .first()
                     .map_or_else(|| self.fresh_inference_type(), |fact| fact.success);
                 for fact in facts.iter().skip(1) {
-                    self.unify_at(
+                    element_type = self.join_branch_type(
                         module_id,
                         *range,
                         fact.success,
@@ -3704,11 +3704,16 @@ impl ProjectTypeChecker {
                 facts.push(self.infer_case_guard(module_id, guard, generics, &mut arm_bindings));
             }
             let body = self.infer_expression(module_id, &arm.body, generics, &mut arm_bindings);
-            if let Some(expected) = success {
-                self.unify_expression_result(module_id, &arm.body, body.success, expected);
-            } else {
-                success = Some(body.success);
-            }
+            success = Some(match success {
+                Some(joined) => self.join_branch_type(
+                    module_id,
+                    expression_range(&arm.body),
+                    body.success,
+                    joined,
+                    "function result",
+                ),
+                None => body.success,
+            });
             facts.push(body);
         }
         let missing = vec![MatchPattern::Wildcard; subjects.len()];
@@ -4197,7 +4202,7 @@ impl ProjectTypeChecker {
             });
             return;
         }
-        if !self.unify(left.success, right.success) {
+        if !self.unify(left.success, right.success) && !self.unify(right.success, left.success) {
             let (left_name, right_name) = (
                 self.type_display_name(left_type),
                 self.type_display_name(right_type),
@@ -5474,11 +5479,16 @@ impl ProjectTypeChecker {
                 ));
             }
             let body = self.infer_expression(module_id, &arm.body, generics, &mut arm_bindings);
-            if let Some(expected) = success {
-                self.unify_expression_result(module_id, &arm.body, body.success, expected);
-            } else {
-                success = Some(body.success);
-            }
+            success = Some(match success {
+                Some(joined) => self.join_branch_type(
+                    module_id,
+                    expression_range(&arm.body),
+                    body.success,
+                    joined,
+                    "function result",
+                ),
+                None => body.success,
+            });
             arm_facts.push(body);
         }
         let missing_success = vec![MatchPattern::Wildcard];
@@ -7913,6 +7923,32 @@ impl ProjectTypeChecker {
         );
     }
 
+    /// The type shared by `joined` (the alternatives so far) and `actual`
+    /// (the next case arm or list element). When `actual` is wider, such as
+    /// a whole enum after a narrowed failure set, the join widens to it.
+    fn join_branch_type(
+        &mut self,
+        module_id: ModuleId,
+        range: TextRange,
+        actual: TypeId,
+        joined: TypeId,
+        context: &str,
+    ) -> TypeId {
+        if self.unify(actual, joined) {
+            return joined;
+        }
+        if self.unify(joined, actual) {
+            return actual;
+        }
+        self.type_error_range(
+            module_id,
+            "T4203",
+            range,
+            format!("{context} has an incompatible type"),
+        );
+        joined
+    }
+
     fn unify_at(
         &mut self,
         module_id: ModuleId,
@@ -7933,7 +7969,26 @@ impl ProjectTypeChecker {
         false
     }
 
+    /// The last inference variable on `id`'s binding chain, if `id` is one.
+    fn last_inference_variable(&self, mut id: TypeId) -> Option<u32> {
+        let mut last = None;
+        while let CanonicalType::InferenceVariable(variable) = &self.types[id.raw() as usize] {
+            last = Some(*variable);
+            match self.inference_bindings.get(variable).copied() {
+                Some(bound) if bound != id => id = bound,
+                _ => break,
+            }
+        }
+        last
+    }
+
+    /// Unifies `actual` with `expected`. The check is directional for
+    /// narrowed failure sets: a value known to be one of an enum's variants
+    /// is accepted where the whole enum is expected, but a whole-enum value
+    /// is not accepted where only some variants are, unless the narrowed
+    /// side is an inference variable, which then widens to the enum.
     fn unify(&mut self, left: TypeId, right: TypeId) -> bool {
+        let right_variable = self.last_inference_variable(right);
         let left = self.resolve_inference_type(left);
         let right = self.resolve_inference_type(right);
         if left == right || left == TypeId::new(0) || right == TypeId::new(0) {
@@ -7972,9 +8027,18 @@ impl ProjectTypeChecker {
             (CanonicalType::FailureSetValue(left), CanonicalType::FailureSetValue(right)) => {
                 self.failure_rows_equivalent(left, right)
             }
-            (CanonicalType::FailureSetValue(row), CanonicalType::Named { symbol, .. })
-            | (CanonicalType::Named { symbol, .. }, CanonicalType::FailureSetValue(row)) => {
+            (CanonicalType::FailureSetValue(row), CanonicalType::Named { symbol, .. }) => {
                 self.failure_row_within_enum(row, symbol)
+            }
+            (CanonicalType::Named { symbol, .. }, CanonicalType::FailureSetValue(row)) => {
+                let Some(variable) = right_variable else {
+                    return false;
+                };
+                if !self.failure_row_within_enum(row, symbol) {
+                    return false;
+                }
+                self.inference_bindings.insert(variable, left);
+                true
             }
             (CanonicalType::Function(left), CanonicalType::Function(right)) => {
                 left.inputs.len() == right.inputs.len()
