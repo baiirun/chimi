@@ -546,3 +546,55 @@ fn line_breaks_separate_interface_fields_with_failure_rows() {
     );
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":42");
 }
+
+// ts-cdc536: standard failure enums denote their variants in failure rows.
+#[test]
+fn a_fake_of_a_standard_capability_states_its_standard_failure_row() {
+    let outcome = run_both(
+        "standard-failure-row",
+        concat!(
+            "import std/io.{FileError}\n",
+            "interface Files {\n",
+            "  read: fn(Text) -> Int errors FileError\n",
+            "}\n",
+            "fn load(path: Text) -> Int needs { files: Files } {\n",
+            "  files.read(path)\n",
+            "}\n",
+            "let missing = {\n",
+            "  read: fn(path) { Failure(FileError.Read(path, \"missing\")) },\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  load(\"a.txt\") using { files: missing }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        concat!(
+            "\"outcome\":\"expected_failure\",",
+            "\"error\":{\"type\":\"FileError\",\"variant\":\"Read\",",
+            "\"fields\":{\"path\":\"a.txt\",\"message\":\"missing\"}}",
+        )
+    );
+}
+
+#[test]
+fn a_standard_failure_row_admits_only_its_own_variants() {
+    let program = |row: &str, failure: &str| {
+        format!(
+            concat!(
+                "import std/io.{{ConsoleError, FileError, Utf8Error}}\n",
+                "fn call(operation: fn() -> Int errors {}) -> Int {{ operation() }}\n",
+                "fn broken() -> Int {{ Failure({}) }}\n",
+                "pub fn main() -> Int {{ call(broken) }}\n",
+            ),
+            row, failure
+        )
+    };
+    // Both enums have one variant, so a body failing with it has exactly the row.
+    let write = "ConsoleError.WriteFailed(\"out\", \"gone\")";
+    let invalid = "Utf8Error.InvalidUtf8(\"a\", 1)";
+    assert!(check_codes(&program("ConsoleError", write)).is_empty());
+    assert!(check_codes(&program("Utf8Error", invalid)).is_empty());
+    assert_eq!(check_codes(&program("ConsoleError", invalid)), ["T4203"]);
+}

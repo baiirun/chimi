@@ -2674,12 +2674,7 @@ impl ProjectTypeChecker {
                 if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Enum
                     || matches!(
                         self.resolved.standard_symbol(symbol),
-                        Some(StandardSymbol::Type(
-                            StandardType::DecodeError
-                                | StandardType::NumberError
-                                | StandardType::ChannelSendError
-                                | StandardType::ChannelError
-                        ))
+                        Some(StandardSymbol::Type(kind)) if kind.is_failure_enum()
                     ) =>
             {
                 let variants = self.enum_variant_symbols(symbol);
@@ -3622,12 +3617,7 @@ impl ProjectTypeChecker {
                 if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Enum
                     || matches!(
                         self.resolved.standard_symbol(symbol),
-                        Some(StandardSymbol::Type(
-                            StandardType::DecodeError
-                                | StandardType::NumberError
-                                | StandardType::ChannelSendError
-                                | StandardType::ChannelError
-                        ))
+                        Some(StandardSymbol::Type(kind)) if kind.is_failure_enum()
                     ) =>
             {
                 let variants = self.enum_variant_symbols(symbol);
@@ -4244,9 +4234,7 @@ impl ProjectTypeChecker {
         }
         if matches!(
             self.resolved.standard_symbol(symbol),
-            Some(StandardSymbol::Type(
-                StandardType::DecodeError | StandardType::NumberError
-            ))
+            Some(StandardSymbol::Type(kind)) if kind.is_failure_enum()
         ) {
             return self.intern_failure_row(FailureRow {
                 variants: self.enum_variant_symbols(symbol),

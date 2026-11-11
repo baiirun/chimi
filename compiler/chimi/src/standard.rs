@@ -45,6 +45,21 @@ pub(crate) enum StandardType {
 }
 
 impl StandardType {
+    /// Whether this standard type is an enum of expected failures, so its name
+    /// denotes the set of its variants in a failure row, like a source enum.
+    pub(crate) const fn is_failure_enum(self) -> bool {
+        matches!(
+            self,
+            Self::ConsoleError
+                | Self::FileError
+                | Self::Utf8Error
+                | Self::DecodeError
+                | Self::NumberError
+                | Self::ChannelSendError
+                | Self::ChannelError
+        )
+    }
+
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Console => "Console",
