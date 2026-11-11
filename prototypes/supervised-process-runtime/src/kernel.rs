@@ -223,11 +223,13 @@ impl ProcessContext {
         }
     }
 
-    /// Requires: `message` belongs to this incarnation's heap.
     /// Ensures: never parks. On failure the copy is discarded and the caller
     /// still holds `message`.
-    pub fn send(&mut self, address: Address, message: *const Value) -> Result<(), SendFailure> {
-        let message = Fragment::copy(message).expect("a process sends only values it owns");
+    ///
+    /// # Safety
+    /// `message` points to a live value in this incarnation's heap.
+    pub unsafe fn send(&mut self, address: Address, message: *const Value) -> Result<(), SendFailure> {
+        let message = unsafe { Fragment::copy(message) }.expect("a process sends only values it owns");
         match self.call(Request::Send { address, message }) {
             (_, Some(Reply::Sent(result))) => result,
             _ => panic!("kernel resumed a send without its outcome"),

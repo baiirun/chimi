@@ -47,6 +47,9 @@ typedef struct {
   size_t live_bytes;
   size_t peak_live_bytes;
   size_t copied_bytes;
+  /* Values a pass traversed: the root plus every value its Cheney scan visited.
+   * With copied_bytes this bounds a pass's work, not only its copying. */
+  uint64_t scanned_values;
   uint64_t minor_collections;
   uint64_t full_collections;
   uint32_t open_regions;

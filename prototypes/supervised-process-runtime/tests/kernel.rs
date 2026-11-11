@@ -63,7 +63,7 @@ fn relay(context: &mut ProcessContext) -> BodyEnd {
         match context.receive() {
             Received::Cancelled => return BodyEnd::Returned,
             Received::Message(message) => {
-                let outcome = context.send(Address::Named(PEER), message);
+                let outcome = unsafe { context.send(Address::Named(PEER), message) };
                 RELAYED.with(|relayed| relayed.borrow_mut().push(outcome));
             }
         }
@@ -116,7 +116,7 @@ impl Host {
     fn message(&self, value: i64) -> Fragment {
         let _current = self.0.enter();
         let mut scratch = unsafe { chimi_value_int(value) };
-        let fragment = Fragment::copy(scratch).expect("host value");
+        let fragment = unsafe { Fragment::copy(scratch) }.expect("host value");
         assert_eq!(unsafe { chimi_region_pass(&mut scratch) }, HeapStatus::Ok);
         fragment
     }

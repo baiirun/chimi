@@ -119,7 +119,7 @@ fn copy_cost() {
         for _ in 0..rounds {
             let fragment = {
                 let _current = sender.enter();
-                Fragment::copy(root).expect("owned graph")
+                unsafe { Fragment::copy(root) }.expect("owned graph")
             };
             let _current = receiver.enter();
             let before = receiver.stats().live_bytes;
@@ -184,7 +184,7 @@ impl Host {
     fn message(&self, value: i64) -> Fragment {
         let _current = self.0.enter();
         let mut scratch = int(value);
-        let fragment = Fragment::copy(scratch).expect("host value");
+        let fragment = unsafe { Fragment::copy(scratch) }.expect("host value");
         unsafe { chimi_region_pass(&mut scratch) };
         fragment
     }

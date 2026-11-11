@@ -37,6 +37,7 @@ pub struct HeapStats {
     pub live_bytes: usize,
     pub peak_live_bytes: usize,
     pub copied_bytes: usize,
+    pub scanned_values: u64,
     pub minor_collections: u64,
     pub full_collections: u64,
     pub open_regions: u32,
@@ -128,11 +129,10 @@ pub struct Fragment(NonNull<RawFragment>);
 
 impl Fragment {
     /// Copies `root` out of the current heap. See `chimi_fragment_copy`.
-    #[allow(
-        clippy::not_unsafe_ptr_arg_deref,
-        reason = "the prototype passes raw value pointers throughout; the C contract applies"
-    )]
-    pub fn copy(root: *const Value) -> Result<Self, HeapStatus> {
+    ///
+    /// # Safety
+    /// `root` points to a live value, and a heap is current.
+    pub unsafe fn copy(root: *const Value) -> Result<Self, HeapStatus> {
         let mut out = std::ptr::null_mut();
         match unsafe { chimi_fragment_copy(root, &mut out) } {
             HeapStatus::Ok => Ok(Self(NonNull::new(out).expect("Ok status carries a fragment"))),

@@ -427,6 +427,7 @@ ChimiHeapStatus chimi_region_pass(ChimiValue **state) {
 
   *state = evacuate(&pass, *state);
   for (ChimiValue *value; (value = scan_next(&pass.scan));) {
+    ++heap->stats.scanned_values;
     if (value->kind != CHIMI_VALUE_ITEMS) continue;
     for (uint32_t index = 0; index < value->length; ++index)
       value->as.items[index] = evacuate(&pass, value->as.items[index]);
