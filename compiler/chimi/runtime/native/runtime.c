@@ -173,6 +173,10 @@ struct AllocationHeader {
   size_t bytes;
   uint64_t mark_epoch;
   AllocationKind kind;
+  /* Part of a list-window copy whose elements all live in strictly enclosing scopes
+     (see list_slice). Nothing in it reaches its own scope's other allocations, so
+     ordinary collections neither mark nor free it; see allocation_scope_collect. */
+  bool window_copy;
   /* The scope whose list holds this allocation; NULL outside every scope. */
   AllocationScope *scope;
 };
@@ -185,16 +189,25 @@ struct AllocationScope {
   size_t total_allocated_bytes;
   size_t allocated_bytes_by_kind[ALLOCATION_KIND_COUNT];
   uint64_t collections;
+  /* Window-copy allocations, kept apart so an ordinary collection does not walk them,
+     their live bytes, and the size at which the next collection also sweeps them. */
+  AllocationHeader *window_copies;
+  size_t window_copy_bytes;
+  size_t window_copy_limit;
 };
 
 static AllocationScope *current_allocation_scope;
 /* Bytes allocated outside every scope. Nothing reclaims them before exit. */
 static size_t unscoped_allocated_bytes;
+/* Set while list_slice builds a window copy; allocate tags what it returns. */
+static bool allocating_window_copy;
 /* The scope allocation_scope_collect is marking. Marking stops at allocations outside
    it: they were made before the scope began and values never change, so they cannot
    reach the scope's allocations, and traversing them would make every collection cost
    the size of long-lived data such as a large list a loop drains. */
 static AllocationScope *collecting_scope;
+/* Whether that collection also marks window copies (allocation_scope_sweep). */
+static bool collecting_window_copies;
 static uint64_t next_mark_epoch = 1;
 
 static void *allocate(size_t count, size_t size) {
@@ -210,9 +223,15 @@ static void *allocate(size_t count, size_t size) {
   if (header == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
   header->bytes = bytes;
   header->scope = current_allocation_scope;
+  header->window_copy = allocating_window_copy && current_allocation_scope;
   if (current_allocation_scope) {
-    header->next = current_allocation_scope->allocations;
-    current_allocation_scope->allocations = header;
+    AllocationHeader **list = &current_allocation_scope->allocations;
+    if (header->window_copy) {
+      list = &current_allocation_scope->window_copies;
+      current_allocation_scope->window_copy_bytes += bytes;
+    }
+    header->next = *list;
+    *list = header;
     current_allocation_scope->live_bytes += bytes;
     current_allocation_scope->total_allocated_bytes += bytes;
     current_allocation_scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
@@ -474,6 +493,24 @@ static AllocationScope *vector_scope(ListVector vector) {
     if (scope == root) return tail;
   return root;
 }
+/* Whether `inner` is `outer` or nested in it; NULL encloses every scope. */
+static bool scope_encloses(const AllocationScope *outer, const AllocationScope *inner) {
+  if (!outer) return true;
+  for (; inner; inner = inner->parent)
+    if (inner == outer) return true;
+  return false;
+}
+/* Whether every element of `vector` lives in a scope strictly enclosing the current
+   one: the vector does, or it is a window copy, whose elements already do. A vector
+   that list_push extended from a copy has an untagged tail, so it falls to the scope test. */
+static bool elements_outside_current_scope(ListVector vector) {
+  if (!current_allocation_scope) return false;
+  bool copied = vector.tail && allocation_header(vector.tail)->window_copy &&
+                (!vector.root || allocation_header(vector.root)->window_copy);
+  if (copied) return true;
+  AllocationScope *source = vector_scope(vector);
+  return source != current_allocation_scope && scope_encloses(source, current_allocation_scope);
+}
 /* A window shorter than 1/LIST_RETAINED_FRACTION of its vector is copied. */
 enum { LIST_RETAINED_FRACTION = 4 };
 /* Window [from, to) of `list`, or NULL when the range is reversed or past the end.
@@ -490,13 +527,14 @@ static ChimiValue *list_slice(const ChimiValue *list, uint32_t from, uint32_t to
     ChimiValue **values = malloc((size_t)length * sizeof(*values));
     if (!values) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
     for (uint32_t index = 0; index < length; ++index) values[index] = list_get(list, from + index);
-    /* The copy joins the scope of the vector it replaces. Its elements are no younger
-       than that vector, so the copy breaks no scope invariant, and a loop draining a
-       list built before the loop does not re-mark each copy on every pass. */
-    AllocationScope *current = current_allocation_scope;
-    current_allocation_scope = vector_scope(list->as.list.vector);
+    /* The copy lives in the current scope, so the scope's collections free it once it
+       is garbage. When every element lives in a strictly enclosing scope, the copy
+       reaches nothing in its own scope: it is tagged as a window copy, which ordinary
+       collections skip, so a loop draining a list built before the loop does not
+       re-mark each surviving copy on every pass. */
+    allocating_window_copy = elements_outside_current_scope(list->as.list.vector);
     ChimiValue *copy = list_from_values(values, length);
-    current_allocation_scope = current;
+    allocating_window_copy = false;
     free(values);
     return copy;
   }
@@ -512,6 +550,7 @@ static bool mark_allocation(void *value, uint64_t epoch, AllocationKind expected
     fputs("Chimi runtime allocation graph is inconsistent\n", stderr); exit(70);
   }
   if (header->scope != collecting_scope || header->mark_epoch == epoch) return false;
+  if (header->window_copy && !collecting_window_copies) return false;
   header->mark_epoch = epoch;
   return true;
 }
@@ -594,32 +633,73 @@ static void allocation_scope_begin(AllocationScope *scope) {
   current_allocation_scope = scope;
 }
 
-static void allocation_scope_collect(AllocationScope *scope, ChimiValue *value,
-                                     ChimiControl *control) {
+/* Frees the allocations in `list` not marked in `epoch` and returns their bytes. */
+static size_t free_unmarked(AllocationHeader **list, uint64_t epoch) {
+  size_t freed = 0;
+  while (*list) {
+    AllocationHeader *header = *list;
+    if (header->mark_epoch == epoch) {
+      list = &header->next;
+    } else {
+      *list = header->next;
+      freed += header->bytes;
+      free(header);
+    }
+  }
+  return freed;
+}
+
+/* Frees what `value` and `control` do not reach. With `window_copies` false, window
+   copies are neither marked nor freed: they reach only enclosing scopes, so skipping
+   them loses no path to this scope's other allocations. */
+static void allocation_scope_sweep(AllocationScope *scope, ChimiValue *value,
+                                   ChimiControl *control, bool window_copies) {
   uint64_t epoch = next_mark_epoch++;
   if (next_mark_epoch == 0) {
     fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); exit(70);
   }
   collecting_scope = scope;
+  collecting_window_copies = window_copies;
   mark_value(value, epoch);
   mark_control(control, epoch);
   collecting_scope = NULL;
-  AllocationHeader **cursor = &scope->allocations;
-  while (*cursor) {
-    AllocationHeader *header = *cursor;
-    if (header->mark_epoch == epoch) {
-      cursor = &header->next;
-    } else {
-      *cursor = header->next;
-      scope->live_bytes -= header->bytes;
-      free(header);
-    }
+  collecting_window_copies = false;
+  scope->live_bytes -= free_unmarked(&scope->allocations, epoch);
+  if (window_copies) {
+    size_t freed = free_unmarked(&scope->window_copies, epoch);
+    scope->live_bytes -= freed;
+    scope->window_copy_bytes -= freed;
   }
   ++scope->collections;
 }
 
+/* Window copies made since the last sweep that included them are swept once they
+   reach twice the copy bytes that survived it (and at least LIST_COPY_SWEEP_BYTES).
+   Each such sweep marks at most that many copy bytes, so it costs O(1) per copied
+   byte amortized, and draining a list stays linear while its garbage copies are freed. */
+enum { LIST_COPY_SWEEP_BYTES = 64 * 1024 };
+static void allocation_scope_collect(AllocationScope *scope, ChimiValue *value,
+                                     ChimiControl *control) {
+  bool window_copies = scope->window_copy_bytes >= scope->window_copy_limit;
+  allocation_scope_sweep(scope, value, control, window_copies);
+  if (!window_copies) return;
+  scope->window_copy_limit = 2 * scope->window_copy_bytes;
+  if (scope->window_copy_limit < LIST_COPY_SWEEP_BYTES)
+    scope->window_copy_limit = LIST_COPY_SWEEP_BYTES;
+}
+
+/* Callers sweep the scope, window copies included, before ending it. The survivors
+   join the parent as ordinary allocations, because a copy's elements may live in the
+   parent itself. */
 static void allocation_scope_end(AllocationScope *scope) {
   current_allocation_scope = scope->parent;
+  while (scope->window_copies) {
+    AllocationHeader *header = scope->window_copies;
+    scope->window_copies = header->next;
+    header->window_copy = false;
+    header->next = scope->allocations;
+    scope->allocations = header;
+  }
   for (AllocationHeader *header = scope->allocations; header; header = header->next)
     header->scope = scope->parent;
   if (!scope->parent || !scope->allocations) return;
@@ -1662,10 +1742,13 @@ static ChimiControl *invoke_line_callback(ChimiRuntime *runtime, ChimiCallable *
   return invoke(runtime, callback, arguments, 2, span, call_node, environment);
 }
 
-/* Ends a reclaiming scope. Only an outermost scope reports to the runtime, because a
-   nested scope's statistics already merge into its parent. */
-static void end_measured_allocation_scope(ChimiRuntime *runtime, AllocationScope *scope) {
+/* Ends a reclaiming scope, keeping only what `control` reaches. Only an outermost
+   scope reports to the runtime, because a nested scope's statistics already merge
+   into its parent. */
+static void end_measured_allocation_scope(ChimiRuntime *runtime, AllocationScope *scope,
+                                          ChimiControl *control) {
   bool top_scope = scope->parent == NULL;
+  allocation_scope_sweep(scope, NULL, control, true);
   allocation_scope_end(scope);
   if (!top_scope) return;
   runtime->scoped_total_allocated_bytes += scope->total_allocated_bytes;
@@ -1747,7 +1830,7 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
     control = host_file_message(CHIMI_CONSTRUCTOR_FILE_CLOSE, path, strerror(errno));
     allocation_scope_collect(&allocation_scope, NULL, control);
   }
-  end_measured_allocation_scope(runtime, &allocation_scope);
+  end_measured_allocation_scope(runtime, &allocation_scope, control);
   return control;
 }
 
@@ -2928,10 +3011,7 @@ NODE_WRAPPER(loop, "loop", {
     }
     break;
   }
-  if (reclaims) {
-    allocation_scope_collect(&passes, NULL, result);
-    end_measured_allocation_scope(runtime, &passes);
-  }
+  if (reclaims) end_measured_allocation_scope(runtime, &passes, result);
 })
 NODE_WRAPPER(break, "break", {
   const ChimiNode *node = &CHIMI_NODES[node_id];

@@ -2673,6 +2673,84 @@ fn execute_with_memory_report(executable: &Path, scratch: &Path) -> (String, Str
     )
 }
 
+// LP-08: draining a list that was built outside every loop frees each drain's window
+// copies, so draining it 8 times peaks at the same memory as draining it twice and
+// leaves nothing more behind. Copies that outlived the loop that made them used to
+// accumulate until exit, growing the process by about 190 KB per drain here.
+#[test]
+fn native_repeated_drains_of_a_list_built_outside_loops_do_not_accumulate_copies() {
+    let scratch = scratch_directory("native-list-repeated-drains");
+    let measure = |drains: u32| {
+        let executable = build_native(
+            &scratch,
+            &format!("list-drains-{drains}"),
+            &format!(
+                concat!(
+                    "import std/json as Json\n",
+                    "import std/json.{{Value}}\n",
+                    "fn ones(doublings: Int) -> Text {{\n",
+                    "  loop state = {{ text: \"1\", left: doublings }} {{\n",
+                    "    case state.left {{\n",
+                    "      0 -> break state.text\n",
+                    "      _ -> {{ text: Text.append(Text.append(state.text, \",\"), state.text), left: state.left - 1 }}\n",
+                    "    }}\n",
+                    "  }}\n",
+                    "}}\n",
+                    "fn drain(values: List<Value>) -> Int {{\n",
+                    "  loop state = {{ rest: values, total: 0 }} {{\n",
+                    "    case state.rest {{\n",
+                    "      [] -> break state.total\n",
+                    "      [_, ..rest] -> {{ rest: rest, total: state.total + 1 }}\n",
+                    "    }}\n",
+                    "  }}\n",
+                    "}}\n",
+                    "fn run(values: List<Value>) -> Int {{\n",
+                    "  loop state = {{ left: {drains}, total: 0 }} {{\n",
+                    "    case state.left {{\n",
+                    "      0 -> break state.total\n",
+                    "      _ -> {{ left: state.left - 1, total: state.total + drain(values) }}\n",
+                    "    }}\n",
+                    "  }}\n",
+                    "}}\n",
+                    "pub fn main() -> Int {{\n",
+                    "  let decoded = Json.decode(Text.append(Text.append(\"[\", ones(16)), \"]\"))\n",
+                    "  case decoded {{\n",
+                    "    Value.Array(values) -> run(values)\n",
+                    "    _ -> -1\n",
+                    "  }}\n",
+                    "}}\n",
+                ),
+                drains = drains
+            ),
+        );
+        let (outcome, report) = execute_with_memory_report(&executable, &scratch);
+        assert_eq!(
+            outcome,
+            format!(
+                "{{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":{}}}\n",
+                u64::from(drains) << 16
+            )
+        );
+        std::fs::remove_file(scratch.join("outcome.jsonl")).unwrap();
+        std::fs::remove_file(scratch.join("memory.json")).unwrap();
+        report
+    };
+    let twice = measure(2);
+    let eight_times = measure(8);
+    for field in [
+        "unscoped_allocated_bytes",
+        "scoped_peak_live_bytes",
+        "scoped_retained_bytes",
+    ] {
+        assert_eq!(
+            json_u64_field(&twice, field),
+            json_u64_field(&eight_times, field),
+            "{field}: {twice} {eight_times}"
+        );
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // LP-07: `[.., last]` checks the length and reads one element, so matching a
 // 1,048,576-element list 10,000 times allocates no list storage. A copy per match
 // would allocate about 8 MB of list nodes each time.

@@ -12,6 +12,12 @@
    push that writes into a vector another window still sees, or a slice that
    reads the wrong offset all turn into a mismatch (or a sanitizer report).
 
+   The pool also enters and leaves a nested scope at random, as a loop inside a
+   loop does. Slicing a version built in the enclosing scope from inside the
+   nested one makes a window copy, which ordinary collections skip and only
+   periodic full sweeps and the end of the nested scope reclaim; versions built
+   on both sides of the boundary keep sharing structure across it.
+
    usage: native-list-fuzz SEED OPERATIONS
    Prints "fuzz ok ..." and exits 0, or prints the first mismatch and exits 1. */
 #include "runtime.c"
@@ -38,7 +44,8 @@ const ChimiConstantValue CHIMI_CONSTANT_VALUES[] = {{0}};
 const uint32_t CHIMI_CONSTANT_VALUE_COUNT = 0;
 ChimiNodeFn CHIMI_NODE_FUNCTIONS[] = {NULL};
 
-enum { VERSIONS = 64, MAX_LENGTH = 200000, COLLECT_EVERY = 997, SPOT_CHECK_EVERY = 50 };
+enum { VERSIONS = 64, MAX_LENGTH = 200000, COLLECT_EVERY = 199, SPOT_CHECK_EVERY = 50,
+       NESTED_TOGGLE_ONE_IN = 400 };
 
 typedef struct {
   ChimiValue *list;
@@ -114,11 +121,27 @@ static Version rebuild(const Version *source) {
   return next;
 }
 
-static void collect_and_check_all(AllocationScope *scope, Version *versions) {
+static ChimiValue *all_versions(const Version *versions) {
   ChimiValue *roots[VERSIONS];
   for (int slot = 0; slot < VERSIONS; ++slot) roots[slot] = versions[slot].list;
-  allocation_scope_collect(scope, list_from_values(roots, VERSIONS), NULL);
+  return list_from_values(roots, VERSIONS);
+}
+
+static void check_all(const Version *versions) {
   for (int slot = 0; slot < VERSIONS; ++slot) check(&versions[slot], slot);
+}
+
+static void collect_and_check_all(AllocationScope *scope, Version *versions) {
+  allocation_scope_collect(scope, all_versions(versions), NULL);
+  check_all(versions);
+}
+
+/* Ends the nested scope as a loop does: a full sweep rooted at every version, after
+   which the survivors join the enclosing scope. */
+static void leave_nested(AllocationScope *nested, Version *versions) {
+  allocation_scope_sweep(nested, NULL, success(all_versions(versions)), true);
+  allocation_scope_end(nested);
+  check_all(versions);
 }
 
 int main(int argc, char **argv) {
@@ -133,13 +156,19 @@ int main(int argc, char **argv) {
   Version versions[VERSIONS];
   for (int slot = 0; slot < VERSIONS; ++slot)
     versions[slot] = (Version){list_from_values(NULL, 0), NULL, 0};
-  AllocationScope scope;
+  AllocationScope scope, nested;
   allocation_scope_begin(&scope);
+  bool in_nested = false;
   int64_t counter = 0;
-  long pushes = 0, slices = 0, rebuilds = 0, collections = 0;
+  long pushes = 0, slices = 0, rebuilds = 0, collections = 0, nestings = 0;
   uint32_t longest = 0;
 
   for (step = 0; step < operations; ++step) {
+    if (below(NESTED_TOGGLE_ONE_IN) == 0) {
+      if (in_nested) leave_nested(&nested, versions);
+      else allocation_scope_begin(&nested), ++nestings;
+      in_nested = !in_nested;
+    }
     int source = (int)below(VERSIONS), target = (int)below(VERSIONS);
     uint32_t choice = below(100);
     Version next;
@@ -153,14 +182,17 @@ int main(int argc, char **argv) {
     if (next.length > longest) longest = next.length;
     free(versions[target].items);
     versions[target] = next;
-    if (step % COLLECT_EVERY == 0) collect_and_check_all(&scope, versions), ++collections;
+    if (step % COLLECT_EVERY == 0)
+      collect_and_check_all(in_nested ? &nested : &scope, versions), ++collections;
     if (step % SPOT_CHECK_EVERY == 0) check(&versions[target], target);
   }
+  if (in_nested) leave_nested(&nested, versions);
   collect_and_check_all(&scope, versions);
   ++collections;
 
   printf("fuzz ok seed=%llu operations=%ld pushes=%ld slices=%ld rebuilds=%ld collections=%ld "
-         "longest=%u\n",
-         (unsigned long long)seed, operations, pushes, slices, rebuilds, collections, longest);
+         "nestings=%ld longest=%u\n",
+         (unsigned long long)seed, operations, pushes, slices, rebuilds, collections, nestings,
+         longest);
   return 0;
 }
