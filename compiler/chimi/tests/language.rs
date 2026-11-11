@@ -2164,3 +2164,85 @@ fn a_constructor_value_result_renders_its_name() {
         "\"outcome\":\"success\",\"value\":{\"callable\":\"Circle\"}"
     );
 }
+
+// Source enum variants resolve qualified by their type, bare and called, in
+// expressions and patterns, as standard ones do (ts-7d6bce).
+#[test]
+fn qualified_source_enum_variants_resolve_in_expressions_and_patterns() {
+    let outcome = run_both(
+        "qualified-source-variants",
+        concat!(
+            "enum Status {\n",
+            "  Pending\n",
+            "  Done\n",
+            "}\n",
+            "enum Shape {\n",
+            "  Circle(radius: Int)\n",
+            "  Dot\n",
+            "}\n",
+            "fn rank(status: Status) -> Int {\n",
+            "  case status {\n",
+            "    Status.Pending -> 1\n",
+            "    Status.Done -> 2\n",
+            "  }\n",
+            "}\n",
+            "fn size(shape: Shape) -> Int {\n",
+            "  case shape {\n",
+            "    Shape.Circle(radius) -> radius\n",
+            "    Shape.Dot -> 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  rank(Done) * 1000 + rank(Status.Done) * 100 + rank(Status.Pending) * 10\n",
+            "  + size(Shape.Circle(7)) + size(Shape.Dot)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":2217");
+}
+
+#[test]
+fn qualified_variants_of_an_imported_enum_resolve() {
+    let shapes = ProjectSource::new(
+        "shapes",
+        SourceSnapshot::from_text(
+            "shapes.chimi",
+            "pub enum Shape {\n  Circle(radius: Int)\n  Dot\n}\n",
+        ),
+    )
+    .expect("valid module path");
+    let main = ProjectSource::new(
+        "main",
+        SourceSnapshot::from_text(
+            "main.chimi",
+            concat!(
+                "import shapes.{Shape}\n",
+                "fn size(shape: Shape) -> Int {\n",
+                "  case shape {\n",
+                "    Shape.Circle(radius) -> radius\n",
+                "    Shape.Dot -> 0\n",
+                "  }\n",
+                "}\n",
+                "pub fn main() -> Int { size(Shape.Circle(7)) + size(Shape.Dot) }\n",
+            ),
+        ),
+    )
+    .expect("valid module path");
+    let codes = Compiler::type_project(vec![shapes, main])
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code().to_owned())
+        .collect::<Vec<_>>();
+    assert!(codes.is_empty(), "unexpected diagnostics: {codes:?}");
+}
+
+#[test]
+fn an_unknown_qualified_variant_is_unresolved() {
+    let codes = check_codes(concat!(
+        "enum Status {\n",
+        "  Pending\n",
+        "}\n",
+        "pub fn main() -> Status { Status.Done }\n",
+    ));
+    assert_eq!(codes, ["E_UNRESOLVED_MEMBER"]);
+}

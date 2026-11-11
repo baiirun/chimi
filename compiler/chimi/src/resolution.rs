@@ -353,7 +353,9 @@ struct ProjectResolver {
     standard_modules: HashMap<StandardModule, StandardModuleIndex>,
     standard_symbols: HashMap<SymbolId, StandardSymbol>,
     standard_types: HashMap<StandardType, SymbolId>,
-    standard_type_members: HashMap<(SymbolId, String), SymbolId>,
+    /// Variant constructors reachable as `Type.Variant`, for standard and
+    /// source enums alike.
+    type_members: HashMap<(SymbolId, String), SymbolId>,
     standard_generics: HashMap<StandardGeneric, SymbolId>,
     standard_callable_parameters: HashMap<SymbolId, Vec<SymbolId>>,
     references: Vec<ProjectReference>,
@@ -430,7 +432,7 @@ impl ProjectResolver {
             standard_modules: HashMap::new(),
             standard_symbols: HashMap::new(),
             standard_types: HashMap::new(),
-            standard_type_members: HashMap::new(),
+            type_members: HashMap::new(),
             standard_generics: HashMap::new(),
             standard_callable_parameters: HashMap::new(),
             references: Vec::new(),
@@ -518,8 +520,7 @@ impl ProjectResolver {
                 self.standard_symbols
                     .insert(id, StandardSymbol::Constructor(constructor));
                 let owner = self.standard_types[&StandardType::Option];
-                self.standard_type_members
-                    .insert((owner, name.to_owned()), id);
+                self.type_members.insert((owner, name.to_owned()), id);
             }
         }
 
@@ -625,7 +626,7 @@ impl ProjectResolver {
             self.standard_symbols
                 .insert(symbol, StandardSymbol::Constructor(constructor));
             let owner = self.standard_types[&constructor.type_kind()];
-            self.standard_type_members
+            self.type_members
                 .insert((owner, constructor.name().to_owned()), symbol);
             if let Some(module) = constructor.module() {
                 self.standard_modules
@@ -898,6 +899,8 @@ impl ProjectResolver {
                     declaration.public,
                 );
                 self.add_to_namespace(module_index, Namespace::Value, &variant.name, constructor);
+                self.type_members
+                    .insert((id, variant.name.text.clone()), constructor);
             }
         }
     }
@@ -1731,7 +1734,7 @@ impl ProjectResolver {
             );
             match owner_resolution {
                 ReferenceResolution::Resolved(owner) => self
-                    .standard_type_members
+                    .type_members
                     .get(&(owner, member.text.clone()))
                     .copied()
                     .map(ReferenceResolution::Resolved)
@@ -1886,7 +1889,7 @@ impl ProjectResolver {
         );
         if let ReferenceResolution::Resolved(owner) = type_resolution
             && let Some(constructor) = self
-                .standard_type_members
+                .type_members
                 .get(&(owner, member.text.clone()))
                 .copied()
         {
@@ -1904,6 +1907,36 @@ impl ProjectResolver {
                 member,
                 ReferenceResolution::Resolved(constructor),
             );
+            return true;
+        }
+        if let ReferenceResolution::Resolved(owner) = type_resolution
+            && self.symbols[owner.raw() as usize].kind == ProjectSymbolKind::Enum
+            && !self.modules[module_index].values.contains_key(&base.text)
+            && !self.modules[module_index]
+                .imported_values
+                .contains_key(&base.text)
+        {
+            self.reference(
+                module_index,
+                base_semantic_id,
+                Namespace::Type,
+                base,
+                type_resolution,
+            );
+            self.reference(
+                module_index,
+                member_semantic_id,
+                Namespace::Value,
+                member,
+                ReferenceResolution::Unresolved,
+            );
+            let current = &self.semantic.modules[module_index];
+            self.diagnostics.push(name_error(
+                current,
+                "E_UNRESOLVED_MEMBER",
+                member.range,
+                format!("enum {} has no variant {}", base.text, member.text),
+            ));
             return true;
         }
         if let Some((module, members)) = self.builtin_modules.get(&base.text) {
