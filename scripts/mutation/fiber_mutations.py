@@ -16,6 +16,10 @@ did not change behaviour; it now leaves an incarnation's children running.
 The nested-supervisor and structured-stop mutants (from "nested supervisor
 outside parent capacity" on) guard the decisions of ts-b1a535 and ts-2e0451.
 
+The mutants from "cancelled send value not released" on guard the release
+hooks of chimi_scheduler_execute_with_config (ts-9f70bd): each one drops or
+misplaces a release, so a discarded value leaks or a delivered one is freed.
+
 The mutants from "removal in flight expanded again" on guard the review
 fixes ts-9c0516 (a stop or removal that meets a nested escalation ends the
 membership without a restart) and ts-bb32bf (an escalated root releases its
@@ -277,5 +281,82 @@ MUTATIONS = [
         edits=[('                if let Some(owner) = owner {\n                    self.finish_draining(owner);\n                }', '                let _ = owner;')],
         targets=["lib"],
         filter='tearing_down_with_an_owner_draining',
+    ),
+    dict(
+        name='cancelled send value not released',
+        file='src/channel.rs',
+        edits=[('                    transition.discarded.push(waiter.value);', '                    let _ = waiter.value;')],
+        targets=["lib"],
+        filter='a_cancelled_send_releases',
+    ),
+    dict(
+        name='ready reply value dropped on cancel',
+        file='src/channel.rs',
+        edits=[('                transition.discarded.extend(ready.held_value());', '                let _ = ready;')],
+        targets=["lib"],
+        filter='a_message_waiting_for_a_cancelled_receiver',
+    ),
+    dict(
+        name='abort clears its queue unreleased',
+        file='src/channel.rs',
+        edits=[('        transition.discarded.extend(channel.queue.drain(..));', '        channel.queue.clear();')],
+        targets=["lib"],
+        filter='an_abort_releases',
+    ),
+    dict(
+        name='queued values not released at teardown',
+        file='src/channel.rs',
+        edits=[('            values.extend(channel.queue.drain(..));', '            channel.queue.clear();')],
+        targets=["lib"],
+        filter='values_still_held_when_execution_gives_up',
+    ),
+    dict(
+        name='discarded channel values ignored',
+        file='src/scheduler.rs',
+        edits=[('        for value in transition.discarded {\n            self.release_channel_value(value);', '        for value in transition.discarded {\n            let _ = value;')],
+        targets=["lib"],
+        filter='release_tests',
+    ),
+    dict(
+        name='task value not kept when the fiber ends',
+        file='src/scheduler.rs',
+        edits=[('        self.keep_task_value(task, &event);\n', '')],
+        targets=["lib"],
+        filter='every_task_value_but_the_outcome',
+    ),
+    dict(
+        name='cleanup value not kept',
+        file='src/scheduler.rs',
+        edits=[('            self.keep_task_value(task, &cleanup);\n', '')],
+        targets=["lib"],
+        filter='a_value_returned_from_cleanup',
+    ),
+    dict(
+        name='task value released when the task ends',
+        file='src/scheduler.rs',
+        edits=[('        let previous = self.task_values.insert(task, value);', '        let previous: Option<TaskValue> = None;\n        if let Some((release, context)) = self.release_task_value {\n            unsafe { release(context, value.word()) };\n        }')],
+        targets=["lib"],
+        filter='every_task_value_but_the_outcome',
+    ),
+    dict(
+        name='kept task values never released',
+        file='src/scheduler.rs',
+        edits=[('                unsafe { release(context, value.word()) };', '                let _ = (release, context, value);')],
+        targets=["lib"],
+        filter='every_task_value_but_the_outcome',
+    ),
+    dict(
+        name='outcome value released',
+        file='src/scheduler.rs',
+        edits=[('    scheduler.hand_out_outcome_value(root, outcome);', '    let _ = root;')],
+        targets=["lib"],
+        filter='a_child_defect_code_carried_by_the_outcome',
+    ),
+    dict(
+        name='defect code handed out from the root not its origin',
+        file='src/scheduler.rs',
+        edits=[('            TaskOutcome::Defected { origin, code } => (origin, TaskValue::Defect(code)),', '            TaskOutcome::Defected { origin, code } => (root.max(origin).min(root), TaskValue::Defect(code)),')],
+        targets=["lib"],
+        filter='a_child_defect_code_carried_by_the_outcome',
     ),
 ]

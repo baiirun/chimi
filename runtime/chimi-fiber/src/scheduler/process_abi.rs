@@ -605,6 +605,8 @@ pub unsafe extern "C" fn chimi_scheduler_run(
         clock,
         release_message: config.release_message,
         release_spec_context: config.release_spec_context,
+        release_task_value: None,
+        release_channel_value: None,
         release_context: config.release_context,
     });
     scheduler.set_trace_sink(config.trace_sink, config.trace_context);

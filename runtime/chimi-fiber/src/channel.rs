@@ -180,6 +180,10 @@ struct ChannelObservation {
 pub(crate) struct Transition {
     pub wakes: Vec<TaskId>,
     pub observations: Vec<Observation>,
+    /// Accepted values the registry gave up without delivering them to a
+    /// receiver or handing them back to their sender. The scheduler
+    /// releases each one.
+    pub discarded: Vec<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -723,6 +727,22 @@ impl ChannelRegistry {
         Ok(())
     }
 
+    /// Gives up every value still queued, parked with a sender, or waiting
+    /// in a ready result, for a scheduler that is being dropped.
+    pub fn drain_held_values(&mut self) -> Vec<usize> {
+        let mut values = Vec::new();
+        for channel in self.channels.values_mut() {
+            values.extend(channel.queue.drain(..));
+            values.extend(channel.waiting_senders.drain(..).map(|waiter| waiter.value));
+        }
+        for (_, operation) in std::mem::take(&mut self.operations) {
+            if let Some(value) = operation.held_value() {
+                values.push(value);
+            }
+        }
+        values
+    }
+
     pub fn cleanup_task(&mut self, task: TaskId) -> Transition {
         let mut transition = self.cancel_operation(task);
         let channels = self.owned_channels.remove(&task).unwrap_or_default();
@@ -790,8 +810,9 @@ impl ChannelRegistry {
                     .waiting_senders
                     .iter()
                     .position(|waiter| waiter.task == task)
+                    && let Some(waiter) = channel_state.waiting_senders.remove(index)
                 {
-                    channel_state.waiting_senders.remove(index);
+                    transition.discarded.push(waiter.value);
                 }
                 observe_channel(
                     &mut transition,
@@ -826,7 +847,9 @@ impl ChannelRegistry {
                 );
                 channel_state.assert_invariants();
             }
-            Operation::SendReady(_) | Operation::ReceiveReady(_) => {}
+            ready @ (Operation::SendReady(_) | Operation::ReceiveReady(_)) => {
+                transition.discarded.extend(ready.held_value());
+            }
         }
         transition
     }
@@ -840,7 +863,7 @@ impl ChannelRegistry {
         }
         channel.lifecycle = Lifecycle::Aborted;
         let discard_count = channel.queue.len();
-        channel.queue.clear();
+        transition.discarded.extend(channel.queue.drain(..));
         while let Some(waiter) = channel.waiting_senders.pop_front() {
             self.operations.insert(
                 waiter.task,
@@ -898,6 +921,24 @@ impl Transition {
     fn merge(&mut self, mut other: Self) {
         self.wakes.append(&mut other.wakes);
         self.observations.append(&mut other.observations);
+        self.discarded.append(&mut other.discarded);
+    }
+}
+
+impl Operation {
+    /// The value a ready result carries back to its task: a received
+    /// message, or a refused send's own value.
+    fn held_value(self) -> Option<usize> {
+        match self {
+            Self::SendReady(SendResult::Closed(value) | SendResult::Aborted(value))
+            | Self::ReceiveReady(ReceiveResult::Received(value)) => Some(value),
+            Self::Sending { .. }
+            | Self::SendReady(SendResult::Pending | SendResult::Accepted)
+            | Self::Receiving { .. }
+            | Self::ReceiveReady(
+                ReceiveResult::Pending | ReceiveResult::Drained | ReceiveResult::Aborted,
+            ) => None,
+        }
     }
 }
 

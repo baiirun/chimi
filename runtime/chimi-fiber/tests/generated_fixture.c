@@ -353,3 +353,22 @@ size_t chimi_fixture_process_layouts(size_t *out) {
   for (size_t index = 0; index < count; index += 1) out[index] = values[index];
   return count;
 }
+
+/* Size and field offsets of ChimiSchedulerExecuteConfig, in the order the
+   Rust test mirrors. Returns the number written. */
+size_t chimi_fixture_execute_config_layout(size_t *out) {
+  size_t values[] = {
+      sizeof(ChimiSchedulerExecuteConfig),
+      LAYOUT(ChimiSchedulerExecuteConfig, context),
+      LAYOUT(ChimiSchedulerExecuteConfig, stack_bytes),
+      LAYOUT(ChimiSchedulerExecuteConfig, trace_mode),
+      LAYOUT(ChimiSchedulerExecuteConfig, trace_sink),
+      LAYOUT(ChimiSchedulerExecuteConfig, trace_context),
+      LAYOUT(ChimiSchedulerExecuteConfig, release_task_value),
+      LAYOUT(ChimiSchedulerExecuteConfig, release_channel_value),
+      LAYOUT(ChimiSchedulerExecuteConfig, release_context),
+  };
+  size_t count = sizeof(values) / sizeof(*values);
+  for (size_t index = 0; index < count; index += 1) out[index] = values[index];
+  return count;
+}

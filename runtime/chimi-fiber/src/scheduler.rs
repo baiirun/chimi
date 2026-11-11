@@ -6,6 +6,8 @@ mod process;
 mod process_abi;
 #[cfg(test)]
 mod process_tests;
+#[cfg(test)]
+mod release_tests;
 
 pub use self::clock::{ClockMode, Instant, TimerId};
 pub use self::process::{
@@ -167,6 +169,11 @@ impl SchedulerTraceEvent {
 }
 
 pub type SchedulerTraceSink = unsafe extern "C" fn(*mut c_void, *const SchedulerTraceEvent);
+
+/// Releases one host word the scheduler took over and will never hand back:
+/// a value a task's fiber ended with, or a value a sender handed to a
+/// channel. See `ChimiValueRelease` in `include/chimi_fiber.h`.
+pub type ValueRelease = unsafe extern "C" fn(*mut c_void, i64);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct TaskId(u64);
@@ -371,6 +378,13 @@ pub struct SchedulerOptions {
     /// Called once for every admitted specification context when no record
     /// needs it any more.
     pub release_spec_context: Option<SpecContextRelease>,
+    /// Called once for every value a non-process task's fiber ended with,
+    /// when the scheduler is dropped. The root's value is released too,
+    /// unless `chimi_scheduler_execute_with_config` hands it to its caller.
+    pub release_task_value: Option<ValueRelease>,
+    /// Called once for every value the scheduler accepted from a sender and
+    /// discards instead of delivering it or handing it back.
+    pub release_channel_value: Option<ValueRelease>,
     pub release_context: *mut c_void,
 }
 
@@ -382,7 +396,25 @@ impl SchedulerOptions {
             clock,
             release_message: None,
             release_spec_context: None,
+            release_task_value: None,
+            release_channel_value: None,
             release_context: std::ptr::null_mut(),
+        }
+    }
+}
+
+/// A word a task's fiber ended with. A defect code and a result are kept
+/// apart so that handing out one never matches the other.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TaskValue {
+    Result(i64),
+    Defect(i64),
+}
+
+impl TaskValue {
+    fn word(self) -> i64 {
+        match self {
+            Self::Result(word) | Self::Defect(word) => word,
         }
     }
 }
@@ -404,6 +436,12 @@ pub struct Scheduler {
     clock_events: Vec<ClockEvent>,
     host_operations: usize,
     kernel: ProcessKernel,
+    release_task_value: Option<(ValueRelease, *mut c_void)>,
+    release_channel_value: Option<(ValueRelease, *mut c_void)>,
+    /// The value each task's fiber ended with, kept only while
+    /// `release_task_value` is set. `Task.result` copies a value without
+    /// consuming it, so every one stays until the scheduler is dropped.
+    task_values: BTreeMap<TaskId, TaskValue>,
 }
 
 impl Drop for Scheduler {
@@ -411,6 +449,7 @@ impl Drop for Scheduler {
         if !self.kernel.incarnations.is_empty() || self.has_blocked_plans() {
             self.tear_down_processes();
         }
+        self.release_held_values();
     }
 }
 
@@ -431,6 +470,8 @@ impl Scheduler {
             clock,
             release_message,
             release_spec_context,
+            release_task_value,
+            release_channel_value,
             release_context,
         } = options;
         let kernel = ProcessKernel::new(
@@ -457,6 +498,9 @@ impl Scheduler {
             clock_events: Vec::new(),
             host_operations: 0,
             kernel,
+            release_task_value: release_task_value.map(|release| (release, release_context)),
+            release_channel_value: release_channel_value.map(|release| (release, release_context)),
+            task_values: BTreeMap::new(),
         }
     }
 
@@ -939,6 +983,64 @@ impl Scheduler {
         })
     }
 
+    /// Hands `root`'s outcome value to the caller: it leaves the scheduler's
+    /// keeping and is not released when the scheduler is dropped. The value
+    /// belongs to the root for a result and to the origin for a defect code;
+    /// a scheduler-made defect code was never kept.
+    fn hand_out_outcome_value(&mut self, root: TaskId, outcome: TaskOutcome) {
+        let (owner, value) = match outcome {
+            TaskOutcome::Succeeded(word) => (root, TaskValue::Result(word)),
+            TaskOutcome::Defected { origin, code } => (origin, TaskValue::Defect(code)),
+            TaskOutcome::Cancelled | TaskOutcome::StackOverflow { .. } => return,
+        };
+        if self.task_values.get(&owner) == Some(&value) {
+            self.task_values.remove(&owner);
+        }
+    }
+
+    /// Keeps the word a non-process task's fiber ended with, so it can be
+    /// released once the execution ends. A process body ends with an end
+    /// code the kernel reads, not a host value.
+    fn keep_task_value(&mut self, task: TaskId, event: &ChimiFiberEvent) {
+        if self.release_task_value.is_none() || self.tasks[&task].process.is_some() {
+            return;
+        }
+        let value = match event.state {
+            state if state == ChimiFiberState::Succeeded as u32 => TaskValue::Result(event.value),
+            state if state == ChimiFiberState::Defected as u32 => {
+                TaskValue::Defect(event.defect_code)
+            }
+            _ => return,
+        };
+        let previous = self.task_values.insert(task, value);
+        debug_assert!(previous.is_none(), "a fiber ends once");
+    }
+
+    fn release_channel_value(&self, value: usize) {
+        if let Some((release, context)) = self.release_channel_value {
+            // SAFETY: the configuring caller keeps the hook and its context
+            // valid until execution returns; the registry gives each
+            // accepted value up at most once.
+            unsafe { release(context, value as i64) };
+        }
+    }
+
+    /// Releases every task value still kept and every value still held by a
+    /// channel. Runs once, when the scheduler is dropped.
+    fn release_held_values(&mut self) {
+        for value in self.channels.drain_held_values() {
+            self.release_channel_value(value);
+        }
+        let task_values = std::mem::take(&mut self.task_values);
+        if let Some((release, context)) = self.release_task_value {
+            for value in task_values.into_values() {
+                // SAFETY: as for `release_channel_value`; each kept value is
+                // removed from the map before it is released.
+                unsafe { release(context, value.word()) };
+            }
+        }
+    }
+
     fn start(
         &mut self,
         parent: Option<TaskId>,
@@ -1038,6 +1140,7 @@ impl Scheduler {
             }
             return;
         }
+        self.keep_task_value(task, &event);
         let outcome = self.outcome(task, event);
         self.begin_terminal(task, outcome, true);
     }
@@ -1318,6 +1421,7 @@ impl Scheduler {
                 .and_then(|record| record.fiber.as_mut())
                 .expect("non-terminal task owns a fiber")
                 .resume(ChimiFiberCommand::Cancel);
+            self.keep_task_value(task, &cleanup);
             if !outcome.is_defect() {
                 outcome = match cleanup.state {
                     value if value == ChimiFiberState::Defected as u32 => TaskOutcome::Defected {
@@ -1510,6 +1614,9 @@ impl Scheduler {
     }
 
     fn apply_channel_transition(&mut self, transition: Transition) {
+        for value in transition.discarded {
+            self.release_channel_value(value);
+        }
         for observation in transition.observations {
             self.emit_channel(observation);
         }
@@ -1582,6 +1689,20 @@ fn scheduler_defect_outcome(code: i64) -> SchedulerOutcome {
     }
 }
 
+/// The arguments of `chimi_scheduler_execute_with_config`.
+#[repr(C)]
+pub struct ChimiSchedulerExecuteConfig {
+    pub entry: Option<ChimiFiberEntry>,
+    pub context: *mut c_void,
+    pub stack_bytes: usize,
+    pub trace_mode: u32,
+    pub trace_sink: Option<SchedulerTraceSink>,
+    pub trace_context: *mut c_void,
+    pub release_task_value: Option<ValueRelease>,
+    pub release_channel_value: Option<ValueRelease>,
+    pub release_context: *mut c_void,
+}
+
 #[unsafe(no_mangle)]
 /// Executes one finite root and every structured descendant to a terminal outcome.
 ///
@@ -1597,19 +1718,55 @@ pub unsafe extern "C" fn chimi_scheduler_execute(
     trace_sink: Option<SchedulerTraceSink>,
     trace_context: *mut c_void,
 ) -> SchedulerOutcome {
-    let Some(entry) = entry else {
+    let config = ChimiSchedulerExecuteConfig {
+        entry,
+        context,
+        stack_bytes,
+        trace_mode,
+        trace_sink,
+        trace_context,
+        release_task_value: None,
+        release_channel_value: None,
+        release_context: std::ptr::null_mut(),
+    };
+    // SAFETY: the config lives for the call, and the caller's guarantees
+    // about the entry, context, and sink carry over unchanged.
+    unsafe { chimi_scheduler_execute_with_config(&config) }
+}
+
+#[unsafe(no_mangle)]
+/// `chimi_scheduler_execute` with release hooks for the host values the
+/// scheduler discards.
+///
+/// # Safety
+///
+/// `config` must be null or valid for reads. Its entry and context satisfy
+/// the Chimi fiber entry contract, and every callback and context stays
+/// valid until this call returns.
+pub unsafe extern "C" fn chimi_scheduler_execute_with_config(
+    config: *const ChimiSchedulerExecuteConfig,
+) -> SchedulerOutcome {
+    // SAFETY: the caller guarantees a null or readable config.
+    let Some(config) = (unsafe { config.as_ref() }) else {
         return scheduler_defect_outcome(SCHEDULER_DEFECT_CODE);
     };
-    let trace_mode = match trace_mode {
+    let Some(entry) = config.entry else {
+        return scheduler_defect_outcome(SCHEDULER_DEFECT_CODE);
+    };
+    let trace_mode = match config.trace_mode {
         0 => TraceMode::Off,
         1 => TraceMode::Boundaries,
         2 => TraceMode::Full,
         _ => return scheduler_defect_outcome(SCHEDULER_DEFECT_CODE),
     };
-    let mut scheduler = Scheduler::new(stack_bytes, trace_mode);
-    scheduler.trace_sink = trace_sink;
-    scheduler.trace_context = trace_context;
-    let Ok(root) = scheduler.start_root_with_context(entry, context) else {
+    let mut scheduler = Scheduler::with_options(SchedulerOptions {
+        release_task_value: config.release_task_value,
+        release_channel_value: config.release_channel_value,
+        release_context: config.release_context,
+        ..SchedulerOptions::new(config.stack_bytes, trace_mode, ClockMode::Real)
+    });
+    scheduler.set_trace_sink(config.trace_sink, config.trace_context);
+    let Ok(root) = scheduler.start_root_with_context(entry, config.context) else {
         return scheduler_defect_outcome(SCHEDULER_DEFECT_CODE);
     };
     scheduler.drive();
@@ -1619,6 +1776,9 @@ pub unsafe extern "C" fn chimi_scheduler_execute(
             return scheduler_defect_outcome(SCHEDULER_DEFECT_CODE);
         }
     };
+    // The outcome's value passes to the caller; the scheduler releases
+    // every other value when it is dropped below.
+    scheduler.hand_out_outcome_value(root, outcome);
     match outcome {
         TaskOutcome::Succeeded(value) => SchedulerOutcome {
             state: ChimiFiberState::Succeeded as u32,

@@ -319,6 +319,66 @@ typedef struct {
   void *deadlock_context;
 } ChimiSchedulerConfig;
 
+/* Releases one host word the scheduler took over and will never hand back.
+
+   Ownership. The scheduler takes over a word at these points:
+   - A task value: the `value` of a CHIMI_FIBER_SUCCEEDED, or the
+     `defect_code` of a CHIMI_FIBER_DEFECTED, that a task's fiber returns
+     from its entry (or from its cleanup after a cancel). Process bodies are
+     not tasks here: their end codes belong to the kernel. Scheduler-made
+     defect codes (deadlock, capability violations) are not host words and
+     are never released. Every word a task returns reaches the hook, so a
+     host whose tasks return both owned and plain words must tell them
+     apart itself, for example by a tag bit.
+   - A channel value: the `value` of a CHIMI_REQUEST_CHANNEL_SEND once the
+     reply is OK or PENDING. A reply of ERROR leaves it with the sender.
+
+   It leaves the scheduler exactly once, by one of:
+   - delivery: a CHIMI_REQUEST_CHANNEL_RECEIVE reply of SUCCEEDED hands a
+     channel value to the receiver;
+   - return: a CHIMI_REQUEST_CHANNEL_SEND reply of CLOSED or ABORTED hands
+     the value back to its sender;
+   - the outcome: chimi_scheduler_execute_with_config returns the root's
+     result, or the defect code of the task the outcome's `origin` names,
+     and that word passes to the caller;
+   - release: this hook, called once per word.
+
+   Delivery and return happen when the scheduler writes the reply into the
+   request record, not when the fiber reads it. A fiber resumed with
+   CHIMI_FIBER_CANCEL still owns the value its record's last reply carries
+   (SUCCEEDED for a receive, CLOSED or ABORTED for a send) and must free it.
+   A record still saying PENDING carries nothing the fiber owns: a parked
+   send's value stays the scheduler's.
+
+   A CHIMI_REQUEST_TASK_RESULT reply copies a task value without consuming
+   it (Task.result may be asked again), so every task value except the one
+   the outcome carries is released, whether it was observed or not, after
+   the root is terminal and before the call returns. A channel value is
+   released when it is discarded: its parked send is cancelled, its channel
+   is aborted while it is queued, or the task it was handed to (a receiver,
+   or a refused sender) is cancelled before the reply is written. Any value
+   still held when the call returns is released then.
+
+   The hook runs on the thread that called the scheduler, on that thread's
+   own stack: never inside a task fiber, and with no task
+   running, so it must not assume any task's heap is current. It must not
+   call back into the scheduler. */
+typedef void (*ChimiValueRelease)(void *context, int64_t value);
+
+/* The arguments of chimi_scheduler_execute_with_config. The release hooks
+   may be null; both receive `release_context`. */
+typedef struct {
+  ChimiFiberEntry entry;
+  void *context;
+  size_t stack_bytes;
+  uint32_t trace_mode;
+  ChimiSchedulerTraceSink trace_sink;
+  void *trace_context;
+  ChimiValueRelease release_task_value;
+  ChimiValueRelease release_channel_value;
+  void *release_context;
+} ChimiSchedulerExecuteConfig;
+
 uint32_t chimi_fiber_abi_version(void);
 ChimiFiber *chimi_fiber_create(ChimiFiberEntry entry, void *context,
                                ChimiFiberConfig config);
@@ -336,6 +396,10 @@ ChimiSchedulerOutcome chimi_scheduler_execute(ChimiFiberEntry entry, void *conte
                                               uint32_t trace_mode,
                                               ChimiSchedulerTraceSink trace_sink,
                                               void *trace_context);
+/* chimi_scheduler_execute with release hooks; chimi_scheduler_execute is
+   this call with both hooks null. */
+ChimiSchedulerOutcome chimi_scheduler_execute_with_config(
+    const ChimiSchedulerExecuteConfig *config);
 /* Runs the root to its outcome, then stops every supervisor still running.
    Under the real clock a root parked with no timer pending and no host
    operation in flight is not a deadlock, because a host event may still
