@@ -3938,8 +3938,13 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
   if (outcome.state == CHIMI_FIBER_SUCCEEDED)
     return task_reply(outcome.value);
   if (outcome.state == CHIMI_FIBER_CANCELLED) return cancelled();
-  if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code != 0)
+  /* A positive code is a task's result word. A negative code is one the scheduler
+     made, for example when nothing can run and the root is still parked. */
+  if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code > 0)
     return task_reply(outcome.defect_code);
+  if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0)
+    return defect("Task scheduler defected: the root task could not finish, "
+                  "because every task is parked (deadlock) or the scheduler failed", -1);
   if (outcome.state == CHIMI_FIBER_STACK_OVERFLOW)
     return defect("Task stack overflow", -1);
   return defect("Task scheduler failed to produce a terminal root", -1);

@@ -707,6 +707,51 @@ fn native_child_defect_propagates_through_task_result() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// Guards: a scheduler-made defect code reached the root as a control pointer and crashed.
+#[test]
+fn native_deadlocked_tasks_defect_the_root() {
+    let scratch = scratch_directory("native-task-deadlock");
+    let executable = build_native(
+        &scratch,
+        "deadlock",
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Receive}\n",
+            "import std/task as Task\n",
+            "pub fn main() -> Int {\n",
+            "  let ch = Channel.bounded(1)\n",
+            "  let s = ch.sender\n",
+            "  let r = ch.receiver\n",
+            "  let child = Task.start(fn() -> Int {\n",
+            "    Channel.send(s, 1)\n",
+            "    Channel.send(s, 2)\n",
+            "    0\n",
+            "  })\n",
+            "  let waited = Task.result(child)\n",
+            "  let got = Channel.receive(r)\n",
+            "  case got {\n",
+            "    Receive.Received(v) -> v + waited\n",
+            "    Receive.Drained -> waited\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "deadlock", "off");
+    assert_eq!(
+        execution.process.status.code(),
+        Some(70),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert!(
+        execution.outcome.contains("\"outcome\":\"defect\"")
+            && execution.outcome.contains("deadlock"),
+        "{}",
+        execution.outcome
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn native_task_result_preserves_expected_failure_values() {
     let scratch = scratch_directory("native-task-expected-failure");
