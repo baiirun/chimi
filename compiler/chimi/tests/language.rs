@@ -962,6 +962,37 @@ fn hover_on_a_later_stage_reports_that_stage_type() {
     assert_eq!(hover("(\"a\")").as_deref(), Some("Label"));
 }
 
+// A fieldless variant named as a value is that value, so inspection reports
+// its value type and no constructor signature; called, it is a callable.
+#[test]
+fn inspecting_a_fieldless_variant_value_reports_no_callable() {
+    let source = concat!(
+        "fn count(option: Option<Int>) -> Int {\n",
+        "  case option {\n",
+        "    Some(value) -> value\n",
+        "    None -> 0\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int { count(None) + count(None()) }\n",
+    );
+    let inspect = |needle: &str| {
+        let offset = source.find(needle).expect("needle is in the source") + 1;
+        let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+            .expect("valid module path");
+        let report =
+            Compiler::inspect_project(vec![module], "main", offset).expect("inspection succeeds");
+        (
+            report.inferred_type().map(str::to_owned),
+            report
+                .callable()
+                .map(|callable| callable.display().to_owned()),
+        )
+    };
+    assert_eq!(inspect("None) +"), (Some("Option<Int>".to_owned()), None));
+    let (_, called) = inspect("None())");
+    assert!(called.is_some(), "a called fieldless variant is a callable");
+}
+
 // A constructor named as a value: one with fields is a callable, a fieldless
 // variant is the value itself.
 #[test]

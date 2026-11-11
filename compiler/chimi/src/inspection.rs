@@ -366,7 +366,12 @@ pub(crate) fn inspect(
         .and_then(|semantic_id| typed.callee_instantiations.get(&(module.id, semantic_id)))
         .and_then(|type_id| typed.callable_contract_for_type(*type_id))
         .map(|contract| inspect_callable(typed, contract));
+    // A reference whose typed value is not callable (a fieldless variant such
+    // as `None` named as a value) shows its value type, not its constructor.
+    let referenced_value_is_callable =
+        expression_fact.is_none_or(|fact| typed.callable_contract_for_type(fact.success).is_some());
     let callable_contract = target_symbol
+        .filter(|_| referenced_value_is_callable)
         .and_then(|symbol| typed.contracts.get(&symbol))
         .or_else(|| {
             expression_fact.and_then(|fact| typed.callable_contract_for_type(fact.success))
