@@ -35,13 +35,15 @@ list is updated instead of silently testing nothing. `targets` are
 
 Before any mutant, the unmutated tests must pass (BASELINE). Output is one line
 per mutant: KILLED (a test failed), KILLED-BUILD (the mutant did not compile,
-which proves nothing about the tests), SURVIVED, STALE, or TIMEOUT.
+which proves nothing about the tests), SURVIVED, NO-TESTS (the targets and
+filter selected no test, so passing proves nothing), STALE, or TIMEOUT.
 Exit status is 0 only when the baseline passes and every mutant is KILLED or
 TIMEOUT.
 """
 
 import argparse
 import os
+import re
 import runpy
 import shutil
 import subprocess
@@ -95,6 +97,10 @@ def cargo_test(crate: Path, args, targets, test_filter, target_dir: Path, timeou
     )
 
 
+def tests_run(output: str) -> int:
+    return sum(int(count) for count in re.findall(r"^running (\d+) tests?$", output, re.M))
+
+
 def build_failed(output: str) -> bool:
     return "error[E" in output or "could not compile" in output or "error: linking" in output
 
@@ -141,7 +147,10 @@ def run_list(path: Path, tree: Path, target_dir: Path, only, timeout) -> bool:
         try:
             result = cargo_test(crate, args, targets, test_filter, target_dir, timeout)
             output = result.stdout + result.stderr
-            if result.returncode == 0:
+            if result.returncode == 0 and tests_run(output) == 0:
+                status = "NO-TESTS"
+                ok = False
+            elif result.returncode == 0:
                 status = "SURVIVED"
                 ok = False
             elif build_failed(output):
@@ -176,7 +185,7 @@ def main() -> int:
     for path in options.lists:
         ok &= run_list(path.resolve(), tree, options.scratch / "target", options.only,
                        options.timeout)
-    print("# result:", "every mutant killed" if ok else "FAILED (see SURVIVED/STALE/BASELINE)")
+    print("# result:", "every mutant killed" if ok else "FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)")
     return 0 if ok else 1
 
 

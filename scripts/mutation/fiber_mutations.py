@@ -3,8 +3,13 @@ and src/scheduler/).
 
 Run: scripts/mutation/mutate.py scripts/mutation/fiber_mutations.py
 Each mutant runs the named unit test of the chimi-fiber library; it must turn
-it red. The scheduler/ files were uncommitted when this list was written, so
-mutants report STALE until that work lands at the tested revision.
+it red.
+
+At 15cebc9 three mutants survived: "zero deadline drains" (sd02),
+"replacement before children drain" (ra07), and "time moves while runnable"
+(virtual_time_advances). Each named test exists and passes with the mutant
+applied, so either the test or the mutant no longer matches the ported
+scheduler.
 """
 
 CRATE = "runtime/chimi-fiber"
