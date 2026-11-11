@@ -123,9 +123,10 @@ static void measure_accumulation(uint32_t length, double *allocated_per_element,
   printf("append length=%u ns_per_append=%.1f allocated_bytes_per_element=%.1f "
          "live_bytes_per_element=%.1f\n",
          length, elapsed / length, *allocated_per_element, *live_per_element);
-  allocation_scope_collect(&scope, NULL, NULL);
+  /* A full pass, because a minor one never revisits the list once it survived. */
+  allocation_scope_sweep(&scope, NULL, NULL, true);
   CHECK(scope.live_bytes == 0, "dropped list left %zu live bytes", scope.live_bytes);
-  allocation_scope_end(&scope);
+  allocation_scope_end(&scope, NULL, NULL);
 }
 
 static void test_accumulation_is_linear_and_reclaimed(void) {
@@ -150,7 +151,7 @@ static void test_collection_keeps_shared_old_version(void) {
   CHECK(scope.live_bytes < before, "collecting the newer version freed nothing");
   expect_sequence(old, 5000, 0);
   (void)newer;
-  allocation_scope_end(&scope);
+  allocation_scope_end(&scope, NULL, NULL);
 }
 
 /* Checks that `list` holds values[from], values[from + 1], ... for `length` elements. */
@@ -239,7 +240,7 @@ static void test_a_small_window_does_not_retain_its_source(void) {
   /* The 100 elements and their copy stay live (about 6 KB); sharing would keep all
      100,000 elements, about 6 MB. */
   CHECK(scope.live_bytes < 16384, "a 100-element window retains %zu bytes", scope.live_bytes);
-  allocation_scope_end(&scope);
+  allocation_scope_end(&scope, NULL, NULL);
 }
 
 /* Dropping the head one element at a time, as `[first, ..rest]` recursion does,
@@ -261,8 +262,7 @@ static void test_drop_front_is_constant_cost(void) {
   /* One header per step, plus copies of under length / 3 slots of one pointer each,
      with node headers. A copy per step would cost about length / 2 slots per step. */
   CHECK(per_step <= sizeof(ChimiValue) + 4 * sizeof(void *), "%.1f bytes per drop", per_step);
-  allocation_scope_collect(&scope, NULL, NULL);
-  allocation_scope_end(&scope);
+  allocation_scope_end(&scope, NULL, NULL);
 }
 
 static void test_collection_keeps_a_window_readable(void) {
@@ -272,7 +272,7 @@ static void test_collection_keeps_a_window_readable(void) {
   ChimiValue *window = list_slice(list, 1234, 4321);
   allocation_scope_collect(&scope, window, NULL);
   expect_window(window, 1234, 4321 - 1234);
-  allocation_scope_end(&scope);
+  allocation_scope_end(&scope, NULL, NULL);
 }
 
 int main(void) {

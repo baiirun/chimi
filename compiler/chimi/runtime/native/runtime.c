@@ -146,6 +146,8 @@ typedef enum {
   ALLOCATION_CALLABLE,
   ALLOCATION_MAP_NODE,
   ALLOCATION_LIST_NODE,
+  /* An environment that nodes write after creating it; no value may point to one. */
+  ALLOCATION_FRAME_ENVIRONMENT,
   ALLOCATION_KIND_COUNT,
 } AllocationKind;
 
@@ -164,51 +166,219 @@ struct ChimiRuntime {
   size_t scoped_peak_live_bytes;
   size_t scoped_retained_bytes;
   uint64_t scoped_collections;
+  uint64_t scoped_full_collections;
 };
 
+/* Per-owner heaps (docs/architecture/supervised-process-runtime.md).
+
+   Every allocation carries a header that names its area. An area belongs to one
+   owner heap, to one detached fragment, or to the static constants:
+
+   - A heap's base area holds what its owner allocates outside every region.
+     Nothing reclaims it before the heap is destroyed.
+   - A region (AllocationScope) is opened by each `loop` and by
+     Stream.process_utf8_lines. It has a young area for what the current pass
+     allocates, a survivor area for what earlier passes kept, and the areas of
+     fragments adopted during the pass.
+   - A fragment area holds a copy made for a transfer between owners. Adoption
+     hands the whole area to the receiver's innermost region in O(1).
+   - The static area holds module constants, which every owner shares.
+
+   Invariants:
+   - A heap value never points into another heap or into a fragment, so a heap
+     can be destroyed, and a fragment freed, without looking at anything else.
+   - Values never change after construction (the one exception, list_slice's
+     compaction, allocates into the area of the value it updates). So a value
+     never points to a value allocated after it, and a survivor never points to
+     a young value. A minor pass therefore marks from the state through young
+     allocations only, and survivors are walked only by a full pass.
+   - Environments that nodes write after creating them are frame environments
+     (ALLOCATION_FRAME_ENVIRONMENT). No value points to one; marking and copying
+     check the kind of every allocation they reach, so a violation aborts.
+
+   Collection does not move anything, so pointers held in C frames stay valid.
+   The runtime switches the current heap around every scheduler request
+   (scheduler_request), because a fiber resumes only by returning from one. */
 typedef struct AllocationHeader AllocationHeader;
+typedef struct AllocationArea AllocationArea;
 typedef struct AllocationScope AllocationScope;
+typedef struct RuntimeHeap RuntimeHeap;
+
+typedef enum { AREA_YOUNG, AREA_SURVIVOR, AREA_BASE, AREA_FRAGMENT, AREA_STATIC } AreaRole;
+
 struct AllocationHeader {
   AllocationHeader *next;
+  AllocationArea *area;
   size_t bytes;
   uint64_t mark_epoch;
   AllocationKind kind;
-  /* Part of a list-window copy whose elements all live in strictly enclosing scopes
-     (see list_slice). Nothing in it reaches its own scope's other allocations, so
-     ordinary collections neither mark nor free it; see allocation_scope_collect. */
-  bool window_copy;
-  /* The scope whose list holds this allocation; NULL outside every scope. */
+};
+
+struct AllocationArea {
+  AreaRole role;
+  /* The owner heap; NULL for a fragment and for static data. */
+  RuntimeHeap *heap;
+  /* The region of a young or survivor area; NULL otherwise. */
   AllocationScope *scope;
+  AllocationHeader *allocations;
+  size_t bytes;
+  size_t count;
+  /* The next adopted area of the same region (young areas only). */
+  AllocationArea *next;
 };
 
 struct AllocationScope {
   AllocationScope *parent;
-  AllocationHeader *allocations;
+  RuntimeHeap *heap;
+  /* `young` is the area this region allocates into; `adopted` lists the areas of
+     fragments received since the last pass, which join the young generation. */
+  AllocationArea young;
+  AllocationArea *adopted;
+  AllocationArea survivors;
+  /* Survivor bytes right after the last full pass, or after the first pass that
+     promoted anything. A full pass runs once survivors reach twice this and grew
+     by at least REGION_FULL_MIN_GROWTH, so a small state that is replaced on every
+     pass does not run a full pass on every other pass. */
+  size_t full_baseline;
+  bool has_baseline;
   size_t live_bytes;
   size_t peak_live_bytes;
   size_t total_allocated_bytes;
   size_t allocated_bytes_by_kind[ALLOCATION_KIND_COUNT];
   uint64_t collections;
-  /* Window-copy allocations, kept apart so an ordinary collection does not walk them,
-     their live bytes, and the size at which the next collection also sweeps them. */
-  AllocationHeader *window_copies;
-  size_t window_copy_bytes;
-  size_t window_copy_limit;
+  uint64_t full_collections;
+  /* Allocations marked by passes, roots included, and bytes promoted to survivors:
+     together they bound a pass's work, which must not grow with old survivors. */
+  uint64_t scanned_allocations;
+  size_t promoted_bytes;
 };
 
-static AllocationScope *current_allocation_scope;
-/* Bytes allocated outside every scope. Nothing reclaims them before exit. */
+struct RuntimeHeap {
+  uint64_t owner;
+  AllocationScope *innermost;
+  AllocationArea base;
+  /* Areas of fragments adopted outside every region; they belong to the base. */
+  AllocationArea *adopted;
+};
+
+typedef enum { HEAP_OK = 0, HEAP_FOREIGN_POINTER = 1 } HeapStatus;
+
+/* Process-wide accounting, so tests can prove that memory stays flat and that
+   destroying heaps and fragments returns every allocation. Footprint bytes count
+   headers and fragment records as well as payloads; static constants are excluded. */
+typedef struct {
+  size_t live_allocations;
+  size_t footprint_bytes;
+  size_t peak_footprint_bytes;
+  size_t live_fragments;
+  size_t fragment_footprint_bytes;
+  size_t peak_fragment_footprint_bytes;
+  size_t live_heaps;
+  /* Freed small blocks kept for reuse (see small_block_take); not live. */
+  size_t cached_bytes;
+} HeapTotals;
+
+enum { REGION_FULL_MIN_GROWTH = 4 * 1024 };
+
+static RuntimeHeap main_heap = {.owner = 1, .base = {.role = AREA_BASE, .heap = &main_heap}};
+static RuntimeHeap *current_heap = &main_heap;
+static uint64_t next_heap_owner = 2;
+static AllocationArea static_area = {.role = AREA_STATIC};
+/* When set, allocate() uses this area instead of the current heap's innermost one:
+   for static constants, fragment copies, and list_slice's in-place compaction. */
+static AllocationArea *allocation_target;
+static HeapTotals heap_totals;
+/* Bytes allocated outside every region, static constants included. Nothing reclaims
+   them before exit. */
 static size_t unscoped_allocated_bytes;
-/* Set while list_slice builds a window copy; allocate tags what it returns. */
-static bool allocating_window_copy;
-/* The scope allocation_scope_collect is marking. Marking stops at allocations outside
-   it: they were made before the scope began and values never change, so they cannot
-   reach the scope's allocations, and traversing them would make every collection cost
-   the size of long-lived data such as a large list a loop drains. */
-static AllocationScope *collecting_scope;
-/* Whether that collection also marks window copies (allocation_scope_sweep). */
-static bool collecting_window_copies;
 static uint64_t next_mark_epoch = 1;
+
+static void exhausted_memory(void) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+
+/* Freed blocks of up to SMALL_BLOCK_LIMIT bytes are kept on per-size free lists and
+   reused, because a message or a pass allocates and frees many small blocks and the
+   system allocator dominated their cost. Each list keeps at most SMALL_BLOCK_CACHE
+   blocks, so the cache is bounded. Sanitizer builds skip it so that a use after free
+   is still reported. */
+enum { SMALL_BLOCK_GRAIN = 16, SMALL_BLOCK_LIMIT = 256, SMALL_BLOCK_CACHE = 4096 };
+#if defined(__SANITIZE_ADDRESS__)
+#define CHIMI_SMALL_BLOCK_CACHE 0
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define CHIMI_SMALL_BLOCK_CACHE 0
+#endif
+#endif
+#ifndef CHIMI_SMALL_BLOCK_CACHE
+#define CHIMI_SMALL_BLOCK_CACHE 1
+#endif
+typedef struct SmallBlock { struct SmallBlock *next; } SmallBlock;
+static SmallBlock *small_blocks[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
+static uint32_t small_block_counts[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
+
+/* A zeroed block of at least `bytes` bytes, to be returned with small_block_give. */
+static void *small_block_take(size_t bytes) {
+  size_t rounded = (bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
+  if (CHIMI_SMALL_BLOCK_CACHE && rounded <= SMALL_BLOCK_LIMIT) {
+    size_t class = rounded / SMALL_BLOCK_GRAIN - 1;
+    SmallBlock *block = small_blocks[class];
+    if (block) {
+      small_blocks[class] = block->next;
+      --small_block_counts[class];
+      heap_totals.cached_bytes -= rounded;
+      memset(block, 0, rounded);
+      return block;
+    }
+  }
+  void *block = calloc(1, rounded);
+  if (!block) exhausted_memory();
+  return block;
+}
+
+static void small_block_give(void *pointer, size_t bytes) {
+  size_t rounded = (bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
+  if (CHIMI_SMALL_BLOCK_CACHE && rounded <= SMALL_BLOCK_LIMIT) {
+    size_t class = rounded / SMALL_BLOCK_GRAIN - 1;
+    if (small_block_counts[class] < SMALL_BLOCK_CACHE) {
+      SmallBlock *block = pointer;
+      block->next = small_blocks[class];
+      small_blocks[class] = block;
+      ++small_block_counts[class];
+      heap_totals.cached_bytes += rounded;
+      return;
+    }
+  }
+  free(pointer);
+}
+
+static AllocationArea *current_area(void) {
+  if (allocation_target) return allocation_target;
+  return current_heap->innermost ? &current_heap->innermost->young : &current_heap->base;
+}
+
+static void footprint_add(size_t bytes) {
+  heap_totals.footprint_bytes += bytes;
+  if (heap_totals.footprint_bytes > heap_totals.peak_footprint_bytes)
+    heap_totals.peak_footprint_bytes = heap_totals.footprint_bytes;
+}
+
+static void fragment_footprint_add(size_t bytes) {
+  heap_totals.fragment_footprint_bytes += bytes;
+  if (heap_totals.fragment_footprint_bytes > heap_totals.peak_fragment_footprint_bytes)
+    heap_totals.peak_fragment_footprint_bytes = heap_totals.fragment_footprint_bytes;
+}
+
+static void scope_add_live(AllocationScope *scope, size_t bytes) {
+  scope->live_bytes += bytes;
+  if (scope->live_bytes > scope->peak_live_bytes) scope->peak_live_bytes = scope->live_bytes;
+}
+
+static void area_link(AllocationArea *area, AllocationHeader *header) {
+  header->area = area;
+  header->next = area->allocations;
+  area->allocations = header;
+  area->bytes += header->bytes;
+  ++area->count;
+}
 
 static void *allocate(size_t count, size_t size) {
   if (count == 0) count = 1;
@@ -216,29 +386,25 @@ static void *allocate(size_t count, size_t size) {
     fputs("Chimi runtime allocation overflow\n", stderr); exit(70);
   }
   size_t bytes = count * size;
-  if (bytes > SIZE_MAX - sizeof(AllocationHeader)) {
+  if (bytes > SIZE_MAX - sizeof(AllocationHeader) - SMALL_BLOCK_GRAIN) {
     fputs("Chimi runtime allocation overflow\n", stderr); exit(70);
   }
-  AllocationHeader *header = calloc(1, sizeof(*header) + bytes);
-  if (header == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  AllocationHeader *header = small_block_take(sizeof(*header) + bytes);
   header->bytes = bytes;
-  header->scope = current_allocation_scope;
-  header->window_copy = allocating_window_copy && current_allocation_scope;
-  if (current_allocation_scope) {
-    AllocationHeader **list = &current_allocation_scope->allocations;
-    if (header->window_copy) {
-      list = &current_allocation_scope->window_copies;
-      current_allocation_scope->window_copy_bytes += bytes;
-    }
-    header->next = *list;
-    *list = header;
-    current_allocation_scope->live_bytes += bytes;
-    current_allocation_scope->total_allocated_bytes += bytes;
-    current_allocation_scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
-    if (current_allocation_scope->live_bytes > current_allocation_scope->peak_live_bytes)
-      current_allocation_scope->peak_live_bytes = current_allocation_scope->live_bytes;
-  } else {
+  AllocationArea *area = current_area();
+  area_link(area, header);
+  if (area->scope) {
+    AllocationScope *scope = area->scope;
+    scope_add_live(scope, bytes);
+    scope->total_allocated_bytes += bytes;
+    scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
+  } else if (area->role != AREA_FRAGMENT) {
     unscoped_allocated_bytes += bytes;
+  }
+  if (area->role != AREA_STATIC) {
+    ++heap_totals.live_allocations;
+    footprint_add(sizeof(*header) + bytes);
+    if (area->role == AREA_FRAGMENT) fragment_footprint_add(sizeof(*header) + bytes);
   }
   return header + 1;
 }
@@ -249,11 +415,89 @@ static AllocationHeader *allocation_header(const void *value) {
 
 static void allocation_kind(void *value, AllocationKind kind) {
   AllocationHeader *header = allocation_header(value);
-  if (current_allocation_scope && header->kind != kind) {
-    current_allocation_scope->allocated_bytes_by_kind[header->kind] -= header->bytes;
-    current_allocation_scope->allocated_bytes_by_kind[kind] += header->bytes;
+  AllocationScope *scope = header->area->scope;
+  if (scope && header->kind != kind) {
+    scope->allocated_bytes_by_kind[header->kind] -= header->bytes;
+    scope->allocated_bytes_by_kind[kind] += header->bytes;
   }
   header->kind = kind;
+}
+
+/* Frees one allocation that its area has already unlinked. */
+static void release_allocation(AllocationHeader *header) {
+  if (header->area->role != AREA_STATIC) {
+    --heap_totals.live_allocations;
+    heap_totals.footprint_bytes -= sizeof(*header) + header->bytes;
+  }
+  small_block_give(header, sizeof(*header) + header->bytes);
+}
+
+/* Frees every allocation of `area`, leaving it empty. O(allocations). */
+static void area_release_all(AllocationArea *area) {
+  while (area->allocations) {
+    AllocationHeader *header = area->allocations;
+    area->allocations = header->next;
+    release_allocation(header);
+  }
+  area->bytes = 0;
+  area->count = 0;
+}
+
+/* Moves every allocation of `source` into `target`. O(allocations of `source`). */
+static void area_merge(AllocationArea *target, AllocationArea *source) {
+  if (!source->allocations) return;
+  AllocationHeader *last = NULL;
+  for (AllocationHeader *header = source->allocations; header; header = header->next) {
+    header->area = target;
+    last = header;
+  }
+  last->next = target->allocations;
+  target->allocations = source->allocations;
+  target->bytes += source->bytes;
+  target->count += source->count;
+  source->allocations = NULL;
+  source->bytes = 0;
+  source->count = 0;
+}
+
+/* A fragment's record. Its area is the first member, so once the area is adopted
+   the record lives on as that area and is freed with it (area_free). */
+enum { FRAGMENT_ROOTS = 2 };
+typedef struct RuntimeFragment {
+  AllocationArea area;
+  uint32_t root_count;
+  void *roots[FRAGMENT_ROOTS];
+} RuntimeFragment;
+
+/* Frees an emptied adopted area, which is the record of the fragment it came from. */
+static void area_free(AllocationArea *area) {
+  heap_totals.footprint_bytes -= sizeof(RuntimeFragment);
+  small_block_give(area, sizeof(RuntimeFragment));
+}
+
+static RuntimeHeap *heap_create(void) {
+  RuntimeHeap *heap = calloc(1, sizeof(*heap));
+  if (!heap) exhausted_memory();
+  heap->owner = next_heap_owner++;
+  heap->base.role = AREA_BASE;
+  heap->base.heap = heap;
+  ++heap_totals.live_heaps;
+  return heap;
+}
+
+/* Requires: no region of `heap` is open. Frees every allocation the heap owns,
+   adopted fragments included, without touching any other heap. */
+static void heap_destroy(RuntimeHeap *heap) {
+  if (heap->innermost) { fputs("Chimi runtime destroyed a heap with an open region\n", stderr); exit(70); }
+  area_release_all(&heap->base);
+  while (heap->adopted) {
+    AllocationArea *area = heap->adopted;
+    heap->adopted = area->next;
+    area_release_all(area);
+    area_free(area);
+  }
+  free(heap);
+  --heap_totals.live_heaps;
 }
 
 static void *reallocate_bytes(void *value, size_t old_bytes, size_t new_bytes) {
@@ -290,14 +534,14 @@ static ChimiValue **clone_value_slots(ChimiValue **source, uint32_t count) {
 }
 static ChimiEnvironment *new_environment(void) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
-  allocation_kind(environment, ALLOCATION_ENVIRONMENT);
+  allocation_kind(environment, ALLOCATION_FRAME_ENVIRONMENT);
   environment->locals = new_value_slots(CHIMI_LOCAL_SLOT_COUNT);
   environment->requirements = new_value_slots(CHIMI_REQUIREMENT_SLOT_COUNT);
   return environment;
 }
 static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
-  allocation_kind(environment, ALLOCATION_ENVIRONMENT);
+  allocation_kind(environment, ALLOCATION_FRAME_ENVIRONMENT);
   environment->locals = clone_value_slots(source->locals, CHIMI_LOCAL_SLOT_COUNT);
   environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
   return environment;
@@ -307,14 +551,14 @@ static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
 // the other table alive through the shared environment pointer.
 static ChimiEnvironment *clone_local_environment(const ChimiEnvironment *source) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
-  allocation_kind(environment, ALLOCATION_ENVIRONMENT);
+  allocation_kind(environment, ALLOCATION_FRAME_ENVIRONMENT);
   environment->locals = clone_value_slots(source->locals, CHIMI_LOCAL_SLOT_COUNT);
   environment->requirements = source->requirements;
   return environment;
 }
 static ChimiEnvironment *clone_requirement_environment(const ChimiEnvironment *source) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
-  allocation_kind(environment, ALLOCATION_ENVIRONMENT);
+  allocation_kind(environment, ALLOCATION_FRAME_ENVIRONMENT);
   environment->locals = source->locals;
   environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
   return environment;
@@ -481,52 +725,17 @@ __attribute__((unused)) static ChimiValue *list_push(const ChimiValue *list, Chi
   vector = end == vector.length ? vector_push(vector, item) : vector_set(vector, end, item);
   return list_value(vector, list->as.list.start, list->as.list.length + 1);
 }
-/* The innermost scope among a vector's root and tail. Live scopes form a stack, so a
-   later allocation sits in the same scope as an earlier one or in a nested one; this
-   scope therefore holds the vector's youngest node, and its elements are no younger.
-   NULL (outside every scope) encloses every scope. */
-static AllocationScope *vector_scope(ListVector vector) {
-  AllocationScope *root = vector.root ? allocation_header(vector.root)->scope : NULL;
-  AllocationScope *tail = vector.tail ? allocation_header(vector.tail)->scope : NULL;
-  if (!root) return tail;
-  for (AllocationScope *scope = tail; scope; scope = scope->parent)
-    if (scope == root) return tail;
-  return root;
-}
-/* Whether `inner` is `outer` or nested in it; NULL encloses every scope. */
-static bool scope_encloses(const AllocationScope *outer, const AllocationScope *inner) {
-  if (!outer) return true;
-  for (; inner; inner = inner->parent)
-    if (inner == outer) return true;
-  return false;
-}
-/* Whether every element of `vector` lives in a scope strictly enclosing `scope`: the
-   vector does, or it is a window copy, whose elements already do. A vector that
-   list_push extended from a copy has an untagged tail, so it falls to the scope test. */
-static bool elements_outside_scope(ListVector vector, const AllocationScope *scope) {
-  if (!scope) return false;
-  bool copied = vector.tail && allocation_header(vector.tail)->window_copy &&
-                (!vector.root || allocation_header(vector.root)->window_copy);
-  if (copied) return true;
-  AllocationScope *source = vector_scope(vector);
-  return source != scope && scope_encloses(source, scope);
-}
 /* Copies elements [from, from + length) of `list` into a fresh vector allocated in
-   `scope`. When every element lives in a strictly enclosing scope, the copy reaches
-   nothing in its own scope: it is tagged as a window copy, which ordinary collections
-   skip, so a loop draining a list built before the loop does not re-mark each
-   surviving copy on every pass. */
+   `area`, or in the current area when `area` is NULL. */
 static ListVector list_copy_window(const ChimiValue *list, uint32_t from, uint32_t length,
-                                   AllocationScope *scope) {
+                                   AllocationArea *area) {
   ChimiValue **values = malloc((size_t)length * sizeof(*values));
-  if (!values) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  if (!values) exhausted_memory();
   for (uint32_t index = 0; index < length; ++index) values[index] = list_get(list, from + index);
-  AllocationScope *current = current_allocation_scope;
-  current_allocation_scope = scope;
-  allocating_window_copy = elements_outside_scope(list->as.list.vector, scope);
+  AllocationArea *previous = allocation_target;
+  if (area) allocation_target = area;
   ListVector copy = vector_from_values(values, length);
-  allocating_window_copy = false;
-  current_allocation_scope = current;
+  allocation_target = previous;
   free(values);
   return copy;
 }
@@ -546,199 +755,545 @@ static bool list_retains_too_much(uint32_t window, uint32_t vector) {
    (n/4 + n/16 + ...), because each copy of m elements follows at least 3m dropped
    ones. The interpreter's PersistentList::slice applies the same rule.
 
-   The compact vector is allocated in the scope that holds `list`, so `list` never
-   points into a younger scope. The in-place update is safe because one carrier runs
-   every fiber and none switches inside list_slice; parallel carriers (R4) would
-   have to publish the vector and start together, for example through an atomic
-   pointer to an immutable window, or leave shared values uncompacted. */
+   The compact vector is allocated in the area that holds `list`, so `list` never
+   points into a younger area: a survivor's new vector is itself a survivor. The
+   in-place update is safe because one carrier runs every fiber and none switches
+   inside list_slice; parallel carriers (R4) would have to publish the vector and
+   start together, for example through an atomic pointer to an immutable window,
+   or leave shared values uncompacted. */
 static ChimiValue *list_slice(ChimiValue *list, uint32_t from, uint32_t to) {
   if (from > to || to > list->as.list.length) return NULL;
   if (from == to) return list_value((ListVector){NULL, NULL, 0}, 0, 0);
   uint32_t length = to - from;
   if (list_retains_too_much(length, list->as.list.vector.length)) {
     if (list_retains_too_much(length, list->as.list.length))
-      return list_value(list_copy_window(list, from, length, current_allocation_scope), 0, length);
+      return list_value(list_copy_window(list, from, length, NULL), 0, length);
     list->as.list.vector =
-      list_copy_window(list, 0, list->as.list.length, allocation_header(list)->scope);
+      list_copy_window(list, 0, list->as.list.length, allocation_header(list)->area);
     list->as.list.start = 0;
   }
   return list_value(list->as.list.vector, list->as.list.start + from, length);
 }
 
-static void mark_value(ChimiValue *value, uint64_t epoch);
+static void allocation_graph_inconsistent(void) {
+  fputs("Chimi runtime allocation graph is inconsistent\n", stderr); exit(70);
+}
 
-static bool mark_allocation(void *value, uint64_t epoch, AllocationKind expected_kind) {
-  if (!value) return false;
-  AllocationHeader *header = allocation_header(value);
-  if (header->kind != expected_kind) {
-    fputs("Chimi runtime allocation graph is inconsistent\n", stderr); exit(70);
+/* A growable stack of allocations, used by marking and copying so neither recurses:
+   both run on 64 KiB fiber stacks. */
+typedef struct { void **items; size_t length; size_t capacity; } PointerStack;
+static void pointer_stack_push(PointerStack *stack, void *pointer) {
+  if (stack->length == stack->capacity) {
+    size_t capacity = stack->capacity ? stack->capacity * 2 : 256;
+    void **items = realloc(stack->items, capacity * sizeof(*items));
+    if (!items) exhausted_memory();
+    stack->items = items;
+    stack->capacity = capacity;
   }
-  if (header->scope != collecting_scope || header->mark_epoch == epoch) return false;
-  if (header->window_copy && !collecting_window_copies) return false;
-  header->mark_epoch = epoch;
-  return true;
+  stack->items[stack->length++] = pointer;
 }
 
-static void mark_value_pointers(ChimiValue **values, uint64_t epoch) {
-  if (!values || !mark_allocation(values, epoch, ALLOCATION_VALUE_POINTERS)) return;
-  AllocationHeader *header = allocation_header(values);
-  size_t length = header->bytes / sizeof(*values);
-  for (size_t index = 0; index < length; ++index) mark_value(values[index], epoch);
-}
+/* The pass in progress. Marking reaches only this region's young allocations, plus
+   its survivors in a full pass: everything else is older than the region's values
+   or than the pass, so it cannot reach them. */
+static AllocationScope *collecting_scope;
+static bool collecting_full;
+static bool collecting_foreign;
+static uint64_t collecting_epoch;
+static PointerStack mark_stack;
 
-static void mark_fields(RuntimeField *fields, uint64_t epoch) {
-  if (!fields || !mark_allocation(fields, epoch, ALLOCATION_FIELDS)) return;
-  AllocationHeader *header = allocation_header(fields);
-  size_t length = header->bytes / sizeof(*fields);
-  for (size_t index = 0; index < length; ++index) mark_value(fields[index].value, epoch);
-}
-
-static void mark_environment(ChimiEnvironment *environment, uint64_t epoch) {
-  if (!environment || !mark_allocation(environment, epoch, ALLOCATION_ENVIRONMENT)) return;
-  mark_value_pointers(environment->locals, epoch);
-  mark_value_pointers(environment->requirements, epoch);
-}
-
-static void mark_callable(ChimiCallable *callable, uint64_t epoch) {
-  if (!callable || !mark_allocation(callable, epoch, ALLOCATION_CALLABLE)) return;
-  mark_environment(callable->environment, epoch);
-  mark_callable(callable->inner, epoch);
-}
-
-static void mark_list_node(ListNode *node, uint64_t epoch) {
-  if (!node || !mark_allocation(node, epoch, ALLOCATION_LIST_NODE)) return;
-  for (uint32_t index = 0; index < node->count; ++index) {
-    if (node->height == 0) mark_value(node->slots[index], epoch);
-    else mark_list_node(node->slots[index], epoch);
+static void mark_push(void *pointer, AllocationKind kind) {
+  if (!pointer) return;
+  AllocationHeader *header = allocation_header(pointer);
+  if (header->kind != kind) allocation_graph_inconsistent();
+  AllocationArea *area = header->area;
+  if (area->scope != collecting_scope) {
+    if (area->heap != collecting_scope->heap && area->role != AREA_STATIC) collecting_foreign = true;
+    return;
   }
+  if (area->role == AREA_SURVIVOR && !collecting_full) return;
+  if (header->mark_epoch == collecting_epoch) return;
+  header->mark_epoch = collecting_epoch;
+  ++collecting_scope->scanned_allocations;
+  pointer_stack_push(&mark_stack, pointer);
 }
 
-static void mark_map(MapNode *node, uint64_t epoch) {
-  if (!node || !mark_allocation(node, epoch, ALLOCATION_MAP_NODE)) return;
-  mark_value(node->key, epoch);
-  mark_value(node->value, epoch);
-  mark_map(node->left, epoch);
-  mark_map(node->right, epoch);
-}
-
-static void mark_value(ChimiValue *value, uint64_t epoch) {
-  if (!value || !mark_allocation(value, epoch, ALLOCATION_VALUE)) return;
-  switch (value->kind) {
-    case VALUE_TEXT: mark_allocation((void *)value->as.text, epoch, ALLOCATION_BYTES); break;
-    case VALUE_LIST:
-      mark_list_node(value->as.list.vector.root, epoch);
-      mark_list_node(value->as.list.vector.tail, epoch);
+static void mark_children(void *pointer) {
+  AllocationHeader *header = allocation_header(pointer);
+  switch (header->kind) {
+    case ALLOCATION_VALUE: {
+      ChimiValue *value = pointer;
+      switch (value->kind) {
+        case VALUE_TEXT: mark_push((void *)value->as.text, ALLOCATION_BYTES); break;
+        case VALUE_JSON_NUMBER: mark_push((void *)value->as.json_number, ALLOCATION_BYTES); break;
+        case VALUE_LIST:
+          mark_push(value->as.list.vector.root, ALLOCATION_LIST_NODE);
+          mark_push(value->as.list.vector.tail, ALLOCATION_LIST_NODE);
+          break;
+        case VALUE_RECORD: mark_push(value->as.record.fields, ALLOCATION_FIELDS); break;
+        case VALUE_CONSTRUCTED: mark_push(value->as.constructed.fields, ALLOCATION_FIELDS); break;
+        case VALUE_CALLABLE: mark_push(value->as.callable, ALLOCATION_CALLABLE); break;
+        case VALUE_MAP: mark_push(value->as.map, ALLOCATION_MAP_NODE); break;
+        case VALUE_TASK:
+        case VALUE_CHANNEL_SENDER:
+        case VALUE_CHANNEL_RECEIVER:
+        case VALUE_CHANNEL_COMPLETION:
+        case VALUE_VOID:
+        case VALUE_INTEGER:
+        case VALUE_FLOAT:
+        case VALUE_BOOLEAN: break;
+      }
       break;
-    case VALUE_RECORD: mark_fields(value->as.record.fields, epoch); break;
-    case VALUE_CONSTRUCTED: mark_fields(value->as.constructed.fields, epoch); break;
-    case VALUE_CALLABLE: mark_callable(value->as.callable, epoch); break;
-    case VALUE_MAP: mark_map(value->as.map, epoch); break;
-    case VALUE_JSON_NUMBER:
-      mark_allocation((void *)value->as.json_number, epoch, ALLOCATION_BYTES); break;
-    case VALUE_TASK:
-    case VALUE_CHANNEL_SENDER:
-    case VALUE_CHANNEL_RECEIVER:
-    case VALUE_CHANNEL_COMPLETION: break;
-    case VALUE_VOID:
-    case VALUE_INTEGER:
-    case VALUE_FLOAT:
-    case VALUE_BOOLEAN: break;
+    }
+    case ALLOCATION_LIST_NODE: {
+      ListNode *node = pointer;
+      AllocationKind kind = node->height == 0 ? ALLOCATION_VALUE : ALLOCATION_LIST_NODE;
+      for (uint32_t index = 0; index < node->count; ++index) mark_push(node->slots[index], kind);
+      break;
+    }
+    case ALLOCATION_FIELDS: {
+      RuntimeField *fields = pointer;
+      size_t length = header->bytes / sizeof(*fields);
+      for (size_t index = 0; index < length; ++index) mark_push(fields[index].value, ALLOCATION_VALUE);
+      break;
+    }
+    case ALLOCATION_VALUE_POINTERS: {
+      ChimiValue **values = pointer;
+      size_t length = header->bytes / sizeof(*values);
+      for (size_t index = 0; index < length; ++index) mark_push(values[index], ALLOCATION_VALUE);
+      break;
+    }
+    case ALLOCATION_ENVIRONMENT: {
+      ChimiEnvironment *environment = pointer;
+      mark_push(environment->locals, ALLOCATION_VALUE_POINTERS);
+      mark_push(environment->requirements, ALLOCATION_VALUE_POINTERS);
+      break;
+    }
+    case ALLOCATION_CALLABLE: {
+      ChimiCallable *callable = pointer;
+      mark_push(callable->environment, ALLOCATION_ENVIRONMENT);
+      mark_push(callable->inner, ALLOCATION_CALLABLE);
+      break;
+    }
+    case ALLOCATION_MAP_NODE: {
+      MapNode *node = pointer;
+      mark_push(node->key, ALLOCATION_VALUE);
+      mark_push(node->value, ALLOCATION_VALUE);
+      mark_push(node->left, ALLOCATION_MAP_NODE);
+      mark_push(node->right, ALLOCATION_MAP_NODE);
+      break;
+    }
+    case ALLOCATION_CONTROL: mark_push(((ChimiControl *)pointer)->value, ALLOCATION_VALUE); break;
+    case ALLOCATION_BYTES: break;
+    case ALLOCATION_FRAME_ENVIRONMENT:
+    case ALLOCATION_KIND_COUNT: allocation_graph_inconsistent();
   }
-}
-
-static void mark_control(ChimiControl *control, uint64_t epoch) {
-  if (!control || !mark_allocation(control, epoch, ALLOCATION_CONTROL)) return;
-  mark_value(control->value, epoch);
 }
 
 static void allocation_scope_begin(AllocationScope *scope) {
   memset(scope, 0, sizeof(*scope));
-  scope->parent = current_allocation_scope;
-  current_allocation_scope = scope;
+  RuntimeHeap *heap = current_heap;
+  scope->heap = heap;
+  scope->parent = heap->innermost;
+  scope->young = (AllocationArea){.role = AREA_YOUNG, .heap = heap, .scope = scope};
+  scope->survivors = (AllocationArea){.role = AREA_SURVIVOR, .heap = heap, .scope = scope};
+  heap->innermost = scope;
 }
 
-/* Frees the allocations in `list` not marked in `epoch` and returns their bytes. */
-static size_t free_unmarked(AllocationHeader **list, uint64_t epoch) {
-  size_t freed = 0;
-  while (*list) {
-    AllocationHeader *header = *list;
-    if (header->mark_epoch == epoch) {
-      list = &header->next;
+/* Moves the marked allocations of a young `area` to the survivors and frees the rest. */
+static void promote_marked(AllocationScope *scope, AllocationArea *area) {
+  AllocationHeader *header = area->allocations;
+  while (header) {
+    AllocationHeader *next = header->next;
+    if (header->mark_epoch == collecting_epoch) {
+      area_link(&scope->survivors, header);
+      scope->promoted_bytes += header->bytes;
     } else {
-      *list = header->next;
-      freed += header->bytes;
-      free(header);
+      scope->live_bytes -= header->bytes;
+      release_allocation(header);
     }
+    header = next;
   }
-  return freed;
+  area->allocations = NULL;
+  area->bytes = 0;
+  area->count = 0;
 }
 
-/* Frees what `value` and `control` do not reach. With `window_copies` false, window
-   copies are neither marked nor freed: they reach only enclosing scopes, so skipping
-   them loses no path to this scope's other allocations. */
-static void allocation_scope_sweep(AllocationScope *scope, ChimiValue *value,
-                                   ChimiControl *control, bool window_copies) {
-  uint64_t epoch = next_mark_epoch++;
+/* Frees the survivors that this full pass did not mark. */
+static void sweep_survivors(AllocationScope *scope) {
+  AllocationArea *area = &scope->survivors;
+  AllocationHeader **link = &area->allocations;
+  while (*link) {
+    AllocationHeader *header = *link;
+    if (header->mark_epoch == collecting_epoch) {
+      link = &header->next;
+      continue;
+    }
+    *link = header->next;
+    area->bytes -= header->bytes;
+    --area->count;
+    scope->live_bytes -= header->bytes;
+    release_allocation(header);
+  }
+}
+
+/* One pass over `scope`, keeping what `value` and `control` reach. A minor pass
+   costs O(allocations since the last pass): it marks young allocations only and
+   promotes the marked ones. A full pass also marks and sweeps the survivors.
+   Returns HEAP_FOREIGN_POINTER, after collecting as usual, when a root reaches a
+   value in another heap or in a fragment. */
+static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue *value,
+                                         ChimiControl *control, bool full) {
+  collecting_epoch = next_mark_epoch++;
   if (next_mark_epoch == 0) {
     fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); exit(70);
   }
   collecting_scope = scope;
-  collecting_window_copies = window_copies;
-  mark_value(value, epoch);
-  mark_control(control, epoch);
+  collecting_full = full;
+  collecting_foreign = false;
+  mark_push(value, ALLOCATION_VALUE);
+  mark_push(control, ALLOCATION_CONTROL);
+  while (mark_stack.length) mark_children(mark_stack.items[--mark_stack.length]);
+  bool foreign = collecting_foreign;
+  promote_marked(scope, &scope->young);
+  while (scope->adopted) {
+    AllocationArea *area = scope->adopted;
+    scope->adopted = area->next;
+    promote_marked(scope, area);
+    area_free(area);
+  }
+  if (full) {
+    sweep_survivors(scope);
+    ++scope->full_collections;
+  }
   collecting_scope = NULL;
-  collecting_window_copies = false;
-  scope->live_bytes -= free_unmarked(&scope->allocations, epoch);
-  if (window_copies) {
-    size_t freed = free_unmarked(&scope->window_copies, epoch);
-    scope->live_bytes -= freed;
-    scope->window_copy_bytes -= freed;
-  }
   ++scope->collections;
+  return foreign ? HEAP_FOREIGN_POINTER : HEAP_OK;
 }
 
-/* Window copies made since the last sweep that included them are swept once they
-   reach twice the copy bytes that survived it (and at least LIST_COPY_SWEEP_BYTES).
-   Each such sweep marks at most that many copy bytes, so it costs O(1) per copied
-   byte amortized, and draining a list stays linear while its garbage copies are freed. */
-enum { LIST_COPY_SWEEP_BYTES = 64 * 1024 };
-static void allocation_scope_collect(AllocationScope *scope, ChimiValue *value,
-                                     ChimiControl *control) {
-  bool window_copies = scope->window_copy_bytes >= scope->window_copy_limit;
-  allocation_scope_sweep(scope, value, control, window_copies);
-  if (!window_copies) return;
-  scope->window_copy_limit = 2 * scope->window_copy_bytes;
-  if (scope->window_copy_limit < LIST_COPY_SWEEP_BYTES)
-    scope->window_copy_limit = LIST_COPY_SWEEP_BYTES;
-}
-
-/* Callers sweep the scope, window copies included, before ending it. The survivors
-   join the parent as ordinary allocations, because a copy's elements may live in the
-   parent itself. */
-static void allocation_scope_end(AllocationScope *scope) {
-  current_allocation_scope = scope->parent;
-  while (scope->window_copies) {
-    AllocationHeader *header = scope->window_copies;
-    scope->window_copies = header->next;
-    header->window_copy = false;
-    header->next = scope->allocations;
-    scope->allocations = header;
+/* A pass boundary: chooses a minor or a full pass (see full_baseline). */
+static HeapStatus allocation_scope_collect(AllocationScope *scope, ChimiValue *value,
+                                           ChimiControl *control) {
+  size_t survivors = scope->survivors.bytes;
+  bool full = scope->has_baseline && survivors >= 2 * scope->full_baseline &&
+              survivors - scope->full_baseline >= REGION_FULL_MIN_GROWTH;
+  HeapStatus status = allocation_scope_sweep(scope, value, control, full);
+  if (full || (!scope->has_baseline && scope->survivors.bytes != 0)) {
+    scope->has_baseline = true;
+    scope->full_baseline = scope->survivors.bytes;
   }
-  for (AllocationHeader *header = scope->allocations; header; header = header->next)
-    header->scope = scope->parent;
-  if (!scope->parent || !scope->allocations) return;
-  size_t nested_peak = scope->parent->live_bytes + scope->peak_live_bytes;
-  if (nested_peak > scope->parent->peak_live_bytes)
-    scope->parent->peak_live_bytes = nested_peak;
-  AllocationHeader *tail = scope->allocations;
-  while (tail->next) tail = tail->next;
-  tail->next = scope->parent->allocations;
-  scope->parent->allocations = scope->allocations;
-  scope->parent->live_bytes += scope->live_bytes;
-  scope->parent->total_allocated_bytes += scope->total_allocated_bytes;
+  return status;
+}
+
+/* Region exit: a full pass keeps what `value` and `control` reach, and the survivors
+   join the enclosing region's young generation, or the heap's base area. */
+static HeapStatus allocation_scope_end(AllocationScope *scope, ChimiValue *value,
+                                       ChimiControl *control) {
+  HeapStatus status = allocation_scope_sweep(scope, value, control, true);
+  RuntimeHeap *heap = scope->heap;
+  AllocationScope *parent = scope->parent;
+  heap->innermost = parent;
+  area_merge(parent ? &parent->young : &heap->base, &scope->survivors);
+  if (!parent) return status;
+  size_t nested_peak = parent->live_bytes + scope->peak_live_bytes;
+  if (nested_peak > parent->peak_live_bytes) parent->peak_live_bytes = nested_peak;
+  parent->live_bytes += scope->live_bytes;
+  parent->total_allocated_bytes += scope->total_allocated_bytes;
   for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
-    scope->parent->allocated_bytes_by_kind[kind] += scope->allocated_bytes_by_kind[kind];
-  scope->parent->collections += scope->collections;
+    parent->allocated_bytes_by_kind[kind] += scope->allocated_bytes_by_kind[kind];
+  parent->collections += scope->collections;
+  parent->full_collections += scope->full_collections;
+  parent->scanned_allocations += scope->scanned_allocations;
+  parent->promoted_bytes += scope->promoted_bytes;
+  return status;
+}
+
+/* Fragments: copies for a transfer between owners. A copy keeps sharing through a
+   forwarding table, so it is linear in distinct allocations, and it rebuilds each
+   List window as a compact vector, so sending a short slice of a long list copies
+   only the slice. Static constants are shared, not copied. */
+enum { COPY_INLINE_SLOTS = 16 };
+typedef struct {
+  /* The copy's source: every allocation of `source_heap`, or of `source_area`. */
+  RuntimeHeap *source_heap;
+  const AllocationArea *source_area;
+  AllocationArea *target;
+  void **keys;
+  void **copies;
+  size_t capacity;
+  size_t count;
+  HeapStatus status;
+  /* Small messages fit the inline table, so copying one allocates nothing else. */
+  void *inline_keys[COPY_INLINE_SLOTS];
+  void *inline_copies[COPY_INLINE_SLOTS];
+} FragmentCopy;
+
+/* Copies that copy_scan still has to redirect. Copying never yields, so one stack,
+   kept between copies, serves every heap. */
+static PointerStack copy_pending;
+
+static size_t pointer_slot(const void *pointer, size_t capacity) {
+  uint64_t hash = (uint64_t)(uintptr_t)pointer * UINT64_C(0x9E3779B97F4A7C15);
+  return (size_t)(hash >> 20) & (capacity - 1);
+}
+
+static void copy_table_insert(FragmentCopy *copy, void *key, void *value) {
+  if (2 * (copy->count + 1) > copy->capacity) {
+    size_t capacity = copy->capacity * 2;
+    void **keys = calloc(capacity, sizeof(*keys));
+    void **copies = calloc(capacity, sizeof(*copies));
+    if (!keys || !copies) exhausted_memory();
+    for (size_t index = 0; index < copy->capacity; ++index) {
+      if (!copy->keys[index]) continue;
+      size_t slot = pointer_slot(copy->keys[index], capacity);
+      while (keys[slot]) slot = (slot + 1) & (capacity - 1);
+      keys[slot] = copy->keys[index];
+      copies[slot] = copy->copies[index];
+    }
+    if (copy->keys != copy->inline_keys) {
+      free(copy->keys);
+      free(copy->copies);
+    }
+    copy->keys = keys;
+    copy->copies = copies;
+    copy->capacity = capacity;
+  }
+  size_t slot = pointer_slot(key, copy->capacity);
+  while (copy->keys[slot]) slot = (slot + 1) & (copy->capacity - 1);
+  copy->keys[slot] = key;
+  copy->copies[slot] = value;
+  ++copy->count;
+}
+
+static void *copy_table_find(const FragmentCopy *copy, const void *key) {
+  size_t slot = pointer_slot(key, copy->capacity);
+  while (copy->keys[slot]) {
+    if (copy->keys[slot] == key) return copy->copies[slot];
+    slot = (slot + 1) & (copy->capacity - 1);
+  }
+  return NULL;
+}
+
+static bool copy_owns(const FragmentCopy *copy, const AllocationArea *area) {
+  return copy->source_area ? area == copy->source_area : area->heap == copy->source_heap;
+}
+
+/* The copy of `pointer`, made on first sight and queued for copy_scan. */
+static void *copy_forward(FragmentCopy *copy, void *pointer, AllocationKind kind) {
+  if (!pointer) return NULL;
+  AllocationHeader *header = allocation_header(pointer);
+  if (header->kind != kind) allocation_graph_inconsistent();
+  if (header->area->role == AREA_STATIC) return pointer;
+  if (!copy_owns(copy, header->area)) {
+    copy->status = HEAP_FOREIGN_POINTER;
+    return NULL;
+  }
+  void *existing = copy_table_find(copy, pointer);
+  if (existing) return existing;
+  AllocationArea *previous = allocation_target;
+  allocation_target = copy->target;
+  void *duplicate = allocate(header->bytes, 1);
+  allocation_target = previous;
+  allocation_kind(duplicate, kind);
+  memcpy(duplicate, pointer, header->bytes);
+  copy_table_insert(copy, pointer, duplicate);
+  pointer_stack_push(&copy_pending, duplicate);
+  return duplicate;
+}
+
+static void copy_list_window(FragmentCopy *copy, ChimiValue *list) {
+  ListVector source = list->as.list.vector;
+  AllocationHeader *root = allocation_header(source.root), *tail = allocation_header(source.tail);
+  if ((root && root->area->role != AREA_STATIC && !copy_owns(copy, root->area)) ||
+      (tail && tail->area->role != AREA_STATIC && !copy_owns(copy, tail->area))) {
+    copy->status = HEAP_FOREIGN_POINTER;
+    list->as.list.vector = (ListVector){NULL, NULL, 0};
+    list->as.list.start = list->as.list.length = 0;
+    return;
+  }
+  uint32_t length = list->as.list.length;
+  ChimiValue **values = malloc(((size_t)length + 1) * sizeof(*values));
+  if (!values) exhausted_memory();
+  for (uint32_t index = 0; index < length; ++index)
+    values[index] = copy_forward(copy, list_get(list, index), ALLOCATION_VALUE);
+  AllocationArea *previous = allocation_target;
+  allocation_target = copy->target;
+  list->as.list.vector = vector_from_values(values, length);
+  allocation_target = previous;
+  list->as.list.start = 0;
+  free(values);
+}
+
+/* Redirects the pointers of a fresh duplicate from its source's graph to copies. */
+static void copy_scan(FragmentCopy *copy, void *duplicate) {
+  AllocationHeader *header = allocation_header(duplicate);
+  switch (header->kind) {
+    case ALLOCATION_VALUE: {
+      ChimiValue *value = duplicate;
+      switch (value->kind) {
+        case VALUE_TEXT:
+          value->as.text = copy_forward(copy, (void *)value->as.text, ALLOCATION_BYTES); break;
+        case VALUE_JSON_NUMBER:
+          value->as.json_number = copy_forward(copy, (void *)value->as.json_number, ALLOCATION_BYTES);
+          break;
+        case VALUE_LIST: copy_list_window(copy, value); break;
+        case VALUE_RECORD:
+          value->as.record.fields = copy_forward(copy, value->as.record.fields, ALLOCATION_FIELDS);
+          break;
+        case VALUE_CONSTRUCTED:
+          value->as.constructed.fields =
+            copy_forward(copy, value->as.constructed.fields, ALLOCATION_FIELDS);
+          break;
+        case VALUE_CALLABLE:
+          value->as.callable = copy_forward(copy, value->as.callable, ALLOCATION_CALLABLE); break;
+        case VALUE_MAP: value->as.map = copy_forward(copy, value->as.map, ALLOCATION_MAP_NODE); break;
+        case VALUE_TASK:
+        case VALUE_CHANNEL_SENDER:
+        case VALUE_CHANNEL_RECEIVER:
+        case VALUE_CHANNEL_COMPLETION:
+        case VALUE_VOID:
+        case VALUE_INTEGER:
+        case VALUE_FLOAT:
+        case VALUE_BOOLEAN: break;
+      }
+      break;
+    }
+    case ALLOCATION_FIELDS: {
+      RuntimeField *fields = duplicate;
+      size_t length = header->bytes / sizeof(*fields);
+      for (size_t index = 0; index < length; ++index)
+        fields[index].value = copy_forward(copy, fields[index].value, ALLOCATION_VALUE);
+      break;
+    }
+    case ALLOCATION_VALUE_POINTERS: {
+      ChimiValue **values = duplicate;
+      size_t length = header->bytes / sizeof(*values);
+      for (size_t index = 0; index < length; ++index)
+        values[index] = copy_forward(copy, values[index], ALLOCATION_VALUE);
+      break;
+    }
+    case ALLOCATION_ENVIRONMENT: {
+      ChimiEnvironment *environment = duplicate;
+      environment->locals = copy_forward(copy, environment->locals, ALLOCATION_VALUE_POINTERS);
+      environment->requirements =
+        copy_forward(copy, environment->requirements, ALLOCATION_VALUE_POINTERS);
+      break;
+    }
+    case ALLOCATION_CALLABLE: {
+      ChimiCallable *callable = duplicate;
+      callable->environment = copy_forward(copy, callable->environment, ALLOCATION_ENVIRONMENT);
+      callable->inner = copy_forward(copy, callable->inner, ALLOCATION_CALLABLE);
+      break;
+    }
+    case ALLOCATION_MAP_NODE: {
+      MapNode *node = duplicate;
+      node->key = copy_forward(copy, node->key, ALLOCATION_VALUE);
+      node->value = copy_forward(copy, node->value, ALLOCATION_VALUE);
+      node->left = copy_forward(copy, node->left, ALLOCATION_MAP_NODE);
+      node->right = copy_forward(copy, node->right, ALLOCATION_MAP_NODE);
+      break;
+    }
+    case ALLOCATION_CONTROL: {
+      ChimiControl *control = duplicate;
+      control->value = copy_forward(copy, control->value, ALLOCATION_VALUE);
+      break;
+    }
+    case ALLOCATION_BYTES: break;
+    case ALLOCATION_LIST_NODE:
+    case ALLOCATION_FRAME_ENVIRONMENT:
+    case ALLOCATION_KIND_COUNT: allocation_graph_inconsistent();
+  }
+}
+
+/* Copies the graphs under `roots` into `target`, writing the copied roots to `out`. */
+static HeapStatus copy_graph(FragmentCopy *copy, void *const *roots, const AllocationKind *kinds,
+                             uint32_t count, void **out) {
+  memset(copy->inline_keys, 0, sizeof(copy->inline_keys));
+  copy->keys = copy->inline_keys;
+  copy->copies = copy->inline_copies;
+  copy->capacity = COPY_INLINE_SLOTS;
+  for (uint32_t index = 0; index < count; ++index)
+    out[index] = copy_forward(copy, roots[index], kinds[index]);
+  while (copy_pending.length) copy_scan(copy, copy_pending.items[--copy_pending.length]);
+  if (copy->keys != copy->inline_keys) {
+    free(copy->keys);
+    free(copy->copies);
+  }
+  return copy->status;
+}
+
+static size_t fragment_footprint(const RuntimeFragment *fragment) {
+  return sizeof(*fragment) + fragment->area.bytes +
+         fragment->area.count * sizeof(AllocationHeader);
+}
+
+/* Transfer boundary. Requires: the current heap owns every value under `roots`, or
+   they are static. Ensures: a detached fragment holding one copy of the graph.
+   Returns HEAP_FOREIGN_POINTER, and no fragment, if the graph leaves the heap. */
+static HeapStatus fragment_copy(void *const *roots, const AllocationKind *kinds, uint32_t count,
+                                RuntimeFragment **out) {
+  if (count > FRAGMENT_ROOTS) abort();
+  RuntimeFragment *fragment = small_block_take(sizeof(*fragment));
+  fragment->area.role = AREA_FRAGMENT;
+  fragment->root_count = count;
+  ++heap_totals.live_fragments;
+  footprint_add(sizeof(*fragment));
+  fragment_footprint_add(sizeof(*fragment));
+  FragmentCopy copy = {.source_heap = current_heap, .target = &fragment->area};
+  HeapStatus status = copy_graph(&copy, roots, kinds, count, fragment->roots);
+  if (status != HEAP_OK) {
+    heap_totals.fragment_footprint_bytes -= fragment_footprint(fragment);
+    area_release_all(&fragment->area);
+    --heap_totals.live_fragments;
+    area_free(&fragment->area);
+    *out = NULL;
+    return status;
+  }
+  *out = fragment;
+  return HEAP_OK;
+}
+
+/* Hands the fragment's allocations to the current heap's innermost region (or its
+   base area) in O(1), without copying, and writes its roots to `roots`. Consumes it. */
+static void fragment_adopt(RuntimeFragment *fragment, void **roots) {
+  for (uint32_t index = 0; index < fragment->root_count; ++index) roots[index] = fragment->roots[index];
+  heap_totals.fragment_footprint_bytes -= fragment_footprint(fragment);
+  --heap_totals.live_fragments;
+  AllocationArea *area = &fragment->area;
+  RuntimeHeap *heap = current_heap;
+  AllocationScope *scope = heap->innermost;
+  area->heap = heap;
+  if (scope) {
+    area->role = AREA_YOUNG;
+    area->scope = scope;
+    area->next = scope->adopted;
+    scope->adopted = area;
+    scope_add_live(scope, area->bytes);
+  } else {
+    area->role = AREA_BASE;
+    area->next = heap->adopted;
+    heap->adopted = area;
+    unscoped_allocated_bytes += area->bytes;
+  }
+}
+
+/* Copies the fragment's graph into the current area, keeping sharing, and leaves the
+   fragment intact, so it can be copied again (Task.result). O(fragment). */
+static void fragment_copy_into_current(const RuntimeFragment *fragment, void **roots) {
+  AllocationKind kinds[FRAGMENT_ROOTS];
+  for (uint32_t index = 0; index < fragment->root_count; ++index)
+    kinds[index] = allocation_header(fragment->roots[index])->kind;
+  FragmentCopy copy = {.source_area = &fragment->area, .target = current_area()};
+  if (copy_graph(&copy, fragment->roots, kinds, fragment->root_count, roots) != HEAP_OK)
+    allocation_graph_inconsistent();
+}
+
+/* Discards an unadopted fragment, for example a message handed back to its sender. */
+static void fragment_free(RuntimeFragment *fragment) {
+  heap_totals.fragment_footprint_bytes -= fragment_footprint(fragment);
+  --heap_totals.live_fragments;
+  area_release_all(&fragment->area);
+  area_free(&fragment->area);
 }
 
 static const ChimiFunction *find_function(uint32_t symbol) {
@@ -1819,22 +2374,28 @@ static ChimiControl *invoke_line_callback(ChimiRuntime *runtime, ChimiCallable *
   return invoke(runtime, callback, arguments, 2, span, call_node, environment);
 }
 
-/* Ends a reclaiming scope, keeping only what `control` reaches. Only an outermost
-   scope reports to the runtime, because a nested scope's statistics already merge
-   into its parent. */
-static void end_measured_allocation_scope(ChimiRuntime *runtime, AllocationScope *scope,
-                                          ChimiControl *control) {
+static const char *const FOREIGN_POINTER_DEFECT =
+  "Chimi runtime heap invariant violated: a value points into another heap";
+
+/* Ends a reclaiming scope, keeping only what `control` reaches, and returns the
+   control the scope's owner should produce: `control`, or a defect when the scope
+   reached into another heap. Only an outermost scope reports to the runtime,
+   because a nested scope's statistics already merge into its parent. */
+static ChimiControl *end_measured_allocation_scope(ChimiRuntime *runtime, AllocationScope *scope,
+                                                   ChimiControl *control) {
   bool top_scope = scope->parent == NULL;
-  allocation_scope_sweep(scope, NULL, control, true);
-  allocation_scope_end(scope);
-  if (!top_scope) return;
-  runtime->scoped_total_allocated_bytes += scope->total_allocated_bytes;
-  for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
-    runtime->scoped_allocated_bytes_by_kind[kind] += scope->allocated_bytes_by_kind[kind];
-  if (scope->peak_live_bytes > runtime->scoped_peak_live_bytes)
-    runtime->scoped_peak_live_bytes = scope->peak_live_bytes;
-  runtime->scoped_retained_bytes += scope->live_bytes;
-  runtime->scoped_collections += scope->collections;
+  HeapStatus status = allocation_scope_end(scope, NULL, control);
+  if (top_scope) {
+    runtime->scoped_total_allocated_bytes += scope->total_allocated_bytes;
+    for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
+      runtime->scoped_allocated_bytes_by_kind[kind] += scope->allocated_bytes_by_kind[kind];
+    if (scope->peak_live_bytes > runtime->scoped_peak_live_bytes)
+      runtime->scoped_peak_live_bytes = scope->peak_live_bytes;
+    runtime->scoped_retained_bytes += scope->live_bytes;
+    runtime->scoped_collections += scope->collections;
+    runtime->scoped_full_collections += scope->full_collections;
+  }
+  return status == HEAP_OK ? control : defect(FOREIGN_POINTER_DEFECT, -1);
 }
 
 static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **arguments,
@@ -1907,8 +2468,7 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
     control = host_file_message(CHIMI_CONSTRUCTOR_FILE_CLOSE, path, strerror(errno));
     allocation_scope_collect(&allocation_scope, NULL, control);
   }
-  end_measured_allocation_scope(runtime, &allocation_scope, control);
-  return control;
+  return end_measured_allocation_scope(runtime, &allocation_scope, control);
 }
 
 static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
@@ -2622,7 +3182,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
 }
 
 /* Module constants, decoded from CHIMI_CONSTANT_VALUES before the entry runs. They are
-   allocated outside every allocation scope, so no collection frees them, and values are
+   allocated in the static area, so no collection frees them, and values are
    immutable, so every task shares them. Decoding cannot fail and emits no events. */
 static ChimiValue **constant_values;
 
@@ -2687,6 +3247,7 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
     case CHIMI_CONSTANT_CLOSURE: {
       const ChimiNode *node = &CHIMI_NODES[raw->a];
       ChimiEnvironment *environment = new_environment();
+      allocation_kind(environment, ALLOCATION_ENVIRONMENT);
       for (uint32_t i = 0; i < raw->length; ++i)
         environment->locals[environment_slot(ids[2 * i])] = constant_values[ids[2 * i + 1]];
       callable->kind = CALL_CLOSURE; callable->body = node->a;
@@ -2700,9 +3261,12 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
 }
 
 static void decode_constants(void) {
+  AllocationArea *previous = allocation_target;
+  allocation_target = &static_area;
   constant_values = allocate(CHIMI_CONSTANT_VALUE_COUNT, sizeof(*constant_values));
   for (uint32_t i = 0; i < CHIMI_CONSTANT_VALUE_COUNT; ++i)
     constant_values[i] = decode_constant(&CHIMI_CONSTANT_VALUES[i]);
+  allocation_target = previous;
 }
 
 static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
@@ -3082,7 +3646,10 @@ NODE_WRAPPER(loop, "loop", {
     ChimiControl *pass = RUN(node->c);
     if (pass->kind == CONTROL_SUCCESS) {
       state = pass->value;
-      if (reclaims) allocation_scope_collect(&passes, state, NULL);
+      if (reclaims && allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {
+        result = defect(FOREIGN_POINTER_DEFECT, (int64_t)node_id);
+        break;
+      }
       continue;
     }
     if (pass->kind == CONTROL_BREAK && pass->node == (int64_t)node->a) {
@@ -3092,7 +3659,7 @@ NODE_WRAPPER(loop, "loop", {
     }
     break;
   }
-  if (reclaims) end_measured_allocation_scope(runtime, &passes, result);
+  if (reclaims) result = end_measured_allocation_scope(runtime, &passes, result);
 })
 NODE_WRAPPER(break, "break", {
   const ChimiNode *node = &CHIMI_NODES[node_id];
@@ -3144,12 +3711,15 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           "\"controls\":%zu,\"environments\":%zu,\"value_pointers\":%zu,"
           "\"fields\":%zu,\"callables\":%zu,\"map_nodes\":%zu,\"list_nodes\":%zu},"
           "\"scoped_peak_live_bytes\":%zu,\"scoped_retained_bytes\":%zu,"
-          "\"scoped_collections\":%" PRIu64 ",\"unscoped_allocated_bytes\":%zu}\n",
+          "\"scoped_collections\":%" PRIu64 ",\"scoped_full_collections\":%" PRIu64
+          ",\"unscoped_allocated_bytes\":%zu,\"peak_footprint_bytes\":%zu,"
+          "\"peak_fragment_footprint_bytes\":%zu}\n",
           runtime->scoped_total_allocated_bytes,
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_BYTES],
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_VALUE],
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_CONTROL],
-          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_ENVIRONMENT],
+          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_ENVIRONMENT] +
+            runtime->scoped_allocated_bytes_by_kind[ALLOCATION_FRAME_ENVIRONMENT],
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_VALUE_POINTERS],
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_FIELDS],
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_CALLABLE],
@@ -3158,7 +3728,10 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           runtime->scoped_peak_live_bytes,
           runtime->scoped_retained_bytes,
           runtime->scoped_collections,
-          unscoped_allocated_bytes);
+          runtime->scoped_full_collections,
+          unscoped_allocated_bytes,
+          heap_totals.peak_footprint_bytes,
+          heap_totals.peak_fragment_footprint_bytes);
   return close_output(output);
 }
 

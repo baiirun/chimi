@@ -2437,6 +2437,59 @@ fn native_list_is_a_persistent_vector() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// The prototype's heap scenarios against runtime.c: pass cost independent of old
+// survivors, flat memory over a million passes with bounded full passes, regions
+// and adoption composing, sharing-preserving and window-compacting copies,
+// non-consuming copies for Task.result, foreign pointers reported, small queued
+// messages, and teardown returning every allocation. AddressSanitizer turns a
+// freed-but-reachable value into a failure even when its bytes still look right.
+#[test]
+fn native_per_owner_heaps_meet_the_prototype_heap_contracts() {
+    let scratch = scratch_directory("native-heap");
+    let executable = scratch.join("native-heap");
+    let compile = |flags: &[&str]| {
+        Command::new("cc")
+            .arg("-std=c11")
+            .arg("-O1")
+            .arg("-g")
+            .args(flags)
+            .arg("-I")
+            .arg(repository_path("compiler/chimi/runtime/native"))
+            .arg("-I")
+            .arg(repository_path("runtime/chimi-fiber/include"))
+            .arg(format!(
+                "{}/tests/fixtures/native-heap.c",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .expect("compile native heap test")
+    };
+    let sanitized = compile(&["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]);
+    if !sanitized.status.success() {
+        let plain = compile(&[]);
+        assert!(
+            plain.status.success(),
+            "{}",
+            String::from_utf8_lossy(&plain.stderr)
+        );
+    }
+    let run = Command::new(&executable)
+        .env("ASAN_OPTIONS", "detect_leaks=0:abort_on_error=0")
+        .env("UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1")
+        .output()
+        .expect("run native heap test");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(stdout.ends_with("ok\n"), "{stdout}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // E18 on the native path: structural comparison of a list nested a million levels
 // deep keeps its work stack on the heap. Chimi programs cannot build such a value
 // in reasonable time yet, so this drives chimi_value_compare directly.

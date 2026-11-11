@@ -14,9 +14,10 @@
 
    The pool also enters and leaves a nested scope at random, as a loop inside a
    loop does. Slicing a version built in the enclosing scope from inside the
-   nested one makes a window copy, which ordinary collections skip and only
-   periodic full sweeps and the end of the nested scope reclaim; versions built
-   on both sides of the boundary keep sharing structure across it.
+   nested one compacts it in the enclosing scope's area, and versions built on
+   both sides of the boundary keep sharing structure across it. Versions that
+   survive a collection are promoted, so later minor collections skip them while
+   newer versions share their nodes, and periodic full collections sweep them.
 
    usage: native-list-fuzz SEED OPERATIONS
    Prints "fuzz ok ..." and exits 0, or prints the first mismatch and exits 1. */
@@ -139,8 +140,7 @@ static void collect_and_check_all(AllocationScope *scope, Version *versions) {
 /* Ends the nested scope as a loop does: a full sweep rooted at every version, after
    which the survivors join the enclosing scope. */
 static void leave_nested(AllocationScope *nested, Version *versions) {
-  allocation_scope_sweep(nested, NULL, success(all_versions(versions)), true);
-  allocation_scope_end(nested);
+  allocation_scope_end(nested, NULL, success(all_versions(versions)));
   check_all(versions);
 }
 
