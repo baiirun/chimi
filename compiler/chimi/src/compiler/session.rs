@@ -1,12 +1,14 @@
 use super::{ProjectSource, TypeArenaStats, TypeReport, resolve_project_sources};
 use crate::diagnostic::Diagnostic;
 use crate::ids::ModuleId;
+use crate::inspection::{InspectionError, InspectionReport, inspect};
 use crate::resolution::resolve_project;
 use crate::semantic::{self, SemanticModule, SemanticProject};
 use crate::source::SourceSnapshot;
 use crate::syntax::{self, ParseResult};
 use crate::typing::{TypedProject, check_project, check_project_incremental};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -48,6 +50,77 @@ impl IncrementalTypeReport {
 
     pub const fn statistics(&self) -> IncrementalStatistics {
         self.statistics
+    }
+
+    /// Answers cursor inspection from this report's retained typed snapshot.
+    ///
+    /// Ensures: the same syntax, reference, type, and channel facts as
+    /// `Compiler::inspect_project` over the same sources.
+    /// Must not: reparse, recheck, or seal; `executable_origin` is always absent.
+    pub fn inspect(
+        &self,
+        module_path: &str,
+        offset: usize,
+    ) -> Result<InspectionReport, InspectionError> {
+        inspect(&self.types.typed, module_path, offset)
+    }
+
+    /// Groups this report's diagnostics by owning module.
+    ///
+    /// Ensures: exactly one entry per analyzed module in module-path order,
+    /// including modules without diagnostics, so callers can clear stale ones.
+    pub fn diagnostics_by_module(&self) -> Vec<ModuleDiagnostics<'_>> {
+        let diagnostics = self.diagnostics();
+        let mut modules = self
+            .types
+            .typed
+            .resolved
+            .semantic
+            .modules
+            .iter()
+            .map(|module| {
+                let file_id = module.source.file_id();
+                ModuleDiagnostics {
+                    module_path: &module.path,
+                    source_path: module.source.path(),
+                    source_text: module.source.text(),
+                    diagnostics: diagnostics
+                        .iter()
+                        .filter(|diagnostic| diagnostic.file_id() == file_id)
+                        .collect(),
+                }
+            })
+            .collect::<Vec<_>>();
+        modules.sort_by(|left, right| left.module_path.cmp(right.module_path));
+        modules
+    }
+}
+
+/// The diagnostics one module owns in an analysis.
+#[derive(Debug)]
+pub struct ModuleDiagnostics<'report> {
+    module_path: &'report str,
+    source_path: &'report Path,
+    source_text: &'report str,
+    diagnostics: Vec<&'report Diagnostic>,
+}
+
+impl<'report> ModuleDiagnostics<'report> {
+    pub const fn module_path(&self) -> &'report str {
+        self.module_path
+    }
+
+    pub const fn source_path(&self) -> &'report Path {
+        self.source_path
+    }
+
+    /// The analyzed text that diagnostic byte ranges index into.
+    pub const fn source_text(&self) -> &'report str {
+        self.source_text
+    }
+
+    pub fn diagnostics(&self) -> &[&'report Diagnostic] {
+        &self.diagnostics
     }
 }
 
@@ -490,5 +563,66 @@ mod tests {
             incremental.contract("main", "first"),
             clean.contract("main", "first")
         );
+    }
+
+    /// Guards session inspection against drifting from the clean oracle,
+    /// including after an edit that the session rechecks incrementally.
+    /// No module declares `main`, so the clean path cannot seal and both
+    /// reports omit the executable origin.
+    #[test]
+    fn session_inspection_matches_clean_inspection_after_an_edit() {
+        let library = "pub fn shared(value: Int) -> Int { value }\n";
+        let user = "import lib as dependency\n\npub fn use(value: Int) -> Int { dependency.shared(value) }\n";
+        let edited = "import lib as dependency\n\npub fn use(count: Int) -> Int { dependency.shared(count) }\n";
+        let mut session = CompilerSession::new();
+        session.analyze_project(vec![module("lib", library), module("user", user)]);
+        let sources = vec![module("lib", library), module("user", edited)];
+        let report = session.analyze_project(sources.clone());
+
+        for needle in ["shared(count)", "count)", "dependency."] {
+            let offset = edited.rfind(needle).expect("needle is present");
+            let incremental = report.inspect("user", offset).expect("session inspection");
+            let clean = Compiler::inspect_project(sources.clone(), "user", offset)
+                .expect("clean inspection");
+            assert_eq!(incremental.render_json(), clean.render_json(), "{needle}");
+        }
+    }
+
+    /// Guards stale-diagnostic clearing: a module that became clean must still
+    /// appear, with an empty list, so an editor replaces its old diagnostics.
+    #[test]
+    fn diagnostics_by_module_lists_every_module_including_clean_ones() {
+        let report = CompilerSession::new().analyze_project(vec![
+            module("b", "pub fn broken() -> Int { missing() }\n"),
+            module("a", "pub fn fine() -> Int { 1 }\n"),
+        ]);
+        let grouped = report
+            .diagnostics_by_module()
+            .iter()
+            .map(|module| {
+                let codes = module
+                    .diagnostics()
+                    .iter()
+                    .map(|diagnostic| diagnostic.code())
+                    .collect::<Vec<_>>();
+                (
+                    module.module_path().to_owned(),
+                    module.source_path().to_owned(),
+                    codes,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(
+            (grouped[0].0.as_str(), grouped[0].1.to_str()),
+            ("a", Some("a.chimi"))
+        );
+        assert!(grouped[0].2.is_empty());
+        assert_eq!(
+            (grouped[1].0.as_str(), grouped[1].1.to_str()),
+            ("b", Some("b.chimi"))
+        );
+        assert!(!grouped[1].2.is_empty());
+        assert_eq!(grouped[1].2.len(), report.diagnostics().len());
     }
 }

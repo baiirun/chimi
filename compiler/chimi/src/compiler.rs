@@ -13,7 +13,9 @@ use crate::typing::{GenericKind, TypedProject, check, check_project};
 use std::sync::Arc;
 
 mod session;
-pub use session::{CompilerSession, IncrementalStatistics, IncrementalTypeReport};
+pub use session::{
+    CompilerSession, IncrementalStatistics, IncrementalTypeReport, ModuleDiagnostics,
+};
 
 #[derive(Clone, Debug)]
 pub struct ProjectSource {

@@ -51,6 +51,11 @@ impl StandardType {
         }
     }
 
+    #[cfg(any(
+        feature = "embedded-bytecode-prototype",
+        feature = "native-backend",
+        feature = "native-aot-prototype"
+    ))]
     pub(crate) const fn runtime_id(self) -> u32 {
         self as u32
     }
@@ -137,6 +142,11 @@ impl StandardFunction {
         }
     }
 
+    #[cfg(any(
+        feature = "embedded-bytecode-prototype",
+        feature = "native-backend",
+        feature = "native-aot-prototype"
+    ))]
     pub(crate) const fn runtime_id(self) -> u32 {
         self as u32
     }
@@ -258,6 +268,11 @@ impl StandardConstructor {
         }
     }
 
+    #[cfg(any(
+        feature = "embedded-bytecode-prototype",
+        feature = "native-backend",
+        feature = "native-aot-prototype"
+    ))]
     pub(crate) const fn runtime_id(self) -> u32 {
         self as u32
     }

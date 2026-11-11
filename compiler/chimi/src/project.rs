@@ -34,6 +34,18 @@ impl LoadedProject {
         root: impl AsRef<Path>,
         entry_module: impl Into<String>,
     ) -> Result<Self, ProjectLoadError> {
+        Self::load_with(root, entry_module, &FileSystemReader)
+    }
+
+    /// Loads a project like [`LoadedProject::load`], taking module text from `reader`.
+    ///
+    /// Ensures: module discovery, validation, and errors match `load`; only
+    /// where text comes from differs. Paths are still canonicalized on disk.
+    pub fn load_with(
+        root: impl AsRef<Path>,
+        entry_module: impl Into<String>,
+        reader: &dyn SourceReader,
+    ) -> Result<Self, ProjectLoadError> {
         let requested_root = root.as_ref();
         let root = requested_root
             .canonicalize()
@@ -49,6 +61,7 @@ impl LoadedProject {
         validate_module_path(entry_module.clone())?;
         let mut loader = Loader {
             root,
+            reader,
             states: HashMap::new(),
             files: HashMap::new(),
             stack: Vec::new(),
@@ -174,6 +187,23 @@ fn write_json_span(
     .expect("writing JSON to a string cannot fail");
 }
 
+/// Supplies module text during project loading, so editors can substitute
+/// unsaved buffers for files on disk.
+pub trait SourceReader {
+    /// Requires: `path` is canonical and inside the project root.
+    fn read(&self, path: &Path) -> io::Result<String>;
+}
+
+/// Reads module text from the filesystem.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FileSystemReader;
+
+impl SourceReader for FileSystemReader {
+    fn read(&self, path: &Path) -> io::Result<String> {
+        std::fs::read_to_string(path)
+    }
+}
+
 #[derive(Debug)]
 pub enum ProjectLoadError {
     InvalidModule(ProjectPathError),
@@ -261,15 +291,16 @@ enum LoadState {
     Loaded,
 }
 
-struct Loader {
+struct Loader<'reader> {
     root: PathBuf,
+    reader: &'reader dyn SourceReader,
     states: HashMap<String, LoadState>,
     files: HashMap<PathBuf, String>,
     stack: Vec<String>,
     modules: Vec<ProjectSource>,
 }
 
-impl Loader {
+impl Loader<'_> {
     fn load_module(&mut self, module_path: &str) -> Result<(), ProjectLoadError> {
         validate_module_path(module_path.to_owned())?;
         match self.states.get(module_path) {
@@ -315,12 +346,15 @@ impl Loader {
             self.files.insert(path.clone(), module_path.to_owned());
         }
 
-        let source =
-            SourceSnapshot::read(&path).map_err(|source| ProjectLoadError::ReadSource {
+        let text = self
+            .reader
+            .read(&path)
+            .map_err(|source| ProjectLoadError::ReadSource {
                 module: module_path.to_owned(),
                 path: path.clone(),
                 source,
             })?;
+        let source = SourceSnapshot::from_text(path.clone(), text);
         let module = ProjectSource::parsed(module_path, source)
             .expect("loaded module paths were validated before filesystem access");
         let imports = imports(&module);
@@ -370,7 +404,7 @@ fn validate_module_path(module_path: String) -> Result<(), ProjectLoadError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LoadedProject, ProjectLoadError};
+    use super::{LoadedProject, ProjectLoadError, SourceReader};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -512,5 +546,43 @@ mod tests {
             .expect_err("duplicate physical module fails");
         assert!(matches!(error, ProjectLoadError::DuplicateFile { .. }));
         assert!(error.to_string().contains("real and alias"));
+    }
+
+    struct Overlay {
+        path: PathBuf,
+        text: &'static str,
+    }
+
+    impl SourceReader for Overlay {
+        fn read(&self, path: &Path) -> std::io::Result<String> {
+            if path == self.path {
+                Ok(self.text.to_owned())
+            } else {
+                fs::read_to_string(path)
+            }
+        }
+    }
+
+    /// Guards that import discovery follows reader text, not disk text: the
+    /// unsaved entry imports a module that the saved entry does not.
+    #[test]
+    fn load_with_discovers_imports_from_reader_text() {
+        let fixture = TestDirectory::new();
+        fixture.write("app.chimi", "pub fn main() -> Int { 0 }");
+        fixture.write("lib/answer.chimi", "pub fn value() -> Int { 42 }");
+        let overlay = Overlay {
+            path: fixture.path().join("app.chimi").canonicalize().unwrap(),
+            text: "import lib/answer as Answer\npub fn main() -> Int { Answer.value() }",
+        };
+
+        let project = LoadedProject::load_with(fixture.path(), "app", &overlay).unwrap();
+
+        let modules = project
+            .sources()
+            .iter()
+            .map(|module| module.module_path().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(modules, ["lib/answer", "app"]);
+        assert_eq!(project.sources()[1].source().text(), overlay.text);
     }
 }
