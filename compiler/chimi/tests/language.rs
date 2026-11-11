@@ -1238,16 +1238,44 @@ fn separated_hexadecimal_and_binary_literals_have_their_values() {
     );
 }
 
-// N10
+// N10. `1.` and `.5` are not literals, so the parser reports what follows them: a
+// field name after `1.`, an expression at `.5`. The rest are literal diagnostics.
 #[test]
 fn malformed_number_literals_are_syntax_errors() {
-    for literal in [
-        "1.", ".5", "1__0", "_1", "1_", "0x", "0b102", "0xG", "017", "1.5_",
+    const SEPARATOR: &str = "S1001 `_` may appear only between two digits of a number";
+    const LEADING_ZERO: &str =
+        "S1001 a decimal literal cannot start with `0`; Chimi has no octal literals";
+    const HEXADECIMAL: &str = "S1001 a hexadecimal literal needs digits 0-9 and a-f after `0x`";
+    for (literal, expected) in [
+        ("1.", "S1001 expected identifier"),
+        (".5", "S1001 expected expression"),
+        ("1__0", SEPARATOR),
+        ("_1", SEPARATOR),
+        ("1_", SEPARATOR),
+        ("1.5_", SEPARATOR),
+        ("0x", HEXADECIMAL),
+        ("0xG", HEXADECIMAL),
+        (
+            "0b102",
+            "S1001 a binary literal needs digits 0 and 1 after `0b`",
+        ),
+        ("017", LEADING_ZERO),
     ] {
-        let codes = check_codes(&format!("pub fn main() -> Int {{ {literal} }}\n"));
-        assert!(
-            codes.iter().any(|code| code.starts_with('S')),
-            "{literal}: {codes:?}"
+        let source = format!("pub fn main() -> Int {{ {literal} }}\n");
+        let module = ProjectSource::new(
+            "main",
+            SourceSnapshot::from_text("main.chimi", source.as_str()),
+        )
+        .expect("valid module path");
+        let diagnostics = Compiler::type_project(vec![module])
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| format!("{} {}", diagnostic.code(), diagnostic.message()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            diagnostics.first().map(String::as_str),
+            Some(expected),
+            "{literal}: {diagnostics:?}"
         );
     }
 }
