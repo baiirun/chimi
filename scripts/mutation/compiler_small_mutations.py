@@ -46,7 +46,20 @@ MUTATIONS = [
         '                    self.type_error_range(module_id, "T4222", pattern.head_range(), message);',
         "                    let _ = message;",
     )], MULTI),
+    lang("an infallible later subject still has failing combinations", T, [(
+        "                                failure_types[outcome_indices[other]].is_none()\n"
+        "                                    || bits",
+        "                                false\n"
+        "                                    || bits",
+    )], MULTI),
     # ts-6c5e9e
+    lang("references ignore the clause alias", E, [(
+        "                    self.clause_parameter_aliases\n"
+        "                        .get(&symbol)\n"
+        "                        .copied()\n"
+        "                        .unwrap_or(symbol),",
+        "                    symbol,",
+    )], "clause_parameter_names_reach_closures_and_guards"),
     cli("clause bindings stay bindings", E, [(
         "                        self.clause_parameter_aliases.insert(*binding, *parameter);\n"
         "                        *pattern = CorePattern::Wildcard;",
