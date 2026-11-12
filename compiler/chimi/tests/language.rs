@@ -10040,7 +10040,7 @@ fn an_exclusive_binding_moves_into_the_value_built_from_it() {
             ("T4241", "r", "by Channel.send"),
             ("T4241", "r", "into `m`"),
             ("T4241", "inner", "into `outer`"),
-            ("T4241", "r", "into `m`"),
+            ("T4241", "r", "by a `break`"),
             ("T4241", "r", "into `held`"),
             ("T4241", "make", "into `first`"),
             ("T4241", "r", "into `x`"),
@@ -10073,6 +10073,55 @@ fn building_a_value_from_an_outer_binding_inside_a_loop_is_reported() {
         .map(|(code, text, message)| (code.as_str(), text.as_str(), message.contains("into `m`")))
         .collect::<Vec<_>>();
     assert_eq!(found, [("T4250", "Hand.Over(r)", true)], "{diagnostics:?}");
+}
+
+// The next pass's state takes what the body's value carries, and a `break` value
+// takes what it carries. Rejects a next state that takes nothing (`alias` sends one
+// receiver to two tasks, and `after` uses `r` after the state took it) and one that
+// does not follow a `let` (`alias_let` builds the state from `h`, which took `r`).
+#[test]
+fn a_loop_state_takes_what_the_next_pass_gets() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "fn hand_worker(h: Hand) -> Int {{\n",
+            "  let child = Task.start(fn() -> Int {{\n    case h {{\n      Hand.Over(r) -> Channel.receive(r)\n    }}\n    1\n  }})\n  1\n}}\n",
+            "fn alias(r: Receiver<Int>, r0: Receiver<Int>) -> Int {{\n",
+            "  let got = loop st = (Hand.Over(r0), 0) {{\n    case st {{\n      (prev, n) -> case n >= 1 {{\n",
+            "        True -> break (prev, Hand.Over(r))\n        False -> (Hand.Over(r), n + 1)\n",
+            "      }}\n    }}\n  }}\n",
+            "  case got {{\n    (x, y) -> hand_worker(x) + hand_worker(y)\n  }}\n}}\n",
+            "fn alias_let(r: Receiver<Int>, r0: Receiver<Int>) -> Int {{\n",
+            "  let got = loop st = (Hand.Over(r0), 0) {{\n    let h = Hand.Over(r)\n",
+            "    case st {{\n      (prev, n) -> case n >= 1 {{\n",
+            "        True -> break (prev, h)\n        False -> (h, n + 1)\n",
+            "      }}\n    }}\n  }}\n",
+            "  case got {{\n    (x, y) -> hand_worker(x) + hand_worker(y)\n  }}\n}}\n",
+            "fn after(r: Receiver<Int>, r0: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  let got = loop st = (Hand.Over(r0), 0) {{\n    case st {{\n      (prev, n) -> case n >= 1 {{\n",
+            "        True -> break (prev, 1)\n        False -> (Hand.Over(r), n + 1)\n",
+            "      }}\n    }}\n  }}\n  r\n}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let found = check_diagnostics(&source);
+    let found = found
+        .iter()
+        .map(|(code, _, message)| {
+            let name = message.split('`').nth(1).unwrap_or("");
+            (code.as_str(), name)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            ("T4250", "r"),
+            ("T4250", "r"),
+            ("T4250", "r"),
+            ("T4241", "r")
+        ],
+        "{found:?}"
+    );
 }
 
 // Moving into a value must not move what only reads a capability. Each function is
@@ -10406,6 +10455,132 @@ fn recursion_over_parts_reaches_a_fixed_point() {
         [
             ("T4241", "c", "by a call of `drain`"),
             ("T4241", "rs", "by a call of `pool`"),
+        ],
+        "{found:?}"
+    );
+}
+
+// Recursion collapses repeated steps but keeps the steps after them, and explicit
+// paths keep every step. Rejects a summary that merges the tail of a recursive walk
+// (`run` gives each lane's receiver to a worker and then feeds each lane's sender;
+// `walk_then_feed` does the same down a `Chain`), and a depth cut that merges sibling
+// parts of nested tuples at depth 2 to 5 (`nested`), while a part taken twice at
+// depth 5 (`twice_deep`) is still `T4241`.
+#[test]
+fn recursion_and_nesting_keep_sibling_parts_apart() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "struct Lane {{\n  receiver: Receiver<Int>\n  sender: Sender<Int>\n}}\n",
+            "fn worker(r: Receiver<Int>) -> Int {{\n",
+            "  let child = Task.start(fn() -> Int {{\n    Channel.receive(r)\n    1\n  }})\n  1\n}}\n",
+            "fn start_all(lanes: List<Lane>) -> Int {{\n",
+            "  case lanes {{\n    [lane, ..rest] -> worker(lane.receiver) + start_all(rest)\n    [] -> 0\n  }}\n}}\n",
+            "fn feed_all(lanes: List<Lane>) -> Int {{\n",
+            "  case lanes {{\n    [lane, ..rest] -> {{\n      Channel.send(lane.sender, 1)\n      feed_all(rest)\n    }}\n    [] -> 0\n  }}\n}}\n",
+            "fn run(lanes: List<Lane>) -> Int {{\n  start_all(lanes)\n  feed_all(lanes)\n}}\n",
+            "enum Chain {{\n  End\n  Link(lane: Lane, next: Chain)\n}}\n",
+            "fn start_chain(c: Chain) -> Int {{\n",
+            "  case c {{\n    Chain.End -> 0\n    Chain.Link(lane, next) -> worker(lane.receiver) + start_chain(next)\n  }}\n}}\n",
+            "fn feed_chain(c: Chain) -> Int {{\n",
+            "  case c {{\n    Chain.End -> 0\n    Chain.Link(lane, next) -> {{\n",
+            "      Channel.send(lane.sender, 1)\n      feed_chain(next)\n    }}\n  }}\n}}\n",
+            "fn walk_then_feed(c: Chain) -> Int {{\n  start_chain(c)\n  feed_chain(c)\n}}\n",
+            "fn nested(t: (Receiver<Int>, (Receiver<Int>, (Receiver<Int>, (Receiver<Int>, (Receiver<Int>, Receiver<Int>)))))) -> Int {{\n",
+            "  let (a, (b, (c, (d, (e, f))))) = t\n",
+            "  worker(a) + worker(b) + worker(c) + worker(d) + worker(e) + worker(f)\n}}\n",
+            "fn twice_deep(t: (Int, (Int, (Int, (Int, (Receiver<Int>, Int)))))) -> Int {{\n",
+            "  let (_, (_, (_, (_, (e, _))))) = t\n",
+            "  worker(e) + worker(e)\n}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let found = transfer_diagnostics(&source);
+    let found = found
+        .iter()
+        .map(|(code, text, boundary)| (code.as_str(), text.as_str(), boundary.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [("T4241", "e", "by a call of `worker`")],
+        "{found:?}"
+    );
+}
+
+// A generic function that keeps two owners of a `T` value requires a shareable
+// `T` at each call, like an inferred equatable requirement. Rejects a body check
+// that rejects `dup` itself (ordinary generic code would not compile), and a call
+// check that accepts a receiver for that `T`, directly or through another generic
+// function (`use_twice`) or a loop (`repeat`).
+#[test]
+fn a_generic_function_that_duplicates_a_value_requires_it_to_be_shareable() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "fn dup<T>(x: T) -> (T, T) {{\n  (x, x)\n}}\n",
+            "fn listed<T>(x: T) -> List<T> {{\n  [x, x]\n}}\n",
+            "fn pick<T>(x: T) -> (T, T) {{\n  let y = x\n  (x, y)\n}}\n",
+            "fn same<T>(x: T, y: T) -> (T, T) {{\n  (x, y)\n}}\n",
+            "fn use_twice<T>(x: T) -> Int {{\n  let a = same(x, x)\n  1\n}}\n",
+            "fn repeat<T>(x: T, n: Int) -> List<T> {{\n",
+            "  loop acc = [] {{\n    case n >= 3 {{\n      True -> break acc\n      False -> [x]\n    }}\n  }}\n}}\n",
+            "fn ints() -> Int {{\n",
+            "  let a = dup(5)\n  let b = listed(1)\n  let c = pick(2)\n  let d = use_twice(3)\n  let e = repeat(4, 1)\n",
+            "  let f = same(Channel.bounded(1).receiver, Channel.bounded(1).receiver)\n  1\n}}\n",
+            "fn receivers(r: Receiver<Int>, q: Receiver<Int>, s: Receiver<Int>) -> Int {{\n",
+            "  let a = dup(r)\n  let c = use_twice(q)\n  let d = repeat(s, 1)\n  1\n}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let found = check_diagnostics(&source);
+    let found = found
+        .iter()
+        .map(|(code, text, message)| {
+            let callee = message.split('`').nth(1).unwrap_or("");
+            (code.as_str(), text.as_str(), callee)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            ("T4241", "r", "dup"),
+            ("T4241", "q", "use_twice"),
+            ("T4241", "s", "repeat"),
+        ],
+        "{found:?}"
+    );
+}
+
+// A record update reads and takes only the fields it keeps. Rejects an update
+// that takes its whole base (replacing a field that moved out would be `T4241`)
+// and one that ignores the kept fields (`{ ..b, tag: 2 }` keeps a moved `inner`).
+#[test]
+fn a_record_update_takes_only_the_fields_it_keeps() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "struct Tagged {{\n  inner: Receiver<Int>\n  tag: Int\n}}\n",
+            "fn spawn(r: Receiver<Int>) -> Int {{\n",
+            "  let child = Task.start(fn() -> Int {{\n    Channel.receive(r)\n    1\n  }})\n  1\n}}\n",
+            "fn replaces(b: Tagged, q: Receiver<Int>) -> Int {{\n",
+            "  spawn(b.inner)\n  let c = {{ ..b, inner: q }}\n  c.tag\n}}\n",
+            "fn keeps(b: Tagged) -> Int {{\n",
+            "  spawn(b.inner)\n  let c = {{ ..b, tag: 2 }}\n  c.tag\n}}\n",
+            "fn takes_kept(b: Tagged, q: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  let c = {{ ..b, tag: 2 }}\n  b.inner\n}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let found = transfer_diagnostics(&source);
+    let found = found
+        .iter()
+        .map(|(code, text, boundary)| (code.as_str(), text.as_str(), boundary.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            ("T4241", "b", "by a call of `spawn`"),
+            ("T4241", "b.inner", "into `c`"),
         ],
         "{found:?}"
     );

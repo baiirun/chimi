@@ -31,10 +31,11 @@ pub(crate) struct CapabilityReport {
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
-/// The deepest path the checker tracks. A longer path is cut to this many steps,
-/// which names a larger part (over-approximating), so summaries over recursive data
-/// stay finite.
-const MAX_PATH_DEPTH: usize = 4;
+/// A guard on path length. Paths through recursive data stay short because a call
+/// collapses repeated recursive steps (`Place::through_call`), so no program in the
+/// corpus comes near this; a longer path is cut to its prefix, which names a larger
+/// part and so over-approximates.
+const MAX_PATH_DEPTH: usize = 32;
 
 /// The shape of a list pattern: the elements it names before and after its rest,
 /// and whether it has a rest. Without one, the list has exactly `front + back`
@@ -70,6 +71,10 @@ enum PathSegment {
     Back { index: usize, shape: ListShape },
     /// The elements between the front and back ones of a list matched by `shape`.
     Rest { shape: ListShape },
+    /// Any sequence, possibly empty, of these steps (kept sorted and without
+    /// repeats): what a recursive function reaches by taking the same steps
+    /// (`next`, or a list's rest) at every level.
+    Repeat(Vec<PathSegment>),
 }
 
 impl PathSegment {
@@ -85,8 +90,15 @@ impl PathSegment {
             Self::Rest { shape } => shape
                 .admits(length)
                 .then(|| (shape.front, length - shape.back)),
-            Self::Field(_) | Self::Position(_) => None,
+            Self::Field(_) | Self::Position(_) | Self::Repeat(_) => None,
         }
+    }
+
+    /// Whether this step goes from a value to a value of a type that can contain it
+    /// again: a field (only a recursive type repeats one) or a list's rest. Repeats
+    /// of these are what recursion over a value produces.
+    fn may_recur(&self) -> bool {
+        matches!(self, Self::Field(_) | Self::Rest { .. })
     }
 
     fn list_shape(&self) -> Option<ListShape> {
@@ -94,7 +106,7 @@ impl PathSegment {
             Self::Front { shape, .. } | Self::Back { shape, .. } | Self::Rest { shape } => {
                 Some(*shape)
             }
-            Self::Field(_) | Self::Position(_) => None,
+            Self::Field(_) | Self::Position(_) | Self::Repeat(_) => None,
         }
     }
 
@@ -126,17 +138,136 @@ impl PathSegment {
     }
 }
 
+/// A path as an automaton over steps, so that `Repeat` can stand for any number of
+/// repetitions: `edges[state]` leads by a step, or by no step (`None`), to another
+/// state, and the path ends at `end`.
+struct PathAutomaton<'a> {
+    edges: Vec<Vec<(Option<&'a PathSegment>, usize)>>,
+    end: usize,
+}
+
+impl<'a> PathAutomaton<'a> {
+    fn new(path: &'a [PathSegment]) -> Self {
+        let mut automaton = Self {
+            edges: vec![Vec::new()],
+            end: 0,
+        };
+        automaton.end = automaton.add(path, 0);
+        automaton
+    }
+
+    /// Adds `path` from `from`; returns the state where it ends.
+    fn add(&mut self, path: &'a [PathSegment], mut from: usize) -> usize {
+        for segment in path {
+            if let PathSegment::Repeat(steps) = segment {
+                // Each step of the repeat leads back to the same state.
+                for step in steps {
+                    self.edges[from].push((Some(step), from));
+                }
+            } else {
+                self.edges.push(Vec::new());
+                let to = self.edges.len() - 1;
+                self.edges[from].push((Some(segment), to));
+                from = to;
+            }
+        }
+        from
+    }
+}
+
+/// Whether some reading of `left` and of `right` (each `Repeat` taken any number of
+/// times) walks both paths step by step, each step pair possibly reaching the same
+/// part, until `done` says one of them has ended.
+fn paths_meet(
+    left: &[PathSegment],
+    right: &[PathSegment],
+    done: impl Fn(bool, bool) -> bool,
+) -> bool {
+    let left = PathAutomaton::new(left);
+    let right = PathAutomaton::new(right);
+    let mut seen = BTreeSet::new();
+    let mut pending = vec![(0, 0)];
+    while let Some((at_left, at_right)) = pending.pop() {
+        if !seen.insert((at_left, at_right)) {
+            continue;
+        }
+        if done(at_left == left.end, at_right == right.end) {
+            return true;
+        }
+        for (step_left, to_left) in &left.edges[at_left] {
+            if step_left.is_none() {
+                pending.push((*to_left, at_right));
+            }
+        }
+        for (step_right, to_right) in &right.edges[at_right] {
+            if step_right.is_none() {
+                pending.push((at_left, *to_right));
+            }
+        }
+        for (step_left, to_left) in &left.edges[at_left] {
+            for (step_right, to_right) in &right.edges[at_right] {
+                if let (Some(step_left), Some(step_right)) = (step_left, step_right)
+                    && step_left.may_reach_the_same_part(step_right)
+                {
+                    pending.push((*to_left, *to_right));
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Whether the parts at two paths from one binding may share a value: one path
 /// leads into the other (the empty path is the whole binding).
 fn paths_overlap(left: &[PathSegment], right: &[PathSegment]) -> bool {
-    left.iter()
-        .zip(right)
-        .all(|(left, right)| left.may_reach_the_same_part(right))
+    paths_meet(left, right, |left_ended, right_ended| {
+        left_ended || right_ended
+    })
 }
 
 /// Whether the part at `inner` lies inside the part at `outer` (or may).
 fn path_inside(inner: &[PathSegment], outer: &[PathSegment]) -> bool {
-    outer.len() <= inner.len() && paths_overlap(inner, outer)
+    paths_meet(inner, outer, |_, outer_ended| outer_ended)
+}
+
+/// Appends `segment` to `path`. When it repeats a recursive step already on the
+/// path (as a step or inside a `Repeat`), the steps from that one on become one
+/// `Repeat` of all of them, merged with a `Repeat` just before. So a recursive call
+/// adds nothing new after one level, while the steps after the recursion (the
+/// `.receiver` of each list element) stay exact. `Repeat` sets only grow from steps
+/// already on the path, so the paths of a recursive function are finitely many.
+fn push_collapsing(path: &mut Vec<PathSegment>, segment: PathSegment) {
+    let repeats = |step: &PathSegment| match step {
+        PathSegment::Repeat(steps) => steps.contains(&segment),
+        step => *step == segment,
+    };
+    if segment.may_recur()
+        && let Some(first) = path.iter().position(repeats)
+    {
+        let mut steps = Vec::new();
+        for step in path.split_off(first) {
+            match step {
+                PathSegment::Repeat(inner) => steps.extend(inner),
+                step => steps.push(step),
+            }
+        }
+        if let Some(PathSegment::Repeat(before)) = path.last_mut() {
+            steps.append(before);
+            path.pop();
+        }
+        steps.sort();
+        steps.dedup();
+        path.push(PathSegment::Repeat(steps));
+    }
+    if let (PathSegment::Repeat(steps), Some(PathSegment::Repeat(before))) =
+        (&segment, path.last_mut())
+    {
+        before.extend(steps.iter().cloned());
+        before.sort();
+        before.dedup();
+        return;
+    }
+    path.push(segment);
 }
 
 /// A binding, or a part of one reached by field reads or patterns. Every exclusive
@@ -167,6 +298,18 @@ impl Place {
         place
     }
 
+    /// The part at `path` of a callee's parameter, when this place is the argument.
+    /// Repeated recursive steps collapse (`push_collapsing`), so the summaries of a
+    /// recursive function reach a fixed point.
+    fn through_call(&self, path: &[PathSegment]) -> Self {
+        let mut place = self.clone();
+        for segment in path {
+            push_collapsing(&mut place.path, segment.clone());
+        }
+        place.path.truncate(MAX_PATH_DEPTH);
+        place
+    }
+
     fn overlaps(&self, other: &Self) -> bool {
         self.root == other.root && paths_overlap(&self.path, &other.path)
     }
@@ -182,6 +325,7 @@ impl Place {
                     name.push_str(&format!("[-{}]", index + 1));
                 }
                 PathSegment::Rest { .. } => name.push_str("[..]"),
+                PathSegment::Repeat(_) => name.push_str("[...]"),
             }
         }
         name
@@ -227,13 +371,18 @@ enum TransferBoundary {
     /// A call of a function (the callee's binding, when it has one) whose body
     /// transfers the parameter.
     IntoCall(Option<SymbolId>),
+    /// A `break` took it into the value of its loop.
+    IntoLoopValue,
 }
 
 impl TransferBoundary {
     /// Whether the value leaves its binding's reach here. A move into a `let` or a
     /// pattern stays in the function until that binding escapes in turn.
     fn escapes(self) -> bool {
-        !matches!(self, Self::IntoBinding(_) | Self::IntoPattern)
+        !matches!(
+            self,
+            Self::IntoBinding(_) | Self::IntoPattern | Self::IntoLoopValue
+        )
     }
 
     fn description(self, typed: &TypedProject) -> String {
@@ -250,6 +399,7 @@ impl TransferBoundary {
                 format!("by a call of `{}`", typed.resolved.symbol(callee).name)
             }
             Self::IntoCall(None) => "by a call".to_owned(),
+            Self::IntoLoopValue => "by a `break`".to_owned(),
         }
     }
 }
@@ -386,18 +536,28 @@ type TransferSummaries = HashMap<SymbolId, ParameterPaths>;
 /// `receiver` has moved can still go to a function that reads only its `sender`.
 type ReadSummaries = HashMap<SymbolId, ParameterPaths>;
 
+/// For each named generic function, the parameters (by position) whose type
+/// parameter's value the body keeps more than one owner of, as `(x, x)` does. Such
+/// a body is fine for a shareable `T`, so the function requires one: a call with an
+/// exclusive argument there is `T4241`, like the inferred equatable and ordered
+/// requirements on type parameters.
+type SharedSummaries = HashMap<SymbolId, BTreeSet<usize>>;
+
 #[derive(Default, Eq, PartialEq)]
 struct Summaries {
     spec_needs: SpecNeedSummaries,
     transfers: TransferSummaries,
     reads: ReadSummaries,
+    shared: SharedSummaries,
 }
 
 /// Ensures: the report of a pass whose summaries are a fixed point, so a function's
 /// summary is the same whether its callers come before or after it. Every summary
 /// only grows from pass to pass, from facts in the bodies and from the previous
-/// pass's summaries, and its paths are cut to `MAX_PATH_DEPTH` steps, so there are
-/// finitely many summaries and the loop ends.
+/// pass's summaries. A call collapses repeated recursive steps into a `Repeat`
+/// (`Place::through_call`), so the paths a recursive function reaches are finitely
+/// many, and `MAX_PATH_DEPTH` cuts any path longer than that: there are finitely
+/// many summaries and the loop ends.
 pub(crate) fn check(typed: &TypedProject) -> CapabilityReport {
     let mut summaries = Summaries::default();
     loop {
@@ -412,6 +572,8 @@ pub(crate) fn check(typed: &TypedProject) -> CapabilityReport {
             took: HashMap::new(),
             escaped: BTreeSet::new(),
             read_places: BTreeSet::new(),
+            type_parameters: BTreeMap::new(),
+            shared: BTreeSet::new(),
         };
         checker.check_modules();
         if checker.next_summaries == summaries {
@@ -446,6 +608,11 @@ struct CapabilityChecker<'a> {
     escaped: BTreeSet<Place>,
     /// The places the current declaration reads.
     read_places: BTreeSet<Place>,
+    /// The parameters of the current declaration (by symbol, with their position)
+    /// that are tracked only because their type holds a type parameter.
+    type_parameters: BTreeMap<SymbolId, usize>,
+    /// Those of them the body keeps more than one owner of.
+    shared: BTreeSet<usize>,
 }
 
 impl CapabilityChecker<'_> {
@@ -466,6 +633,8 @@ impl CapabilityChecker<'_> {
         self.took.clear();
         self.escaped.clear();
         self.read_places.clear();
+        self.type_parameters.clear();
+        self.shared.clear();
         let mut function = None;
         let mut parameters = Vec::new();
         if declaration.kind == ModuleDeclarationKind::Function {
@@ -490,6 +659,15 @@ impl CapabilityChecker<'_> {
                 &mut environment,
             );
             function = Some(symbol);
+            for (index, parameter) in parameters.iter().enumerate() {
+                if let Some(parameter) = parameter
+                    && let Some(binding) = environment.get(parameter)
+                    && binding.value.properties.capability != CapabilityClass::Exclusive
+                    && owned(&binding.value)
+                {
+                    self.type_parameters.insert(*parameter, index);
+                }
+            }
         }
         self.evaluate(module_id, body, &mut environment);
         if let Some(symbol) = function {
@@ -504,6 +682,11 @@ impl CapabilityChecker<'_> {
             }
             let reads = parameter_paths(&parameters, &self.read_places);
             self.next_summaries.reads.insert(symbol, reads);
+            if !self.shared.is_empty() {
+                self.next_summaries
+                    .shared
+                    .insert(symbol, std::mem::take(&mut self.shared));
+            }
         }
     }
 
@@ -649,6 +832,11 @@ impl CapabilityChecker<'_> {
                     &arguments,
                     environment,
                 );
+                if let Some(callee) =
+                    callee_symbol.filter(|symbol| self.is_project_function(*symbol))
+                {
+                    self.check_shared_arguments(module_id, callee, &arguments);
+                }
                 match self.standard_function(module_id, callee) {
                     Some(StandardFunction::TaskStart) => {
                         if let Some((argument, thunk)) = arguments.first() {
@@ -749,7 +937,7 @@ impl CapabilityChecker<'_> {
                 value
             }
             ModuleExpression::Update { base, fields, .. } => {
-                let mut value = self.evaluate(module_id, base, environment);
+                let mut value = self.evaluate_update_base(module_id, base, fields, environment);
                 for field in fields {
                     let part = self.evaluate(module_id, &field.value, environment);
                     value = self.join_part(module_id, value, field.value.range(), part);
@@ -841,6 +1029,14 @@ impl CapabilityChecker<'_> {
             ModuleExpression::Break { value, .. } => {
                 if let Some(value) = value {
                     let carries = self.evaluate(module_id, value, environment).carries;
+                    for place in &carries {
+                        self.transfer_place(
+                            place,
+                            value.range(),
+                            TransferBoundary::IntoLoopValue,
+                            environment,
+                        );
+                    }
                     if let Some(breaks) = self.loop_breaks.last_mut() {
                         breaks.extend(carries);
                     }
@@ -953,7 +1149,7 @@ impl CapabilityChecker<'_> {
         for (place, read) in captures {
             let name = place.name(self.typed);
             if let Some(transfer) = self.moved_part(environment, &place) {
-                self.use_after_transfer(module_id, &name, body.range(), transfer.boundary);
+                self.use_after_transfer(module_id, &place, body.range(), transfer.boundary);
             }
             self.read_places.insert(place.clone());
             let mut captured = self.place_value(module_id, read, environment);
@@ -1194,6 +1390,16 @@ impl CapabilityChecker<'_> {
         }
     }
 
+    /// Adds `place`, and what its binding took, transitively, to `reached`.
+    fn reach(&self, place: &Place, reached: &mut BTreeSet<Place>) {
+        if !reached.insert(place.clone()) {
+            return;
+        }
+        for taken in self.took.get(&place.root).into_iter().flatten() {
+            self.reach(taken, reached);
+        }
+    }
+
     fn escape(&mut self, place: &Place) {
         if !self.escaped.insert(place.clone()) {
             return;
@@ -1274,13 +1480,13 @@ impl CapabilityChecker<'_> {
                 .iter()
                 .find_map(|(path, transfer)| path_inside(&place.path, path).then_some(*transfer)),
             ReadCheck::Paths(paths) => paths.iter().find_map(|path| {
-                let part = place.joined(path);
+                let part = place.through_call(path);
                 self.read_places.insert(part.clone());
                 self.moved_part(environment, &part)
             }),
         });
-        if let Some(transfer) = moved {
-            self.diagnostics.push(Diagnostic::error(
+        if let (Some(transfer), Some(place)) = (moved, &place) {
+            let diagnostic = Diagnostic::error(
                 DiagnosticStage::Type,
                 "T4241",
                 self.file_id(module_id),
@@ -1289,7 +1495,8 @@ impl CapabilityChecker<'_> {
                     "`{text}` was transferred {} and cannot be used by its previous owner",
                     transfer.boundary.description(self.typed)
                 ),
-            ));
+            );
+            self.owner_conflict(place, diagnostic);
         }
         let mut value = self.place_value(module_id, expression, environment);
         if let Some(place) = place
@@ -1363,6 +1570,43 @@ impl CapabilityChecker<'_> {
         self.record(module_id, expression, value)
     }
 
+    /// The base of `{ ..base, field: value }`. When it is a place of a struct or
+    /// record type, only the fields the update keeps are read and carried, so the
+    /// update may replace a field that moved out; otherwise the base is a whole value.
+    fn evaluate_update_base(
+        &mut self,
+        module_id: ModuleId,
+        base: &ModuleExpression,
+        replaced: &[crate::semantic::RecordValueField],
+        environment: &mut FlowEnvironment,
+    ) -> FlowValue {
+        let place = self.expression_place(module_id, base, environment);
+        let kept = self
+            .expression_type(module_id, base)
+            .and_then(|type_id| self.typed.value_fields(type_id))
+            .map(|fields| {
+                fields
+                    .into_iter()
+                    .filter(|(name, _)| !replaced.iter().any(|field| field.name.text == *name))
+                    .collect::<Vec<_>>()
+            });
+        let (Some(place), Some(kept)) = (place, kept) else {
+            return self.evaluate(module_id, base, environment);
+        };
+        let paths = kept
+            .iter()
+            .map(|(name, _)| vec![PathSegment::Field(name.clone())])
+            .collect::<BTreeSet<_>>();
+        let mut value = self.read_argument(module_id, base, ReadCheck::Paths(&paths), environment);
+        value.carries.clear();
+        for (name, type_id) in kept {
+            if owned(&FlowValue::from_type(self.typed, type_id)) {
+                value.carries.insert(place.child(PathSegment::Field(name)));
+            }
+        }
+        self.record(module_id, base, value)
+    }
+
     /// A field read out of a value that is not a place carries what that value
     /// carries, as `boxed(r).inner` holds `r`.
     fn evaluate_select(
@@ -1430,7 +1674,7 @@ impl CapabilityChecker<'_> {
     }
 
     fn taken_twice(&mut self, module_id: ModuleId, place: &Place, at: TextRange) {
-        self.diagnostics.push(Diagnostic::error(
+        let diagnostic = Diagnostic::error(
             DiagnosticStage::Type,
             "T4241",
             self.file_id(module_id),
@@ -1439,7 +1683,78 @@ impl CapabilityChecker<'_> {
                 "`{}` is taken twice here; an exclusive value has one owner",
                 place.name(self.typed)
             ),
-        ));
+        );
+        self.owner_conflict(place, diagnostic);
+    }
+
+    /// Reports a second owner of `place`, unless the place holds only values of the
+    /// function's type parameters: then the function requires those parameters'
+    /// arguments to be shareable (`SharedSummaries`) instead.
+    fn owner_conflict(&mut self, place: &Place, diagnostic: Diagnostic) {
+        match self.type_parameter_origins(place, &mut BTreeSet::new()) {
+            Some(origins) => self.shared.extend(origins),
+            None => self.diagnostics.push(diagnostic),
+        }
+    }
+
+    /// The type-parameter parameters whose values are all that `place` may hold: the
+    /// parameter it is part of, or those its binding took. `None` when it may hold
+    /// anything else.
+    fn type_parameter_origins(
+        &self,
+        place: &Place,
+        visiting: &mut BTreeSet<SymbolId>,
+    ) -> Option<BTreeSet<usize>> {
+        if let Some(index) = self.type_parameters.get(&place.root) {
+            return Some(BTreeSet::from([*index]));
+        }
+        if !visiting.insert(place.root) {
+            return Some(BTreeSet::new());
+        }
+        let took = self.took.get(&place.root).filter(|took| !took.is_empty())?;
+        let mut origins = BTreeSet::new();
+        for taken in took {
+            origins.extend(self.type_parameter_origins(taken, visiting)?);
+        }
+        Some(origins)
+    }
+
+    /// `T4241` for an exclusive argument where the callee keeps more than one owner
+    /// of its parameter's type-parameter value. A type-parameter argument passes the
+    /// requirement on to the caller.
+    fn check_shared_arguments(
+        &mut self,
+        module_id: ModuleId,
+        callee: SymbolId,
+        arguments: &[(&ModuleExpression, FlowValue)],
+    ) {
+        let Some(shared) = self.summaries.shared.get(&callee) else {
+            return;
+        };
+        for index in shared {
+            let Some((argument, value)) = arguments.get(*index) else {
+                continue;
+            };
+            if value.properties.capability == CapabilityClass::Exclusive {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Type,
+                    "T4241",
+                    self.file_id(module_id),
+                    argument.range(),
+                    format!(
+                        "`{}` keeps more than one owner of this argument, so it must be \
+                         shareable",
+                        self.typed.resolved.symbol(callee).name
+                    ),
+                ));
+                continue;
+            }
+            for place in &value.carries {
+                if let Some(origins) = self.type_parameter_origins(place, &mut BTreeSet::new()) {
+                    self.shared.extend(origins);
+                }
+            }
+        }
     }
 
     /// Moves, out of each argument, the parts of it that the callee transfers: the
@@ -1460,7 +1775,7 @@ impl CapabilityChecker<'_> {
                 continue;
             };
             let places = match self.expression_place(module_id, argument, environment) {
-                Some(place) => paths.iter().map(|path| place.joined(path)).collect(),
+                Some(place) => paths.iter().map(|path| place.through_call(path)).collect(),
                 None => value.carries.iter().cloned().collect::<Vec<_>>(),
             };
             if let Some(place) = places
@@ -1720,26 +2035,30 @@ impl CapabilityChecker<'_> {
     fn use_after_transfer(
         &mut self,
         module_id: ModuleId,
-        name: &str,
+        place: &Place,
         range: TextRange,
         boundary: TransferBoundary,
     ) {
-        self.diagnostics.push(Diagnostic::error(
+        let diagnostic = Diagnostic::error(
             DiagnosticStage::Type,
             "T4241",
             self.file_id(module_id),
             range,
             format!(
-                "`{name}` was transferred {} and cannot be captured again",
+                "`{}` was transferred {} and cannot be captured again",
+                place.name(self.typed),
                 boundary.description(self.typed)
             ),
-        ));
+        );
+        self.owner_conflict(place, diagnostic);
     }
 
     /// Requires: `loop_id` is the loop's `state_id`, which defines its state binding.
-    /// Ensures: a capability bound outside the loop, or a part of one, that the body may
-    /// move so that it escapes is reported, because the next pass would use it again. The state binding is exempt: each pass
-    /// rebinds it to the body's value. Returns what the loop's `break` values carry.
+    /// Ensures: the body's value, the next pass's state, takes what it carries. A
+    /// capability bound outside the loop, or a part of one, that the pass moves so that
+    /// it escapes or reaches the next state is `T4250`, because the next pass would
+    /// take it again. The state binding is exempt: each pass rebinds it. Returns what
+    /// the loop's `break` values carry.
     fn evaluate_loop(
         &mut self,
         module_id: ModuleId,
@@ -1769,8 +2088,22 @@ impl CapabilityChecker<'_> {
         }
         self.loop_breaks.push(BTreeSet::new());
         let escaped_before = self.escaped.clone();
-        self.evaluate(module_id, body, &mut pass);
+        let next = self.evaluate(module_id, body, &mut pass);
         let breaks = self.loop_breaks.pop().unwrap_or_default();
+        // The next state takes what the body's value carries, and with each place
+        // what its binding took (`h` in `let h = Hand.Over(r)`).
+        let mut into_state = BTreeSet::new();
+        if let Some(state) = state {
+            for place in &next.carries {
+                self.transfer_place(
+                    place,
+                    body.range(),
+                    TransferBoundary::IntoBinding(state),
+                    &mut pass,
+                );
+                self.reach(place, &mut into_state);
+            }
+        }
         // A move that escaped during the pass would be repeated by the next pass. One
         // into a binding of the pass that goes no further leaves the value in the
         // task, as a read does.
@@ -1800,12 +2133,13 @@ impl CapabilityChecker<'_> {
             .filter(|(place, _)| {
                 escaped_in_pass
                     .iter()
-                    .any(|escaped| escaped.overlaps(place))
+                    .chain(&into_state)
+                    .any(|reused| reused.overlaps(place))
             })
             .collect::<Vec<_>>();
         reused.sort_by_key(|(_, transfer)| transfer.at.start());
         for (place, transfer) in reused {
-            self.diagnostics.push(Diagnostic::error(
+            let diagnostic = Diagnostic::error(
                 DiagnosticStage::Type,
                 "T4250",
                 self.file_id(module_id),
@@ -1815,7 +2149,8 @@ impl CapabilityChecker<'_> {
                     place.name(self.typed),
                     transfer.boundary.description(self.typed)
                 ),
-            ));
+            );
+            self.owner_conflict(&place, diagnostic);
         }
         pass.retain(|symbol, _| environment.contains_key(symbol));
         *environment = pass;

@@ -151,7 +151,12 @@ place (`channel.receiver`), or a pattern binding over a part of a `case`
 subject that is a place. Moves are tracked for exclusive values and for values
 whose type holds a type parameter (`x: T`, `Option<T>`), since `T` may be
 exclusive; a function or interface value is not tracked, so it may be called
-twice.
+twice. A generic function that keeps more than one owner of a type parameter's
+value, as `fn dup<T>(x: T) -> (T, T) { (x, x) }` does, is not rejected: it
+requires that parameter's argument to be shareable, like an inferred equatable
+or ordered requirement, and each call checks it. `dup(5)` compiles, and
+`dup(receiver)` is `T4241` at the argument. The requirement passes through a
+generic caller that hands its own `T` on.
 
 - A value **carries** a place when it is read out of that place, or is built
   from a value that carries it: an element of a list or tuple literal, a field
@@ -160,7 +165,10 @@ twice.
   depth and in parentheses. A field read out of a value that is not a place,
   such as `boxed(r).inner`, carries what that value carries. A value built
   from two parts that carry one place, such as `(r, r)` or
-  `Pair(channel, channel.receiver)`, is `T4241`.
+  `Pair(channel, channel.receiver)`, is `T4241`. A record update
+  `{ ..b, inner: q }` whose base is a place reads and carries only the fields
+  it keeps, so it may replace a field that moved out; `{ ..b, tag: 2 }` keeps
+  `inner` and is `T4241` when `b.inner` moved.
 - A call's result carries what an argument carries when the result type is not
   always shareable and the argument's type occurs in it: as the result itself,
   or inside a field, variant field, element, or type argument. A function type,
@@ -172,7 +180,9 @@ twice.
   one-shot closure whose result is not always shareable also carries the
   closure.
 - Binding a value with `let`, or as a loop's initial state, moves every place
-  the value carries into the new binding, which becomes the only owner. A
+  the value carries into the new binding, which becomes the only owner. So
+  does a loop body's value, which is the next pass's state, and a `break`
+  value takes what it carries into the loop's value. A
   destructuring `let`, or a `case` whose subject is not a place, moves what the
   subject carries into its patterns. Moving a place moves its parts, and a
   place one of whose parts moved can no longer be used whole: a later use of a
@@ -201,8 +211,9 @@ twice.
   `T4241`. A `case` subject is checked only for a move of the place itself or
   of a place it lies in; its pattern bindings check the parts they read.
 - A move inside a loop of a place bound outside it is `T4250` when the place
-  escapes during the pass, since the next pass would take it again. A
-  `let r = channel.receiver` inside the loop that goes no further is not.
+  escapes during the pass or reaches the next state (directly, or through a
+  binding of the pass that took it), since the next pass would take it again.
+  A `let r = channel.receiver` inside the loop that goes no further is not.
 - Reading a place moves nothing: `Channel.receive(r)`,
   `Channel.receive(channel.receiver)`, or a helper `next(r) -> Int` that only
   reads its parameter may run on every pass of a loop. A value that is built
@@ -214,9 +225,13 @@ twice.
   the front or back and the rest. Two list parts are apart when no list length
   that both patterns match puts them on a common element, so the `r` and
   `rest` of `[r, ..rest]` are apart, while `[a, ..]` and `[.., z]` matched on
-  one list may be the same element. Paths deeper than four steps are cut to
-  four, which names a larger part, so summaries over recursive data stay
-  finite.
+  one list may be the same element. Paths keep every step a function names.
+  When a call's summary repeats a step that may recur (a field, or a list's
+  rest) already on the argument's path, the steps from the first one on
+  collapse into one step that stands for any sequence of them, while the steps
+  after it stay exact: the receivers `start_all` gives away down a list of
+  lanes stay apart from the senders `feed_all` uses. So the summaries of a
+  recursive function are finitely many.
 - `Channel.Receive<T>` is what `T` is: a received exclusive value is exclusive
   before it is matched out, so one `Received(receiver)` cannot be captured by
   two children (`ts-bb95dc`).

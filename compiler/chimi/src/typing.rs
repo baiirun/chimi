@@ -977,6 +977,32 @@ impl TypedProject {
         self.value_properties_with(id, &HashMap::new(), &mut HashSet::new())
     }
 
+    /// The fields of a struct or record type, by name and declared type (a generic
+    /// struct's field types are its declaration's, with its parameters open). `None`
+    /// for any other type.
+    pub(crate) fn value_fields(&self, type_id: TypeId) -> Option<Vec<(String, TypeId)>> {
+        match &self.types[self.resolve_type_id(type_id).raw() as usize] {
+            CanonicalType::Record(fields) => Some(
+                fields
+                    .iter()
+                    .map(|field| (field.name.clone(), field.type_id))
+                    .collect(),
+            ),
+            CanonicalType::Named { symbol, .. }
+                if self.resolved.symbol(*symbol).kind == ProjectSymbolKind::Struct =>
+            {
+                Some(
+                    self.fields
+                        .get(symbol)?
+                        .iter()
+                        .map(|field| (field.name.clone(), field.type_id))
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
+    }
+
     /// Whether a value of `type_id` holds an open type parameter's value: the type
     /// is one, or has one as a field, variant field, element, or type argument. A
     /// function type does not count: calling it does not take what it was given.
