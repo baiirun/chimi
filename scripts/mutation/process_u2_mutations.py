@@ -52,50 +52,8 @@ MUTATIONS = [
     lab("Process.send is not a transfer boundary", C, [(
         "                    Some(StandardFunction::ProcessSend) => {",
         "                    Some(StandardFunction::ProcessSend) if false => {")]),
-    lab("send moves only a payload that is itself a binding", C, [(
-        "                if constructs {",
-        "                if false {")]),
-    language("send payload list literals not followed", C, [(
-        "            ModuleExpression::List { elements, .. } | ModuleExpression::Tuple { elements, .. } => {\n"
-        "                for element in elements {\n"
-        "                    self.payload_bindings(",
-        "            ModuleExpression::Tuple { elements, .. } => {\n"
-        "                for element in elements {\n"
-        "                    self.payload_bindings(")], "a_send_moves_bindings"),
-    language("send payload tuple literals not followed", C, [(
-        "            ModuleExpression::List { elements, .. } | ModuleExpression::Tuple { elements, .. } => {\n"
-        "                for element in elements {\n"
-        "                    self.payload_bindings(",
-        "            ModuleExpression::List { elements, .. } => {\n"
-        "                for element in elements {\n"
-        "                    self.payload_bindings(")], "a_send_moves_bindings"),
-    language("send payload record literals not followed", C, [(
-        "                for field in fields {\n"
-        "                    self.payload_bindings(module_id, &field.value, bindings);",
-        "                for field in fields {\n"
-        "                    let _ = field;")], "a_send_moves_bindings"),
-    language("send payload parentheses not followed", C, [(
-        "            ModuleExpression::Group { expression, .. } => {\n"
-        "                self.payload_bindings(module_id, expression, bindings);",
-        "            ModuleExpression::Group { expression, .. } => {\n"
-        "                let _ = expression;")], "a_send_moves_bindings"),
-    language("send payload constructors followed one level only", C, [(
-        "                    for argument in arguments {\n"
-        "                        self.payload_bindings(module_id, &argument.value, bindings);",
-        "                    for argument in arguments {\n"
-        "                        if let ModuleExpression::Name { semantic_id, .. } = &argument.value\n"
-        "                            && let Some(symbol) = self.resolved_value_symbol(module_id, *semantic_id)\n"
-        "                        {\n"
-        "                            bindings.push((symbol, argument.value.range()));\n"
-        "                        }")], "a_send_moves_bindings"),
-    language("send payload follows any function call", C, [(
-        "                if constructs {",
-        "                if constructs || true {")], "a_send_moves_bindings"),
-    language("send moves shareable values too", C, [(
-        "            if environment.get(&symbol).is_some_and(|binding| {\n"
-        "                binding.value.properties.capability == CapabilityClass::Exclusive\n"
-        "            }) {",
-        "            if environment.contains_key(&symbol) {")], "a_send_moves"),
+    # What a send's payload carries and moves: exclusive_move_mutations.py (ts-184972),
+    # which replaced the payload-syntax walk these mutants targeted.
     # Removal.
     lab("remove_process does not consume", C, [(
         "                        function @ (StandardFunction::SupervisorRemoveProcess\n"

@@ -9899,13 +9899,12 @@ fn a_send_moves_the_exclusive_values_its_payload_is_built_from() {
     );
 }
 
-// Each payload shape that moves a binding, one function each, plus the shape that
-// does not. Rejects a transfer that drops the list, tuple, record, or parenthesis
-// case, or follows constructors only one level deep. The last function records the
-// current limit: a payload built by a project function call is a new value, so its
-// argument stays usable (the aliasing hole is ts-184972, not fixed here).
+// Each payload shape that moves a binding, one function each. Rejects a transfer
+// that drops the list, tuple, record, or parenthesis case, follows constructors only
+// one level deep, or treats a project function's result as a new value that holds
+// nothing of its argument (ts-184972).
 #[test]
-fn a_send_moves_bindings_through_every_payload_shape_but_not_through_calls() {
+fn a_send_moves_bindings_through_every_payload_shape() {
     let source = process_program(concat!(
         "import std/channel as Channel\n",
         "import std/channel.{Receiver, Sender}\n",
@@ -9926,8 +9925,7 @@ fn a_send_moves_bindings_through_every_payload_shape_but_not_through_calls() {
         "  Process.send(to, wrap(r))\n  r\n}\n",
     ));
     let diagnostics = check_diagnostics(&source);
-    // One `T4241` per moving function, at the use of `r` after its send; none in
-    // `through_call`.
+    // One `T4241` per function, at the use of `r` after its send.
     let found = diagnostics
         .iter()
         .map(|(code, text, message)| {
@@ -9949,9 +9947,205 @@ fn a_send_moves_bindings_through_every_payload_shape_but_not_through_calls() {
             ("T4241", "r", "Channel.send"),
             ("T4241", "r", "Process.send"),
             ("T4241", "r", "Process.send"),
+            ("T4241", "r", "Process.send"),
         ],
         "{diagnostics:?}"
     );
+}
+
+const HAND_PROGRAM: &str = concat!(
+    "import std/channel as Channel\n",
+    "import std/channel.{Receiver, Sender}\n",
+    "import std/task as Task\n",
+    "enum Hand {\n  Over(receiver: Receiver<Int>)\n}\n",
+    "enum Parcel {\n  Hold(hand: Hand)\n}\n",
+    "fn wrap(r: Receiver<Int>) -> Hand {\n  Hand.Over(r)\n}\n",
+    "struct Box {\n  inner: Receiver<Int>\n}\n",
+    "fn boxed(r: Receiver<Int>) -> Box {\n  Box(r)\n}\n",
+    "interface Store {\n  read: fn() -> Int\n}\n",
+    "fn uses_store() -> Int needs { store: Store } {\n  store.read()\n}\n",
+);
+
+// ts-184972: a value built from an exclusive binding takes it, so the binding cannot
+// stay usable while the value crosses a task boundary. One function per route by
+// which `r` reaches a sent or bound value, each ending in a use of `r` (or of the
+// binding that took it). Rejects a move that looks only at the send's syntax (the
+// let, block, case, loop, and alias routes), one that drops what a block, case arm,
+// or `break` yields, one that treats a call's result as holding nothing of its
+// arguments or of the one-shot closure it calls,
+// and a let or loop state that does not move what its value is built from.
+#[test]
+fn an_exclusive_binding_moves_into_the_value_built_from_it() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "fn let_bound(s: Sender<Hand>, r: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  let m = Hand.Over(r)\n  Channel.send(s, m)\n  r\n}}\n",
+            "fn block(s: Sender<Hand>, r: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  Channel.send(s, {{\n    Hand.Over(r)\n  }})\n  r\n}}\n",
+            "fn case_arm(s: Sender<Hand>, r: Receiver<Int>, q: Receiver<Int>, f: Bool) -> Receiver<Int> {{\n",
+            "  Channel.send(s, case f {{\n    True -> Hand.Over(r)\n    False -> Hand.Over(q)\n  }})\n",
+            "  r\n}}\n",
+            "fn case_later_arm(s: Sender<Hand>, r: Receiver<Int>, q: Receiver<Int>, f: Bool) -> Receiver<Int> {{\n",
+            "  Channel.send(s, case f {{\n    True -> Hand.Over(r)\n    False -> Hand.Over(q)\n  }})\n",
+            "  q\n}}\n",
+            "fn case_swapped(s: Sender<Hand>, r: Receiver<Int>, q: Receiver<Int>, f: Bool) -> Receiver<Int> {{\n",
+            "  Channel.send(s, case f {{\n    True -> Hand.Over(q)\n    False -> Hand.Over(r)\n  }})\n",
+            "  r\n}}\n",
+            "fn updated(s: Sender<{{ r: Receiver<Int>, n: Int }}>, base: {{ r: Receiver<Int>, n: Int }}, r: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  Channel.send(s, {{ ..base, r: r }})\n  r\n}}\n",
+            "fn function_built(s: Sender<Hand>, r: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  let m = wrap(r)\n  Channel.send(s, m)\n  r\n}}\n",
+            "fn nested(s: Sender<Parcel>, r: Receiver<Int>) -> Hand {{\n",
+            "  let inner = wrap(r)\n  let outer = Parcel.Hold(inner)\n  Channel.send(s, outer)\n",
+            "  inner\n}}\n",
+            "fn loop_break(s: Sender<Hand>, r: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  let m = loop n = 0 {{\n    break Hand.Over(r)\n  }}\n  Channel.send(s, m)\n  r\n}}\n",
+            "fn loop_state(r: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  let count = loop held = Hand.Over(r) {{\n    break 1\n  }}\n  r\n}}\n",
+            "fn closure_built(r: Receiver<Int>) -> Hand {{\n",
+            "  let make = fn() -> Hand {{\n    Hand.Over(r)\n  }}\n  let first = make()\n  make()\n}}\n",
+            "fn field_of_call(r: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  let x = boxed(r).inner\n  r\n}}\n",
+            "fn destructured(r: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  let (x, n) = (r, 1)\n  r\n}}\n",
+            "fn provided(r: Receiver<Int>) -> Int {{\n",
+            "  let local = {{ read: fn() -> Int {{\n    r\n    1\n  }} }}\n",
+            "  let a = uses_store() using {{ store: local }}\n  local\n  a\n}}\n",
+            "fn alias(r: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  let x = r\n  let child = Task.start(fn() -> Int {{\n    Channel.receive(x)\n    1\n  }})\n",
+            "  r\n}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let diagnostics = check_diagnostics(&source);
+    let found = diagnostics
+        .iter()
+        .map(|(code, text, message)| {
+            let boundary = message
+                .split_once("transferred ")
+                .and_then(|(_, rest)| rest.split_once(" and "))
+                .map_or("", |(boundary, _)| boundary);
+            (code.as_str(), text.as_str(), boundary)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            ("T4241", "r", "into `m`"),
+            ("T4241", "r", "by Channel.send"),
+            ("T4241", "r", "by Channel.send"),
+            ("T4241", "q", "by Channel.send"),
+            ("T4241", "r", "by Channel.send"),
+            ("T4241", "r", "by Channel.send"),
+            ("T4241", "r", "into `m`"),
+            ("T4241", "inner", "into `outer`"),
+            ("T4241", "r", "into `m`"),
+            ("T4241", "r", "into `held`"),
+            ("T4241", "make", "into `first`"),
+            ("T4241", "r", "into `x`"),
+            ("T4241", "r", "into a pattern"),
+            ("T4241", "local", "into a one-shot closure"),
+            ("T4241", "r", "into `x`"),
+        ],
+        "{diagnostics:?}"
+    );
+}
+
+// Building a value from a binding inside a loop takes the binding on the first pass.
+// Rejects a let move that the loop rule does not see.
+#[test]
+fn building_a_value_from_an_outer_binding_inside_a_loop_is_reported() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "fn each(s: Sender<Hand>, r: Receiver<Int>) -> Int {{\n",
+            "  loop count = 0 {{\n    let m = Hand.Over(r)\n",
+            "    case count >= 3 {{\n      True -> break count\n      False -> count + 1\n    }}\n",
+            "  }}\n}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let diagnostics = check_diagnostics(&source);
+    let found = diagnostics
+        .iter()
+        .map(|(code, text, message)| (code.as_str(), text.as_str(), message.contains("into `m`")))
+        .collect::<Vec<_>>();
+    assert_eq!(found, [("T4250", "Hand.Over(r)", true)], "{diagnostics:?}");
+}
+
+// Moving into a value must not move what only reads a capability. Each function is
+// a legitimate owner pattern that must stay free of diagnostics. Rejects a rule that
+// moves a receiver passed to `Channel.receive`, one that moves an argument of a call
+// whose result is shareable (a helper that receives once, called on every pass), one
+// that moves a record when a field is read out of it (a capability or a closure
+// field), one that reports the owner binding itself once its value is bound, and one
+// that lets any exclusive argument flow into a non-shareable result: `next_hand` and
+// `first_of` read a receiver whose type does not occur in their result (nor does
+// `slot_of`, through a generic struct's field), so calling them on every pass or
+// twice moves nothing, and calling a one-shot closure whose result is shareable
+// does not move the closure.
+// `handles` guards a later change: `Receive<T>` is typed shareable whatever `T` is
+// today, and if it comes to follow `T`, `Channel.receive` must still not carry its
+// receiver.
+#[test]
+fn reading_or_owning_an_exclusive_binding_does_not_move_it() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "import std/channel.{{Completion, Receive}}\n",
+            "fn next(r: Receiver<Int>) -> Int {{\n",
+            "  let next = Channel.receive(r)\n",
+            "  case next {{\n    Receive.Received(value) -> value\n    Receive.Drained -> 0\n  }}\n",
+            "}}\n",
+            "fn reads_then_sends(s: Sender<Hand>, r: Receiver<Int>) -> Int {{\n",
+            "  let first = Channel.receive(r)\n  let second = Channel.receive(r)\n",
+            "  Channel.send(s, Hand.Over(r))\n  1\n}}\n",
+            "fn helper_in_loop(r: Receiver<Int>) -> Int {{\n",
+            "  loop total = 0 {{\n    let value = next(r)\n",
+            "    case value == 0 {{\n      True -> break total\n      False -> total + value\n    }}\n",
+            "  }}\n}}\n",
+            "fn handles(rs: Receiver<Receiver<Int>>) -> Int {{\n",
+            "  let first = Channel.receive(rs)\n  let second = Channel.receive(rs)\n  1\n}}\n",
+            "fn owner_sends(s: Sender<Parcel>, r: Receiver<Int>) -> Int {{\n",
+            "  let m = Hand.Over(r)\n  let parcel = Parcel.Hold(m)\n  Channel.send(s, parcel)\n  1\n}}\n",
+            "fn fields() -> Int {{\n",
+            "  let channel = Channel.bounded(1)\n  let receiver = channel.receiver\n",
+            "  let completion = channel.completion\n",
+            "  let child = Task.start(fn() -> Int {{\n    Channel.receive(receiver)\n    1\n  }})\n",
+            "  Channel.close(completion)\n  1\n}}\n",
+            "fn matched(h: Hand) -> Hand {{\n",
+            "  let n = case h {{\n    Hand.Over(x) -> 1\n  }}\n  h\n}}\n",
+            "fn closure_field(r: Receiver<Int>, c: Completion<Int>) -> Int {{\n",
+            "  let job = {{ run: fn() -> Int {{\n    Channel.receive(r)\n    1\n  }}, done: c }}\n",
+            "  let run = job.run\n  let done = job.done\n  1\n}}\n",
+            "fn next_hand(rs: Receiver<Hand>) -> Hand {{\n",
+            "  let got = Channel.receive(rs)\n",
+            "  case got {{\n    Receive.Received(h) -> h\n    Receive.Drained -> wrap(rs_fallback())\n  }}\n",
+            "}}\n",
+            "fn rs_fallback() -> Receiver<Int> {{\n  Channel.bounded(1).receiver\n}}\n",
+            "fn dispatch(rs: Receiver<Hand>) -> Int {{\n",
+            "  loop n = 0 {{\n    let h = next_hand(rs)\n",
+            "    case n >= 3 {{\n      True -> break n\n      False -> n + 1\n    }}\n",
+            "  }}\n}}\n",
+            "fn first_of(rs: Receiver<Receiver<Int>>) -> Option<Receiver<Int>> {{\n",
+            "  let got = Channel.receive(rs)\n",
+            "  case got {{\n    Receive.Received(h) -> Option.Some(h)\n    Receive.Drained -> Option.None\n  }}\n",
+            "}}\n",
+            "fn first_twice(rs: Receiver<Receiver<Int>>) -> Int {{\n",
+            "  let a = first_of(rs)\n  let b = first_of(rs)\n  1\n}}\n",
+            "struct Slot<T> {{\n  item: T\n}}\n",
+            "fn slot_of(rs: Receiver<Receiver<Int>>) -> Slot<Receiver<Int>> {{\n",
+            "  Slot(rs_fallback())\n}}\n",
+            "fn slot_twice(rs: Receiver<Receiver<Int>>) -> Int {{\n",
+            "  let a = slot_of(rs)\n  let b = slot_of(rs)\n  1\n}}\n",
+            "fn closure_twice(r: Receiver<Int>) -> Int {{\n",
+            "  let peek = fn() -> Int {{\n    r\n    1\n  }}\n  let a = peek()\n  let b = peek()\n  a + b\n}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let diagnostics = check_diagnostics(&source);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
 }
 
 // Removing a managed supervisor consumes its handle, as removing a process does.

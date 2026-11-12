@@ -977,6 +977,143 @@ impl TypedProject {
         self.value_properties_with(id, &HashMap::new(), &mut HashSet::new())
     }
 
+    /// Whether a value of type `container` may hold a value of type `part`: `part`
+    /// occurs in `container` through fields, variant fields, elements, and type
+    /// arguments. A function, interface, open generic, or unresolved type may hold
+    /// anything, since a closure or provider can capture any value. Conservative past
+    /// a nesting depth, so a recursive type cannot loop.
+    pub(crate) fn type_may_hold(&self, container: TypeId, part: TypeId) -> bool {
+        self.type_may_hold_with(container, part, &HashMap::new(), 0)
+    }
+
+    fn type_may_hold_with(
+        &self,
+        container: TypeId,
+        part: TypeId,
+        generics: &HashMap<SymbolId, TypeId>,
+        depth: usize,
+    ) -> bool {
+        const DEPTH_LIMIT: usize = 16;
+        if depth > DEPTH_LIMIT {
+            return true;
+        }
+        let container = self.resolve_type_id(container);
+        if let CanonicalType::Generic(symbol) = &self.types[container.raw() as usize]
+            && let Some(bound) = generics.get(symbol)
+        {
+            return self.type_may_hold_with(*bound, part, generics, depth + 1);
+        }
+        if self.same_type_with(container, part, generics, depth) {
+            return true;
+        }
+        let holds = |id: TypeId, generics: &HashMap<SymbolId, TypeId>| {
+            self.type_may_hold_with(id, part, generics, depth + 1)
+        };
+        match &self.types[container.raw() as usize] {
+            CanonicalType::Named { symbol, arguments } => {
+                let symbol_kind = self.resolved.symbol(*symbol).kind;
+                if symbol_kind == ProjectSymbolKind::Interface
+                    || matches!(
+                        self.resolved.standard_symbol(*symbol),
+                        Some(StandardSymbol::Type(
+                            StandardType::Console | StandardType::FileSystem | StandardType::Clock
+                        ))
+                    )
+                {
+                    return true;
+                }
+                let mut inner = generics.clone();
+                for (parameter, argument) in self
+                    .type_generic_parameters(*symbol)
+                    .into_iter()
+                    .zip(arguments)
+                {
+                    inner.insert(parameter, *argument);
+                }
+                let mut fields = self
+                    .fields
+                    .get(symbol)
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                if symbol_kind == ProjectSymbolKind::Enum {
+                    for variant in self.enum_variants(*symbol) {
+                        fields.extend(self.fields.get(&variant).into_iter().flatten());
+                    }
+                }
+                fields.iter().any(|field| holds(field.type_id, &inner))
+                    || arguments.iter().any(|argument| holds(*argument, generics))
+            }
+            CanonicalType::Record(fields) => {
+                fields.iter().any(|field| holds(field.type_id, generics))
+            }
+            CanonicalType::Tuple(elements) => {
+                elements.iter().any(|element| holds(*element, generics))
+            }
+            CanonicalType::Poison => false,
+            CanonicalType::Generic(_)
+            | CanonicalType::FailureSetValue(_)
+            | CanonicalType::Function(_)
+            | CanonicalType::PolymorphicFunction { .. }
+            | CanonicalType::InferenceVariable(_) => true,
+        }
+    }
+
+    /// Whether `left`, read with `generics` bound, is the type `right`.
+    fn same_type_with(
+        &self,
+        left: TypeId,
+        right: TypeId,
+        generics: &HashMap<SymbolId, TypeId>,
+        depth: usize,
+    ) -> bool {
+        const DEPTH_LIMIT: usize = 16;
+        if depth > DEPTH_LIMIT {
+            return false;
+        }
+        let left = self.resolve_type_id(left);
+        let right = self.resolve_type_id(right);
+        if left == right {
+            return true;
+        }
+        let same =
+            |left: &TypeId, right: &TypeId| self.same_type_with(*left, *right, generics, depth + 1);
+        match (
+            &self.types[left.raw() as usize],
+            &self.types[right.raw() as usize],
+        ) {
+            (CanonicalType::Generic(symbol), _) if generics.contains_key(symbol) => {
+                same(&generics[symbol], &right)
+            }
+            (
+                CanonicalType::Named { symbol, arguments },
+                CanonicalType::Named {
+                    symbol: other,
+                    arguments: other_arguments,
+                },
+            ) => {
+                symbol == other
+                    && arguments.len() == other_arguments.len()
+                    && arguments
+                        .iter()
+                        .zip(other_arguments)
+                        .all(|(a, b)| same(a, b))
+            }
+            (CanonicalType::Tuple(elements), CanonicalType::Tuple(other)) => {
+                elements.len() == other.len() && elements.iter().zip(other).all(|(a, b)| same(a, b))
+            }
+            (CanonicalType::Record(fields), CanonicalType::Record(other)) => {
+                fields.len() == other.len()
+                    && fields
+                        .iter()
+                        .zip(other)
+                        .all(|(a, b)| a.name == b.name && same(&a.type_id, &b.type_id))
+            }
+            (CanonicalType::Generic(symbol), CanonicalType::Generic(other)) => symbol == other,
+            _ => false,
+        }
+    }
+
     fn value_properties_with(
         &self,
         id: TypeId,

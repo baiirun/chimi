@@ -8,6 +8,11 @@
 //!   `Process.spec` call, directly or through calls of named functions.
 //! - `Process.send` is a transfer boundary for its message, like `Channel.send`.
 //! - `Supervisor.remove_process` and `remove_supervisor` consume their handle.
+//!
+//! Exclusive values move (`task-and-channel-capabilities.md`): a value built from an
+//! exclusive binding carries it (`FlowValue::carries`), and the carried bindings move
+//! when the value is bound by `let` or a loop state, taken apart by patterns, or
+//! crosses a transfer boundary.
 
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::ids::{ModuleId, SemanticId, SymbolId, TextRange};
@@ -42,17 +47,24 @@ enum TransferBoundary {
     ProcessSend,
     ProcessRemoval,
     SupervisorRemoval,
+    /// A `let` or loop state binding took the value that carried it.
+    IntoBinding(SymbolId),
+    /// The patterns of a `case`, or of a destructuring `let`, took apart a value
+    /// that carried it.
+    IntoPattern,
 }
 
 impl TransferBoundary {
-    const fn description(self) -> &'static str {
+    fn description(self, typed: &TypedProject) -> String {
         match self {
-            Self::ClosureCapture => "into a one-shot closure",
-            Self::TaskStart => "by Task.start",
-            Self::ChannelSend => "by Channel.send",
-            Self::ProcessSend => "by Process.send",
-            Self::ProcessRemoval => "by Supervisor.remove_process",
-            Self::SupervisorRemoval => "by Supervisor.remove_supervisor",
+            Self::ClosureCapture => "into a one-shot closure".to_owned(),
+            Self::TaskStart => "by Task.start".to_owned(),
+            Self::ChannelSend => "by Channel.send".to_owned(),
+            Self::ProcessSend => "by Process.send".to_owned(),
+            Self::ProcessRemoval => "by Supervisor.remove_process".to_owned(),
+            Self::SupervisorRemoval => "by Supervisor.remove_supervisor".to_owned(),
+            Self::IntoBinding(owner) => format!("into `{}`", typed.resolved.symbol(owner).name),
+            Self::IntoPattern => "into a pattern".to_owned(),
         }
     }
 }
@@ -65,6 +77,11 @@ struct FlowValue {
     /// What makes the value never shareable, for diagnostics.
     unshared_by: Option<String>,
     nonshareable_provider: Option<String>,
+    /// The exclusive bindings this value may hold: the binding itself when the value
+    /// is one, and those it was built from by constructors, literals, blocks, `case`
+    /// arms, `break`, and calls whose result type can hold an argument's type. Taking
+    /// the value moves them. Empty for a value read out of a binding's field.
+    carries: BTreeSet<SymbolId>,
 }
 
 impl FlowValue {
@@ -77,6 +94,7 @@ impl FlowValue {
             unshared_by: (properties.shareable == PropertyDerivation::Never)
                 .then(|| typed.format_type(type_id)),
             nonshareable_provider: None,
+            carries: BTreeSet::new(),
         }
     }
 
@@ -86,6 +104,7 @@ impl FlowValue {
             blocked_by: None,
             unshared_by: None,
             nonshareable_provider: None,
+            carries: BTreeSet::new(),
         }
     }
 
@@ -95,10 +114,12 @@ impl FlowValue {
             blocked_by: None,
             unshared_by: None,
             nonshareable_provider: None,
+            carries: BTreeSet::new(),
         }
     }
 
-    fn combine(self, other: Self) -> Self {
+    fn combine(mut self, mut other: Self) -> Self {
+        self.carries.append(&mut other.carries);
         let properties = self.properties.combine(other.properties);
         let blocked_by = if properties.transferable == PropertyDerivation::Never {
             self.blocked_by.or(other.blocked_by)
@@ -115,6 +136,7 @@ impl FlowValue {
             blocked_by,
             unshared_by,
             nonshareable_provider: self.nonshareable_provider.or(other.nonshareable_provider),
+            carries: self.carries,
         }
     }
 }
@@ -146,6 +168,7 @@ pub(crate) fn check(typed: &TypedProject) -> CapabilityReport {
             diagnostics: Vec::new(),
             spec_needs: BTreeSet::new(),
             next_summaries: SpecNeedSummaries::new(),
+            loop_breaks: Vec::new(),
         };
         checker.check_modules();
         if checker.next_summaries == summaries {
@@ -168,6 +191,9 @@ struct CapabilityChecker<'a> {
     /// declaration and that no enclosing `using` has bound yet.
     spec_needs: BTreeSet<String>,
     next_summaries: SpecNeedSummaries,
+    /// For each enclosing loop of the function being evaluated, innermost last, what
+    /// its `break` values carry: the loop's value carries them.
+    loop_breaks: Vec<BTreeSet<SymbolId>>,
 }
 
 impl CapabilityChecker<'_> {
@@ -276,11 +302,17 @@ impl CapabilityChecker<'_> {
                             format!(
                                 "`{}` was transferred {} and cannot be used by its previous owner",
                                 name.text,
-                                boundary.description()
+                                boundary.description(self.typed)
                             ),
                         ));
                     }
-                    binding.value
+                    let mut value = binding.value;
+                    if !binding.requirement
+                        && value.properties.capability == CapabilityClass::Exclusive
+                    {
+                        value.carries.insert(symbol);
+                    }
+                    value
                 } else if matches!(
                     self.typed.resolved.symbol(symbol).kind,
                     ProjectSymbolKind::Function
@@ -293,19 +325,29 @@ impl CapabilityChecker<'_> {
                     self.type_value(module_id, expression)
                 }
             }
-            ModuleExpression::Select { receiver, .. } => {
-                let receiver = self.evaluate(module_id, receiver, environment);
-                let value = self.type_value(module_id, expression);
-                if value.properties.transferable == PropertyDerivation::ValueDependent {
-                    receiver
+            ModuleExpression::Select {
+                receiver: receiver_expression,
+                ..
+            } => {
+                let receiver = self.evaluate(module_id, receiver_expression, environment);
+                let mut value = self.type_value(module_id, expression);
+                let carries = if value.properties.shareable == PropertyDerivation::Always
+                    || reads_a_binding(receiver_expression)
+                {
+                    BTreeSet::new()
                 } else {
-                    value
+                    receiver.carries.clone()
+                };
+                if value.properties.transferable == PropertyDerivation::ValueDependent {
+                    value = receiver;
                 }
+                value.carries = carries;
+                value
             }
             ModuleExpression::Call {
                 callee, arguments, ..
             } => {
-                self.evaluate(module_id, callee, environment);
+                let callee_value = self.evaluate(module_id, callee, environment);
                 let arguments = arguments
                     .iter()
                     .map(|argument| {
@@ -355,11 +397,8 @@ impl CapabilityChecker<'_> {
                         } else {
                             TransferBoundary::SupervisorRemoval
                         };
-                        if let Some((argument, _)) = arguments.get(1)
-                            && let Some(symbol) =
-                                self.expression_binding_symbol(module_id, argument)
-                        {
-                            self.transfer_binding(symbol, argument.range(), boundary, environment);
+                        if let Some((argument, handle)) = arguments.get(1) {
+                            self.transfer_carried(handle, argument.range(), boundary, environment);
                         }
                     }
                     Some(_) => {}
@@ -371,7 +410,27 @@ impl CapabilityChecker<'_> {
                         }
                     }
                 }
-                self.type_value(module_id, expression)
+                // The callee is not followed: a result that could hold an exclusive
+                // value may hold the closure called and every argument whose type
+                // occurs in the result's type.
+                let mut result = self.type_value(module_id, expression);
+                if result.properties.shareable != PropertyDerivation::Always {
+                    result.carries = callee_value.carries;
+                    let result_type = self.expression_type(module_id, expression);
+                    for (argument, value) in arguments {
+                        let embeds = match (result_type, self.expression_type(module_id, argument))
+                        {
+                            (Some(result_type), Some(argument_type)) => {
+                                self.typed.type_may_hold(result_type, argument_type)
+                            }
+                            _ => true,
+                        };
+                        if embeds {
+                            result.carries.extend(value.carries);
+                        }
+                    }
+                }
+                result
             }
             ModuleExpression::List { elements, .. } | ModuleExpression::Tuple { elements, .. } => {
                 elements
@@ -444,17 +503,12 @@ impl CapabilityChecker<'_> {
                     if provided.properties.shareable == PropertyDerivation::Never {
                         provided.nonshareable_provider = Some(provider.name.text.clone());
                     }
-                    if provided.properties.capability == CapabilityClass::Exclusive
-                        && let Some(symbol) =
-                            self.expression_binding_symbol(module_id, &provider.value)
-                    {
-                        self.transfer_binding(
-                            symbol,
-                            provider.value.range(),
-                            TransferBoundary::ClosureCapture,
-                            environment,
-                        );
-                    }
+                    self.transfer_carried(
+                        &provided,
+                        provider.value.range(),
+                        TransferBoundary::ClosureCapture,
+                        environment,
+                    );
                     value = value.combine(provided);
                 }
                 self.spec_needs.extend(outer_spec_needs);
@@ -478,19 +532,34 @@ impl CapabilityChecker<'_> {
                 body,
                 ..
             } => {
-                let loop_value = self.type_value(module_id, expression);
-                self.evaluate_loop(module_id, *state_id, initial, body, environment);
+                let mut loop_value = self.type_value(module_id, expression);
+                loop_value.carries =
+                    self.evaluate_loop(module_id, *state_id, initial, body, environment);
                 loop_value
             }
             ModuleExpression::Break { value, .. } => {
                 if let Some(value) = value {
-                    self.evaluate(module_id, value, environment);
+                    let carries = self.evaluate(module_id, value, environment).carries;
+                    if let Some(breaks) = self.loop_breaks.last_mut() {
+                        breaks.extend(carries);
+                    }
                 }
                 FlowValue::invalid()
             }
             ModuleExpression::Case { subjects, arms, .. } => {
                 for subject in subjects {
-                    self.evaluate(module_id, subject, environment);
+                    // A subject built here, not read from a binding, is taken apart by
+                    // the patterns, as by a destructuring `let`: they take what it
+                    // carries.
+                    let value = self.evaluate(module_id, subject, environment);
+                    if !reads_a_binding(subject) {
+                        self.transfer_carried(
+                            &value,
+                            subject.range(),
+                            TransferBoundary::IntoPattern,
+                            environment,
+                        );
+                    }
                 }
                 let mut values = Vec::new();
                 let mut arm_environments = Vec::new();
@@ -537,14 +606,7 @@ impl CapabilityChecker<'_> {
                         ProjectSymbolKind::LocalBinding,
                         &name.text,
                     ) {
-                        environment.insert(
-                            symbol,
-                            FlowBinding {
-                                value: value.clone(),
-                                ownership: OwnershipState::Available,
-                                requirement: false,
-                            },
-                        );
+                        self.bind_owner(symbol, value.clone(), expression.range(), environment);
                     }
                 }
                 ModuleBlockItem::Expression(expression) => {
@@ -565,6 +627,7 @@ impl CapabilityChecker<'_> {
         environment: &mut FlowEnvironment,
     ) -> FlowValue {
         let captures = self.capture_symbols(module_id, body, environment);
+        let outer_loop_breaks = std::mem::take(&mut self.loop_breaks);
         let mut closure = FlowValue::shareable();
         let mut function_environment = environment.clone();
         for symbol in captures {
@@ -621,6 +684,7 @@ impl CapabilityChecker<'_> {
             self.add_signature_bindings(module_id, signature, contract, &mut function_environment);
         }
         self.evaluate(module_id, body, &mut function_environment);
+        self.loop_breaks = outer_loop_breaks;
         closure
     }
 
@@ -654,24 +718,18 @@ impl CapabilityChecker<'_> {
             ));
             return;
         }
-        if thunk.properties.capability == CapabilityClass::Exclusive
-            && let Some(symbol) = self.expression_binding_symbol(module_id, argument)
-        {
-            self.transfer_binding(
-                symbol,
-                argument.range(),
-                TransferBoundary::TaskStart,
-                environment,
-            );
-        }
+        self.transfer_carried(
+            thunk,
+            argument.range(),
+            TransferBoundary::TaskStart,
+            environment,
+        );
     }
 
     /// `Channel.send` and `Process.send`: the payload moves to the receiver.
     ///
-    /// Ensures: `T4243` when the payload is never transferable; otherwise every exclusive
-    /// binding named directly in the payload expression (see `payload_bindings`) is
-    /// transferred, so a later use is `T4241`. A `let`-bound or function-built payload
-    /// moves nothing (`ts-184972`).
+    /// Ensures: `T4243` when the payload is never transferable; otherwise every
+    /// exclusive binding the payload carries is transferred, so a later use is `T4241`.
     fn check_message_transfer(
         &mut self,
         module_id: ModuleId,
@@ -697,65 +755,7 @@ impl CapabilityChecker<'_> {
             ));
             return;
         }
-        let mut moved = Vec::new();
-        self.payload_bindings(module_id, argument, &mut moved);
-        for (symbol, range) in moved {
-            if environment.get(&symbol).is_some_and(|binding| {
-                binding.value.properties.capability == CapabilityClass::Exclusive
-            }) {
-                self.transfer_binding(symbol, range, boundary, environment);
-            }
-        }
-    }
-
-    /// The bindings a payload expression is built from: the expression itself when it
-    /// names a binding, and the arguments of constructors, records, lists, and tuples.
-    /// A call of any other function makes a new value, so its arguments are not followed.
-    fn payload_bindings(
-        &self,
-        module_id: ModuleId,
-        expression: &ModuleExpression,
-        bindings: &mut Vec<(SymbolId, TextRange)>,
-    ) {
-        match expression {
-            ModuleExpression::Name { semantic_id, .. } => {
-                if let Some(symbol) = self.resolved_value_symbol(module_id, *semantic_id) {
-                    bindings.push((symbol, expression.range()));
-                }
-            }
-            ModuleExpression::Group { expression, .. } => {
-                self.payload_bindings(module_id, expression, bindings);
-            }
-            ModuleExpression::Call {
-                callee, arguments, ..
-            } => {
-                let constructs = self
-                    .expression_binding_symbol(module_id, callee)
-                    .is_some_and(|symbol| {
-                        matches!(
-                            self.typed.resolved.symbol(symbol).kind,
-                            ProjectSymbolKind::StructConstructor
-                                | ProjectSymbolKind::EnumConstructor
-                        )
-                    });
-                if constructs {
-                    for argument in arguments {
-                        self.payload_bindings(module_id, &argument.value, bindings);
-                    }
-                }
-            }
-            ModuleExpression::List { elements, .. } | ModuleExpression::Tuple { elements, .. } => {
-                for element in elements {
-                    self.payload_bindings(module_id, element, bindings);
-                }
-            }
-            ModuleExpression::Record { fields, .. } => {
-                for field in fields {
-                    self.payload_bindings(module_id, &field.value, bindings);
-                }
-            }
-            _ => {}
-        }
+        self.transfer_carried(payload, argument.range(), boundary, environment);
     }
 
     /// `T4260` for a `Process.spec` body: every incarnation runs it again, so its
@@ -811,6 +811,46 @@ impl CapabilityChecker<'_> {
                  incarnation of the process uses it"
             ),
         ));
+    }
+
+    /// Binds `owner` to `value`: the bindings the value carries move into it, so the
+    /// new binding is their only owner.
+    fn bind_owner(
+        &mut self,
+        owner: SymbolId,
+        mut value: FlowValue,
+        at: TextRange,
+        environment: &mut FlowEnvironment,
+    ) {
+        let carries = std::mem::take(&mut value.carries);
+        for symbol in carries {
+            self.transfer_binding(
+                symbol,
+                at,
+                TransferBoundary::IntoBinding(owner),
+                environment,
+            );
+        }
+        environment.insert(
+            owner,
+            FlowBinding {
+                value,
+                ownership: OwnershipState::Available,
+                requirement: false,
+            },
+        );
+    }
+
+    fn transfer_carried(
+        &mut self,
+        value: &FlowValue,
+        at: TextRange,
+        boundary: TransferBoundary,
+        environment: &mut FlowEnvironment,
+    ) {
+        for symbol in &value.carries {
+            self.transfer_binding(*symbol, at, boundary, environment);
+        }
     }
 
     fn transfer_binding(
@@ -917,6 +957,17 @@ impl CapabilityChecker<'_> {
         }
     }
 
+    fn expression_type(
+        &self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+    ) -> Option<crate::ids::TypeId> {
+        self.typed
+            .expression_facts
+            .get(&(module_id, expression.semantic_id()))
+            .map(|fact| fact.success)
+    }
+
     fn type_value(&self, module_id: ModuleId, expression: &ModuleExpression) -> FlowValue {
         self.typed
             .expression_facts
@@ -996,7 +1047,7 @@ impl CapabilityChecker<'_> {
             format!(
                 "`{}` was transferred {} and cannot be captured again",
                 self.typed.resolved.symbol(symbol).name,
-                boundary.description()
+                boundary.description(self.typed)
             ),
         ));
     }
@@ -1004,7 +1055,7 @@ impl CapabilityChecker<'_> {
     /// Requires: `loop_id` is the loop's `state_id`, which defines its state binding.
     /// Ensures: a capability bound outside the loop that the body may transfer is reported,
     /// because the next pass would use it again. The state binding is exempt: each pass
-    /// rebinds it to the body's value.
+    /// rebinds it to the body's value. Returns what the loop's `break` values carry.
     fn evaluate_loop(
         &mut self,
         module_id: ModuleId,
@@ -1012,7 +1063,7 @@ impl CapabilityChecker<'_> {
         initial: &ModuleExpression,
         body: &ModuleExpression,
         environment: &mut FlowEnvironment,
-    ) {
+    ) -> BTreeSet<SymbolId> {
         let initial_value = self.evaluate(module_id, initial, environment);
         let state = self
             .typed
@@ -1023,18 +1074,18 @@ impl CapabilityChecker<'_> {
             .find(|symbol| {
                 self.typed.resolved.symbol(*symbol).kind == ProjectSymbolKind::LocalBinding
             });
+        // The initial value's bindings move into the state, which only the pass binds.
+        if let Some(state) = state {
+            let boundary = TransferBoundary::IntoBinding(state);
+            self.transfer_carried(&initial_value, initial.range(), boundary, environment);
+        }
         let mut pass = environment.clone();
         if let Some(state) = state {
-            pass.insert(
-                state,
-                FlowBinding {
-                    value: initial_value,
-                    ownership: OwnershipState::Available,
-                    requirement: false,
-                },
-            );
+            self.bind_owner(state, initial_value, initial.range(), &mut pass);
         }
+        self.loop_breaks.push(BTreeSet::new());
         self.evaluate(module_id, body, &mut pass);
+        let breaks = self.loop_breaks.pop().unwrap_or_default();
         let mut reused = environment
             .iter()
             .filter(|(_, before)| before.ownership == OwnershipState::Available)
@@ -1053,18 +1104,29 @@ impl CapabilityChecker<'_> {
                 format!(
                     "`{}` is transferred {} inside a loop; the next pass would use it again",
                     self.typed.resolved.symbol(symbol).name,
-                    boundary.description()
+                    boundary.description(self.typed)
                 ),
             ));
         }
         pass.retain(|symbol, _| environment.contains_key(symbol));
         *environment = pass;
+        breaks
     }
 
     fn file_id(&self, module_id: ModuleId) -> crate::ids::FileId {
         self.typed.resolved.semantic.modules[module_id.raw() as usize]
             .source
             .file_id()
+    }
+}
+
+/// Whether `expression` reads a binding by name. A field or pattern read out of a
+/// binding leaves the binding its owner, so it takes nothing the binding carries.
+fn reads_a_binding(expression: &ModuleExpression) -> bool {
+    match expression {
+        ModuleExpression::Name { .. } => true,
+        ModuleExpression::Group { expression, .. } => reads_a_binding(expression),
+        _ => false,
     }
 }
 

@@ -133,18 +133,59 @@ compiler diagnoses provable aliasing and use-after-transfer.
 
 `Channel.send(sender, value)` is a transfer boundary. Acceptance moves the
 value into the channel; receive moves it to the receiver task. The compiler
-marks an exclusive binding as moved when the payload expression names it
-directly: the payload is the binding, or the binding appears as an element of a
-list or tuple literal, a field of a record literal, or an argument of a struct
-or enum constructor call written in the payload, nested in any of these and in
-parentheses at any depth. Nothing else moves a binding. A payload bound to a
-`let` before the send, or returned by a function call such as `wrap(r)`, leaves
-`r` usable after the send; that aliasing hole is `ts-184972` and is not closed
-by this rule. If close or abort
+marks every exclusive binding the payload carries as moved
+([moving exclusive values](#moving-exclusive-values)). If close or abort
 wins before acceptance, `Channel.SendError.Closed(value)` or
 `Channel.SendError.Aborted(value)` returns the unaccepted value through the
 ordinary failure channel. Cancellation before acceptance removes the waiter
 and transfers no value.
+
+### Moving exclusive values
+
+An exclusive binding has one owner in its task as well as across tasks: a value
+built from it takes it, so the binding cannot stay usable while the value
+crosses a task boundary. The compiler follows this through a function body
+(`ts-184972`):
+
+- A value **carries** an exclusive binding when it is that binding, or is built
+  from a value that carries it: an element of a list or tuple literal, a field
+  of a record literal or update, an argument of a constructor call, the value
+  of a block, of any `case` arm, or of a `break` out of a loop, nested at any
+  depth and in parentheses. A field read out of a value that is not a binding,
+  such as `boxed(r).inner`, carries what that value carries.
+- A call's result carries what an argument carries when the result type is not
+  always shareable and the argument's type occurs in it: as the result itself,
+  or inside a field, variant field, element, or type argument. A function type,
+  an interface, or an open type parameter in the result may hold any value. The
+  compiler does not look inside the called function, so `wrap(r) -> Hand`, where
+  `Hand` has a `Receiver<Int>` field, is assumed to embed `r: Receiver<Int>`,
+  while `next_hand(rs: Receiver<Hand>) -> Hand` does not embed `rs`, since
+  `Receiver<Hand>` does not occur in `Hand`. Calling a one-shot closure whose
+  result is not always shareable also carries the closure.
+- Binding a value with `let`, or as a loop's initial state, moves every binding
+  the value carries into the new binding, which becomes the only owner. A
+  destructuring `let`, or a `case` whose subject is not a binding, moves what
+  the subject carries into its patterns. A later use of a moved binding is
+  `T4241`; moving a binding bound outside a loop from inside the loop is
+  `T4250`.
+- `Channel.send`, `Process.send`, `Task.start`, a `using` provider, and
+  `Supervisor.remove_process` and `remove_supervisor` transfer every binding
+  their operand carries.
+- Passing a binding to a call whose result cannot embed it does not move it.
+  `Channel.receive(r)`, or a helper `next(r) -> Int`, may run on every pass of a
+  loop. A value that is built and then dropped, never bound or transferred,
+  moves nothing.
+- Reading a field of a binding (`channel.receiver`), or matching a binding in a
+  `case`, gives a new, independent binding and moves nothing, so the record that
+  `Channel.bounded` returns can be split into its three capabilities.
+
+Three flows are outside this rule, and the runtime owner token is their only
+backstop: a capability read out of the same binding twice (two reads of
+`channel.receiver`, or a pattern binding beside the binding it matched); a
+called function that transfers its parameter, which leaves the caller's
+argument usable; and `Channel.Receive<T>`, which the compiler treats as
+shareable whatever `T` is, so a received exclusive value can be captured by two
+children.
 
 Capacity, FIFO admission, graceful drain, abort, and cancellation
 linearization follow [bounded channel semantics](../research/channel-semantics.md).
