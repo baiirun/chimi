@@ -7,8 +7,13 @@ storable outcomes, failure-set types, failure context, and retry. It covers
 gaps G13, G14, and G25 of the
 [language completion plan](../plans/language-completion-plan.md) and the
 `Duration` type of `prog show ts-f31a20`. The remaining work is tracked by
-`prog show ts-80cbfb`. Nothing here is implemented yet. Source spelling
-follows the current kernel and remains free to break.
+`prog show ts-80cbfb`. Only [`Duration`](#duration) is implemented: the
+type, constructors, conversions, arithmetic, text form, parser, `Duration.zero`,
+derived equality and order, debug rendering, module constants, `T4303` help,
+and `T4348` to `T4350`, on both backends (see
+[Implementation notes](#implementation-notes)). `T4263` for process
+durations waits for `Process.spec`. Nothing else here is implemented yet.
+Source spelling follows the current kernel and remains free to break.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative.
 
@@ -239,16 +244,28 @@ needs no `Duration.less` or `Duration.greater`.
 
 `Duration.parse(Text) -> Duration errors ParseError` accepts the same grammar:
 an optional `-`, then one or more `<decimal><unit>` parts with units in
-strictly descending order and each unit at most once. The literal `0` is also
-accepted.
+strictly descending order and each unit at most once. A `<decimal>` is one or
+more ASCII digits with an optional `.` and one or more fraction digits; a
+fraction is allowed in every unit (`1.5h` is `1h30m`). The literal `0` is also
+accepted; `-0` is not, but `-0s` is. Nothing else is: no `+`, whitespace,
+`_`, or `µs`.
 
 <!-- chimi: check -->
 ```chimi
 enum ParseError {
-  Invalid(text: Text)
-  OutOfRange(text: Text)
+  Empty
+  Invalid
+  OutOfRange
 }
 ```
+
+Following the [failure-type conventions](standard-library-conventions.md#payloads),
+the variants carry no copy of the parsed text; a caller adds it with
+`Cause.context`.
+
+- The empty text is `Empty`.
+- A grammar error anywhere in the text is `Invalid`, even when another part
+  is out of range.
 
 - `Duration.parse(Duration.to_text(d))` MUST return `d` for every `d`,
   including the minimum value.
@@ -256,7 +273,7 @@ enum ParseError {
   `Invalid`. Parsing MUST NOT round.
 - A value outside the range is `OutOfRange`.
 - When the argument is a `Text` literal or a module constant, the compiler
-  parses it at build time. Text that would fail is a compile error (`T4349`).
+  parses it at build time, with the parser the interpreter runs. Text that would fail is a compile error (`T4349`).
   Valid text compiles and draws a warning (`T4350`) that suggests the
   equivalent constructor expression, because a constructor cannot fail and
   needs no failure handling. Neither check applies to a non-constant argument.
@@ -1051,6 +1068,48 @@ deadlock under virtual time.
 | Tracing | Timer set, fire, and cancel, select park and commit with the committed index, timeout scope firing, virtual time advance, and terminal causes appear in `boundaries` mode without payloads. `off` mode constructs no events. |
 
 ## Implementation notes
+
+### Duration as implemented (ts-f31a20)
+
+`std/duration` is a built-in standard module until G1 lets it move to Chimi
+source; its surface is the one this contract writes, so the move changes no
+program.
+
+- **Model.** `compiler/chimi/src/duration.rs` holds the arithmetic, the
+  canonical text form, the parser, and the constructor expression for
+  `T4350`. The interpreter (`execution/durations.rs`) and the type checker's
+  constant checks (`typing/durations.rs`) both call it, so a build-time
+  verdict cannot differ from the run-time one. The native runtime
+  (`duration_*` in `runtime.c`) mirrors it value for value, text for text,
+  and defect message for defect message. A language test runs a generated
+  set of values and texts through both backends and compares them.
+- **Representation.** The interpreter has a `Duration` runtime value and the
+  native runtime a `VALUE_DURATION` whose payload is the `int64_t` count, in
+  the same slot an `Int` uses. The native runtime boxes every value today,
+  `Int` included, so a `Duration` is exactly as unboxed as an `Int`. Program
+  data stores a constant `Duration` as one row (`CHIMI_CONSTANT_DURATION`).
+- **Ordering and equality** compare the count, so `==`, the comparison
+  operators, `Order.compare`, and `Map` keys follow numeric order.
+- **`Duration.zero`** is a registry constant that lowers to
+  `Duration.nanoseconds(0)`.
+- **Defects** name the operation and its operands, such as
+  ``Duration.add` overflows the Duration range: 2562047h47m16.854775807s + 1ns``
+  or ``Duration.hours(2562048)` overflows the Duration range``.
+- **Constant evaluator.** `typing::durations::ConstantEvaluator` folds
+  literals, module constants, `Duration.zero`, `Int` arithmetic, and the
+  `std/duration` constructors, conversions, and arithmetic, and reports a
+  defect a folded call always raises. `T4348` uses it for constructors whose
+  argument folds; process typing will use it for `T4263`.
+- **Constant `parse`.** `T4349` and `T4350` apply when the argument is a
+  `Text` literal or a reference to a module constant whose value folds to
+  text. A local `let` bound to a literal is not a module constant and is not
+  checked. The `T4350` suggestion builds one constructor per nonzero part, in
+  that part's unit or the largest smaller unit that makes its count whole,
+  and negates each count for a negative text, so it never overflows:
+  `-1.5s` suggests `Duration.milliseconds(-1500)`.
+- **Outcome records** encode a `Duration` as `{"duration":<nanoseconds>}`.
+- **Interpolation** of a `Duration` stays `T4325`; write
+  `${Duration.to_text(d)}` or `${Debug.render(d)}`.
 
 ### Compiler (`compiler/chimi/src`)
 

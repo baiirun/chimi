@@ -616,7 +616,7 @@ impl Compiler {
     }
 }
 
-fn resolve_project_sources(sources: Vec<ProjectSource>) -> ResolvedProject {
+pub(crate) fn resolve_project_sources(sources: Vec<ProjectSource>) -> ResolvedProject {
     let semantic = semantic::lower_project(
         sources
             .into_iter()

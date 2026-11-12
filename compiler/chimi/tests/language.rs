@@ -8559,3 +8559,537 @@ fn a_plain_case_over_a_fallible_subject_names_the_failures_and_the_rewrite() {
     );
     assert_eq!(check_codes(&fixed), Vec::<String>::new());
 }
+
+// Duration (time-and-outcomes.md, ts-f31a20). Arguments pass through a function
+// parameter so that the constant checks (T4348, T4349, T4350) stay out of the way.
+
+const DURATION_PRELUDE: &str = "import std/duration as Duration\n\
+                                import std/duration.{Duration}\n\
+                                import std/debug as Debug\n";
+
+/// The Duration value `min` cannot be written as one `Int` literal.
+const DURATION_MIN: &str =
+    "Duration.subtract(Duration.nanoseconds(-9223372036854775807), Duration.nanoseconds(1))";
+const DURATION_MAX: &str = "Duration.nanoseconds(9223372036854775807)";
+
+/// `run_both` without the inspection sweep, which is quadratic in the program size:
+/// for generated programs whose syntax a smaller `run_both` program already covers.
+fn run_both_paths(name: &str, source: &str) -> String {
+    let scratch = scratch_directory(name);
+    let path = scratch.join("main.chimi");
+    std::fs::write(&path, source).unwrap();
+    let interpreted = interpreter_outcome(&path);
+    let native = native_outcome(&scratch, &path);
+    assert_eq!(interpreted, native, "execution paths disagree for {name}");
+    assert_formatter_round_trips(source);
+    std::fs::remove_dir_all(scratch).unwrap();
+    interpreted
+        .strip_prefix("{\"schema\":\"chimi.runtime.v1\",")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .unwrap_or_else(|| panic!("unexpected outcome line: {interpreted}"))
+        .to_owned()
+}
+
+fn duration_program(body: &str) -> String {
+    format!(
+        "{DURATION_PRELUDE}\
+         fn id(count: Int) -> Int {{ count }}\n\
+         pub fn main() -> Text {{\n{body}\n}}\n"
+    )
+}
+
+// Conformance matrix "Duration range": every constructor accepts its boundary count
+// in both directions, and conversions truncate toward zero.
+#[test]
+fn duration_constructors_accept_their_boundary_counts() {
+    let source = duration_program(
+        "  let values = [\n\
+             Duration.hours(id(2562047)), Duration.hours(id(-2562047)),\n\
+             Duration.minutes(id(153722867)), Duration.minutes(id(-153722867)),\n\
+             Duration.seconds(id(9223372036)), Duration.seconds(id(-9223372036)),\n\
+             Duration.milliseconds(id(9223372036854)), Duration.milliseconds(id(-9223372036854)),\n\
+             Duration.microseconds(id(9223372036854775)),\n\
+             Duration.microseconds(id(-9223372036854775)),\n\
+             Duration.nanoseconds(id(9223372036854775807)),\n\
+           ]\n\
+           let truncated = [\n\
+             Duration.to_microseconds(Duration.nanoseconds(id(-1999))),\n\
+             Duration.to_milliseconds(Duration.nanoseconds(id(1999999))),\n\
+             Duration.to_seconds(Duration.milliseconds(id(-1999))),\n\
+             Duration.to_nanoseconds(Duration.hours(id(1))),\n\
+           ]\n\
+           \"${Debug.render(values)} ${Debug.render(truncated)}\"",
+    );
+    let outcome = run_both("duration-boundaries", &source);
+    assert_eq!(
+        outcome,
+        concat!(
+            "\"outcome\":\"success\",\"value\":\"[2562047h, -2562047h, 2562047h47m, ",
+            "-2562047h47m, 2562047h47m16s, -2562047h47m16s, 2562047h47m16.854s, ",
+            "-2562047h47m16.854s, 2562047h47m16.854775s, -2562047h47m16.854775s, ",
+            "2562047h47m16.854775807s] [-1, 1, -1, 3600000000000]\""
+        )
+    );
+}
+
+// Conformance matrix "Duration range": one more unit defects, as do arithmetic results
+// outside the range, a zero divisor, and `negate` / `absolute` of the minimum. The
+// defect is the same on both backends, so neither wraps nor saturates.
+#[test]
+fn duration_overflow_and_zero_divisors_defect_on_both_backends() {
+    let min = DURATION_MIN;
+    let max = DURATION_MAX;
+    let cases = [
+        (
+            "Duration.hours(id(2562048))".to_owned(),
+            "`Duration.hours(2562048)` overflows the Duration range",
+        ),
+        (
+            "Duration.minutes(id(-153722868))".to_owned(),
+            "`Duration.minutes(-153722868)` overflows the Duration range",
+        ),
+        (
+            "Duration.seconds(id(9223372037))".to_owned(),
+            "`Duration.seconds(9223372037)` overflows the Duration range",
+        ),
+        (
+            "Duration.milliseconds(id(9223372036855))".to_owned(),
+            "`Duration.milliseconds(9223372036855)` overflows the Duration range",
+        ),
+        (
+            "Duration.microseconds(id(9223372036854776))".to_owned(),
+            "`Duration.microseconds(9223372036854776)` overflows the Duration range",
+        ),
+        (
+            format!("Duration.negate({min})"),
+            "`Duration.negate` overflows the Duration range: -(-2562047h47m16.854775808s)",
+        ),
+        (
+            format!("Duration.absolute({min})"),
+            "`Duration.absolute` overflows the Duration range: |-2562047h47m16.854775808s|",
+        ),
+        (
+            format!("Duration.add({max}, Duration.nanoseconds(id(1)))"),
+            "`Duration.add` overflows the Duration range: 2562047h47m16.854775807s + 1ns",
+        ),
+        (
+            format!("Duration.subtract({min}, Duration.nanoseconds(id(1)))"),
+            "`Duration.subtract` overflows the Duration range: -2562047h47m16.854775808s - 1ns",
+        ),
+        (
+            "Duration.multiply(Duration.hours(id(2000000)), id(2))".to_owned(),
+            "`Duration.multiply` overflows the Duration range: 2000000h * 2",
+        ),
+        (
+            format!("Duration.divide({min}, id(-1))"),
+            "`Duration.divide` overflows the Duration range: -2562047h47m16.854775808s / -1",
+        ),
+        (
+            "Duration.divide(Duration.seconds(id(3)), id(0))".to_owned(),
+            "`Duration.divide` by zero: 3s / 0",
+        ),
+    ];
+    for (index, (expression, message)) in cases.into_iter().enumerate() {
+        let source = duration_program(&format!("  Duration.to_text({expression})"));
+        let name = format!("duration-defect-{index}");
+        let outcome = if index == 0 {
+            run_both(&name, &source)
+        } else {
+            run_both_paths(&name, &source)
+        };
+        let expected = format!("\"outcome\":\"defect\",\"message\":\"{message}\"");
+        assert!(outcome.starts_with(&expected), "{expression}: {outcome}");
+    }
+}
+
+// Conformance matrix "Duration order": derived `==` and the comparison operators agree
+// with `to_nanoseconds` for negative, zero, and positive values, and a Duration works
+// as a Map key.
+#[test]
+fn duration_equality_and_order_follow_the_nanosecond_count() {
+    let source = format!(
+        "{DURATION_PRELUDE}\
+         import std/map as Map\n\
+         fn agree(left: Duration, right: Duration) -> Bool {{\n\
+           let l = Duration.to_nanoseconds(left)\n\
+           let r = Duration.to_nanoseconds(right)\n\
+           let equal = (left == right) == (l == r) and (left != right) == (l != r)\n\
+           let less = (left < right) == (l < r) and (left <= right) == (l <= r)\n\
+           let greater = (left > right) == (l > r) and (left >= right) == (l >= r)\n\
+           equal and less and greater\n\
+         }}\n\
+         fn against(left: Duration, rights: List<Duration>) -> Int {{\n\
+           case rights {{\n\
+             [] -> 0\n\
+             [right, ..rest] -> {{\n\
+               let miss = case agree(left, right) {{\n\
+                 True -> 0\n\
+                 False -> 1\n\
+               }}\n\
+               miss + against(left, rest)\n\
+             }}\n\
+           }}\n\
+         }}\n\
+         fn disagreements(lefts: List<Duration>, all: List<Duration>) -> Int {{\n\
+           case lefts {{\n\
+             [] -> 0\n\
+             [left, ..rest] -> against(left, all) + disagreements(rest, all)\n\
+           }}\n\
+         }}\n\
+         pub fn main() -> Text {{\n\
+           let values = [{DURATION_MIN}, Duration.seconds(-1), Duration.nanoseconds(-1),\n\
+             Duration.zero, Duration.nanoseconds(1), Duration.milliseconds(1000),\n\
+             Duration.seconds(1), {DURATION_MAX}]\n\
+           let table = Map.from([(Duration.seconds(1), \"one\"), (Duration.nanoseconds(-1), \"minus\")])\n\
+           let found = Map.get(table, Duration.milliseconds(1000))\n\
+           \"${{disagreements(values, values)}} ${{Debug.render(found)}}\"\n\
+         }}\n"
+    );
+    let outcome = run_both("duration-order", &source);
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":\"0 Some(\\\"one\\\")\""
+    );
+}
+
+/// Nanosecond counts for the text differential: the extremes, every unit boundary,
+/// sub-microsecond and mixed-unit values, and a deterministic spread over the range.
+fn generated_durations() -> Vec<String> {
+    let mut counts: Vec<i64> = vec![
+        0,
+        1,
+        7,
+        999,
+        1_000,
+        1_001,
+        1_500,
+        999_999,
+        1_000_000,
+        1_500_000,
+        999_999_999,
+        1_000_000_000,
+        1_000_000_001,
+        59_999_999_999,
+        60_000_000_000,
+        3_599_500_000_000,
+        3_600_000_000_000,
+        3_600_000_000_001,
+        3_630_000_000_000,
+        123_250_000_000,
+        86_400_000_000_000,
+        i64::MAX,
+    ];
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    for index in 0..60 {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        // Shift by a varying amount so magnitudes cover every unit.
+        counts.push(((state >> 1) >> (index % 63)) as i64);
+    }
+    let negatives = counts.iter().map(|count| -count).collect::<Vec<_>>();
+    counts.extend(negatives);
+    let mut values = counts
+        .iter()
+        .map(|count| format!("Duration.nanoseconds({count})"))
+        .collect::<Vec<_>>();
+    values.push(DURATION_MIN.to_owned());
+    values
+}
+
+const DURATION_TEXTS: &[&str] = &[
+    "",
+    "0",
+    "-0",
+    "0s",
+    "-0s",
+    "1.5ns",
+    "1.0ns",
+    "1s1h",
+    "1h1h",
+    "1m1ms",
+    "1ms1m",
+    "1.5h",
+    "1h30m",
+    "2m3.25s",
+    "1.000000001s",
+    "0.0000000005s",
+    "1.0000000000000s",
+    "90s",
+    "01s",
+    "1.50s",
+    "0.00000000001h",
+    "0.000000000001h",
+    "0.0000000000000000000000000001h",
+    "2562047h47m16.854775807s",
+    "2562047h47m16.854775808s",
+    "-2562047h47m16.854775808s",
+    "-2562047h47m16.854775809s",
+    "9223372036854775807ns",
+    "9223372036854775808ns",
+    "99999999999999999999999h",
+    "99999999999999999999999h1x",
+    "1x",
+    "1 s",
+    "+1s",
+    "1µs",
+    "1us",
+    ".5s",
+    "1.s",
+    "-",
+    "1h-1m",
+    "s",
+    "1",
+];
+
+// Conformance matrix "Text round trip": `parse(to_text(d)) == d` for a generated set
+// that includes the minimum, maximum, sub-microsecond, and mixed-unit values. The same
+// run is the differential between the Rust model (interpreter) and the C runtime
+// (native): `run_both` fails if any text or parse result differs.
+#[test]
+fn duration_text_round_trips_and_both_backends_agree_on_text_and_parsing() {
+    let values = generated_durations().join(",\n    ");
+    let texts = DURATION_TEXTS
+        .iter()
+        .map(|text| format!("{text:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "{DURATION_PRELUDE}\
+         fn round_trips(values: List<Duration>) -> Text {{\n\
+           case values {{\n\
+             [] -> \"\"\n\
+             [value, ..rest] -> {{\n\
+               let text = Duration.to_text(value)\n\
+               let back = case Duration.parse(text) {{\n\
+                 Success(parsed) if parsed == value -> \"\"\n\
+                 Success(parsed) -> \"!${{Duration.to_text(parsed)}}\"\n\
+                 Failure(error) -> \"!${{Debug.render(error)}}\"\n\
+               }}\n\
+               \"${{text}}${{back}} ${{round_trips(rest)}}\"\n\
+             }}\n\
+           }}\n\
+         }}\n\
+         fn parses(texts: List<Text>) -> Text {{\n\
+           case texts {{\n\
+             [] -> \"\"\n\
+             [text, ..rest] -> {{\n\
+               let result = case Duration.parse(text) {{\n\
+                 Success(parsed) -> Duration.to_text(parsed)\n\
+                 Failure(error) -> Debug.render(error)\n\
+               }}\n\
+               \"[${{text}}]=${{result}} ${{parses(rest)}}\"\n\
+             }}\n\
+           }}\n\
+         }}\n\
+         pub fn main() -> Text {{\n\
+           let values = [\n    {values},\n  ]\n\
+           \"${{round_trips(values)}}| ${{parses([{texts}])}}\"\n\
+         }}\n"
+    );
+    let outcome = run_both_paths("duration-text", &source);
+    let value = outcome
+        .strip_prefix("\"outcome\":\"success\",\"value\":\"")
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or_else(|| panic!("{outcome}"));
+    let (round_trips, parses) = value.split_once("| ").expect("both halves");
+    assert!(!round_trips.contains('!'), "{round_trips}");
+    for expected in [
+        "-2562047h47m16.854775808s ",
+        "2562047h47m16.854775807s ",
+        "1.5us ",
+        "1h0m0.000000001s ",
+        "2m3.25s ",
+        "1h0m30s ",
+    ] {
+        assert!(
+            round_trips.contains(expected),
+            "{expected} in {round_trips}"
+        );
+    }
+    let parses = parses
+        .split(" [")
+        .map(|part| part.trim_start_matches('[').trim_end().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        parses,
+        [
+            "]=ParseError.Empty",
+            "0]=0s",
+            "-0]=ParseError.Invalid",
+            "0s]=0s",
+            "-0s]=0s",
+            "1.5ns]=ParseError.Invalid",
+            "1.0ns]=1ns",
+            "1s1h]=ParseError.Invalid",
+            "1h1h]=ParseError.Invalid",
+            "1m1ms]=1m0.001s",
+            "1ms1m]=ParseError.Invalid",
+            "1.5h]=1h30m",
+            "1h30m]=1h30m",
+            "2m3.25s]=2m3.25s",
+            "1.000000001s]=1.000000001s",
+            "0.0000000005s]=ParseError.Invalid",
+            "1.0000000000000s]=1s",
+            "90s]=1m30s",
+            "01s]=1s",
+            "1.50s]=1.5s",
+            "0.00000000001h]=36ns",
+            "0.000000000001h]=ParseError.Invalid",
+            "0.0000000000000000000000000001h]=ParseError.Invalid",
+            "2562047h47m16.854775807s]=2562047h47m16.854775807s",
+            "2562047h47m16.854775808s]=ParseError.OutOfRange",
+            "-2562047h47m16.854775808s]=-2562047h47m16.854775808s",
+            "-2562047h47m16.854775809s]=ParseError.OutOfRange",
+            "9223372036854775807ns]=2562047h47m16.854775807s",
+            "9223372036854775808ns]=ParseError.OutOfRange",
+            "99999999999999999999999h]=ParseError.OutOfRange",
+            "99999999999999999999999h1x]=ParseError.Invalid",
+            "1x]=ParseError.Invalid",
+            "1 s]=ParseError.Invalid",
+            "+1s]=ParseError.Invalid",
+            "1µs]=ParseError.Invalid",
+            "1us]=1us",
+            ".5s]=ParseError.Invalid",
+            "1.s]=ParseError.Invalid",
+            "-]=ParseError.Invalid",
+            "1h-1m]=ParseError.Invalid",
+            "s]=ParseError.Invalid",
+            "1]=ParseError.Invalid",
+        ]
+    );
+}
+
+// Debug rendering uses the canonical text, a module constant holds a Duration
+// (`Duration.zero` included) and is loaded from program data, and a Duration outcome
+// and a parse failure (no copy of the input) encode the same on both backends.
+#[test]
+fn duration_renders_as_text_lives_in_constants_and_encodes_outcomes() {
+    let source = format!(
+        "{DURATION_PRELUDE}\
+         const job_timeout = Duration.seconds(30)\n\
+         pub const grace = Duration.add(Duration.zero, Duration.milliseconds(1500))\n\
+         pub fn describe_status(status: Int) -> Text {{\n\
+           \"payments returned ${{status}} after ${{Debug.render(job_timeout)}}\"\n\
+         }}\n\
+         pub fn main() -> Text {{\n\
+           \"${{describe_status(503)}}; ${{Debug.render([grace, Duration.zero])}}; ${{Debug.render(Duration.parse)}}\"\n\
+         }}\n"
+    );
+    assert_eq!(
+        run_both("duration-render", &source),
+        "\"outcome\":\"success\",\"value\":\"payments returned 503 after 30s; [1.5s, 0s]; <fn parse>\""
+    );
+    let returned = format!(
+        "{DURATION_PRELUDE}pub fn main() -> Duration {{ Duration.negate(Duration.minutes(2)) }}\n"
+    );
+    assert_eq!(
+        run_both("duration-outcome", &returned),
+        "\"outcome\":\"success\",\"value\":{\"duration\":-120000000000}"
+    );
+    let failed = format!(
+        "{DURATION_PRELUDE}\
+         fn read(text: Text) -> Duration {{ Duration.parse(text) }}\n\
+         pub fn main() -> Duration {{ read(\"1s1h\") }}\n"
+    );
+    assert_eq!(
+        run_both("duration-parse-failure", &failed),
+        concat!(
+            "\"outcome\":\"expected_failure\",",
+            "\"error\":{\"type\":\"ParseError\",\"variant\":\"Invalid\",\"fields\":{}}"
+        )
+    );
+}
+
+fn warning_messages(source: &str) -> Vec<String> {
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    Compiler::type_project(vec![module])
+        .warnings()
+        .iter()
+        .map(|diagnostic| format!("{} {}", diagnostic.code(), diagnostic.message()))
+        .collect()
+}
+
+// Conformance matrix "Operators": arithmetic operators reject Duration with T4303 and
+// a help that names the Duration function, for every operator and for unary `-`.
+#[test]
+fn arithmetic_operators_reject_duration_and_name_the_function() {
+    for (expression, function) in [
+        ("Duration.seconds(1) + Duration.seconds(2)", "Duration.add"),
+        (
+            "Duration.seconds(1) - Duration.seconds(2)",
+            "Duration.subtract",
+        ),
+        ("Duration.seconds(1) * 2", "Duration.multiply"),
+        ("2 * Duration.seconds(1)", "Duration.multiply"),
+        ("Duration.seconds(1) / 2", "Duration.divide"),
+        ("-Duration.seconds(1)", "Duration.negate"),
+    ] {
+        let source = format!("{DURATION_PRELUDE}pub fn main() -> Duration {{ {expression} }}\n");
+        let messages = check_messages(&source);
+        assert!(
+            messages.len() == 1
+                && messages[0].starts_with("T4303 ")
+                && messages[0].contains(&format!("`{function}`")),
+            "{expression}: {messages:?}"
+        );
+    }
+}
+
+// Conformance matrix "Constant parse" and T4348: a literal or module-constant argument
+// is checked with the runtime's parser at build time; a computed argument never is.
+#[test]
+fn constant_duration_arguments_are_checked_at_build_time() {
+    let program = |body: &str| {
+        format!(
+            "{DURATION_PRELUDE}\
+             const text = \"90s\"\n\
+             const broken = \"1s1h\"\n\
+             const count = 3000000\n\
+             fn computed(name: Text, hours: Int) -> Duration {{\n{body}\n}}\n"
+        )
+    };
+    let cases: [(&str, &[&str], &[&str]); 8] = [
+        ("  Duration.parse(\"5x\")", &["T4349"], &[]),
+        ("  Duration.parse(\"\")", &["T4349"], &[]),
+        ("  Duration.parse(\"2562048h\")", &["T4349"], &[]),
+        ("  Duration.parse(broken)", &["T4349"], &[]),
+        ("  Duration.parse(name)", &[], &[]),
+        ("  Duration.hours(count)", &["T4348"], &[]),
+        ("  Duration.hours(-2562048)", &["T4348"], &[]),
+        ("  Duration.hours(hours)", &[], &[]),
+    ];
+    for (body, errors, warnings) in cases {
+        let source = program(body);
+        assert_eq!(check_codes(&source), errors.to_vec(), "{body}");
+        assert_eq!(warning_codes(&source), warnings.to_vec(), "{body}");
+    }
+    assert_eq!(
+        check_messages(&program("  Duration.parse(\"5x\")")),
+        [concat!(
+            "T4349 `Duration.parse(\"5x\")` always fails with `Duration.ParseError.Invalid`: ",
+            "a duration is parts such as `1h30m` or `250ms`, with units (`h`, `m`, `s`, `ms`, ",
+            "`us`, `ns`) in descending order and exact fractions"
+        )]
+    );
+    for (argument, suggestion) in [
+        (
+            "\"1h30m\"",
+            "Duration.add(Duration.hours(1), Duration.minutes(30))",
+        ),
+        ("\"5s\"", "Duration.seconds(5)"),
+        ("text", "Duration.seconds(90)"),
+    ] {
+        let source = program(&format!("  Duration.parse({argument})"));
+        assert_eq!(check_codes(&source), Vec::<String>::new(), "{argument}");
+        assert_eq!(
+            warning_messages(&source),
+            [format!(
+                "T4350 this `Duration.parse` of constant text always succeeds; write \
+                 `{suggestion}`, which cannot fail and needs no failure handling"
+            )],
+            "{argument}"
+        );
+    }
+}

@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 mod constants;
+pub(crate) mod durations;
 
 mod properties;
 
@@ -689,6 +690,19 @@ pub(crate) struct TypedProject {
     /// Warnings never block compilation, so they stay out of `diagnostics`.
     pub(crate) warnings: Vec<Diagnostic>,
     pub(crate) inference_bindings: HashMap<u32, TypeId>,
+}
+
+/// The `T4303` help for an arithmetic operator applied to a `Duration`: Chimi has no
+/// operator overloading, so `std/duration` provides the operations as functions.
+fn duration_operator_help(operator: BinaryOperator) -> String {
+    let function = match operator {
+        BinaryOperator::Add => "add",
+        BinaryOperator::Subtract => "subtract",
+        BinaryOperator::Multiply => "multiply",
+        BinaryOperator::Divide => "divide",
+        _ => return "; `Duration` has no remainder operation".to_owned(),
+    };
+    format!("; `Duration` arithmetic is a function: use `Duration.{function}`")
 }
 
 const fn binary_operator_symbol(operator: BinaryOperator) -> &'static str {
@@ -2601,6 +2615,9 @@ impl ProjectTypeChecker {
         let constant_diagnostics =
             constants::check(&typed, body_modules, &self.undetermined_constants);
         typed.diagnostics.extend(constant_diagnostics);
+        let (duration_errors, duration_warnings) = durations::check(&typed, body_modules);
+        typed.diagnostics.extend(duration_errors);
+        typed.warnings.extend(duration_warnings);
         let capability_report = crate::capability::check(&typed);
         typed.expression_value_properties = capability_report.expression_properties;
         typed.diagnostics.extend(capability_report.diagnostics);
@@ -3422,12 +3439,20 @@ impl ProjectTypeChecker {
                 let success = if operand_type == float {
                     float
                 } else if known_other {
+                    let duration = self.standard_named_type(StandardType::Duration, Vec::new());
+                    let help = if operand_type == duration {
+                        "; negate a `Duration` with `Duration.negate`"
+                    } else {
+                        ""
+                    };
                     let found = self.type_display_name(operand_type);
                     self.type_error_range(
                         module_id,
                         "T4303",
                         *range,
-                        format!("unary `-` needs an `Int` or `Float` operand, found `{found}`"),
+                        format!(
+                            "unary `-` needs an `Int` or `Float` operand, found `{found}`{help}"
+                        ),
                     );
                     TypeId::new(0)
                 } else {
@@ -4877,11 +4902,15 @@ impl ProjectTypeChecker {
             .into_iter()
             .find(|id| known(self, *id) && *id != int && *id != float)
         {
+            let duration = self.standard_named_type(StandardType::Duration, Vec::new());
+            let is_duration = found == duration;
             let found = self.type_display_name(found);
             let help = if operator == BinaryOperator::Add && found == "Text" {
-                "; join text with `Text.append`"
+                "; join text with `Text.append`".to_owned()
+            } else if is_duration {
+                duration_operator_help(operator)
             } else {
-                ""
+                String::new()
             };
             self.type_error_range(
                 module_id,

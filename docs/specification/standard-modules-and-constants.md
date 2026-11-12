@@ -10,7 +10,8 @@ the evaluation budgets (which `chimi.build.v1` records as `constant_limits`),
 and `process name` (which the language does not have yet). Text interpolation (G9)
 is implemented on the existing intrinsics (migration step 2). Debug rendering
 (G10) is implemented as hand-built intrinsics ahead of step 4, as step 5
-allows; the runner's bounded rendering and registry render overrides are not. The standard tree (G1)
+allows; the runner's bounded rendering is not, and the one registry render override
+(`Duration`, as canonical text) is hand-built in both renderers. The standard tree (G1)
 and C bindings (G20) are not implemented. Source spelling is provisional, as
 in the other specifications.
 
@@ -64,7 +65,8 @@ pub fn describe_status(status: Int) -> Text {
 ```
 
 `describe_status(503)` returns
-`payments returned 503 after Duration { nanoseconds: 30000000000 }`.
+`payments returned 503 after 30s`, because `Duration` has a registry render
+override (see [Debug rendering](#debug-rendering-g10)).
 
 ## Standard modules in Chimi (G1)
 

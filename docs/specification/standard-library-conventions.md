@@ -403,7 +403,7 @@ fn port(value: Option<Text>) -> Int errors PortError {
 | `IO.ConsoleError.WriteFailed(stream, message)` | conforms |
 | `Channel.SendError` (`Closed`, `Aborted`) | conforms |
 | `Task.Timeout.TimedOut(limit)` | conforms; a one-condition type |
-| `Duration.ParseError` (`Invalid(text)`, `OutOfRange(text)`) | does not conform: drop the `text` fields |
+| `Duration.ParseError` (`Empty`, `Invalid`, `OutOfRange`) | conforms |
 | `Json.NumberError` (`NotInteger`, `OutOfRange`) | does not conform: rename to `Json.ConversionError` to match `Float.ConversionError` when `std/json` moves to source (migration step 6) |
 
 ## `Option` and `Result` helpers
