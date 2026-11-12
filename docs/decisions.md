@@ -70,6 +70,7 @@ from the philosophy and earlier decisions; any of these can be overruled.
 | 2026-11-12 | `process` and `name` are contextual words, read only at module item position before `<identifier>:`. | Coordinator | `process-and-supervisor-static-contracts.md`; `ts-6ccbc9` |
 | 2026-11-12 | Process and supervisor range defects use `Function: precondition, got value`. | Coordinator | `process-and-supervisor-static-contracts.md`; `ts-6ccbc9` |
 | 2026-11-12 | `T4264` follows module constants, never function calls; what it cannot see is `NameTaken` at start. | Coordinator | `process-and-supervisor-static-contracts.md`; `ts-6ccbc9` |
+| 2026-11-12 | A `process name` is a value: reach it as `Module.name`; member imports (`import m.{name}`) do not bind it. | Coordinator | `process-identity-and-routing.md`; `ts-6ccbc9` |
 | 2026-11-12 | `T4263` "literal" is syntactic (an integer literal, `Duration.zero`, or a constructor of an integer literal); a constant or arithmetic is checked where it is received. | Implementer | `process-and-supervisor-static-contracts.md`; `ts-6ccbc9` |
 | 2026-11-12 | The process data constructors are pure, so constants may hold specs, members, and policies; every other process operation is runtime-only. | Implementer | `process-and-supervisor-static-contracts.md`; `ts-6ccbc9` |
 | 2026-11-10 | One `Supervisor.Member` type without the message type; `Supervisor.Restart` is an argument (`Never`/`OnDefect`). | User | `process-and-supervisor-static-contracts.md`; `ts-5961ee` |

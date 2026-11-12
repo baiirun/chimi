@@ -61,8 +61,12 @@ fn finish_exactly(managed: ManagedProcess<CounterMessage>) {
   declaration, not its text, so two declarations never collide even with the
   same identifier in different modules, and a name's message type is fixed.
 - The declared identifier is a value of type `Process.Address<Message>` with
-  the named routing kind. Code shares a name by importing it, so names follow
-  ordinary module visibility. Its qualified identifier is the trace label.
+  the named routing kind. Code shares a name by importing its module, so names
+  follow ordinary module visibility: a `pub process name counter` in `app/lib`
+  is reached as `Lib.counter` after `import app/lib as Lib`. A name is a value,
+  and member imports bind only types and constructors, so
+  `import app/lib.{counter}` does not bind it (coordinator decision,
+  ts-6ccbc9). Its qualified identifier is the trace label.
 - Names are declarations rather than computed values because module bindings
   are neither exportable nor evaluated once (`prog show ts-f47931`); a declaration needs no program initialization order.
 - `Process.register(spec, name)` is part of the process specification, so every replacement registers the same name. Its argument

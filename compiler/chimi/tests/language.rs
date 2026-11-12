@@ -9537,6 +9537,27 @@ fn register_takes_only_a_direct_process_name_reference() {
         ))
     };
     assert_eq!(check_codes(&program("alias")), ["T4262"]);
+    // A name resolution already rejected reports only its own error.
+    let unresolved = check_codes(&program("missing"));
+    assert!(!unresolved.contains(&"T4262".to_owned()), "{unresolved:?}");
+    let library = "pub enum Note {\n  Ping\n}\nprocess name hidden: Note\n";
+    let private = build_codes(&[
+        ("lib", library),
+        (
+            "main",
+            &format!(
+                "import lib as Lib\n{}",
+                process_program(
+                    "fn build() {\n  Process.register(Process.spec(body, 1, \
+                     Duration.seconds(1)), Lib.hidden)\n}\n"
+                )
+            ),
+        ),
+    ]);
+    assert!(
+        !private.is_empty() && !private.contains(&"T4262".to_owned()),
+        "{private:?}"
+    );
     assert_eq!(check_codes(&program("(counter)")), Vec::<String>::new());
 }
 
@@ -9587,6 +9608,17 @@ fn process_data_constructors_check_computed_values_when_they_run() {
                 "Supervisor.restarts(1, Duration.seconds(1)))\n",
             ),
             "Supervisor.policy: capacity must be at least 1, got 0",
+        ),
+        (
+            concat!(
+                "const two = [Process.spec(body, 1, Duration.seconds(1)) ",
+                "|> Supervisor.process(Supervisor.Restart.Never), ",
+                "Process.spec(body, 2, Duration.seconds(1)) ",
+                "|> Supervisor.process(Supervisor.Restart.Never)]\n",
+                "const policy = Supervisor.policy(two, 2 - 1, ",
+                "Supervisor.restarts(1, Duration.seconds(1)))\n",
+            ),
+            "Supervisor.policy: members must not exceed capacity 1, got 2",
         ),
         (
             concat!(

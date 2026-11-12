@@ -451,6 +451,7 @@ impl Checker<'_> {
             }
             StandardFunction::ProcessRegister => {
                 if let Some(name) = argument(1)
+                    && !self.reports_its_own_resolution(module_id, name)
                     && self.process_name_reference(module_id, name).is_none()
                 {
                     self.diagnostics.push(
@@ -700,6 +701,30 @@ impl Checker<'_> {
             StandardSymbol::Function(function) => Some(function),
             _ => None,
         }
+    }
+
+    /// Whether `expression` is a name that resolution already rejected (unresolved,
+    /// inaccessible, or ambiguous), so a further diagnostic would only pile on.
+    fn reports_its_own_resolution(
+        &self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+    ) -> bool {
+        let (ModuleExpression::Name { semantic_id, .. }
+        | ModuleExpression::Select { semantic_id, .. }) = strip_groups(expression)
+        else {
+            return false;
+        };
+        matches!(
+            self.typed
+                .resolved
+                .reference_resolution(module_id, *semantic_id, Namespace::Value),
+            Some(
+                ReferenceResolution::Unresolved
+                    | ReferenceResolution::Inaccessible(_)
+                    | ReferenceResolution::Ambiguous
+            )
+        )
     }
 
     fn value_symbol(&self, module_id: ModuleId, expression: &ModuleExpression) -> Option<SymbolId> {

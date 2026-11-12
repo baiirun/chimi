@@ -14,10 +14,15 @@ I = "src/execution/processes.rs"
 K = "src/execution/constants.rs"
 Y = "src/typing.rs"
 L = "src/process_lab/static_kind.rs"
+N = "src/backend/native.rs"
 
 
 def lab(name, file, edits):
     return dict(name=name, file=file, edits=edits, targets=["process_lab"], filter="")
+
+
+def cli(name, file, edits):
+    return dict(name=name, file=file, edits=edits, targets=["cli"], filter="native_build_refuses")
 
 
 def language(name, file, edits):
@@ -94,4 +99,17 @@ MUTATIONS = [
     lab("static runner ignores diagnostic columns", L, [(
         '.map(|((module, line, column, code), _)| format!("{code} {module}.chimi:{line}:{column}"))',
         '.map(|((module, line, _column, code), _)| format!("{code} {module}.chimi:{line}:1"))')]),
+    # Review follow-ups.
+    cli("native build accepts process programs", N, [(
+        "    if requires_process_runtime(&program.core) {",
+        "    if false && requires_process_runtime(&program.core) {")]),
+    cli("native refusal misses a program that only names a process", N, [(
+        "        symbol.kind == crate::executable::CoreSymbolKind::ProcessName\n",
+        "        false\n")]),
+    language("Supervisor.policy accepts more members than its computed capacity", I, [(
+        "                } else if list.len() as i64 > *capacity {",
+        "                } else if false {")]),
+    language("T4262 piles onto a name resolution rejected", R, [(
+        "                    && !self.reports_its_own_resolution(module_id, name)",
+        "                    && true")]),
 ]
