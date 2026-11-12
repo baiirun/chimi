@@ -124,7 +124,7 @@ pub native type Map<K, V>
 pub native fn empty<K, V>() -> Map<K, V>
 pub native fn get<K, V>(map: Map<K, V>, key: K) -> Option<V>
 pub native fn put<K, V>(map: Map<K, V>, key: K, value: V) -> Map<K, V>
-native fn fold_entries<K, V, S, F, R>(
+native fn reduce_entries<K, V, S, F, R>(
   map: Map<K, V>,
   initial: S,
   step: fn(S, K, V) -> S errors F needs R,
@@ -139,7 +139,7 @@ pub fn update<K, V, F, R>(
 }
 
 pub fn size<K, V>(map: Map<K, V>) -> Int {
-  fold_entries(map, 0, fn(count, _key, _value) { count + 1 })
+  reduce_entries(map, 0, fn(count, _key, _value) { count + 1 })
 }
 ```
 

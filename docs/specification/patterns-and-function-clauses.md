@@ -271,7 +271,7 @@ patterns:
 
 <!-- chimi: fragment -->
 ```chimi
-let total = List.fold(prices, 0, fn(sum, (_, price)) { sum + price })
+let total = List.reduce(prices, 0, fn(sum, (_, price)) { sum + price })
 ```
 
 To match several shapes in an anonymous function, write `case` in its body.

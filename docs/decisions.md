@@ -12,6 +12,11 @@ from the philosophy and earlier decisions; any of these can be overruled.
 
 | Date | Decision | By | Detail |
 | --- | --- | --- | --- |
+| 2026-11-11 | Standard library conventions: `Module.verb` plain-verb names, no functional jargon (`List.reduce` replaces `fold`); subject first, callbacks last; conversions owned by the importing type (`Int.to_text`, `T.parse`); `_checked` returns `Option`; `length` for List/Range, `size` for Map/Set. | Coordinator (conventions owner) | `standard-library-conventions.md`; `ts-de8a01` |
+| 2026-11-11 | Option helpers `map`, `and_then`, `or`, `unwrap_or`, `unwrap_or_else`, `unwrap_or_fail`, `is_some`, `is_none`; `Result` is storage only (`capture`, `get`, `map`, `map_error`, `unwrap_or`, `to_option`), chaining goes through failure rows. | Coordinator (conventions owner) | `standard-library-conventions.md` |
+| 2026-11-11 | Text positions are UTF-8 bytes named as such (`byte_length`, `byte_slice`); display widths count graphemes; no bare `Text.length`. Error payloads carry identifiers and limits, never copies of content input. | Coordinator (conventions owner) | `standard-library-conventions.md` |
+| 2026-11-11 | Map/Set enumerate in ascending structural key order; `Debug.crash(message) -> Never` raises a defect on purpose; a fixed set of higher-order collection helpers exists. | Coordinator (conventions owner) | `standard-library-conventions.md` |
+| 2026-11-11 | The native runtime archive is built once per compiler, not once per project. | Coordinator | `ts-1db9f0` |
 | 2026-11-11 | Module items are `const` / `pub const`, not module `let` (`L2101`); the std registry may mark inert shareable std types (`Duration`, `Process.Spec`, `Supervisor.Member`, `Supervisor.Policy`, `Supervisor.Restarts`) constant-representable. | Coordinator (cross-spec review) | `executable-kernel.md`; `standard-modules-and-constants.md` |
 | 2026-11-11 | The std registry may give a runtime-known std type a debug-render override; `Duration` renders as its canonical text (`30s`). | Coordinator (cross-spec review) | `standard-modules-and-constants.md` Debug rendering |
 | 2026-11-11 | Nullary constructors are written bare (`None`, `Status.Pending`, `Supervisor.Restart.OnDefect`), never `None()`, in expressions and patterns. | Coordinator (cross-spec review) | `executable-kernel.md` Enums; `ts-dc28b2` |
