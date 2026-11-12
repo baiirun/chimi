@@ -4740,13 +4740,15 @@ fn text_equality_does_not_normalize() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[false,true]");
 }
 
-// E18 end to end: the deepest value Chimi builds in a few seconds today. Both
-// paths are bounded by construction, not comparison: the interpreter's value
-// `Drop` recurses near 10,000 levels, and native loop collection is quadratic in
-// nesting depth. The million-level rows are the unit and C runtime tests.
+// E18 end to end, with ts-0e026f and ts-9b1ec1: a value nested 100,000 levels deep
+// builds, compares, renders with `Debug.render`, is returned as the outcome, and is
+// freed, on both backends, without overflowing a host or fiber stack. run_both
+// compares the whole rendered text and outcome across backends. The million-level
+// comparison rows are the unit and C runtime tests.
 #[test]
-fn deeply_nested_values_compare_equal() {
+fn deeply_nested_values_build_compare_render_and_free() {
     let source = concat!(
+        "import std/debug as Debug\n",
         "enum Nest {\n  Leaf\n  Wrap(children: List<Nest>)\n}\n",
         "struct Build { depth: Int, nest: Nest }\n",
         "fn nested(depth: Int) -> Nest {\n",
@@ -4758,11 +4760,27 @@ fn deeply_nested_values_compare_equal() {
         "    }\n",
         "  }\n",
         "}\n",
-        "pub fn main() -> List<Bool> { [nested(5000) == nested(5000), nested(5000) == nested(4999)] }\n",
+        "pub fn main() -> (Bool, Bool, Text, Nest) {\n",
+        "  let deep = nested(100000)\n",
+        "  let copy = nested(100000)\n",
+        "  (deep == copy, Wrap([deep]) == copy, Debug.render(deep), copy)\n",
+        "}\n",
+    );
+    let outcome = run_both("deep-values", source);
+    let levels = 100_000;
+    let rendered = format!(
+        "\"{}Nest.Leaf{}\"",
+        "Nest.Wrap([".repeat(levels),
+        "])".repeat(levels)
+    );
+    let value = format!(
+        "{}{{\"type\":\"Nest\",\"variant\":\"Leaf\",\"fields\":{{}}}}{}",
+        "{\"type\":\"Nest\",\"variant\":\"Wrap\",\"fields\":{\"children\":[".repeat(levels),
+        "]}}".repeat(levels)
     );
     assert_eq!(
-        run_both("deep-equality", source),
-        "\"outcome\":\"success\",\"value\":[true,false]"
+        outcome,
+        format!("\"outcome\":\"success\",\"value\":{{\"tuple\":[true,false,{rendered},{value}]}}")
     );
 }
 

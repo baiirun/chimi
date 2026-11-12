@@ -169,6 +169,7 @@ struct ChimiRuntime {
   size_t scoped_retained_bytes;
   uint64_t scoped_collections;
   uint64_t scoped_full_collections;
+  uint64_t scoped_scanned_allocations;
 };
 
 /* Per-owner heaps (docs/architecture/supervised-process-runtime.md).
@@ -1444,58 +1445,7 @@ static void json_string(FILE *output, const char *value) {
 }
 
 static void json_value(FILE *output, const ChimiValue *value);
-static void json_map(FILE *output, const MapNode *map);
 static void float_text(double value, char *output);
-static void json_fields(FILE *output, const RuntimeField *fields, uint32_t length) {
-  fputc('{', output);
-  for (uint32_t index = 0; index < length; ++index) {
-    if (index) fputc(',', output);
-    json_string(output, fields[index].name);
-    fputc(':', output);
-    json_value(output, fields[index].value);
-  }
-  fputc('}', output);
-}
-static void json_value(FILE *output, const ChimiValue *value) {
-  switch (value->kind) {
-    case VALUE_VOID: fputs("{\"type\":\"Void\"}", output); break;
-    case VALUE_INTEGER: fprintf(output, "%" PRId64, value->as.integer); break;
-    case VALUE_FLOAT: { char text[40]; float_text(value->as.floating, text); fputs(text, output); break; }
-    case VALUE_TEXT: json_string(output, value->as.text); break;
-    case VALUE_BOOLEAN: fputs(value->as.boolean ? "true" : "false", output); break;
-    case VALUE_LIST:
-      fputc('[', output); for (uint32_t i = 0; i < list_length(value); ++i) {
-        if (i) fputc(',', output); json_value(output, list_get(value, i));
-      } fputc(']', output); break;
-    case VALUE_RECORD: json_fields(output, value->as.record.fields, value->as.record.length); break;
-    case VALUE_DURATION: fprintf(output, "{\"duration\":%" PRId64 "}", value->as.integer); break;
-    case VALUE_RANGE:
-      fprintf(output, "{\"range\":{\"start\":%" PRId64 ",\"end\":%" PRId64 "}}",
-              value->as.range.start, value->as.range.end); break;
-    case VALUE_TUPLE:
-      fputs("{\"tuple\":[", output); for (uint32_t i = 0; i < value->as.record.length; ++i) {
-        if (i) fputc(',', output); json_value(output, value->as.record.fields[i].value);
-      } fputs("]}", output); break;
-    case VALUE_CONSTRUCTED:
-      fputs("{\"type\":", output); json_string(output, value->as.constructed.type_name);
-      if (value->as.constructed.variant_name) {
-        fputs(",\"variant\":", output); json_string(output, value->as.constructed.variant_name);
-      }
-      fputs(",\"fields\":", output);
-      json_fields(output, value->as.constructed.fields, value->as.constructed.length);
-      fputc('}', output); break;
-    case VALUE_CALLABLE:
-      fputs("{\"callable\":", output); json_string(output, value->as.callable->name);
-      fputc('}', output); break;
-    case VALUE_MAP: json_map(output, value->as.map); break;
-    case VALUE_JSON_NUMBER: json_string(output, value->as.json_number); break;
-    case VALUE_TASK: fprintf(output, "{\"task\":%" PRIu64 "}", value->as.task); break;
-    case VALUE_CHANNEL_SENDER:
-    case VALUE_CHANNEL_RECEIVER:
-    case VALUE_CHANNEL_COMPLETION:
-      fprintf(output, "{\"channel\":%" PRIu64 "}", value->as.capability.channel); break;
-  }
-}
 
 static void emit_event(ChimiRuntime *runtime, const char *event, uint32_t node_id,
                        uint64_t span, int64_t parent, const char *operation,
@@ -2119,28 +2069,125 @@ static MapEntries map_entries(const MapNode *root) {
   return (MapEntries){nodes, length};
 }
 
+/* Writing an outcome value as JSON. The writer keeps its own stack of steps, so a
+   value of any nesting depth costs heap, not C stack; a step pushed last runs first. */
+typedef enum { JSON_STEP_VALUE, JSON_STEP_TEXT, JSON_STEP_NAME, JSON_STEP_KEY, JSON_STEP_FREE } JsonStepKind;
+typedef struct { JsonStepKind kind; const void *pointer; } JsonStep;
+typedef struct { JsonStep *items; size_t length; size_t capacity; } JsonSteps;
+
+static void json_step(JsonSteps *steps, JsonStepKind kind, const void *pointer) {
+  if (steps->length == steps->capacity) {
+    size_t capacity = steps->capacity ? steps->capacity * 2 : 64;
+    JsonStep *items = realloc(steps->items, capacity * sizeof(*items));
+    if (!items) exhausted_memory();
+    steps->items = items;
+    steps->capacity = capacity;
+  }
+  steps->items[steps->length++] = (JsonStep){kind, pointer};
+}
+
+/* `"name":value` pairs, comma-separated, then `close`. */
+static void json_push_fields(JsonSteps *steps, const RuntimeField *fields, uint32_t length,
+                             bool named, const char *close) {
+  json_step(steps, JSON_STEP_TEXT, close);
+  for (uint32_t index = length; index-- > 0;) {
+    json_step(steps, JSON_STEP_VALUE, fields[index].value);
+    if (named) json_step(steps, JSON_STEP_NAME, fields[index].name);
+    if (index) json_step(steps, JSON_STEP_TEXT, ",");
+  }
+}
+
 /* A map value in an outcome record is an object of its entries in key order, as the
    interpreter writes it: a Text key is the member name, and any other key's member
    name is that key's own JSON encoding. */
-static void json_map(FILE *output, const MapNode *map) {
+static void json_push_map(JsonSteps *steps, const MapNode *map) {
   MapEntries entries = map_entries(map);
-  fputc('{', output);
-  for (size_t index = 0; index < entries.length; ++index) {
-    const MapNode *entry = entries.nodes[index];
-    if (index) fputc(',', output);
-    if (entry->key->kind == VALUE_TEXT) json_string(output, entry->key->as.text);
-    else {
-      char *name = NULL; size_t name_length = 0;
-      FILE *buffer = open_memstream(&name, &name_length);
-      if (buffer == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
-      json_value(buffer, entry->key); fclose(buffer);
-      json_string(output, name); free(name);
-    }
-    fputc(':', output);
-    json_value(output, entry->value);
+  json_step(steps, JSON_STEP_FREE, entries.nodes);
+  json_step(steps, JSON_STEP_TEXT, "}");
+  for (size_t index = entries.length; index-- > 0;) {
+    json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);
+    json_step(steps, JSON_STEP_KEY, entries.nodes[index]);
+    if (index) json_step(steps, JSON_STEP_TEXT, ",");
   }
-  fputc('}', output);
-  free(entries.nodes);
+}
+
+/* A map entry's member name and `:`. A non-Text key is encoded on its own first,
+   which nests only as deep as maps used as keys of maps. */
+static void json_key(FILE *output, const MapNode *entry) {
+  if (entry->key->kind == VALUE_TEXT) json_string(output, entry->key->as.text);
+  else {
+    char *name = NULL; size_t name_length = 0;
+    FILE *buffer = open_memstream(&name, &name_length);
+    if (buffer == NULL) exhausted_memory();
+    json_value(buffer, entry->key); fclose(buffer);
+    json_string(output, name); free(name);
+  }
+  fputc(':', output);
+}
+
+static void json_value(FILE *output, const ChimiValue *root) {
+  JsonSteps steps = {0};
+  json_step(&steps, JSON_STEP_VALUE, root);
+  while (steps.length) {
+    JsonStep step = steps.items[--steps.length];
+    switch (step.kind) {
+      case JSON_STEP_TEXT: fputs(step.pointer, output); continue;
+      case JSON_STEP_NAME: json_string(output, step.pointer); fputc(':', output); continue;
+      case JSON_STEP_KEY: json_key(output, step.pointer); continue;
+      case JSON_STEP_FREE: free((void *)step.pointer); continue;
+      case JSON_STEP_VALUE: break;
+    }
+    const ChimiValue *value = step.pointer;
+    switch (value->kind) {
+      case VALUE_VOID: fputs("{\"type\":\"Void\"}", output); break;
+      case VALUE_INTEGER: fprintf(output, "%" PRId64, value->as.integer); break;
+      case VALUE_FLOAT: { char text[40]; float_text(value->as.floating, text); fputs(text, output); break; }
+      case VALUE_TEXT: json_string(output, value->as.text); break;
+      case VALUE_BOOLEAN: fputs(value->as.boolean ? "true" : "false", output); break;
+      case VALUE_LIST:
+        fputc('[', output);
+        json_step(&steps, JSON_STEP_TEXT, "]");
+        for (uint32_t index = list_length(value); index-- > 0;) {
+          json_step(&steps, JSON_STEP_VALUE, list_get(value, index));
+          if (index) json_step(&steps, JSON_STEP_TEXT, ",");
+        }
+        break;
+      case VALUE_RECORD:
+        fputc('{', output);
+        json_push_fields(&steps, value->as.record.fields, value->as.record.length, true, "}");
+        break;
+      case VALUE_DURATION: fprintf(output, "{\"duration\":%" PRId64 "}", value->as.integer); break;
+      case VALUE_RANGE:
+        fprintf(output, "{\"range\":{\"start\":%" PRId64 ",\"end\":%" PRId64 "}}",
+                value->as.range.start, value->as.range.end); break;
+      case VALUE_TUPLE:
+        fputs("{\"tuple\":[", output);
+        json_push_fields(&steps, value->as.record.fields, value->as.record.length, false, "]}");
+        break;
+      case VALUE_CONSTRUCTED:
+        fputs("{\"type\":", output); json_string(output, value->as.constructed.type_name);
+        if (value->as.constructed.variant_name) {
+          fputs(",\"variant\":", output); json_string(output, value->as.constructed.variant_name);
+        }
+        fputs(",\"fields\":{", output);
+        json_push_fields(&steps, value->as.constructed.fields, value->as.constructed.length, true, "}}");
+        break;
+      case VALUE_CALLABLE:
+        fputs("{\"callable\":", output); json_string(output, value->as.callable->name);
+        fputc('}', output); break;
+      case VALUE_MAP:
+        fputc('{', output);
+        json_push_map(&steps, value->as.map);
+        break;
+      case VALUE_JSON_NUMBER: json_string(output, value->as.json_number); break;
+      case VALUE_TASK: fprintf(output, "{\"task\":%" PRIu64 "}", value->as.task); break;
+      case VALUE_CHANNEL_SENDER:
+      case VALUE_CHANNEL_RECEIVER:
+      case VALUE_CHANNEL_COMPLETION:
+        fprintf(output, "{\"channel\":%" PRIu64 "}", value->as.capability.channel); break;
+    }
+  }
+  free(steps.items);
 }
 
 static uint32_t constructor_ordinal(uint32_t symbol) {
@@ -2603,6 +2650,7 @@ static ChimiControl *end_measured_allocation_scope(ChimiRuntime *runtime, Alloca
     runtime->scoped_retained_bytes += scope->live_bytes;
     runtime->scoped_collections += scope->collections;
     runtime->scoped_full_collections += scope->full_collections;
+    runtime->scoped_scanned_allocations += scope->scanned_allocations;
   }
   return status == HEAP_OK ? control : defect(FOREIGN_POINTER_DEFECT, -1);
 }
@@ -3107,6 +3155,28 @@ static void debug_json_number(TextBuffer *buffer, const char *text) {
   float_text(value == 0.0 ? 0.0 : value, output); debug_text(buffer, output);
 }
 
+/* The renderer keeps its own stack of steps, so a value of any nesting depth costs
+   heap, not C stack: `Debug.render` may run on a 64 KiB fiber stack. A step pushed
+   last runs first. */
+typedef enum {
+  DEBUG_STEP_VALUE, DEBUG_STEP_LABEL, DEBUG_STEP_KEY, DEBUG_STEP_SEPARATOR,
+  DEBUG_STEP_PART_END, DEBUG_STEP_CLOSE, DEBUG_STEP_FREE
+} DebugStepKind;
+typedef struct { DebugStepKind kind; bool spaced; uint32_t index; const void *pointer; } DebugStep;
+typedef struct { DebugStep *items; size_t length; size_t capacity; } DebugSteps;
+
+static void debug_step(DebugSteps *steps, DebugStepKind kind, const void *pointer, uint32_t index,
+                       bool spaced) {
+  if (steps->length == steps->capacity) {
+    size_t capacity = steps->capacity ? steps->capacity * 2 : 64;
+    DebugStep *items = realloc(steps->items, capacity * sizeof(*items));
+    if (!items) exhausted_memory();
+    steps->items = items;
+    steps->capacity = capacity;
+  }
+  steps->items[steps->length++] = (DebugStep){kind, spaced, index, pointer};
+}
+
 static void debug_value(DebugRenderer *renderer, const ChimiValue *value);
 
 static void debug_line(DebugRenderer *renderer) {
@@ -3130,40 +3200,40 @@ static void debug_close(DebugRenderer *renderer, const char *close, bool spaced)
   debug_text(renderer->buffer, close);
 }
 
-/* Named parts in the given order, as `name: value`; `labels` false drops the names. */
-static void debug_fields(DebugRenderer *renderer, const char *open, const char *close, bool spaced,
-                         const RuntimeField *fields, const uint32_t *order, uint32_t length,
-                         bool labels) {
+/* Opens a composite of `length` parts: each part is a separator, an optional label,
+   its value, and a part end, and `close` follows the last. Returns false when there
+   are no parts, after writing `close` itself. */
+static bool debug_open(DebugRenderer *renderer, DebugSteps *steps, const char *open,
+                       const char *close, bool spaced, uint32_t length) {
   debug_text(renderer->buffer, open);
-  if (length == 0) { debug_text(renderer->buffer, close); return; }
+  if (length == 0) { debug_text(renderer->buffer, close); return false; }
   ++renderer->depth;
-  for (uint32_t i = 0; i < length; ++i) {
+  debug_step(steps, DEBUG_STEP_CLOSE, close, 0, spaced);
+  return true;
+}
+
+/* Queues part `index`; parts are queued last to first. */
+static void debug_part(DebugSteps *steps, uint32_t index, bool spaced, const char *label,
+                       const ChimiValue *value) {
+  debug_step(steps, DEBUG_STEP_PART_END, NULL, 0, false);
+  debug_step(steps, DEBUG_STEP_VALUE, value, 0, false);
+  if (label) debug_step(steps, DEBUG_STEP_LABEL, label, 0, false);
+  debug_step(steps, DEBUG_STEP_SEPARATOR, NULL, index, spaced);
+}
+
+/* Named parts in the given order, as `name: value`; `labels` false drops the names. */
+static void debug_fields(DebugRenderer *renderer, DebugSteps *steps, const char *open,
+                         const char *close, bool spaced, const RuntimeField *fields,
+                         const uint32_t *order, uint32_t length, bool labels) {
+  if (!debug_open(renderer, steps, open, close, spaced, length)) return;
+  for (uint32_t i = length; i-- > 0;) {
     const RuntimeField *field = &fields[order ? order[i] : i];
-    debug_separator(renderer, i, spaced);
-    if (labels) { debug_text(renderer->buffer, field->name); debug_text(renderer->buffer, ": "); }
-    debug_value(renderer, field->value);
-    debug_part_end(renderer);
+    debug_part(steps, i, spaced, labels ? field->name : NULL, field->value);
   }
-  --renderer->depth;
-  debug_close(renderer, close, spaced);
 }
 
-static void debug_map(DebugRenderer *renderer, const MapNode *node, uint32_t *index) {
-  if (!node) return;
-  debug_map(renderer, node->left, index);
-  debug_separator(renderer, (*index)++, true);
-  /* A key renders on one line even in the indented format, as the interpreter does. */
-  bool indented = renderer->indented; uint32_t depth = renderer->depth;
-  renderer->indented = false;
-  debug_value(renderer, node->key);
-  renderer->indented = indented; renderer->depth = depth;
-  debug_text(renderer->buffer, ": ");
-  debug_value(renderer, node->value);
-  debug_part_end(renderer);
-  debug_map(renderer, node->right, index);
-}
-
-static void debug_value(DebugRenderer *renderer, const ChimiValue *value) {
+/* Writes a scalar, or queues the parts of a composite. */
+static void debug_expand(DebugRenderer *renderer, DebugSteps *steps, const ChimiValue *value) {
   TextBuffer *buffer = renderer->buffer;
   char scalar[48];
   switch (value->kind) {
@@ -3176,17 +3246,9 @@ static void debug_value(DebugRenderer *renderer, const ChimiValue *value) {
     case VALUE_TEXT: debug_quote(buffer, value->as.text); return;
     case VALUE_BOOLEAN: debug_text(buffer, value->as.boolean ? "True" : "False"); return;
     case VALUE_LIST: {
-      debug_text(buffer, "[");
       uint32_t length = value->as.list.length;
-      if (length == 0) { debug_text(buffer, "]"); return; }
-      ++renderer->depth;
-      for (uint32_t i = 0; i < length; ++i) {
-        debug_separator(renderer, i, false);
-        debug_value(renderer, list_get(value, i));
-        debug_part_end(renderer);
-      }
-      --renderer->depth;
-      debug_close(renderer, "]", false);
+      if (!debug_open(renderer, steps, "[", "]", false, length)) return;
+      for (uint32_t i = length; i-- > 0;) debug_part(steps, i, false, NULL, list_get(value, i));
       return;
     }
     case VALUE_RECORD: {
@@ -3200,7 +3262,7 @@ static void debug_value(DebugRenderer *renderer, const ChimiValue *value) {
         }
         order[j] = i;
       }
-      debug_fields(renderer, "{", "}", true, value->as.record.fields, order, length, true);
+      debug_fields(renderer, steps, "{", "}", true, value->as.record.fields, order, length, true);
       return;
     }
     /* The registry's render override: the canonical text form. */
@@ -3209,7 +3271,8 @@ static void debug_value(DebugRenderer *renderer, const ChimiValue *value) {
       snprintf(scalar, sizeof(scalar), "%" PRId64 "..%" PRId64, value->as.range.start, value->as.range.end);
       debug_text(buffer, scalar); return;
     case VALUE_TUPLE:
-      debug_fields(renderer, "(", ")", false, value->as.record.fields, NULL, value->as.record.length, false);
+      debug_fields(renderer, steps, "(", ")", false, value->as.record.fields, NULL,
+                   value->as.record.length, false);
       return;
     case VALUE_CONSTRUCTED: {
       uint32_t standard = CHIMI_SYMBOLS[value->as.constructed.constructor].standard_constructor;
@@ -3218,23 +3281,32 @@ static void debug_value(DebugRenderer *renderer, const ChimiValue *value) {
       uint32_t length = value->as.constructed.length;
       if (!prelude) debug_text(buffer, value->as.constructed.type_name);
       if (!variant) {
-        debug_fields(renderer, " {", "}", true, value->as.constructed.fields, NULL, length, true);
+        debug_fields(renderer, steps, " {", "}", true, value->as.constructed.fields, NULL, length, true);
         return;
       }
       if (!prelude) buffer_char(buffer, '.');
       debug_text(buffer, variant);
       if (length > 0)
-        debug_fields(renderer, "(", ")", false, value->as.constructed.fields, NULL, length, length > 1);
+        debug_fields(renderer, steps, "(", ")", false, value->as.constructed.fields, NULL, length,
+                     length > 1);
       return;
     }
     case VALUE_MAP: {
-      debug_text(buffer, "Map {");
-      if (!value->as.map) { debug_text(buffer, "}"); return; }
-      uint32_t index = 0;
-      ++renderer->depth;
-      debug_map(renderer, value->as.map, &index);
-      --renderer->depth;
-      debug_close(renderer, "}", true);
+      MapEntries entries = map_entries(value->as.map);
+      if (!debug_open(renderer, steps, "Map {", "}", true, (uint32_t)entries.length)) {
+        free(entries.nodes);
+        return;
+      }
+      /* Under the close, so it runs after every entry. */
+      DebugStep close = steps->items[--steps->length];
+      debug_step(steps, DEBUG_STEP_FREE, entries.nodes, 0, false);
+      steps->items[steps->length++] = close;
+      for (size_t i = entries.length; i-- > 0;) {
+        debug_step(steps, DEBUG_STEP_PART_END, NULL, 0, false);
+        debug_step(steps, DEBUG_STEP_VALUE, entries.nodes[i]->value, 0, false);
+        debug_step(steps, DEBUG_STEP_KEY, entries.nodes[i]->key, 0, false);
+        debug_step(steps, DEBUG_STEP_SEPARATOR, NULL, (uint32_t)i, true);
+      }
       return;
     }
     case VALUE_JSON_NUMBER:
@@ -3260,6 +3332,35 @@ static void debug_value(DebugRenderer *renderer, const ChimiValue *value) {
     case VALUE_CHANNEL_RECEIVER: debug_text(buffer, "<Receiver>"); return;
     case VALUE_CHANNEL_COMPLETION: debug_text(buffer, "<Completion>"); return;
   }
+}
+
+static void debug_value(DebugRenderer *renderer, const ChimiValue *root) {
+  DebugSteps steps = {0};
+  debug_step(&steps, DEBUG_STEP_VALUE, root, 0, false);
+  while (steps.length) {
+    DebugStep step = steps.items[--steps.length];
+    switch (step.kind) {
+      case DEBUG_STEP_VALUE: debug_expand(renderer, &steps, step.pointer); break;
+      case DEBUG_STEP_LABEL:
+        debug_text(renderer->buffer, step.pointer); debug_text(renderer->buffer, ": "); break;
+      case DEBUG_STEP_KEY: {
+        /* A key renders on one line even in the indented format, as the interpreter
+           does. It nests only as deep as maps used as keys of maps. */
+        DebugRenderer key = {renderer->buffer, false, renderer->depth};
+        debug_value(&key, step.pointer);
+        debug_text(renderer->buffer, ": ");
+        break;
+      }
+      case DEBUG_STEP_SEPARATOR: debug_separator(renderer, step.index, step.spaced); break;
+      case DEBUG_STEP_PART_END: debug_part_end(renderer); break;
+      case DEBUG_STEP_CLOSE:
+        --renderer->depth;
+        debug_close(renderer, step.pointer, step.spaced);
+        break;
+      case DEBUG_STEP_FREE: free((void *)step.pointer); break;
+    }
+  }
+  free(steps.items);
 }
 
 static ChimiValue *debug_render(const ChimiValue *value, bool indented) {
@@ -4295,7 +4396,7 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           "\"fields\":%zu,\"callables\":%zu,\"map_nodes\":%zu,\"list_nodes\":%zu},"
           "\"scoped_peak_live_bytes\":%zu,\"scoped_retained_bytes\":%zu,"
           "\"scoped_collections\":%" PRIu64 ",\"scoped_full_collections\":%" PRIu64
-          ",\"unscoped_allocated_bytes\":%zu,\"peak_footprint_bytes\":%zu,"
+          ",\"scoped_scanned_allocations\":%" PRIu64 ",\"unscoped_allocated_bytes\":%zu,\"peak_footprint_bytes\":%zu,"
           "\"peak_fragment_footprint_bytes\":%zu}\n",
           runtime->scoped_total_allocated_bytes,
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_BYTES],
@@ -4312,6 +4413,7 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           runtime->scoped_retained_bytes,
           runtime->scoped_collections,
           runtime->scoped_full_collections,
+          runtime->scoped_scanned_allocations,
           unscoped_allocated_bytes,
           heap_totals.peak_footprint_bytes,
           heap_totals.peak_fragment_footprint_bytes);

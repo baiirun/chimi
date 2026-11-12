@@ -3208,6 +3208,45 @@ fn pipeline_program(jobs: u64) -> String {
     )
 }
 
+// ts-9b1ec1: a loop that nests its state one level deeper on every pass marks only
+// what the pass allocated, plus full passes at geometric growth points, so marking
+// work is linear in the depth. Marking the whole state on every pass, as before
+// generational regions, scans about depth^2 / 2 allocations: 16 times as many for
+// four times the depth.
+#[test]
+fn native_marking_work_is_linear_in_the_nesting_depth_a_loop_builds() {
+    let measure = |depth: u64| {
+        let scratch = scratch_directory(&format!("native-deep-marking-{depth}"));
+        let source = format!(
+            concat!(
+                "enum Nest {{\n  Leaf\n  Wrap(children: List<Nest>)\n}}\n",
+                "struct Build {{ depth: Int, nest: Nest }}\n",
+                "pub fn main() -> Bool {{\n",
+                "  let built = loop state = Build({depth}, Leaf) {{\n",
+                "    case state.depth {{\n",
+                "      0 -> break state.nest\n",
+                "      _ -> Build(state.depth - 1, Wrap([state.nest]))\n",
+                "    }}\n",
+                "  }}\n",
+                "  built != Leaf\n",
+                "}}\n",
+            ),
+            depth = depth
+        );
+        let executable = build_native(&scratch, "deep", &source);
+        let (outcome, report) = execute_with_memory_report(&executable, &scratch);
+        assert!(outcome.contains("\"value\":true"), "{outcome}");
+        std::fs::remove_dir_all(scratch).unwrap();
+        json_u64_field(&report, "scoped_scanned_allocations")
+    };
+    let shallow = measure(5_000);
+    let deep = measure(20_000);
+    assert!(
+        deep <= 8 * shallow,
+        "20,000 levels scanned {deep} allocations, 5,000 levels {shallow}"
+    );
+}
+
 // ts-6ccbc9 / ts-df67fb: with per-owner heaps, loops reclaim under the scheduler, so
 // the pipeline's memory does not grow with the number of jobs. Before, every pass's
 // allocations stayed live until exit once a program used tasks or channels.

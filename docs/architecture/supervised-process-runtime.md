@@ -637,6 +637,9 @@ adds three fields. `scoped_full_collections` counts full passes.
 `peak_footprint_bytes` is the peak of all heap and in-transit allocations,
 headers and fragment records included, with static constants excluded.
 `peak_fragment_footprint_bytes` is the peak of in-transit fragments alone.
+`scoped_scanned_allocations` counts the allocations marking visited across
+all passes, so a test can bound collection work without timing it: building
+a value N levels deep in a loop scans O(N) allocations, not O(N^2).
 
 **Evidence.** `compiler/chimi/tests/fixtures/native-heap.c` reproduces every
 scenario of the prototype's `tests/heap.rs` and `c/stress.c` against
