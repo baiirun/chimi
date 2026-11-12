@@ -39,9 +39,6 @@ FAILED_REPLACEMENT = """        if let Err(error) = self.start_incarnation(membe
             self.emit_process(ProcessEventKind::AdmissionRejected { supervisor, error });"""
 DRAIN = """                stopping.pending = false;
                 match record.mailbox.pop_front() {"""
-REMOVE_WAIT = """      if (process_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
-      if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
-      if (request.owner != 0)"""
 
 MUTATIONS = [
     # Admission.
@@ -67,12 +64,13 @@ MUTATIONS = [
             "      if (name->as.constructed.length != 0)\n        return defect(\"Process.register: spec already has a name\", call_node);",
             "      if (false)\n        return defect(\"Process.register: spec already has a name\", call_node);")]),
     # Removal.
-    lab("removal returns before its target terminates", RUNTIME, "RR01",
+    # Removal answers only after its target has terminated. (A runtime.c
+    # mutant that took the scheduler's PENDING reply as done survives at U7:
+    # every U7 cleanup finishes inline, so removal never replies PENDING.)
+    lab("removal finishes before its target terminates", KERNEL, "RR01",
         [TRANSCRIPT, OUTCOME, EXITED], [(
-            REMOVE_WAIT,
-            """      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
-      if (request.status == CHIMI_RESPONSE_OK || request.status == CHIMI_RESPONSE_PENDING) return success(void_value());
-      if (request.owner != 0)""")]),
+            "            Some(Instance::Process(incarnation)) => Plan::from([Step::Await(incarnation), finish]),",
+            "            Some(Instance::Process(incarnation)) => Plan::from([finish, Step::Await(incarnation)]),")]),
     lab("the foreign-owner defect names one supervisor", RUNTIME, "SV12",
         [OUTCOME], [(
             "function, request.owner, arguments[0]->as.managed.supervisor),",
