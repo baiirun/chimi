@@ -2,6 +2,7 @@ mod constants;
 mod debug;
 mod durations;
 mod persistent_list;
+mod processes;
 mod structural;
 mod teardown;
 
@@ -361,6 +362,8 @@ enum RuntimeValue {
     },
     /// A `std/duration.Duration`: a signed count of nanoseconds.
     Duration(i64),
+    /// A named `std/process.Address`: the `process name` declaration's symbol.
+    ProcessAddress(SymbolId),
     /// Fields of records and constructed values are shared like list nodes and
     /// closure environments: values are copied on every reference, and a structure
     /// that holds an earlier one twice would otherwise double with each level.
@@ -1126,6 +1129,7 @@ impl<'core> Evaluator<'core> {
                     requirements: environment.requirements,
                 }))
             }
+            CoreSymbolKind::ProcessName => Control::Success(RuntimeValue::ProcessAddress(symbol)),
             CoreSymbolKind::Constant => match self.constants.get(&symbol) {
                 Some(value) => Control::Success(value.clone()),
                 None => self.evaluate_constant_reference(symbol, span),
@@ -1519,6 +1523,23 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::DurationParse => {
                 self.invoke_duration(function, &arguments, call_node)
             }
+            StandardFunction::ProcessSpec
+            | StandardFunction::ProcessRegister
+            | StandardFunction::ProcessReceive
+            | StandardFunction::ProcessSend
+            | StandardFunction::SupervisorProcess
+            | StandardFunction::SupervisorSupervisor
+            | StandardFunction::SupervisorPolicy
+            | StandardFunction::SupervisorRestarts
+            | StandardFunction::SupervisorStart
+            | StandardFunction::SupervisorStartProcess
+            | StandardFunction::SupervisorStartSupervisor
+            | StandardFunction::SupervisorAddress
+            | StandardFunction::SupervisorRemoveProcess
+            | StandardFunction::SupervisorRemoveSupervisor
+            | StandardFunction::SupervisorStop
+            | StandardFunction::SupervisorWait
+            | StandardFunction::ClockSleep => self.invoke_process(function, arguments, call_node),
             StandardFunction::IoPath => {
                 let [RuntimeValue::Text(path)] = arguments.as_slice() else {
                     return self.intrinsic_shape_defect(function, call_node);
@@ -2554,6 +2575,13 @@ fn public_value(value: &RuntimeValue) -> ExecutionValue {
         ),
         RuntimeValue::Callable(callable) => ExecutionValue::Callable {
             name: callable_name(callable).to_owned(),
+        },
+        // Process programs never reach an outcome on the interpreter; an address is
+        // opaque, so its public form names only what it is.
+        RuntimeValue::ProcessAddress(_) => ExecutionValue::Constructed {
+            type_name: "Address".to_owned(),
+            variant_name: None,
+            fields: Vec::new(),
         },
     }
 }

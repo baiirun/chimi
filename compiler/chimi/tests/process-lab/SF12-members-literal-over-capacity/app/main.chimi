@@ -1,0 +1,21 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+enum Message {
+  Ping
+}
+
+fn body(inbox: Inbox<Message>) -> Void {
+  Void
+}
+
+fn build() {
+  let member = Process.spec(body, 1, Duration.seconds(1)) |> Supervisor.process(Supervisor.Restart.Never)
+  Supervisor.policy([member, member, member], 2, Supervisor.restarts(1, Duration.seconds(1)))
+}
+
+pub fn main() -> Int {
+  0
+}

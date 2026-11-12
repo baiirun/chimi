@@ -1,0 +1,19 @@
+import std/process as Process
+
+enum CounterMessage {
+  Add(amount: Int)
+}
+
+enum CacheMessage {
+  Clear
+}
+
+process name counter: CounterMessage
+
+fn poke() {
+  Process.send(counter, CacheMessage.Clear)
+}
+
+pub fn main() -> Int {
+  0
+}

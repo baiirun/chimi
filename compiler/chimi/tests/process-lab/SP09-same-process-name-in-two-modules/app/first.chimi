@@ -1,0 +1,11 @@
+import std/process.{Inbox}
+
+pub enum Count {
+  Add(amount: Int)
+}
+
+pub process name counter: Count
+
+pub fn body(inbox: Inbox<Count>) -> Void {
+  Void
+}

@@ -153,6 +153,8 @@ pub(crate) enum ProjectSymbolKind {
     Interface,
     Function,
     Constant,
+    /// A `process name` declaration: a module-level `Process.Address<M>`.
+    ProcessName,
     GenericParameter,
     Parameter,
     Requirement,
@@ -174,6 +176,7 @@ impl ProjectSymbolKind {
             Self::Interface => "interface",
             Self::Function => "function",
             Self::Constant => "constant",
+            Self::ProcessName => "process name",
             Self::GenericParameter => "generic parameter",
             Self::Parameter => "parameter",
             Self::Requirement => "requirement",
@@ -576,6 +579,28 @@ impl ProjectResolver {
             (StandardType::Ordering, StandardModule::Order),
             (StandardType::Duration, StandardModule::Duration),
             (StandardType::DurationParseError, StandardModule::Duration),
+            (StandardType::ProcessAddress, StandardModule::Process),
+            (StandardType::ProcessInbox, StandardModule::Process),
+            (StandardType::ProcessSpec, StandardModule::Process),
+            (StandardType::ProcessSendError, StandardModule::Process),
+            (StandardType::SupervisorMember, StandardModule::Supervisor),
+            (StandardType::SupervisorPolicy, StandardModule::Supervisor),
+            (StandardType::SupervisorRestarts, StandardModule::Supervisor),
+            (StandardType::SupervisorRestart, StandardModule::Supervisor),
+            (StandardType::SupervisorRunning, StandardModule::Supervisor),
+            (
+                StandardType::SupervisorManagedProcess,
+                StandardModule::Supervisor,
+            ),
+            (
+                StandardType::SupervisorManagedSupervisor,
+                StandardModule::Supervisor,
+            ),
+            (
+                StandardType::SupervisorStartError,
+                StandardModule::Supervisor,
+            ),
+            (StandardType::Clock, StandardModule::Clock),
         ] {
             let symbol = self.add_symbol(
                 None,
@@ -798,7 +823,10 @@ impl ProjectResolver {
                 self.standard_constructor_symbol(StandardConstructor::ChannelDrained),
                 vec![StandardGeneric::ChannelValue],
             ),
-        ] {
+        ]
+        .into_iter()
+        .chain(self.process_callable_parameters())
+        {
             self.standard_callable_parameters.insert(
                 callable,
                 parameters
@@ -807,6 +835,63 @@ impl ProjectResolver {
                     .collect(),
             );
         }
+    }
+
+    /// The generic parameters of each `std/process` and `std/supervisor` callable,
+    /// in contract order.
+    fn process_callable_parameters(&self) -> Vec<(SymbolId, Vec<StandardGeneric>)> {
+        use StandardGeneric as G;
+        let function = |function| self.standard_function_symbol(function);
+        let constructor = |constructor| self.standard_constructor_symbol(constructor);
+        vec![
+            (
+                function(StandardFunction::ProcessSpec),
+                vec![
+                    G::ProcessSpecMessage,
+                    G::ProcessSpecFailures,
+                    G::ProcessSpecNeeds,
+                ],
+            ),
+            (
+                function(StandardFunction::ProcessRegister),
+                vec![G::ProcessRegisterMessage, G::ProcessRegisterFailures],
+            ),
+            (
+                function(StandardFunction::ProcessReceive),
+                vec![G::ProcessReceiveMessage],
+            ),
+            (
+                function(StandardFunction::ProcessSend),
+                vec![G::ProcessSendMessage],
+            ),
+            (
+                constructor(StandardConstructor::ProcessSendFull),
+                vec![G::ProcessSendMessage],
+            ),
+            (
+                constructor(StandardConstructor::ProcessSendUnavailable),
+                vec![G::ProcessSendMessage],
+            ),
+            (
+                function(StandardFunction::SupervisorProcess),
+                vec![G::SupervisorProcessMessage, G::SupervisorProcessFailures],
+            ),
+            (
+                function(StandardFunction::SupervisorStartProcess),
+                vec![
+                    G::SupervisorStartProcessMessage,
+                    G::SupervisorStartProcessFailures,
+                ],
+            ),
+            (
+                function(StandardFunction::SupervisorAddress),
+                vec![G::SupervisorAddressMessage],
+            ),
+            (
+                function(StandardFunction::SupervisorRemoveProcess),
+                vec![G::SupervisorRemoveMessage],
+            ),
+        ]
     }
 
     fn standard_function_symbol(&self, function: StandardFunction) -> SymbolId {
@@ -940,6 +1025,9 @@ impl ProjectResolver {
             ModuleDeclarationKind::Interface => (Namespace::Type, ProjectSymbolKind::Interface),
             ModuleDeclarationKind::Function => (Namespace::Value, ProjectSymbolKind::Function),
             ModuleDeclarationKind::Constant => (Namespace::Value, ProjectSymbolKind::Constant),
+            ModuleDeclarationKind::ProcessName => {
+                (Namespace::Value, ProjectSymbolKind::ProcessName)
+            }
         };
         let id = self.add_symbol(
             Some(module_id),

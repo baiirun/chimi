@@ -261,6 +261,9 @@ pub(crate) enum NodeKind {
     RequirementRecord,
     LetBinding,
     ConstDeclaration,
+    /// `[pub] process name <identifier>: <Message>`. `process` and `name` are
+    /// contextual words, recognised only at module item position.
+    ProcessNameDeclaration,
     /// A text literal with `${...}` interpolations: text chunk tokens around
     /// `InterpolationOpen` expression `InterpolationClose` groups.
     InterpolatedText,
@@ -333,6 +336,7 @@ impl NodeKind {
             Self::RequirementRecord => "requirement_record",
             Self::LetBinding => "let_binding",
             Self::ConstDeclaration => "const_declaration",
+            Self::ProcessNameDeclaration => "process_name_declaration",
             Self::InterpolatedText => "interpolated_text",
             Self::UsingExpression => "using_expression",
             Self::OrExpression => "or_expression",
@@ -1382,6 +1386,9 @@ impl<'source> Parser<'source> {
                 TokenKind::Pub | TokenKind::Struct | TokenKind::Enum | TokenKind::Interface => {
                     self.parse_declaration()
                 }
+                TokenKind::Identifier if self.process_name_starts_at(self.position) => {
+                    self.parse_process_name_declaration()
+                }
                 TokenKind::Fn if self.fn_starts_declaration() => self.parse_declaration(),
                 TokenKind::Const => self.parse_const_declaration(),
                 TokenKind::Let => self.parse_let_binding(),
@@ -1466,8 +1473,10 @@ impl<'source> Parser<'source> {
             Some((NodeKind::EnumDeclaration, TokenKind::Enum)) => self.parse_enum(),
             Some((NodeKind::FunctionDeclaration, TokenKind::Fn)) => self.parse_function(),
             Some((NodeKind::ConstDeclaration, TokenKind::Const)) => self.parse_const_declaration(),
+            Some((NodeKind::ProcessNameDeclaration, _)) => self.parse_process_name_declaration(),
             _ => self.error_and_bump(
-                "expected `struct`, `enum`, `interface`, `fn`, or `const` after `pub`",
+                "expected `struct`, `enum`, `interface`, `fn`, `const`, or `process name` after \
+                 `pub`",
             ),
         }
     }
@@ -1486,6 +1495,9 @@ impl<'source> Parser<'source> {
             TokenKind::Interface => Some((NodeKind::InterfaceDeclaration, TokenKind::Interface)),
             TokenKind::Fn => Some((NodeKind::FunctionDeclaration, TokenKind::Fn)),
             TokenKind::Const => Some((NodeKind::ConstDeclaration, TokenKind::Const)),
+            TokenKind::Identifier if self.process_name_starts_at(index) => {
+                Some((NodeKind::ProcessNameDeclaration, TokenKind::Identifier))
+            }
             _ => None,
         }
     }
@@ -1876,6 +1888,36 @@ impl<'source> Parser<'source> {
         }
         self.expect(TokenKind::Equal);
         self.parse_expression();
+        self.finish();
+    }
+
+    /// Whether `process name <identifier> :` starts at significant token `index`.
+    /// Anything else keeps `process` an ordinary identifier, so a module, binding,
+    /// or function named `process` is unaffected.
+    fn process_name_starts_at(&self, index: usize) -> bool {
+        let word = |offset: usize, text: &str| {
+            self.kind_at(index + offset) == TokenKind::Identifier
+                && self
+                    .significant
+                    .get(index + offset)
+                    .is_some_and(|raw| &*self.tokens[*raw].text == text)
+        };
+        word(0, "process")
+            && word(1, "name")
+            && self.kind_at(index + 2) == TokenKind::Identifier
+            && self.kind_at(index + 3) == TokenKind::Colon
+    }
+
+    /// Parses `[pub] process name <identifier>: <type>`.
+    /// Requires: `process_name_starts_at` holds after the optional `pub`.
+    fn parse_process_name_declaration(&mut self) {
+        self.start(NodeKind::ProcessNameDeclaration);
+        self.parse_visibility();
+        self.expect(TokenKind::Identifier);
+        self.expect(TokenKind::Identifier);
+        self.expect(TokenKind::Identifier);
+        self.expect(TokenKind::Colon);
+        self.parse_type();
         self.finish();
     }
 

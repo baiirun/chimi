@@ -1,0 +1,11 @@
+import std/process.{Inbox}
+
+pub enum Tally {
+  Reset
+}
+
+pub process name counter: Tally
+
+pub fn body(inbox: Inbox<Tally>) -> Void {
+  Void
+}

@@ -1,0 +1,3 @@
+Process.send: fn(Address<M>, M) -> Void errors SendError<M>
+Supervisor.start: fn(Policy) -> Running errors StartError.NameTaken
+Supervisor.start_process: fn(Running, Spec<M, E>, Restart) -> ManagedProcess<M> errors StartError

@@ -348,6 +348,12 @@ Callbacks receive a tuple only where a function produces tuples, such as
   would then reach traces and logs. The caller adds "which value" with
   `Cause.context`, which is the designed place for that information
   ([failure context](time-and-outcomes.md#adding-context)).
+- A failure that hands a transferred input back carries it. This is not a
+  copy: the operation took ownership of the value, and the payload returns
+  it, as `Channel.SendError.Closed(value)` and
+  `Process.SendError.Full(message)` do. Such a field has the properties of
+  the value it returns, so the equatable and shareable rule below does not
+  apply to it.
 - A payload MUST NOT hold a cause. Causes live outside values in `Cause`.
 - Every payload field MUST be equatable, shareable, and constant-representable.
   Failures are stored in `Result`, sent through channels, and compared in
@@ -404,6 +410,8 @@ fn port(value: Option<Text>) -> Int errors PortError {
 | `Channel.SendError` (`Closed`, `Aborted`) | conforms |
 | `Task.Timeout.TimedOut(limit)` | conforms; a one-condition type |
 | `Duration.ParseError` (`Empty`, `Invalid`, `OutOfRange`) | conforms |
+| `Process.SendError` (`Full(message)`, `Unavailable(message)`) | conforms; `message` hands the transferred input back |
+| `Supervisor.StartError` (`CapacityReached`, `NameTaken(name)`, `Stopped`) | conforms; `name` is an identifier (the `process name` label) |
 | `Json.NumberError` (`NotInteger`, `OutOfRange`) | does not conform: rename to `Json.ConversionError` to match `Float.ConversionError` when `std/json` moves to source (migration step 6) |
 
 ## `Option` and `Result` helpers

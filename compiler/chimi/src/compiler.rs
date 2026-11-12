@@ -263,6 +263,28 @@ impl TypeReport {
             .map(|contract| self.typed.format_function_contract(contract))
     }
 
+    /// The rendered contract of a standard function named as written in source,
+    /// such as `Process.send`, or `None` when no standard module has it.
+    pub fn standard_contract(&self, qualified_name: &str) -> Option<String> {
+        let (qualifier, name) = qualified_name.split_once('.')?;
+        let function = crate::standard::StandardFunction::ALL
+            .into_iter()
+            .find(|function| {
+                function.name() == name
+                    && function
+                        .module()
+                        .is_some_and(|module| module.qualifier() == qualifier)
+            })?;
+        let symbol = self.typed.resolved.symbols.iter().find(|symbol| {
+            self.typed.resolved.standard_symbol(symbol.id)
+                == Some(crate::standard::StandardSymbol::Function(function))
+        })?;
+        self.typed
+            .contracts
+            .get(&symbol.id)
+            .map(|contract| self.typed.format_function_contract(contract))
+    }
+
     pub fn generic_kind(
         &self,
         module_path: &str,

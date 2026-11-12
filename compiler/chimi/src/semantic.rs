@@ -429,6 +429,10 @@ pub(crate) enum ModuleDeclarationKind {
     Function,
     /// A module constant, `[pub] const name [: Type] = initializer`, evaluated at build time.
     Constant,
+    /// `[pub] process name <identifier>: <Message>`: a module-level
+    /// `Process.Address<Message>` with named routing. `annotation` holds the message
+    /// type; there is no initializer.
+    ProcessName,
 }
 
 #[derive(Clone, Debug)]
@@ -1125,6 +1129,11 @@ impl ProjectLowerer {
                         declarations.push(declaration);
                     }
                 }
+                NodeKind::ProcessNameDeclaration => {
+                    if let Some(declaration) = lowerer.lower_process_name(&node) {
+                        declarations.push(declaration);
+                    }
+                }
                 // Module-level `let` was replaced by `const` (`L2101`). It still lowers as
                 // a constant so references to it resolve and report nothing further.
                 NodeKind::LetBinding => {
@@ -1483,6 +1492,34 @@ impl ProjectLowerer {
             variants: Vec::new(),
             function: None,
             body,
+            annotation,
+        })
+    }
+
+    /// Lowers a `ProcessNameDeclaration`; the name is the identifier after the
+    /// contextual words `process` and `name`.
+    fn lower_process_name(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleDeclaration> {
+        let name = node
+            .child_tokens()
+            .into_iter()
+            .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+            .nth(2)
+            .map(|token| name_from(&token))?;
+        let annotation =
+            direct_child(node, NodeKind::Type).map(|type_node| self.lower_type(&type_node));
+        Some(ModuleDeclaration {
+            semantic_id: self.allocate_semantic_id(),
+            kind: ModuleDeclarationKind::ProcessName,
+            public: node
+                .child_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::Pub),
+            name,
+            generic_parameters: Vec::new(),
+            fields: Vec::new(),
+            variants: Vec::new(),
+            function: None,
+            body: None,
             annotation,
         })
     }

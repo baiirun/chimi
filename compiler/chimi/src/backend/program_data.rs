@@ -58,6 +58,9 @@ impl ProgramData {
             ConstantValue::Void => (0, 0, 0, 0, 0),
             ConstantValue::Integer(value) => (1, 0, 0, 0, *value),
             ConstantValue::Duration(value) => (16, 0, 0, 0, *value),
+            // Decoded by the process kernel (U5); until then the native build refuses
+            // process programs before emitting data.
+            ConstantValue::ProcessAddress(symbol) => (17, symbol.raw(), 0, 0, 0),
             // The runtime reads the IEEE 754 bits back with `memcpy`.
             ConstantValue::Float(value) => (2, 0, 0, 0, value.to_bits() as i64),
             ConstantValue::Text(value) => (3, self.string(value), 0, 0, 0),
@@ -701,6 +704,7 @@ const fn symbol_kind(kind: CoreSymbolKind) -> u32 {
         CoreSymbolKind::Constructor => 4,
         CoreSymbolKind::Intrinsic => 5,
         CoreSymbolKind::Other => 6,
+        CoreSymbolKind::ProcessName => 7,
     }
 }
 fn environment_slot(

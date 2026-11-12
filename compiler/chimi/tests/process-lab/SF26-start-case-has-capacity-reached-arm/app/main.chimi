@@ -1,0 +1,24 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+enum Message {
+  Ping
+}
+
+fn body(inbox: Inbox<Message>) -> Void {
+  Void
+}
+
+fn start(policy: Supervisor.Policy) -> Int {
+  case Supervisor.start(policy) {
+    Success(_) -> 0
+    Failure(Supervisor.StartError.NameTaken(_)) -> 1
+    Failure(Supervisor.StartError.CapacityReached) -> 2
+  }
+}
+
+pub fn main() -> Int {
+  0
+}

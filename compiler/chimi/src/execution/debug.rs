@@ -129,6 +129,10 @@ impl Renderer<'_> {
                 self.output.push_str(&normalize_json_number(text));
                 self.output.push(')');
             }
+            RuntimeValue::ProcessAddress(symbol) => {
+                self.output
+                    .push_str(&format!("<address {}>", self.core.symbol(*symbol).name));
+            }
             RuntimeValue::Callable(callable) => {
                 let name = match callable {
                     RuntimeCallable::Declared { symbol, .. }

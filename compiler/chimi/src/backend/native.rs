@@ -8,7 +8,7 @@ use super::runtime_archive_key::{
 use crate::executable::{CoreOperation, CoreProgram};
 use crate::json::write_json_string;
 use crate::semantic::{BinaryOperator, UnaryOperator};
-use crate::standard::{StandardFunction, StandardSymbol};
+use crate::standard::{StandardFunction, StandardModule, StandardSymbol};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     AbiParam, Function, InstBuilder, Signature, UserFuncName, Value, types,
@@ -165,6 +165,13 @@ fn build_to_path(
     output_directory: &Path,
     executable_path: &Path,
 ) -> Result<NativeArtifact, String> {
+    if requires_process_runtime(&program.core) {
+        return Err(
+            "this program uses std/process, std/supervisor, or std/clock, which require the \
+             supervised process runtime; the native build does not include it yet"
+                .to_owned(),
+        );
+    }
     std::fs::create_dir_all(output_directory)
         .map_err(|error| format!("create native artifact directory: {error}"))?;
     if let Some(parent) = executable_path
@@ -393,6 +400,25 @@ fn bundled_fiber_archive() -> Result<PathBuf, String> {
         format!(
             "bundled Chimi fiber runtime ABI {FIBER_RUNTIME_ABI_VERSION} is missing; set CHIMI_FIBER_RUNTIME_ARCHIVE"
         )
+    })
+}
+
+/// Whether any reachable node calls into `std/process`, `std/supervisor`, or
+/// `std/clock`, or names a `process name`.
+fn requires_process_runtime(core: &CoreProgram) -> bool {
+    core.nodes.iter().any(|node| {
+        let CoreOperation::Reference(symbol) = node.operation else {
+            return false;
+        };
+        let symbol = core.symbol(symbol);
+        symbol.kind == crate::executable::CoreSymbolKind::ProcessName
+            || matches!(
+                symbol.standard,
+                Some(StandardSymbol::Function(function)) if matches!(
+                    function.module(),
+                    Some(StandardModule::Process | StandardModule::Supervisor | StandardModule::Clock)
+                )
+            )
     })
 }
 

@@ -1174,6 +1174,16 @@ program.
 - Emit trace events for timers, select park and commit, scope firing, and
   virtual advance.
 
+### Clock slice for supervised processes (ts-6ccbc9)
+
+- U1: `std/clock` declares `Clock` as an opaque provider type with no methods
+  yet, and `Clock.sleep: fn(Duration) -> Void needs { clock: Clock }`. Nothing
+  binds a root `clock` need yet, and no build runs `Clock.sleep`: the
+  interpreter defects with "requires the supervised process runtime", and the
+  native build refuses the program, until the process kernel lands.
+- Instant, Timestamp, `now`, and the structural `Clock` interface fields are
+  not part of this slice.
+
 ### Runner
 
 - Add `--clock real|virtual` and `--clock-start`, and make the test runner

@@ -2,6 +2,8 @@
 //! (`docs/specification/supervised-process-conformance.md`).
 
 pub mod catalogue;
+mod fixture;
+mod static_kind;
 pub mod transcript;
 
 use catalogue::{Form, Scenario, Stage};
@@ -171,6 +173,7 @@ fn status(scenario: &Scenario, options: &Options) -> Status {
     }
     let result = match (scenario.kind(), scenario.form) {
         (_, Form::Check(check) | Form::Gate(check)) => check(),
+        (Kind::Static, Form::Fixture) => static_kind::check(scenario, options),
         (kind, form) => Err(format!(
             "the {} runner for {form:?} scenarios has not landed",
             kind.name()

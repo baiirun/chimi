@@ -9464,3 +9464,254 @@ fn clause_parameter_names_reach_closures_and_guards() {
     );
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[6,11,6]");
 }
+
+// Supervised processes, stage U1 (process-and-supervisor-static-contracts.md). The
+// conformance lab's static fixtures cover T4261-T4264 at their contract scenarios;
+// these cover the edges the fixtures do not.
+
+const PROCESS_PRELUDE: &str = concat!(
+    "import std/duration as Duration\n",
+    "import std/process as Process\n",
+    "import std/process.{Inbox}\n",
+    "import std/supervisor as Supervisor\n",
+    "enum Message {\n  Ping\n}\n",
+    "fn body(inbox: Inbox<Message>) -> Void {\n  Void\n}\n",
+);
+
+fn process_program(declarations: &str) -> String {
+    format!("{PROCESS_PRELUDE}{declarations}pub fn main() -> Int {{\n  0\n}}\n")
+}
+
+// Rejects a formatter that drops or rewrites the declaration, and a parser that
+// reserves `process` or `name` instead of reading them only at item position.
+#[test]
+fn process_name_declarations_format_and_process_stays_an_ordinary_word() {
+    let source = process_program("pub process name counter: Message\n");
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source.as_str()));
+    assert!(
+        formatted
+            .text()
+            .contains("\npub process name counter: Message\n")
+    );
+    assert_formatter_round_trips(&source);
+    assert_inspection_survives_every_offset(&source);
+    assert_eq!(
+        check_codes(concat!(
+            "fn process(name: Int) -> Int {\n  let process = name\n  process\n}\n",
+            "pub fn main() -> Int {\n  process(1)\n}\n",
+        )),
+        Vec::<String>::new()
+    );
+}
+
+// T4263 applies to literals only (the static contract's definition). Rejects a check
+// that folds constants or arithmetic: those values defect where they are received.
+#[test]
+fn literal_range_checks_ignore_constants_and_computed_values() {
+    assert_eq!(
+        check_codes(&process_program(concat!(
+            "const none = 0\n",
+            "fn build() {\n",
+            "  Process.spec(body, none, Duration.seconds(5 - 10))\n",
+            "}\n",
+            "fn restarts() {\n  Supervisor.restarts(0 - 1, Duration.seconds(none))\n}\n",
+        ))),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        check_codes(&process_program(
+            "fn build() {\n  Process.spec(body, (0), Duration.nanoseconds(-1))\n}\n",
+        )),
+        ["T4263", "T4263"]
+    );
+}
+
+// Rejects a T4262 that accepts any expression of type `Address`, such as a constant
+// that holds a name, while a parenthesised direct reference stays accepted.
+#[test]
+fn register_takes_only_a_direct_process_name_reference() {
+    let program = |name: &str| {
+        process_program(&format!(
+            "process name counter: Message\nconst alias = counter\nfn build() {{\n  \
+             Process.register(Process.spec(body, 1, Duration.seconds(1)), {name})\n}}\n"
+        ))
+    };
+    assert_eq!(check_codes(&program("alias")), ["T4262"]);
+    assert_eq!(check_codes(&program("(counter)")), Vec::<String>::new());
+}
+
+// Rejects a T4264 that follows only one constant, or that keys names by text: two
+// modules' `counter` are different names (SP09 covers the module case in the lab).
+#[test]
+fn duplicate_names_are_found_through_chains_of_constants() {
+    assert_eq!(
+        check_codes(&process_program(concat!(
+            "process name counter: Message\n",
+            "const named = Process.spec(body, 1, Duration.seconds(1)) |> Process.register(counter)\n",
+            "const member = named |> Supervisor.process(Supervisor.Restart.Never)\n",
+            "fn build() {\n",
+            "  Supervisor.policy([member, member], 2, Supervisor.restarts(1, Duration.seconds(1)))\n",
+            "}\n",
+        ))),
+        ["T4264"]
+    );
+}
+
+// The data constructors run at build time with the native kernel's defect texts.
+// Rejects an interpreter that skips the range checks for computed values, or that
+// lets a spec be registered twice.
+#[test]
+fn process_data_constructors_check_computed_values_when_they_run() {
+    for (declarations, defect) in [
+        (
+            "const spec = Process.spec(body, 1 - 1, Duration.seconds(1))\n",
+            "Process.spec: mailbox capacity must be at least 1, got 0",
+        ),
+        (
+            "const spec = Process.spec(body, 1, Duration.seconds(1 - 2))\n",
+            "Process.spec: shutdown_within must be at least zero, got -1s",
+        ),
+        (
+            "const restarts = Supervisor.restarts(1, Duration.seconds(1 - 1))\n",
+            "Supervisor.restarts: restart window must be positive, got 0s",
+        ),
+        (
+            "const restarts = Supervisor.restarts(1 - 2, Duration.seconds(1))\n",
+            "Supervisor.restarts: restart limit must be at least 0, got -1",
+        ),
+        (
+            concat!(
+                "const members = [Process.spec(body, 1, Duration.seconds(1)) ",
+                "|> Supervisor.process(Supervisor.Restart.Never)]\n",
+                "const policy = Supervisor.policy(members, 1 - 1, ",
+                "Supervisor.restarts(1, Duration.seconds(1)))\n",
+            ),
+            "Supervisor.policy: capacity must be at least 1, got 0",
+        ),
+        (
+            concat!(
+                "process name first: Message\nprocess name second: Message\n",
+                "const spec = Process.spec(body, 1, Duration.seconds(1)) ",
+                "|> Process.register(first) |> Process.register(second)\n",
+            ),
+            "Process.register: spec already has a name",
+        ),
+    ] {
+        let messages = build_messages(&process_program(declarations));
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(
+            messages[0].starts_with("E5202") && messages[0].contains(defect),
+            "{messages:?}"
+        );
+    }
+    assert_eq!(
+        build_messages(&process_program(concat!(
+            "process name counter: Message\n",
+            "const policy = Supervisor.policy(\n",
+            "  [Process.spec(body, 4, Duration.zero) |> Process.register(counter) ",
+            "|> Supervisor.process(Supervisor.Restart.OnDefect)],\n",
+            "  1,\n  Supervisor.restarts(0, Duration.seconds(30)),\n)\n",
+        ))),
+        Vec::<String>::new()
+    );
+}
+
+// Rejects classifying a runtime operation as pure, which would let a constant send a
+// message while the program is being built.
+#[test]
+fn process_operations_are_not_build_time_operations() {
+    let messages = build_messages(&process_program(concat!(
+        "process name pinger: Message\n",
+        "fn ping() -> Int {\n  case Process.send(pinger, Message.Ping) {\n",
+        "    Success(_) -> 0\n    Failure(_) -> 1\n  }\n}\n",
+        "const pinged = ping()\n",
+    )));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].starts_with("E5201") && messages[0].contains("`std/process.send`"),
+        "{messages:?}"
+    );
+}
+
+// Coordinator decision 1 (ts-6ccbc9): the interpreter has no process runtime and says
+// so at the first operation that needs one, instead of diverging from native.
+#[test]
+fn the_interpreter_defects_at_the_first_process_operation() {
+    let scratch = scratch_directory("process-interpreter-defect");
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        format!(
+            "{PROCESS_PRELUDE}process name pinger: Message\n\
+             pub fn main() -> Int {{\n  case Process.send(pinger, Message.Ping) {{\n    \
+             Success(_) -> 0\n    Failure(_) -> 1\n  }}\n}}\n"
+        ),
+    )
+    .unwrap();
+    let outcome = interpreter_outcome(&path);
+    std::fs::remove_dir_all(scratch).unwrap();
+    assert!(
+        outcome.contains("\"outcome\":\"defect\"")
+            && outcome.contains("Process.send requires the supervised process runtime"),
+        "{outcome}"
+    );
+}
+
+// Rejects a `Process.spec` that drops the body's needs or keeps them in the spec, and
+// a `Clock.sleep` without its `clock` need.
+#[test]
+fn a_spec_surfaces_its_body_needs_at_the_call() {
+    let source = process_program(concat!(
+        "import std/clock as Clock\n",
+        "fn napping(inbox: Inbox<Message>) -> Void needs { clock: Clock.Clock } {\n",
+        "  Clock.sleep(Duration.seconds(1))\n",
+        "}\n",
+        "pub fn build() {\n  Process.spec(napping, 1, Duration.seconds(1))\n}\n",
+    ));
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    assert!(report.is_success(), "{}", report.render_diagnostics());
+    assert_eq!(
+        report.contract("main", "build").as_deref(),
+        Some("fn() -> Spec<Message, Never> needs { clock: Clock }")
+    );
+    assert_eq!(
+        report.standard_contract("Clock.sleep").as_deref(),
+        Some("fn(Duration) -> Void needs { clock: Clock }")
+    );
+}
+
+// The static contract's "Types" table. Rejects a wrong capability class, which U2's
+// capability rules (T4240, T4241, T4260) build on.
+#[test]
+fn process_handles_have_the_contracted_capability_classes() {
+    use chimi::ValuePropertyStatus::{Always, Never};
+    let source = process_program(concat!(
+        "pub fn handles(\n",
+        "  address: Process.Address<Message>,\n",
+        "  inbox: Inbox<Message>,\n",
+        "  managed: Supervisor.ManagedProcess<Message>,\n",
+        "  running: Supervisor.Running,\n",
+        ") -> Int {\n  0\n}\n",
+    ));
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let properties = |input| {
+        let properties = report
+            .function_input_value_properties("main", "handles", input)
+            .unwrap();
+        (properties.transferable, properties.shareable)
+    };
+    // Shareable; task-local (neither); exclusive (moves, never shared); shareable.
+    assert_eq!(
+        [0, 1, 2, 3].map(properties),
+        [
+            (Always, Always),
+            (Never, Never),
+            (Always, Never),
+            (Always, Always)
+        ]
+    );
+}

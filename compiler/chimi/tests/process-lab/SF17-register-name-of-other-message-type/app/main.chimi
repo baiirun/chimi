@@ -1,0 +1,26 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+enum Message {
+  Ping
+}
+
+fn body(inbox: Inbox<Message>) -> Void {
+  Void
+}
+
+enum CacheMessage {
+  Clear
+}
+
+process name cache: CacheMessage
+
+fn build() {
+  Process.spec(body, 1, Duration.seconds(1)) |> Process.register(cache)
+}
+
+pub fn main() -> Int {
+  0
+}

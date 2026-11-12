@@ -1,0 +1,52 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+enum CounterMessage {
+  Add(amount: Int)
+  Finish
+}
+
+enum CacheMessage {
+  Put(key: Text, value: Int)
+  Clear
+}
+
+pub process name counter: CounterMessage
+
+fn counter_loop(inbox: Inbox<CounterMessage>) -> Void {
+  loop count = 0 {
+    case Process.receive(inbox) {
+      CounterMessage.Add(amount) -> count + amount
+      CounterMessage.Finish -> break
+    }
+  }
+}
+
+fn cache_loop(inbox: Inbox<CacheMessage>) -> Void {
+  loop entries = 0 {
+    case Process.receive(inbox) {
+      CacheMessage.Put(_, _) -> entries + 1
+      CacheMessage.Clear -> break
+    }
+  }
+}
+
+const counting = Process.spec(counter_loop, 64, Duration.seconds(5))
+  |> Process.register(counter)
+  |> Supervisor.process(Supervisor.Restart.OnDefect)
+
+const caching = Process.spec(cache_loop, 256, Duration.seconds(5))
+  |> Supervisor.process(Supervisor.Restart.Never)
+
+const workers = Supervisor.policy(
+  [counting, caching],
+  16,
+  Supervisor.restarts(2, Duration.seconds(30)),
+)
+
+pub fn main() {
+  let root = Supervisor.start(workers)
+  Supervisor.wait(root)
+}

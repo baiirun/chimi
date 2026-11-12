@@ -1,0 +1,11 @@
+import std/task.{Task}
+
+enum Carry {
+  Work(task: Task<Int, Never>)
+}
+
+process name worker: Carry
+
+pub fn main() -> Int {
+  0
+}

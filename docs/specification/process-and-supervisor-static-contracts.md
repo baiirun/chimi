@@ -85,7 +85,7 @@ functions below.
 | `Process.Address<M>` | shareable |
 | `Process.Inbox<M>` | task-local |
 | `Process.Spec<M, E>` | shareable, enforced by `Process.spec` |
-| `Process.SendError<M>`: `Full(M)`, `Unavailable(M)` | that of `M` |
+| `Process.SendError<M>`: `Full(message: M)`, `Unavailable(message: M)` | that of `M` |
 | `Supervisor.Member` | shareable |
 | `Supervisor.Policy` | shareable |
 | `Supervisor.Restarts` | shareable |
@@ -93,12 +93,19 @@ functions below.
 | `Supervisor.Running` | shareable |
 | `Supervisor.ManagedProcess<M>` | exclusive, transferable |
 | `Supervisor.ManagedSupervisor` | exclusive, transferable |
-| `Supervisor.StartError`: `CapacityReached`, `NameTaken(Text)`, `Stopped` | shareable |
+| `Supervisor.StartError`: `CapacityReached`, `NameTaken(name: Text)`, `Stopped` | shareable |
 
 - **Task-local** is the existing parent-local capability class that
   `Task<T, F>` uses: the value may be passed to ordinary calls within the
   owning task but cannot be returned beyond it, sent, captured by a started
   task, or stored in a spec.
+- Payload fields are named, as the
+  [standard-library conventions](standard-library-conventions.md#payloads)
+  require. `Full` and `Unavailable` hand the transferred message back; that
+  is not a copy of input (the conventions' transferred-input rule).
+- The variants are written type-qualified (`SendError.Full`,
+  `Supervisor.Restart.Never`, `Supervisor.StartError.Stopped`); none is a
+  module member.
 - `M` and `E` stay in `Process.Spec` so a dynamic start can return a typed
   `ManagedProcess<M>`. `Supervisor.process` drops both: a declared member is
   reached through its `process name`, and its terminal failure is observed only
@@ -149,7 +156,11 @@ Supervisor.wait:     fn(Running) -> Void
   defect.
 - `Supervisor.policy` takes the members, the capacity, and the restart limit.
   `Supervisor.restarts` takes the limit and the window.
-- Each failure row lists only the variants that operation can produce.
+- Each failure row lists only the variants that operation can produce. A row
+  that holds every variant of an enum is that enum, so contracts render
+  `start_process` and `start_supervisor` as `errors StartError`.
+- Process operations name themselves in an interpreter defect:
+  `Process.send requires the supervised process runtime`.
 - `Process.send` is a transfer boundary for its message, like `Channel.send`.
 - `Supervisor.address` reads its argument without consuming it.
   `remove_process` and `remove_supervisor` consume theirs.
@@ -178,7 +189,26 @@ Supervisor.wait:     fn(Running) -> Void
 | type mismatch | Sending a message whose type differs from the address's `M`; registering a name whose message type differs from the body's `M`; putting a `Process.Spec` directly in the members list instead of `Supervisor.process(...)`. |
 
 A literal duration is `Duration.zero` or a `Duration` constructor such as
-`Duration.seconds` applied to an integer literal.
+`Duration.seconds` applied to an integer literal. An integer literal may have
+a leading minus and parentheses. A module constant or an arithmetic
+expression is not a literal, even when the compiler could fold it: such a
+value is checked at run time by the call that receives it (see below).
+
+`T4264` follows each members-list element through `Supervisor.process`,
+`Process.register`, pipelines, and references to module constants, at any
+depth. It does not follow function calls. A duplicate it cannot see is the
+runtime's `NameTaken` when the policy starts.
+
+Range defect texts follow the standard-library form
+`Function: precondition, got value`:
+
+- `Process.spec: mailbox capacity must be at least 1, got 0`
+- `Process.spec: shutdown_within must be at least zero, got -1s`
+- `Process.register: spec already has a name`
+- `Supervisor.policy: capacity must be at least 1, got 0`
+- `Supervisor.policy: members must not exceed capacity 2, got 3`
+- `Supervisor.restarts: restart limit must be at least 0, got -1`
+- `Supervisor.restarts: restart window must be positive, got 0s`
 
 ## Runtime checks
 
@@ -228,3 +258,19 @@ capability and supervisor identity, never as expected failures:
 | `case Supervisor.start(policy)` matching `CapacityReached` | unreachable arm |
 | `Running` sent to a process in a message and used there to start a sibling | Compiles |
 | `ManagedProcess` sent through a channel to another task, removed there | Compiles |
+
+## Implementation status
+
+- U1 (ts-6ccbc9): the `process name` declaration (`process` and `name` are
+  contextual words at module item position), `std/process`, `std/supervisor`,
+  the `std/clock` `Clock` provider type and `Clock.sleep` signature, the
+  contracts above, the value properties of the types table, and `T4261` to
+  `T4264` (`compiler/chimi/src/typing/process.rs`). The data constructors
+  (`Process.spec`, `register`, `Supervisor.process`, `supervisor`, `policy`,
+  `restarts`) run at build time, so module constants may hold specs,
+  members, and policies; every other operation is a run-time operation
+  (`E5201` in a constant). The interpreter defects at the first run-time
+  operation. The native build refuses process programs until the process
+  kernel lands (U5).
+- Capability checking (`T4260`, `T4240`, `T4241`, `T4243`, `T4250` for
+  processes), Core lowering, and the Core verifier are U2.

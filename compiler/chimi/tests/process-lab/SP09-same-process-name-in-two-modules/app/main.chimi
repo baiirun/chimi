@@ -1,0 +1,23 @@
+import std/duration as Duration
+import std/process as Process
+import std/supervisor as Supervisor
+import app/first as First
+import app/second as Second
+
+const workers = Supervisor.policy(
+  [
+    Process.spec(First.body, 1, Duration.seconds(1))
+      |> Process.register(First.counter)
+      |> Supervisor.process(Supervisor.Restart.Never),
+    Process.spec(Second.body, 1, Duration.seconds(1))
+      |> Process.register(Second.counter)
+      |> Supervisor.process(Supervisor.Restart.Never),
+  ],
+  2,
+  Supervisor.restarts(1, Duration.seconds(1)),
+)
+
+pub fn main() {
+  let root = Supervisor.start(workers)
+  Supervisor.wait(root)
+}

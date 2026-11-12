@@ -170,6 +170,19 @@ compile has an empty file. Message text is not compared, except where a
 scenario says the diagnostic names a capture or provider. Those scenarios add
 a second column with the required substring.
 
+### `expected.contracts`
+
+SP08 only. One line per standard function, `<Module>.<function>: <contract>`,
+in the compiler's contract notation (the form inferred contracts and hover
+use): generic parameters are written bare, and a failure row that holds every
+variant of an enum is the enum's name. The SP08 file is:
+
+```text
+Process.send: fn(Address<M>, M) -> Void errors SendError<M>
+Supervisor.start: fn(Policy) -> Running errors StartError.NameTaken
+Supervisor.start_process: fn(Running, Spec<M, E>, Restart) -> ManagedProcess<M> errors StartError
+```
+
 ### `expected.outcome`
 
 The runner outcome line. For `success` and `expected_failure` the line must
@@ -393,8 +406,8 @@ did for each of its tests.
 | SF22 | U2 | Returning the inbox from a helper beyond the body | `T4240` |
 | SF23 | U2 | `Process.send(other, Message.Forward(inbox))` | `T4243` |
 | SF24 | U2 | A loop pass that removes a managed handle bound outside the loop | `T4250` |
-| SF25 | U1 | A `start_process` case that omits `Stopped` | non-exhaustive match |
-| SF26 | U1 | A `case Supervisor.start(policy)` arm for `CapacityReached` | unreachable arm |
+| SF25 | U1 | A `start_process` case that omits `Stopped`, matched as `Failure(error) -> case error { ... }`: a `Failure(variant)` arm list that leaves a variant out lets it propagate, so coverage is checked on the failure value | non-exhaustive match (`T4231`) |
+| SF26 | U1 | A `case Supervisor.start(policy)` arm `Failure(Supervisor.StartError.CapacityReached)` | unreachable arm: the variant is absent from the closed row, `T4224` (patterns FP-02) |
 
 ### Verified Core
 

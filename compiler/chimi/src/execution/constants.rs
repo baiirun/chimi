@@ -55,6 +55,9 @@ impl Operation {
                 Some(module @ (StandardModule::Task | StandardModule::Channel)) => {
                     Some(format!("{}.{}", module.path(), function.name()))
                 }
+                Some(module) if function.requires_process_runtime() => {
+                    Some(format!("{}.{}", module.path(), function.name()))
+                }
                 _ => None,
             },
             Self::Host(function) => Some(
@@ -594,6 +597,7 @@ impl Measure<'_> {
             RuntimeValue::Void
             | RuntimeValue::Integer(_)
             | RuntimeValue::Duration(_)
+            | RuntimeValue::ProcessAddress(_)
             | RuntimeValue::Float(_)
             | RuntimeValue::Boolean(_) => Some(ROW_BYTES),
             // Its row refers to one `Int` row per bound.
@@ -743,6 +747,7 @@ fn constant_value(
         RuntimeValue::Void => ConstantValue::Void,
         RuntimeValue::Integer(value) => ConstantValue::Integer(*value),
         RuntimeValue::Duration(value) => ConstantValue::Duration(*value),
+        RuntimeValue::ProcessAddress(symbol) => ConstantValue::ProcessAddress(*symbol),
         RuntimeValue::Float(value) => ConstantValue::Float(*value),
         RuntimeValue::Text(value) => ConstantValue::Text(value.clone()),
         RuntimeValue::Boolean(value) => ConstantValue::Boolean(*value),
@@ -844,6 +849,7 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
         ConstantValue::Void => RuntimeValue::Void,
         ConstantValue::Integer(value) => RuntimeValue::Integer(*value),
         ConstantValue::Duration(value) => RuntimeValue::Duration(*value),
+        ConstantValue::ProcessAddress(symbol) => RuntimeValue::ProcessAddress(*symbol),
         ConstantValue::Float(value) => RuntimeValue::Float(*value),
         ConstantValue::Text(value) => RuntimeValue::Text(value.clone()),
         ConstantValue::Boolean(value) => RuntimeValue::Boolean(*value),

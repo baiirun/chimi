@@ -340,7 +340,12 @@ fn unrepresentable_part(
                 | StandardType::ChannelReceiver
                 | StandardType::ChannelCompletion
                 | StandardType::Console
-                | StandardType::FileSystem,
+                | StandardType::FileSystem
+                | StandardType::Clock
+                | StandardType::ProcessInbox
+                | StandardType::SupervisorRunning
+                | StandardType::SupervisorManagedProcess
+                | StandardType::SupervisorManagedSupervisor,
             )) = typed.resolved.standard_symbol(*symbol)
             {
                 Some(format!(

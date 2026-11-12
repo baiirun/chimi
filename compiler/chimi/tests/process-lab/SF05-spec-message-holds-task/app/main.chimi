@@ -1,0 +1,20 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/task.{Task}
+
+enum Carry {
+  Work(task: Task<Int, Never>)
+}
+
+fn body(inbox: Inbox<Carry>) -> Void {
+  Void
+}
+
+fn build() {
+  Process.spec(body, 1, Duration.seconds(1))
+}
+
+pub fn main() -> Int {
+  0
+}

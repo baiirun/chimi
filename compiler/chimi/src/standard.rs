@@ -11,10 +11,13 @@ pub(crate) enum StandardModule {
     Order,
     Range,
     Duration,
+    Process,
+    Supervisor,
+    Clock,
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::Channel,
         Self::Io,
         Self::Json,
@@ -26,6 +29,9 @@ impl StandardModule {
         Self::Order,
         Self::Range,
         Self::Duration,
+        Self::Process,
+        Self::Supervisor,
+        Self::Clock,
     ];
 
     pub(crate) const fn path(self) -> &'static str {
@@ -41,6 +47,9 @@ impl StandardModule {
             Self::Order => "std/order",
             Self::Range => "std/range",
             Self::Duration => "std/duration",
+            Self::Process => "std/process",
+            Self::Supervisor => "std/supervisor",
+            Self::Clock => "std/clock",
         }
     }
 
@@ -82,6 +91,24 @@ pub(crate) enum StandardType {
     /// A signed 64-bit count of nanoseconds (`std/duration`).
     Duration,
     DurationParseError,
+    /// `std/process.Address<M>`: where messages of type `M` are routed.
+    ProcessAddress,
+    /// `std/process.Inbox<M>`: a process body's mailbox; task-local.
+    ProcessInbox,
+    /// `std/process.Spec<M, E>`: a body, a mailbox capacity, a shutdown bound,
+    /// and an optional `process name`.
+    ProcessSpec,
+    ProcessSendError,
+    SupervisorMember,
+    SupervisorPolicy,
+    SupervisorRestarts,
+    SupervisorRestart,
+    SupervisorRunning,
+    SupervisorManagedProcess,
+    SupervisorManagedSupervisor,
+    SupervisorStartError,
+    /// `std/clock.Clock`: the time provider the runner binds to a root `clock` need.
+    Clock,
 }
 
 impl StandardType {
@@ -101,6 +128,8 @@ impl StandardType {
                 | Self::FloatParseError
                 | Self::FloatConversionError
                 | Self::DurationParseError
+                | Self::ProcessSendError
+                | Self::SupervisorStartError
         )
     }
 
@@ -129,6 +158,19 @@ impl StandardType {
             Self::FloatConversionError => "ConversionError",
             Self::Ordering => "Ordering",
             Self::Duration => "Duration",
+            Self::ProcessAddress => "Address",
+            Self::ProcessInbox => "Inbox",
+            Self::ProcessSpec => "Spec",
+            Self::ProcessSendError => "SendError",
+            Self::SupervisorMember => "Member",
+            Self::SupervisorPolicy => "Policy",
+            Self::SupervisorRestarts => "Restarts",
+            Self::SupervisorRestart => "Restart",
+            Self::SupervisorRunning => "Running",
+            Self::SupervisorManagedProcess => "ManagedProcess",
+            Self::SupervisorManagedSupervisor => "ManagedSupervisor",
+            Self::SupervisorStartError => "StartError",
+            Self::Clock => "Clock",
         }
     }
 
@@ -136,7 +178,20 @@ impl StandardType {
     /// Its private representation grants neither silently.
     pub(crate) const fn properties(self) -> StandardProperties {
         match self {
-            Self::Console | Self::FileSystem => StandardProperties::Opaque("a provider"),
+            Self::Console | Self::FileSystem | Self::Clock => {
+                StandardProperties::Opaque("a provider")
+            }
+            Self::ProcessAddress
+            | Self::ProcessInbox
+            | Self::ProcessSpec
+            | Self::SupervisorMember
+            | Self::SupervisorPolicy
+            | Self::SupervisorRestarts
+            | Self::SupervisorRunning
+            | Self::SupervisorManagedProcess
+            | Self::SupervisorManagedSupervisor => {
+                StandardProperties::Opaque("a process or supervisor capability")
+            }
             Self::Task => StandardProperties::Opaque("a `Task` capability"),
             Self::ChannelSender | Self::ChannelReceiver | Self::ChannelCompletion => {
                 StandardProperties::Opaque("a channel capability")
@@ -161,7 +216,10 @@ impl StandardType {
             | Self::FloatConversionError
             | Self::Ordering
             | Self::Duration
-            | Self::DurationParseError => StandardProperties::Structural,
+            | Self::DurationParseError
+            | Self::ProcessSendError
+            | Self::SupervisorRestart
+            | Self::SupervisorStartError => StandardProperties::Structural,
         }
     }
 
@@ -267,10 +325,27 @@ pub(crate) enum StandardFunction {
     /// The canonical text form, which `Debug.render` also uses.
     DurationToText,
     DurationParse,
+    ProcessSpec,
+    ProcessRegister,
+    ProcessReceive,
+    ProcessSend,
+    SupervisorProcess,
+    SupervisorSupervisor,
+    SupervisorPolicy,
+    SupervisorRestarts,
+    SupervisorStart,
+    SupervisorStartProcess,
+    SupervisorStartSupervisor,
+    SupervisorAddress,
+    SupervisorRemoveProcess,
+    SupervisorRemoveSupervisor,
+    SupervisorStop,
+    SupervisorWait,
+    ClockSleep,
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 66] = [
+    pub(crate) const ALL: [Self; 83] = [
         Self::DebugRender,
         Self::DebugRenderIndented,
         Self::IntParse,
@@ -337,10 +412,44 @@ impl StandardFunction {
         Self::ChannelClose,
         Self::ChannelAbort,
         Self::ChannelBounded,
+        Self::ProcessSpec,
+        Self::ProcessRegister,
+        Self::ProcessReceive,
+        Self::ProcessSend,
+        Self::SupervisorProcess,
+        Self::SupervisorSupervisor,
+        Self::SupervisorPolicy,
+        Self::SupervisorRestarts,
+        Self::SupervisorStart,
+        Self::SupervisorStartProcess,
+        Self::SupervisorStartSupervisor,
+        Self::SupervisorAddress,
+        Self::SupervisorRemoveProcess,
+        Self::SupervisorRemoveSupervisor,
+        Self::SupervisorStop,
+        Self::SupervisorWait,
+        Self::ClockSleep,
     ];
 
     pub(crate) const fn module(self) -> Option<StandardModule> {
         match self {
+            Self::ProcessSpec
+            | Self::ProcessRegister
+            | Self::ProcessReceive
+            | Self::ProcessSend => Some(StandardModule::Process),
+            Self::SupervisorProcess
+            | Self::SupervisorSupervisor
+            | Self::SupervisorPolicy
+            | Self::SupervisorRestarts
+            | Self::SupervisorStart
+            | Self::SupervisorStartProcess
+            | Self::SupervisorStartSupervisor
+            | Self::SupervisorAddress
+            | Self::SupervisorRemoveProcess
+            | Self::SupervisorRemoveSupervisor
+            | Self::SupervisorStop
+            | Self::SupervisorWait => Some(StandardModule::Supervisor),
+            Self::ClockSleep => Some(StandardModule::Clock),
             Self::IoPath => Some(StandardModule::Io),
             Self::MapEmpty
             | Self::MapGet
@@ -473,7 +582,45 @@ impl StandardFunction {
             Self::OrderCompare => "compare",
             Self::OrderMin => "min",
             Self::OrderMax => "max",
+            Self::ProcessSpec => "spec",
+            Self::ProcessRegister => "register",
+            Self::ProcessReceive => "receive",
+            Self::ProcessSend => "send",
+            Self::SupervisorProcess => "process",
+            Self::SupervisorSupervisor => "supervisor",
+            Self::SupervisorPolicy => "policy",
+            Self::SupervisorRestarts => "restarts",
+            Self::SupervisorStart => "start",
+            Self::SupervisorStartProcess => "start_process",
+            Self::SupervisorStartSupervisor => "start_supervisor",
+            Self::SupervisorAddress => "address",
+            Self::SupervisorRemoveProcess => "remove_process",
+            Self::SupervisorRemoveSupervisor => "remove_supervisor",
+            Self::SupervisorStop => "stop",
+            Self::SupervisorWait => "wait",
+            Self::ClockSleep => "sleep",
         }
+    }
+
+    /// Whether this function needs the supervised process runtime (or its clock) to
+    /// run. The process data constructors (`Process.spec`, `register`, and the
+    /// `Supervisor` member, policy, and restart constructors) do not: they build
+    /// plain values, so module constants may call them.
+    pub(crate) const fn requires_process_runtime(self) -> bool {
+        matches!(
+            self,
+            Self::ProcessReceive
+                | Self::ProcessSend
+                | Self::SupervisorStart
+                | Self::SupervisorStartProcess
+                | Self::SupervisorStartSupervisor
+                | Self::SupervisorAddress
+                | Self::SupervisorRemoveProcess
+                | Self::SupervisorRemoveSupervisor
+                | Self::SupervisorStop
+                | Self::SupervisorWait
+                | Self::ClockSleep
+        )
     }
 
     /// The unit of a `Duration` constructor (`Duration.seconds`) or of a whole-unit
@@ -576,10 +723,17 @@ pub(crate) enum StandardConstructor {
     DurationParseEmpty,
     DurationParseInvalid,
     DurationParseOutOfRange,
+    ProcessSendFull,
+    ProcessSendUnavailable,
+    RestartNever,
+    RestartOnDefect,
+    StartCapacityReached,
+    StartNameTaken,
+    StartStopped,
 }
 
 impl StandardConstructor {
-    pub(crate) const ALL: [Self; 36] = [
+    pub(crate) const ALL: [Self; 43] = [
         Self::IntParseEmpty,
         Self::IntParseInvalidDigit,
         Self::IntParseOutOfRange,
@@ -616,6 +770,13 @@ impl StandardConstructor {
         Self::ChannelReceived,
         Self::ChannelDrained,
         Self::ChannelAborted,
+        Self::ProcessSendFull,
+        Self::ProcessSendUnavailable,
+        Self::RestartNever,
+        Self::RestartOnDefect,
+        Self::StartCapacityReached,
+        Self::StartNameTaken,
+        Self::StartStopped,
     ];
 
     pub(crate) const fn type_kind(self) -> StandardType {
@@ -650,6 +811,11 @@ impl StandardConstructor {
             Self::DurationParseEmpty
             | Self::DurationParseInvalid
             | Self::DurationParseOutOfRange => StandardType::DurationParseError,
+            Self::ProcessSendFull | Self::ProcessSendUnavailable => StandardType::ProcessSendError,
+            Self::RestartNever | Self::RestartOnDefect => StandardType::SupervisorRestart,
+            Self::StartCapacityReached | Self::StartNameTaken | Self::StartStopped => {
+                StandardType::SupervisorStartError
+            }
         }
     }
 
@@ -683,6 +849,22 @@ impl StandardConstructor {
             // access is valid: Channel.Aborted names the receive failure.
             StandardType::ChannelSendError => None,
             StandardType::Task => None,
+            // Std docs write these type-qualified (`SendError.Full`,
+            // `Supervisor.Restart.Never`), and `std/channel` already owns a
+            // `SendError`, so none is a module member.
+            StandardType::ProcessSendError
+            | StandardType::SupervisorRestart
+            | StandardType::SupervisorStartError => None,
+            StandardType::ProcessAddress
+            | StandardType::ProcessInbox
+            | StandardType::ProcessSpec
+            | StandardType::SupervisorMember
+            | StandardType::SupervisorPolicy
+            | StandardType::SupervisorRestarts
+            | StandardType::SupervisorRunning
+            | StandardType::SupervisorManagedProcess
+            | StandardType::SupervisorManagedSupervisor
+            | StandardType::Clock => None,
             StandardType::Console
             | StandardType::FileSystem
             | StandardType::Map
@@ -725,6 +907,13 @@ impl StandardConstructor {
             Self::OrderingLess => "Less",
             Self::OrderingEqual => "Equal",
             Self::OrderingGreater => "Greater",
+            Self::ProcessSendFull => "Full",
+            Self::ProcessSendUnavailable => "Unavailable",
+            Self::RestartNever => "Never",
+            Self::RestartOnDefect => "OnDefect",
+            Self::StartCapacityReached => "CapacityReached",
+            Self::StartNameTaken => "NameTaken",
+            Self::StartStopped => "Stopped",
         }
     }
 
@@ -775,6 +964,12 @@ impl StandardConstructor {
             | Self::DurationParseEmpty
             | Self::DurationParseInvalid
             | Self::DurationParseOutOfRange => &[],
+            Self::ProcessSendFull | Self::ProcessSendUnavailable => &["message"],
+            Self::StartNameTaken => &["name"],
+            Self::RestartNever
+            | Self::RestartOnDefect
+            | Self::StartCapacityReached
+            | Self::StartStopped => &[],
         }
     }
 
@@ -840,10 +1035,23 @@ pub(crate) enum StandardGeneric {
     OrderMaxValue,
     MapFromKey,
     MapFromValue,
+    ProcessSpecMessage,
+    ProcessSpecFailures,
+    ProcessSpecNeeds,
+    ProcessRegisterMessage,
+    ProcessRegisterFailures,
+    ProcessReceiveMessage,
+    ProcessSendMessage,
+    SupervisorProcessMessage,
+    SupervisorProcessFailures,
+    SupervisorStartProcessMessage,
+    SupervisorStartProcessFailures,
+    SupervisorAddressMessage,
+    SupervisorRemoveMessage,
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 32] = [
+    pub(crate) const ALL: [Self; 45] = [
         Self::DebugRenderValue,
         Self::DebugRenderIndentedValue,
         Self::FileState,
@@ -876,6 +1084,19 @@ impl StandardGeneric {
         Self::OrderMaxValue,
         Self::MapFromKey,
         Self::MapFromValue,
+        Self::ProcessSpecMessage,
+        Self::ProcessSpecFailures,
+        Self::ProcessSpecNeeds,
+        Self::ProcessRegisterMessage,
+        Self::ProcessRegisterFailures,
+        Self::ProcessReceiveMessage,
+        Self::ProcessSendMessage,
+        Self::SupervisorProcessMessage,
+        Self::SupervisorProcessFailures,
+        Self::SupervisorStartProcessMessage,
+        Self::SupervisorStartProcessFailures,
+        Self::SupervisorAddressMessage,
+        Self::SupervisorRemoveMessage,
     ];
 
     /// The name shown in contracts and diagnostics. Names repeat across
@@ -909,6 +1130,19 @@ impl StandardGeneric {
             Self::ChannelValue => "T",
             Self::DebugRenderValue | Self::DebugRenderIndentedValue => "T",
             Self::OrderCompareValue | Self::OrderMinValue | Self::OrderMaxValue => "A",
+            Self::ProcessSpecMessage
+            | Self::ProcessRegisterMessage
+            | Self::ProcessReceiveMessage
+            | Self::ProcessSendMessage
+            | Self::SupervisorProcessMessage
+            | Self::SupervisorStartProcessMessage
+            | Self::SupervisorAddressMessage
+            | Self::SupervisorRemoveMessage => "M",
+            Self::ProcessSpecFailures
+            | Self::ProcessRegisterFailures
+            | Self::SupervisorProcessFailures
+            | Self::SupervisorStartProcessFailures => "E",
+            Self::ProcessSpecNeeds => "R",
         }
     }
 
@@ -917,10 +1151,15 @@ impl StandardGeneric {
             Self::FileFailures | Self::MapUpdateFailures | Self::MapValuesFailures => {
                 StandardGenericKind::FailureRow
             }
-            Self::TaskFailures => StandardGenericKind::FailureSet,
-            Self::FileNeeds | Self::MapUpdateNeeds | Self::MapValuesNeeds => {
-                StandardGenericKind::NeedsRow
-            }
+            Self::TaskFailures
+            | Self::ProcessSpecFailures
+            | Self::ProcessRegisterFailures
+            | Self::SupervisorProcessFailures
+            | Self::SupervisorStartProcessFailures => StandardGenericKind::FailureSet,
+            Self::FileNeeds
+            | Self::MapUpdateNeeds
+            | Self::MapValuesNeeds
+            | Self::ProcessSpecNeeds => StandardGenericKind::NeedsRow,
             _ => StandardGenericKind::Value,
         }
     }

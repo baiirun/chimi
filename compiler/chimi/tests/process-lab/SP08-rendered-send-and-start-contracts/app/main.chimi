@@ -1,0 +1,22 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+enum Message {
+  Ping
+}
+
+fn body(inbox: Inbox<Message>) -> Void {
+  Void
+}
+
+process name pinger: Message
+
+fn ping() {
+  Process.send(pinger, Message.Ping)
+}
+
+pub fn main() -> Int {
+  0
+}

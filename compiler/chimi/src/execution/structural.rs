@@ -81,6 +81,9 @@ pub(super) fn structural_order(
             ) => (left_start, left_end).cmp(&(right_start, right_end)),
             // The single nanosecond field: numeric order.
             (RuntimeValue::Duration(left), RuntimeValue::Duration(right)) => left.cmp(right),
+            (RuntimeValue::ProcessAddress(left), RuntimeValue::ProcessAddress(right)) => {
+                left.cmp(right)
+            }
             (RuntimeValue::Record(left), RuntimeValue::Record(right)) => {
                 // Records have no declaration order; any fixed order serves.
                 let (left, right) = (by_name(left), by_name(right));
@@ -161,6 +164,7 @@ const fn rank(value: &RuntimeValue) -> u8 {
         RuntimeValue::Tuple(_) => 11,
         RuntimeValue::Range { .. } => 12,
         RuntimeValue::Duration(_) => 13,
+        RuntimeValue::ProcessAddress(_) => 14,
     }
 }
 

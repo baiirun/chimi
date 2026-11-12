@@ -111,6 +111,30 @@ impl LoadedProject {
         output
     }
 
+    /// `(module path, one-based line, one-based UTF-16 column)` of each
+    /// diagnostic's primary start, as `render_diagnostics` prints it.
+    #[cfg(feature = "native-backend")]
+    pub(crate) fn diagnostic_positions(
+        &self,
+        diagnostics: &[Diagnostic],
+    ) -> Vec<(String, u32, u32)> {
+        use crate::line_index::{LineIndex, PositionEncoding};
+        let sources = self.diagnostic_sources();
+        diagnostics
+            .iter()
+            .map(|diagnostic| {
+                let (module_path, source) = &sources[diagnostic.file_id().raw() as usize];
+                let position = LineIndex::new(std::sync::Arc::from(source.text()))
+                    .position(diagnostic.range().start(), PositionEncoding::Utf16);
+                (
+                    module_path.clone(),
+                    position.line + 1,
+                    position.character + 1,
+                )
+            })
+            .collect()
+    }
+
     fn diagnostic_sources(&self) -> Vec<(String, SourceSnapshot)> {
         let mut sources = self
             .modules

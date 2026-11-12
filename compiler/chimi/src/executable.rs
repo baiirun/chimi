@@ -356,6 +356,9 @@ pub(crate) enum CoreSymbolKind {
     Function,
     /// A module constant; a reference loads its build-time value.
     Constant,
+    /// A `process name` declaration; a reference is its named `Process.Address`,
+    /// identified by this symbol, never by its text.
+    ProcessName,
     Requirement,
     Local,
     Constructor,
@@ -418,6 +421,8 @@ pub(crate) enum ConstantValue {
     },
     /// A `Duration` in nanoseconds.
     Duration(i64),
+    /// A named `Process.Address`: the `process name` declaration's symbol.
+    ProcessAddress(SymbolId),
     Record(Vec<(String, ConstantValue)>),
     /// A struct or enum value; field names come from the constructor's shape.
     Constructed {
@@ -1187,7 +1192,8 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
             }
             ModuleDeclarationKind::Struct
             | ModuleDeclarationKind::Enum
-            | ModuleDeclarationKind::Interface => {
+            | ModuleDeclarationKind::Interface
+            | ModuleDeclarationKind::ProcessName => {
                 unreachable!("only executable declarations enter reachability")
             }
         }
@@ -2307,6 +2313,7 @@ fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
             let kind = match symbol.kind {
                 ProjectSymbolKind::Function => CoreSymbolKind::Function,
                 ProjectSymbolKind::Constant => CoreSymbolKind::Constant,
+                ProjectSymbolKind::ProcessName => CoreSymbolKind::ProcessName,
                 ProjectSymbolKind::Requirement => CoreSymbolKind::Requirement,
                 ProjectSymbolKind::Parameter
                 | ProjectSymbolKind::LocalBinding

@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 mod constants;
 pub(crate) mod durations;
+pub(crate) mod process;
 
 mod properties;
 
@@ -519,7 +520,10 @@ impl TypeFormatter<'_> {
             }
         }
         members.sort();
-        if members.len() == 1 {
+        if members.is_empty() {
+            // The empty failure set, as in `Task<Int, Never>`.
+            "Never".to_owned()
+        } else if members.len() == 1 {
             members.pop().expect("one member")
         } else {
             format!("{{ {} }}", members.join(", "))
@@ -1055,6 +1059,39 @@ impl TypedProject {
             Some(StandardSymbol::Type(StandardType::ChannelSender)) => {
                 return ValueProperties::SHAREABLE;
             }
+            // The static contract's "Types" table.
+            Some(StandardSymbol::Type(StandardType::ProcessInbox)) => {
+                return ValueProperties::PARENT_LOCAL;
+            }
+            Some(StandardSymbol::Type(
+                StandardType::SupervisorManagedProcess | StandardType::SupervisorManagedSupervisor,
+            )) => {
+                return ValueProperties::EXCLUSIVE;
+            }
+            Some(StandardSymbol::Type(
+                StandardType::ProcessAddress
+                | StandardType::ProcessSpec
+                | StandardType::SupervisorMember
+                | StandardType::SupervisorPolicy
+                | StandardType::SupervisorRestarts
+                | StandardType::SupervisorRestart
+                | StandardType::SupervisorRunning
+                | StandardType::SupervisorStartError,
+            )) => {
+                return ValueProperties::SHAREABLE;
+            }
+            // `SendError<M>` hands the message back, so it is what `M` is.
+            Some(StandardSymbol::Type(StandardType::ProcessSendError)) => {
+                return arguments
+                    .iter()
+                    .fold(ValueProperties::SHAREABLE, |result, argument| {
+                        result.combine(self.value_properties_with(
+                            *argument,
+                            outer_generics,
+                            visiting,
+                        ))
+                    });
+            }
             _ => {}
         }
 
@@ -1063,7 +1100,7 @@ impl TypedProject {
             || matches!(
                 self.resolved.standard_symbol(symbol),
                 Some(StandardSymbol::Type(
-                    StandardType::Console | StandardType::FileSystem
+                    StandardType::Console | StandardType::FileSystem | StandardType::Clock
                 ))
             )
         {
@@ -1452,6 +1489,7 @@ impl ProjectTypeChecker {
                 .insert(self.resolved.standard_generic(generic), kind);
         }
 
+        self.index_process_contracts();
         let text = self.builtin_type("Text");
         let int = self.builtin_type("Int");
         let bool_type = self.builtin_type("Bool");
@@ -2230,6 +2268,13 @@ impl ProjectTypeChecker {
         let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
         let number = self.standard_named_type(StandardType::JsonNumber, Vec::new());
         match constructor {
+            StandardConstructor::ProcessSendFull
+            | StandardConstructor::ProcessSendUnavailable
+            | StandardConstructor::RestartNever
+            | StandardConstructor::RestartOnDefect
+            | StandardConstructor::StartCapacityReached
+            | StandardConstructor::StartNameTaken
+            | StandardConstructor::StartStopped => self.process_constructor_shape(constructor),
             StandardConstructor::DurationParseEmpty
             | StandardConstructor::DurationParseInvalid
             | StandardConstructor::DurationParseOutOfRange => (
@@ -2617,6 +2662,8 @@ impl ProjectTypeChecker {
         typed.diagnostics.extend(constant_diagnostics);
         let (duration_errors, duration_warnings) = durations::check(&typed, body_modules);
         typed.diagnostics.extend(duration_errors);
+        let process_errors = process::check(&typed, body_modules);
+        typed.diagnostics.extend(process_errors);
         typed.warnings.extend(duration_warnings);
         let capability_report = crate::capability::check(&typed);
         typed.expression_value_properties = capability_report.expression_properties;
@@ -2745,6 +2792,14 @@ impl ProjectTypeChecker {
                         .insert((module_id, declaration.semantic_id), declared);
                 }
             }
+            ModuleDeclarationKind::ProcessName => {
+                if let Some(annotation) = &declaration.annotation {
+                    let message = self.lower_value_type(module_id, annotation, &generic_symbols);
+                    let address = self.process_name_type(message);
+                    self.declaration_types
+                        .insert((module_id, declaration.semantic_id), address);
+                }
+            }
         }
     }
 
@@ -2838,7 +2893,8 @@ impl ProjectTypeChecker {
             }
             ModuleDeclarationKind::Struct
             | ModuleDeclarationKind::Enum
-            | ModuleDeclarationKind::Interface => false,
+            | ModuleDeclarationKind::Interface
+            | ModuleDeclarationKind::ProcessName => false,
         }
     }
 
@@ -7592,7 +7648,9 @@ impl ProjectTypeChecker {
                             // there also denotes the task's failure row.
                             if matches!(
                                 self.resolved.standard_symbol(symbol),
-                                Some(StandardSymbol::Type(StandardType::Task))
+                                Some(StandardSymbol::Type(
+                                    StandardType::Task | StandardType::ProcessSpec
+                                ))
                             ) && let Some(TypeUse::Named {
                                 semantic_id: failures_id,
                                 path: failures_path,
@@ -10029,6 +10087,7 @@ impl ProjectTypeChecker {
             ModuleDeclarationKind::Interface => ProjectSymbolKind::Interface,
             ModuleDeclarationKind::Function => ProjectSymbolKind::Function,
             ModuleDeclarationKind::Constant => ProjectSymbolKind::Constant,
+            ModuleDeclarationKind::ProcessName => ProjectSymbolKind::ProcessName,
         };
         self.find_symbol(
             module_id,
