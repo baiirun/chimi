@@ -15,4 +15,7 @@ export CARGO_TARGET_DIR="$scratch/target"
 cd "$tree"
 echo "check-head: testing $commit"
 cargo test --workspace --quiet
+# Feature-gated targets (the benchmarks) are outside the default test build;
+# check them so they cannot stop compiling unnoticed.
+cargo check --workspace --all-targets --all-features --quiet
 echo "check-head: $commit is green"

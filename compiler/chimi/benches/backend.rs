@@ -394,7 +394,7 @@ fn print_result(result: &ResultRow) {
         concat!(
             "{{\"schema\":\"chimi.backend-comparison.v1\",\"kind\":\"workload\",",
             "\"id\":\"{}\",\"files\":{},\"source_bytes\":{},\"outcome\":\"{}\",",
-            "\"profile\":{{\"types\":{},\"symbols\":{},\"functions\":{},\"bindings\":{},",
+            "\"profile\":{{\"types\":{},\"symbols\":{},\"functions\":{},\"module_constants\":{},",
             "\"nodes\":{},\"origins\":{},\"operations\":{{\"constants\":{},\"references\":{},",
             "\"selects\":{},\"dependency_methods\":{},\"constructions\":{},\"calls\":{},",
             "\"lists\":{},\"records\":{},\"unary\":{},\"binary\":{},\"identities\":{},",
@@ -416,7 +416,7 @@ fn print_result(result: &ResultRow) {
         result.profile.types,
         result.profile.symbols,
         result.profile.functions,
-        result.profile.bindings,
+        result.profile.module_constants,
         result.profile.nodes,
         result.profile.origins,
         operations.constants,
