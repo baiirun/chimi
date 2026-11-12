@@ -18,9 +18,9 @@ use crate::numeric::{
 };
 use crate::semantic::{BinaryOperator, UnaryOperator};
 use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol, StandardType};
-#[cfg(test)]
-pub(crate) use constants::evaluate_constants_with;
 pub(crate) use constants::{ConstantLimits, evaluate_constants};
+#[cfg(test)]
+pub(crate) use constants::{evaluate_constants_with, measured_values_to_evaluate};
 use persistent_list::PersistentList;
 use std::cmp::Ordering as Comparison;
 use std::collections::HashMap;

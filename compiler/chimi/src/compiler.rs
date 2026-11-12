@@ -3267,6 +3267,58 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
         assert!(failed[0].1.contains("`pair`"), "{failed:?}");
     }
 
+    // ts-a512d8: constant evaluation measures a constant's value after every step,
+    // and records, tuples, and constructed values are shared, so `Measure` caches
+    // their sizes by address. Growing a constant tree that holds the previous level
+    // twice then measures a few new values per level. Without the cache every step
+    // walks the whole tree, 2^depth values: 256 times as many for 16 levels as for 8.
+    #[test]
+    fn measuring_a_growing_constant_is_linear_in_its_depth() {
+        let measured = |depth: u32| {
+            let source = format!(
+                concat!(
+                    "enum Tree {{\n  Leaf\n  Node(left: Tree, right: Tree)\n}}\n",
+                    "struct Pair {{ tree: Tree, levels: Int }}\n",
+                    "fn grown(depth: Int) -> Pair {{\n",
+                    "  loop state = {{ left: depth, pair: Pair(Leaf, 0) }} {{\n",
+                    "    case state.left {{\n",
+                    "      0 -> break state.pair\n",
+                    "      _ -> {{\n",
+                    "        left: state.left - 1,\n",
+                    "        pair: Pair(Node(state.pair.tree, state.pair.tree), state.pair.levels + 1),\n",
+                    "      }}\n",
+                    "    }}\n",
+                    "  }}\n",
+                    "}}\n",
+                    "const grown_tree = grown({depth})\n",
+                    "pub fn main() -> Int {{ grown_tree.levels }}\n",
+                ),
+                depth = depth
+            );
+            let mut core = crate::executable::lower(
+                crate::executable::seal_entry(crate::typing::check_project(
+                    resolve_project_sources(vec![module("main", "main.chimi", &source)]),
+                ))
+                .expect("program verifies"),
+            )
+            .expect("the build's budgets admit every constant");
+            core.constants.clear();
+            let (measured, evaluated) = crate::execution::measured_values_to_evaluate(
+                &core,
+                crate::execution::ConstantLimits::BUILD,
+            );
+            assert!(evaluated, "the tree fits the build's budgets");
+            measured
+        };
+        let base = measured(0);
+        let eight = measured(8) - base;
+        let sixteen = measured(16) - base;
+        assert!(
+            sixteen <= 4 * eight,
+            "16 levels measured {sixteen} values, 8 levels {eight}"
+        );
+    }
+
     #[test]
     fn module_binding_closure_inference_converges() {
         let report = Compiler::type_project(vec![module(

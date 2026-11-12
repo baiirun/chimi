@@ -546,6 +546,27 @@ impl SharedSizes {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Values `Measure` has visited on this thread, cached parts included, so a test
+    /// can bound measuring work without timing it.
+    static MEASURED_VALUES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Evaluates `core`'s constants as `evaluate_constants_with` does and returns how many
+/// values `Measure` visited, with whether evaluation succeeded.
+#[cfg(test)]
+pub(crate) fn measured_values_to_evaluate(
+    core: &CoreProgram,
+    limits: ConstantLimits,
+) -> (usize, bool) {
+    super::on_evaluation_stack("constant-evaluation", || {
+        MEASURED_VALUES.with(|count| count.set(0));
+        let evaluated = evaluate_on_this_thread(core, limits).is_ok();
+        (MEASURED_VALUES.with(std::cell::Cell::get), evaluated)
+    })
+}
+
 /// Bytes of one `CHIMI_CONSTANT_VALUES` row (`ChimiConstantValue` in `runtime.h`).
 const ROW_BYTES: usize = 24;
 /// Bytes of one entry of `CHIMI_IDS`.
@@ -567,6 +588,8 @@ struct Measure<'a> {
 impl Measure<'_> {
     /// The stored size of `value`, or `None` as soon as it exceeds `limit`.
     fn value(&mut self, value: &RuntimeValue) -> Option<usize> {
+        #[cfg(test)]
+        MEASURED_VALUES.with(|count| count.set(count.get() + 1));
         match value {
             RuntimeValue::Void
             | RuntimeValue::Integer(_)
