@@ -75,11 +75,12 @@ MUTATIONS = [
     lab("each small fragment costs a 64 KiB chunk", RUNTIME, "MF04",
         ["fragment_bytes_peak exceeds"], [(
             "  footprint_add(sizeof(*fragment));\n  fragment_footprint_add(sizeof(*fragment));",
-            "  footprint_add(sizeof(*fragment));\n  fragment_footprint_add(sizeof(*fragment) + 65536);\n"
-            "  heap_totals.fragment_footprint_bytes -= 65536;")]),
+            "  footprint_add(sizeof(*fragment));\n  fragment_footprint_add(sizeof(*fragment) + 65536);"),
+            ("  return sizeof(*fragment) + fragment->area.bytes +",
+             "  return 65536 + sizeof(*fragment) + fragment->area.bytes +")]),
     # Trace family 3: identities, labels, and modes.
     lab("the incarnation is written from the task field", RUNTIME, "OB07",
-        [TRANSCRIPT, "in its task field"], [(
+        [TRANSCRIPT, "in its task field", "has a null incarnation_id"], [(
             '    json_identity(output, "incarnation_id", event->incarnation);',
             '    json_identity(output, "incarnation_id", event->task);')]),
     lab("a name id is the bare symbol index", RUNTIME, "MB01",
