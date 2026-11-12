@@ -56,11 +56,19 @@ MUTATIONS = [
         "                if constructs {",
         "                if false {")]),
     language("send payload list literals not followed", C, [(
-        "            ModuleExpression::List { elements, .. } | ModuleExpression::Tuple { elements, .. } => {",
-        "            ModuleExpression::Tuple { elements, .. } => {")], "a_send_moves_bindings"),
+        "            ModuleExpression::List { elements, .. } | ModuleExpression::Tuple { elements, .. } => {\n"
+        "                for element in elements {\n"
+        "                    self.payload_bindings(",
+        "            ModuleExpression::Tuple { elements, .. } => {\n"
+        "                for element in elements {\n"
+        "                    self.payload_bindings(")], "a_send_moves_bindings"),
     language("send payload tuple literals not followed", C, [(
-        "            ModuleExpression::List { elements, .. } | ModuleExpression::Tuple { elements, .. } => {",
-        "            ModuleExpression::List { elements, .. } => {")], "a_send_moves_bindings"),
+        "            ModuleExpression::List { elements, .. } | ModuleExpression::Tuple { elements, .. } => {\n"
+        "                for element in elements {\n"
+        "                    self.payload_bindings(",
+        "            ModuleExpression::List { elements, .. } => {\n"
+        "                for element in elements {\n"
+        "                    self.payload_bindings(")], "a_send_moves_bindings"),
     language("send payload record literals not followed", C, [(
         "                for field in fields {\n"
         "                    self.payload_bindings(module_id, &field.value, bindings);",
