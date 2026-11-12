@@ -78,7 +78,9 @@ pub(super) fn check(scenario: &Scenario, options: &Options) -> Result<(), String
 }
 
 /// Compares `expected.contracts`, when present: each line is
-/// `<Module>.<function>: <contract>` as the compiler renders it.
+/// `<Module>.<function>: <contract>` as the compiler renders it. A name whose module
+/// part is a project module path (it contains `/`, as in `app/main.serving`) is that
+/// project function's inferred contract; any other name is a standard function.
 fn check_contracts(
     scenario: &Scenario,
     project: &LoadedProject,
@@ -95,9 +97,13 @@ fn check_contracts(
             let name = line
                 .split_once(": ")
                 .map_or(line.as_str(), |(name, _)| name);
-            let contract = report
-                .standard_contract(name)
-                .unwrap_or_else(|| "<no such standard function>".to_owned());
+            let contract = match name.rsplit_once('.') {
+                Some((module, function)) if module.contains('/') => {
+                    report.contract(module, function)
+                }
+                _ => report.standard_contract(name),
+            }
+            .unwrap_or_else(|| "<no such function>".to_owned());
             format!("{name}: {contract}")
         })
         .collect::<Vec<_>>();

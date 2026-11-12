@@ -1,0 +1,28 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+enum Request {
+  Ping
+}
+
+enum Leak {
+  Escaped(inbox: Inbox<Request>)
+}
+
+fn hand_back(inbox: Inbox<Request>) -> Void {
+  Failure(Leak.Escaped(inbox))
+}
+
+fn body(inbox: Inbox<Request>) -> Void {
+  hand_back(inbox)
+}
+
+fn build() {
+  Process.spec(body, 1, Duration.seconds(1))
+}
+
+pub fn main() -> Int {
+  0
+}

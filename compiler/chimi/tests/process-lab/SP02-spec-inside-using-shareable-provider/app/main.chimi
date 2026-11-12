@@ -1,0 +1,33 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+interface Store {
+  read: fn() -> Int
+}
+
+enum Request {
+  Read
+  Stop
+}
+
+fn serve(inbox: Inbox<Request>) -> Void needs { store: Store } {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Request.Read -> total + store.read()
+      Request.Stop -> break
+    }
+  }
+}
+
+fn serving() {
+  Process.spec(serve, 4, Duration.seconds(1))
+}
+
+pub fn main() -> Int {
+  let memory_store = { read: fn() -> Int { 1 } }
+  let direct = Process.spec(serve, 4, Duration.seconds(1)) using { store: memory_store }
+  let through_helper = serving() using { store: memory_store }
+  0
+}

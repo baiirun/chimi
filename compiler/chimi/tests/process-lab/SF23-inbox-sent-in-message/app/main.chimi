@@ -1,0 +1,20 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+enum Request {
+  Ping
+}
+
+enum Message {
+  Forward(inbox: Inbox<Request>)
+}
+
+fn forward(other: Process.Address<Message>, inbox: Inbox<Request>) -> Void {
+  Process.send(other, Message.Forward(inbox))
+}
+
+pub fn main() -> Int {
+  0
+}

@@ -6,7 +6,7 @@ use super::Kind;
 
 /// The last stage whose scenarios must pass. Each ts-6ccbc9 commit that
 /// completes a stage bumps this in the same commit.
-pub const CURRENT_STAGE: Stage = Stage::U1;
+pub const CURRENT_STAGE: Stage = Stage::U2;
 
 /// An implementation stage from the lab's unlock order.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -200,10 +200,30 @@ pub static SCENARIOS: [Scenario; 131] = [
     fixture("SF25", "start-process-case-omits-stopped", U1),
     fixture("SF26", "start-case-has-capacity-reached-arm", U1),
     // Verified Core.
-    check("CO01", "process-name-constant-address-identity", U2),
-    check("CO02", "register-takes-constant-address", U2),
-    check("CO03", "process-operations-are-intrinsics", U2),
-    check("CO04", "verifier-rejects-inbox-outside-body", U2),
+    Scenario::new(
+        "CO01",
+        "process-name-constant-address-identity",
+        U2,
+        Form::Check(super::core_kind::co01),
+    ),
+    Scenario::new(
+        "CO02",
+        "register-takes-constant-address",
+        U2,
+        Form::Check(super::core_kind::co02),
+    ),
+    Scenario::new(
+        "CO03",
+        "process-operations-are-intrinsics",
+        U2,
+        Form::Check(super::core_kind::co03),
+    ),
+    Scenario::new(
+        "CO04",
+        "verifier-rejects-inbox-outside-body",
+        U2,
+        Form::Check(super::core_kind::co04),
+    ),
     // Runtime: mailbox and delivery.
     fixture("MB01", "acceptance-order-across-senders", U5),
     fixture("MB02", "full-returns-the-message", U5),

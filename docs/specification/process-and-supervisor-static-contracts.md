@@ -272,5 +272,43 @@ capability and supervisor identity, never as expected failures:
   (`E5201` in a constant). The interpreter defects at the first run-time
   operation. The native build refuses process programs until the process
   kernel lands (U5).
-- Capability checking (`T4260`, `T4240`, `T4241`, `T4243`, `T4250` for
-  processes), Core lowering, and the Core verifier are U2.
+- U2 (ts-6ccbc9): capability checking for processes in
+  `compiler/chimi/src/capability.rs`, `T4240` for a body failure type in
+  `typing/process.rs`, and the Core verifier
+  (`compiler/chimi/src/executable/verify.rs`), which `lower` runs in debug
+  builds and tests and the conformance lab runs on hand-built Core. See
+  "Capability rules as checked" below.
+
+## Capability rules as checked
+
+- `T4260`, capture: a `Process.spec` body that captures a value that is never
+  shareable is reported at the body argument, naming the capture
+  (``capture `receiver` (Receiver<Int>)``).
+- `T4260`, provider: a provider that is not shareable is reported at the body
+  argument when `using` binds it to the body
+  (`Process.spec(serve using { store: p }, ...)`), and at the provider when a
+  `using` binds it to a need that flowed out of a `Process.spec` call: around
+  the call itself, or around a call of a named function whose open needs come
+  from a `Process.spec` call in its body, at any depth. The message names the
+  provider. Needs that flow out of a spec built inside a closure count for the
+  enclosing function; a closure value is not followed through a later call.
+  As with `Task.start` (`T4242`), shareability is judged from the provider's
+  flow when it is a local binding and from its type otherwise.
+- `Process.send` moves every exclusive binding its message is built from, as
+  `Channel.send` does ([task and channel capabilities](task-and-channel-capabilities.md)).
+  A shareable value in a message (a `Running`, an `Address`) stays usable.
+- `Supervisor.remove_process` and `remove_supervisor` consume a handle passed
+  as a binding: a later use is `T4241`, and a removal inside a loop of a
+  handle bound outside it is `T4250`.
+- `T4240`, escape beyond the body: the inbox is task-local, so ending a body
+  with `Failure(E)` must not return one. A `Process.spec` body whose failure
+  type is not transferable is `T4240` at the body argument. Captures by
+  `Task.start` are the existing `T4240`, and an inbox in a message is `T4243`.
+
+The Core verifier checks, over every node: each `Process.register` call's
+second argument is a reference to a `process name` symbol; each node typed
+`Process.Inbox<_>` only reads an inbox (a local reference, a call of a project
+function or closure, a standard call given an inbox-holding argument, or a
+node forwarding a child's value), so every inbox starts at a parameter; and a
+`Process.spec` body closure captures only shareable values, with shareable
+providers.

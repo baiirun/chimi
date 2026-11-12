@@ -1,0 +1,19 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+enum Request {
+  Ping
+}
+
+fn build(managed: Supervisor.ManagedProcess<Request>) {
+  Process.spec(fn(inbox: Inbox<Request>) -> Void {
+    managed
+    Void
+  }, 1, Duration.seconds(1))
+}
+
+pub fn main() -> Int {
+  0
+}

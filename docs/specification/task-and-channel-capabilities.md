@@ -132,7 +132,11 @@ sequential operations by the current owner do not consume the receiver. The
 compiler diagnoses provable aliasing and use-after-transfer.
 
 `Channel.send(sender, value)` is a transfer boundary. Acceptance moves the
-value into the channel; receive moves it to the receiver task. If close or abort
+value into the channel; receive moves it to the receiver task. The compiler
+treats every exclusive binding the payload is built from as moved: the payload
+itself when it names a binding, and the arguments of constructors, records,
+lists, and tuples that build it, at any depth. A payload returned by another
+function call is a new value, so that call's arguments are not followed. If close or abort
 wins before acceptance, `Channel.SendError.Closed(value)` or
 `Channel.SendError.Aborted(value)` returns the unaccepted value through the
 ordinary failure channel. Cancellation before acceptance removes the waiter

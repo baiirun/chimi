@@ -1,0 +1,22 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+enum Request {
+  Ping
+}
+
+fn remove_each(root: Supervisor.Running, managed: Supervisor.ManagedProcess<Request>) -> Int {
+  loop count = 0 {
+    Supervisor.remove_process(root, managed)
+    case count >= 3 {
+      True -> break count
+      False -> count + 1
+    }
+  }
+}
+
+pub fn main() -> Int {
+  0
+}

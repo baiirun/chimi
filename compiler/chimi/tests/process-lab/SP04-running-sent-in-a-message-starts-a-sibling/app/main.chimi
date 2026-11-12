@@ -1,0 +1,40 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+enum Control {
+  Adopt(root: Supervisor.Running)
+}
+
+enum Request {
+  Ping
+}
+
+pub process name keeper: Control
+
+fn sibling(inbox: Inbox<Request>) -> Void {
+  Void
+}
+
+fn keep(inbox: Inbox<Control>) -> Void {
+  case Process.receive(inbox) {
+    Control.Adopt(root) -> {
+      let spec = Process.spec(sibling, 1, Duration.seconds(1))
+      case Supervisor.start_process(root, spec, Supervisor.Restart.Never) {
+        Success(managed) -> Supervisor.remove_process(root, managed)
+        Failure(_) -> Void
+      }
+    }
+  }
+}
+
+const keeping = Process.spec(keep, 1, Duration.seconds(1))
+  |> Process.register(keeper)
+  |> Supervisor.process(Supervisor.Restart.Never)
+
+pub fn main() {
+  let root = Supervisor.start(Supervisor.policy([keeping], 2, Supervisor.restarts(0, Duration.seconds(1))))
+  Process.send(keeper, Control.Adopt(root))
+  Supervisor.wait(root)
+}

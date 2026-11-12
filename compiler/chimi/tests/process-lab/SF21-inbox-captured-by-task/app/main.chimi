@@ -1,0 +1,22 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/task as Task
+
+enum Request {
+  Ping
+}
+
+fn body(inbox: Inbox<Request>) -> Void {
+  let child = Task.start(fn() -> Request { Process.receive(inbox) })
+  Void
+}
+
+fn build() {
+  Process.spec(body, 1, Duration.seconds(1))
+}
+
+pub fn main() -> Int {
+  0
+}

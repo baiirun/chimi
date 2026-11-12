@@ -1,0 +1,1 @@
+app/main.serving: fn() -> Spec<Request, Never> needs { store: Store }

@@ -172,10 +172,15 @@ a second column with the required substring.
 
 ### `expected.contracts`
 
-SP08 only. One line per standard function, `<Module>.<function>: <contract>`,
+SP08 and SP02. One line per function, `<Module>.<function>: <contract>`,
 in the compiler's contract notation (the form inferred contracts and hover
 use): generic parameters are written bare, and a failure row that holds every
-variant of an enum is the enum's name. The SP08 file is:
+variant of an enum is the enum's name. A module part that is a project module
+path (it contains `/`, as in `app/main.serving`) names that project function's
+inferred contract; any other names a standard function. SP02's file holds
+`app/main.serving: fn() -> Spec<Request, Never> needs { store: Store }`: the
+need surfaces at the enclosing function, and the spec carries none. The SP08
+file is:
 
 ```text
 Process.send: fn(Address<M>, M) -> Void errors SendError<M>

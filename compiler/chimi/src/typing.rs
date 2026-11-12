@@ -774,7 +774,7 @@ impl TypedProject {
         self.formatter().format_type(id)
     }
 
-    fn resolve_type_id(&self, id: TypeId) -> TypeId {
+    pub(crate) fn resolve_type_id(&self, id: TypeId) -> TypeId {
         self.formatter().resolve_type_id(id)
     }
 

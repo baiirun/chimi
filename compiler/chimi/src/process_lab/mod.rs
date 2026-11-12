@@ -2,6 +2,7 @@
 //! (`docs/specification/supervised-process-conformance.md`).
 
 pub mod catalogue;
+mod core_kind;
 mod fixture;
 mod static_kind;
 pub mod transcript;

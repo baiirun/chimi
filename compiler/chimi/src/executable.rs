@@ -12,6 +12,9 @@ use crate::typing::{CanonicalType, TypeFact, TypedProgram, TypedProject};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+mod verify;
+pub(crate) use verify::{CoreViolation, verify_core};
+
 #[derive(Clone, Debug)]
 pub(crate) struct Origin {
     pub(crate) origin_id: OriginId,
@@ -57,6 +60,14 @@ impl CoreProgram {
             .get(id.raw() as usize)
             .filter(|symbol| symbol.id == id)
             .expect("core symbol ID belongs to this program")
+    }
+
+    /// Replaces one node's operation, keeping its type and origin. The conformance lab
+    /// uses it to build Core the frontend never produces, to show that `verify_core`
+    /// rejects it (CO02, CO04); nothing in the compiler calls it.
+    #[cfg(feature = "native-backend")]
+    pub(crate) fn replace_operation(&mut self, node: CoreNodeId, operation: CoreOperation) {
+        self.nodes[node.raw() as usize].operation = operation;
     }
 
     fn assert_well_formed(&self) {
@@ -1221,6 +1232,11 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
     let mut core = core;
     core.constants = crate::execution::evaluate_constants(&core)?;
     core.assert_well_formed();
+    if cfg!(debug_assertions)
+        && let Err(violation) = verify_core(&core, &root.typed)
+    {
+        panic!("Core verifier: {violation}");
+    }
     Ok(core)
 }
 

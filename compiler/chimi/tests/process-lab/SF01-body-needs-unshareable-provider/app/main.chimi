@@ -1,0 +1,42 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/channel.{Receiver}
+
+interface Store {
+  read: fn() -> Int
+}
+
+enum Request {
+  Read
+  Stop
+}
+
+fn serve(inbox: Inbox<Request>) -> Void needs { store: Store } {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Request.Read -> total + store.read()
+      Request.Stop -> break
+    }
+  }
+}
+
+fn serving() {
+  Process.spec(serve, 4, Duration.seconds(1))
+}
+
+fn build(receiver: Receiver<Int>) -> Int {
+  let local_store = {
+    read: fn() -> Int {
+      receiver
+      1
+    }
+  }
+  let spec = serving() using { store: local_store }
+  0
+}
+
+pub fn main() -> Int {
+  0
+}

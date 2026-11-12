@@ -1,0 +1,40 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/channel as Channel
+import std/channel.{Receive, Receiver}
+import std/task as Task
+
+enum Request {
+  Ping
+}
+
+fn worker(inbox: Inbox<Request>) -> Void {
+  Void
+}
+
+fn remover(root: Supervisor.Running, handles: Receiver<Supervisor.ManagedProcess<Request>>) -> Int {
+  let next = Channel.receive(handles)
+  case next {
+    Receive.Received(managed) -> {
+      Supervisor.remove_process(root, managed)
+      1
+    }
+    Receive.Drained -> 0
+  }
+}
+
+pub fn main() {
+  let root = Supervisor.start(Supervisor.policy([], 2, Supervisor.restarts(0, Duration.seconds(1))))
+  let handles = Channel.bounded(1)
+  let sender = handles.sender
+  let receiver = handles.receiver
+  let child = Task.start(fn() -> Int { remover(root, receiver) })
+  let spec = Process.spec(worker, 1, Duration.seconds(1))
+  case Supervisor.start_process(root, spec, Supervisor.Restart.Never) {
+    Success(managed) -> Channel.send(sender, managed)
+    Failure(_) -> Void
+  }
+  Task.result(child)
+}

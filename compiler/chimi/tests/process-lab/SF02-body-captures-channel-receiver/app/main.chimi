@@ -1,0 +1,20 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/channel.{Receiver}
+
+enum Request {
+  Ping
+}
+
+fn build(receiver: Receiver<Int>) {
+  Process.spec(fn(inbox: Inbox<Request>) -> Void {
+    receiver
+    Void
+  }, 1, Duration.seconds(1))
+}
+
+pub fn main() -> Int {
+  0
+}

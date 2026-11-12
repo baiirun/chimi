@@ -9810,3 +9810,91 @@ fn process_handles_have_the_contracted_capability_classes() {
         ]
     );
 }
+
+const STORE_PROGRAM: &str = concat!(
+    "import std/channel.{Receiver}\n",
+    "interface Store {\n  read: fn() -> Int\n}\n",
+    "fn serve(inbox: Inbox<Message>) -> Void needs { store: Store } {\n",
+    "  let value = store.read()\n  Void\n}\n",
+);
+
+// A provider whose method captures an exclusive `Receiver`, so it is not shareable.
+const LOCAL_STORE: &str = "  let local = { read: fn() -> Int {\n    receiver\n    1\n  } }\n";
+
+// T4260 for a provider that is not shareable, wherever `using` binds it to a spec
+// body's need. Rejects a check that looks only at the spec body argument (misses
+// the outer `using` and the helper), one that runs functions in declaration order
+// without a fixed point (`late_helper` is declared after its caller), and one that
+// flags every non-shareable provider rather than those bound to a spec's need.
+#[test]
+fn a_spec_provider_must_be_shareable_wherever_using_binds_it() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "fn uses_store() -> Int needs {{ store: Store }} {{\n  store.read()\n}}\n",
+            "fn attached(receiver: Receiver<Int>) {{\n{local}",
+            "  Process.spec(serve using {{ store: local }}, 1, Duration.seconds(1))\n",
+            "}}\n",
+            "fn outer(receiver: Receiver<Int>) {{\n{local}",
+            "  Process.spec(serve, 1, Duration.seconds(1)) using {{ store: local }}\n",
+            "}}\n",
+            "fn through_helper(receiver: Receiver<Int>) {{\n{local}",
+            "  late_helper() using {{ store: local }}\n",
+            "}}\n",
+            "fn late_helper() {{\n  Process.spec(serve, 1, Duration.seconds(1))\n}}\n",
+            "fn not_a_spec(receiver: Receiver<Int>) -> Int {{\n{local}",
+            "  uses_store() using {{ store: local }}\n",
+            "}}\n",
+        ),
+        program = STORE_PROGRAM,
+        local = LOCAL_STORE,
+    ));
+    let diagnostics = check_diagnostics(&source);
+    let found = diagnostics
+        .iter()
+        .map(|(code, text, _)| (code.as_str(), text.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            ("T4260", "serve using { store: local }"),
+            ("T4260", "local"),
+            ("T4260", "local"),
+        ],
+        "{diagnostics:?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|(_, _, message)| message.contains("provider `store`"))
+    );
+}
+
+// Both send operations move every exclusive value the payload is built from, not
+// only a payload that is itself a binding. Rejects a transfer that inspects only a
+// bare name (a `Receiver` wrapped in a constructor would stay usable), and one that
+// also moves shareable values (a `Running` sent in a message stays usable).
+#[test]
+fn a_send_moves_the_exclusive_values_its_payload_is_built_from() {
+    let source = process_program(concat!(
+        "import std/channel as Channel\n",
+        "import std/channel.{Receiver, Sender}\n",
+        "enum Hand {\n  Over(receiver: Receiver<Int>)\n  Root(root: Supervisor.Running)\n}\n",
+        "fn by_channel(sender: Sender<Hand>, receiver: Receiver<Int>) -> Receiver<Int> {\n",
+        "  Channel.send(sender, Hand.Over(receiver))\n  receiver\n}\n",
+        "fn by_process(to: Process.Address<Hand>, receiver: Receiver<Int>) -> Receiver<Int> {\n",
+        "  Process.send(to, Hand.Over(receiver))\n  receiver\n}\n",
+        "fn shared(to: Process.Address<Hand>, root: Supervisor.Running) -> Supervisor.Running {\n",
+        "  Process.send(to, Hand.Root(root))\n  root\n}\n",
+    ));
+    let diagnostics = check_diagnostics(&source);
+    let found = diagnostics
+        .iter()
+        .map(|(code, text, _)| (code.as_str(), text.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [("T4241", "receiver"), ("T4241", "receiver")],
+        "{diagnostics:?}"
+    );
+}

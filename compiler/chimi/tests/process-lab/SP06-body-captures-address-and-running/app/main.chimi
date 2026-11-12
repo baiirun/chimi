@@ -1,0 +1,26 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+enum Request {
+  Ping
+}
+
+pub process name peer: Request
+
+fn build(root: Supervisor.Running) {
+  let address = peer
+  Process.spec(fn(inbox: Inbox<Request>) -> Void {
+    case Process.receive(inbox) {
+      Request.Ping -> {
+        Process.send(address, Request.Ping)
+        Supervisor.stop(root)
+      }
+    }
+  }, 1, Duration.seconds(1))
+}
+
+pub fn main() -> Int {
+  0
+}

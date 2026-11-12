@@ -16,6 +16,9 @@
 //! - `T4264`: one `Supervisor.policy` members list literal registers a `process name`
 //!   twice. Elements are followed through `Supervisor.process`, `Process.register`,
 //!   and module constants, never through function calls.
+//! - `T4240`: a `Process.spec` body whose failure type is not transferable. Ending
+//!   with `Failure(E)` returns `E` beyond the body, so a task-local value such as the
+//!   inbox would escape its owner.
 
 use super::durations::{ConstantEvaluator, Folded};
 use super::{
@@ -425,6 +428,18 @@ impl Checker<'_> {
                 {
                     self.check_transferable(module_id, body.range(), message, "this process body");
                 }
+                if let (Some(body), Some(fact)) = (
+                    argument(0),
+                    self.typed
+                        .expression_facts
+                        .get(&(module_id, call.semantic_id())),
+                ) && let Some(failure) = self
+                    .type_arguments(fact.success, StandardType::ProcessSpec)
+                    .get(1)
+                    .copied()
+                {
+                    self.check_failure_stays_local(module_id, body.range(), failure);
+                }
                 if let Some(capacity) = argument(1)
                     && let Some(value) = integer_literal(capacity)
                     && value < 1
@@ -624,6 +639,29 @@ impl Checker<'_> {
         ));
     }
 
+    /// `T4240` when the body's failure type `failure` is never transferable.
+    fn check_failure_stays_local(
+        &mut self,
+        module_id: ModuleId,
+        range: TextRange,
+        failure: TypeId,
+    ) {
+        if self.typed.value_properties(failure).transferable != PropertyDerivation::Never {
+            return;
+        }
+        let found = self.typed.format_type(failure);
+        self.diagnostics.push(self.error(
+            module_id,
+            "T4240",
+            range,
+            format!(
+                "this process body can end with a failure of type `{found}`, which holds a \
+                 task-local value such as a `Process.Inbox`; ending with `Failure` would \
+                 return it beyond the body"
+            ),
+        ));
+    }
+
     fn range_error(&mut self, module_id: ModuleId, argument: &ModuleExpression, message: String) {
         let diagnostic = self.error(module_id, "T4263", argument.range(), message);
         self.diagnostics.push(diagnostic);
@@ -746,14 +784,19 @@ impl Checker<'_> {
 
     /// The first type argument of `id` when it is the standard type `kind`.
     fn type_argument(&self, id: TypeId, kind: StandardType) -> Option<TypeId> {
+        self.type_arguments(id, kind).first().copied()
+    }
+
+    /// The type arguments of `id` when it is the standard type `kind`, else none.
+    fn type_arguments(&self, id: TypeId, kind: StandardType) -> &[TypeId] {
         match &self.typed.types[self.typed.resolve_type_id(id).raw() as usize] {
             CanonicalType::Named { symbol, arguments }
                 if self.typed.resolved.standard_symbol(*symbol)
                     == Some(StandardSymbol::Type(kind)) =>
             {
-                arguments.first().copied()
+                arguments
             }
-            _ => None,
+            _ => &[],
         }
     }
 }

@@ -1,0 +1,20 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/channel.{Receiver}
+
+enum Hand {
+  Over(receiver: Receiver<Int>)
+}
+
+pub process name taker: Hand
+
+fn give(receiver: Receiver<Int>) -> Receiver<Int> {
+  Process.send(taker, Hand.Over(receiver))
+  receiver
+}
+
+pub fn main() -> Int {
+  0
+}

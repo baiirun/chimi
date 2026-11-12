@@ -1,0 +1,17 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+enum Request {
+  Ping
+}
+
+fn remove_then_read(root: Supervisor.Running, managed: Supervisor.ManagedProcess<Request>) -> Process.Address<Request> {
+  Supervisor.remove_process(root, managed)
+  Supervisor.address(managed)
+}
+
+pub fn main() -> Int {
+  0
+}
