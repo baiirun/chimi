@@ -29,7 +29,7 @@ MUTATIONS = [
     dict(
         name="key ignores the C compiler identity",
         file="src/backend/runtime_archive_key.rs",
-        edits=[("        inputs.compiler_identity.as_bytes(),\n", "")],
+        edits=[("        inputs.compiler_identity.as_bytes(),\n", "        b\"\",\n")],
         targets=TESTS, filter=FILTER,
     ),
     dict(
