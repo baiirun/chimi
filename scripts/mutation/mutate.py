@@ -33,13 +33,19 @@ list is updated instead of silently testing nothing. `targets` are
 `cargo test --test` names ("lib" means `--lib`); empty runs every target.
 `filter` is passed to the test binaries. A mutant may instead give `command`, an
 argv run in CRATE with the shared target directory (for example a `cargo run` of
-a lab binary with flags the default tests do not pass); it is killed when the
-command exits nonzero. Each distinct command must pass at the baseline.
+a lab binary with flags the default tests do not pass). A command mutant must
+also give `expect`, a list of substrings of the failure it is meant to cause: it
+is KILLED only when the command exits nonzero and its output contains one of
+them. A command that fails because the mutated source did not build (a Rust or C
+compile error, or a native build failure the lab reports as a failed scenario) is
+KILLED-BUILD, and any other failure is KILLED-OTHER; neither proves the scenario
+guards the mutant. Each distinct command must pass at the baseline.
 
 Before any mutant, the unmutated tests must pass (BASELINE). Output is one line
 per mutant: KILLED (a test failed), KILLED-BUILD (the mutant did not compile,
-which proves nothing about the tests), SURVIVED, NO-TESTS (the targets and
-filter selected no test, so passing proves nothing), STALE, or TIMEOUT.
+which proves nothing about the tests), KILLED-OTHER (a command mutant failed,
+but not with any `expect` text), SURVIVED, NO-TESTS (the targets and filter
+selected no test, so passing proves nothing), STALE, or TIMEOUT.
 Exit status is 0 only when the baseline passes and every mutant is KILLED or
 TIMEOUT.
 """
@@ -115,6 +121,22 @@ def build_failed(output: str) -> bool:
     return "error[E" in output or "could not compile" in output or "error: linking" in output
 
 
+# How a command reports that the mutated source did not build: cargo's own
+# errors, the lab's C harness compile failure ("compile heap_boundary.c: ..."),
+# a failed native build of a fixture, or a compiler diagnostic line.
+COMMAND_BUILD_FAILURES = re.compile(
+    r"compile [\w.-]+\.c:|native build failed|fixture does not compile|error:"
+)
+
+
+def command_status(output: str, expect) -> str:
+    if any(text in output for text in expect):
+        return "KILLED"
+    if build_failed(output) or COMMAND_BUILD_FAILURES.search(output):
+        return "KILLED-BUILD"
+    return "KILLED-OTHER"
+
+
 def run_list(path: Path, tree: Path, target_dir: Path, only, timeout) -> bool:
     spec = runpy.run_path(str(path))
     crate = tree / spec["CRATE"]
@@ -156,6 +178,10 @@ def run_list(path: Path, tree: Path, target_dir: Path, only, timeout) -> bool:
         targets = mutation.get("targets", [])
         test_filter = mutation.get("filter", "")
         command = mutation.get("command")
+        if command and not mutation.get("expect"):
+            print(f"STALE        {mutation['name']}: a command mutant needs `expect`", flush=True)
+            ok = False
+            continue
         scope = " ".join(targets) or "all targets"
         if test_filter:
             scope += f" -- {test_filter}"
@@ -172,6 +198,11 @@ def run_list(path: Path, tree: Path, target_dir: Path, only, timeout) -> bool:
             if command and result.returncode == 0:
                 status = "SURVIVED"
                 ok = False
+            elif command:
+                status = command_status(output, mutation["expect"])
+                if status != "KILLED":
+                    ok = False
+                    print(output[-600:], flush=True)
             elif result.returncode == 0 and tests_run(output) == 0:
                 status = "NO-TESTS"
                 ok = False

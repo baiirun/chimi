@@ -1,1 +1,2 @@
 equal scoped_peak_live_bytes
+at_most scoped_peak_live_bytes 7168

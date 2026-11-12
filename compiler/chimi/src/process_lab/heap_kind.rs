@@ -4,12 +4,14 @@
 //! `runtime.c`, and runs it with the scenario ID as its only argument. It
 //! passes when the harness exits 0. AddressSanitizer is used when the C
 //! compiler supports it, so a freed value that is still reachable fails the
-//! scenario even when its bytes look right.
+//! scenario even when its bytes look right. When it is not, the harness runs
+//! unsanitized and the pass carries a note saying so.
 //!
 //! A fixture scenario runs natively once per argument (`fixture::execute`),
 //! then checks `expected.memory` against the runs' memory reports. Each line
-//! is `equal <field>`: the top-level integer field must have the same value in
-//! every run.
+//! names a top-level integer field of the report:
+//! - `equal <field>`: the field has the same value in every run;
+//! - `at_most <field> <limit>`: the field is at most `limit` in every run.
 
 use super::Options;
 use super::catalogue::{Form, Scenario};
@@ -20,12 +22,13 @@ use std::process::Command;
 
 const MEMORY: &str = "expected.memory";
 
-pub(super) fn check(scenario: &Scenario, options: &Options) -> Result<(), String> {
+/// `Ok(Some(note))` is a pass with a caveat the report shows as its detail.
+pub(super) fn check(scenario: &Scenario, options: &Options) -> Result<Option<String>, String> {
     match scenario.form {
         Form::CHarness(file) => harness(scenario, file),
         Form::Fixture => {
             let runs = fixture::execute(scenario, options)?;
-            check_memory(scenario, &runs, options)
+            check_memory(scenario, &runs, options).map(|()| None)
         }
         form => Err(format!("the heap runner does not run {form:?} scenarios")),
     }
@@ -35,7 +38,7 @@ fn manifest_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
-fn harness(scenario: &Scenario, file: &str) -> Result<(), String> {
+fn harness(scenario: &Scenario, file: &str) -> Result<Option<String>, String> {
     let scratch = Scratch::new(scenario)?;
     let executable = scratch.path().join("harness");
     let source = manifest_path("tests/process-lab/c").join(file);
@@ -54,7 +57,12 @@ fn harness(scenario: &Scenario, file: &str) -> Result<(), String> {
             .map_err(|error| format!("run cc: {error}"))
     };
     let sanitized = compile(&["-fsanitize=address,undefined", "-fno-omit-frame-pointer"])?;
+    let mut note = None;
     if !sanitized.status.success() {
+        note = Some(format!(
+            "ran without AddressSanitizer: the sanitized build failed ({})",
+            compile_error_line(&sanitized.stderr)
+        ));
         let plain = compile(&[])?;
         if !plain.status.success() {
             return Err(format!(
@@ -84,7 +92,7 @@ fn harness(scenario: &Scenario, file: &str) -> Result<(), String> {
             String::from_utf8_lossy(&run.stdout).trim_end()
         ));
     }
-    Ok(())
+    Ok(note)
 }
 
 fn compile_error_line(bytes: &[u8]) -> String {
@@ -126,11 +134,18 @@ fn check_memory(scenario: &Scenario, runs: &[Run], options: &Options) -> Result<
         }
     }
     for (index, line) in lines.iter().enumerate() {
-        let Some(field) = line.strip_prefix("equal ") else {
-            return Err(format!(
-                "{MEMORY} line {}: `{line}` is not `equal <field>`",
+        let malformed = || {
+            format!(
+                "{MEMORY} line {}: `{line}` is not `equal <field>` or `at_most <field> <limit>`",
                 index + 1
-            ));
+            )
+        };
+        let (field, limit) = match line.split(' ').collect::<Vec<_>>().as_slice() {
+            ["equal", field] => (*field, None),
+            ["at_most", field, limit] => {
+                (*field, Some(limit.parse::<u64>().map_err(|_| malformed())?))
+            }
+            _ => return Err(malformed()),
         };
         let values = reports
             .iter()
@@ -147,18 +162,31 @@ fn check_memory(scenario: &Scenario, runs: &[Run], options: &Options) -> Result<
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        if values.windows(2).any(|pair| pair[0] != pair[1]) {
-            let runs = scenario
+        let runs = || {
+            scenario
                 .arguments
                 .iter()
                 .zip(&values)
                 .map(|(argument, value)| format!("{argument}: {value}"))
                 .collect::<Vec<_>>()
-                .join(", ");
-            return Err(format!(
-                "{MEMORY} line {}: {field} differs ({runs})",
-                index + 1
-            ));
+                .join(", ")
+        };
+        match limit {
+            None if values.windows(2).any(|pair| pair[0] != pair[1]) => {
+                return Err(format!(
+                    "{MEMORY} line {}: {field} differs ({})",
+                    index + 1,
+                    runs()
+                ));
+            }
+            Some(limit) if values.iter().any(|value| *value > limit) => {
+                return Err(format!(
+                    "{MEMORY} line {}: {field} exceeds {limit} ({})",
+                    index + 1,
+                    runs()
+                ));
+            }
+            _ => {}
         }
     }
     Ok(())

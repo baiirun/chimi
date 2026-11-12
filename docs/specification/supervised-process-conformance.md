@@ -159,7 +159,10 @@ Each kind prints one JSON line:
 ```
 
 - `status` is `pass`, `fail`, `locked`, or `unsupported`. A `fail` entry
-  carries a `detail` field with the first differing line.
+  carries a `detail` field with the first differing line. A `pass` entry
+  carries a `detail` note when its evidence is weaker than specified, for
+  example a C harness that ran without AddressSanitizer because the
+  sanitized build failed.
 - `gates` lists each performance gate as `metric`, `value`, `limit`, and
   `status`.
 - The process exits nonzero if any unlocked scenario or gate fails.
@@ -222,10 +225,15 @@ Memory-flatness fixtures (`MF`) only. One assertion per line over the
 
 ```text
 equal scoped_peak_live_bytes
+at_most scoped_peak_live_bytes 7168
 ```
 
 `equal <field>` requires the top-level integer field to have the same value
-in every run. MF04 adds a bound form when it lands at U5.
+in every run. `at_most <field> <limit>` requires it to be at most `limit` in
+every run. Equality across sizes proves that memory does not grow with
+uptime, but it also accepts reclamation in batches of k passes. MF05
+therefore also bounds its peak below two passes' allocations on top of the
+4 KiB full-pass minimum, so that only per-pass reclamation passes.
 
 ### `expected.transcript`
 

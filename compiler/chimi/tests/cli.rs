@@ -4184,12 +4184,12 @@ fn native_a_value_a_finished_task_put_on_a_channel_survives_its_heap() {
             "  values: List<Int>,\n",
             "}\n",
             "fn churn(passes: Int) -> Int {\n",
-            "  loop left = passes {\n",
-            "    case left {\n",
-            "      0 -> break 0\n",
+            "  loop state = { left: passes, made: 0 } {\n",
+            "    case state.left {\n",
+            "      0 -> break state.made\n",
             "      _ -> {\n",
-            "        let garbage = Reply(Text.append(\"xx\", \"xxx\"), [left, left, left])\n",
-            "        left - List.length(garbage.values) + 2\n",
+            "        let garbage = Reply(Text.append(\"xx\", \"xxx\"), [state.left, state.left, state.left])\n",
+            "        { left: state.left - 1, made: state.made + List.length(garbage.values) }\n",
             "      }\n",
             "    }\n",
             "  }\n",
@@ -4219,9 +4219,11 @@ fn native_a_value_a_finished_task_put_on_a_channel_survives_its_heap() {
         ),
     );
     let (outcome, _) = execute_with_memory_report(&executable, &scratch);
+    // First element 40 * 100, three elements * 10, the child's 1, and the
+    // 3 * 1,000 garbage elements the churn made.
     assert_eq!(
         outcome,
-        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":4031}\n"
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":7031}\n"
     );
     std::fs::remove_dir_all(scratch).unwrap();
 }

@@ -1,7 +1,11 @@
 // MF05: a program that uses tasks and no processes, so it links the
 // scheduler. A child task runs a loop of N passes, each of which allocates a
 // list it drops. Loops reclaim every pass in every tier, so the peak live
-// bytes are the same for N = 10,000 and N = 1,000,000.
+// bytes are the same for N = 10,000 and N = 1,000,000. Equality alone would
+// also accept reclaiming every k-th pass, so expected.memory also bounds the
+// peak at 7 KiB: one pass allocates about 1.7 KB, and survivors may grow by
+// REGION_FULL_MIN_GROWTH (4 KiB) before a full pass. Per-pass reclamation
+// peaks at 6,088 bytes; reclaiming every second pass peaks at 7,776.
 import std/int as Int
 import std/task as Task
 

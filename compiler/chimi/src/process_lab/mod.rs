@@ -110,7 +110,11 @@ impl Default for Options {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Status {
-    Pass,
+    /// `note` is a caveat on the evidence, such as a C harness that ran
+    /// without AddressSanitizer. The report shows it as `detail`.
+    Pass {
+        note: Option<String>,
+    },
     /// `detail` is the first differing line.
     Fail {
         detail: String,
@@ -148,13 +152,13 @@ impl Report {
                 output.push(',');
             }
             let name = match status {
-                Status::Pass => "pass",
+                Status::Pass { .. } => "pass",
                 Status::Fail { .. } => "fail",
                 Status::Locked => "locked",
                 Status::Unsupported => "unsupported",
             };
             write!(output, "{{\"id\":\"{id}\",\"status\":\"{name}\"").expect("write to a string");
-            if let Status::Fail { detail } = status {
+            if let Status::Fail { detail } | Status::Pass { note: Some(detail) } = status {
                 output.push_str(",\"detail\":");
                 crate::json::write_json_string(&mut output, detail);
             }
@@ -202,8 +206,8 @@ fn status(scenario: &Scenario, options: &Options) -> Status {
         return Status::Unsupported;
     }
     let result = match (scenario.kind(), scenario.form) {
-        (_, Form::Check(check) | Form::Gate(check)) => check(),
-        (Kind::Static, Form::Fixture) => static_kind::check(scenario, options),
+        (_, Form::Check(check) | Form::Gate(check)) => check().map(|()| None),
+        (Kind::Static, Form::Fixture) => static_kind::check(scenario, options).map(|()| None),
         (Kind::Heap, Form::Fixture | Form::CHarness(_)) => heap_kind::check(scenario, options),
         (kind, form) => Err(format!(
             "the {} runner for {form:?} scenarios has not landed",
@@ -211,7 +215,7 @@ fn status(scenario: &Scenario, options: &Options) -> Status {
         )),
     };
     match result {
-        Ok(()) => Status::Pass,
+        Ok(note) => Status::Pass { note },
         Err(detail) => Status::Fail { detail },
     }
 }
@@ -260,6 +264,28 @@ mod tests {
         extra_events: &[],
     };
 
+    // Rejects a report that hides weaker evidence, such as a C harness that ran
+    // without AddressSanitizer, behind a bare pass.
+    #[test]
+    fn a_pass_with_a_note_reports_the_note_as_its_detail() {
+        let report = Report {
+            kind: Kind::Heap,
+            stage: Stage::U3,
+            scenarios: vec![(
+                "CB06",
+                Status::Pass {
+                    note: Some("ran without AddressSanitizer".into()),
+                },
+            )],
+        };
+        assert!(!report.failed());
+        assert!(
+            report.render_json().contains(
+                r#"{"id":"CB06","status":"pass","detail":"ran without AddressSanitizer"}"#
+            )
+        );
+    }
+
     // Independent of CURRENT_STAGE and of which runners have landed: rejects
     // a lab that reports an unlocked failure as a pass, runs a locked
     // scenario, or mixes kinds into one report.
@@ -269,7 +295,7 @@ mod tests {
         assert_eq!(
             report.scenarios,
             [
-                ("CO01", Status::Pass),
+                ("CO01", Status::Pass { note: None }),
                 (
                     "CO02",
                     Status::Fail {

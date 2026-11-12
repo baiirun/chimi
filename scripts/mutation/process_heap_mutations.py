@@ -15,10 +15,13 @@ RUNTIME = "runtime/native/runtime.c"
 NATIVE = "src/backend/native.rs"
 
 
-def lab(name, file, scenario, edits):
+def lab(name, file, scenario, expect, edits):
+    """`expect` is the failure the mutant must cause, as the scenario's detail
+    prints it; a compile error or another failure does not count as a kill."""
     command = ["cargo", "run", "--quiet", "--bin", "chimi-process-lab", "--",
                "--scenario", scenario, "--through", "U4"]
-    return dict(name=f"{scenario}: {name}", file=file, edits=edits, command=command)
+    return dict(name=f"{scenario}: {name}", file=file, edits=edits, command=command,
+                expect=expect)
 
 
 def cli(name, file, test, edits):
@@ -36,22 +39,40 @@ FOREIGN_COPY = (
     "  }"
 )
 
+LOOP_PASS = "      if (allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {"
+
+
+def batched(every):
+    return ("      static uint64_t batched_passes;\n"
+            f"      if (++batched_passes % {every} == 0 && "
+            "allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {")
+
+
 MUTATIONS = [
     # CB06: a pointer into another heap is reported and not followed.
-    lab("a region pass ignores foreign pointers", RUNTIME, "CB06", [(
+    lab("a region pass ignores foreign pointers", RUNTIME, "CB06",
+        ["a region pass accepted a pointer into another heap"], [(
         FOREIGN_MARK, "    return;\n")]),
-    lab("a region pass reports and then follows foreign pointers", RUNTIME, "CB06", [(
+    lab("a region pass reports and then follows foreign pointers", RUNTIME, "CB06",
+        ["the pass followed a foreign pointer"], [(
         FOREIGN_MARK,
         "    if (area->heap != collecting_scope->heap && area->role != AREA_STATIC) collecting_foreign = true;\n"
         "    if (area->heap == collecting_scope->heap || area->role == AREA_STATIC) return;\n")]),
-    lab("a fragment copy ignores foreign pointers", RUNTIME, "CB06", [(
+    lab("a fragment copy ignores foreign pointers", RUNTIME, "CB06",
+        ["a fragment copy accepted a pointer into another heap", "the copy followed a foreign pointer"], [(
         FOREIGN_COPY, "  (void)copy_owns;")]),
-    lab("a fragment copy reports and then follows foreign pointers", RUNTIME, "CB06", [(
+    lab("a fragment copy reports and then follows foreign pointers", RUNTIME, "CB06",
+        ["the copy followed a foreign pointer"], [(
         FOREIGN_COPY, "  if (!copy_owns(copy, header->area)) copy->status = HEAP_FOREIGN_POINTER;")]),
     # MF05: loops reclaim every pass when the scheduler is linked (ts-da83af).
-    lab("loop passes skipped under CHIMI_REQUIRES_SCHEDULER", RUNTIME, "MF05", [(
-        "      if (allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {",
+    lab("loop passes skipped under CHIMI_REQUIRES_SCHEDULER", RUNTIME, "MF05",
+        ["scoped_peak_live_bytes differs"], [(LOOP_PASS,
         "      if (!CHIMI_REQUIRES_SCHEDULER && allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {")]),
+    # Equality across sizes accepts batched reclamation; the 7 KiB bound does not.
+    lab("loops reclaim every 1000th pass", RUNTIME, "MF05",
+        ["scoped_peak_live_bytes exceeds 7168"], [(LOOP_PASS, batched(1000))]),
+    lab("loops reclaim every second pass", RUNTIME, "MF05",
+        ["scoped_peak_live_bytes exceeds 7168"], [(LOOP_PASS, batched(2))]),
     # CB04's task analogue: a channel value is a copy, not a pointer into the sender's heap.
     cli("Channel.send queues the sender's original value", RUNTIME,
         "native_a_value_a_finished_task_put_on_a_channel_survives_its_heap", [(
