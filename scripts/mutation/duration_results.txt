@@ -1,0 +1,31 @@
+# Produced by: scripts/mutation/mutate.py --scratch <scratch>/mutation scripts/mutation/duration_mutations.py
+# at commit 03c4c0c (lane2-duration), on 2026-11-11: 22 killed, 1 survived.
+# The survivor was killed by the test added in bf8dd09; re-run with --only at bf8dd09: KILLED.
+# mutation run at 03c4c0c68ffe2d7d39248c174e006a04f282d0d6
+# duration_mutations.py: 23 mutants against compiler/chimi
+BASELINE ok (356s)
+KILLED       Rust: one second renders in ms [lib language -- duration] (23s)
+KILLED       Rust: keep trailing fraction zeros [lib language -- duration] (2s)
+KILLED       Rust: omit a zero unit between nonzero units [lib language -- duration] (2s)
+KILLED       Rust: allow a repeated unit [lib language -- duration] (2s)
+KILLED       Rust: round an inexact fraction [lib language -- duration] (2s)
+KILLED       Rust: range-check the magnitude before the sign [lib language -- duration] (2s)
+KILLED       Rust: constructors wrap [lib language -- duration] (2s)
+KILLED       Rust: negate wraps [lib language -- duration] (2s)
+KILLED       Rust: add saturates [lib language -- duration] (2s)
+KILLED       interpreter: Duration order reversed [language -- duration] (17s)
+KILLED       C: one second renders in ms [language -- duration] (26s)
+KILLED       C: keep trailing fraction zeros [language -- duration] (29s)
+KILLED       C: allow a repeated unit [language -- duration] (42s)
+KILLED       C: round an inexact fraction [language -- duration] (58s)
+KILLED       C: no range check on the total [language -- duration] (47s)
+KILLED       C: constructors wrap [language -- duration] (35s)
+KILLED       C: negate and absolute of the minimum wrap [language -- duration] (48s)
+KILLED       C: Duration order reversed [language -- duration] (65s)
+SURVIVED     T4349/T4350 for a computed argument [language -- constant_duration] (6s)
+KILLED       no T4350 warning [language -- constant_duration] (6s)
+KILLED       no T4348 for a constructor [language -- constant_duration] (6s)
+KILLED       constants do not fold through references [lib -- durations] (9s)
+KILLED       T4303 help without the Duration function [language -- arithmetic_operators_reject_duration] (7s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# re-run at bf8dd09 (--only "T4349/T4350 for a computed argument"): KILLED

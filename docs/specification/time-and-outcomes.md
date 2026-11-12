@@ -189,7 +189,7 @@ equality inexact.
 | `Duration.seconds` | `fn(Int) -> Duration` | |
 | `Duration.minutes` | `fn(Int) -> Duration` | |
 | `Duration.hours` | `fn(Int) -> Duration` | |
-| `Duration.zero` | `Duration` | Module constant; needs G7. Until then use `Duration.nanoseconds(0)`. |
+| `Duration.zero` | `Duration` | Module constant (implemented as a registry constant equal to `Duration.nanoseconds(0)`). |
 | `Duration.to_nanoseconds` | `fn(Duration) -> Int` | Exact |
 | `Duration.to_microseconds` | `fn(Duration) -> Int` | Truncates toward zero |
 | `Duration.to_milliseconds` | `fn(Duration) -> Int` | Truncates toward zero |
