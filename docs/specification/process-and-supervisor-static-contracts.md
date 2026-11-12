@@ -289,6 +289,10 @@ capability and supervisor identity, never as expected failures:
   `Supervisor.RestartLimitExceeded`. A `SendError`, `Restart`, or
   `StartError` value is a closed enum in a `case`, so naming every variant is
   exhaustive.
+- U6 (ts-6ccbc9): the non-literal range defects above are checked at the call
+  that receives the value, before anything is started (lab MB10, SV11). A
+  root escalation ends the program with `Supervisor.RestartLimitExceeded`
+  wherever main is parked, not only in `Supervisor.wait`.
 
 ## Capability rules as checked
 

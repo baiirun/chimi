@@ -1,0 +1,7 @@
+process_started 1001
+process_send outcome=accepted 1000
+process_terminated cause=defected 1000
+process_terminated cause=cancelled 1
+restart_attempted attempts_in_window=1 500
+restart_attempted attempts_in_window=2 500
+supervisor_stopped 1

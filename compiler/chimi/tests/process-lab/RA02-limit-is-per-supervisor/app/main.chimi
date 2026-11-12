@@ -1,0 +1,48 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// RA02: under `restarts(2, 30s)`, members `a` and `b` each defect once, which
+// spends the supervisor's two restarts (attempts 1 and 2). A second defect of
+// `a` is the third in the window, so the supervisor escalates, and at the root
+// that ends the program with `Supervisor.RestartLimitExceeded` while main is
+// asleep in `settle`. A limit kept per member would restart `a` a second time.
+
+pub enum Message {
+  Crash
+}
+
+fn wait_for_crash(inbox: Inbox<Message>) -> Void {
+  let divisor = case Process.receive(inbox) {
+    Message.Crash -> 0
+  }
+  let quotient = 1 / divisor
+  Void
+}
+
+pub process name a: Message
+pub process name b: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let first = Process.spec(wait_for_crash, 1, Duration.seconds(1))
+    |> Process.register(a)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let second = Process.spec(wait_for_crash, 1, Duration.seconds(1))
+    |> Process.register(b)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let root = Supervisor.start(Supervisor.policy([first, second], 2, Supervisor.restarts(2, Duration.seconds(30))))
+  Process.send(a, Message.Crash)
+  Process.send(b, Message.Crash)
+  settle()
+  Process.send(a, Message.Crash)
+  settle()
+  Supervisor.stop(root)
+  0
+}

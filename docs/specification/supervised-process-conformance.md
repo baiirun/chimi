@@ -73,6 +73,7 @@ compiler/chimi/tests/process-lab/<ID>-<slug>/expected.diagnostics
 compiler/chimi/tests/process-lab/<ID>-<slug>/expected.outcome
 compiler/chimi/tests/process-lab/<ID>-<slug>/expected.transcript
 compiler/chimi/tests/process-lab/<ID>-<slug>/expected.memory
+compiler/chimi/tests/process-lab/RA08-<slug>/expected.events
 compiler/chimi/tests/process-lab/c/heap_boundary.c
 compiler/chimi/tests/process-lab/c/kernel_faults.c
 compiler/chimi/tests/process_lab.rs          cargo test that runs every kind
@@ -242,6 +243,24 @@ every run. `exactly <field> <value>` requires it to be `value` in every run
 uptime, but it also accepts reclamation in batches of k passes. MF05
 therefore also bounds its peak below two passes' allocations on top of the
 4 KiB full-pass minimum, so that only per-pass reclamation passes.
+
+### `expected.events`
+
+RA08 only (U6 decision). Its 1,000-defect storm has a transcript of over
+4,000 lines, too long to write by hand, so the scenario states event counts
+instead. The lab runs the fixture twice under `--trace=full`. The two telemetry
+files must be byte-identical once `execution_id` is removed. The first run's
+projected transcript is then counted by class, one line per class, in any
+order:
+
+```text
+process_terminated cause=defected 1000
+restart_attempted attempts_in_window=2 500
+```
+
+A class is the event name followed by those of its fields that are a
+`cause`, `reason`, `outcome`, or `attempts_in_window`. Identities and times do
+not split a class. Every class that occurs must be listed.
 
 ### `expected.transcript`
 
@@ -535,7 +554,13 @@ did for each of its tests.
 | RA05 | U6 | `restarts(0, 30s)`. The first defect escalates | A free first restart |
 | RA06 | U7 | C harness: the replacement's start fails by injected fault. The attempt shows in `attempts_in_window`, and the next defect counts it | Uncharged failed replacements |
 | RA07 | U8 | A body starts a child task that sleeps, then defects. The child's `task_terminal` (cancelled, so `cause=-`) appears before the replacement's `process_started` (`extra_events = ["task_terminal"]`) | Overlap of a child task with the replacement |
-| RA08 | U6 | 1,000 defect cycles, with a 31 s sleep after every second one. The lab runs it twice and compares telemetry byte for byte, ignoring `execution_id`. It also checks the counts of each event kind | Nondeterminism under a restart storm |
+| RA08 | U6 | 1,000 defect cycles, with a 31 s sleep after every second one. The lab runs it twice and compares telemetry byte for byte, ignoring `execution_id`. It also checks the counts of each event kind (`expected.events`) | Nondeterminism under a restart storm |
+
+An escalation that reaches the root ends the program with the defect
+`Supervisor.RestartLimitExceeded` (exit code 70), wherever main is parked:
+in `Supervisor.wait` (ES01, ES05) or in a sleep (RA02, RA05). The scheduler
+ends every root task with its restart-limit code, and the runner reports that
+code as this defect (U6 decision).
 
 ### Runtime: escalation
 
@@ -695,6 +720,17 @@ outcome, a dynamic member, a stop); FP01 adds the same check at U10.
 | OB06 | U6 | A fixture with 30 s windows and 5 s deadlines finishes in less than 2 s of wall time | Real waiting under virtual time |
 | OB07 | U5 | The trace ABI reports `CHIMI_FIBER_ABI_VERSION` 5. Process events carry dedicated `supervisor`, `membership`, and `incarnation` fields, separate from `task_id` | Identities carried in task fields |
 | IP01 | U5 | `chimi run` on a process fixture defects with "requires the supervised process runtime" | Silent divergence between backends |
+
+As built at U6:
+
+- OB04 reruns every transcript fixture whose unlock stage is at or below
+  `CURRENT_STAGE`: one build, two `--trace=full` runs, with the scenario's
+  first argument when it has runs.
+- OB06 runs 2m35s of virtual time (five restart cycles of 31 s, with 5 s
+  deadlines). The lab's 60 s limit on every run fails a runtime that waits for
+  real. The default suite asserts no wall-clock bound, because the machine
+  may be loaded; the 2 s bound belongs to the performance gates
+  (`ts-1765ba`).
 
 ### Catalogue data
 

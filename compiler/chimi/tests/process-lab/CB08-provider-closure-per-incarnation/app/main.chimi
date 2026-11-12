@@ -1,0 +1,89 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox}
+import std/supervisor as Supervisor
+
+// CB08: the body of `reader` needs a `store` whose `read` closure captures a
+// record, `config`, built in main's heap. The spec carries the provider, and
+// each incarnation runs on its own copy of it. Main reads once (123), crashes
+// the body, whose heap is destroyed, then reads again from the replacement
+// (123), and finally allocates in the replacement before a third read (123).
+// Providers shared with the first incarnation would point into its destroyed
+// heap. The outcome packs the three reads as 123123123.
+
+interface Store {
+  read: fn() -> Int
+}
+
+pub struct Config {
+  base: Int,
+  offset: Int,
+}
+
+pub enum Message {
+  Read(reply: Sender<Int>)
+  Churn(count: Int)
+  Crash
+}
+
+fn serve(inbox: Inbox<Message>) -> Void needs { store: Store } {
+  loop reads = 0 {
+    case Process.receive(inbox) {
+      Message.Read(reply) -> {
+        Channel.send(reply, store.read())
+        reads + 1
+      }
+      Message.Churn(count) -> loop left = count {
+        case left {
+          0 -> break reads
+          _ -> {
+            let garbage = Config(left, left)
+            garbage.base - 1
+          }
+        }
+      }
+      Message.Crash -> reads / 0
+    }
+  }
+}
+
+pub process name reader: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn reply_value(received: Receive<Int>) -> Int {
+  case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+fn read(address: Address<Message>) -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(address, Message.Read(replies.sender))
+  reply_value(Channel.receive(replies.receiver))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let config = Config(100, 23)
+  let store = { read: fn() -> Int { config.base + config.offset } }
+  let spec = Process.spec(serve, 2, Duration.seconds(1)) using { store: store }
+  let member = spec
+    |> Process.register(reader)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  let before = read(reader)
+  Process.send(reader, Message.Crash)
+  settle()
+  let after = read(reader)
+  Process.send(reader, Message.Churn(200))
+  let churned = read(reader)
+  Supervisor.stop(root)
+  before * 1000000 + after * 1000 + churned
+}

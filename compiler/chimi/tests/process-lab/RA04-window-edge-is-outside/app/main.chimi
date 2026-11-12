@@ -1,0 +1,43 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// RA04: under `restarts(1, 30s)`, `worker` defects at 0s and restarts, then
+// defects again exactly 30 s after that restart. A restart exactly `within`
+// later is outside the window (as in the prototype), so the second defect
+// restarts too, with attempts_in_window=1, and main finishes normally. An
+// off-by-one window that still counts the first restart would escalate.
+
+pub enum Message {
+  Crash
+}
+
+fn wait_for_crash(inbox: Inbox<Message>) -> Void {
+  let divisor = case Process.receive(inbox) {
+    Message.Crash -> 0
+  }
+  let quotient = 1 / divisor
+  Void
+}
+
+pub process name worker: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let member = Process.spec(wait_for_crash, 1, Duration.seconds(1))
+    |> Process.register(worker)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  Process.send(worker, Message.Crash)
+  Clock.sleep(Duration.seconds(30))
+  Process.send(worker, Message.Crash)
+  settle()
+  Supervisor.stop(root)
+  0
+}

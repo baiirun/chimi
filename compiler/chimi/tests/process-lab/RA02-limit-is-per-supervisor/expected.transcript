@@ -1,0 +1,15 @@
+@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.a
+@0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.b
+@0s process_send kind=named name=app/main.a incarnation=I1 outcome=accepted
+@0s process_send kind=named name=app/main.b incarnation=I2 outcome=accepted
+@0s process_terminated membership=M1 incarnation=I1 cause=defected
+@0s restart_attempted supervisor=S1 membership=M1 attempts_in_window=1
+@0s process_started supervisor=S1 membership=M1 incarnation=I3 name=app/main.a
+@0s process_terminated membership=M2 incarnation=I2 cause=defected
+@0s restart_attempted supervisor=S1 membership=M2 attempts_in_window=2
+@0s process_started supervisor=S1 membership=M2 incarnation=I4 name=app/main.b
+@1ms process_send kind=named name=app/main.a incarnation=I3 outcome=accepted
+@1ms process_terminated membership=M1 incarnation=I3 cause=defected
+@1ms restart_limit_exceeded supervisor=S1
+@1ms process_terminated membership=M2 incarnation=I4 cause=cancelled
+@1ms supervisor_escalated supervisor=S1 parent=root

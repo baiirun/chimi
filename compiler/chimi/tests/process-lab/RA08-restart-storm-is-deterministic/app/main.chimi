@@ -1,0 +1,56 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// RA08: a restart storm of 1,000 defects under `restarts(2, 30s)`. Defects
+// come in pairs 1 ms apart, and a 31 s sleep after each pair rolls the window,
+// so the pairs charge attempts 1 and 2 and the supervisor never escalates. The
+// lab runs the storm twice under --trace=full and requires byte-identical
+// telemetry apart from `execution_id`, and checks the count of each event kind
+// (expected.events). The outcome is the number of pairs, 500.
+
+pub enum Message {
+  Crash
+}
+
+fn wait_for_crash(inbox: Inbox<Message>) -> Void {
+  let divisor = case Process.receive(inbox) {
+    Message.Crash -> 0
+  }
+  let quotient = 1 / divisor
+  Void
+}
+
+pub process name worker: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn storm(pairs: Int) -> Int needs { clock: Clock } {
+  loop left = pairs {
+    case left {
+      0 -> break pairs
+      _ -> {
+        Process.send(worker, Message.Crash)
+        settle()
+        Process.send(worker, Message.Crash)
+        Clock.sleep(Duration.seconds(31))
+        left - 1
+      }
+    }
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let member = Process.spec(wait_for_crash, 1, Duration.seconds(1))
+    |> Process.register(worker)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(2, Duration.seconds(30))))
+  let pairs = storm(500)
+  Supervisor.stop(root)
+  pairs
+}

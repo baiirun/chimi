@@ -6,7 +6,7 @@ use super::Kind;
 
 /// The last stage whose scenarios must pass. Each ts-6ccbc9 commit that
 /// completes a stage bumps this in the same commit.
-pub const CURRENT_STAGE: Stage = Stage::U5;
+pub const CURRENT_STAGE: Stage = Stage::U6;
 
 /// An implementation stage from the lab's unlock order.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -145,10 +145,6 @@ const fn c_harness(
     file: &'static str,
 ) -> Scenario {
     Scenario::new(id, slug, unlock, Form::CHarness(file))
-}
-
-const fn check(id: &'static str, slug: &'static str, unlock: Stage) -> Scenario {
-    Scenario::new(id, slug, unlock, Form::Check(not_landed))
 }
 
 const fn gate(id: &'static str, slug: &'static str) -> Scenario {
@@ -327,7 +323,12 @@ pub static SCENARIOS: [Scenario; 131] = [
     fixture("OB01", "trace-off-constructs-nothing", U5),
     fixture("OB02", "boundaries-omit-sends", U5),
     fixture("OB03", "full-send-fields", U5),
-    check("OB04", "transcripts-are-deterministic", U6),
+    Scenario::new(
+        "OB04",
+        "transcripts-are-deterministic",
+        U6,
+        Form::Check(super::observability_kind::transcripts_are_deterministic),
+    ),
     fixture("OB05", "one-shared-sequence", U5),
     fixture("OB06", "virtual-time-costs-no-wall-time", U6),
     Scenario::new(

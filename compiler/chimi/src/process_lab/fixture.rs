@@ -14,6 +14,10 @@ use std::time::{Duration, Instant};
 const OUTCOME: &str = "expected.outcome";
 const TRANSCRIPT: &str = "expected.transcript";
 const MEMORY: &str = "expected.memory";
+const EVENTS: &str = "expected.events";
+/// The fields that split an event kind into the classes `expected.events`
+/// counts.
+const CLASS_FIELDS: [&str; 4] = ["cause", "reason", "outcome", "attempts_in_window"];
 /// The longest one fixture run may take (see `run_once`).
 const RUN_LIMIT: Duration = Duration::from_secs(60);
 
@@ -140,13 +144,21 @@ struct Output {
 /// - With `expected.transcript`, the same run under `--trace=full` must
 ///   project to it, and under `--trace=boundaries` to it without its
 ///   `process_send` lines.
+/// - With `expected.events` (RA08, whose transcript is too long to write by
+///   hand), the run goes twice under `--trace=full`: the two telemetry files
+///   must be identical apart from `execution_id`, and the projected events,
+///   counted by `event_classes`, must match the file in any order.
 pub(super) fn execute(scenario: &Scenario, options: &Options) -> Result<Vec<Run>, String> {
     let expected = expected_lines(scenario, OUTCOME)?;
-    let transcript = root(scenario)
-        .join(TRANSCRIPT)
-        .exists()
-        .then(|| expected_lines(scenario, TRANSCRIPT))
-        .transpose()?;
+    let optional = |file: &str| {
+        root(scenario)
+            .join(file)
+            .exists()
+            .then(|| expected_lines(scenario, file))
+            .transpose()
+    };
+    let transcript = optional(TRANSCRIPT)?;
+    let events = optional(EVENTS)?;
     let scratch = Scratch::new(scenario)?;
     let executable = build(scenario, scratch.path())?;
     let arguments: Vec<Option<&str>> = if scenario.arguments.is_empty() {
@@ -157,17 +169,17 @@ pub(super) fn execute(scenario: &Scenario, options: &Options) -> Result<Vec<Run>
     let mut outcomes = Vec::with_capacity(arguments.len());
     let mut runs = Vec::with_capacity(arguments.len());
     for (index, argument) in arguments.into_iter().enumerate() {
-        let run = |trace: Trace| {
+        let run = |trace: Trace, repeat: u32| {
             run_once(
                 scenario,
                 &executable,
                 scratch.path(),
-                &format!("{index}-{}", &trace.flag()[8..]),
+                &format!("{index}-{}-{repeat}", &trace.flag()[8..]),
                 trace,
                 argument,
             )
         };
-        let off = run(Trace::Off)?;
+        let off = run(Trace::Off, 0)?;
         if !off.telemetry.is_empty() {
             return Err(format!(
                 "run `{}` wrote telemetry under --trace=off: {}",
@@ -178,14 +190,14 @@ pub(super) fn execute(scenario: &Scenario, options: &Options) -> Result<Vec<Run>
         outcomes.extend(off.outcome.lines().map(str::to_owned));
         let mut full_telemetry = String::new();
         if let Some(transcript) = &transcript {
-            let full = run(Trace::Full)?;
+            let full = run(Trace::Full, 0)?;
             let actual = super::transcript::project(&full.telemetry, scenario.extra_events)
                 .map_err(|error| format!("--trace=full: {error}"))?;
             if options.print_actual {
                 print_actual(scenario, TRANSCRIPT, transcript, &actual);
             }
             compare(TRANSCRIPT, transcript, &actual)?;
-            let boundaries = run(Trace::Boundaries)?;
+            let boundaries = run(Trace::Boundaries, 0)?;
             let actual = super::transcript::project(&boundaries.telemetry, scenario.extra_events)
                 .map_err(|error| format!("--trace=boundaries: {error}"))?;
             compare(
@@ -194,6 +206,21 @@ pub(super) fn execute(scenario: &Scenario, options: &Options) -> Result<Vec<Run>
                 &actual,
             )?;
             full_telemetry = full.telemetry;
+        }
+        if let Some(events) = &events {
+            let first = run(Trace::Full, 1)?.telemetry;
+            let second = run(Trace::Full, 2)?.telemetry;
+            same_telemetry(&first, &second)?;
+            let actual = event_classes(
+                &super::transcript::project(&first, scenario.extra_events)
+                    .map_err(|error| format!("--trace=full: {error}"))?,
+            );
+            let mut expected = events.clone();
+            expected.sort();
+            if options.print_actual {
+                print_actual(scenario, EVENTS, &expected, &actual);
+            }
+            compare(EVENTS, &expected, &actual)?;
         }
         runs.push(Run {
             memory_report: off.memory_report,
@@ -277,6 +304,96 @@ fn run_once(
         memory_report: read(&memory_path)?,
         telemetry: read(&telemetry_path)?,
     })
+}
+
+/// The telemetry with each line's `execution_id` field removed: the only
+/// field the lab lets differ between two runs of one executable.
+fn without_execution_id(telemetry: &str) -> Vec<String> {
+    const KEY: &str = "\"execution_id\":\"";
+    telemetry
+        .lines()
+        .map(|line| match line.find(KEY) {
+            Some(start) => {
+                let value = start + KEY.len();
+                // An execution id holds no quote; the field's comma goes with it.
+                let end = line[value..]
+                    .find('"')
+                    .map_or(line.len(), |close| value + close + 1);
+                let end = if line[end..].starts_with(',') {
+                    end + 1
+                } else {
+                    end
+                };
+                format!("{}{}", &line[..start], &line[end..])
+            }
+            None => line.to_owned(),
+        })
+        .collect()
+}
+
+/// `Ok` when two `--trace=full` telemetry files are byte-identical apart from
+/// `execution_id` (OB04, RA08); otherwise the first differing line.
+fn same_telemetry(first: &str, second: &str) -> Result<(), String> {
+    compare(
+        "telemetry of the second --trace=full run",
+        &without_execution_id(first),
+        &without_execution_id(second),
+    )
+}
+
+/// The `expected.events` lines of a projected transcript: one line per class
+/// of event, `<event> [<field>=<value>...] <count>`, sorted. A class is the
+/// event name with its `CLASS_FIELDS` (the terminal cause, the rejection
+/// reason, the send outcome, the restart attempt), so identities and times
+/// do not split it.
+fn event_classes(transcript: &[String]) -> Vec<String> {
+    let mut counts = std::collections::BTreeMap::<String, u64>::new();
+    for line in transcript {
+        let mut words = line.split(' ').skip(1);
+        let mut class = words.next().unwrap_or_default().to_owned();
+        for word in words {
+            if CLASS_FIELDS
+                .iter()
+                .any(|field| word.split_once('=').is_some_and(|(key, _)| key == *field))
+            {
+                class.push(' ');
+                class.push_str(word);
+            }
+        }
+        *counts.entry(class).or_default() += 1;
+    }
+    let mut lines: Vec<String> = counts
+        .into_iter()
+        .map(|(class, count)| format!("{class} {count}"))
+        .collect();
+    lines.sort();
+    lines
+}
+
+/// OB04 for one transcript fixture: builds it and runs it twice under
+/// `--trace=full`, with no arguments or with its first, and requires
+/// byte-identical telemetry apart from `execution_id`.
+pub(super) fn deterministic(scenario: &Scenario) -> Result<(), String> {
+    let scratch = Scratch::new(scenario)?;
+    let executable = build(scenario, scratch.path())?;
+    let argument = scenario.arguments.first().copied();
+    let first = run_once(
+        scenario,
+        &executable,
+        scratch.path(),
+        "first",
+        Trace::Full,
+        argument,
+    )?;
+    let second = run_once(
+        scenario,
+        &executable,
+        scratch.path(),
+        "second",
+        Trace::Full,
+        argument,
+    )?;
+    same_telemetry(&first.telemetry, &second.telemetry)
 }
 
 /// `Ok` when every outcome line matches its expected line: byte for byte, or,
@@ -491,5 +608,58 @@ mod tests {
             "f line 2: expected `<absent>`, actual `b`"
         );
         assert!(compare("f", &lines(&["a", "b"]), &lines(&["a"])).is_err());
+    }
+
+    // Rejects a determinism check that ignores more than `execution_id`, or
+    // that strips the field and leaves the lines unequal.
+    #[test]
+    fn same_telemetry_ignores_only_the_execution_id() {
+        let line = |id: &str, sequence: u32| {
+            format!(
+                "{{\"schema\":\"s\",\"event\":\"process_started\",\"sequence\":{sequence},\"computation\":\"main\",\"execution_id\":\"{id}\",\"task_id\":2}}\n"
+            )
+        };
+        let first = line("execution-1", 1) + &line("execution-1", 2);
+        assert!(
+            same_telemetry(&first, &(line("execution-2", 1) + &line("execution-2", 2))).is_ok()
+        );
+        assert!(
+            same_telemetry(&first, &(line("execution-2", 1) + &line("execution-2", 3))).is_err()
+        );
+        assert!(same_telemetry(&first, &line("execution-2", 1)).is_err());
+        assert_eq!(
+            without_execution_id(&line("x", 1)),
+            [
+                "{\"schema\":\"s\",\"event\":\"process_started\",\"sequence\":1,\"computation\":\"main\",\"task_id\":2}"
+            ]
+        );
+    }
+
+    // Rejects classes split by identities or times, and classes that drop the
+    // cause, outcome, or attempt that RA08 counts.
+    #[test]
+    fn event_classes_count_by_event_and_class_fields_only() {
+        let transcript = lines(&[
+            "@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.w",
+            "@0s process_send kind=named name=app/main.w incarnation=I1 outcome=accepted",
+            "@0s process_terminated membership=M1 incarnation=I1 cause=defected",
+            "@0s restart_attempted supervisor=S1 membership=M1 attempts_in_window=1",
+            "@1ms process_started supervisor=S1 membership=M1 incarnation=I2 name=app/main.w",
+            "@1ms process_send kind=named name=app/main.w incarnation=- outcome=full",
+            "@1ms restart_attempted supervisor=S1 membership=M1 attempts_in_window=2",
+            "@2ms process_terminated membership=M1 incarnation=I2 cause=cancelled",
+        ]);
+        assert_eq!(
+            event_classes(&transcript),
+            [
+                "process_send outcome=accepted 1",
+                "process_send outcome=full 1",
+                "process_started 2",
+                "process_terminated cause=cancelled 1",
+                "process_terminated cause=defected 1",
+                "restart_attempted attempts_in_window=1 1",
+                "restart_attempted attempts_in_window=2 1",
+            ]
+        );
     }
 }

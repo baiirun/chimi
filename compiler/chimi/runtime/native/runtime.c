@@ -5456,6 +5456,11 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
   if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code == CHIMI_SCHEDULER_DEFECT_DEADLOCK &&
       runtime->deadlock_waiters)
     return defect(runtime->deadlock_waiters, -1);
+  /* A root supervisor escalated: the scheduler ends every root task with this code,
+     wherever it was parked, and the program ends with the escalation's defect. */
+  if (outcome.state == CHIMI_FIBER_DEFECTED &&
+      outcome.defect_code == CHIMI_SCHEDULER_DEFECT_RESTART_LIMIT_EXCEEDED)
+    return defect("Supervisor.RestartLimitExceeded", -1);
   /* Under the real clock a root parked with nothing pending stays suspended,
      because a host event might wake it. The native runtime has no
      asynchronous host operations, so nothing ever will: report the same

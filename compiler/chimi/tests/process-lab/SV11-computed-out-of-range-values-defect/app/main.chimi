@@ -1,0 +1,61 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// SV11: one run per out-of-range value, each computed from the run's argument
+// count (`zero` is 0 at run time), so the compiler cannot reject it. Each call
+// that receives a bad value defects there, naming it:
+// - capacity: `Process.spec` with mailbox capacity 0;
+// - limit: `Supervisor.restarts` with limit -1;
+// - window: `Supervisor.restarts` with a 0s window;
+// - members: `Supervisor.policy` with 3 members over capacity 2;
+// - shutdown_within: `Process.spec` with a -1s deadline.
+// Nothing is ever started, so a check made later (at `Supervisor.start`, or in
+// the scheduler) would never run, and main would return the argument's length.
+
+pub enum Message {
+  Ping
+}
+
+fn ignore(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.Ping -> Void
+  }
+}
+
+fn build(which: Text, zero: Int) -> Int {
+  let member = Process.spec(ignore, 1, Duration.seconds(1)) |> Supervisor.process(Supervisor.Restart.Never)
+  let restarts = Supervisor.restarts(1, Duration.seconds(30))
+  case which {
+    "capacity" -> {
+      let spec = Process.spec(ignore, zero, Duration.seconds(1))
+      1
+    }
+    "limit" -> {
+      let limit = Supervisor.restarts(zero - 1, Duration.seconds(30))
+      2
+    }
+    "window" -> {
+      let window = Supervisor.restarts(1, Duration.seconds(zero))
+      3
+    }
+    "members" -> {
+      let policy = Supervisor.policy([member, member, member], zero + 2, restarts)
+      4
+    }
+    "shutdown_within" -> {
+      let spec = Process.spec(ignore, 1, Duration.seconds(zero - 1))
+      5
+    }
+    _ -> 0
+  }
+}
+
+pub fn main(arguments: List<Text>) -> Int {
+  let zero = List.length(arguments) - 1
+  case List.first(arguments) {
+    Some(which) -> build(which, zero)
+    None -> 0
+  }
+}

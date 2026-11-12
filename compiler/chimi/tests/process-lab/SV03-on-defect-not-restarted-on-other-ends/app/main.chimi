@@ -1,0 +1,73 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{Running, StartError}
+
+// SV03: three `OnDefect` members end without a defect, under a supervisor
+// with capacity 3 and restart budget to spare: `returning` returns,
+// `failing` ends with `Failure`, and a dynamic member is cancelled by its
+// removal. None is restarted, so no `restart_attempted` appears, and all three
+// slots are free: three later starts at capacity all succeed (outcome 3). A
+// runtime that restarted on any terminal end would refill a slot with the
+// replacement, and at least one of the later starts would return
+// `CapacityReached`.
+
+pub enum Message {
+  End
+}
+
+pub enum Problem {
+  Broken
+}
+
+pub process name returning: Message
+pub process name failing: Message
+
+fn return_on_end(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.End -> Void
+  }
+}
+
+fn fail_on_end(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.End -> Failure(Problem.Broken)
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+// 1 when a dynamic member started, 0 when admission refused it.
+fn try_start(root: Running) -> Int {
+  case Supervisor.start_process(root, Process.spec(return_on_end, 1, Duration.seconds(1)), Supervisor.Restart.OnDefect) {
+    Success(_) -> 1
+    Failure(error) -> case error {
+      StartError.CapacityReached -> 0
+      StartError.NameTaken(_) -> 0
+      StartError.Stopped -> 0
+    }
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let first = Process.spec(return_on_end, 1, Duration.seconds(1))
+    |> Process.register(returning)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let second = Process.spec(fail_on_end, 1, Duration.seconds(1))
+    |> Process.register(failing)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let root = Supervisor.start(Supervisor.policy([first, second], 3, Supervisor.restarts(5, Duration.seconds(30))))
+  let removed = Supervisor.start_process(root, Process.spec(return_on_end, 1, Duration.seconds(1)), Supervisor.Restart.OnDefect)
+  Process.send(returning, Message.End)
+  Process.send(failing, Message.End)
+  settle()
+  Supervisor.remove_process(root, removed)
+  let started = try_start(root) + try_start(root) + try_start(root)
+  Supervisor.stop(root)
+  started
+}

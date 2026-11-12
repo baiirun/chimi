@@ -1,0 +1,76 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox}
+import std/supervisor as Supervisor
+
+// RA01: `counter` and `peer` are declared `OnDefect` and both count Add(5).
+// `counter` then defects. Its replacement starts with fresh state and reports
+// 0; `peer` is untouched and still reports 5. The transcript orders the
+// defect's termination, the restart charge (attempts_in_window=1), and the
+// replacement's start, in that order, with no fiber in between.
+
+pub enum Message {
+  Add(amount: Int)
+  Crash
+  Report(reply: Sender<Int>)
+}
+
+pub struct Totals {
+  counter: Int,
+  peer: Int,
+}
+
+fn count_messages(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Crash -> total / 0
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+    }
+  }
+}
+
+pub process name counter: Message
+pub process name peer: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn reply_value(received: Receive<Int>) -> Int {
+  case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+fn ask(address: Address<Message>) -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(address, Message.Report(replies.sender))
+  reply_value(Channel.receive(replies.receiver))
+}
+
+pub fn main() -> Totals needs { clock: Clock } {
+  let first = Process.spec(count_messages, 4, Duration.seconds(1))
+    |> Process.register(counter)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let second = Process.spec(count_messages, 4, Duration.seconds(1))
+    |> Process.register(peer)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let root = Supervisor.start(Supervisor.policy([first, second], 2, Supervisor.restarts(1, Duration.seconds(30))))
+  Process.send(counter, Message.Add(5))
+  Process.send(peer, Message.Add(5))
+  settle()
+  Process.send(counter, Message.Crash)
+  settle()
+  let totals = Totals(ask(counter), ask(peer))
+  Supervisor.stop(root)
+  totals
+}

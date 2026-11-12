@@ -1,0 +1,88 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox}
+import std/supervisor as Supervisor
+
+// RT01: `worker` is a dynamic `OnDefect` member, so main holds both its name
+// and its managed handle. `old` is a direct address taken before the defect.
+// After the restart:
+// - the named address reaches the replacement (Add(10) is counted);
+// - `old` returns `Unavailable` on every send, before and after another
+//   settle, and never reaches the replacement (Add(100) twice is not counted);
+// - a new `Supervisor.address` reaches the replacement (Add(1000) is counted).
+// Add(1) went to the first incarnation and died with it, so the replacement's
+// total is 1010, and both stale sends are counted as unavailable.
+
+pub enum Message {
+  Add(amount: Int)
+  Crash
+  Report(reply: Sender<Int>)
+}
+
+pub struct Routed {
+  total: Int,
+  stale: Int,
+}
+
+fn count_messages(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Crash -> total / 0
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+    }
+  }
+}
+
+pub process name worker: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn reply_value(received: Receive<Int>) -> Int {
+  case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+fn ask(address: Address<Message>) -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(address, Message.Report(replies.sender))
+  reply_value(Channel.receive(replies.receiver))
+}
+
+// 1 when the send was refused as unavailable, 0 when it was accepted.
+fn unavailable(address: Address<Message>, message: Message) -> Int {
+  case Process.send(address, message) {
+    Success(_) -> 0
+    Failure(_) -> 1
+  }
+}
+
+pub fn main() -> Routed needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  let spec = Process.spec(count_messages, 4, Duration.seconds(1)) |> Process.register(worker)
+  let managed = Supervisor.start_process(root, spec, Supervisor.Restart.OnDefect)
+  let old = Supervisor.address(managed)
+  Process.send(old, Message.Add(1))
+  Process.send(worker, Message.Crash)
+  settle()
+  Process.send(worker, Message.Add(10))
+  let first = unavailable(old, Message.Add(100))
+  settle()
+  let second = unavailable(old, Message.Add(100))
+  let fresh = Supervisor.address(managed)
+  Process.send(fresh, Message.Add(1000))
+  let total = ask(fresh)
+  Supervisor.stop(root)
+  Routed(total, first + second)
+}

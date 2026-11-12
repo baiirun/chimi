@@ -21,6 +21,29 @@ pub(super) fn check(scenario: &Scenario, options: &Options) -> Result<(), String
     }
 }
 
+/// OB04: every transcript fixture unlocked at `CURRENT_STAGE` runs twice under
+/// `--trace=full`, and the two telemetry files are byte-identical once
+/// `execution_id` is removed (`fixture::deterministic`). Scheduling order,
+/// identities, virtual times, and sequences all appear in that telemetry, so
+/// any nondeterminism in them fails here.
+pub(super) fn transcripts_are_deterministic() -> Result<(), String> {
+    let mut checked = 0;
+    for scenario in &catalogue::SCENARIOS {
+        if scenario.unlock > catalogue::CURRENT_STAGE
+            || !matches!(scenario.form, Form::Fixture)
+            || !fixture::root(scenario).join("expected.transcript").exists()
+        {
+            continue;
+        }
+        fixture::deterministic(scenario).map_err(|error| format!("{}: {error}", scenario.id))?;
+        checked += 1;
+    }
+    if checked == 0 {
+        return Err("no transcript fixture is unlocked".into());
+    }
+    Ok(())
+}
+
 const FIBER_HEADER: &str = include_str!("../../../../runtime/chimi-fiber/include/chimi_fiber.h");
 
 /// OB07: the scheduler the compiler links and the header the runtime is built

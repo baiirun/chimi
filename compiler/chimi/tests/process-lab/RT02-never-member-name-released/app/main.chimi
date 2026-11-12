@@ -1,0 +1,53 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox, SendError}
+import std/supervisor as Supervisor
+
+// RT02: `once` is declared `Restart.Never` and defects on `Crash`. The
+// supervisor has restart budget left, so only `Never` keeps it from being
+// replaced. Its name then routes nowhere: a named send returns
+// `Unavailable(message)` with the original message, whose amount (42) is the
+// outcome. A name held after its incarnation ended would accept the send.
+
+pub enum Message {
+  Add(amount: Int)
+  Crash
+}
+
+fn count_messages(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Crash -> total / 0
+    }
+  }
+}
+
+pub process name once: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let member = Process.spec(count_messages, 2, Duration.seconds(1))
+    |> Process.register(once)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  Process.send(once, Message.Crash)
+  settle()
+  let returned = case Process.send(once, Message.Add(42)) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      SendError.Full(_) -> -1
+      SendError.Unavailable(message) -> case message {
+        Message.Add(amount) -> amount
+        Message.Crash -> -2
+      }
+    }
+  }
+  Supervisor.stop(root)
+  returned
+}

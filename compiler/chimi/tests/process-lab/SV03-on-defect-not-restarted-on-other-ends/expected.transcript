@@ -1,0 +1,16 @@
+@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.returning
+@0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.failing
+@0s process_started supervisor=S1 membership=M3 incarnation=I3
+@0s process_send kind=named name=app/main.returning incarnation=I1 outcome=accepted
+@0s process_send kind=named name=app/main.failing incarnation=I2 outcome=accepted
+@0s process_terminated membership=M1 incarnation=I1 cause=returned
+@0s process_terminated membership=M2 incarnation=I2 cause=failed
+@1ms process_terminated membership=M3 incarnation=I3 cause=cancelled
+@1ms membership_removed membership=M3
+@1ms process_started supervisor=S1 membership=M4 incarnation=I4
+@1ms process_started supervisor=S1 membership=M5 incarnation=I5
+@1ms process_started supervisor=S1 membership=M6 incarnation=I6
+@1ms process_terminated membership=M6 incarnation=I6 cause=cancelled
+@1ms process_terminated membership=M5 incarnation=I5 cause=cancelled
+@1ms process_terminated membership=M4 incarnation=I4 cause=cancelled
+@1ms supervisor_stopped supervisor=S1

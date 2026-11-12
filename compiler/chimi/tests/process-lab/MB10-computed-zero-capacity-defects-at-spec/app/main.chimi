@@ -1,0 +1,24 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+
+// MB10: the mailbox capacity is computed (the number of arguments, 0), so the
+// compiler cannot reject it. `Process.spec` itself defects, naming the
+// capacity. The spec is never started: a check left to `Supervisor.start` or
+// to the scheduler would never run, and main would return 1.
+
+pub enum Message {
+  Ping
+}
+
+fn ignore(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.Ping -> Void
+  }
+}
+
+pub fn main(arguments: List<Text>) -> Int {
+  let capacity = List.length(arguments)
+  let spec = Process.spec(ignore, capacity, Duration.seconds(1))
+  1
+}

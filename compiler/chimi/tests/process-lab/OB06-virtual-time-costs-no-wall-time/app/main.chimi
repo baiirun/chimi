@@ -1,0 +1,50 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// OB06: five restart cycles, each followed by a 31 s sleep that rolls the
+// 30 s restart window, under members with 5 s shutdown deadlines: 2m35s of
+// virtual time in all. Under virtual time the run takes no real waiting. The
+// lab's run limit (60 s of wall time per run, three runs) fails a runtime that
+// slept for real, and the transcript shows the stop at 2m35s ending the
+// member at once, without waiting out its 5 s deadline.
+
+pub enum Message {
+  Crash
+}
+
+fn wait_for_crash(inbox: Inbox<Message>) -> Void {
+  let divisor = case Process.receive(inbox) {
+    Message.Crash -> 0
+  }
+  let quotient = 1 / divisor
+  Void
+}
+
+pub process name worker: Message
+
+fn cycle(count: Int) -> Int needs { clock: Clock } {
+  loop left = count {
+    case left {
+      0 -> break count
+      _ -> {
+        Process.send(worker, Message.Crash)
+        Clock.sleep(Duration.seconds(31))
+        left - 1
+      }
+    }
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let member = Process.spec(wait_for_crash, 1, Duration.seconds(5))
+    |> Process.register(worker)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  let cycles = cycle(5)
+  Supervisor.stop(root)
+  cycles
+}

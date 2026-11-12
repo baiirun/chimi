@@ -1,0 +1,6 @@
+@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.fragile
+@0s process_send kind=named name=app/main.fragile incarnation=I1 outcome=accepted
+@0s process_terminated membership=M1 incarnation=I1 cause=defected
+@1ms process_started supervisor=S1 membership=M2 incarnation=I2
+@1ms process_terminated membership=M2 incarnation=I2 cause=cancelled
+@1ms supervisor_stopped supervisor=S1

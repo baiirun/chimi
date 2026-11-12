@@ -1,0 +1,23 @@
+@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.worker
+@0s process_send kind=named name=app/main.worker incarnation=I1 outcome=accepted
+@0s process_terminated membership=M1 incarnation=I1 cause=defected
+@0s restart_attempted supervisor=S1 membership=M1 attempts_in_window=1
+@0s process_started supervisor=S1 membership=M1 incarnation=I2 name=app/main.worker
+@31s process_send kind=named name=app/main.worker incarnation=I2 outcome=accepted
+@31s process_terminated membership=M1 incarnation=I2 cause=defected
+@31s restart_attempted supervisor=S1 membership=M1 attempts_in_window=1
+@31s process_started supervisor=S1 membership=M1 incarnation=I3 name=app/main.worker
+@1m2s process_send kind=named name=app/main.worker incarnation=I3 outcome=accepted
+@1m2s process_terminated membership=M1 incarnation=I3 cause=defected
+@1m2s restart_attempted supervisor=S1 membership=M1 attempts_in_window=1
+@1m2s process_started supervisor=S1 membership=M1 incarnation=I4 name=app/main.worker
+@1m33s process_send kind=named name=app/main.worker incarnation=I4 outcome=accepted
+@1m33s process_terminated membership=M1 incarnation=I4 cause=defected
+@1m33s restart_attempted supervisor=S1 membership=M1 attempts_in_window=1
+@1m33s process_started supervisor=S1 membership=M1 incarnation=I5 name=app/main.worker
+@2m4s process_send kind=named name=app/main.worker incarnation=I5 outcome=accepted
+@2m4s process_terminated membership=M1 incarnation=I5 cause=defected
+@2m4s restart_attempted supervisor=S1 membership=M1 attempts_in_window=1
+@2m4s process_started supervisor=S1 membership=M1 incarnation=I6 name=app/main.worker
+@2m35s process_terminated membership=M1 incarnation=I6 cause=cancelled
+@2m35s supervisor_stopped supervisor=S1

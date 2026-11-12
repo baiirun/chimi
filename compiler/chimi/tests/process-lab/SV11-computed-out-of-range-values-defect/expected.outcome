@@ -1,0 +1,5 @@
+{"outcome":"defect","message":"Process.spec: mailbox capacity must be at least 1, got 0"}
+{"outcome":"defect","message":"Supervisor.restarts: restart limit must be at least 0, got -1"}
+{"outcome":"defect","message":"Supervisor.restarts: restart window must be positive, got 0s"}
+{"outcome":"defect","message":"Supervisor.policy: members must not exceed capacity 2, got 3"}
+{"outcome":"defect","message":"Process.spec: shutdown_within must be at least zero, got -1s"}
