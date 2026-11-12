@@ -352,7 +352,7 @@ enum RuntimeValue {
     Boolean(bool),
     List(PersistentList<RuntimeValue>),
     /// Two or more elements; typing fixes the arity.
-    Tuple(Vec<RuntimeValue>),
+    Tuple(Arc<Vec<RuntimeValue>>),
     /// The half-open run `start..end`; `..=` is already normalized to it.
     Range {
         start: i64,
@@ -360,12 +360,15 @@ enum RuntimeValue {
     },
     /// A `std/duration.Duration`: a signed count of nanoseconds.
     Duration(i64),
-    Record(Vec<RuntimeField>),
+    /// Fields of records and constructed values are shared like list nodes and
+    /// closure environments: values are copied on every reference, and a structure
+    /// that holds an earlier one twice would otherwise double with each level.
+    Record(Arc<Vec<RuntimeField>>),
     Constructed {
         constructor: SymbolId,
         type_name: String,
         variant_name: Option<String>,
-        fields: Vec<RuntimeField>,
+        fields: Arc<Vec<RuntimeField>>,
     },
     Map(RuntimeMap),
     JsonNumber(String),
@@ -915,7 +918,7 @@ impl<'core> Evaluator<'core> {
                         environment.clone()
                     )));
                 }
-                Control::Success(RuntimeValue::Tuple(values))
+                Control::Success(RuntimeValue::Tuple(Arc::new(values)))
             }
             CoreOperation::Record(fields) => {
                 let mut values = Vec::with_capacity(fields.len());
@@ -929,7 +932,7 @@ impl<'core> Evaluator<'core> {
                         )),
                     });
                 }
-                Control::Success(RuntimeValue::Record(values))
+                Control::Success(RuntimeValue::Record(Arc::new(values)))
             }
             CoreOperation::Unary {
                 operator: UnaryOperator::Negate,
@@ -1145,12 +1148,12 @@ impl<'core> Evaluator<'core> {
                 name: field_name.clone(),
                 value,
             })
-            .collect();
+            .collect::<Vec<_>>();
         Control::Success(RuntimeValue::Constructed {
             constructor,
             type_name: shape.type_name,
             variant_name: shape.variant_name,
-            fields,
+            fields: Arc::new(fields),
         })
     }
 
@@ -1925,13 +1928,15 @@ impl<'core> Evaluator<'core> {
             constructor: symbol,
             type_name: shape.type_name.clone(),
             variant_name: shape.variant_name.clone(),
-            fields: shape
-                .fields
-                .iter()
-                .cloned()
-                .zip(values)
-                .map(|(name, value)| RuntimeField { name, value })
-                .collect(),
+            fields: Arc::new(
+                shape
+                    .fields
+                    .iter()
+                    .cloned()
+                    .zip(values)
+                    .map(|(name, value)| RuntimeField { name, value })
+                    .collect(),
+            ),
         }
     }
 
@@ -2234,8 +2239,8 @@ impl<'core> Evaluator<'core> {
 
     fn public_outcome(&self, control: Control) -> ExecutionOutcome {
         match control {
-            Control::Success(value) => ExecutionOutcome::Success(public_value(value)),
-            Control::Failure(value) => ExecutionOutcome::ExpectedFailure(public_value(value)),
+            Control::Success(value) => ExecutionOutcome::Success(public_value(&value)),
+            Control::Failure(value) => ExecutionOutcome::ExpectedFailure(public_value(&value)),
             Control::Defect { message, node } => {
                 let origin = node.map(|node| {
                     let node = &self.core.nodes[node.raw() as usize];
@@ -2321,7 +2326,7 @@ fn match_plain_pattern(
             if constructor != symbol || fields.len() != values.len() {
                 return Ok(false);
             }
-            for (pattern, field) in fields.iter().zip(values) {
+            for (pattern, field) in fields.iter().zip(values.iter()) {
                 if !match_plain_pattern(pattern, &field.value, bindings)? {
                     return Ok(false);
                 }
@@ -2345,7 +2350,7 @@ fn match_plain_pattern(
             if elements.len() != values.len() {
                 return Ok(false);
             }
-            for (pattern, value) in elements.iter().zip(values) {
+            for (pattern, value) in elements.iter().zip(values.iter()) {
                 if !match_plain_pattern(pattern, value, bindings)? {
                     return Ok(false);
                 }
@@ -2436,9 +2441,9 @@ fn select_field(value: RuntimeValue, member: &str) -> Option<Control> {
         _ => return None,
     };
     fields
-        .into_iter()
+        .iter()
         .find(|field| field.name == member)
-        .map(|field| Control::Success(field.value))
+        .map(|field| Control::Success(field.value.clone()))
 }
 
 fn runtime_literal(literal: CoreLiteral) -> RuntimeValue {
@@ -2451,21 +2456,26 @@ fn runtime_literal(literal: CoreLiteral) -> RuntimeValue {
     }
 }
 
-fn public_value(value: RuntimeValue) -> ExecutionValue {
+fn public_value(value: &RuntimeValue) -> ExecutionValue {
     match value {
         RuntimeValue::Void => ExecutionValue::Void,
-        RuntimeValue::Integer(value) => ExecutionValue::Integer(value),
-        RuntimeValue::Float(value) => ExecutionValue::Float(FloatValue(value)),
-        RuntimeValue::Text(value) => ExecutionValue::Text(value),
-        RuntimeValue::Boolean(value) => ExecutionValue::Boolean(value),
+        RuntimeValue::Integer(value) => ExecutionValue::Integer(*value),
+        RuntimeValue::Float(value) => ExecutionValue::Float(FloatValue(*value)),
+        RuntimeValue::Text(value) | RuntimeValue::JsonNumber(value) => {
+            ExecutionValue::Text(value.clone())
+        }
+        RuntimeValue::Boolean(value) => ExecutionValue::Boolean(*value),
         RuntimeValue::List(values) => {
-            ExecutionValue::List(values.iter().cloned().map(public_value).collect())
+            ExecutionValue::List(values.iter().map(public_value).collect())
         }
         RuntimeValue::Tuple(values) => {
-            ExecutionValue::Tuple(values.into_iter().map(public_value).collect())
+            ExecutionValue::Tuple(values.iter().map(public_value).collect())
         }
-        RuntimeValue::Range { start, end } => ExecutionValue::Range { start, end },
-        RuntimeValue::Duration(value) => ExecutionValue::Duration(value),
+        RuntimeValue::Range { start, end } => ExecutionValue::Range {
+            start: *start,
+            end: *end,
+        },
+        RuntimeValue::Duration(value) => ExecutionValue::Duration(*value),
         RuntimeValue::Record(fields) => ExecutionValue::Record(public_fields(fields)),
         RuntimeValue::Constructed {
             type_name,
@@ -2473,16 +2483,16 @@ fn public_value(value: RuntimeValue) -> ExecutionValue {
             fields,
             ..
         } => ExecutionValue::Constructed {
-            type_name,
-            variant_name,
+            type_name: type_name.clone(),
+            variant_name: variant_name.clone(),
             fields: public_fields(fields),
         },
         RuntimeValue::Map(map) => ExecutionValue::Record(
-            map.entries()
+            map.entry_refs()
                 .into_iter()
                 .map(|(key, value)| ValueField {
                     name: match key {
-                        RuntimeValue::Text(name) => name,
+                        RuntimeValue::Text(name) => name.clone(),
                         key => {
                             let mut name = String::new();
                             write_json_value(&mut name, &public_value(key));
@@ -2493,19 +2503,18 @@ fn public_value(value: RuntimeValue) -> ExecutionValue {
                 })
                 .collect(),
         ),
-        RuntimeValue::JsonNumber(value) => ExecutionValue::Text(value),
         RuntimeValue::Callable(callable) => ExecutionValue::Callable {
-            name: callable_name(&callable).to_owned(),
+            name: callable_name(callable).to_owned(),
         },
     }
 }
 
-fn public_fields(fields: Vec<RuntimeField>) -> Vec<ValueField> {
+fn public_fields(fields: &[RuntimeField]) -> Vec<ValueField> {
     fields
-        .into_iter()
+        .iter()
         .map(|field| ValueField {
-            name: field.name,
-            value: public_value(field.value),
+            name: field.name.clone(),
+            value: public_value(&field.value),
         })
         .collect()
 }

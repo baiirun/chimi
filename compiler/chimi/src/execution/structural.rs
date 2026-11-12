@@ -62,7 +62,7 @@ pub(super) fn structural_order(
             (RuntimeValue::Tuple(left), RuntimeValue::Tuple(right)) => {
                 steps.extend(
                     left.iter()
-                        .zip(right)
+                        .zip(right.iter())
                         .rev()
                         .map(|(left, right)| Step::Compare(left, right)),
                 );
@@ -109,7 +109,7 @@ pub(super) fn structural_order(
                     steps.extend(
                         left_fields
                             .iter()
-                            .zip(right_fields)
+                            .zip(right_fields.iter())
                             .rev()
                             .map(|(left, right)| Step::Compare(&left.value, &right.value)),
                     );

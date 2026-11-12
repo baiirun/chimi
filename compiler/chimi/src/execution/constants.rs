@@ -519,7 +519,8 @@ fn closure_nodes(core: &CoreProgram) -> HashMap<CoreNodeId, CoreNodeId> {
 }
 
 /// Stored sizes of the parts that interpreter values share instead of copying: lists,
-/// map nodes, and closure environments, keyed by address. Measuring a value that grew
+/// map nodes, closure environments, tuples, and the fields of records and constructed
+/// values, keyed by address. Measuring a value that grew
 /// by one step then costs the new parts, not the whole value.
 ///
 /// Each entry holds a weak handle to its part, which keeps the allocation, and so the
@@ -593,11 +594,17 @@ impl Measure<'_> {
             }
             RuntimeValue::Record(fields) => self.fields(fields, 2 * ID_BYTES),
             RuntimeValue::Tuple(values) => {
+                let address = Arc::as_ptr(values) as usize;
+                if let Some(size) = self.shared.get(address) {
+                    return Some(size);
+                }
                 let mut size = ROW_BYTES;
                 for value in values.iter() {
                     let part = self.value(value)?;
                     size = self.sum(size, ID_BYTES + part)?;
                 }
+                self.shared
+                    .insert(address, Arc::downgrade(values) as Weak<dyn Any>, size);
                 Some(size)
             }
             RuntimeValue::Constructed { fields, .. } => self.fields(fields, ID_BYTES),
@@ -633,12 +640,18 @@ impl Measure<'_> {
         }
     }
 
-    fn fields(&mut self, fields: &[RuntimeField], ids: usize) -> Option<usize> {
+    fn fields(&mut self, fields: &Arc<Vec<RuntimeField>>, ids: usize) -> Option<usize> {
+        let address = Arc::as_ptr(fields) as usize;
+        if let Some(size) = self.shared.get(address) {
+            return Some(size);
+        }
         let mut size = ROW_BYTES;
-        for field in fields {
+        for field in fields.iter() {
             let part = self.value(&field.value)?;
             size = self.sum(size, ids + part)?;
         }
+        self.shared
+            .insert(address, Arc::downgrade(fields) as Weak<dyn Any>, size);
         Some(size)
     }
 
@@ -821,13 +834,13 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
             start: *start,
             end: *end,
         },
-        ConstantValue::Tuple(values) => RuntimeValue::Tuple(
+        ConstantValue::Tuple(values) => RuntimeValue::Tuple(Arc::new(
             values
                 .iter()
                 .map(|value| runtime_value(core, value))
                 .collect(),
-        ),
-        ConstantValue::Record(fields) => RuntimeValue::Record(
+        )),
+        ConstantValue::Record(fields) => RuntimeValue::Record(Arc::new(
             fields
                 .iter()
                 .map(|(name, value)| RuntimeField {
@@ -835,7 +848,7 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
                     value: runtime_value(core, value),
                 })
                 .collect(),
-        ),
+        )),
         ConstantValue::Constructed {
             constructor,
             fields,
@@ -849,15 +862,17 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
                 constructor: *constructor,
                 type_name: shape.type_name.clone(),
                 variant_name: shape.variant_name.clone(),
-                fields: shape
-                    .fields
-                    .iter()
-                    .zip(fields)
-                    .map(|(name, value)| RuntimeField {
-                        name: name.clone(),
-                        value: runtime_value(core, value),
-                    })
-                    .collect(),
+                fields: Arc::new(
+                    shape
+                        .fields
+                        .iter()
+                        .zip(fields)
+                        .map(|(name, value)| RuntimeField {
+                            name: name.clone(),
+                            value: runtime_value(core, value),
+                        })
+                        .collect(),
+                ),
             }
         }
         ConstantValue::Map(entries) => RuntimeValue::Map(entries.iter().fold(
