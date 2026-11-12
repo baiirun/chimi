@@ -35,8 +35,8 @@ MUTATIONS = [
         "                            std::cmp::Ordering::Less => true,",
         "                            std::cmp::Ordering::Less => bits >> later & 1 == 0,",
     ), (
-        "            let signatures = (0..1_usize << later)",
-        "            let signatures = (0..1_usize << (later + position))",
+        "            let mut signatures = (0..1_usize << later)",
+        "            let mut signatures = (0..1_usize << (later + position))",
     )], MULTI),
     lang("subtract a variant whatever the other subjects hold", T, [(
         "                if fully_covered(self, candidate) {",
