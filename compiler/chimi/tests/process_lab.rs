@@ -60,21 +60,6 @@ fn every_scenario_through_the_current_stage_passes() {
     }
 }
 
-// Rejects a lab that exits 0 or reports `pass` for an unlocked scenario it
-// cannot run.
-#[test]
-fn an_unlocked_scenario_that_cannot_pass_fails_the_lab() {
-    let output = lab(&["--through", "U10", "--scenario", "RR02"]);
-    let report = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(output.status.code(), Some(1), "{report}");
-    assert!(
-        report.contains("\"kind\":\"runtime\",\"stage\":\"U10\""),
-        "{report}"
-    );
-    assert_eq!(statuses(&report), [("RR02".to_owned(), "fail".to_owned())]);
-    assert!(report.contains("\"detail\":\""), "{report}");
-}
-
 #[test]
 fn all_prints_one_report_per_kind_in_order() {
     let output = lab(&["all", "--through", Stage::U0.name()]);
@@ -108,10 +93,12 @@ fn malformed_arguments_are_usage_errors() {
     }
 }
 
-// Projects telemetry the native runner really writes, so the projector is
-// held to the runner's envelope rather than to hand-written lines alone.
-// Task identities count from 1 in creation order: the root is T1 and its
-// child T2. Neither defects, so neither terminal names a cause.
+// Projects task telemetry the native runner really writes. This covers the
+// shared envelope, `sequence` order, and the `task_terminal` extra event. The
+// process and clock families are not emitted before U5, so their encoding is
+// covered only by the hand-written unit tests until then. Task identities
+// count from 1 in creation order: the root is T1 and its child T2, and
+// neither terminal names a defect cause.
 #[test]
 fn the_projector_reads_real_runner_telemetry() {
     let scratch = std::env::temp_dir().join(format!("chimi-process-lab-{}", std::process::id()));

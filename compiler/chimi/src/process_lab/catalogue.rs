@@ -416,7 +416,11 @@ mod tests {
     fn unlock_stages_match_the_scenario_tables() {
         let unlocks = catalogue_unlocks();
         let mut rows = 0;
-        for row in section("## Scenario catalogue", SPECIFICATION).lines() {
+        let tables = section("## Scenario catalogue", SPECIFICATION);
+        let tables = &tables[..tables
+            .find("### Catalogue data")
+            .expect("catalogue data table")];
+        for row in tables.lines() {
             let row = cells(row);
             if row.len() < 2 || !is_scenario_id(row[0]) {
                 continue;
@@ -464,34 +468,73 @@ mod tests {
         assert_eq!(counted, SCENARIOS.len());
     }
 
-    #[test]
-    fn c_harnesses_and_extra_events_match_the_specification() {
-        let harnesses = SCENARIOS
-            .iter()
-            .filter(|scenario| matches!(scenario.form, Form::CHarness(_)))
-            .map(|scenario| scenario.id)
-            .collect::<BTreeSet<_>>();
-        let sentence = SPECIFICATION
-            .lines()
-            .find_map(|line| line.strip_prefix("Four scenarios use C harnesses: "))
-            .expect("the specification lists the C harnesses");
-        let specified = sentence
-            .trim_end_matches('.')
-            .split([',', ' '])
-            .filter(|word| is_scenario_id(word))
-            .collect::<BTreeSet<_>>();
-        assert_eq!(harnesses, specified);
+    fn form_name(form: Form) -> String {
+        match form {
+            Form::Fixture => "fixture".into(),
+            Form::CHarness(file) => format!("C `{file}`"),
+            Form::Check(_) => "check".into(),
+            Form::Gate(_) => "gate".into(),
+        }
+    }
 
-        let with_extra = SCENARIOS
-            .iter()
-            .filter(|scenario| !scenario.extra_events.is_empty())
-            .map(|scenario| scenario.id)
-            .collect::<BTreeSet<_>>();
-        let specified = SPECIFICATION
-            .lines()
-            .filter(|line| line.contains("`extra_events = [\"task_terminal\"]`"))
-            .map(|line| cells(line)[0])
-            .collect::<BTreeSet<_>>();
-        assert_eq!(with_extra, specified);
+    fn listed(cell: &str) -> Vec<String> {
+        if cell == "-" {
+            return Vec::new();
+        }
+        cell.split(", ")
+            .map(|item| item.trim_matches('`').to_owned())
+            .collect()
+    }
+
+    // Rejects a catalogue whose form, harness file, exit code, runs, or extra
+    // events differ from the specification's catalogue data. Unlisted
+    // scenarios must keep every default.
+    #[test]
+    fn forms_exit_codes_runs_and_extra_events_match_the_catalogue_data() {
+        let default = ("fixture".to_owned(), 0, Vec::new(), Vec::new());
+        let mut specified = BTreeMap::new();
+        let table = section("### Catalogue data", SPECIFICATION);
+        for row in table.lines() {
+            let row = cells(row);
+            if row.len() != 5 || !is_scenario_id(&row[0][..4.min(row[0].len())]) {
+                continue;
+            }
+            let data = (
+                row[1].to_owned(),
+                row[2].parse::<i32>().expect("an exit code"),
+                listed(row[3]),
+                listed(row[4]),
+            );
+            for id in expand(row[0]) {
+                assert!(
+                    specified.insert(id.clone(), data.clone()).is_none(),
+                    "{id} listed twice"
+                );
+            }
+        }
+        for scenario in &SCENARIOS {
+            let actual = (
+                form_name(scenario.form),
+                scenario.exit_code,
+                scenario
+                    .arguments
+                    .iter()
+                    .map(|item| (*item).to_owned())
+                    .collect::<Vec<_>>(),
+                scenario
+                    .extra_events
+                    .iter()
+                    .map(|item| (*item).to_owned())
+                    .collect::<Vec<_>>(),
+            );
+            let expected = specified
+                .remove(scenario.id)
+                .unwrap_or_else(|| default.clone());
+            assert_eq!(actual, expected, "{}", scenario.id);
+        }
+        assert!(
+            specified.is_empty(),
+            "listed but not catalogued: {specified:?}"
+        );
     }
 }

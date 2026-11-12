@@ -142,7 +142,15 @@ impl Report {
 /// (whatever its kind). Scenarios above `options.through` report `locked`
 /// and do not run.
 pub fn run(kind: Kind, options: &Options) -> Result<Report, String> {
-    let scenarios = catalogue::SCENARIOS
+    run_scenarios(&catalogue::SCENARIOS, kind, options)
+}
+
+fn run_scenarios(
+    catalogue: &'static [Scenario],
+    kind: Kind,
+    options: &Options,
+) -> Result<Report, String> {
+    let scenarios = catalogue
         .iter()
         .filter(|scenario| match options.scenario {
             Some(only) => scenario.id == only.id,
@@ -171,5 +179,86 @@ fn status(scenario: &Scenario, options: &Options) -> Status {
     match result {
         Ok(()) => Status::Pass,
         Err(detail) => Status::Fail { detail },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn passes() -> Result<(), String> {
+        Ok(())
+    }
+
+    fn fails() -> Result<(), String> {
+        Err("first differing line".into())
+    }
+
+    static PROBES: [Scenario; 4] = [
+        Scenario {
+            id: "CO01",
+            ..PASSING
+        },
+        Scenario {
+            id: "CO02",
+            form: Form::Check(fails),
+            ..PASSING
+        },
+        Scenario {
+            id: "CO03",
+            unlock: Stage::U10,
+            form: Form::Check(fails),
+            ..PASSING
+        },
+        Scenario {
+            id: "SP01",
+            form: Form::Check(fails),
+            ..PASSING
+        },
+    ];
+    const PASSING: Scenario = Scenario {
+        id: "",
+        slug: "probe",
+        unlock: Stage::U0,
+        form: Form::Check(passes),
+        exit_code: 0,
+        arguments: &[],
+        extra_events: &[],
+    };
+
+    // Independent of CURRENT_STAGE and of which runners have landed: rejects
+    // a lab that reports an unlocked failure as a pass, runs a locked
+    // scenario, or mixes kinds into one report.
+    #[test]
+    fn unlocked_failures_fail_the_report_and_locked_scenarios_do_not_run() {
+        let report = run_scenarios(&PROBES, Kind::Core, &Options::default()).unwrap();
+        assert_eq!(
+            report.scenarios,
+            [
+                ("CO01", Status::Pass),
+                (
+                    "CO02",
+                    Status::Fail {
+                        detail: "first differing line".into()
+                    }
+                ),
+                ("CO03", Status::Locked),
+            ]
+        );
+        assert!(report.failed());
+        assert!(
+            report
+                .render_json()
+                .contains(r#"{"id":"CO02","status":"fail","detail":"first differing line"}"#)
+        );
+        let only = Options {
+            scenario: Some(&PROBES[0]),
+            ..Options::default()
+        };
+        assert!(
+            !run_scenarios(&PROBES, Kind::Static, &only)
+                .unwrap()
+                .failed()
+        );
     }
 }

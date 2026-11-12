@@ -18,7 +18,7 @@ def lib(name, file, edits, filter):
 
 
 def lab(name, file, edits):
-    return dict(name=name, file=file, edits=edits, targets=["process_lab"], filter="")
+    return dict(name=name, file=file, edits=edits, targets=["lib"], filter="process_lab::tests")
 
 
 MUTATIONS = [
@@ -64,6 +64,21 @@ MUTATIONS = [
     lib("catalogue extra event dropped", C,
         [('    fixture("SD05", "member-children-end-before-next-member", U8).with_events(TASK_TERMINAL),', '    fixture("SD05", "member-children-end-before-next-member", U8),')],
         "process_lab::catalogue"),
+    lib("catalogue exit code dropped", C,
+        [('    fixture("MB10", "computed-zero-capacity-defects-at-spec", U6).defects(),', '    fixture("MB10", "computed-zero-capacity-defects-at-spec", U6),')],
+        "process_lab::catalogue"),
+    lib("catalogue runs truncated", C,
+        [('.runs(&["capacity", "limit", "window", "members", "shutdown_within"])', '.runs(&["capacity", "limit", "window", "members"])')],
+        "process_lab::catalogue"),
+    lib("catalogue harness file swapped", C,
+        [('        HEAP_BOUNDARY,\n    ),\n    fixture("CB08"', '        KERNEL_FAULTS,\n    ),\n    fixture("CB08"')],
+        "process_lab::catalogue"),
+    lib("clock request kind read from cause_task_id", T,
+        [('lookup(&event.fields, "cause_task_id") != Some(&JsonData::Null)', 'false')],
+        "process_lab::transcript"),
+    lib("unexpected keys accepted", T,
+        [('        if field_keys(&self.fields) != sorted_keys(&[ENVELOPE, identities]) {', '        if false {')],
+        "process_lab::transcript"),
     lab("locked scenarios run", M,
         [('    if scenario.unlock > options.through {', '    if false {')]),
     lab("unlocked failures pass", M,

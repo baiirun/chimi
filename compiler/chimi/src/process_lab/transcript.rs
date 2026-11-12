@@ -1,25 +1,68 @@
 //! Runner telemetry -> canonical transcript (lab specification,
-//! "`expected.transcript`").
-//!
-//! The input is the JSON-lines telemetry the native runner writes. Every line
-//! carries `schema`, `event`, and a `sequence` shared by every event the
-//! runner writes. Scheduler events add `task_id`, `parent_task_id`,
-//! `cause_task_id`, and `channel_id`. Process-family events
-//! (`ChimiSchedulerTraceEvent` family 3) add `supervisor_id`,
-//! `membership_id`, `incarnation_id`, and `parent_supervisor_id`, and their
-//! `attributes` carry `time_ns`, `cause`, `name`, `address_kind`, `outcome`,
-//! and `attempts_in_window`. Clock-family events (family 4) are named
-//! `clock_advanced`, `clock_timer_started`, `clock_timer_fired`,
-//! `clock_timer_cancelled`, and `clock_deadlock_waiter`, and carry
-//! `attributes.time_ns`. An absent identity or attribute is `null`. The lab
-//! specification's "Runner telemetry" section is the contract for these
-//! fields.
+//! "`expected.transcript`" and "Runner telemetry for process and clock
+//! events", which fix the key set of each event family checked here).
 
 use crate::json::{JsonData, decode_json};
 
 const SCHEMA: &str = "chimi.runtime.v1";
 const CLOCK_ADVANCED: &str = "clock_advanced";
 const PROCESS_SEND: &str = "process_send";
+
+const ENVELOPE: &[&str] = &[
+    "schema",
+    "event",
+    "sequence",
+    "computation",
+    "execution_id",
+    "task_id",
+    "parent_task_id",
+    "cause_task_id",
+    "channel_id",
+    "attributes",
+];
+const PROCESS_IDENTITIES: &[&str] = &[
+    "supervisor_id",
+    "membership_id",
+    "incarnation_id",
+    "parent_supervisor_id",
+];
+const SCHEDULER_ATTRIBUTES: &[&str] = &[
+    "scheduler_sequence",
+    "capacity",
+    "queue_depth",
+    "waiter_depth",
+    "discard_count",
+];
+const PROCESS_ATTRIBUTES: &[&str] = &[
+    "time_ns",
+    "cause",
+    "name",
+    "address_kind",
+    "outcome",
+    "attempts_in_window",
+];
+const CLOCK_ATTRIBUTES: &[&str] = &["time_ns", "request_kind"];
+
+/// Process-family event names in trace-kind order (kinds 1 to 10).
+const PROCESS_EVENTS: &[&str] = &[
+    "process_started",
+    "admission_rejected",
+    "process_terminated",
+    "restart_attempted",
+    "restart_limit_exceeded",
+    "supervisor_escalated",
+    "membership_removed",
+    "supervisor_stopped",
+    PROCESS_SEND,
+    "supervisor_started",
+];
+const CLOCK_EVENTS: &[&str] = &[
+    CLOCK_ADVANCED,
+    "clock_timer_started",
+    "clock_timer_fired",
+    "clock_timer_cancelled",
+    "clock_deadlock_waiter",
+];
 
 /// Projects telemetry onto the transcript lines the lab compares.
 ///
@@ -48,6 +91,29 @@ pub fn project(telemetry: &str, extra_events: &[&str]) -> Result<Vec<String>, St
             ));
         }
         last_sequence = Some(event.sequence);
+        let name = event.name.as_str();
+        let family = if PROCESS_EVENTS.contains(&name) {
+            Some((PROCESS_IDENTITIES, PROCESS_ATTRIBUTES))
+        } else if CLOCK_EVENTS.contains(&name) {
+            Some((&[][..], CLOCK_ATTRIBUTES))
+        } else if extra_events.contains(&name) {
+            Some((&[][..], &[][..]))
+        } else {
+            None
+        };
+        if let Some((identities, attributes)) = family {
+            event
+                .expect_keys(identities, attributes)
+                .map_err(|error| format!("telemetry line {}: {error}", index + 1))?;
+        }
+        if CLOCK_EVENTS.contains(&name)
+            && lookup(&event.fields, "cause_task_id") != Some(&JsonData::Null)
+        {
+            return Err(format!(
+                "telemetry line {}: `{name}` carries its request kind in attributes, not cause_task_id",
+                index + 1
+            ));
+        }
         let rendered = if event.name == CLOCK_ADVANCED {
             let time = event.time()?;
             if time < now {
@@ -163,6 +229,26 @@ impl Event {
             fields,
             attributes,
         })
+    }
+
+    /// The event has exactly the envelope plus `identities` at the top level,
+    /// and exactly the scheduler attributes plus `attributes`.
+    fn expect_keys(&self, identities: &[&str], attributes: &[&str]) -> Result<(), String> {
+        if field_keys(&self.fields) != sorted_keys(&[ENVELOPE, identities]) {
+            return Err(format!(
+                "`{}` has keys {:?}",
+                self.name,
+                field_keys(&self.fields)
+            ));
+        }
+        if field_keys(&self.attributes) != sorted_keys(&[SCHEDULER_ATTRIBUTES, attributes]) {
+            return Err(format!(
+                "`{}` has attributes {:?}",
+                self.name,
+                field_keys(&self.attributes)
+            ));
+        }
+        Ok(())
     }
 
     fn time(&self) -> Result<u64, String> {
@@ -313,6 +399,21 @@ impl Event {
     }
 }
 
+fn field_keys(fields: &[(String, JsonData)]) -> Vec<&str> {
+    let mut keys = fields
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    keys
+}
+
+fn sorted_keys<'a>(parts: &[&[&'a str]]) -> Vec<&'a str> {
+    let mut keys = parts.concat();
+    keys.sort_unstable();
+    keys
+}
+
 fn lookup<'a>(fields: &'a [(String, JsonData)], key: &str) -> Option<&'a JsonData> {
     fields
         .iter()
@@ -375,7 +476,7 @@ mod tests {
                 id(parent)
             ),
             &format!(
-                r#""scheduler_sequence":{sequence},"time_ns":{time},"cause":{},"name":{},"address_kind":{},"outcome":{},"attempts_in_window":{attempts}"#,
+                r#""scheduler_sequence":{sequence},"capacity":0,"queue_depth":0,"waiter_depth":0,"discard_count":0,"time_ns":{time},"cause":{},"name":{},"address_kind":{},"outcome":{},"attempts_in_window":{attempts}"#,
                 text(cause),
                 text(name),
                 text(send.map(|send| send.0)),
@@ -384,13 +485,24 @@ mod tests {
         )
     }
 
-    fn advance(sequence: u64, time: u64) -> String {
+    /// A clock-family line. The request kind lives in attributes, never in
+    /// `cause_task_id`.
+    fn clock(event: &str, sequence: u64, task: Option<u64>, time: u64) -> String {
+        let task = task.map_or("null".to_owned(), |task| task.to_string());
         line(
-            CLOCK_ADVANCED,
+            event,
             sequence,
-            r#""task_id":null,"parent_task_id":null,"cause_task_id":null,"channel_id":null"#,
-            &format!(r#""scheduler_sequence":{sequence},"time_ns":{time},"request_kind":0"#),
+            &format!(
+                r#""task_id":{task},"parent_task_id":null,"cause_task_id":null,"channel_id":null"#
+            ),
+            &format!(
+                r#""scheduler_sequence":{sequence},"capacity":0,"queue_depth":0,"waiter_depth":0,"discard_count":0,"time_ns":{time},"request_kind":0"#
+            ),
         )
+    }
+
+    fn advance(sequence: u64, time: u64) -> String {
+        clock(CLOCK_ADVANCED, sequence, None, time)
     }
 
     fn task(
@@ -505,12 +617,7 @@ mod tests {
                 0,
             ),
             advance(10, MS),
-            line(
-                "clock_timer_fired",
-                11,
-                r#""task_id":1"#,
-                &format!(r#""time_ns":{MS}"#),
-            ),
+            clock("clock_timer_fired", 11, Some(1), MS),
             process(
                 "process_send",
                 12,
@@ -686,6 +793,16 @@ mod tests {
                 None,
                 0,
             ),
+            process(
+                "admission_rejected",
+                8,
+                0,
+                [None, Some(1), None, None, None],
+                Some("start_failed"),
+                None,
+                None,
+                0,
+            ),
         ]
         .join("\n");
         assert_eq!(
@@ -698,6 +815,7 @@ mod tests {
                 "@0s admission_rejected supervisor=S1 reason=capacity_reached",
                 "@0s supervisor_escalated supervisor=S2 parent=S1",
                 "@0s membership_removed membership=M3",
+                "@0s admission_rejected supervisor=S1 reason=start_failed",
             ]
         );
     }
@@ -726,6 +844,14 @@ mod tests {
                 0,
             )
         };
+        // The unbroken lines the cases edit are valid.
+        for valid in [
+            started(1, 0),
+            advance(1, 5),
+            task("task_terminal", 1, 1, None, None),
+        ] {
+            assert!(project(&valid, &["task_terminal"]).is_ok(), "{valid}");
+        }
         let cases = [
             ("not JSON", "{".to_owned()),
             (
@@ -780,10 +906,37 @@ mod tests {
                     0,
                 ),
             ),
-            ("advance without time", line(CLOCK_ADVANCED, 1, "", "")),
+            (
+                "advance without time",
+                advance(1, 5).replace(r#""time_ns":5,"#, ""),
+            ),
+            (
+                "unexpected attribute on a kept event",
+                started(1, 0).replace(
+                    r#""attempts_in_window":0"#,
+                    r#""attempts_in_window":0,"extra":1"#,
+                ),
+            ),
+            (
+                "unexpected identity on a kept event",
+                started(1, 0).replace(r#""channel_id":null"#, r#""channel_id":null,"region_id":3"#),
+            ),
+            (
+                "unexpected key on a dropped process event",
+                process("supervisor_started", 1, 0, NONE, None, None, None, 0)
+                    .replace(r#""channel_id":null"#, r#""channel_id":null,"region_id":3"#),
+            ),
+            (
+                "clock request kind in cause_task_id",
+                advance(1, 5).replace(r#""cause_task_id":null"#, r#""cause_task_id":5"#),
+            ),
+            (
+                "task_terminal without the scheduler attributes",
+                task("task_terminal", 1, 1, None, None).replace(r#","discard_count":0"#, ""),
+            ),
         ];
         for (case, telemetry) in cases {
-            assert!(project(&telemetry, &[]).is_err(), "{case}");
+            assert!(project(&telemetry, &["task_terminal"]).is_err(), "{case}");
         }
     }
 

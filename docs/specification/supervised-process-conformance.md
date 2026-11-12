@@ -242,20 +242,38 @@ channel events: `schema`, `event`, `sequence`, `computation`,
 is `null`. The process and clock families add these fields. `project`
 reads them, and U5 implements them in `runtime.c`:
 
+- The envelope's `capacity`, `queue_depth`, `waiter_depth`, and
+  `discard_count` attributes stay on process and clock events, and are 0.
 - Process family (3). The event names are the transcript table's names, in
-  kind order, with `supervisor_started` as kind 10. Top-level
+  kind order, with `supervisor_started` as kind 10. The top level adds
   `supervisor_id`, `membership_id`, `incarnation_id`, and
-  `parent_supervisor_id`. `attributes` adds `time_ns` (the event's `time`),
-  `cause` (the terminal cause word or the admission reason word),
-  `name` (the name's label, `<module path>.<identifier>`), `address_kind`
-  (`named` or `direct`), `outcome` (`accepted`, `full`, or `unavailable`),
-  and `attempts_in_window`. A field the kind does not set is `null`, and
-  `attempts_in_window` is 0. `cause_task_id` is `null`, because the
-  process family's `cause` is a code, not a task.
+  `parent_supervisor_id`. `task_id` is the incarnation's task on
+  `process_started` and `null` otherwise. `cause_task_id` is `null`, because
+  the process family's `cause` is a code, not a task. `attributes` adds:
+  - `time_ns`, the event's `time`;
+  - `cause`, the terminal cause word for `process_terminated`
+    (`CHIMI_PROCESS_CAUSE_*`: `returned`, `failed`, `defected`,
+    `cancelled`, `forced`), or the reason word for `admission_rejected`
+    (`CHIMI_ADMISSION_*`: `capacity_reached`, `name_taken`, `stopped`,
+    `start_failed`);
+  - `name`, the label `<module path>.<identifier>`. `runtime.c` resolves the
+    event's name ID to this label through the program's name table;
+  - `address_kind`, `named` for `CHIMI_ADDRESS_NAMED` (1) or `direct` for
+    `CHIMI_ADDRESS_DIRECT` (2);
+  - `outcome`, `accepted`, `full`, or `unavailable` (`CHIMI_SEND_*`);
+  - `attempts_in_window`.
+
+  A field the kind does not set is `null`, and `attempts_in_window` is 0.
 - Clock family (4): `clock_advanced`, `clock_timer_started`,
   `clock_timer_fired`, `clock_timer_cancelled`, and
-  `clock_deadlock_waiter`. `attributes` adds `time_ns` and `request_kind`
-  (the waiter's request kind, otherwise 0).
+  `clock_deadlock_waiter`. `task_id` is the timer's or waiter's task, or
+  `null`. The scheduler stores a waiter's request kind in the event's
+  `cause` field, so `cause_task_id` is `null` and `attributes` adds
+  `request_kind`, read from `cause` (0 except on `clock_deadlock_waiter`),
+  and `time_ns`.
+
+The projector rejects a kept or clock event whose keys differ from these
+sets.
 
 ### Determinism obligations on the runtime
 
@@ -318,12 +336,15 @@ interleaving. RR02 shows the pattern.
 
 ## Scenario catalogue
 
-Each table lists the scenario, its unlock stage, its form, and the wrong
-implementation it rejects. Forms:
+Each table lists the scenario, its unlock stage, and the wrong
+implementation it rejects. [Catalogue data](#catalogue-data) gives each
+scenario's form, exit code, runs, and extra events. Forms:
 
 - **fixture**: a Chimi project with expected files.
 - **C**: a white-box C harness under `tests/process-lab/c/`.
-- **core**: a Rust check over verified Core.
+- **check**: a Rust check with no fixture of its own: CO01 to CO04 over
+  verified Core, MF06 over built executables, OB04 over other fixtures'
+  telemetry, and OB07 over the trace ABI.
 - **gate**: a measured performance gate.
 
 Before a runtime or heap scenario unlocks, ts-6ccbc9 breaks the guarded
@@ -581,6 +602,40 @@ take their size from `main(arguments)`.
 | OB06 | U6 | A fixture with 30 s windows and 5 s deadlines finishes in less than 2 s of wall time | Real waiting under virtual time |
 | OB07 | U5 | The trace ABI reports `CHIMI_FIBER_ABI_VERSION` 4. Process events carry dedicated `supervisor`, `membership`, and `incarnation` fields, separate from `task_id` | Identities carried in task fields |
 | IP01 | U5 | `chimi run` on a process fixture defects with "requires the supervised process runtime" | Silent divergence between backends |
+
+### Catalogue data
+
+`catalogue.rs` must match this table, and a unit test checks that it does.
+A scenario not listed is a `fixture` with exit code 0, one run with no
+arguments, and no extra events. `Runs` lists each run's argument.
+
+| ID | Form | Exit code | Runs | Extra events |
+| --- | --- | --- | --- | --- |
+| CO01–CO04 | check | 0 | - | - |
+| MF06 | check | 0 | - | - |
+| OB04 | check | 0 | - | - |
+| OB07 | check | 0 | - | - |
+| PG01–PG10 | gate | 0 | - | - |
+| RA06 | C `kernel_faults.c` | 0 | - | - |
+| SD04 | C `kernel_faults.c` | 0 | - | - |
+| CB06 | C `heap_boundary.c` | 0 | - | - |
+| CB07 | C `heap_boundary.c` | 0 | - | - |
+| MB10 | fixture | 70 | - | - |
+| RT07 | fixture | 70 | - | - |
+| SV11 | fixture | 70 | `capacity`, `limit`, `window`, `members`, `shutdown_within` | - |
+| SV12 | fixture | 70 | - | - |
+| RA02 | fixture | 70 | - | - |
+| RA05 | fixture | 70 | - | - |
+| ES01 | fixture | 70 | - | - |
+| ES04 | fixture | 70 | - | - |
+| ES05 | fixture | 70 | - | - |
+| IP01 | fixture | 70 | - | - |
+| MF01 | fixture | 0 | `10000`, `1000000` | - |
+| MF02 | fixture | 0 | `100`, `10000` | - |
+| MF03 | fixture | 0 | `100`, `10000` | - |
+| MF05 | fixture | 0 | `10000`, `1000000` | - |
+| RA07 | fixture | 0 | - | `task_terminal` |
+| SD05 | fixture | 0 | - | `task_terminal` |
 
 ## Forcing program
 
