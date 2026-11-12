@@ -10085,9 +10085,15 @@ fn building_a_value_from_an_outer_binding_inside_a_loop_is_reported() {
 // `slot_of`, through a generic struct's field), so calling them on every pass or
 // twice moves nothing, and calling a one-shot closure whose result is shareable
 // does not move the closure.
-// `handles` guards a later change: `Receive<T>` is typed shareable whatever `T` is
-// today, and if it comes to follow `T`, `Channel.receive` must still not carry its
-// receiver.
+// `handles` guards the typing of `Receive<T>`, which follows `T`: `Channel.receive`
+// must still not carry its receiver. The part rules (ts-05c0da) must keep reading
+// a part, the sibling parts, and a pattern binding free: `parts` reads a field on
+// every pass and takes each field once, `sibling_capture` captures `sender` after
+// `receiver` moved, and `pattern_reads` reads a pattern binding and then uses its
+// subject. A call moves only what the callee's body transfers (ts-a2fc84):
+// `reader_twice` calls a helper that reads its parameter, `keeps_wrap` calls one
+// that only returns it, and `keeps_completion` keeps the parts of its record that
+// `takes_receiver` does not take.
 #[test]
 fn reading_or_owning_an_exclusive_binding_does_not_move_it() {
     let source = process_program(&format!(
@@ -10141,11 +10147,191 @@ fn reading_or_owning_an_exclusive_binding_does_not_move_it() {
             "  let a = slot_of(rs)\n  let b = slot_of(rs)\n  1\n}}\n",
             "fn closure_twice(r: Receiver<Int>) -> Int {{\n",
             "  let peek = fn() -> Int {{\n    r\n    1\n  }}\n  let a = peek()\n  let b = peek()\n  a + b\n}}\n",
+            "fn parts() -> Int {{\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  let n = loop n = 0 {{\n    Channel.receive(channel.receiver)\n",
+            "    case n >= 3 {{\n      True -> break n\n      False -> n + 1\n    }}\n  }}\n",
+            "  let r = channel.receiver\n  let c = channel.completion\n  let s = channel.sender\n  n\n}}\n",
+            "fn sibling_capture() -> Int {{\n",
+            "  let channel = Channel.bounded(1)\n  let r = channel.receiver\n",
+            "  let child = Task.start(fn() -> Int {{\n    Channel.send(channel.sender, 1)\n    1\n  }})\n",
+            "  Channel.receive(r)\n  1\n}}\n",
+            "fn pattern_reads(h: Hand) -> Hand {{\n",
+            "  case h {{\n    Hand.Over(x) -> {{\n      Channel.receive(x)\n      Channel.receive(x)\n      h\n    }}\n  }}\n}}\n",
+            "fn reader_twice(r: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  next(r)\n  next(r)\n  r\n}}\n",
+            "fn keeps_wrap(r: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  wrap(r)\n  r\n}}\n",
+            "fn takes_receiver(channel: {{ completion: Completion<Int>, receiver: Receiver<Int>, sender: Sender<Int> }}) -> Int {{\n",
+            "  let r = channel.receiver\n  1\n}}\n",
+            "fn keeps_completion() -> Int {{\n",
+            "  let channel = Channel.bounded(1)\n  takes_receiver(channel)\n",
+            "  let c = channel.completion\n  1\n}}\n",
         ),
         program = HAND_PROGRAM,
     ));
     let diagnostics = check_diagnostics(&source);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+/// `(code, diagnostic text, transfer boundary)` for each diagnostic: the boundary is
+/// the words after "transferred " in a `T4241` or `T4250` message, or the message
+/// itself for any other message.
+fn transfer_diagnostics(source: &str) -> Vec<(String, String, String)> {
+    check_diagnostics(source)
+        .into_iter()
+        .map(|(code, text, message)| {
+            let boundary = message
+                .split_once("transferred ")
+                .and_then(|(_, rest)| {
+                    rest.split_once(" and ")
+                        .or_else(|| rest.split_once(" inside "))
+                })
+                .map_or(message.as_str(), |(boundary, _)| boundary)
+                .to_owned();
+            (code, text, boundary)
+        })
+        .collect()
+}
+
+// ts-05c0da: a part of an exclusive binding has one owner, as the binding does.
+// Rejects a field read that takes nothing (the second `channel.receiver` would be a
+// second owner), one that moves the whole binding (the sibling `sender` read in
+// `field_twice` would be reported), a whole use that ignores a moved part, a
+// pattern binding that is a new owner beside its subject (in either order), a value
+// that holds one binding twice, and a field move inside a loop that the loop rule
+// does not see.
+#[test]
+fn an_exclusive_part_has_one_owner() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "fn field_twice() -> Int {{\n",
+            "  let channel = Channel.bounded(1)\n  let a = channel.receiver\n",
+            "  let s = channel.sender\n  let b = channel.receiver\n  1\n}}\n",
+            "fn whole_after_field() -> Int {{\n",
+            "  let channel = Channel.bounded(1)\n  let a = channel.receiver\n",
+            "  let b = channel\n  1\n}}\n",
+            "fn part_after_subject(s: Sender<Hand>, h: Hand) -> Int {{\n",
+            "  case h {{\n    Hand.Over(x) -> {{\n      Channel.send(s, h)\n      let y = x\n      1\n    }}\n  }}\n}}\n",
+            "fn subject_after_part(s: Sender<Hand>, h: Hand) -> Int {{\n",
+            "  case h {{\n    Hand.Over(x) -> {{\n      let y = x\n      Channel.send(s, h)\n      1\n    }}\n  }}\n}}\n",
+            "fn held_twice(s: Sender<(Receiver<Int>, Receiver<Int>)>, r: Receiver<Int>) -> Int {{\n",
+            "  Channel.send(s, (r, r))\n  1\n}}\n",
+            "fn field_in_loop() -> Int {{\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  loop n = 0 {{\n    let r = channel.receiver\n",
+            "    case n >= 3 {{\n      True -> break n\n      False -> n + 1\n    }}\n",
+            "  }}\n}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let found = transfer_diagnostics(&source);
+    let found = found
+        .iter()
+        .map(|(code, text, boundary)| (code.as_str(), text.as_str(), boundary.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            ("T4241", "channel.receiver", "into `a`"),
+            ("T4241", "channel", "into `a`"),
+            ("T4241", "x", "by Channel.send"),
+            ("T4241", "h", "into `y`"),
+            (
+                "T4241",
+                "r",
+                "`r` is taken twice here; an exclusive value has one owner"
+            ),
+            ("T4250", "channel.receiver", "into `r`"),
+        ],
+        "{found:?}"
+    );
+}
+
+// ts-a2fc84: a call of a function whose body transfers its parameter moves the
+// caller's argument. Rejects calls that move nothing, summaries that do not reach a
+// fixed point (`relay_late` is called before it and `relay` are checked), a summary
+// that moves every argument (`spawn_other` keeps `r`), a closure that transfers
+// its parameter but leaves the argument usable, and a call that takes one place for
+// two transferred parameters.
+#[test]
+fn a_call_of_a_function_that_transfers_its_parameter_moves_the_argument() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "fn steal(r: Receiver<Int>) -> Int {{\n",
+            "  let child = Task.start(fn() -> Int {{\n    Channel.receive(r)\n    1\n  }})\n  1\n}}\n",
+            "fn direct(r: Receiver<Int>) -> Receiver<Int> {{\n  steal(r)\n  r\n}}\n",
+            "fn through_relays(r: Receiver<Int>) -> Receiver<Int> {{\n  relay_late(r)\n  r\n}}\n",
+            "fn relay_late(r: Receiver<Int>) -> Int {{\n  relay(r)\n}}\n",
+            "fn relay(r: Receiver<Int>) -> Int {{\n  steal(r)\n}}\n",
+            "fn field(b: Box) -> Box {{\n  steal(b.inner)\n  b\n}}\n",
+            "fn each(r: Receiver<Int>) -> Int {{\n",
+            "  loop n = 0 {{\n    steal(r)\n",
+            "    case n >= 3 {{\n      True -> break n\n      False -> n + 1\n    }}\n",
+            "  }}\n}}\n",
+            "fn spawn_other(r: Receiver<Int>, q: Receiver<Int>) -> Int {{\n",
+            "  steal(q)\n  Channel.receive(r)\n  1\n}}\n",
+            "fn keeps_r(r: Receiver<Int>, q: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  spawn_other(r, q)\n  r\n}}\n",
+            "fn by_closure(r: Receiver<Int>) -> Receiver<Int> {{\n",
+            "  let give = fn(q: Receiver<Int>) -> Int {{\n    steal(q)\n  }}\n  give(r)\n  r\n}}\n",
+            "fn both(a: Receiver<Int>, b: Receiver<Int>) -> Int {{\n  steal(a) + steal(b)\n}}\n",
+            "fn same_twice(r: Receiver<Int>) -> Int {{\n  both(r, r)\n}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let found = transfer_diagnostics(&source);
+    let found = found
+        .iter()
+        .map(|(code, text, boundary)| (code.as_str(), text.as_str(), boundary.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            ("T4241", "r", "by a call of `steal`"),
+            ("T4241", "r", "by a call of `relay_late`"),
+            ("T4241", "b", "by a call of `steal`"),
+            ("T4250", "r", "by a call of `steal`"),
+            ("T4241", "r", "by a call of `give`"),
+            (
+                "T4241",
+                "r",
+                "`r` is taken twice here; an exclusive value has one owner"
+            ),
+        ],
+        "{found:?}"
+    );
+}
+
+// ts-bb95dc: `Channel.Receive<T>` is what `T` is, so a received exclusive value is
+// exclusive while it is still wrapped. Rejects a `Receive<T>` that is shareable
+// whatever `T` is (two children could capture one received receiver), and one that
+// is never shareable (a received `Int` captured twice is fine).
+#[test]
+fn a_received_value_has_the_capability_class_of_its_payload() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "import std/channel.{{Receive}}\n",
+            "fn captured_twice(rs: Receiver<Receiver<Int>>) -> Int {{\n",
+            "  let got = Channel.receive(rs)\n",
+            "  let a = Task.start(fn() -> Int {{\n    got\n    1\n  }})\n",
+            "  let b = Task.start(fn() -> Int {{\n    got\n    2\n  }})\n  1\n}}\n",
+            "fn ints_twice(rs: Receiver<Int>) -> Int {{\n",
+            "  let got = Channel.receive(rs)\n",
+            "  let a = Task.start(fn() -> Int {{\n    got\n    1\n  }})\n",
+            "  let b = Task.start(fn() -> Int {{\n    got\n    2\n  }})\n  1\n}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let found = check_diagnostics(&source);
+    let found = found
+        .iter()
+        .map(|(code, _, message)| (code.as_str(), message.contains("`got` was transferred")))
+        .collect::<Vec<_>>();
+    assert_eq!(found, [("T4241", true)], "{found:?}");
 }
 
 // Removing a managed supervisor consumes its handle, as removing a process does.

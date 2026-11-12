@@ -1221,8 +1221,11 @@ impl TypedProject {
             )) => {
                 return ValueProperties::SHAREABLE;
             }
-            // `SendError<M>` hands the message back, so it is what `M` is.
-            Some(StandardSymbol::Type(StandardType::ProcessSendError)) => {
+            // `Process.SendError<M>` hands the message back, and `Channel.Receive<T>`
+            // holds the received value, so each is what its argument is.
+            Some(StandardSymbol::Type(
+                StandardType::ProcessSendError | StandardType::ChannelReceive,
+            )) => {
                 return arguments
                     .iter()
                     .fold(ValueProperties::SHAREABLE, |result, argument| {

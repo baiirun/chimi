@@ -142,50 +142,70 @@ and transfers no value.
 
 ### Moving exclusive values
 
-An exclusive binding has one owner in its task as well as across tasks: a value
-built from it takes it, so the binding cannot stay usable while the value
-crosses a task boundary. The compiler follows this through a function body
-(`ts-184972`):
+An exclusive value has one owner in its task as well as across tasks: a value
+built from it takes it, so the place it came from cannot stay usable while the
+value crosses a task boundary. The compiler follows this through a function
+body, and through calls by per-function summaries (`ts-184972`, `ts-05c0da`,
+`ts-a2fc84`). A **place** is a binding or a part of one: a field read out of a
+place (`channel.receiver`), or a pattern binding over a part of a `case`
+subject that is a place.
 
-- A value **carries** an exclusive binding when it is that binding, or is built
-  from a value that carries it: an element of a list or tuple literal, a field
-  of a record literal or update, an argument of a constructor call, the value
-  of a block, of any `case` arm, or of a `break` out of a loop, nested at any
-  depth and in parentheses. A field read out of a value that is not a binding,
-  such as `boxed(r).inner`, carries what that value carries.
+- A value **carries** an exclusive place when it is read out of that place, or
+  is built from a value that carries it: an element of a list or tuple literal,
+  a field of a record literal or update, an argument of a constructor call, the
+  value of a block, of any `case` arm, or of a `break` out of a loop, nested at
+  any depth and in parentheses. A field read out of a value that is not a
+  place, such as `boxed(r).inner`, carries what that value carries. A value
+  built from two parts that carry one place, such as `(r, r)` or
+  `Pair(channel, channel.receiver)`, is `T4241`.
 - A call's result carries what an argument carries when the result type is not
   always shareable and the argument's type occurs in it: as the result itself,
   or inside a field, variant field, element, or type argument. A function type,
   an interface, or an open type parameter in the result may hold any value. The
-  compiler does not look inside the called function, so `wrap(r) -> Hand`, where
-  `Hand` has a `Receiver<Int>` field, is assumed to embed `r: Receiver<Int>`,
-  while `next_hand(rs: Receiver<Hand>) -> Hand` does not embed `rs`, since
-  `Receiver<Hand>` does not occur in `Hand`. Calling a one-shot closure whose
-  result is not always shareable also carries the closure.
-- Binding a value with `let`, or as a loop's initial state, moves every binding
+  result type decides, not the called function's body, so `wrap(r) -> Hand`,
+  where `Hand` has a `Receiver<Int>` field, is assumed to embed
+  `r: Receiver<Int>`, while `next_hand(rs: Receiver<Hand>) -> Hand` does not
+  embed `rs`, since `Receiver<Hand>` does not occur in `Hand`. Calling a
+  one-shot closure whose result is not always shareable also carries the
+  closure.
+- Binding a value with `let`, or as a loop's initial state, moves every place
   the value carries into the new binding, which becomes the only owner. A
-  destructuring `let`, or a `case` whose subject is not a binding, moves what
-  the subject carries into its patterns. A later use of a moved binding is
-  `T4241`; moving a binding bound outside a loop from inside the loop is
-  `T4250`.
-- `Channel.send`, `Process.send`, `Task.start`, a `using` provider, and
-  `Supervisor.remove_process` and `remove_supervisor` transfer every binding
-  their operand carries.
-- Passing a binding to a call whose result cannot embed it does not move it.
-  `Channel.receive(r)`, or a helper `next(r) -> Int`, may run on every pass of a
-  loop. A value that is built and then dropped, never bound or transferred,
-  moves nothing.
-- Reading a field of a binding (`channel.receiver`), or matching a binding in a
-  `case`, gives a new, independent binding and moves nothing, so the record that
-  `Channel.bounded` returns can be split into its three capabilities.
+  destructuring `let`, or a `case` whose subject is not a place, moves what the
+  subject carries into its patterns. A `send`, `Task.start`, a `using`
+  provider, and `Supervisor.remove_process` and `remove_supervisor` transfer
+  every place their operand carries, and a closure transfers each exclusive
+  place it captures.
+- A call of a function whose body transfers a parameter moves the argument.
+  The body transfers a parameter when it moves the parameter, or a part of it,
+  by any of the rules above or by such a call; a call moves the same parts of
+  the argument, or what a built argument carries. Each named function has a
+  summary of the parameters it transfers, computed to a fixed point over the
+  project, so the order of declarations does not matter; a closure the
+  compiler sees built has one too. Passing an argument that only a returned
+  value embeds moves nothing at the call; the result carries it as above.
+- Moving a place moves its parts, and a place one of whose parts moved can no
+  longer be used whole. A later use of a moved place, or of a place it is part
+  of, is `T4241`; its other parts stay usable. Moving a place bound outside a
+  loop from inside the loop is `T4250`.
+- Reading a place moves nothing: `Channel.receive(r)`,
+  `Channel.receive(channel.receiver)`, or a helper `next(r) -> Int` that only
+  reads its parameter may run on every pass of a loop. A value that is built
+  and then dropped, never bound or transferred, moves nothing. Matching a place
+  in a `case` moves nothing until a pattern binding is taken, which moves that
+  part of the subject. So the record that `Channel.bounded` returns splits into
+  its three capabilities by three field reads, and a second
+  `let b = channel.receiver` is `T4241`.
+- `Channel.Receive<T>` is what `T` is: a received exclusive value is exclusive
+  before it is matched out, so one `Received(receiver)` cannot be captured by
+  two children (`ts-bb95dc`).
 
-Three flows are outside this rule, and the runtime owner token is their only
-backstop: a capability read out of the same binding twice (two reads of
-`channel.receiver`, or a pattern binding beside the binding it matched); a
-called function that transfers its parameter, which leaves the caller's
-argument usable; and `Channel.Receive<T>`, which the compiler treats as
-shareable whatever `T` is, so a received exclusive value can be captured by two
-children.
+Two flows are outside this rule, and the runtime owner token is their only
+backstop. A call through a function value the compiler did not see built (a
+function parameter, an interface method, or a closure read out of a received or
+returned value) does not move its argument when that function transfers its
+parameter. And the failure value of `Channel.send`, whose `Closed(value)` and
+`Aborted(value)` hand the payload back, is typed shareable whatever the payload
+is, so it can be captured by two children before it is matched out.
 
 Capacity, FIFO admission, graceful drain, abort, and cancellation
 linearization follow [bounded channel semantics](../research/channel-semantics.md).

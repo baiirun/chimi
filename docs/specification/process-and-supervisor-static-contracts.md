@@ -305,16 +305,19 @@ capability and supervisor identity, never as expected failures:
   enclosing function; a closure value is not followed through a later call.
   As with `Task.start` (`T4242`), shareability is judged from the provider's
   flow when it is a local binding and from its type otherwise.
-- `Process.send` moves every exclusive binding its message carries, as
+- `Process.send` moves every exclusive place its message carries, as
   `Channel.send` does
   ([moving exclusive values](task-and-channel-capabilities.md#moving-exclusive-values)):
-  the message itself, a binding it was built from through literals,
-  constructors, blocks, `case` arms, or a call whose result type can hold the
-  binding's type, and through a `let` that bound such a value (`ts-184972`).
-  A shareable value in a message (a `Running`, an `Address`) stays usable.
+  the message itself, a binding or a field of one it was built from through
+  literals, constructors, blocks, `case` arms, or a call whose result type can
+  hold the binding's type, and through a `let` that bound such a value
+  (`ts-184972`, `ts-05c0da`). A shareable value in a message (a `Running`, an
+  `Address`) stays usable.
 - `Supervisor.remove_process` and `remove_supervisor` consume a handle passed
   as a binding: a later use is `T4241`, and a removal inside a loop of a
-  handle bound outside it is `T4250`.
+  handle bound outside it is `T4250`. A function whose body sends, removes, or
+  otherwise transfers its parameter does the same to the caller's argument
+  (`ts-a2fc84`).
 - `T4240`, escape beyond the body: the inbox is task-local, so ending a body
   with `Failure(E)` must not return one. A `Process.spec` body whose failure
   type is not transferable is `T4240` at the body argument. Captures by
