@@ -1,0 +1,15 @@
+# Produced by: scripts/mutation/mutate.py --timeout 900 scripts/mutation/deep_value_mutations.py
+# at commit 541e6c1 (lane2-deep), on 2026-11-11.
+# mutation run at 541e6c1ffcf1861b56adb61941bbe0f18b328fe8
+# deep_value_mutations.py: 9 mutants against compiler/chimi
+BASELINE ok (426s)
+KILLED       release frees nested parts in place [lib -- execution::tests] (8s)
+KILLED       maps are released the derived way [lib -- execution::tests] (11s)
+KILLED       closures are released the derived way [lib -- execution::tests] (6s)
+KILLED       outcome records are freed the derived way [lib -- execution::tests] (8s)
+KILLED       outcome writer writes a field's value before its name [lib -- execution::tests] (8s)
+KILLED       native outcome writer writes a field's value before its name [language -- deeply_nested] (73s)
+KILLED       native debug renderer queues list parts first to last [language -- render] (112s)
+KILLED       native debug renderer closes before restoring the depth [language -- render] (96s)
+KILLED       native marking rescans the whole state on every pass [cli -- native_marking_work_is_linear] (17s)
+# result: every mutant killed
