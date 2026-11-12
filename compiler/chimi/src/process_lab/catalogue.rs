@@ -305,7 +305,7 @@ pub static SCENARIOS: [Scenario; 131] = [
     check("OB04", "transcripts-are-deterministic", U6),
     fixture("OB05", "one-shared-sequence", U5),
     fixture("OB06", "virtual-time-costs-no-wall-time", U6),
-    check("OB07", "trace-abi-version-four", U5),
+    check("OB07", "trace-abi-version-five", U5),
     fixture("IP01", "interpreter-rejects-processes", U5).defects(),
     // Forcing program.
     fixture("FP01", "supervised-pool", U10),

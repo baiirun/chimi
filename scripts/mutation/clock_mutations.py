@@ -66,6 +66,20 @@ MUTATIONS = [
         "      if (__builtin_add_overflow(now.value, arguments[0]->as.integer, &deadline)) {",
         "      if (__builtin_add_overflow(now.value, llabs(arguments[0]->as.integer), &deadline)) {")],
         filter="native_virtual_sleep_advances"),
+    native("Instant overflow unchecked", RUNTIME, [(
+        "      if (__builtin_add_overflow(now.value, arguments[0]->as.integer, &deadline)) {",
+        "      if ((deadline = (int64_t)((uint64_t)now.value + (uint64_t)arguments[0]->as.integer), false)) {")],
+        filter="native_sleep_past_the_instant_range"),
+    native("sleep ignores cancellation and parks again", RUNTIME, [(
+        "        if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();\n"
+        "        if (request.status == CHIMI_RESPONSE_OK) return success(void_value());\n"
+        "        if (request.status != CHIMI_RESPONSE_PENDING)\n"
+        '          return defect("Clock.sleep scheduler request failed"',
+        "        (void)scheduler_request(&request);\n"
+        "        if (request.status == CHIMI_RESPONSE_OK) return success(void_value());\n"
+        "        if (request.status != CHIMI_RESPONSE_PENDING)\n"
+        '          return defect("Clock.sleep scheduler request failed"')],
+        filter="native_cancelling_a_sleeping_task"),
     native("--clock=virtual ignored", RUNTIME, [(
         '    else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;',
         '    else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = false;')],

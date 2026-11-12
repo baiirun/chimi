@@ -614,7 +614,7 @@ take their size from `main(arguments)`.
 | OB04 | U6 | Every transcript fixture runs twice. Telemetry is byte-identical once `execution_id` is removed | Nondeterministic scheduling or identities |
 | OB05 | U5 | Process, task, and channel events share one strictly increasing `sequence` | A separate sequence for process events |
 | OB06 | U6 | A fixture with 30 s windows and 5 s deadlines finishes in less than 2 s of wall time | Real waiting under virtual time |
-| OB07 | U5 | The trace ABI reports `CHIMI_FIBER_ABI_VERSION` 4. Process events carry dedicated `supervisor`, `membership`, and `incarnation` fields, separate from `task_id` | Identities carried in task fields |
+| OB07 | U5 | The trace ABI reports `CHIMI_FIBER_ABI_VERSION` 5. Process events carry dedicated `supervisor`, `membership`, and `incarnation` fields, separate from `task_id` | Identities carried in task fields |
 | IP01 | U5 | `chimi run` on a process fixture defects with "requires the supervised process runtime" | Silent divergence between backends |
 
 ### Catalogue data
@@ -918,7 +918,7 @@ scenarios pass and `CURRENT_STAGE` names it.
 | U2 | Capability checking for specs, inboxes, and managed handles, and lowering to verified Core | SP02, SP04–SP06, SF01–SF03, SF19–SF24, CO01–CO04 |
 | U3 | Per-owner heaps, regions, and fragments in `runtime.c`, with loop reclamation on in every tier. The concurrency lab stays green | CB06, MF05, MF06 |
 | U4 | Copy on transfer for `Task.start`, `Task.result`, and `Channel.send` | CB04 |
-| U5 | The process kernel: `Process.spec`, `send`, `receive`, `Supervisor.start`, `start_process`, `stop`, the trace family, ABI version 4, and the memory-report fields | MB01–MB04, MB06, MB07, MB11, RT08, SV01, SD01, SD09, CB01–CB03, CB07, MF01, MF04, OB01–OB03, OB05, OB07, IP01 |
+| U5 | The process kernel: `Process.spec`, `send`, `receive`, `Supervisor.start`, `start_process`, `stop`, the trace family, ABI version 5, and the memory-report fields | MB01–MB04, MB06, MB07, MB11, RT08, SV01, SD01, SD09, CB01–CB03, CB07, MF01, MF04, OB01–OB03, OB05, OB07, IP01 |
 | U6 | Restart accounting and escalation at the root. Needs `Duration` and `--clock=virtual` from ts-f31a20 | MB05, MB10, RT01, RT02, SV03, SV04, SV11, RA01–RA05, RA08, ES01, ES05, CB08, OB04, OB06 |
 | U7 | Admission, names, removal, `Supervisor.wait`, drain on cancellation | MB08, MB09, RT03–RT07, SV02, SV05–SV08, SV12, RA06, RR01–RR04, SD08 |
 | U8 | `shutdown_within` deadlines, forced termination, and structured child tasks inside processes | RA07, RR05, RR06, SD02–SD07, CB05 |

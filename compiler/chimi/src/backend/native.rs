@@ -28,7 +28,7 @@ const CACHE_SCHEMA: &str = "chimi.native-cache.v1";
 const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
 const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
 const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
-const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v4-clock";
+const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v5-clock";
 const RUNTIME_ABI_VERSION: u32 = 17;
 const FIBER_RUNTIME_ABI_VERSION: u32 = chimi_fiber::ABI_VERSION;
 static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);

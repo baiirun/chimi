@@ -370,8 +370,9 @@ Sleeping follows these rules:
 
 Every execution has one time source, chosen by the runner:
 
-- `real`: the host monotonic and wall clocks. This is the default for
-  `chimi run`.
+- `real`: the host monotonic and wall clocks. This is the default for a
+  native executable's runner. `chimi run` runs the reference interpreter,
+  which has no clock yet and defects at `Clock.sleep`.
 - `virtual`: a deterministic source owned by the scheduler. This is the
   default for test runs (T1) and is available as the runner flag
   `--clock=virtual` (`--clock=real` selects the default).
@@ -1205,9 +1206,9 @@ program.
   - **Runner.** The native runner takes `--clock=real` (the default) or
     `--clock=virtual` before `--`. `runtime.c` enters the scheduler through
     `chimi_scheduler_run`, which gained the task and channel release hooks
-    of `chimi_scheduler_execute_with_config`. The fiber ABI stays version 4:
-    `ChimiSchedulerConfig` had no consumer outside the fiber crate before
-    this change, and the lab's OB07 expects 4.
+    of `chimi_scheduler_execute_with_config`. The new fields change the
+    config's layout, so `CHIMI_FIBER_ABI_VERSION` is 5, and the lab's OB07
+    expects 5.
   - **Virtual deadlock.** The root defects with
     `virtual-time deadlock: every task is parked and no timer is pending:`
     followed by ` task <id> waits on <operation>` for each parked task,

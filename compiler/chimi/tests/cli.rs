@@ -1135,6 +1135,92 @@ fn native_virtual_deadlock_defects_the_root_with_its_waiters() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// An Instant past the range defects instead of wrapping to a deadline in the
+// past. Rejects an unchecked `now + d`: the 1 s sleep first makes now positive,
+// so the maximum Duration overflows, and a wrapped deadline would return at once.
+#[test]
+fn native_sleep_past_the_instant_range_defects() {
+    let scratch = scratch_directory("native-clock-overflow");
+    let executable = build_native(
+        &scratch,
+        "clock-overflow",
+        &format!(
+            "{CLOCK_IMPORTS}pub fn main() -> Int {{\n  \
+             Clock.sleep(Duration.seconds(1))\n  \
+             Clock.sleep(Duration.nanoseconds(9223372036854775807))\n  \
+             0\n}}\n"
+        ),
+    );
+    let execution = execute_native_with(
+        &executable,
+        &scratch,
+        "clock-overflow",
+        "off",
+        &["--clock=virtual"],
+    );
+    assert_eq!(execution.process.status.code(), Some(70));
+    assert!(
+        execution.outcome.contains("\"outcome\":\"defect\"")
+            && execution
+                .outcome
+                .contains("`Clock.sleep(2562047h47m16.854775807s)` overflows the Instant range"),
+        "{}",
+        execution.outcome
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// time-and-outcomes.md, "The Clock capability": cancelling a sleeping task
+// removes its timer and propagates cancellation. Rejects a sleep that ignores
+// the cancel and parks again: time would then advance to the child's 100 s
+// deadline, and the timer would never be cancelled.
+#[test]
+fn native_cancelling_a_sleeping_task_removes_its_timer() {
+    let scratch = scratch_directory("native-clock-cancel-sleep");
+    let executable = build_native(
+        &scratch,
+        "cancel-sleep",
+        &format!(
+            "{CLOCK_IMPORTS}pub fn main() -> Int {{\n  \
+             let child = Task.start(fn() -> Int {{\n    \
+             Clock.sleep(Duration.seconds(100))\n    \
+             1\n  }})\n  \
+             Clock.sleep(Duration.seconds(1))\n  \
+             Task.cancel(child)\n  \
+             Clock.sleep(Duration.seconds(1))\n  \
+             0\n}}\n"
+        ),
+    );
+    let execution = execute_native_with(
+        &executable,
+        &scratch,
+        "cancel-sleep",
+        "full",
+        &["--clock=virtual"],
+    );
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":0}\n"
+    );
+    assert_eq!(
+        clock_advances(&execution.telemetry),
+        [1_000_000_000, 2_000_000_000]
+    );
+    let cancelled: Vec<_> = execution
+        .telemetry
+        .lines()
+        .filter(|line| line.contains("\"event\":\"clock_timer_cancelled\""))
+        .collect();
+    assert_eq!(cancelled.len(), 1, "{}", execution.telemetry);
+    assert!(
+        cancelled[0].contains("\"task_id\":2,") && cancelled[0].contains("\"time_ns\":1000000000,"),
+        "{}",
+        cancelled[0]
+    );
+    terminals(&execution.telemetry);
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // Real-clock sanity check, kept out of the default suite because it waits on
 // the wall clock. Run it with
 // `cargo test -p chimi --test cli native_real_sleep_waits -- --ignored`.
