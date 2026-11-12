@@ -123,3 +123,27 @@ KILLED       process names keyed by text in Core (CO01) [process_lab] (6s)
 KILLED       a user function named like a process operation is an intrinsic (CO03) [process_lab] (6s)
 KILLED       static runner reads project contracts as standard ones [process_lab] (7s)
 # result: every mutant killed
+
+# Command: scripts/mutation/mutate.py --scratch <scratch>/mutation scripts/mutation/process_u5_mutations.py
+# CB02 is a TIMEOUT kill: a copy that ignores sharing copies 2^21 - 1 values and does not finish in 600 s.
+# mutation run at 3cd28d2fde9449ba248d9c3d5c43e8d70fc12f8c
+# process_u5_mutations.py: 17 mutants against compiler/chimi
+BASELINE ok (416s)
+KILLED       CB01: the message is the sender's original value [cargo run --quiet --bin chimi-process-lab -- --scenario CB01 --through U5] (7s)
+KILLED       MB01: an accepted message is freed by its sender [cargo run --quiet --bin chimi-process-lab -- --scenario MB01 --through U5] (5s)
+KILLED       CB03: a refused message is never freed [cargo run --quiet --bin chimi-process-lab -- --scenario CB03 --through U5] (5s)
+TIMEOUT      CB02: a message copy ignores sharing [cargo run --quiet --bin chimi-process-lab -- --scenario CB02 --through U5] (600s)
+KILLED       MB02: Full is reported as Unavailable [cargo run --quiet --bin chimi-process-lab -- --scenario MB02 --through U5] (10s)
+KILLED       CB07: a send skips the foreign-pointer check [cargo run --quiet --bin chimi-process-lab -- --scenario CB07 --through U5] (12s)
+KILLED       CB07: the defect names only the sender [cargo run --quiet --bin chimi-process-lab -- --scenario CB07 --through U5] (13s)
+KILLED       MF01: received messages join the heap's base area [cargo run --quiet --bin chimi-process-lab -- --scenario MF01 --through U5] (16s)
+KILLED       MF04: each small fragment costs a 64 KiB chunk [cargo run --quiet --bin chimi-process-lab -- --scenario MF04 --through U5] (8s)
+KILLED       OB07: the incarnation is written from the task field [cargo run --quiet --bin chimi-process-lab -- --scenario OB07 --through U5] (8s)
+KILLED       MB01: a name id is the bare symbol index [cargo run --quiet --bin chimi-process-lab -- --scenario MB01 --through U5] (8s)
+KILLED       OB02: boundaries mode runs the scheduler in full mode [cargo run --quiet --bin chimi-process-lab -- --scenario OB02 --through U5] (8s)
+KILLED       OB01: trace off still traces the scheduler [cargo run --quiet --bin chimi-process-lab -- --scenario OB01 --through U5] (9s)
+KILLED       MF06: every program links the process kernel [cargo run --quiet --bin chimi-process-lab -- --scenario MF06 --through U5] (8s)
+KILLED       IP01: defect outcomes compared as whole lines [cargo run --quiet --bin chimi-process-lab -- --scenario IP01 --through U5] (4s)
+KILLED       IP01: the interpreter names no process runtime [cargo run --quiet --bin chimi-process-lab -- --scenario IP01 --through U5] (4s)
+KILLED       SendError has no variant domain [language -- process_standard_enum_values_match_exhaustively] (4s)
+# result: every mutant killed
