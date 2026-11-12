@@ -31,6 +31,31 @@ pub(crate) struct CapabilityReport {
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
+/// The deepest path the checker tracks. A longer path is cut to this many steps,
+/// which names a larger part (over-approximating), so summaries over recursive data
+/// stay finite.
+const MAX_PATH_DEPTH: usize = 4;
+
+/// The shape of a list pattern: the elements it names before and after its rest,
+/// and whether it has a rest. Without one, the list has exactly `front + back`
+/// elements.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ListShape {
+    front: usize,
+    back: usize,
+    rest: bool,
+}
+
+impl ListShape {
+    fn admits(self, length: usize) -> bool {
+        if self.rest {
+            length >= self.front + self.back
+        } else {
+            length == self.front + self.back
+        }
+    }
+}
+
 /// One step from a value to a part of it.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum PathSegment {
@@ -39,24 +64,64 @@ enum PathSegment {
     /// A tuple pattern's element, or a constructor pattern's argument whose field
     /// name is unknown.
     Position(usize),
-    /// A list pattern's element, counted from the front.
-    Front(usize),
-    /// A list pattern's element, counted from the back.
-    Back(usize),
-    /// A list pattern's rest.
-    Rest,
+    /// The element at `index` from the front of a list matched by `shape`.
+    Front { index: usize, shape: ListShape },
+    /// The element at `index` from the back of a list matched by `shape`.
+    Back { index: usize, shape: ListShape },
+    /// The elements between the front and back ones of a list matched by `shape`.
+    Rest { shape: ListShape },
 }
 
 impl PathSegment {
-    /// Whether the parts these steps reach from one value may be the same part. Only
-    /// two different steps of the same kind are known to reach different parts.
+    /// The list elements this step reaches when the list has `length` elements, as
+    /// a half-open index range; `None` when the step's pattern does not match that
+    /// length or the step is not into a list.
+    fn list_elements(&self, length: usize) -> Option<(usize, usize)> {
+        match self {
+            Self::Front { index, shape } => shape.admits(length).then_some((*index, index + 1)),
+            Self::Back { index, shape } => shape
+                .admits(length)
+                .then(|| (length - 1 - index, length - index)),
+            Self::Rest { shape } => shape
+                .admits(length)
+                .then(|| (shape.front, length - shape.back)),
+            Self::Field(_) | Self::Position(_) => None,
+        }
+    }
+
+    fn list_shape(&self) -> Option<ListShape> {
+        match self {
+            Self::Front { shape, .. } | Self::Back { shape, .. } | Self::Rest { shape } => {
+                Some(*shape)
+            }
+            Self::Field(_) | Self::Position(_) => None,
+        }
+    }
+
+    /// Whether the parts these steps reach from one value may be the same part.
+    /// Different fields, and different tuple or constructor positions, are apart.
+    /// Two list steps overlap when some list length that both patterns match puts
+    /// them on a common element, so `[r, ..rest]` keeps `r` and `rest` apart. A field
+    /// and a position, whose correspondence is not known here, may overlap.
     fn may_reach_the_same_part(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Field(a), Self::Field(b)) => a == b,
-            (Self::Position(a), Self::Position(b))
-            | (Self::Front(a), Self::Front(b))
-            | (Self::Back(a), Self::Back(b)) => a == b,
-            _ => true,
+            (Self::Position(a), Self::Position(b)) => a == b,
+            _ => match (self.list_shape(), other.list_shape()) {
+                (Some(left), Some(right)) => {
+                    // An overlap needs a length no greater than this, or holds at
+                    // every greater length too: a front step stays put, a back step
+                    // keeps its distance from the end, and a rest only grows.
+                    let longest = left.front + left.back + right.front + right.back + 2;
+                    (0..=longest).any(|length| {
+                        match (self.list_elements(length), other.list_elements(length)) {
+                            (Some((a, b)), Some((c, d))) => a < d && c < b,
+                            _ => false,
+                        }
+                    })
+                }
+                _ => true,
+            },
         }
     }
 }
@@ -67,6 +132,11 @@ fn paths_overlap(left: &[PathSegment], right: &[PathSegment]) -> bool {
     left.iter()
         .zip(right)
         .all(|(left, right)| left.may_reach_the_same_part(right))
+}
+
+/// Whether the part at `inner` lies inside the part at `outer` (or may).
+fn path_inside(inner: &[PathSegment], outer: &[PathSegment]) -> bool {
+    outer.len() <= inner.len() && paths_overlap(inner, outer)
 }
 
 /// A binding, or a part of one reached by field reads or patterns. Every exclusive
@@ -89,9 +159,11 @@ impl Place {
         self.joined(std::slice::from_ref(&segment))
     }
 
+    /// `path` from this place, cut to `MAX_PATH_DEPTH` steps.
     fn joined(&self, path: &[PathSegment]) -> Self {
         let mut place = self.clone();
         place.path.extend_from_slice(path);
+        place.path.truncate(MAX_PATH_DEPTH);
         place
     }
 
@@ -105,9 +177,11 @@ impl Place {
             match segment {
                 PathSegment::Field(field) => name.push_str(&format!(".{field}")),
                 PathSegment::Position(index) => name.push_str(&format!(".{index}")),
-                PathSegment::Front(index) => name.push_str(&format!("[{index}]")),
-                PathSegment::Back(index) => name.push_str(&format!("[-{}]", index + 1)),
-                PathSegment::Rest => name.push_str("[..]"),
+                PathSegment::Front { index, .. } => name.push_str(&format!("[{index}]")),
+                PathSegment::Back { index, .. } => {
+                    name.push_str(&format!("[-{}]", index + 1));
+                }
+                PathSegment::Rest { .. } => name.push_str("[..]"),
             }
         }
         name
@@ -120,9 +194,22 @@ struct Transfer {
     boundary: TransferBoundary,
 }
 
+/// What a read of a place uses of the value there, and so which moves out of its
+/// binding make the read `T4241`.
+#[derive(Clone, Copy)]
+enum ReadCheck<'a> {
+    /// The whole value: any move that overlaps the place.
+    Whole,
+    /// Only its tag, as a `case` subject: a move of the place or of a place it lies
+    /// in. The pattern bindings check the parts they read.
+    Tag,
+    /// The parts at these paths, which the function it is passed to reads.
+    Paths(&'a BTreeSet<Vec<PathSegment>>),
+}
+
 /// For a function or closure, the parts of each parameter, by position, that its
 /// body transfers: a call moves those parts of the argument.
-type ParameterTransfers = BTreeMap<usize, BTreeSet<Vec<PathSegment>>>;
+type ParameterPaths = BTreeMap<usize, BTreeSet<Vec<PathSegment>>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TransferBoundary {
@@ -143,6 +230,12 @@ enum TransferBoundary {
 }
 
 impl TransferBoundary {
+    /// Whether the value leaves its binding's reach here. A move into a `let` or a
+    /// pattern stays in the function until that binding escapes in turn.
+    fn escapes(self) -> bool {
+        !matches!(self, Self::IntoBinding(_) | Self::IntoPattern)
+    }
+
     fn description(self, typed: &TypedProject) -> String {
         match self {
             Self::ClosureCapture => "into a one-shot closure".to_owned(),
@@ -169,14 +262,17 @@ struct FlowValue {
     /// What makes the value never shareable, for diagnostics.
     unshared_by: Option<String>,
     nonshareable_provider: Option<String>,
-    /// The exclusive places this value may hold: the place itself when the value is
+    /// The owned places (see `owned`) this value may hold: the place itself when it is
     /// read out of one (a binding, a field of one, or a pattern binding over a part of
     /// one), and those it was built from by constructors, literals, blocks, `case`
     /// arms, `break`, and calls whose result type can hold an argument's type. Taking
     /// the value moves them.
     carries: BTreeSet<Place>,
     /// When the value is a function, what a call of it transfers.
-    parameter_transfers: ParameterTransfers,
+    parameter_transfers: ParameterPaths,
+    /// The value's type holds an open type parameter, whose argument may be
+    /// exclusive (`x: T`, `Option<T>`).
+    holds_type_parameter: bool,
 }
 
 impl FlowValue {
@@ -190,7 +286,8 @@ impl FlowValue {
                 .then(|| typed.format_type(type_id)),
             nonshareable_provider: None,
             carries: BTreeSet::new(),
-            parameter_transfers: ParameterTransfers::new(),
+            parameter_transfers: ParameterPaths::new(),
+            holds_type_parameter: typed.holds_type_parameter(type_id),
         }
     }
 
@@ -201,7 +298,8 @@ impl FlowValue {
             unshared_by: None,
             nonshareable_provider: None,
             carries: BTreeSet::new(),
-            parameter_transfers: ParameterTransfers::new(),
+            parameter_transfers: ParameterPaths::new(),
+            holds_type_parameter: false,
         }
     }
 
@@ -212,7 +310,8 @@ impl FlowValue {
             unshared_by: None,
             nonshareable_provider: None,
             carries: BTreeSet::new(),
-            parameter_transfers: ParameterTransfers::new(),
+            parameter_transfers: ParameterPaths::new(),
+            holds_type_parameter: false,
         }
     }
 
@@ -240,6 +339,7 @@ impl FlowValue {
             nonshareable_provider: self.nonshareable_provider.or(other.nonshareable_provider),
             carries: self.carries,
             parameter_transfers: self.parameter_transfers,
+            holds_type_parameter: self.holds_type_parameter || other.holds_type_parameter,
         }
     }
 }
@@ -274,20 +374,30 @@ type FlowEnvironment = HashMap<SymbolId, FlowBinding>;
 /// function snapshots its providers into a spec.
 type SpecNeedSummaries = HashMap<SymbolId, BTreeSet<String>>;
 
-/// For each named function whose body transfers a parameter (to a task, a send, a
-/// `using` provider, a removal, a closure, a `let` or pattern, or another such call),
-/// the parts it transfers. A call of the function moves them out of its arguments.
-type TransferSummaries = HashMap<SymbolId, ParameterTransfers>;
+/// For each named function whose body transfers a parameter, the parts it
+/// transfers. A part is transferred when it, or a binding it was moved into, reaches
+/// a send, `Task.start`, a `using` provider, a removal, a closure capture, or a call
+/// that transfers it in turn; a move into a `let` or pattern that goes no further
+/// does not count. A call of the function moves those parts out of its arguments.
+type TransferSummaries = HashMap<SymbolId, ParameterPaths>;
+
+/// For each named function, the parts of each parameter its body reads, directly or
+/// through calls. A call checks only those parts of an argument, so a record whose
+/// `receiver` has moved can still go to a function that reads only its `sender`.
+type ReadSummaries = HashMap<SymbolId, ParameterPaths>;
 
 #[derive(Default, Eq, PartialEq)]
 struct Summaries {
     spec_needs: SpecNeedSummaries,
     transfers: TransferSummaries,
+    reads: ReadSummaries,
 }
 
-/// Ensures: the report of a pass whose spec-need and transfer summaries are a fixed
-/// point, so a function's summary is the same whether its callers come before or
-/// after it. Both only grow from pass to pass, so the loop ends.
+/// Ensures: the report of a pass whose summaries are a fixed point, so a function's
+/// summary is the same whether its callers come before or after it. Every summary
+/// only grows from pass to pass, from facts in the bodies and from the previous
+/// pass's summaries, and its paths are cut to `MAX_PATH_DEPTH` steps, so there are
+/// finitely many summaries and the loop ends.
 pub(crate) fn check(typed: &TypedProject) -> CapabilityReport {
     let mut summaries = Summaries::default();
     loop {
@@ -299,6 +409,9 @@ pub(crate) fn check(typed: &TypedProject) -> CapabilityReport {
             spec_needs: BTreeSet::new(),
             next_summaries: Summaries::default(),
             loop_breaks: Vec::new(),
+            took: HashMap::new(),
+            escaped: BTreeSet::new(),
+            read_places: BTreeSet::new(),
         };
         checker.check_modules();
         if checker.next_summaries == summaries {
@@ -324,6 +437,15 @@ struct CapabilityChecker<'a> {
     /// For each enclosing loop of the function being evaluated, innermost last, what
     /// its `break` values carry: the loop's value carries them.
     loop_breaks: Vec<BTreeSet<Place>>,
+    /// For each binding of the current declaration, the places moved into it when it
+    /// was bound. Kept after the binding leaves scope, so an escape of a value built
+    /// in a block still reaches what the block's bindings took.
+    took: HashMap<SymbolId, BTreeSet<Place>>,
+    /// The places of the current declaration that reached a transfer boundary,
+    /// directly or through the bindings they were moved into.
+    escaped: BTreeSet<Place>,
+    /// The places the current declaration reads.
+    read_places: BTreeSet<Place>,
 }
 
 impl CapabilityChecker<'_> {
@@ -341,6 +463,9 @@ impl CapabilityChecker<'_> {
         };
         let mut environment = FlowEnvironment::new();
         self.spec_needs.clear();
+        self.took.clear();
+        self.escaped.clear();
+        self.read_places.clear();
         let mut function = None;
         let mut parameters = Vec::new();
         if declaration.kind == ModuleDeclarationKind::Function {
@@ -373,15 +498,17 @@ impl CapabilityChecker<'_> {
                     .spec_needs
                     .insert(symbol, std::mem::take(&mut self.spec_needs));
             }
-            let transfers = parameter_transfers(&parameters, &environment);
+            let transfers = parameter_paths(&parameters, &self.escaped);
             if !transfers.is_empty() {
                 self.next_summaries.transfers.insert(symbol, transfers);
             }
+            let reads = parameter_paths(&parameters, &self.read_places);
+            self.next_summaries.reads.insert(symbol, reads);
         }
     }
 
     /// Returns the parameter symbols by position (`None` where a parameter has no
-    /// symbol), for `parameter_transfers`.
+    /// symbol), for `parameter_paths`.
     fn add_signature_bindings(
         &self,
         module_id: ModuleId,
@@ -430,7 +557,14 @@ impl CapabilityChecker<'_> {
                     return self.record(module_id, expression, FlowValue::invalid());
                 };
                 if environment.contains_key(&symbol) {
-                    self.read_place(module_id, expression, &name.text, name.range, environment)
+                    self.read_place(
+                        module_id,
+                        expression,
+                        &name.text,
+                        name.range,
+                        ReadCheck::Whole,
+                        environment,
+                    )
                 } else if matches!(
                     self.typed.resolved.symbol(symbol).kind,
                     ProjectSymbolKind::Function
@@ -450,7 +584,14 @@ impl CapabilityChecker<'_> {
             ModuleExpression::Select { range, .. } => {
                 if let Some(place) = self.expression_place(module_id, expression, environment) {
                     let text = place.name(self.typed);
-                    self.read_place(module_id, expression, &text, *range, environment)
+                    self.read_place(
+                        module_id,
+                        expression,
+                        &text,
+                        *range,
+                        ReadCheck::Whole,
+                        environment,
+                    )
                 } else {
                     self.evaluate_select(module_id, expression, environment)
                 }
@@ -459,17 +600,42 @@ impl CapabilityChecker<'_> {
                 callee, arguments, ..
             } => {
                 let mut callee_value = self.evaluate(module_id, callee, environment);
+                let callee_symbol = self.expression_binding_symbol(module_id, callee);
+                // A named function's argument is checked only at the parts the
+                // function reads, from its summary in the previous pass.
+                let reads = callee_symbol
+                    .filter(|symbol| self.is_project_function(*symbol))
+                    .map(|symbol| self.summaries.reads.get(&symbol));
+                let unread = BTreeSet::new();
                 let arguments = arguments
                     .iter()
-                    .map(|argument| {
-                        let value = self.evaluate(module_id, &argument.value, environment);
-                        (&argument.value, value)
+                    .enumerate()
+                    .map(|(index, argument)| {
+                        let argument = &argument.value;
+                        let value = match reads {
+                            Some(reads)
+                                if self
+                                    .expression_place(module_id, argument, environment)
+                                    .is_some() =>
+                            {
+                                let paths =
+                                    reads.and_then(|reads| reads.get(&index)).unwrap_or(&unread);
+                                let value = self.read_argument(
+                                    module_id,
+                                    argument,
+                                    ReadCheck::Paths(paths),
+                                    environment,
+                                );
+                                self.record(module_id, argument, value)
+                            }
+                            _ => self.evaluate(module_id, argument, environment),
+                        };
+                        (argument, value)
                     })
                     .collect::<Vec<_>>();
                 // A call of a function whose body transfers a parameter moves the
                 // argument: what the callee's value says, and for a named function
                 // its summary from the previous pass.
-                let callee_symbol = self.expression_binding_symbol(module_id, callee);
                 let mut transfers = std::mem::take(&mut callee_value.parameter_transfers);
                 if let Some(summary) =
                     callee_symbol.and_then(|symbol| self.summaries.transfers.get(&symbol))
@@ -687,16 +853,23 @@ impl CapabilityChecker<'_> {
                 // A subject built here is taken apart by the patterns, as by a
                 // destructuring `let`: they take what it carries.
                 let mut subject_places = Vec::new();
+                let mut subject_carries = Vec::new();
                 for subject in subjects {
-                    let value = self.evaluate(module_id, subject, environment);
                     let place = self.expression_place(module_id, subject, environment);
-                    if place.is_none() {
+                    if place.is_some() {
+                        let value =
+                            self.read_argument(module_id, subject, ReadCheck::Tag, environment);
+                        self.record(module_id, subject, value);
+                        subject_carries.push(BTreeSet::new());
+                    } else {
+                        let value = self.evaluate(module_id, subject, environment);
                         self.transfer_carried(
                             &value,
                             subject.range(),
                             TransferBoundary::IntoPattern,
                             environment,
                         );
+                        subject_carries.push(value.carries);
                     }
                     subject_places.push(place);
                 }
@@ -706,7 +879,14 @@ impl CapabilityChecker<'_> {
                     let mut arm_environment = environment.clone();
                     for (index, pattern) in arm.patterns.iter().enumerate() {
                         let place = subject_places.get(index).cloned().flatten();
-                        self.add_pattern_bindings(module_id, pattern, place, &mut arm_environment);
+                        let took = subject_carries.get(index).cloned().unwrap_or_default();
+                        self.add_pattern_bindings(
+                            module_id,
+                            pattern,
+                            place,
+                            &took,
+                            &mut arm_environment,
+                        );
                     }
                     if let Some(guard) = &arm.guard {
                         self.evaluate(module_id, guard, &mut arm_environment);
@@ -775,6 +955,7 @@ impl CapabilityChecker<'_> {
             if let Some(transfer) = self.moved_part(environment, &place) {
                 self.use_after_transfer(module_id, &name, body.range(), transfer.boundary);
             }
+            self.read_places.insert(place.clone());
             let mut captured = self.place_value(module_id, read, environment);
             captured.parameter_transfers.clear();
             if captured.properties.transferable == PropertyDerivation::Never {
@@ -795,7 +976,7 @@ impl CapabilityChecker<'_> {
                         .unwrap_or("non-shareable value")
                 ));
             }
-            if captured.properties.capability == CapabilityClass::Exclusive {
+            if owned(&captured) {
                 self.transfer_place(
                     &place,
                     expression.range(),
@@ -828,7 +1009,7 @@ impl CapabilityChecker<'_> {
         }
         self.evaluate(module_id, body, &mut function_environment);
         self.loop_breaks = outer_loop_breaks;
-        closure.parameter_transfers = parameter_transfers(&parameters, &function_environment);
+        closure.parameter_transfers = parameter_paths(&parameters, &self.escaped);
         closure
     }
 
@@ -873,7 +1054,7 @@ impl CapabilityChecker<'_> {
     /// `Channel.send` and `Process.send`: the payload moves to the receiver.
     ///
     /// Ensures: `T4243` when the payload is never transferable; otherwise every
-    /// exclusive binding the payload carries is transferred, so a later use is `T4241`.
+    /// place the payload carries is transferred, so a later use is `T4241`.
     fn check_message_transfer(
         &mut self,
         module_id: ModuleId,
@@ -967,14 +1148,10 @@ impl CapabilityChecker<'_> {
         environment: &mut FlowEnvironment,
     ) {
         let carries = std::mem::take(&mut value.carries);
-        for place in carries {
-            self.transfer_place(
-                &place,
-                at,
-                TransferBoundary::IntoBinding(owner),
-                environment,
-            );
+        for place in &carries {
+            self.transfer_place(place, at, TransferBoundary::IntoBinding(owner), environment);
         }
+        self.took.entry(owner).or_default().extend(carries);
         environment.insert(owner, FlowBinding::owner(value));
     }
 
@@ -992,6 +1169,7 @@ impl CapabilityChecker<'_> {
 
     /// Moves `place` out of its binding, unless a part of it that overlaps has moved
     /// already (the use that took it again was reported where it read the place).
+    /// At a boundary that escapes, the place and what its binding took escape.
     fn transfer_place(
         &mut self,
         place: &Place,
@@ -999,6 +1177,9 @@ impl CapabilityChecker<'_> {
         boundary: TransferBoundary,
         environment: &mut FlowEnvironment,
     ) {
+        if boundary.escapes() {
+            self.escape(place);
+        }
         let Some(binding) = environment.get_mut(&place.root) else {
             return;
         };
@@ -1010,6 +1191,17 @@ impl CapabilityChecker<'_> {
             binding
                 .moved
                 .push((place.path.clone(), Transfer { at, boundary }));
+        }
+    }
+
+    fn escape(&mut self, place: &Place) {
+        if !self.escaped.insert(place.clone()) {
+            return;
+        }
+        // A part of a binding may hold anything the binding took.
+        let took = self.took.get(&place.root).cloned().unwrap_or_default();
+        for taken in &took {
+            self.escape(taken);
         }
     }
 
@@ -1058,20 +1250,36 @@ impl CapabilityChecker<'_> {
         }
     }
 
-    /// Reads the place `expression` names (`T4241` when it, or a part of it, moved)
-    /// or the need it names. The value carries the place when it is exclusive.
+    /// Reads the place `expression` names, as `check` says (`T4241` when a part it
+    /// uses moved), or the need it names. The value carries the place when it is
+    /// owned.
     fn read_place(
         &mut self,
         module_id: ModuleId,
         expression: &ModuleExpression,
         text: &str,
         range: TextRange,
+        check: ReadCheck<'_>,
         environment: &FlowEnvironment,
     ) -> FlowValue {
         let place = self.expression_place(module_id, expression, environment);
-        if let Some(place) = &place
-            && let Some(transfer) = self.moved_part(environment, place)
-        {
+        let moved = place.as_ref().and_then(|place| match check {
+            ReadCheck::Whole => {
+                self.read_places.insert(place.clone());
+                self.moved_part(environment, place)
+            }
+            ReadCheck::Tag => environment
+                .get(&place.root)?
+                .moved
+                .iter()
+                .find_map(|(path, transfer)| path_inside(&place.path, path).then_some(*transfer)),
+            ReadCheck::Paths(paths) => paths.iter().find_map(|path| {
+                let part = place.joined(path);
+                self.read_places.insert(part.clone());
+                self.moved_part(environment, &part)
+            }),
+        });
+        if let Some(transfer) = moved {
             self.diagnostics.push(Diagnostic::error(
                 DiagnosticStage::Type,
                 "T4241",
@@ -1085,11 +1293,39 @@ impl CapabilityChecker<'_> {
         }
         let mut value = self.place_value(module_id, expression, environment);
         if let Some(place) = place
-            && value.properties.capability == CapabilityClass::Exclusive
+            && owned(&value)
         {
             value.carries.insert(place);
         }
         value
+    }
+
+    /// `read_place` for a place passed on whole: an argument or a `case` subject.
+    fn read_argument(
+        &mut self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        check: ReadCheck<'_>,
+        environment: &FlowEnvironment,
+    ) -> FlowValue {
+        let text = self
+            .expression_place(module_id, expression, environment)
+            .map_or_else(String::new, |place| place.name(self.typed));
+        self.read_place(
+            module_id,
+            expression,
+            &text,
+            expression.range(),
+            check,
+            environment,
+        )
+    }
+
+    /// Whether `symbol` is a function declared in the project, whose body the
+    /// checker summarizes.
+    fn is_project_function(&self, symbol: SymbolId) -> bool {
+        self.typed.resolved.symbol(symbol).kind == ProjectSymbolKind::Function
+            && self.typed.resolved.standard_symbol(symbol).is_none()
     }
 
     /// The value at a place or need, without checking or taking it: a binding's
@@ -1212,11 +1448,12 @@ impl CapabilityChecker<'_> {
     fn transfer_parameters(
         &mut self,
         module_id: ModuleId,
-        transfers: &ParameterTransfers,
+        transfers: &ParameterPaths,
         boundary: TransferBoundary,
         arguments: &[(&ModuleExpression, FlowValue)],
         environment: &mut FlowEnvironment,
     ) {
+        // What earlier arguments gave up; parts of one argument may overlap.
         let mut taken = Vec::<Place>::new();
         for (index, paths) in transfers {
             let Some((argument, value)) = arguments.get(*index) else {
@@ -1226,14 +1463,17 @@ impl CapabilityChecker<'_> {
                 Some(place) => paths.iter().map(|path| place.joined(path)).collect(),
                 None => value.carries.iter().cloned().collect::<Vec<_>>(),
             };
-            for place in places {
-                if taken.iter().any(|taken| taken.overlaps(&place)) {
-                    self.taken_twice(module_id, &place, argument.range());
-                    continue;
-                }
-                self.transfer_place(&place, argument.range(), boundary, environment);
-                taken.push(place);
+            if let Some(place) = places
+                .iter()
+                .find(|place| taken.iter().any(|taken| taken.overlaps(place)))
+            {
+                self.taken_twice(module_id, place, argument.range());
+                continue;
             }
+            for place in &places {
+                self.transfer_place(place, argument.range(), boundary, environment);
+            }
+            taken.extend(places);
         }
     }
 
@@ -1296,11 +1536,13 @@ impl CapabilityChecker<'_> {
 
     /// Binds the names in `pattern`, which matches the value at `place` when the
     /// subject was read out of one: each pattern binding is then part of that place.
+    /// Otherwise each pattern binding took `took`, what the built subject carried.
     fn add_pattern_bindings(
-        &self,
+        &mut self,
         module_id: ModuleId,
         pattern: &Pattern,
         place: Option<Place>,
+        took: &BTreeSet<Place>,
         environment: &mut FlowEnvironment,
     ) {
         if let Pattern::Binding {
@@ -1332,11 +1574,17 @@ impl CapabilityChecker<'_> {
                     ..FlowBinding::owner(FlowValue::from_type(self.typed, *type_id))
                 },
             );
+            if place.is_none() {
+                self.took
+                    .entry(symbol)
+                    .or_default()
+                    .extend(took.iter().cloned());
+            }
         }
         let part = |segment| place.as_ref().map(|place| place.child(segment));
         match pattern {
             Pattern::Alias { pattern, .. } => {
-                self.add_pattern_bindings(module_id, pattern, place.clone(), environment);
+                self.add_pattern_bindings(module_id, pattern, place.clone(), took, environment);
             }
             Pattern::Constructor { arguments, .. } => {
                 let fields = self
@@ -1348,13 +1596,19 @@ impl CapabilityChecker<'_> {
                         .map_or(PathSegment::Position(index), |field| {
                             PathSegment::Field(field.name.clone())
                         });
-                    self.add_pattern_bindings(module_id, argument, part(segment), environment);
+                    self.add_pattern_bindings(
+                        module_id,
+                        argument,
+                        part(segment),
+                        took,
+                        environment,
+                    );
                 }
             }
             Pattern::Tuple { elements, .. } => {
                 for (index, element) in elements.iter().enumerate() {
                     let segment = PathSegment::Position(index);
-                    self.add_pattern_bindings(module_id, element, part(segment), environment);
+                    self.add_pattern_bindings(module_id, element, part(segment), took, environment);
                 }
             }
             Pattern::List {
@@ -1363,17 +1617,22 @@ impl CapabilityChecker<'_> {
                 suffix,
                 ..
             } => {
+                let shape = ListShape {
+                    front: prefix.len(),
+                    back: suffix.len(),
+                    rest: rest.is_some(),
+                };
                 for (index, element) in prefix.iter().enumerate() {
-                    let segment = PathSegment::Front(index);
-                    self.add_pattern_bindings(module_id, element, part(segment), environment);
+                    let segment = PathSegment::Front { index, shape };
+                    self.add_pattern_bindings(module_id, element, part(segment), took, environment);
                 }
                 if let Some(rest) = rest {
-                    let segment = PathSegment::Rest;
-                    self.add_pattern_bindings(module_id, rest, part(segment), environment);
+                    let segment = PathSegment::Rest { shape };
+                    self.add_pattern_bindings(module_id, rest, part(segment), took, environment);
                 }
                 for (index, element) in suffix.iter().rev().enumerate() {
-                    let segment = PathSegment::Back(index);
-                    self.add_pattern_bindings(module_id, element, part(segment), environment);
+                    let segment = PathSegment::Back { index, shape };
+                    self.add_pattern_bindings(module_id, element, part(segment), took, environment);
                 }
             }
             Pattern::Wildcard { .. }
@@ -1479,7 +1738,7 @@ impl CapabilityChecker<'_> {
 
     /// Requires: `loop_id` is the loop's `state_id`, which defines its state binding.
     /// Ensures: a capability bound outside the loop, or a part of one, that the body may
-    /// transfer is reported, because the next pass would use it again. The state binding is exempt: each pass
+    /// move so that it escapes is reported, because the next pass would use it again. The state binding is exempt: each pass
     /// rebinds it to the body's value. Returns what the loop's `break` values carry.
     fn evaluate_loop(
         &mut self,
@@ -1509,8 +1768,17 @@ impl CapabilityChecker<'_> {
             self.bind_owner(state, initial_value, initial.range(), &mut pass);
         }
         self.loop_breaks.push(BTreeSet::new());
+        let escaped_before = self.escaped.clone();
         self.evaluate(module_id, body, &mut pass);
         let breaks = self.loop_breaks.pop().unwrap_or_default();
+        // A move that escaped during the pass would be repeated by the next pass. One
+        // into a binding of the pass that goes no further leaves the value in the
+        // task, as a read does.
+        let escaped_in_pass = self
+            .escaped
+            .difference(&escaped_before)
+            .cloned()
+            .collect::<Vec<_>>();
         let mut reused = environment
             .iter()
             .filter_map(|(symbol, before)| Some((*symbol, before, pass.get(symbol)?)))
@@ -1528,6 +1796,11 @@ impl CapabilityChecker<'_> {
                             *transfer,
                         )
                     })
+            })
+            .filter(|(place, _)| {
+                escaped_in_pass
+                    .iter()
+                    .any(|escaped| escaped.overlaps(place))
             })
             .collect::<Vec<_>>();
         reused.sort_by_key(|(_, transfer)| transfer.at.start());
@@ -1556,27 +1829,33 @@ impl CapabilityChecker<'_> {
     }
 }
 
-/// The parts of each parameter that moved by the end of a body, by position.
-fn parameter_transfers(
-    parameters: &[Option<SymbolId>],
-    environment: &FlowEnvironment,
-) -> ParameterTransfers {
+/// The paths of `places` rooted at each parameter, by position.
+fn parameter_paths(parameters: &[Option<SymbolId>], places: &BTreeSet<Place>) -> ParameterPaths {
     parameters
         .iter()
         .enumerate()
         .filter_map(|(index, symbol)| {
-            let binding = environment.get(&(*symbol)?)?;
-            let paths = binding
-                .moved
+            let symbol = (*symbol)?;
+            let paths = places
                 .iter()
-                .map(|(path, _)| path.clone())
+                .filter(|place| place.root == symbol)
+                .map(|place| place.path.clone())
                 .collect::<BTreeSet<_>>();
             (!paths.is_empty()).then_some((index, paths))
         })
         .collect()
 }
 
-fn add_parameter_transfers(into: &mut ParameterTransfers, transfers: ParameterTransfers) {
+/// Whether a value has one owner whose moves are tracked: an exclusive value, or one
+/// that holds a type parameter's value, which may be exclusive. A function or
+/// interface value whose captures are not known is not: calling it twice is fine.
+fn owned(value: &FlowValue) -> bool {
+    value.properties.capability == CapabilityClass::Exclusive
+        || (value.holds_type_parameter
+            && value.properties.shareable == PropertyDerivation::ValueDependent)
+}
+
+fn add_parameter_transfers(into: &mut ParameterPaths, transfers: ParameterPaths) {
     for (index, mut paths) in transfers {
         into.entry(index).or_default().append(&mut paths);
     }

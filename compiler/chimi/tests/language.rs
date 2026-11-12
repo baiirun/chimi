@@ -10052,15 +10052,16 @@ fn an_exclusive_binding_moves_into_the_value_built_from_it() {
     );
 }
 
-// Building a value from a binding inside a loop takes the binding on the first pass.
-// Rejects a let move that the loop rule does not see.
+// Building a value from a binding inside a loop and sending it takes the binding on
+// the first pass. Rejects a let move that the loop rule does not see once the value
+// escapes.
 #[test]
 fn building_a_value_from_an_outer_binding_inside_a_loop_is_reported() {
     let source = process_program(&format!(
         concat!(
             "{program}",
             "fn each(s: Sender<Hand>, r: Receiver<Int>) -> Int {{\n",
-            "  loop count = 0 {{\n    let m = Hand.Over(r)\n",
+            "  loop count = 0 {{\n    let m = Hand.Over(r)\n    Channel.send(s, m)\n",
             "    case count >= 3 {{\n      True -> break count\n      False -> count + 1\n    }}\n",
             "  }}\n}}\n",
         ),
@@ -10093,7 +10094,13 @@ fn building_a_value_from_an_outer_binding_inside_a_loop_is_reported() {
 // subject. A call moves only what the callee's body transfers (ts-a2fc84):
 // `reader_twice` calls a helper that reads its parameter, `keeps_wrap` calls one
 // that only returns it, and `keeps_completion` keeps the parts of its record that
-// `takes_receiver` does not take.
+// `takes_receiver` does not take. A move that goes no further than a local binding
+// is not a transfer: `rebinds` may run on every pass, and so may `let r =
+// channel.receiver` in `rebind_in_loop`; `keep` takes a `T` without sending it.
+// `feeds_after_moving_receiver` passes a record whose `receiver` moved to a function
+// that reads only its `sender`, and `tag_after_part` matches a subject again after
+// sending a part of it. `calls_twice` calls a function parameter twice, which is not
+// tracked like a `T`. `pair_parts` captures both parts of a tuple.
 #[test]
 fn reading_or_owning_an_exclusive_binding_does_not_move_it() {
     let source = process_program(&format!(
@@ -10167,6 +10174,31 @@ fn reading_or_owning_an_exclusive_binding_does_not_move_it() {
             "fn keeps_completion() -> Int {{\n",
             "  let channel = Channel.bounded(1)\n  takes_receiver(channel)\n",
             "  let c = channel.completion\n  1\n}}\n",
+            "fn rebinds(r: Receiver<Int>) -> Int {{\n  let q = r\n  Channel.receive(q)\n  1\n}}\n",
+            "fn rebinds_each_pass() -> Int {{\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  loop n = 0 {{\n    rebinds(channel.receiver)\n",
+            "    case n >= 3 {{\n      True -> break n\n      False -> n + 1\n    }}\n  }}\n}}\n",
+            "fn rebind_in_loop() -> Int {{\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  loop n = 0 {{\n    let r = channel.receiver\n    Channel.receive(r)\n",
+            "    case n >= 3 {{\n      True -> break n\n      False -> n + 1\n    }}\n  }}\n}}\n",
+            "fn keep<T>(x: T) -> Int {{\n  let y = x\n  1\n}}\n",
+            "fn keeps_generic(r: Receiver<Int>) -> Receiver<Int> {{\n  keep(r)\n  r\n}}\n",
+            "fn feed(channel: {{ completion: Completion<Int>, receiver: Receiver<Int>, sender: Sender<Int> }}) -> Int {{\n",
+            "  Channel.send(channel.sender, 1)\n  1\n}}\n",
+            "fn feeds_after_moving_receiver() -> Int {{\n",
+            "  let channel = Channel.bounded(1)\n  let r = channel.receiver\n",
+            "  let child = Task.start(fn() -> Int {{\n    Channel.receive(r)\n    1\n  }})\n",
+            "  feed(channel)\n}}\n",
+            "fn tag_after_part(h: Hand, s: Sender<Receiver<Int>>) -> Int {{\n",
+            "  case h {{\n    Hand.Over(x) -> {{\n      Channel.send(s, x)\n",
+            "      case h {{\n        Hand.Over(_) -> 1\n      }}\n    }}\n  }}\n}}\n",
+            "fn calls_twice<A>(f: fn() -> A) -> A {{\n  let first = f()\n  f()\n}}\n",
+            "fn pair_parts(pair: (Receiver<Int>, Receiver<Int>)) -> Int {{\n",
+            "  let (a, b) = pair\n",
+            "  let x = Task.start(fn() -> Int {{\n    Channel.receive(a)\n    1\n  }})\n",
+            "  let y = Task.start(fn() -> Int {{\n    Channel.receive(b)\n    1\n  }})\n  1\n}}\n",
         ),
         program = HAND_PROGRAM,
     ));
@@ -10199,8 +10231,9 @@ fn transfer_diagnostics(source: &str) -> Vec<(String, String, String)> {
 // second owner), one that moves the whole binding (the sibling `sender` read in
 // `field_twice` would be reported), a whole use that ignores a moved part, a
 // pattern binding that is a new owner beside its subject (in either order), a value
-// that holds one binding twice, and a field move inside a loop that the loop rule
-// does not see.
+// that holds one binding twice, a field move inside a loop that escapes and that the
+// loop rule does not see, a list or tuple taken whole after a part of it moved, and
+// list steps from the front and the back that may reach one element.
 #[test]
 fn an_exclusive_part_has_one_owner() {
     let source = process_program(&format!(
@@ -10221,8 +10254,21 @@ fn an_exclusive_part_has_one_owner() {
             "fn field_in_loop() -> Int {{\n",
             "  let channel = Channel.bounded(1)\n",
             "  loop n = 0 {{\n    let r = channel.receiver\n",
+            "    let child = Task.start(fn() -> Int {{\n      Channel.receive(r)\n      1\n    }})\n",
             "    case n >= 3 {{\n      True -> break n\n      False -> n + 1\n    }}\n",
             "  }}\n}}\n",
+            "fn list_after_part(s: Sender<List<Receiver<Int>>>, rs: List<Receiver<Int>>) -> Int {{\n",
+            "  case rs {{\n    [r, ..rest] -> {{\n",
+            "      let child = Task.start(fn() -> Int {{\n        Channel.receive(r)\n        1\n      }})\n",
+            "      Channel.send(s, rs)\n      1\n    }}\n    [] -> 0\n  }}\n}}\n",
+            "fn front_and_back(rs: List<Receiver<Int>>) -> Int {{\n",
+            "  case rs {{\n    [a, ..rest] -> case rs {{\n      [..init, z] -> {{\n",
+            "        let child = Task.start(fn() -> Int {{\n          Channel.receive(a)\n          1\n        }})\n",
+            "        let y = z\n        1\n      }}\n      [] -> 0\n    }}\n    [] -> 0\n  }}\n}}\n",
+            "fn tuple_after_part(s: Sender<(Receiver<Int>, Receiver<Int>)>, pair: (Receiver<Int>, Receiver<Int>)) -> Int {{\n",
+            "  let (a, b) = pair\n",
+            "  let child = Task.start(fn() -> Int {{\n    Channel.receive(a)\n    1\n  }})\n",
+            "  Channel.send(s, pair)\n  1\n}}\n",
         ),
         program = HAND_PROGRAM,
     ));
@@ -10244,6 +10290,9 @@ fn an_exclusive_part_has_one_owner() {
                 "`r` is taken twice here; an exclusive value has one owner"
             ),
             ("T4250", "channel.receiver", "into `r`"),
+            ("T4241", "rs", "into a one-shot closure"),
+            ("T4241", "z", "into a one-shot closure"),
+            ("T4241", "pair", "into a one-shot closure"),
         ],
         "{found:?}"
     );
@@ -10253,8 +10302,10 @@ fn an_exclusive_part_has_one_owner() {
 // caller's argument. Rejects calls that move nothing, summaries that do not reach a
 // fixed point (`relay_late` is called before it and `relay` are checked), a summary
 // that moves every argument (`spawn_other` keeps `r`), a closure that transfers
-// its parameter but leaves the argument usable, and a call that takes one place for
-// two transferred parameters.
+// its parameter but leaves the argument usable, a call that takes one place for
+// two transferred parameters, a generic helper whose `T` parameter is sent (a `T`
+// may be exclusive), and a record passed to a function that reads the part of it
+// that moved.
 #[test]
 fn a_call_of_a_function_that_transfers_its_parameter_moves_the_argument() {
     let source = process_program(&format!(
@@ -10279,6 +10330,14 @@ fn a_call_of_a_function_that_transfers_its_parameter_moves_the_argument() {
             "  let give = fn(q: Receiver<Int>) -> Int {{\n    steal(q)\n  }}\n  give(r)\n  r\n}}\n",
             "fn both(a: Receiver<Int>, b: Receiver<Int>) -> Int {{\n  steal(a) + steal(b)\n}}\n",
             "fn same_twice(r: Receiver<Int>) -> Int {{\n  both(r, r)\n}}\n",
+            "fn stash<T>(x: T, s: Sender<T>) -> Int {{\n  Channel.send(s, x)\n  1\n}}\n",
+            "fn generic(r: Receiver<Int>, s: Sender<Receiver<Int>>) -> Receiver<Int> {{\n",
+            "  stash(r, s)\n  r\n}}\n",
+            "fn reads_inner(b: Box) -> Int {{\n  Channel.receive(b.inner)\n  1\n}}\n",
+            "fn reads_moved_part(b: Box) -> Int {{\n",
+            "  let r = b.inner\n",
+            "  let child = Task.start(fn() -> Int {{\n    Channel.receive(r)\n    1\n  }})\n",
+            "  reads_inner(b)\n}}\n",
         ),
         program = HAND_PROGRAM,
     ));
@@ -10300,6 +10359,47 @@ fn a_call_of_a_function_that_transfers_its_parameter_moves_the_argument() {
                 "r",
                 "`r` is taken twice here; an exclusive value has one owner"
             ),
+            ("T4241", "r", "by a call of `stash`"),
+            ("T4241", "b", "into `r`"),
+        ],
+        "{found:?}"
+    );
+}
+
+// Summaries over recursive data reach a fixed point: paths are cut to a bounded
+// depth, so a function that recurses into a part of its parameter does not make the
+// checker run forever (this test hangs without the bound). Rejects a bound that
+// drops the transfer (the callers must still see their argument moved) and list
+// steps that make `r` and `rest` of `[r, ..rest]` overlap (`pool` must compile).
+#[test]
+fn recursion_over_parts_reaches_a_fixed_point() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "enum Chain {{\n  End\n  Link(r: Receiver<Int>, next: Chain)\n}}\n",
+            "fn drain(c: Chain) -> Int {{\n",
+            "  case c {{\n    Chain.End -> 0\n    Chain.Link(r, next) -> {{\n",
+            "      let child = Task.start(fn() -> Int {{\n        Channel.receive(r)\n        1\n      }})\n",
+            "      drain(next)\n    }}\n  }}\n}}\n",
+            "fn drains(c: Chain) -> Chain {{\n  drain(c)\n  c\n}}\n",
+            "fn pool(rs: List<Receiver<Int>>) -> Int {{\n",
+            "  case rs {{\n    [r, ..rest] -> {{\n",
+            "      let child = Task.start(fn() -> Int {{\n        Channel.receive(r)\n        1\n      }})\n",
+            "      pool(rest)\n    }}\n    [] -> 0\n  }}\n}}\n",
+            "fn pools(rs: List<Receiver<Int>>) -> List<Receiver<Int>> {{\n  pool(rs)\n  rs\n}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let found = transfer_diagnostics(&source);
+    let found = found
+        .iter()
+        .map(|(code, text, boundary)| (code.as_str(), text.as_str(), boundary.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            ("T4241", "c", "by a call of `drain`"),
+            ("T4241", "rs", "by a call of `pool`"),
         ],
         "{found:?}"
     );

@@ -977,6 +977,48 @@ impl TypedProject {
         self.value_properties_with(id, &HashMap::new(), &mut HashSet::new())
     }
 
+    /// Whether a value of `type_id` holds an open type parameter's value: the type
+    /// is one, or has one as a field, variant field, element, or type argument. A
+    /// function type does not count: calling it does not take what it was given.
+    /// Conservative past a nesting depth.
+    pub(crate) fn holds_type_parameter(&self, type_id: TypeId) -> bool {
+        self.holds_type_parameter_with(type_id, &mut HashSet::new())
+    }
+
+    fn holds_type_parameter_with(&self, type_id: TypeId, visiting: &mut HashSet<TypeId>) -> bool {
+        let type_id = self.resolve_type_id(type_id);
+        if !visiting.insert(type_id) {
+            return false;
+        }
+        let holds = match &self.types[type_id.raw() as usize] {
+            CanonicalType::Generic(_) => true,
+            CanonicalType::Named { symbol, arguments } => {
+                arguments
+                    .iter()
+                    .any(|argument| self.holds_type_parameter_with(*argument, visiting))
+                    || self
+                        .fields
+                        .get(symbol)
+                        .into_iter()
+                        .flatten()
+                        .any(|field| self.holds_type_parameter_with(field.type_id, visiting))
+            }
+            CanonicalType::Record(fields) => fields
+                .iter()
+                .any(|field| self.holds_type_parameter_with(field.type_id, visiting)),
+            CanonicalType::Tuple(elements) => elements
+                .iter()
+                .any(|element| self.holds_type_parameter_with(*element, visiting)),
+            CanonicalType::FailureSetValue(_)
+            | CanonicalType::Function(_)
+            | CanonicalType::PolymorphicFunction { .. }
+            | CanonicalType::InferenceVariable(_)
+            | CanonicalType::Poison => false,
+        };
+        visiting.remove(&type_id);
+        holds
+    }
+
     /// Whether a value of type `container` may hold a value of type `part`: `part`
     /// occurs in `container` through fields, variant fields, elements, and type
     /// arguments. A function, interface, open generic, or unresolved type may hold

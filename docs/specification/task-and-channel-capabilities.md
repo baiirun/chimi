@@ -148,15 +148,18 @@ value crosses a task boundary. The compiler follows this through a function
 body, and through calls by per-function summaries (`ts-184972`, `ts-05c0da`,
 `ts-a2fc84`). A **place** is a binding or a part of one: a field read out of a
 place (`channel.receiver`), or a pattern binding over a part of a `case`
-subject that is a place.
+subject that is a place. Moves are tracked for exclusive values and for values
+whose type holds a type parameter (`x: T`, `Option<T>`), since `T` may be
+exclusive; a function or interface value is not tracked, so it may be called
+twice.
 
-- A value **carries** an exclusive place when it is read out of that place, or
-  is built from a value that carries it: an element of a list or tuple literal,
-  a field of a record literal or update, an argument of a constructor call, the
-  value of a block, of any `case` arm, or of a `break` out of a loop, nested at
-  any depth and in parentheses. A field read out of a value that is not a
-  place, such as `boxed(r).inner`, carries what that value carries. A value
-  built from two parts that carry one place, such as `(r, r)` or
+- A value **carries** a place when it is read out of that place, or is built
+  from a value that carries it: an element of a list or tuple literal, a field
+  of a record literal or update, an argument of a constructor call, the value
+  of a block, of any `case` arm, or of a `break` out of a loop, nested at any
+  depth and in parentheses. A field read out of a value that is not a place,
+  such as `boxed(r).inner`, carries what that value carries. A value built
+  from two parts that carry one place, such as `(r, r)` or
   `Pair(channel, channel.receiver)`, is `T4241`.
 - A call's result carries what an argument carries when the result type is not
   always shareable and the argument's type occurs in it: as the result itself,
@@ -171,30 +174,49 @@ subject that is a place.
 - Binding a value with `let`, or as a loop's initial state, moves every place
   the value carries into the new binding, which becomes the only owner. A
   destructuring `let`, or a `case` whose subject is not a place, moves what the
-  subject carries into its patterns. A `send`, `Task.start`, a `using`
-  provider, and `Supervisor.remove_process` and `remove_supervisor` transfer
-  every place their operand carries, and a closure transfers each exclusive
-  place it captures.
-- A call of a function whose body transfers a parameter moves the argument.
-  The body transfers a parameter when it moves the parameter, or a part of it,
-  by any of the rules above or by such a call; a call moves the same parts of
-  the argument, or what a built argument carries. Each named function has a
-  summary of the parameters it transfers, computed to a fixed point over the
+  subject carries into its patterns. Moving a place moves its parts, and a
+  place one of whose parts moved can no longer be used whole: a later use of a
+  moved place, or of a place it is part of, is `T4241`, and its other parts
+  stay usable. So the record that `Channel.bounded` returns splits into its
+  three capabilities by three field reads, and a second
+  `let b = channel.receiver` is `T4241`.
+- A place **escapes** when it reaches a transfer boundary: `Channel.send`,
+  `Process.send`, `Task.start`, a `using` provider, `Supervisor.remove_process`
+  or `remove_supervisor`, a closure that captures it, or a call that transfers
+  it. A place moved into a binding escapes when that binding, or a part of it,
+  escapes. A move that goes no further than a local binding leaves the value
+  in the task.
+- A call of a function whose body makes a parameter, or a part of it, escape
+  moves the same part of the argument (or, for a built argument, what it
+  carries). Each named function has a summary of the parameter parts that
+  escape, and of the parts it reads, computed to a fixed point over the
   project, so the order of declarations does not matter; a closure the
-  compiler sees built has one too. Passing an argument that only a returned
-  value embeds moves nothing at the call; the result carries it as above.
-- Moving a place moves its parts, and a place one of whose parts moved can no
-  longer be used whole. A later use of a moved place, or of a place it is part
-  of, is `T4241`; its other parts stay usable. Moving a place bound outside a
-  loop from inside the loop is `T4250`.
+  compiler sees built has a summary of what escapes too. A function that only
+  moves its parameter into a local, such as `fn next(r) { let q = r; ... }`,
+  transfers nothing. Passing an argument that only a returned value embeds
+  moves nothing at the call; the result carries it as above.
+- An argument passed to a named function is checked only at the parts the
+  function reads: a record whose `receiver` moved may go to a function that
+  reads only its `sender`, and passing it to one that reads `receiver` is
+  `T4241`. A `case` subject is checked only for a move of the place itself or
+  of a place it lies in; its pattern bindings check the parts they read.
+- A move inside a loop of a place bound outside it is `T4250` when the place
+  escapes during the pass, since the next pass would take it again. A
+  `let r = channel.receiver` inside the loop that goes no further is not.
 - Reading a place moves nothing: `Channel.receive(r)`,
   `Channel.receive(channel.receiver)`, or a helper `next(r) -> Int` that only
   reads its parameter may run on every pass of a loop. A value that is built
   and then dropped, never bound or transferred, moves nothing. Matching a place
   in a `case` moves nothing until a pattern binding is taken, which moves that
-  part of the subject. So the record that `Channel.bounded` returns splits into
-  its three capabilities by three field reads, and a second
-  `let b = channel.receiver` is `T4241`.
+  part of the subject.
+- Parts are named by field (`h.receiver`, and the `receiver` field of
+  `Hand.Over(x)`), by tuple position, and for list patterns by position from
+  the front or back and the rest. Two list parts are apart when no list length
+  that both patterns match puts them on a common element, so the `r` and
+  `rest` of `[r, ..rest]` are apart, while `[a, ..]` and `[.., z]` matched on
+  one list may be the same element. Paths deeper than four steps are cut to
+  four, which names a larger part, so summaries over recursive data stay
+  finite.
 - `Channel.Receive<T>` is what `T` is: a received exclusive value is exclusive
   before it is matched out, so one `Received(receiver)` cannot be captured by
   two children (`ts-bb95dc`).
@@ -204,7 +226,7 @@ backstop. A call through a function value the compiler did not see built (a
 function parameter, an interface method, or a closure read out of a received or
 returned value) does not move its argument when that function transfers its
 parameter. And the failure value of `Channel.send`, whose `Closed(value)` and
-`Aborted(value)` hand the payload back, is typed shareable whatever the payload
+`Aborted(value)` hand the payload back, is not exclusive whatever the payload
 is, so it can be captured by two children before it is matched out.
 
 Capacity, FIFO admission, graceful drain, abort, and cancellation
