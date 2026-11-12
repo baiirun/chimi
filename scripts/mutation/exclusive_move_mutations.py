@@ -1,5 +1,7 @@
 """Mutants of the exclusive-move rule (ts-184972): a value built from an exclusive
-binding carries it, and binding or transferring the value moves what it carries.
+place carries it, and binding or transferring the value moves what it carries.
+Parts of a binding move on their own (ts-05c0da), a call moves what its callee
+transfers (ts-a2fc84), and `Channel.Receive<T>` is what `T` is (ts-bb95dc).
 
 Run: scripts/mutation/mutate.py scripts/mutation/exclusive_move_mutations.py
 Each mutant must turn a capability test in tests/language.rs red. Results:
@@ -18,16 +20,19 @@ def language(name, edits, filter, file=C):
 
 MOVES = "an_exclusive_binding_moves"
 READS = "reading_or_owning"
+PARTS = "an_exclusive_part_has_one_owner"
+CALLS = "a_call_of_a_function_that_transfers"
+RECEIVED = "a_received_value"
 
 MUTATIONS = [
     # What a value carries.
-    language("a name of an exclusive binding carries nothing", [(
-        "                        value.carries.insert(symbol);",
-        "                        let _ = symbol;")], "a_send_moves"),
-    language("a name of a shareable binding carries it too", [(
-        "                    if !binding.requirement\n"
-        "                        && value.properties.capability == CapabilityClass::Exclusive\n",
-        "                    if !binding.requirement\n")], "a_send_moves_the_exclusive"),
+    language("a read of an exclusive place carries nothing", [(
+        "            value.carries.insert(place);",
+        "            let _ = place;")], "a_send_moves"),
+    language("a read of a shareable place carries it too", [(
+        "        if let Some(place) = place\n"
+        "            && value.properties.capability == CapabilityClass::Exclusive\n",
+        "        if let Some(place) = place\n")], "a_send_moves_the_exclusive"),
     language("combining values drops what the later one carries", [(
         "        self.carries.append(&mut other.carries);",
         "        other.carries.clear();")], "a_send_moves_bindings"),
@@ -48,14 +53,17 @@ MUTATIONS = [
         "                    .last()\n"
         "                    .unwrap_or_else(FlowValue::shareable)")], MOVES),
     language("a record update carries only its base", [(
-        "                    .fold(base, FlowValue::combine)",
-        "                    .fold(base, |base, field| {\n"
-        "                        let _ = field;\n"
-        "                        base\n"
-        "                    })")], MOVES),
+        "                let mut value = self.evaluate(module_id, base, environment);\n"
+        "                for field in fields {\n"
+        "                    let part = self.evaluate(module_id, &field.value, environment);\n"
+        "                    value = self.join_part(module_id, value, field.value.range(), part);",
+        "                let mut value = self.evaluate(module_id, base, environment);\n"
+        "                for field in fields {\n"
+        "                    let part = self.evaluate(module_id, &field.value, environment);\n"
+        "                    let _ = part;")], MOVES),
     language("a call's result never carries its arguments", [(
-        "                        if embeds {\n                            result.carries.extend(value.carries);",
-        "                        if false && embeds {\n                            result.carries.extend(value.carries);")],
+        "                        if embeds {\n                            self.hold_part(",
+        "                        if false && embeds {\n                            self.hold_part(")],
         MOVES),
     language("a call's result does not carry its callee", [(
         "                    result.carries = callee_value.carries;",
@@ -89,14 +97,14 @@ MUTATIONS = [
     language("a break value carries nothing out of its loop", [(
         "                        breaks.extend(carries);",
         "                        let _ = (breaks, carries);")], MOVES),
-    language("a field read out of a binding carries the binding", [(
-        "                let carries = if value.properties.shareable == PropertyDerivation::Always\n"
-        "                    || reads_a_binding(receiver_expression)\n",
-        "                let carries = if value.properties.shareable == PropertyDerivation::Always\n")],
+    language("a field read out of a binding is the whole binding", [(
+        "                self.expression_place(module_id, receiver, environment)?\n"
+        "                    .child(PathSegment::Field(member.text.clone())),",
+        "                self.expression_place(module_id, receiver, environment)?,")],
         READS),
     language("a field read out of a built value carries nothing", [(
-        "                    receiver.carries.clone()",
-        "                    BTreeSet::new()")], MOVES),
+        "            receiver.carries.clone()",
+        "            BTreeSet::new()")], MOVES),
     # Where carried bindings move.
     language("a let binding moves nothing", [(
         "                TransferBoundary::IntoBinding(owner),\n                environment,\n            );",
@@ -106,10 +114,10 @@ MUTATIONS = [
         "            self.transfer_carried(&initial_value, initial.range(), boundary, environment);",
         "            let _ = boundary;")], MOVES),
     language("a destructured or matched built value moves nothing", [(
-        "                    if !reads_a_binding(subject) {",
+        "                    if place.is_none() {",
         "                    if false {")], MOVES),
     language("matching a binding moves it", [(
-        "                    if !reads_a_binding(subject) {",
+        "                    if place.is_none() {",
         "                    if true {")], READS),
     language("a using provider transfers nothing", [(
         "                    self.transfer_carried(\n"
@@ -120,4 +128,74 @@ MUTATIONS = [
     language("a send transfers nothing it carries", [(
         "        self.transfer_carried(payload, argument.range(), boundary, environment);",
         "        let _ = boundary;")], "a_send_moves"),
+    language("a closure capture moves nothing", [(
+        "                    TransferBoundary::ClosureCapture,\n"
+        "                    environment,\n"
+        "                );\n"
+        "            }\n"
+        "            closure = closure.combine(captured);",
+        "                    TransferBoundary::ClosureCapture,\n"
+        "                    &mut environment.clone(),\n"
+        "                );\n"
+        "            }\n"
+        "            closure = closure.combine(captured);")], RECEIVED),
+    # Parts of a binding (ts-05c0da).
+    language("a field read of a binding is not checked or carried", [(
+        "                    self.read_place(module_id, expression, &text, *range, environment)",
+        "                    let _ = (text, range);\n"
+        "                    self.place_value(module_id, expression, environment)")], PARTS),
+    language("a moved part leaves its whole binding usable", [(
+        "    left.iter()\n"
+        "        .zip(right)\n"
+        "        .all(|(left, right)| left.may_reach_the_same_part(right))",
+        "    left == right")], PARTS),
+    language("sibling fields reach the same part", [(
+        "            (Self::Field(a), Self::Field(b)) => a == b,",
+        "            (Self::Field(_), Self::Field(_)) => true,")], READS),
+    language("a pattern binding over a binding is a new owner", [(
+        "                    part_of: place.clone(),",
+        "                    part_of: None,")], PARTS),
+    language("a value may hold one place twice", [(
+        "        self.check_held_once(module_id, &whole.carries, at, &part.carries);",
+        "        let _ = at;")], PARTS),
+    language("the loop rule sees only whole-binding moves", [(
+        "                    .filter(|(path, _)| !before.moved.iter().any(|(moved, _)| moved == path))",
+        "                    .filter(|(path, _)| {\n"
+        "                        path.is_empty() && !before.moved.iter().any(|(moved, _)| moved == path)\n"
+        "                    })")], PARTS),
+    language("a closure captures whole bindings", [(
+        "            captures.entry(place).or_insert(expression);",
+        "            captures.entry(Place::whole(place.root)).or_insert(expression);")], READS),
+    # Calls of functions that transfer a parameter (ts-a2fc84).
+    language("a call moves nothing its callee transfers", [(
+        "        let mut taken = Vec::<Place>::new();",
+        "        let transfers = &ParameterTransfers::new();\n"
+        "        let mut taken = Vec::<Place>::new();")], CALLS),
+    language("transfer summaries stop after one pass", [(
+        "        if checker.next_summaries == summaries {",
+        "        if checker.next_summaries.spec_needs == summaries.spec_needs {")], CALLS),
+    language("a summary transfers every parameter", [(
+        "            (!paths.is_empty()).then_some((index, paths))",
+        "            let _ = paths;\n"
+        "            Some((index, BTreeSet::from([Vec::new()])))")], READS),
+    language("a closure's parameter transfers are dropped", [(
+        "        closure.parameter_transfers = parameter_transfers(&parameters, &function_environment);",
+        "        let _ = parameter_transfers(&parameters, &function_environment);")], CALLS),
+    language("one call may take a place for two parameters", [(
+        "                if taken.iter().any(|taken| taken.overlaps(&place)) {",
+        "                if false {")], CALLS),
+    language("a call moves the whole argument, not the transferred parts", [(
+        "                Some(place) => paths.iter().map(|path| place.joined(path)).collect(),",
+        "                Some(place) => paths.iter().map(|_| place.clone()).collect(),")], READS),
+    # `Channel.Receive<T>` (ts-bb95dc).
+    language("Receive<T> is shareable whatever T is", [(
+        "                StandardType::ProcessSendError | StandardType::ChannelReceive,",
+        "                StandardType::ProcessSendError,")], RECEIVED, file=T),
+    language("Receive<T> is always exclusive", [(
+        "                StandardType::ChannelReceiver | StandardType::ChannelCompletion,\n"
+        "            )) => {",
+        "                StandardType::ChannelReceiver\n"
+        "                | StandardType::ChannelCompletion\n"
+        "                | StandardType::ChannelReceive,\n"
+        "            )) => {")], RECEIVED, file=T),
 ]
