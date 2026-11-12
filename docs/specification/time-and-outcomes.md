@@ -7,12 +7,16 @@ storable outcomes, failure-set types, failure context, and retry. It covers
 gaps G13, G14, and G25 of the
 [language completion plan](../plans/language-completion-plan.md) and the
 `Duration` type of `prog show ts-f31a20`. The remaining work is tracked by
-`prog show ts-80cbfb`. Only [`Duration`](#duration) is implemented: the
+`prog show ts-80cbfb`. [`Duration`](#duration) is implemented: the
 type, constructors, conversions, arithmetic, text form, parser, `Duration.zero`,
 derived equality and order, debug rendering, module constants, `T4303` help,
 and `T4348` to `T4350`, on both backends (see
 [Implementation notes](#implementation-notes)). `T4263` for process
-durations waits for `Process.spec`. Nothing else here is implemented yet.
+durations waits for `Process.spec`. Of the clock, only `Clock.sleep`, the
+root `clock` need, the runner's real and virtual sources, virtual deadlock,
+and the clock trace events are implemented, on the native backend only (see
+[Clock slice](#clock-slice-for-supervised-processes-ts-6ccbc9)). Nothing else
+here is implemented yet.
 Source spelling follows the current kernel and remains free to break.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative.
@@ -369,7 +373,8 @@ Every execution has one time source, chosen by the runner:
 - `real`: the host monotonic and wall clocks. This is the default for
   `chimi run`.
 - `virtual`: a deterministic source owned by the scheduler. This is the
-  default for test runs (T1) and is available as `chimi run --clock virtual`.
+  default for test runs (T1) and is available as the runner flag
+  `--clock=virtual` (`--clock=real` selects the default).
   The runner accepts `--clock-start <RFC 3339>` for the initial `Timestamp`
   and defaults to `1970-01-01T00:00:00Z`.
 
@@ -1065,7 +1070,7 @@ deadlock under virtual time.
 | Retry | Selected failures retry with the scheduled delays under virtual time. Unselected failures, defects, and cancellation are never retried. Exhaustion returns the final failure. |
 | Retry typing | A predicate over `HttpError` for an operation with `HttpError \| Timeout` reports `T4346`. |
 | Supervisor time | A restart window and a `shutdown_within` deadline elapse under virtual time with no real waiting. |
-| Tracing | Timer set, fire, and cancel, select park and commit with the committed index, timeout scope firing, virtual time advance, and terminal causes appear in `boundaries` mode without payloads. `off` mode constructs no events. |
+| Tracing | Virtual time advance, each parked task of a virtual deadlock, select park and commit with the committed index, timeout scope firing, and terminal causes appear in `boundaries` mode without payloads. Timer set, fire, and cancel are motion events, like a task's park and wake, and appear only in `full` mode. `off` mode constructs no events. |
 
 ## Implementation notes
 
@@ -1177,18 +1182,56 @@ program.
 ### Clock slice for supervised processes (ts-6ccbc9)
 
 - U1: `std/clock` declares `Clock` as an opaque provider type with no methods
-  yet, and `Clock.sleep: fn(Duration) -> Void needs { clock: Clock }`. Nothing
-  binds a root `clock` need yet, and no build runs `Clock.sleep`: the
-  interpreter defects with "requires the supervised process runtime", and the
-  native build refuses the program, until the process kernel lands.
-- Instant, Timestamp, `now`, and the structural `Clock` interface fields are
-  not part of this slice.
+  yet, and `Clock.sleep: fn(Duration) -> Void needs { clock: Clock }`.
+- Decision 6: `Clock.sleep` runs on the native backend.
+  - **Root closure.** `typing.rs` (`runner_closes`) lets `main` keep a need
+    whose interface is `std/clock.Clock` and whose name is `clock`, beside
+    the native `Console` and `FileSystem`. Any other name, such as
+    `timer: Clock`, is still `E5002`, and a constant that sleeps is still
+    `T4322`. Source code cannot construct a `Clock`, so the need has no
+    run-time value: `Clock.sleep` reads the execution time source directly.
+  - **Sleep.** `CHIMI_INTRINSIC_CLOCK_SLEEP` in `runtime.c` reads now with
+    `CHIMI_REQUEST_TIMER_NOW`, which checks cancellation, and then issues
+    `CHIMI_REQUEST_TIMER_SLEEP_UNTIL` at `now + d` until the scheduler
+    answers OK. The scheduler answers a deadline at or before now at once,
+    without parking, so a zero or negative duration returns without
+    yielding. A deadline past the `Instant` range defects with
+    ``Clock.sleep(<d>)` overflows the Instant range``. A program that
+    reaches `Clock.sleep` runs its root as a scheduler task and links the
+    fiber archive (`StandardFunction::requires_scheduler`).
+    `StandardFunction::ClockSleep` is declared before the process
+    functions, because the declaration order is the `CHIMI_INTRINSIC_*`
+    order and the runtime has no process intrinsics yet.
+  - **Runner.** The native runner takes `--clock=real` (the default) or
+    `--clock=virtual` before `--`. `runtime.c` enters the scheduler through
+    `chimi_scheduler_run`, which gained the task and channel release hooks
+    of `chimi_scheduler_execute_with_config`. The fiber ABI stays version 4:
+    `ChimiSchedulerConfig` had no consumer outside the fiber crate before
+    this change, and the lab's OB07 expects 4.
+  - **Virtual deadlock.** The root defects with
+    `virtual-time deadlock: every task is parked and no timer is pending:`
+    followed by ` task <id> waits on <operation>` for each parked task,
+    separated by `;`. The operation is `Task.result`, `Channel.send`,
+    `Channel.receive`, or `a scheduler request`. Under the real clock a root
+    with nothing pending stays suspended in the scheduler. The native
+    runtime has no asynchronous host operations, so it reports the earlier
+    generic deadlock defect and leaves the suspended tasks to process exit.
+  - **Telemetry.** Clock events use the envelope and fields of
+    [runner telemetry](supervised-process-conformance.md#runner-telemetry-for-process-and-clock-events).
+    `clock_advanced` and `clock_deadlock_waiter` are boundary events.
+    `clock_timer_started`, `clock_timer_fired`, and `clock_timer_cancelled`
+    are motion events (`full` only).
+  - **Interpreter.** The interpreter has no scheduler clock. `Clock.sleep`
+    defects with ``Clock.sleep requires the native runtime; build the program
+    with `chimi build` ``.
+- Instant, Timestamp, `now`, `--clock-start`, and the structural `Clock`
+  interface fields are not part of this slice.
 
 ### Runner
 
-- Add `--clock real|virtual` and `--clock-start`, and make the test runner
-  default to virtual.
-- Bind the root `clock` need to the execution clock provider.
+- Add `--clock-start`, and make the test runner default to virtual. The
+  native runner already takes `--clock=real|virtual` and binds the root
+  `clock` need (see the clock slice).
 - Expose cause limits as execution configuration.
 
 ## Changes to other specifications

@@ -2296,6 +2296,9 @@ fn run_c(
         release_context: ptr::null_mut(),
         deadlock_report: Some(collect_deadlock),
         deadlock_context: ptr::null_mut(),
+        release_task_value: None,
+        release_channel_value: None,
+        release_task_context: None,
     };
     let outcome = unsafe { chimi_scheduler_run(&config) };
     (outcome, events)
@@ -2447,6 +2450,9 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiSchedulerConfig, release_context),
         offset_of!(ChimiSchedulerConfig, deadlock_report),
         offset_of!(ChimiSchedulerConfig, deadlock_context),
+        offset_of!(ChimiSchedulerConfig, release_task_value),
+        offset_of!(ChimiSchedulerConfig, release_channel_value),
+        offset_of!(ChimiSchedulerConfig, release_task_context),
         size_of::<ChimiDeadlockWaiter>(),
         offset_of!(ChimiDeadlockWaiter, request_kind),
         REQUEST_SUPERVISOR_START_SUPERVISOR as usize,

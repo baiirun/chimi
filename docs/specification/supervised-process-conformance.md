@@ -253,7 +253,8 @@ channel events: `schema`, `event`, `sequence`, `computation`,
 `execution_id`, `task_id`, `parent_task_id`, `cause_task_id`, and
 `channel_id`, then `attributes` with `scheduler_sequence`. An identity of 0
 is `null`. The process and clock families add these fields. `project`
-reads them, and U5 implements them in `runtime.c`:
+reads them. `runtime.c` writes the clock family (ts-6ccbc9 decision 6),
+and U5 implements the process family there:
 
 - The envelope's `capacity`, `queue_depth`, `waiter_depth`, and
   `discard_count` attributes stay on process and clock events, and are 0.

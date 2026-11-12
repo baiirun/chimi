@@ -3,12 +3,18 @@
 //! The interpreter has no process runtime (coordinator decision 1 on ts-6ccbc9). It
 //! runs the data constructors, which build plain records so module constants can hold
 //! specs, members, and policies, and checks their ranges with the defect texts the
-//! native kernel uses. Every operation that needs a running process or the clock
-//! defects with "requires the supervised process runtime".
+//! native kernel uses. Every operation that needs a running process defects with
+//! "requires the supervised process runtime", and `Clock.sleep`, which the native
+//! runtime runs on its scheduler, says that it requires the native runtime.
 
 use super::{Control, Evaluator, RuntimeField, RuntimeValue};
 use crate::ids::CoreNodeId;
 use crate::standard::{StandardConstructor, StandardFunction};
+
+/// The interpreter has no scheduler clock; `Clock.sleep` runs on the native
+/// runtime only (time-and-outcomes.md, "Clock slice for supervised processes").
+const CLOCK_SLEEP_DEFECT: &str =
+    "Clock.sleep requires the native runtime; build the program with `chimi build`";
 
 impl Evaluator<'_> {
     /// Requires: `function` is in `std/process`, `std/supervisor`, or `std/clock`.
@@ -18,6 +24,9 @@ impl Evaluator<'_> {
         arguments: Vec<RuntimeValue>,
         call_node: CoreNodeId,
     ) -> Control {
+        if function == StandardFunction::ClockSleep {
+            return defect(CLOCK_SLEEP_DEFECT.to_owned(), call_node);
+        }
         if function.requires_process_runtime() {
             return defect(
                 format!(

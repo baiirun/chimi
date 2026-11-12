@@ -9689,6 +9689,69 @@ fn the_interpreter_defects_at_the_first_process_operation() {
     );
 }
 
+// executable-kernel.md "Program entry": the runner's provider plan closes a root
+// `clock: Clock` need, including one that reaches `main` through a started task.
+// Rejects a closure that ignores the fixed need name (`timer: Clock` must still be
+// E5002) or that reaches past the root (a constant still reports T4322).
+#[test]
+fn the_runner_closes_only_a_root_clock_need() {
+    let program = |declarations: &str| {
+        check_codes(&format!(
+            "import std/clock as Clock\nimport std/duration as Duration\n\
+             import std/task as Task\n{declarations}"
+        ))
+    };
+    let nap = "fn nap() -> Int needs { clock: Clock.Clock } {\n  \
+               Clock.sleep(Duration.seconds(1))\n  1\n}\n";
+    assert_eq!(
+        program(&format!("{nap}pub fn main() -> Int {{\n  nap()\n}}\n")),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        program(&format!(
+            "{nap}pub fn main() -> Int {{\n  Task.result(Task.start(nap))\n}}\n"
+        )),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        program(
+            "fn nap() -> Int needs { timer: Clock.Clock } {\n  1\n}\n\
+             pub fn main() -> Int {\n  nap()\n}\n"
+        ),
+        ["E5002"]
+    );
+    assert_eq!(
+        program(
+            "const later = Clock.sleep(Duration.seconds(1))\n\
+             pub fn main() -> Int {\n  1\n}\n"
+        ),
+        ["T4322"]
+    );
+}
+
+// time-and-outcomes.md "Clock slice": the interpreter has no scheduler clock and says
+// so at the sleep instead of returning as if no time had passed.
+#[test]
+fn the_interpreter_defects_at_clock_sleep() {
+    let scratch = scratch_directory("clock-interpreter-defect");
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        "import std/clock as Clock\nimport std/duration as Duration\n\
+         pub fn main() -> Int {\n  Clock.sleep(Duration.seconds(1))\n  1\n}\n",
+    )
+    .unwrap();
+    let outcome = interpreter_outcome(&path);
+    std::fs::remove_dir_all(scratch).unwrap();
+    assert!(
+        outcome.contains("\"outcome\":\"defect\"")
+            && outcome.contains(
+                "Clock.sleep requires the native runtime; build the program with `chimi build`"
+            ),
+        "{outcome}"
+    );
+}
+
 // Rejects a `Process.spec` that drops the body's needs or keeps them in the spec, and
 // a `Clock.sleep` without its `clock` need.
 #[test]

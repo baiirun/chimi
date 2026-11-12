@@ -1,4 +1,5 @@
-//! Release hooks of `chimi_scheduler_execute_with_config`: every host word
+//! Release hooks of `chimi_scheduler_execute_with_config` and
+//! `chimi_scheduler_run`: every host word
 //! the scheduler takes over leaves it exactly once, by delivery, by return,
 //! as the outcome, or through a release hook. The same holds for the entry
 //! context of a started task, which its entry or `release_task_context`
@@ -48,21 +49,97 @@ fn checkpoint(name: &'static str) {
     });
 }
 
+/// Runs `entry` through `chimi_scheduler_execute_with_config` and through
+/// `chimi_scheduler_run` on the real clock (the native runtime's entry), and
+/// requires both to release exactly the same words in the same order. A
+/// root that stalls is the exception: see `a_stalled_run_keeps_its_held_values`.
 fn execute(entry: ChimiFiberEntry) -> (SchedulerOutcome, Log) {
+    let executed = execute_once(entry, Entry::Execute);
+    let run = execute_once(entry, Entry::Run);
+    assert_ne!(
+        run.0.state,
+        ChimiFiberState::Parked as u32,
+        "a stalled root is tested on its own"
+    );
+    assert_eq!(
+        (
+            (
+                executed.0.state,
+                executed.0.value,
+                executed.0.origin,
+                executed.0.defect_code
+            ),
+            &executed.1.tasks,
+            &executed.1.channels,
+            executed.1.contexts.len(),
+            &executed.1.checkpoints,
+            &executed.1.cancelled_receives,
+        ),
+        (
+            (run.0.state, run.0.value, run.0.origin, run.0.defect_code),
+            &run.1.tasks,
+            &run.1.channels,
+            run.1.contexts.len(),
+            &run.1.checkpoints,
+            &run.1.cancelled_receives,
+        ),
+        "chimi_scheduler_run releases what chimi_scheduler_execute_with_config releases"
+    );
+    // Contexts are addresses, which differ between the two runs; each run
+    // must release the contexts its own tasks left unrun.
+    assert_eq!(
+        executed.1.contexts == executed.1.unrun_contexts,
+        run.1.contexts == run.1.unrun_contexts,
+        "both entries release the unrun contexts"
+    );
+    executed
+}
+
+#[derive(Clone, Copy)]
+enum Entry {
+    Execute,
+    Run,
+}
+
+fn execute_once(entry: ChimiFiberEntry, through: Entry) -> (SchedulerOutcome, Log) {
     LOG.with(|log| *log.borrow_mut() = Log::default());
-    let config = ChimiSchedulerExecuteConfig {
-        entry: Some(entry),
-        context: ptr::null_mut(),
-        stack_bytes: STACK,
-        trace_mode: 0,
-        trace_sink: None,
-        trace_context: ptr::null_mut(),
-        release_task_value: Some(release_task),
-        release_channel_value: Some(release_channel),
-        release_context: ptr::null_mut(),
-        release_task_context: Some(release_context),
+    let outcome = match through {
+        Entry::Execute => {
+            let config = ChimiSchedulerExecuteConfig {
+                entry: Some(entry),
+                context: ptr::null_mut(),
+                stack_bytes: STACK,
+                trace_mode: 0,
+                trace_sink: None,
+                trace_context: ptr::null_mut(),
+                release_task_value: Some(release_task),
+                release_channel_value: Some(release_channel),
+                release_context: ptr::null_mut(),
+                release_task_context: Some(release_context),
+            };
+            unsafe { chimi_scheduler_execute_with_config(&config) }
+        }
+        Entry::Run => {
+            let config = ChimiSchedulerConfig {
+                entry: Some(entry),
+                context: ptr::null_mut(),
+                stack_bytes: STACK,
+                trace_mode: 0,
+                clock_mode: process_abi::CLOCK_REAL,
+                trace_sink: None,
+                trace_context: ptr::null_mut(),
+                release_message: None,
+                release_spec_context: None,
+                release_context: ptr::null_mut(),
+                deadlock_report: None,
+                deadlock_context: ptr::null_mut(),
+                release_task_value: Some(release_task),
+                release_channel_value: Some(release_channel),
+                release_task_context: Some(release_context),
+            };
+            unsafe { process_abi::chimi_scheduler_run(&config) }
+        }
     };
-    let outcome = unsafe { chimi_scheduler_execute_with_config(&config) };
     (
         outcome,
         LOG.with(|log| std::mem::take(&mut *log.borrow_mut())),
@@ -476,9 +553,20 @@ unsafe extern "C" fn parks_forever_with_a_queued_value(_context: *mut c_void) ->
 
 #[test]
 fn values_still_held_when_execution_gives_up_are_released_once() {
-    let (outcome, log) = execute(parks_forever_with_a_queued_value);
+    let (outcome, log) = execute_once(parks_forever_with_a_queued_value, Entry::Execute);
     assert_eq!(outcome.state, ChimiFiberState::Defected as u32);
     assert_eq!(log.channels, vec![950]);
+}
+
+// `chimi_scheduler_run` on the real clock does not give up: a host event may
+// still wake the root, so it returns PARKED and the suspended execution keeps
+// what it holds. Releasing the value here would hand it out while a parked
+// fiber can still be resumed to deliver it.
+#[test]
+fn a_stalled_run_keeps_its_held_values() {
+    let (outcome, log) = execute_once(parks_forever_with_a_queued_value, Entry::Run);
+    assert_eq!(outcome.state, ChimiFiberState::Parked as u32);
+    assert!(log.channels.is_empty());
 }
 
 unsafe extern "C" fn aborts_a_channel_with_queued_values(

@@ -5,7 +5,7 @@ use crate::executable::{
     CoreStep, CoreSymbolKind,
 };
 use crate::semantic::{BinaryOperator, UnaryOperator};
-use crate::standard::{StandardFunction, StandardSymbol};
+use crate::standard::StandardSymbol;
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -626,16 +626,7 @@ fn requires_scheduler(core: &CoreProgram) -> bool {
         };
         matches!(
             core.symbol(symbol).standard,
-            Some(StandardSymbol::Function(
-                StandardFunction::TaskStart
-                    | StandardFunction::TaskResult
-                    | StandardFunction::TaskCancel
-                    | StandardFunction::ChannelSend
-                    | StandardFunction::ChannelReceive
-                    | StandardFunction::ChannelClose
-                    | StandardFunction::ChannelAbort
-                    | StandardFunction::ChannelBounded
-            ))
+            Some(StandardSymbol::Function(function)) if function.requires_scheduler()
         )
     })
 }

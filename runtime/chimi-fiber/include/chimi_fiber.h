@@ -308,25 +308,6 @@ enum {
   CHIMI_SCHEDULER_CLOCK_VIRTUAL = 1,
 };
 
-typedef struct {
-  ChimiFiberEntry entry;
-  void *context;
-  size_t stack_bytes;
-  uint32_t trace_mode;
-  uint32_t clock_mode;
-  ChimiSchedulerTraceSink trace_sink;
-  void *trace_context;
-  /* Called once for each accepted message the scheduler discards unread. */
-  ChimiMessageRelease release_message;
-  ChimiSpecContextRelease release_spec_context;
-  void *release_context;
-  /* Under the virtual clock, called once before chimi_scheduler_run returns
-     when the root defected with CHIMI_SCHEDULER_DEFECT_DEADLOCK, with every
-     parked task and the operation it waits on. May be null. */
-  ChimiDeadlockReport deadlock_report;
-  void *deadlock_context;
-} ChimiSchedulerConfig;
-
 /* Releases one host word the scheduler took over and will never hand back.
 
    Ownership. The scheduler takes over a word at these points:
@@ -346,8 +327,8 @@ typedef struct {
      channel value to the receiver;
    - return: a CHIMI_REQUEST_CHANNEL_SEND reply of CLOSED or ABORTED hands
      the value back to its sender;
-   - the outcome: chimi_scheduler_execute_with_config returns the root's
-     result, or the defect code of the task the outcome's `origin` names,
+   - the outcome: chimi_scheduler_execute_with_config or
+     chimi_scheduler_run returns the root's result, or the defect code of the task the outcome's `origin` names,
      and that word passes to the caller;
    - release: this hook, called once per word.
 
@@ -388,6 +369,34 @@ typedef void (*ChimiValueRelease)(void *context, int64_t value);
    no entry ever sees it. A null context is never passed. The hook
    runs under the same conditions as ChimiValueRelease. */
 typedef void (*ChimiTaskContextRelease)(void *context, void *task_context);
+
+/* The arguments of chimi_scheduler_run. */
+typedef struct {
+  ChimiFiberEntry entry;
+  void *context;
+  size_t stack_bytes;
+  uint32_t trace_mode;
+  uint32_t clock_mode;
+  ChimiSchedulerTraceSink trace_sink;
+  void *trace_context;
+  /* Called once for each accepted message the scheduler discards unread. */
+  ChimiMessageRelease release_message;
+  ChimiSpecContextRelease release_spec_context;
+  void *release_context;
+  /* Under the virtual clock, called once before chimi_scheduler_run returns
+     when the root defected with CHIMI_SCHEDULER_DEFECT_DEADLOCK, with every
+     parked task and the operation it waits on. May be null. */
+  ChimiDeadlockReport deadlock_report;
+  void *deadlock_context;
+  /* The task and channel hooks of ChimiSchedulerExecuteConfig, with the same
+     contract; both receive `release_context`. The root's value or defect
+     code passes to the caller as the outcome, except when the call returns
+     CHIMI_FIBER_PARKED: the suspended execution then keeps every word it
+     holds. May be null. */
+  ChimiValueRelease release_task_value;
+  ChimiValueRelease release_channel_value;
+  ChimiTaskContextRelease release_task_context;
+} ChimiSchedulerConfig;
 
 /* The arguments of chimi_scheduler_execute_with_config. The release hooks
    may be null; all three receive `release_context`. */

@@ -8,7 +8,7 @@ use super::runtime_archive_key::{
 use crate::executable::{CoreOperation, CoreProgram};
 use crate::json::write_json_string;
 use crate::semantic::{BinaryOperator, UnaryOperator};
-use crate::standard::{StandardFunction, StandardModule, StandardSymbol};
+use crate::standard::{StandardModule, StandardSymbol};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     AbiParam, Function, InstBuilder, Signature, UserFuncName, Value, types,
@@ -28,8 +28,8 @@ const CACHE_SCHEMA: &str = "chimi.native-cache.v1";
 const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
 const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
 const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
-const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v3";
-const RUNTIME_ABI_VERSION: u32 = 16;
+const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v4-clock";
+const RUNTIME_ABI_VERSION: u32 = 17;
 const FIBER_RUNTIME_ABI_VERSION: u32 = chimi_fiber::ABI_VERSION;
 static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -167,7 +167,7 @@ fn build_to_path(
 ) -> Result<NativeArtifact, String> {
     if requires_process_runtime(&program.core) {
         return Err(
-            "this program uses std/process, std/supervisor, or std/clock, which require the \
+            "this program uses std/process or std/supervisor, which require the \
              supervised process runtime; the native build does not include it yet"
                 .to_owned(),
         );
@@ -403,8 +403,8 @@ fn bundled_fiber_archive() -> Result<PathBuf, String> {
     })
 }
 
-/// Whether any reachable node calls into `std/process`, `std/supervisor`, or
-/// `std/clock`, or names a `process name`.
+/// Whether any reachable node calls into `std/process` or `std/supervisor`, or
+/// names a `process name`. `Clock.sleep` runs on the scheduler alone.
 fn requires_process_runtime(core: &CoreProgram) -> bool {
     core.nodes.iter().any(|node| {
         let CoreOperation::Reference(symbol) = node.operation else {
@@ -416,34 +416,20 @@ fn requires_process_runtime(core: &CoreProgram) -> bool {
                 symbol.standard,
                 Some(StandardSymbol::Function(function)) if matches!(
                     function.module(),
-                    Some(StandardModule::Process | StandardModule::Supervisor | StandardModule::Clock)
+                    Some(StandardModule::Process | StandardModule::Supervisor)
                 )
             )
     })
 }
 
 fn requires_fiber_runtime(core: &CoreProgram) -> bool {
-    let fiber_symbols = core
-        .symbols
-        .iter()
-        .filter_map(|symbol| match symbol.standard {
-            Some(StandardSymbol::Function(
-                StandardFunction::TaskStart
-                | StandardFunction::TaskResult
-                | StandardFunction::TaskCancel
-                | StandardFunction::ChannelSend
-                | StandardFunction::ChannelReceive
-                | StandardFunction::ChannelClose
-                | StandardFunction::ChannelAbort
-                | StandardFunction::ChannelBounded,
-            )) => Some(symbol.id),
-            _ => None,
-        })
-        .collect::<std::collections::HashSet<_>>();
     core.nodes.iter().any(|node| {
+        let CoreOperation::Reference(symbol) = node.operation else {
+            return false;
+        };
         matches!(
-            node.operation,
-            CoreOperation::Reference(symbol) if fiber_symbols.contains(&symbol)
+            core.symbol(symbol).standard,
+            Some(StandardSymbol::Function(function)) if function.requires_scheduler()
         )
     })
 }

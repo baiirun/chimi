@@ -325,6 +325,10 @@ pub(crate) enum StandardFunction {
     /// The canonical text form, which `Debug.render` also uses.
     DurationToText,
     DurationParse,
+    /// Declared before the process functions: declaration order is the
+    /// native runtime's `CHIMI_INTRINSIC_*` order (`runtime_id`), which has
+    /// `Clock.sleep` and no process operation yet.
+    ClockSleep,
     ProcessSpec,
     ProcessRegister,
     ProcessReceive,
@@ -341,7 +345,6 @@ pub(crate) enum StandardFunction {
     SupervisorRemoveSupervisor,
     SupervisorStop,
     SupervisorWait,
-    ClockSleep,
 }
 
 impl StandardFunction {
@@ -619,6 +622,28 @@ impl StandardFunction {
                 | Self::SupervisorRemoveSupervisor
                 | Self::SupervisorStop
                 | Self::SupervisorWait
+                | Self::ClockSleep
+        )
+    }
+
+    /// Whether the native runtime runs this function on the fiber scheduler, so
+    /// a program that reaches it runs its root as a scheduler task.
+    #[cfg(any(
+        feature = "embedded-bytecode-prototype",
+        feature = "native-backend",
+        feature = "native-aot-prototype"
+    ))]
+    pub(crate) const fn requires_scheduler(self) -> bool {
+        matches!(
+            self,
+            Self::TaskStart
+                | Self::TaskResult
+                | Self::TaskCancel
+                | Self::ChannelSend
+                | Self::ChannelReceive
+                | Self::ChannelClose
+                | Self::ChannelAbort
+                | Self::ChannelBounded
                 | Self::ClockSleep
         )
     }

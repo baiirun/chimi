@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 16
+#define CHIMI_RUNTIME_ABI_VERSION 17
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -119,6 +119,7 @@ enum {
   CHIMI_INTRINSIC_DURATION_ABSOLUTE,
   CHIMI_INTRINSIC_DURATION_TO_TEXT,
   CHIMI_INTRINSIC_DURATION_PARSE,
+  CHIMI_INTRINSIC_CLOCK_SLEEP,
 };
 
 enum {

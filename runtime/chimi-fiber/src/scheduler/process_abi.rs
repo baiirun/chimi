@@ -12,7 +12,7 @@ use super::{
     SCHEDULER_DEFECT_CODE, Scheduler, SchedulerOptions, SchedulerOutcome, SchedulerTraceSink,
     ParkedTask, TaskId, TaskOutcome, TaskPhase, TaskResult, TraceMode,
 };
-use super::{MessageRelease, SendFailure, SpecContextRelease};
+use super::{MessageRelease, SendFailure, SpecContextRelease, TaskContextRelease, ValueRelease};
 use crate::{ChimiFiberCommand, ChimiFiberEntry, ChimiFiberState};
 use std::ffi::c_void;
 use std::num::NonZeroU32;
@@ -109,6 +109,9 @@ pub struct ChimiSchedulerConfig {
     pub release_context: *mut c_void,
     pub deadlock_report: Option<DeadlockReport>,
     pub deadlock_context: *mut c_void,
+    pub release_task_value: Option<ValueRelease>,
+    pub release_channel_value: Option<ValueRelease>,
+    pub release_task_context: Option<TaskContextRelease>,
 }
 
 /// One task parked in a detected deadlock and the request kind it waits on
@@ -553,7 +556,12 @@ impl Scheduler {
             }
         }
         let outcome = match self.result(None, root) {
-            Ok(TaskResult::Ready(outcome)) => outcome_of(outcome),
+            Ok(TaskResult::Ready(outcome)) => {
+                // The outcome's value passes to the caller; the scheduler
+                // releases every other value when it is dropped.
+                self.hand_out_outcome_value(root, outcome);
+                outcome_of(outcome)
+            }
             Ok(TaskResult::Pending) | Err(_) => defect_outcome(SCHEDULER_DEFECT_CODE),
         };
         RootRun { outcome, deadlock }
@@ -605,9 +613,9 @@ pub unsafe extern "C" fn chimi_scheduler_run(
         clock,
         release_message: config.release_message,
         release_spec_context: config.release_spec_context,
-        release_task_value: None,
-        release_channel_value: None,
-        release_task_context: None,
+        release_task_value: config.release_task_value,
+        release_channel_value: config.release_channel_value,
+        release_task_context: config.release_task_context,
         release_context: config.release_context,
     });
     scheduler.set_trace_sink(config.trace_sink, config.trace_context);

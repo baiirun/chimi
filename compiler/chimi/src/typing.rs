@@ -833,7 +833,7 @@ impl TypedProject {
             let unresolved = row
                 .entries
                 .into_iter()
-                .filter(|need| !need.explained && !self.native_host_need(need.interface))
+                .filter(|need| !need.explained && !self.runner_closes(need))
                 .collect::<Vec<_>>();
             for need in unresolved {
                 self.diagnostics.push(Diagnostic::error(
@@ -872,18 +872,22 @@ impl TypedProject {
         }
     }
 
-    fn native_host_need(&self, interface: TypeId) -> bool {
-        matches!(
-            &self.types[interface.raw() as usize],
-            CanonicalType::Named { symbol, arguments }
-                if arguments.is_empty()
-                    && matches!(
-                        self.resolved.standard_symbol(*symbol),
-                        Some(StandardSymbol::Type(
-                            StandardType::Console | StandardType::FileSystem
-                        ))
-                    )
-        )
+    /// Whether the runner's provider plan closes this need on `main`: the
+    /// native `Console` and `FileSystem` under any name, and the execution
+    /// clock provider for `clock: Clock` (std/clock), whose need name is fixed.
+    fn runner_closes(&self, need: &Need) -> bool {
+        let CanonicalType::Named { symbol, arguments } = &self.types[need.interface.raw() as usize]
+        else {
+            return false;
+        };
+        if !arguments.is_empty() {
+            return false;
+        }
+        match self.resolved.standard_symbol(*symbol) {
+            Some(StandardSymbol::Type(StandardType::Console | StandardType::FileSystem)) => true,
+            Some(StandardSymbol::Type(StandardType::Clock)) => need.lexical_name == "clock",
+            _ => false,
+        }
     }
 
     pub(crate) fn contract(

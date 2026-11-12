@@ -33,10 +33,22 @@ struct NativeExecution {
 }
 
 fn execute_native(executable: &Path, scratch: &Path, name: &str, trace: &str) -> NativeExecution {
+    execute_native_with(executable, scratch, name, trace, &[])
+}
+
+/// `execute_native` with extra runner arguments, such as `--clock=virtual`.
+fn execute_native_with(
+    executable: &Path,
+    scratch: &Path,
+    name: &str,
+    trace: &str,
+    runner: &[&str],
+) -> NativeExecution {
     let telemetry_path = scratch.join(format!("{name}-telemetry.jsonl"));
     let outcome_path = scratch.join(format!("{name}-outcome.jsonl"));
     let process = Command::new(executable)
         .arg("--chimi-runner")
+        .args(runner)
         .arg(format!("--trace={trace}"))
         .arg(format!("--telemetry-file={}", telemetry_path.display()))
         .arg(format!("--outcome-file={}", outcome_path.display()))
@@ -853,6 +865,299 @@ fn native_deadlocked_tasks_defect_the_root() {
         "{}",
         execution.outcome
     );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// ----- Clock.sleep and the virtual clock (ts-6ccbc9 decision 6) ----------
+
+const CLOCK_IMPORTS: &str = concat!(
+    "import std/channel as Channel\n",
+    "import std/channel.{Receive}\n",
+    "import std/clock as Clock\n",
+    "import std/duration as Duration\n",
+    "import std/task as Task\n",
+);
+
+/// The virtual times, in nanoseconds, that the telemetry's `clock_advanced`
+/// events move the clock to, in order.
+fn clock_advances(telemetry: &str) -> Vec<i64> {
+    telemetry
+        .lines()
+        .filter(|line| line.contains("\"event\":\"clock_advanced\""))
+        .map(|line| {
+            let start = line.find("\"time_ns\":").expect("an advance has time_ns") + 10;
+            let digits: String = line[start..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            digits.parse().expect("time_ns is a count")
+        })
+        .collect()
+}
+
+/// The lab projector's view of the run, with task terminals kept, so each
+/// line carries the virtual time at which a task ended. The projector also
+/// checks the clock events' key sets and that time never moves back.
+fn terminals(telemetry: &str) -> Vec<String> {
+    chimi::process_lab::transcript::project(telemetry, &["task_terminal"])
+        .unwrap_or_else(|error| panic!("{error}\n{telemetry}"))
+}
+
+// Rejects: a clock that advances by anything but the requested duration, a
+// non-positive duration that parks or moves time, and wall-clock waiting
+// (thirty seconds of it would time the suite out).
+#[test]
+fn native_virtual_sleep_advances_exactly_the_requested_duration() {
+    let scratch = scratch_directory("native-clock-virtual-sleep");
+    let executable = build_native(
+        &scratch,
+        "virtual-sleep",
+        &format!(
+            "{CLOCK_IMPORTS}pub fn main() -> Int {{\n  \
+             Clock.sleep(Duration.seconds(-5))\n  \
+             Clock.sleep(Duration.zero)\n  \
+             Clock.sleep(Duration.seconds(30))\n  \
+             7\n}}\n"
+        ),
+    );
+    for trace in ["boundaries", "full"] {
+        let execution = execute_native_with(
+            &executable,
+            &scratch,
+            &format!("virtual-sleep-{trace}"),
+            trace,
+            &["--clock=virtual"],
+        );
+        assert_eq!(
+            execution.process.status.code(),
+            Some(0),
+            "{}",
+            execution.outcome
+        );
+        assert_eq!(
+            execution.outcome,
+            "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":7}\n"
+        );
+        assert_eq!(clock_advances(&execution.telemetry), [30_000_000_000]);
+        assert_eq!(
+            terminals(&execution.telemetry),
+            ["@30s task_terminal task=T1 parent=- cause=-"]
+        );
+        let timer_events = execution
+            .telemetry
+            .matches("\"event\":\"clock_timer_")
+            .count();
+        // Timer start and fire are motion events: full mode only.
+        assert_eq!(timer_events, if trace == "full" { 2 } else { 0 }, "{trace}");
+    }
+    let off = execute_native_with(
+        &executable,
+        &scratch,
+        "virtual-sleep-off",
+        "off",
+        &["--clock=virtual"],
+    );
+    assert_eq!(off.process.status.code(), Some(0));
+    assert!(off.telemetry.is_empty(), "{}", off.telemetry);
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Rejects timers that fire in registration or start order instead of deadline
+// order: the 2 ms sleeper starts first, so FIFO wakeup would deliver 2 first.
+#[test]
+fn native_virtual_sleepers_wake_in_deadline_order() {
+    let scratch = scratch_directory("native-clock-deadline-order");
+    let executable = build_native(
+        &scratch,
+        "deadline-order",
+        &format!(
+            "{CLOCK_IMPORTS}fn take(receiver: Channel.Receiver<Int>) -> Int {{\n  \
+             let got = Channel.receive(receiver)\n  \
+             case got {{\n    \
+             Receive.Received(value) -> value\n    \
+             Receive.Drained -> 0\n  }}\n}}\n\
+             pub fn main() -> Int {{\n  \
+             let channel = Channel.bounded(2)\n  \
+             let sender = channel.sender\n  \
+             let slow = Task.start(fn() -> Int {{\n    \
+             Clock.sleep(Duration.milliseconds(2))\n    \
+             Channel.send(sender, 2)\n    \
+             0\n  }})\n  \
+             let fast = Task.start(fn() -> Int {{\n    \
+             Clock.sleep(Duration.milliseconds(1))\n    \
+             Channel.send(sender, 1)\n    \
+             0\n  }})\n  \
+             let first = take(channel.receiver)\n  \
+             let second = take(channel.receiver)\n  \
+             Task.result(slow) + Task.result(fast) + first * 10 + second\n}}\n"
+        ),
+    );
+    let execution = execute_native_with(
+        &executable,
+        &scratch,
+        "deadline-order",
+        "boundaries",
+        &["--clock=virtual"],
+    );
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":12}\n"
+    );
+    assert_eq!(clock_advances(&execution.telemetry), [1_000_000, 2_000_000]);
+    assert_eq!(
+        terminals(&execution.telemetry),
+        [
+            "@1ms task_terminal task=T3 parent=T1 cause=-",
+            "@2ms task_terminal task=T2 parent=T1 cause=-",
+            "@2ms task_terminal task=T1 parent=- cause=-",
+        ]
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// The lab's `settle` barrier (supervised-process-conformance.md, "Virtual time
+// in fixtures"): when it returns, every task woken before the call has run
+// until it parked, and time has moved exactly 1 ms. Rejects a clock that
+// advances while a task is runnable: the relay chain below would then end
+// after the advance.
+#[test]
+fn native_settle_runs_woken_work_before_time_moves() {
+    let scratch = scratch_directory("native-clock-settle");
+    let executable = build_native(
+        &scratch,
+        "settle",
+        &format!(
+            "{CLOCK_IMPORTS}fn settle() -> Void needs {{ clock: Clock.Clock }} {{\n  \
+             Clock.sleep(Duration.milliseconds(1))\n}}\n\
+             pub fn main() -> Int {{\n  \
+             let first = Channel.bounded(1)\n  \
+             let second = Channel.bounded(1)\n  \
+             let forward = second.sender\n  \
+             let inbox = first.receiver\n  \
+             let relay = Task.start(fn() -> Int {{\n    \
+             let got = Channel.receive(inbox)\n    \
+             case got {{\n      \
+             Receive.Received(value) -> {{\n        \
+             Channel.send(forward, value + 1)\n        \
+             0\n      }}\n      \
+             Receive.Drained -> 0\n    }}\n  }})\n  \
+             let ping = first.sender\n  \
+             let pinger = Task.start(fn() -> Int {{\n    \
+             Channel.send(ping, 41)\n    \
+             0\n  }})\n  \
+             settle()\n  \
+             let reply = Channel.receive(second.receiver)\n  \
+             let relayed = case reply {{\n    \
+             Receive.Received(value) -> value\n    \
+             Receive.Drained -> 0\n  }}\n  \
+             Task.result(relay) + Task.result(pinger) + relayed\n}}\n"
+        ),
+    );
+    let execution = execute_native_with(
+        &executable,
+        &scratch,
+        "settle",
+        "boundaries",
+        &["--clock=virtual"],
+    );
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+    assert_eq!(clock_advances(&execution.telemetry), [1_000_000]);
+    assert_eq!(
+        terminals(&execution.telemetry),
+        [
+            "@0s task_terminal task=T3 parent=T1 cause=-",
+            "@0s task_terminal task=T2 parent=T1 cause=-",
+            "@1ms task_terminal task=T1 parent=- cause=-",
+        ]
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// time-and-outcomes.md, "Virtual time": with every task parked and no timer
+// pending, the root defects with a cause naming each parked task and what it
+// waits on. Rejects deadlock detection that is off (the run would hang or
+// report the real clock's generic deadlock) and a cause without the waiters.
+#[test]
+fn native_virtual_deadlock_defects_the_root_with_its_waiters() {
+    let scratch = scratch_directory("native-clock-virtual-deadlock");
+    let executable = build_native(
+        &scratch,
+        "virtual-deadlock",
+        &format!(
+            "{CLOCK_IMPORTS}pub fn main() -> Int {{\n  \
+             let channel = Channel.bounded(1)\n  \
+             let keep = channel.sender\n  \
+             Clock.sleep(Duration.seconds(1))\n  \
+             let got = Channel.receive(channel.receiver)\n  \
+             case got {{\n    \
+             Receive.Received(value) -> value\n    \
+             Receive.Drained -> 0\n  }}\n}}\n"
+        ),
+    );
+    let execution = execute_native_with(
+        &executable,
+        &scratch,
+        "virtual-deadlock",
+        "boundaries",
+        &["--clock=virtual"],
+    );
+    assert_eq!(execution.process.status.code(), Some(70));
+    assert!(
+        execution.outcome.contains("\"outcome\":\"defect\"")
+            && execution.outcome.contains(
+                "virtual-time deadlock: every task is parked and no timer is pending: \
+                 task 1 waits on Channel.receive"
+            ),
+        "{}",
+        execution.outcome
+    );
+    let waiters: Vec<_> = execution
+        .telemetry
+        .lines()
+        .filter(|line| line.contains("\"event\":\"clock_deadlock_waiter\""))
+        .collect();
+    assert_eq!(waiters.len(), 1, "{}", execution.telemetry);
+    // The projector rejects a clock event that carries its request kind in
+    // `cause_task_id`.
+    assert_eq!(
+        terminals(&execution.telemetry),
+        ["@1s task_terminal task=T1 parent=- cause=T1"]
+    );
+    assert!(
+        waiters[0].contains("\"task_id\":1,")
+            && waiters[0].contains("\"time_ns\":1000000000,\"request_kind\":6}"),
+        "{}",
+        waiters[0]
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Real-clock sanity check, kept out of the default suite because it waits on
+// the wall clock. Run it with
+// `cargo test -p chimi --test cli native_real_sleep_waits -- --ignored`.
+#[test]
+#[ignore = "waits on the wall clock"]
+fn native_real_sleep_waits_on_the_wall_clock() {
+    let scratch = scratch_directory("native-clock-real-sleep");
+    let executable = build_native(
+        &scratch,
+        "real-sleep",
+        &format!(
+            "{CLOCK_IMPORTS}pub fn main() -> Int {{\n  Clock.sleep(Duration.milliseconds(200))\n  1\n}}\n"
+        ),
+    );
+    let started = std::time::Instant::now();
+    let execution = execute_native(&executable, &scratch, "real-sleep", "boundaries");
+    let elapsed = started.elapsed();
+    assert_eq!(execution.process.status.code(), Some(0));
+    assert!(
+        elapsed >= std::time::Duration::from_millis(200),
+        "{elapsed:?}"
+    );
+    assert!(clock_advances(&execution.telemetry).is_empty());
     std::fs::remove_dir_all(scratch).unwrap();
 }
 

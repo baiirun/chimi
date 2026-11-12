@@ -25,8 +25,8 @@ __attribute__((weak)) ChimiFiberCommand chimi_fiber_request(
   abort();
 }
 
-__attribute__((weak)) ChimiSchedulerOutcome chimi_scheduler_execute_with_config(
-  const ChimiSchedulerExecuteConfig *config) {
+__attribute__((weak)) ChimiSchedulerOutcome chimi_scheduler_run(
+  const ChimiSchedulerConfig *config) {
   (void)config;
   return (ChimiSchedulerOutcome){.state = CHIMI_FIBER_DEFECTED};
 }
@@ -156,6 +156,10 @@ typedef enum {
 struct ChimiRuntime {
   const char *execution_id;
   bool full_trace;
+  /* `--clock=virtual`: the scheduler's deterministic time source. */
+  bool virtual_clock;
+  /* The parked tasks of a virtual-time deadlock, from the scheduler's report. */
+  char *deadlock_waiters;
   bool cancel;
   bool silent;
   FILE *telemetry;
@@ -3896,6 +3900,34 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
         ? success(void_value())
         : defect("Channel.close scheduler request failed", call_node);
     }
+    case CHIMI_INTRINSIC_CLOCK_SLEEP: {
+      /* `Clock.sleep(d)` is `sleep_until(now + d)`. Reading now checks
+         cancellation; a deadline at or before now then returns without
+         parking (time-and-outcomes.md, "The Clock capability"). */
+      if (argument_count != 1 || arguments[0]->kind != VALUE_DURATION)
+        return intrinsic_shape_defect(call_node);
+      ChimiSchedulerRequest now = {.kind = CHIMI_REQUEST_TIMER_NOW};
+      if (scheduler_request(&now) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (now.status != CHIMI_RESPONSE_OK)
+        return defect("Clock.sleep scheduler request failed", call_node);
+      int64_t deadline;
+      if (__builtin_add_overflow(now.value, arguments[0]->as.integer, &deadline)) {
+        char duration[32];
+        duration_text(arguments[0]->as.integer, duration);
+        return defect(numeric_message("`Clock.sleep(%s)` overflows the Instant range", duration),
+                      call_node);
+      }
+      for (;;) {
+        ChimiSchedulerRequest request = {
+          .kind = CHIMI_REQUEST_TIMER_SLEEP_UNTIL,
+          .value = deadline,
+        };
+        if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+        if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
+        if (request.status != CHIMI_RESPONSE_PENDING)
+          return defect("Clock.sleep scheduler request failed", call_node);
+      }
+    }
     case CHIMI_INTRINSIC_CHANNEL_ABORT: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_CHANNEL_RECEIVER)
         return intrinsic_shape_defect(call_node);
@@ -4546,9 +4578,16 @@ static const char *scheduler_event_name(const ChimiSchedulerTraceEvent *event) {
   if (event->family == CHIMI_SCHEDULER_TRACE_TASK &&
       event->kind > 0 && event->kind <= sizeof(task_names) / sizeof(*task_names))
     return task_names[event->kind - 1];
+  static const char *clock_names[] = {
+    "clock_advanced", "clock_timer_started", "clock_timer_fired",
+    "clock_timer_cancelled", "clock_deadlock_waiter",
+  };
   if (event->family == CHIMI_SCHEDULER_TRACE_CHANNEL &&
       event->kind > 0 && event->kind <= sizeof(channel_names) / sizeof(*channel_names))
     return channel_names[event->kind - 1];
+  if (event->family == CHIMI_SCHEDULER_TRACE_CLOCK &&
+      event->kind > 0 && event->kind <= sizeof(clock_names) / sizeof(*clock_names))
+    return clock_names[event->kind - 1];
   return "scheduler_event";
 }
 
@@ -4565,16 +4604,50 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
   if (event->task == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->task);
   fputs(",\"parent_task_id\":", output);
   if (event->parent == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->parent);
+  /* A clock event's `cause` is the waiter's request kind, not a task
+     (supervised-process-conformance.md, "Runner telemetry"). */
+  bool clock = event->family == CHIMI_SCHEDULER_TRACE_CLOCK;
   fputs(",\"cause_task_id\":", output);
-  if (event->cause == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->cause);
+  if (clock || event->cause == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->cause);
   fputs(",\"channel_id\":", output);
   if (event->channel == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->channel);
   fprintf(output,
           ",\"attributes\":{\"scheduler_sequence\":%" PRIu64
           ",\"capacity\":%" PRIu64 ",\"queue_depth\":%" PRIu64
-          ",\"waiter_depth\":%" PRIu64 ",\"discard_count\":%" PRIu64 "}}\n",
+          ",\"waiter_depth\":%" PRIu64 ",\"discard_count\":%" PRIu64,
           event->sequence, event->capacity, event->queue_depth,
           event->waiter_depth, event->discard_count);
+  if (clock)
+    fprintf(output, ",\"time_ns\":%" PRId64 ",\"request_kind\":%" PRIu64,
+            event->time, event->cause);
+  fputs("}}\n", output);
+}
+
+/* The operation a parked task waits on, by its scheduler request kind. */
+static const char *waited_operation(uint32_t request_kind) {
+  switch (request_kind) {
+    case CHIMI_REQUEST_TASK_RESULT: return "Task.result";
+    case CHIMI_REQUEST_CHANNEL_SEND: return "Channel.send";
+    case CHIMI_REQUEST_CHANNEL_RECEIVE: return "Channel.receive";
+    default: return "a scheduler request";
+  }
+}
+
+/* Builds the root's virtual-time deadlock defect: each parked task and the
+   operation it waits on (time-and-outcomes.md, "Virtual time"). */
+static void record_deadlock(void *context, const ChimiDeadlockWaiter *waiters, size_t count) {
+  ChimiRuntime *runtime = context;
+  static const char prefix[] =
+    "virtual-time deadlock: every task is parked and no timer is pending:";
+  size_t capacity = sizeof(prefix) + count * 64;
+  char *message = malloc(capacity);
+  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); exit(70); }
+  size_t length = (size_t)snprintf(message, capacity, "%s", prefix);
+  for (size_t index = 0; index < count; ++index)
+    length += (size_t)snprintf(message + length, capacity - length, "%s task %" PRIu64 " waits on %s",
+                               index == 0 ? "" : ";", waiters[index].task,
+                               waited_operation(waiters[index].request_kind));
+  runtime->deadlock_waiters = message;
 }
 
 static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn entry,
@@ -4586,20 +4659,23 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .entry = entry,
     .span = 1,
   };
-  ChimiSchedulerExecuteConfig config = {
+  ChimiSchedulerConfig config = {
     .entry = chimi_task_entry,
     .context = &context,
     .stack_bytes = 64u * 1024u,
     .trace_mode = runtime->silent ? 0 : (runtime->full_trace ? 2 : 1),
+    .clock_mode = runtime->virtual_clock ? CHIMI_SCHEDULER_CLOCK_VIRTUAL : CHIMI_SCHEDULER_CLOCK_REAL,
     .trace_sink = emit_scheduler_event,
     .trace_context = runtime,
+    .release_context = runtime,
+    .deadlock_report = record_deadlock,
+    .deadlock_context = runtime,
     .release_task_value = release_task_word,
     .release_channel_value = release_channel_word,
-    .release_context = runtime,
     .release_task_context = release_task_context,
   };
   channel_endpoints_reset();
-  ChimiSchedulerOutcome outcome = chimi_scheduler_execute_with_config(&config);
+  ChimiSchedulerOutcome outcome = chimi_scheduler_run(&config);
   current_heap = &main_heap;
   /* The outcome's word is ours: copy a child's result fragment, then free it. */
   if (outcome.state == CHIMI_FIBER_SUCCEEDED || outcome.state == CHIMI_FIBER_DEFECTED) {
@@ -4617,7 +4693,15 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
      made, for example when nothing can run and the root is still parked. */
   if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code > 0)
     return task_reply(outcome.defect_code);
-  if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0)
+  if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code == CHIMI_SCHEDULER_DEFECT_DEADLOCK &&
+      runtime->deadlock_waiters)
+    return defect(runtime->deadlock_waiters, -1);
+  /* Under the real clock a root parked with nothing pending stays suspended,
+     because a host event might wake it. The native runtime has no
+     asynchronous host operations, so nothing ever will: report the same
+     deadlock as before, leaving the suspended tasks to process exit. */
+  if (outcome.state == CHIMI_FIBER_PARKED ||
+      (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0))
     return defect("Task scheduler defected: the root task could not finish, "
                   "because every task is parked (deadlock) or the scheduler failed", -1);
   if (outcome.state == CHIMI_FIBER_STACK_OVERFLOW)
@@ -4661,6 +4745,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     else if (strncmp(argv[index], "--memory-report-file=", 21) == 0) memory_report_path = argv[index] + 21;
     else if (strncmp(argv[index], "--execution-id=", 15) == 0) runtime.execution_id = argv[index] + 15;
     else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = true;
+    else if (strcmp(argv[index], "--clock=real") == 0) runtime.virtual_clock = false;
+    else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;
     else if (strncmp(argv[index], "--max-line-bytes=", 17) == 0) {
       errno = 0;
       char *end = NULL;
