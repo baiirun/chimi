@@ -137,6 +137,19 @@ Assessment at 2026-11-11, after about 20 completed agents:
   was found only because rebases ran the full suite; rebase agents pinned each
   with a test.
 
+## Milestone: processes run natively (2026-11-12)
+
+- Stages U0-U5 of the supervised-process lab are on main (7df2f24): Chimi
+  `process` programs build and run natively on the scheduler kernel, with
+  per-incarnation heaps, copy-on-transfer messages, trace family 3, and 65 lab
+  scenarios passing. Every stage branch was reviewed independently (Sonnet)
+  before merge; reviews found a crash path, a stack-depth limit of ~150 frames,
+  untested release paths, a mutation tool that scored compile failures as kills,
+  and a pre-existing capability aliasing hole (since fixed, ts-184972).
+- Process lesson: the main coordinator now runs the review/fix/integrate loop
+  directly (N19); implementers report to it. Throughput held with three
+  implementers at a time.
+
 ## Open hypotheses
 
 - Publishing cross-cutting conventions before a fan-out will cut spec conflicts
