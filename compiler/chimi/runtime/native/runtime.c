@@ -2345,17 +2345,13 @@ static void buffer_json_string(TextBuffer *buffer, const char *value) {
   buffer_char(buffer, '"');
 }
 
-static bool encode_json_value(TextBuffer *buffer, const ChimiValue *value);
-static bool encode_json_map(TextBuffer *buffer, const MapNode *node, bool *first) {
-  if (!node) return true;
-  if (!encode_json_map(buffer, node->left, first)) return false;
-  if (!*first) buffer_char(buffer, ','); *first = false;
-  if (node->key->kind != VALUE_TEXT) return false;
-  buffer_json_string(buffer, node->key->as.text); buffer_char(buffer, ':');
-  if (!encode_json_value(buffer, node->value)) return false;
-  return encode_json_map(buffer, node->right, first);
-}
-static bool encode_json_value(TextBuffer *buffer, const ChimiValue *value) {
+/* `Json.encode`. It keeps its own stack of steps, as the outcome writer does, so a
+   program-built Json.Value of any nesting depth costs heap, not C stack. A step
+   pushed last runs first: TEXT is a literal, KEY is an Object entry's member name
+   and `:`, and FREE releases an entry array once its entries are written. Returns
+   false, having freed what it queued, when the value is not a well-formed
+   Json.Value or an Object key is not Text. */
+static bool encode_json_step(TextBuffer *buffer, JsonSteps *steps, const ChimiValue *value) {
   if (value->kind != VALUE_CONSTRUCTED) return false;
   uint32_t kind = CHIMI_SYMBOLS[value->as.constructed.constructor].standard_constructor;
   ChimiValue *field = value->as.constructed.length ? value->as.constructed.fields[0].value : NULL;
@@ -2373,19 +2369,55 @@ static bool encode_json_value(TextBuffer *buffer, const ChimiValue *value) {
     case CHIMI_CONSTRUCTOR_JSON_ARRAY:
       if (!field || field->kind != VALUE_LIST) return false;
       buffer_char(buffer, '[');
-      for (uint32_t index = 0; index < list_length(field); ++index) {
-        if (index) buffer_char(buffer, ',');
-        if (!encode_json_value(buffer, list_get(field, index))) return false;
+      json_step(steps, JSON_STEP_TEXT, "]");
+      for (uint32_t index = list_length(field); index-- > 0;) {
+        json_step(steps, JSON_STEP_VALUE, list_get(field, index));
+        if (index) json_step(steps, JSON_STEP_TEXT, ",");
       }
-      buffer_char(buffer, ']'); return true;
+      return true;
     case CHIMI_CONSTRUCTOR_JSON_OBJECT: {
       if (!field || field->kind != VALUE_MAP) return false;
-      buffer_char(buffer, '{'); bool first = true;
-      if (!encode_json_map(buffer, field->as.map, &first)) return false;
-      buffer_char(buffer, '}'); return true;
+      buffer_char(buffer, '{');
+      MapEntries entries = map_entries(field->as.map);
+      json_step(steps, JSON_STEP_FREE, entries.nodes);
+      json_step(steps, JSON_STEP_TEXT, "}");
+      for (size_t index = entries.length; index-- > 0;) {
+        json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);
+        json_step(steps, JSON_STEP_KEY, entries.nodes[index]);
+        if (index) json_step(steps, JSON_STEP_TEXT, ",");
+      }
+      return true;
     }
     default: return false;
   }
+}
+static bool encode_json_value(TextBuffer *buffer, const ChimiValue *root) {
+  JsonSteps steps = {0};
+  json_step(&steps, JSON_STEP_VALUE, root);
+  bool encoded = true;
+  while (steps.length) {
+    JsonStep step = steps.items[--steps.length];
+    if (!encoded) {
+      if (step.kind == JSON_STEP_FREE) free((void *)step.pointer);
+      continue;
+    }
+    switch (step.kind) {
+      case JSON_STEP_TEXT: buffer_bytes(buffer, step.pointer, strlen(step.pointer)); break;
+      case JSON_STEP_KEY: {
+        const MapNode *entry = step.pointer;
+        if (entry->key->kind != VALUE_TEXT) { encoded = false; break; }
+        buffer_json_string(buffer, entry->key->as.text); buffer_char(buffer, ':');
+        break;
+      }
+      case JSON_STEP_FREE: free((void *)step.pointer); break;
+      case JSON_STEP_VALUE: encoded = encode_json_step(buffer, &steps, step.pointer); break;
+      /* The outcome writer's steps; never queued here. */
+      case JSON_STEP_NAME:
+      case JSON_STEP_KEY_END: encoded = false; break;
+    }
+  }
+  free(steps.items);
+  return encoded;
 }
 
 typedef struct { const char *source; size_t length; size_t offset; const char *message; } JsonParser;

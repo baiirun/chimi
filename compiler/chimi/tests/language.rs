@@ -4784,6 +4784,42 @@ fn deeply_nested_values_build_compare_render_and_free() {
     );
 }
 
+// E18 for `Json.encode`: a Json.Value a program builds 100,000 levels deep, through
+// both Array and Object, encodes on both backends. A native encoder that recursed
+// per level overflowed the C stack; one whose step stack wrote an Object's entries
+// or closing text out of order would disagree with the interpreter and with the
+// expected text.
+#[test]
+fn json_encode_writes_a_deeply_nested_value() {
+    let source = concat!(
+        "import std/json as Json\n",
+        "import std/map as Map\n",
+        "struct Build { depth: Int, value: Json.Value }\n",
+        "pub fn main() -> Text {\n",
+        "  let built = loop state = Build(100000, Json.Null) {\n",
+        "    case state.depth {\n",
+        "      0 -> break state.value\n",
+        "      _ -> {\n",
+        "        let fields = Map.put(Map.put(Map.empty(), \"b\", Json.Text(\"q\\\"\")), \"a\", state.value)\n",
+        "        Build(state.depth - 1, Json.Array([Json.Object(fields), Json.Boolean(True)]))\n",
+        "      }\n",
+        "    }\n",
+        "  }\n",
+        "  Json.encode(built)\n",
+        "}\n",
+    );
+    let levels = 100_000;
+    let encoded = format!(
+        "{}null{}",
+        "[{\\\"a\\\":".repeat(levels),
+        ",\\\"b\\\":\\\"q\\\\\\\"\\\"},true]".repeat(levels)
+    );
+    assert_eq!(
+        run_both("deep-json-encode", source),
+        format!("\"outcome\":\"success\",\"value\":\"{encoded}\"")
+    );
+}
+
 // E18 through map keys: a value nested 100,000 levels deep where each level is a
 // key of the next level's map renders with `Debug.render` on both backends. A key
 // renders on one line even in the indented format, and the value after it is
