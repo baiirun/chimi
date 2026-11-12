@@ -63,11 +63,11 @@ CLOCK_MODE = ".clock_mode = runtime->virtual_clock ? CHIMI_SCHEDULER_CLOCK_VIRTU
 MUTATIONS = [
     # Restart policy marshalling (runtime.c -> ChimiSupervisorPolicy).
     lab("declared members always marshal as Restart.Never", RUNTIME, "RA01",
-        [TRANSCRIPT], [(MEMBER_RESTART, "    array[index].restart = CHIMI_RESTART_NEVER;")]),
+        [TRANSCRIPT, EXITED], [(MEMBER_RESTART, "    array[index].restart = CHIMI_RESTART_NEVER;")]),
     lab("declared members always marshal as OnDefect", RUNTIME, "SV04",
         [TRANSCRIPT], [(MEMBER_RESTART, "    array[index].restart = CHIMI_RESTART_ON_DEFECT;")]),
     lab("dynamic members always marshal as Restart.Never", RUNTIME, "RT01",
-        [TRANSCRIPT], [(DYNAMIC_RESTART, "        .restart = CHIMI_RESTART_NEVER,")]),
+        [TRANSCRIPT, EXITED], [(DYNAMIC_RESTART, "        .restart = CHIMI_RESTART_NEVER,")]),
     lab("the restart limit marshals as 0", RUNTIME, "RA01",
         [TRANSCRIPT, EXITED], [(LIMIT, "    .restart_limit = 0,")]),
     lab("the restart window marshals as 1 ns", RUNTIME, "RA02",
@@ -85,10 +85,13 @@ MUTATIONS = [
             "        if cause != TerminalCause::Cancelled && entry.member.restart == Restart::OnDefect && open {")]),
     lab("the restart is charged after the replacement starts", KERNEL, "RA01",
         [TRANSCRIPT], [(CHARGE, CHARGE_AFTER_START)]),
+    # Both release points must go: the body's end (unroute) and its finish.
     lab("a name outlives its incarnation", KERNEL, "RT02",
-        [TRANSCRIPT, OUTCOME, EXITED], [(
-            "            self.kernel.names.remove(&name);\n        }\n        if let Some(timer) = record.stopping",
-            "        }\n        if let Some(timer) = record.stopping")]),
+        [TRANSCRIPT, OUTCOME, EXITED], [
+            ("            self.kernel.names.remove(&name);\n        }\n        if let Some(timer) = record.stopping",
+             "        }\n        if let Some(timer) = record.stopping"),
+            ("        record.accepting = false;\n        if let Some(name) = record.spec.name\n            && self.kernel.names.get(&name) == Some(&incarnation)\n        {\n            self.kernel.names.remove(&name);\n        }",
+             "        record.accepting = false;")]),
     # Escalation.
     lab("escalation stops declared members before dynamic ones", KERNEL, "ES05",
         [TRANSCRIPT], [(STOP_ORDER, "                    for membership in dynamic.into_iter().chain(declared) {")]),
