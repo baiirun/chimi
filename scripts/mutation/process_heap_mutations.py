@@ -4,9 +4,9 @@ mechanism a lab scenario or its tests/cli.rs stand-in guards, and must turn it r
 Run: scripts/mutation/mutate.py scripts/mutation/process_heap_mutations.py
 Results: compiler/chimi/tests/process-lab/MUTATION-RESULTS.txt.
 
-The lab mutants run the scenario through `--through U4` with the lab binary,
-because CURRENT_STAGE stays below U3 until U2 lands; tests/process_lab.rs covers
-the same scenarios once the stage is bumped.
+The lab mutants run one scenario through the lab binary with `--through U4`, so
+each mutant is scored on that scenario's own failure text rather than on any
+red test; tests/process_lab.rs runs the same scenarios in the default suite.
 """
 
 CRATE = "compiler/chimi"
