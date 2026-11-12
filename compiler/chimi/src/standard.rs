@@ -10,10 +10,11 @@ pub(crate) enum StandardModule {
     Debug,
     Order,
     Range,
+    Duration,
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Channel,
         Self::Io,
         Self::Json,
@@ -24,6 +25,7 @@ impl StandardModule {
         Self::Debug,
         Self::Order,
         Self::Range,
+        Self::Duration,
     ];
 
     pub(crate) const fn path(self) -> &'static str {
@@ -38,6 +40,7 @@ impl StandardModule {
             Self::Debug => "std/debug",
             Self::Order => "std/order",
             Self::Range => "std/range",
+            Self::Duration => "std/duration",
         }
     }
 
@@ -76,6 +79,9 @@ pub(crate) enum StandardType {
     FloatParseError,
     FloatConversionError,
     Ordering,
+    /// A signed 64-bit count of nanoseconds (`std/duration`).
+    Duration,
+    DurationParseError,
 }
 
 impl StandardType {
@@ -94,6 +100,7 @@ impl StandardType {
                 | Self::IntParseError
                 | Self::FloatParseError
                 | Self::FloatConversionError
+                | Self::DurationParseError
         )
     }
 
@@ -118,9 +125,10 @@ impl StandardType {
             Self::ChannelReceive => "Receive",
             Self::ChannelError => "ChannelError",
             Self::Task => "Task",
-            Self::IntParseError | Self::FloatParseError => "ParseError",
+            Self::IntParseError | Self::FloatParseError | Self::DurationParseError => "ParseError",
             Self::FloatConversionError => "ConversionError",
             Self::Ordering => "Ordering",
+            Self::Duration => "Duration",
         }
     }
 
@@ -151,7 +159,9 @@ impl StandardType {
             | Self::IntParseError
             | Self::FloatParseError
             | Self::FloatConversionError
-            | Self::Ordering => StandardProperties::Structural,
+            | Self::Ordering
+            | Self::Duration
+            | Self::DurationParseError => StandardProperties::Structural,
         }
     }
 
@@ -237,10 +247,30 @@ pub(crate) enum StandardFunction {
     /// 0 for an empty range; defects when the count exceeds `Int`.
     RangeLength,
     RangeContains,
+    DurationNanoseconds,
+    DurationMicroseconds,
+    DurationMilliseconds,
+    DurationSeconds,
+    DurationMinutes,
+    DurationHours,
+    DurationToNanoseconds,
+    DurationToMicroseconds,
+    DurationToMilliseconds,
+    DurationToSeconds,
+    DurationAdd,
+    DurationSubtract,
+    DurationMultiply,
+    /// Truncates toward zero; a zero divisor defects.
+    DurationDivide,
+    DurationNegate,
+    DurationAbsolute,
+    /// The canonical text form, which `Debug.render` also uses.
+    DurationToText,
+    DurationParse,
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 48] = [
+    pub(crate) const ALL: [Self; 66] = [
         Self::DebugRender,
         Self::DebugRenderIndented,
         Self::IntParse,
@@ -266,6 +296,24 @@ impl StandardFunction {
         Self::RangeEnd,
         Self::RangeLength,
         Self::RangeContains,
+        Self::DurationNanoseconds,
+        Self::DurationMicroseconds,
+        Self::DurationMilliseconds,
+        Self::DurationSeconds,
+        Self::DurationMinutes,
+        Self::DurationHours,
+        Self::DurationToNanoseconds,
+        Self::DurationToMicroseconds,
+        Self::DurationToMilliseconds,
+        Self::DurationToSeconds,
+        Self::DurationAdd,
+        Self::DurationSubtract,
+        Self::DurationMultiply,
+        Self::DurationDivide,
+        Self::DurationNegate,
+        Self::DurationAbsolute,
+        Self::DurationToText,
+        Self::DurationParse,
         Self::IoPath,
         Self::MapEmpty,
         Self::MapGet,
@@ -335,6 +383,24 @@ impl StandardFunction {
             Self::RangeStart | Self::RangeEnd | Self::RangeLength | Self::RangeContains => {
                 Some(StandardModule::Range)
             }
+            Self::DurationNanoseconds
+            | Self::DurationMicroseconds
+            | Self::DurationMilliseconds
+            | Self::DurationSeconds
+            | Self::DurationMinutes
+            | Self::DurationHours
+            | Self::DurationToNanoseconds
+            | Self::DurationToMicroseconds
+            | Self::DurationToMilliseconds
+            | Self::DurationToSeconds
+            | Self::DurationAdd
+            | Self::DurationSubtract
+            | Self::DurationMultiply
+            | Self::DurationDivide
+            | Self::DurationNegate
+            | Self::DurationAbsolute
+            | Self::DurationToText
+            | Self::DurationParse => Some(StandardModule::Duration),
             Self::ListFirst | Self::ListLength | Self::TextAppend | Self::TextEqual => None,
         }
     }
@@ -372,8 +438,24 @@ impl StandardFunction {
             Self::ChannelClose => "close",
             Self::ChannelAbort => "abort",
             Self::ChannelBounded => "bounded",
-            Self::IntParse | Self::FloatParse => "parse",
-            Self::IntToText | Self::FloatToText => "to_text",
+            Self::IntParse | Self::FloatParse | Self::DurationParse => "parse",
+            Self::IntToText | Self::FloatToText | Self::DurationToText => "to_text",
+            Self::DurationNanoseconds => "nanoseconds",
+            Self::DurationMicroseconds => "microseconds",
+            Self::DurationMilliseconds => "milliseconds",
+            Self::DurationSeconds => "seconds",
+            Self::DurationMinutes => "minutes",
+            Self::DurationHours => "hours",
+            Self::DurationToNanoseconds => "to_nanoseconds",
+            Self::DurationToMicroseconds => "to_microseconds",
+            Self::DurationToMilliseconds => "to_milliseconds",
+            Self::DurationToSeconds => "to_seconds",
+            Self::DurationAdd => "add",
+            Self::DurationSubtract => "subtract",
+            Self::DurationMultiply => "multiply",
+            Self::DurationDivide => "divide",
+            Self::DurationNegate => "negate",
+            Self::DurationAbsolute => "absolute",
             Self::IntAddChecked => "add_checked",
             Self::IntSubtractChecked => "subtract_checked",
             Self::IntMultiplyChecked => "multiply_checked",
@@ -394,6 +476,26 @@ impl StandardFunction {
         }
     }
 
+    /// The unit of a `Duration` constructor (`Duration.seconds`) or of a whole-unit
+    /// conversion (`Duration.to_seconds`).
+    pub(crate) const fn duration_unit(self) -> Option<(crate::duration::Unit, DurationUnitRole)> {
+        use crate::duration::Unit;
+        let (unit, role) = match self {
+            Self::DurationNanoseconds => (Unit::Nanoseconds, DurationUnitRole::Constructor),
+            Self::DurationMicroseconds => (Unit::Microseconds, DurationUnitRole::Constructor),
+            Self::DurationMilliseconds => (Unit::Milliseconds, DurationUnitRole::Constructor),
+            Self::DurationSeconds => (Unit::Seconds, DurationUnitRole::Constructor),
+            Self::DurationMinutes => (Unit::Minutes, DurationUnitRole::Constructor),
+            Self::DurationHours => (Unit::Hours, DurationUnitRole::Constructor),
+            Self::DurationToNanoseconds => (Unit::Nanoseconds, DurationUnitRole::Conversion),
+            Self::DurationToMicroseconds => (Unit::Microseconds, DurationUnitRole::Conversion),
+            Self::DurationToMilliseconds => (Unit::Milliseconds, DurationUnitRole::Conversion),
+            Self::DurationToSeconds => (Unit::Seconds, DurationUnitRole::Conversion),
+            _ => return None,
+        };
+        Some((unit, role))
+    }
+
     #[cfg(any(
         feature = "embedded-bytecode-prototype",
         feature = "native-backend",
@@ -401,6 +503,38 @@ impl StandardFunction {
     ))]
     pub(crate) const fn runtime_id(self) -> u32 {
         self as u32
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DurationUnitRole {
+    /// `fn(Int) -> Duration`.
+    Constructor,
+    /// `fn(Duration) -> Int`.
+    Conversion,
+}
+
+/// A standard module value that is not a function: a module constant whose value
+/// the registry defines.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum StandardConstant {
+    /// `Duration.zero`; lowers to `Duration.nanoseconds(0)`.
+    DurationZero,
+}
+
+impl StandardConstant {
+    pub(crate) const ALL: [Self; 1] = [Self::DurationZero];
+
+    pub(crate) const fn module(self) -> StandardModule {
+        match self {
+            Self::DurationZero => StandardModule::Duration,
+        }
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::DurationZero => "zero",
+        }
     }
 }
 
@@ -439,10 +573,13 @@ pub(crate) enum StandardConstructor {
     OrderingLess,
     OrderingEqual,
     OrderingGreater,
+    DurationParseEmpty,
+    DurationParseInvalid,
+    DurationParseOutOfRange,
 }
 
 impl StandardConstructor {
-    pub(crate) const ALL: [Self; 33] = [
+    pub(crate) const ALL: [Self; 36] = [
         Self::IntParseEmpty,
         Self::IntParseInvalidDigit,
         Self::IntParseOutOfRange,
@@ -454,6 +591,9 @@ impl StandardConstructor {
         Self::OrderingLess,
         Self::OrderingEqual,
         Self::OrderingGreater,
+        Self::DurationParseEmpty,
+        Self::DurationParseInvalid,
+        Self::DurationParseOutOfRange,
         Self::ConsoleWriteFailed,
         Self::FileClose,
         Self::FileLineTooLong,
@@ -507,6 +647,9 @@ impl StandardConstructor {
             Self::OrderingLess | Self::OrderingEqual | Self::OrderingGreater => {
                 StandardType::Ordering
             }
+            Self::DurationParseEmpty
+            | Self::DurationParseInvalid
+            | Self::DurationParseOutOfRange => StandardType::DurationParseError,
         }
     }
 
@@ -519,6 +662,7 @@ impl StandardConstructor {
         match self.type_kind() {
             StandardType::IntParseError => Some(StandardModule::Int),
             StandardType::Ordering => Some(StandardModule::Order),
+            StandardType::DurationParseError => Some(StandardModule::Duration),
             StandardType::FloatParseError | StandardType::FloatConversionError => {
                 Some(StandardModule::Float)
             }
@@ -542,7 +686,8 @@ impl StandardConstructor {
             StandardType::Console
             | StandardType::FileSystem
             | StandardType::Map
-            | StandardType::Path => None,
+            | StandardType::Path
+            | StandardType::Duration => None,
         }
     }
 
@@ -569,12 +714,13 @@ impl StandardConstructor {
             Self::ChannelSendAborted | Self::ChannelAborted => "Aborted",
             Self::ChannelReceived => "Received",
             Self::ChannelDrained => "Drained",
-            Self::IntParseEmpty | Self::FloatParseEmpty => "Empty",
+            Self::IntParseEmpty | Self::FloatParseEmpty | Self::DurationParseEmpty => "Empty",
             Self::IntParseInvalidDigit => "InvalidDigit",
-            Self::FloatParseInvalid => "Invalid",
-            Self::IntParseOutOfRange | Self::FloatParseOutOfRange | Self::FloatOutOfRange => {
-                "OutOfRange"
-            }
+            Self::FloatParseInvalid | Self::DurationParseInvalid => "Invalid",
+            Self::IntParseOutOfRange
+            | Self::FloatParseOutOfRange
+            | Self::FloatOutOfRange
+            | Self::DurationParseOutOfRange => "OutOfRange",
             Self::FloatNotInteger => "NotInteger",
             Self::OrderingLess => "Less",
             Self::OrderingEqual => "Equal",
@@ -625,7 +771,10 @@ impl StandardConstructor {
             | Self::FloatOutOfRange
             | Self::OrderingLess
             | Self::OrderingEqual
-            | Self::OrderingGreater => &[],
+            | Self::OrderingGreater
+            | Self::DurationParseEmpty
+            | Self::DurationParseInvalid
+            | Self::DurationParseOutOfRange => &[],
         }
     }
 
@@ -646,6 +795,7 @@ pub(crate) enum StandardSymbol {
     Function(StandardFunction),
     Constructor(StandardConstructor),
     Generic(StandardGeneric),
+    Constant(StandardConstant),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

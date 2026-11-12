@@ -7,7 +7,7 @@ use crate::semantic::{
     BinaryOperator, Literal, ModuleBlockItem, ModuleDeclarationKind, ModuleExpression, Pattern,
     PatternLiteral, UnaryOperator,
 };
-use crate::standard::{StandardFunction, StandardSymbol};
+use crate::standard::{StandardConstant, StandardFunction, StandardSymbol};
 use crate::typing::{CanonicalType, TypeFact, TypedProgram, TypedProject};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -416,6 +416,8 @@ pub(crate) enum ConstantValue {
         start: i64,
         end: i64,
     },
+    /// A `Duration` in nanoseconds.
+    Duration(i64),
     Record(Vec<(String, ConstantValue)>),
     /// A struct or enum value; field names come from the constructor's shape.
     Constructed {
@@ -1221,10 +1223,12 @@ impl CoreLowerer {
                 Literal::Boolean { value, .. } => CoreLiteral::Boolean(*value),
                 Literal::Void { .. } => CoreLiteral::Void,
             }),
-            ModuleExpression::Name { semantic_id, .. } => self.reference(
-                self.value_symbol(module_id, *semantic_id)
-                    .expect("verified value reference resolves"),
-            ),
+            ModuleExpression::Name { semantic_id, .. } => {
+                let symbol = self
+                    .value_symbol(module_id, *semantic_id)
+                    .expect("verified value reference resolves");
+                self.value_reference(module_id, expression, symbol)
+            }
             ModuleExpression::Select {
                 semantic_id,
                 receiver,
@@ -1232,7 +1236,7 @@ impl CoreLowerer {
                 ..
             } => {
                 if let Some(symbol) = self.value_symbol(module_id, *semantic_id) {
-                    self.reference(symbol)
+                    self.value_reference(module_id, expression, symbol)
                 } else if let Some((requirement, interface, method)) =
                     self.dependency_method(module_id, receiver, &member.text)
                 {
@@ -2076,6 +2080,33 @@ impl CoreLowerer {
             })
             .map(|symbol| symbol.id)
             .expect("every standard function is indexed")
+    }
+
+    /// A reference to `symbol`, except that a standard module constant becomes the
+    /// call that builds its value: `Duration.zero` is `Duration.nanoseconds(0)`.
+    fn value_reference(
+        &mut self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        symbol: SymbolId,
+    ) -> CoreOperation {
+        match self.typed.resolved.standard_symbol(symbol) {
+            Some(StandardSymbol::Constant(StandardConstant::DurationZero)) => {
+                let constructor = self.standard_function(StandardFunction::DurationNanoseconds);
+                let callee =
+                    self.push_node(module_id, expression, CoreOperation::Reference(constructor));
+                let zero = self.push_node(
+                    module_id,
+                    expression,
+                    CoreOperation::Constant(CoreLiteral::Integer(0)),
+                );
+                CoreOperation::Call {
+                    callee,
+                    arguments: vec![zero],
+                }
+            }
+            _ => self.reference(symbol),
+        }
     }
 
     fn reference(&self, symbol: SymbolId) -> CoreOperation {

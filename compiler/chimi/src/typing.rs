@@ -11,8 +11,8 @@ use crate::semantic::{
 };
 use crate::semantic::{BindingKind, CaseOrigin};
 use crate::standard::{
-    StandardConstructor, StandardFunction, StandardGeneric, StandardGenericKind, StandardSymbol,
-    StandardType,
+    DurationUnitRole, StandardConstant, StandardConstructor, StandardFunction, StandardGeneric,
+    StandardGenericKind, StandardSymbol, StandardType,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -1807,7 +1807,76 @@ impl ProjectTypeChecker {
                 },
             );
         }
-        for (function, inputs, success, failures) in numeric_contracts {
+        let duration = self.standard_named_type(StandardType::Duration, Vec::new());
+        let duration_parse_failure = self.standard_failure_row(&[
+            StandardConstructor::DurationParseEmpty,
+            StandardConstructor::DurationParseInvalid,
+            StandardConstructor::DurationParseOutOfRange,
+        ]);
+        let mut duration_contracts = vec![
+            (
+                StandardFunction::DurationAdd,
+                vec![duration, duration],
+                duration,
+                pure.0,
+            ),
+            (
+                StandardFunction::DurationSubtract,
+                vec![duration, duration],
+                duration,
+                pure.0,
+            ),
+            (
+                StandardFunction::DurationMultiply,
+                vec![duration, int],
+                duration,
+                pure.0,
+            ),
+            (
+                StandardFunction::DurationDivide,
+                vec![duration, int],
+                duration,
+                pure.0,
+            ),
+            (
+                StandardFunction::DurationNegate,
+                vec![duration],
+                duration,
+                pure.0,
+            ),
+            (
+                StandardFunction::DurationAbsolute,
+                vec![duration],
+                duration,
+                pure.0,
+            ),
+            (
+                StandardFunction::DurationToText,
+                vec![duration],
+                text,
+                pure.0,
+            ),
+            (
+                StandardFunction::DurationParse,
+                vec![text],
+                duration,
+                duration_parse_failure,
+            ),
+        ];
+        for function in StandardFunction::ALL {
+            match function.duration_unit() {
+                Some((_, DurationUnitRole::Constructor)) => {
+                    duration_contracts.push((function, vec![int], duration, pure.0));
+                }
+                Some((_, DurationUnitRole::Conversion)) => {
+                    duration_contracts.push((function, vec![duration], int, pure.0));
+                }
+                None => {}
+            }
+        }
+        for (function, inputs, success, failures) in
+            numeric_contracts.into_iter().chain(duration_contracts)
+        {
             let symbol = self.standard_function_symbol(function);
             self.contracts.insert(
                 symbol,
@@ -2147,6 +2216,12 @@ impl ProjectTypeChecker {
         let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
         let number = self.standard_named_type(StandardType::JsonNumber, Vec::new());
         match constructor {
+            StandardConstructor::DurationParseEmpty
+            | StandardConstructor::DurationParseInvalid
+            | StandardConstructor::DurationParseOutOfRange => (
+                Vec::new(),
+                self.standard_named_type(StandardType::DurationParseError, Vec::new()),
+            ),
             StandardConstructor::ConsoleWriteFailed => (
                 vec![text, text],
                 self.standard_named_type(StandardType::ConsoleError, Vec::new()),
@@ -3112,7 +3187,10 @@ impl ProjectTypeChecker {
                         failures: FailureRowId::new(0),
                         needs: NeedsRowId::new(0),
                     }
-                } else if let Some(type_id) = self.symbol_value_type(symbol) {
+                } else if let Some(type_id) = self
+                    .symbol_value_type(symbol)
+                    .or_else(|| self.standard_constant_type(symbol))
+                {
                     ExpressionFact {
                         success: type_id,
                         failures: FailureRowId::new(0),
@@ -6144,6 +6222,7 @@ impl ProjectTypeChecker {
                     | StandardType::IntParseError
                     | StandardType::FloatParseError
                     | StandardType::FloatConversionError
+                    | StandardType::DurationParseError
                     | StandardType::ConsoleError
                     | StandardType::FileError
                     | StandardType::Utf8Error
@@ -8246,6 +8325,17 @@ impl ProjectTypeChecker {
             Some(self.callable_type_for_symbol(symbol, contract))
         } else {
             self.symbol_value_type(symbol)
+                .or_else(|| self.standard_constant_type(symbol))
+        }
+    }
+
+    /// The type of a standard module constant such as `Duration.zero`.
+    fn standard_constant_type(&mut self, symbol: SymbolId) -> Option<TypeId> {
+        match self.resolved.standard_symbol(symbol)? {
+            StandardSymbol::Constant(StandardConstant::DurationZero) => {
+                Some(self.standard_named_type(StandardType::Duration, Vec::new()))
+            }
+            _ => None,
         }
     }
 

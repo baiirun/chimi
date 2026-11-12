@@ -1,5 +1,6 @@
 mod constants;
 mod debug;
+mod durations;
 mod persistent_list;
 mod structural;
 
@@ -202,6 +203,8 @@ pub enum ExecutionValue {
         start: i64,
         end: i64,
     },
+    /// Nanoseconds.
+    Duration(i64),
     Record(Vec<ValueField>),
     Constructed {
         type_name: String,
@@ -355,6 +358,8 @@ enum RuntimeValue {
         start: i64,
         end: i64,
     },
+    /// A `std/duration.Duration`: a signed count of nanoseconds.
+    Duration(i64),
     Record(Vec<RuntimeField>),
     Constructed {
         constructor: SymbolId,
@@ -1442,6 +1447,26 @@ impl<'core> Evaluator<'core> {
             return stop;
         }
         match function {
+            StandardFunction::DurationNanoseconds
+            | StandardFunction::DurationMicroseconds
+            | StandardFunction::DurationMilliseconds
+            | StandardFunction::DurationSeconds
+            | StandardFunction::DurationMinutes
+            | StandardFunction::DurationHours
+            | StandardFunction::DurationToNanoseconds
+            | StandardFunction::DurationToMicroseconds
+            | StandardFunction::DurationToMilliseconds
+            | StandardFunction::DurationToSeconds
+            | StandardFunction::DurationAdd
+            | StandardFunction::DurationSubtract
+            | StandardFunction::DurationMultiply
+            | StandardFunction::DurationDivide
+            | StandardFunction::DurationNegate
+            | StandardFunction::DurationAbsolute
+            | StandardFunction::DurationToText
+            | StandardFunction::DurationParse => {
+                self.invoke_duration(function, &arguments, call_node)
+            }
             StandardFunction::IoPath => {
                 let [RuntimeValue::Text(path)] = arguments.as_slice() else {
                     return self.intrinsic_shape_defect(function, call_node);
@@ -2440,6 +2465,7 @@ fn public_value(value: RuntimeValue) -> ExecutionValue {
             ExecutionValue::Tuple(values.into_iter().map(public_value).collect())
         }
         RuntimeValue::Range { start, end } => ExecutionValue::Range { start, end },
+        RuntimeValue::Duration(value) => ExecutionValue::Duration(value),
         RuntimeValue::Record(fields) => ExecutionValue::Record(public_fields(fields)),
         RuntimeValue::Constructed {
             type_name,
@@ -2584,6 +2610,8 @@ fn write_json_value(output: &mut String, value: &ExecutionValue) {
             write!(output, "{{\"range\":{{\"start\":{start},\"end\":{end}}}}}")
                 .expect("writing JSON to a string cannot fail")
         }
+        ExecutionValue::Duration(nanoseconds) => write!(output, "{{\"duration\":{nanoseconds}}}")
+            .expect("writing JSON to a string cannot fail"),
         ExecutionValue::Record(fields) => write_json_fields(output, fields),
         ExecutionValue::Constructed {
             type_name,

@@ -57,6 +57,10 @@ impl Renderer<'_> {
             RuntimeValue::Range { start, end } => {
                 self.output.push_str(&format!("{start}..{end}"));
             }
+            // The registry's render override: the canonical text form.
+            RuntimeValue::Duration(value) => {
+                self.output.push_str(&crate::duration::to_text(*value));
+            }
             RuntimeValue::Tuple(values) => {
                 let parts = values.iter().map(|value| Part { label: None, value });
                 self.composite("", "(", ")", false, parts.collect());

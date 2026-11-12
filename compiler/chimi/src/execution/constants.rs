@@ -569,6 +569,7 @@ impl Measure<'_> {
         match value {
             RuntimeValue::Void
             | RuntimeValue::Integer(_)
+            | RuntimeValue::Duration(_)
             | RuntimeValue::Float(_)
             | RuntimeValue::Boolean(_) => Some(ROW_BYTES),
             // Its row refers to one `Int` row per bound.
@@ -705,6 +706,7 @@ fn constant_value(
     Ok(match value {
         RuntimeValue::Void => ConstantValue::Void,
         RuntimeValue::Integer(value) => ConstantValue::Integer(*value),
+        RuntimeValue::Duration(value) => ConstantValue::Duration(*value),
         RuntimeValue::Float(value) => ConstantValue::Float(*value),
         RuntimeValue::Text(value) => ConstantValue::Text(value.clone()),
         RuntimeValue::Boolean(value) => ConstantValue::Boolean(*value),
@@ -805,6 +807,7 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
     match value {
         ConstantValue::Void => RuntimeValue::Void,
         ConstantValue::Integer(value) => RuntimeValue::Integer(*value),
+        ConstantValue::Duration(value) => RuntimeValue::Duration(*value),
         ConstantValue::Float(value) => RuntimeValue::Float(*value),
         ConstantValue::Text(value) => RuntimeValue::Text(value.clone()),
         ConstantValue::Boolean(value) => RuntimeValue::Boolean(*value),

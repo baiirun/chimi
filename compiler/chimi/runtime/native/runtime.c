@@ -34,7 +34,9 @@ __attribute__((weak)) ChimiSchedulerOutcome chimi_scheduler_execute_with_config(
 typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
                VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER, VALUE_TASK,
                VALUE_CHANNEL_SENDER, VALUE_CHANNEL_RECEIVER,
-               VALUE_CHANNEL_COMPLETION, VALUE_TUPLE, VALUE_RANGE } ValueKind;
+               VALUE_CHANNEL_COMPLETION, VALUE_TUPLE, VALUE_RANGE,
+               /* A `Duration`: nanoseconds in `as.integer`. */
+               VALUE_DURATION } ValueKind;
 /* CALL_CONSTRUCTOR is a constructor with fields named as a value; calling it constructs. */
 typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC,
                CALL_CONSTRUCTOR } CallableKind;
@@ -941,7 +943,8 @@ static void mark_children(void *pointer) {
         case VALUE_INTEGER:
         case VALUE_FLOAT:
         case VALUE_BOOLEAN:
-        case VALUE_RANGE: break;
+        case VALUE_RANGE:
+        case VALUE_DURATION: break;
       }
       break;
     }
@@ -1258,7 +1261,8 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
         case VALUE_INTEGER:
         case VALUE_FLOAT:
         case VALUE_BOOLEAN:
-        case VALUE_RANGE: break;
+        case VALUE_RANGE:
+        case VALUE_DURATION: break;
       }
       break;
     }
@@ -1464,6 +1468,7 @@ static void json_value(FILE *output, const ChimiValue *value) {
         if (i) fputc(',', output); json_value(output, list_get(value, i));
       } fputc(']', output); break;
     case VALUE_RECORD: json_fields(output, value->as.record.fields, value->as.record.length); break;
+    case VALUE_DURATION: fprintf(output, "{\"duration\":%" PRId64 "}", value->as.integer); break;
     case VALUE_RANGE:
       fprintf(output, "{\"range\":{\"start\":%" PRId64 ",\"end\":%" PRId64 "}}",
               value->as.range.start, value->as.range.end); break;
@@ -1882,6 +1887,7 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
     case VALUE_TEXT:
     case VALUE_BOOLEAN:
     case VALUE_RANGE:
+    case VALUE_DURATION:
     case VALUE_JSON_NUMBER:
     case VALUE_TASK:
     case VALUE_CHANNEL_SENDER: return true;
@@ -2153,7 +2159,8 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
     if (left->kind != right->kind) { order = order_of(left->kind, right->kind); continue; }
     switch (left->kind) {
       case VALUE_VOID: break;
-      case VALUE_INTEGER: order = order_of(left->as.integer, right->as.integer); break;
+      case VALUE_INTEGER:
+      case VALUE_DURATION: order = order_of(left->as.integer, right->as.integer); break;
       /* Finite, so total; -0.0 and 0.0 are equal. */
       case VALUE_FLOAT: order = (left->as.floating > right->as.floating) - (left->as.floating < right->as.floating); break;
       case VALUE_BOOLEAN: order = order_of(left->as.boolean, right->as.boolean); break;
@@ -2874,6 +2881,185 @@ static uint32_t parse_float_text(const char *text, double *output) {
   return isfinite(*output) ? 0 : CHIMI_CONSTRUCTOR_FLOAT_PARSE_OUT_OF_RANGE;
 }
 
+/* `std/duration`. It mirrors compiler/chimi/src/duration.rs value for value, text for
+   text, and message for message; the language tests run a generated set through both. */
+static const int64_t DURATION_UNITS[6] = {
+  3600000000000, 60000000000, 1000000000, 1000000, 1000, 1
+};
+static const char *const DURATION_SUFFIXES[6] = { "h", "m", "s", "ms", "us", "ns" };
+static const char *const DURATION_CONSTRUCTORS[6] = {
+  "hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds"
+};
+static ChimiValue *duration_value(int64_t nanoseconds) {
+  ChimiValue *v = new_value(VALUE_DURATION); v->as.integer = nanoseconds; return v;
+}
+
+/* Appends `value / scale` as an exact decimal with no trailing fraction zeros. */
+static char *duration_decimal(char *out, uint64_t value, uint64_t scale) {
+  out += sprintf(out, "%" PRIu64, value / scale);
+  uint64_t fraction = value % scale;
+  if (fraction == 0) return out;
+  int width = 0; for (uint64_t rest = scale; rest > 1; rest /= 10) ++width;
+  char digits[24]; snprintf(digits, sizeof(digits), "%0*" PRIu64, width, fraction);
+  size_t length = strlen(digits); while (length > 0 && digits[length - 1] == '0') --length;
+  digits[length] = '\0';
+  return out + sprintf(out, ".%s", digits);
+}
+
+/* The canonical text form into `text`, which holds at least 32 bytes. */
+static void duration_text(int64_t duration, char *text) {
+  if (duration == 0) { strcpy(text, "0s"); return; }
+  char *out = text;
+  if (duration < 0) *out++ = '-';
+  /* The magnitude of the minimum value does not fit int64_t. */
+  uint64_t magnitude = duration < 0 ? (uint64_t)0 - (uint64_t)duration : (uint64_t)duration;
+  if (magnitude < (uint64_t)DURATION_UNITS[2]) {
+    int unit = magnitude >= (uint64_t)DURATION_UNITS[3] ? 3 : magnitude >= (uint64_t)DURATION_UNITS[4] ? 4 : 5;
+    out = duration_decimal(out, magnitude, (uint64_t)DURATION_UNITS[unit]);
+    strcpy(out, DURATION_SUFFIXES[unit]); return;
+  }
+  uint64_t hour = (uint64_t)DURATION_UNITS[0], minute = (uint64_t)DURATION_UNITS[1];
+  /* Seconds stay in nanoseconds, so the fraction is exact. */
+  uint64_t parts[3] = { magnitude / hour, magnitude % hour / minute, magnitude % minute };
+  int first = 0, last = 2;
+  while (parts[first] == 0) ++first;
+  while (parts[last] == 0) --last;
+  for (int part = first; part <= last; ++part) {
+    if (part == 2) out = duration_decimal(out, parts[part], (uint64_t)DURATION_UNITS[2]);
+    else out += sprintf(out, "%" PRIu64, parts[part]);
+    out += sprintf(out, "%s", DURATION_SUFFIXES[part]);
+  }
+}
+
+/* `Duration.parse`; returns 0 on success or the failure constructor. A grammar error
+   anywhere outranks a range error, and an inexact fraction is INVALID, never rounded. */
+static uint32_t duration_parse(const char *text, int64_t *output) {
+  if (*text == '\0') return CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY;
+  if (strcmp(text, "0") == 0) { *output = 0; return 0; }
+  bool negative = *text == '-', out_of_range = false;
+  const char *cursor = negative ? text + 1 : text;
+  if (*cursor == '\0') return CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID;
+  __int128 total = 0; int previous = -1;
+  while (*cursor) {
+    const char *integer = cursor;
+    while (*cursor >= '0' && *cursor <= '9') ++cursor;
+    size_t integer_length = (size_t)(cursor - integer);
+    if (integer_length == 0) return CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID;
+    const char *fraction = cursor; size_t fraction_length = 0;
+    if (*cursor == '.') {
+      fraction = ++cursor;
+      while (*cursor >= '0' && *cursor <= '9') ++cursor;
+      fraction_length = (size_t)(cursor - fraction);
+      if (fraction_length == 0) return CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID;
+    }
+    int unit = -1;
+    for (int candidate = 0; candidate < 6; ++candidate) {
+      size_t length = strlen(DURATION_SUFFIXES[candidate]);
+      /* `ms` before `m`: the longest suffix wins. */
+      if (strncmp(cursor, DURATION_SUFFIXES[candidate], length) == 0 &&
+          (unit < 0 || length > strlen(DURATION_SUFFIXES[unit]))) unit = candidate;
+    }
+    if (unit < 0 || unit <= previous) return CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID;
+    cursor += strlen(DURATION_SUFFIXES[unit]); previous = unit;
+    while (fraction_length > 0 && fraction[fraction_length - 1] == '0') --fraction_length;
+    /* An exact fraction has at most 13 significant digits: `h` is 2^13 * 5^11 * 9 ns. */
+    if (fraction_length > 13) return CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID;
+    __int128 scale = DURATION_UNITS[unit], denominator = 1, numerator = 0;
+    for (size_t i = 0; i < fraction_length; ++i) {
+      denominator *= 10; numerator = numerator * 10 + (fraction[i] - '0');
+    }
+    numerator *= scale;
+    if (numerator % denominator != 0) return CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID;
+    while (integer_length > 0 && *integer == '0') { ++integer; --integer_length; }
+    if (integer_length > 22) { out_of_range = true; continue; }
+    __int128 whole = 0;
+    for (size_t i = 0; i < integer_length; ++i) whole = whole * 10 + (integer[i] - '0');
+    total += whole * scale + numerator / denominator;
+  }
+  if (out_of_range) return CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE;
+  if (negative) total = -total;
+  if (total > INT64_MAX || total < INT64_MIN) return CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE;
+  *output = (int64_t)total; return 0;
+}
+
+static ChimiControl *intrinsic_shape_defect(uint32_t call_node);
+
+static ChimiControl *duration_overflow(const char *function, const char *operation, int64_t node) {
+  return defect(numeric_message("`Duration.%s` overflows the Duration range: %s", function, operation), node);
+}
+
+static ChimiControl *invoke_duration(uint32_t intrinsic, ChimiValue **arguments,
+                                     uint32_t argument_count, uint32_t call_node) {
+  char left[32], right[32], operation[96];
+  if (intrinsic <= CHIMI_INTRINSIC_DURATION_HOURS) {
+    if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
+    int unit = 5 - (int)(intrinsic - CHIMI_INTRINSIC_DURATION_NANOSECONDS);
+    int64_t count = arguments[0]->as.integer, result;
+    if (__builtin_mul_overflow(count, DURATION_UNITS[unit], &result))
+      return defect(numeric_message("`Duration.%s(%" PRId64 ")` overflows the Duration range",
+                                    DURATION_CONSTRUCTORS[unit], count), call_node);
+    return success(duration_value(result));
+  }
+  if (intrinsic == CHIMI_INTRINSIC_DURATION_PARSE) {
+    if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
+    int64_t value = 0; uint32_t error = duration_parse(arguments[0]->as.text, &value);
+    return error ? failure(standard_value(error, NULL, 0)) : success(duration_value(value));
+  }
+  if (argument_count < 1 || arguments[0]->kind != VALUE_DURATION) return intrinsic_shape_defect(call_node);
+  int64_t value = arguments[0]->as.integer, result;
+  duration_text(value, left);
+  if (intrinsic <= CHIMI_INTRINSIC_DURATION_TO_SECONDS) {
+    if (argument_count != 1) return intrinsic_shape_defect(call_node);
+    int unit = 5 - (int)(intrinsic - CHIMI_INTRINSIC_DURATION_TO_NANOSECONDS);
+    return success(integer_value(value / DURATION_UNITS[unit]));
+  }
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_DURATION_ADD:
+    case CHIMI_INTRINSIC_DURATION_SUBTRACT: {
+      if (argument_count != 2 || arguments[1]->kind != VALUE_DURATION) return intrinsic_shape_defect(call_node);
+      bool add = intrinsic == CHIMI_INTRINSIC_DURATION_ADD;
+      int64_t other = arguments[1]->as.integer;
+      bool overflow = add ? __builtin_add_overflow(value, other, &result)
+                          : __builtin_sub_overflow(value, other, &result);
+      if (!overflow) return success(duration_value(result));
+      duration_text(other, right);
+      snprintf(operation, sizeof(operation), "%s %s %s", left, add ? "+" : "-", right);
+      return duration_overflow(add ? "add" : "subtract", operation, call_node);
+    }
+    case CHIMI_INTRINSIC_DURATION_MULTIPLY:
+    case CHIMI_INTRINSIC_DURATION_DIVIDE: {
+      if (argument_count != 2 || arguments[1]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
+      int64_t other = arguments[1]->as.integer;
+      if (intrinsic == CHIMI_INTRINSIC_DURATION_MULTIPLY) {
+        if (!__builtin_mul_overflow(value, other, &result)) return success(duration_value(result));
+        snprintf(operation, sizeof(operation), "%s * %" PRId64, left, other);
+        return duration_overflow("multiply", operation, call_node);
+      }
+      if (other == 0)
+        return defect(numeric_message("`Duration.divide` by zero: %s / 0", left), call_node);
+      if (value == INT64_MIN && other == -1) {
+        snprintf(operation, sizeof(operation), "%s / %" PRId64, left, other);
+        return duration_overflow("divide", operation, call_node);
+      }
+      return success(duration_value(value / other));
+    }
+    case CHIMI_INTRINSIC_DURATION_NEGATE:
+    case CHIMI_INTRINSIC_DURATION_ABSOLUTE: {
+      if (argument_count != 1) return intrinsic_shape_defect(call_node);
+      bool negate = intrinsic == CHIMI_INTRINSIC_DURATION_NEGATE;
+      if (value == INT64_MIN) {
+        snprintf(operation, sizeof(operation), negate ? "-(%s)" : "|%s|", left);
+        return duration_overflow(negate ? "negate" : "absolute", operation, call_node);
+      }
+      return success(duration_value(negate || value < 0 ? -value : value));
+    }
+    case CHIMI_INTRINSIC_DURATION_TO_TEXT:
+      if (argument_count != 1) return intrinsic_shape_defect(call_node);
+      return success(text_value(left));
+    default: return intrinsic_shape_defect(call_node);
+  }
+}
+
 /* The debug format of `std/debug` (G10). It MUST match the interpreter's renderer in
    execution/debug.rs byte for byte; the language tests compare both. Captures and
    capability contents are never shown. */
@@ -3017,6 +3203,8 @@ static void debug_value(DebugRenderer *renderer, const ChimiValue *value) {
       debug_fields(renderer, "{", "}", true, value->as.record.fields, order, length, true);
       return;
     }
+    /* The registry's render override: the canonical text form. */
+    case VALUE_DURATION: duration_text(value->as.integer, scalar); debug_text(buffer, scalar); return;
     case VALUE_RANGE:
       snprintf(scalar, sizeof(scalar), "%" PRId64 "..%" PRId64, value->as.range.start, value->as.range.end);
       debug_text(buffer, scalar); return;
@@ -3089,6 +3277,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment) {
+  if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
+    return invoke_duration(intrinsic, arguments, argument_count, call_node);
   switch (intrinsic) {
     case CHIMI_INTRINSIC_IO_PATH:
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT)
@@ -3551,6 +3741,7 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
       for (uint32_t i = 0; i < raw->length; ++i) items[i] = constant_values[ids[i]];
       return list_from_values(items, raw->length);
     }
+    case CHIMI_CONSTANT_DURATION: return duration_value(raw->integer);
     case CHIMI_CONSTANT_RANGE:
       return range_value(constant_values[ids[0]]->as.integer, constant_values[ids[1]]->as.integer);
     case CHIMI_CONSTANT_TUPLE: {

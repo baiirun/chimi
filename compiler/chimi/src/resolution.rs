@@ -6,8 +6,8 @@ use crate::semantic::{
     SemanticProject, StructDeclaration, TypeUse,
 };
 use crate::standard::{
-    StandardConstructor, StandardFunction, StandardGeneric, StandardModule, StandardSymbol,
-    StandardType,
+    StandardConstant, StandardConstructor, StandardFunction, StandardGeneric, StandardModule,
+    StandardSymbol, StandardType,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -574,6 +574,8 @@ impl ProjectResolver {
             (StandardType::FloatParseError, StandardModule::Float),
             (StandardType::FloatConversionError, StandardModule::Float),
             (StandardType::Ordering, StandardModule::Order),
+            (StandardType::Duration, StandardModule::Duration),
+            (StandardType::DurationParseError, StandardModule::Duration),
         ] {
             let symbol = self.add_symbol(
                 None,
@@ -609,6 +611,24 @@ impl ProjectResolver {
                 .expect("standard module is indexed")
                 .values
                 .insert(function.name().to_owned(), symbol);
+        }
+
+        for constant in StandardConstant::ALL {
+            let symbol = self.add_symbol(
+                None,
+                None,
+                Namespace::Value,
+                ProjectSymbolKind::BuiltinValue,
+                constant.name(),
+                true,
+            );
+            self.standard_symbols
+                .insert(symbol, StandardSymbol::Constant(constant));
+            self.standard_modules
+                .get_mut(&constant.module())
+                .expect("standard module is indexed")
+                .values
+                .insert(constant.name().to_owned(), symbol);
         }
 
         for constructor in StandardConstructor::ALL {

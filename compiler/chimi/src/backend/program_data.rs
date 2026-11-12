@@ -57,6 +57,7 @@ impl ProgramData {
         let row = match value {
             ConstantValue::Void => (0, 0, 0, 0, 0),
             ConstantValue::Integer(value) => (1, 0, 0, 0, *value),
+            ConstantValue::Duration(value) => (16, 0, 0, 0, *value),
             // The runtime reads the IEEE 754 bits back with `memcpy`.
             ConstantValue::Float(value) => (2, 0, 0, 0, value.to_bits() as i64),
             ConstantValue::Text(value) => (3, self.string(value), 0, 0, 0),
