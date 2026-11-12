@@ -9374,3 +9374,51 @@ fn a_multi_subject_outcome_case_reports_what_it_does_not_cover() {
         ["T4232"]
     );
 }
+
+// RU-12 (ts-8250de): a local base is read directly, but values written out of
+// declaration order are still evaluated in source order.
+#[test]
+fn an_update_of_a_local_base_evaluates_values_in_source_order() {
+    let program = |verbose_fails: &str, jobs_fails: &str| {
+        format!(
+            concat!(
+                "{}",
+                "enum Step {{\n",
+                "  First\n",
+                "  Second\n",
+                "}}\n",
+                "fn jobs(fails: Bool) -> Int {{\n",
+                "  case fails {{\n",
+                "    True -> Failure(Step.Second)\n",
+                "    False -> 2\n",
+                "  }}\n",
+                "}}\n",
+                "fn verbose(fails: Bool) -> Bool {{\n",
+                "  case fails {{\n",
+                "    True -> Failure(Step.First)\n",
+                "    False -> True\n",
+                "  }}\n",
+                "}}\n",
+                "fn change(config: Config, verbose_fails: Bool, jobs_fails: Bool) -> Config {{\n",
+                "  {{ ..config, verbose: verbose(verbose_fails), jobs: jobs(jobs_fails) }}\n",
+                "}}\n",
+                "pub fn main() -> Int {{\n",
+                "  let updated = change(Config(\"a\", 1, False), {}, {})\n",
+                "  case updated.verbose {{\n",
+                "    True -> updated.jobs\n",
+                "    False -> 0\n",
+                "  }}\n",
+                "}}\n",
+            ),
+            CONFIG, verbose_fails, jobs_fails
+        )
+    };
+    assert_eq!(
+        run_both("local-update-order", &program("True", "True")),
+        failure("Step", "First")
+    );
+    assert_eq!(
+        run_both("local-update-success", &program("False", "False")),
+        "\"outcome\":\"success\",\"value\":2"
+    );
+}

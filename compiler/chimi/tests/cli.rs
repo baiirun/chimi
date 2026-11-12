@@ -4300,3 +4300,37 @@ fn native_function_clauses_allocate_what_the_equivalent_case_allocates() {
     );
     assert_eq!(clauses, case, "clauses {clauses} bytes, case {case} bytes");
 }
+
+// RU-11 (ts-8250de): an update of a local base allocates what the constructor
+// written out allocates. Before, it bound the base and each value in a sequence,
+// which cloned the environment, and every environment carried a slot per
+// update temporary.
+#[test]
+fn native_record_update_allocates_what_the_written_out_constructor_allocates() {
+    let measure = |name: &str, bump: &str| {
+        let scratch = scratch_directory(&format!("native-update-allocation-{name}"));
+        let step = format!(
+            concat!(
+                "fn bump(tally: Tally, event: Text) -> Tally {{\n",
+                "  case event {{\n",
+                "    \"b\" -> {}\n",
+                "    _ -> tally\n",
+                "  }}\n",
+                "}}\n",
+                "fn step(tally: Tally, event: Text) -> Tally {{ bump(tally, event) }}\n",
+            ),
+            bump
+        );
+        let executable = build_native(&scratch, "tally", &tally_program(&step));
+        let (outcome, report) = execute_with_memory_report(&executable, &scratch);
+        assert!(outcome.contains("\"value\":20000"), "{name}: {outcome}");
+        std::fs::remove_dir_all(scratch).unwrap();
+        json_u64_field(&report, "scoped_total_allocated_bytes")
+    };
+    let update = measure("update", "{ ..tally, b: tally.b + 1 }");
+    let constructor = measure("constructor", "Tally(tally.a, tally.b + 1, tally.other)");
+    assert_eq!(
+        update, constructor,
+        "update {update} bytes, constructor {constructor} bytes"
+    );
+}

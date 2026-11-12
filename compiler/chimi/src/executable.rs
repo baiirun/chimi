@@ -1128,6 +1128,7 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
         origin_ids,
         nodes: Vec::new(),
         clause_parameter_aliases: HashMap::new(),
+        unbound_temporaries: HashSet::new(),
     };
     let mut functions = Vec::new();
     let mut constant_initializers = Vec::new();
@@ -1191,10 +1192,12 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
             }
         }
     }
-    // A name aliased to its clause parameter binds nothing, so it takes no
-    // environment slot.
+    // A name aliased to its clause parameter, or an update temporary left
+    // unbound, binds nothing, so it takes no environment slot.
     for symbol in &mut symbols {
-        if lowerer.clause_parameter_aliases.contains_key(&symbol.id) {
+        if lowerer.clause_parameter_aliases.contains_key(&symbol.id)
+            || lowerer.unbound_temporaries.contains(&symbol.id)
+        {
             symbol.kind = CoreSymbolKind::Other;
         }
     }
@@ -1222,6 +1225,8 @@ struct CoreLowerer {
     /// A clause pattern that only names its parameter (`fn f(state, "a")`) binds
     /// nothing in Core: references to that name read the generated parameter.
     clause_parameter_aliases: HashMap<SymbolId, SymbolId>,
+    /// Update temporaries the lowering did not need to bind.
+    unbound_temporaries: HashSet<SymbolId>,
 }
 
 impl CoreLowerer {
@@ -1761,30 +1766,66 @@ impl CoreLowerer {
                 )
                 .expect("resolution defines update temporaries")
         };
-        let base_symbol = temporary(self, semantic_id);
         let base_type = self.typed.expression_facts[&(module_id, base.semantic_id())].success;
-        let mut steps = vec![CoreStep::Bind {
-            symbol: base_symbol,
-            value: self.expression(module_id, base),
-        }];
+        // A local base is read where each kept field needs it, as the written-out
+        // constructor would; any other base is evaluated once, first, and bound.
+        let local_base = match base {
+            ModuleExpression::Name { semantic_id, .. } => self
+                .value_symbol(module_id, *semantic_id)
+                .filter(|symbol| self.is_local(*symbol)),
+            _ => None,
+        };
+        let mut steps = Vec::new();
+        let base_symbol = match local_base {
+            Some(symbol) => {
+                self.unbound_temporaries
+                    .insert(temporary(self, semantic_id));
+                symbol
+            }
+            None => {
+                let symbol = temporary(self, semantic_id);
+                steps.push(CoreStep::Bind {
+                    symbol,
+                    value: self.expression(module_id, base),
+                });
+                symbol
+            }
+        };
+        // The constructor evaluates its arguments in declaration order. When the
+        // new values are written in that order they are its arguments directly;
+        // otherwise each is bound in source order first.
+        let replacements = shape
+            .fields
+            .iter()
+            .filter_map(|(_, _, replacement)| *replacement)
+            .collect::<Vec<_>>();
+        let in_order = replacements.windows(2).all(|pair| pair[0] < pair[1]);
         let mut values = Vec::new();
         for field in fields {
             let symbol = temporary(self, field.value.semantic_id());
-            steps.push(CoreStep::Bind {
-                symbol,
-                value: self.expression(module_id, &field.value),
-            });
-            values.push(symbol);
+            if in_order {
+                self.unbound_temporaries.insert(symbol);
+                values.push(None);
+            } else {
+                steps.push(CoreStep::Bind {
+                    symbol,
+                    value: self.expression(module_id, &field.value),
+                });
+                values.push(Some(symbol));
+            }
         }
         let mut arguments = Vec::new();
         for (name, type_id, replacement) in &shape.fields {
             let value = match replacement {
-                Some(index) => self.push_typed_node(
-                    module_id,
-                    semantic_id,
-                    *type_id,
-                    CoreOperation::Reference(values[*index]),
-                ),
+                Some(index) => match values[*index] {
+                    Some(symbol) => self.push_typed_node(
+                        module_id,
+                        semantic_id,
+                        *type_id,
+                        CoreOperation::Reference(symbol),
+                    ),
+                    None => self.expression(module_id, &fields[*index].value),
+                },
                 None => {
                     let receiver = self.push_typed_node(
                         module_id,
@@ -1817,10 +1858,22 @@ impl CoreLowerer {
                     .collect(),
             ),
         };
+        if steps.is_empty() {
+            return construction;
+        }
         let result_type = self.typed.expression_facts[&(module_id, semantic_id)].success;
         let construction = self.push_typed_node(module_id, semantic_id, result_type, construction);
         steps.push(CoreStep::Expression(construction));
         CoreOperation::Sequence(steps)
+    }
+
+    fn is_local(&self, symbol: SymbolId) -> bool {
+        matches!(
+            self.typed.resolved.symbol(symbol).kind,
+            ProjectSymbolKind::Parameter
+                | ProjectSymbolKind::LocalBinding
+                | ProjectSymbolKind::PatternBinding
+        )
     }
 
     /// A node with the origin of `semantic_id` but its own type, for the parts of a

@@ -726,6 +726,15 @@ proportional to the field count, not to the size of the field values, which
 are shared. A compiler MAY reuse the base's storage when the base has no other
 reference. That reuse MUST NOT be observable.
 
+An update MUST NOT allocate more than the constructor call that writes out the
+same fields: `{ ..tally, b: tally.b + 1 }` costs what
+`Tally(tally.a, tally.b + 1, tally.other)` costs. When the base is not a local
+name, the comparison is with a `let` that binds the base first. The
+evaluation order above still holds. A local base is read once for each kept
+field, which is unobservable. New values written in declaration order are the
+constructor's arguments directly. Only values written out of declaration order
+are evaluated into temporaries first.
+
 ## Execution
 
 - Clause selection and `case` matching have the same semantics. A compiler MAY
@@ -844,6 +853,8 @@ specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2023`:
 | RU-08 | `Config(..base, jobs)` | `S1001`; fix suggests `{ ..base, jobs: jobs }` |
 | RU-09 | Update whose second field value fails | Runtime: base and first field evaluated in order; the failure propagates and no updated value exists |
 | RU-10 | Update of a fake provider's `charge` | Compiles; type is the interface |
+| RU-11 | `{ ..tally, b: tally.b + 1 }` against `Tally(tally.a, tally.b + 1, tally.other)` on native | Runtime: equal allocated bytes |
+| RU-12 | Update of a local base whose values are written out of declaration order and both fail | Runtime: the first value in source order fails |
 
 ## Implementation notes
 
