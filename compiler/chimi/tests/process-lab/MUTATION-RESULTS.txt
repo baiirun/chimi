@@ -83,4 +83,15 @@ KILLED       verifier spec-body rule dropped [lib -- the_verifier_rejects] (2s)
 KILLED       process names keyed by text in Core (CO01) [process_lab] (4s)
 KILLED       a user function named like a process operation is an intrinsic (CO03) [process_lab] (5s)
 KILLED       static runner reads project contracts as standard ones [process_lab] (4s)
+# Command: scripts/mutation/mutate.py --scratch <scratch>/mutation --timeout 1500 scripts/mutation/process_heap_mutations.py
+# mutation run at ed9ec4ba5999661b76f8e7ce3b1808e9ba5cc7d8
+# process_heap_mutations.py: 7 mutants against compiler/chimi
+BASELINE ok (777s)
+KILLED       CB06: a region pass ignores foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (6s)
+KILLED       CB06: a region pass reports and then follows foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (5s)
+KILLED       CB06: a fragment copy ignores foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (10s)
+KILLED       CB06: a fragment copy reports and then follows foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (8s)
+KILLED       MF05: loop passes skipped under CHIMI_REQUIRES_SCHEDULER [cargo run --quiet --bin chimi-process-lab -- --scenario MF05 --through U4] (7s)
+KILLED       Channel.send queues the sender's original value [cli -- native_a_value_a_finished_task_put_on_a_channel_survives_its_heap] (5s)
+KILLED       every program links the fiber runtime [cli -- native_only_a_task_program_links_the_fiber_runtime] (6s)
 # result: every mutant killed
