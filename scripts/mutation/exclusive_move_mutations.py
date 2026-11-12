@@ -115,7 +115,7 @@ MUTATIONS = [
         MOVES),
     language("a loop state moves nothing", [(
         "            self.transfer_carried(&initial_value, initial.range(), boundary, environment);",
-        "            let _ = boundary;")], MOVES),
+        "            let _ = boundary;")], READS),
     language("a destructured or matched built value moves nothing", [(
         "                            TransferBoundary::IntoPattern,\n"
         "                            environment,",
@@ -180,7 +180,7 @@ MUTATIONS = [
     # Calls of functions that transfer a parameter (ts-a2fc84).
     language("a call moves nothing its callee transfers", [(
         "        let mut taken = Vec::<Place>::new();",
-        "        let transfers = &ParameterTransfers::new();\n"
+        "        let transfers = &ParameterPaths::new();\n"
         "        let mut taken = Vec::<Place>::new();")], CALLS),
     language("transfer summaries stop after one pass", [(
         "        if checker.next_summaries == summaries {",

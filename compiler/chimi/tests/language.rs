@@ -10094,13 +10094,16 @@ fn building_a_value_from_an_outer_binding_inside_a_loop_is_reported() {
 // subject. A call moves only what the callee's body transfers (ts-a2fc84):
 // `reader_twice` calls a helper that reads its parameter, `keeps_wrap` calls one
 // that only returns it, and `keeps_completion` keeps the parts of its record that
-// `takes_receiver` does not take. A move that goes no further than a local binding
+// `takes_receiver` does not hand to a task. A move that goes no further than a local binding
 // is not a transfer: `rebinds` may run on every pass, and so may `let r =
 // channel.receiver` in `rebind_in_loop`; `keep` takes a `T` without sending it.
 // `feeds_after_moving_receiver` passes a record whose `receiver` moved to a function
 // that reads only its `sender`, and `tag_after_part` matches a subject again after
-// sending a part of it. `calls_twice` calls a function parameter twice, which is not
-// tracked like a `T`. `pair_parts` captures both parts of a tuple.
+// sending a part of it. `sends_state` sends a loop state built from `r` on the first
+// pass, which takes `r` once, before the loop. `slot_of` reads `rs`, so its argument
+// is checked and only the result type keeps it from moving. `calls_twice` calls a
+// function parameter twice, which is not tracked like a `T`. `pair_parts` captures
+// both parts of a tuple.
 #[test]
 fn reading_or_owning_an_exclusive_binding_does_not_move_it() {
     let source = process_program(&format!(
@@ -10149,7 +10152,7 @@ fn reading_or_owning_an_exclusive_binding_does_not_move_it() {
             "  let a = first_of(rs)\n  let b = first_of(rs)\n  1\n}}\n",
             "struct Slot<T> {{\n  item: T\n}}\n",
             "fn slot_of(rs: Receiver<Receiver<Int>>) -> Slot<Receiver<Int>> {{\n",
-            "  Slot(rs_fallback())\n}}\n",
+            "  Channel.receive(rs)\n  Slot(rs_fallback())\n}}\n",
             "fn slot_twice(rs: Receiver<Receiver<Int>>) -> Int {{\n",
             "  let a = slot_of(rs)\n  let b = slot_of(rs)\n  1\n}}\n",
             "fn closure_twice(r: Receiver<Int>) -> Int {{\n",
@@ -10170,7 +10173,8 @@ fn reading_or_owning_an_exclusive_binding_does_not_move_it() {
             "fn keeps_wrap(r: Receiver<Int>) -> Receiver<Int> {{\n",
             "  wrap(r)\n  r\n}}\n",
             "fn takes_receiver(channel: {{ completion: Completion<Int>, receiver: Receiver<Int>, sender: Sender<Int> }}) -> Int {{\n",
-            "  let r = channel.receiver\n  1\n}}\n",
+            "  let r = channel.receiver\n",
+            "  let child = Task.start(fn() -> Int {{\n    Channel.receive(r)\n    1\n  }})\n  1\n}}\n",
             "fn keeps_completion() -> Int {{\n",
             "  let channel = Channel.bounded(1)\n  takes_receiver(channel)\n",
             "  let c = channel.completion\n  1\n}}\n",
@@ -10195,6 +10199,8 @@ fn reading_or_owning_an_exclusive_binding_does_not_move_it() {
             "  case h {{\n    Hand.Over(x) -> {{\n      Channel.send(s, x)\n",
             "      case h {{\n        Hand.Over(_) -> 1\n      }}\n    }}\n  }}\n}}\n",
             "fn calls_twice<A>(f: fn() -> A) -> A {{\n  let first = f()\n  f()\n}}\n",
+            "fn sends_state(s: Sender<Hand>, r: Receiver<Int>) -> Int {{\n",
+            "  loop held = Hand.Over(r) {{\n    Channel.send(s, held)\n    break 1\n  }}\n}}\n",
             "fn pair_parts(pair: (Receiver<Int>, Receiver<Int>)) -> Int {{\n",
             "  let (a, b) = pair\n",
             "  let x = Task.start(fn() -> Int {{\n    Channel.receive(a)\n    1\n  }})\n",
