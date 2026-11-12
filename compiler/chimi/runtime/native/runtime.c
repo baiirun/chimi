@@ -2071,7 +2071,9 @@ static MapEntries map_entries(const MapNode *root) {
 
 /* Writing an outcome value as JSON. The writer keeps its own stack of steps, so a
    value of any nesting depth costs heap, not C stack; a step pushed last runs first. */
-typedef enum { JSON_STEP_VALUE, JSON_STEP_TEXT, JSON_STEP_NAME, JSON_STEP_KEY, JSON_STEP_FREE } JsonStepKind;
+typedef enum {
+  JSON_STEP_VALUE, JSON_STEP_TEXT, JSON_STEP_NAME, JSON_STEP_KEY, JSON_STEP_KEY_END, JSON_STEP_FREE
+} JsonStepKind;
 typedef struct { JsonStepKind kind; const void *pointer; } JsonStep;
 typedef struct { JsonStep *items; size_t length; size_t capacity; } JsonSteps;
 
@@ -2111,19 +2113,9 @@ static void json_push_map(JsonSteps *steps, const MapNode *map) {
   }
 }
 
-/* A map entry's member name and `:`. A non-Text key is encoded on its own first,
-   which nests only as deep as maps used as keys of maps. */
-static void json_key(FILE *output, const MapNode *entry) {
-  if (entry->key->kind == VALUE_TEXT) json_string(output, entry->key->as.text);
-  else {
-    char *name = NULL; size_t name_length = 0;
-    FILE *buffer = open_memstream(&name, &name_length);
-    if (buffer == NULL) exhausted_memory();
-    json_value(buffer, entry->key); fclose(buffer);
-    json_string(output, name); free(name);
-  }
-  fputc(':', output);
-}
+/* A non-Text map key's member name is its own JSON encoding, written into a buffer
+   of its own and then quoted into the output it interrupted. */
+typedef struct { FILE *outer; FILE *buffer; char *name; size_t name_length; } JsonKey;
 
 static void json_value(FILE *output, const ChimiValue *root) {
   JsonSteps steps = {0};
@@ -2133,7 +2125,31 @@ static void json_value(FILE *output, const ChimiValue *root) {
     switch (step.kind) {
       case JSON_STEP_TEXT: fputs(step.pointer, output); continue;
       case JSON_STEP_NAME: json_string(output, step.pointer); fputc(':', output); continue;
-      case JSON_STEP_KEY: json_key(output, step.pointer); continue;
+      /* A key's steps go on the same stack, so maps nested through keys of maps
+         cost heap, not C stack. */
+      case JSON_STEP_KEY: {
+        const MapNode *entry = step.pointer;
+        if (entry->key->kind == VALUE_TEXT) {
+          json_string(output, entry->key->as.text); fputc(':', output); continue;
+        }
+        JsonKey *key = malloc(sizeof(*key));
+        if (!key) exhausted_memory();
+        *key = (JsonKey){.outer = output};
+        key->buffer = open_memstream(&key->name, &key->name_length);
+        if (!key->buffer) exhausted_memory();
+        json_step(&steps, JSON_STEP_KEY_END, key);
+        json_step(&steps, JSON_STEP_VALUE, entry->key);
+        output = key->buffer;
+        continue;
+      }
+      case JSON_STEP_KEY_END: {
+        JsonKey *key = (JsonKey *)step.pointer;
+        fclose(key->buffer);
+        output = key->outer;
+        json_string(output, key->name); fputc(':', output);
+        free(key->name); free(key);
+        continue;
+      }
       case JSON_STEP_FREE: free((void *)step.pointer); continue;
       case JSON_STEP_VALUE: break;
     }
@@ -3159,7 +3175,7 @@ static void debug_json_number(TextBuffer *buffer, const char *text) {
    heap, not C stack: `Debug.render` may run on a 64 KiB fiber stack. A step pushed
    last runs first. */
 typedef enum {
-  DEBUG_STEP_VALUE, DEBUG_STEP_LABEL, DEBUG_STEP_KEY, DEBUG_STEP_SEPARATOR,
+  DEBUG_STEP_VALUE, DEBUG_STEP_LABEL, DEBUG_STEP_KEY, DEBUG_STEP_KEY_END, DEBUG_STEP_SEPARATOR,
   DEBUG_STEP_PART_END, DEBUG_STEP_CLOSE, DEBUG_STEP_FREE
 } DebugStepKind;
 typedef struct { DebugStepKind kind; bool spaced; uint32_t index; const void *pointer; } DebugStep;
@@ -3343,14 +3359,18 @@ static void debug_value(DebugRenderer *renderer, const ChimiValue *root) {
       case DEBUG_STEP_VALUE: debug_expand(renderer, &steps, step.pointer); break;
       case DEBUG_STEP_LABEL:
         debug_text(renderer->buffer, step.pointer); debug_text(renderer->buffer, ": "); break;
-      case DEBUG_STEP_KEY: {
-        /* A key renders on one line even in the indented format, as the interpreter
-           does. It nests only as deep as maps used as keys of maps. */
-        DebugRenderer key = {renderer->buffer, false, renderer->depth};
-        debug_value(&key, step.pointer);
+      /* A key renders on one line even in the indented format, as the interpreter
+         does. Its steps go on the same stack, so maps nested through keys of maps
+         cost heap, not C stack; KEY_END restores the format the key interrupted. */
+      case DEBUG_STEP_KEY:
+        debug_step(&steps, DEBUG_STEP_KEY_END, NULL, 0, renderer->indented);
+        debug_step(&steps, DEBUG_STEP_VALUE, step.pointer, 0, false);
+        renderer->indented = false;
+        break;
+      case DEBUG_STEP_KEY_END:
+        renderer->indented = step.spaced;
         debug_text(renderer->buffer, ": ");
         break;
-      }
       case DEBUG_STEP_SEPARATOR: debug_separator(renderer, step.index, step.spaced); break;
       case DEBUG_STEP_PART_END: debug_part_end(renderer); break;
       case DEBUG_STEP_CLOSE:

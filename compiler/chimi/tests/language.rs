@@ -4784,6 +4784,54 @@ fn deeply_nested_values_build_compare_render_and_free() {
     );
 }
 
+// E18 through map keys: a value nested 100,000 levels deep where each level is a
+// key of the next level's map renders with `Debug.render` on both backends. A key
+// renders on one line even in the indented format, and the value after it is
+// indented again, so the shallow indented render checks that the format is
+// restored after a key. The outcome writes a non-Text key as the key's own JSON
+// text, which escapes every enclosing key again, so its size doubles per level
+// through keys: the outcome case stays shallow and checks only that both
+// backends write it alike.
+#[test]
+fn debug_render_nests_through_map_keys() {
+    let source = concat!(
+        "import std/debug as Debug\n",
+        "import std/map as Map\n",
+        "import std/map.{Map}\n",
+        "enum N {\n  Leaf\n  W(m: Map<N, List<Int>>)\n}\n",
+        "struct Build { depth: Int, n: N }\n",
+        "fn nested(depth: Int) -> N {\n",
+        "  loop state = Build(depth, Leaf) {\n",
+        "    case state.depth {\n",
+        "      0 -> break state.n\n",
+        "      _ -> Build(state.depth - 1, W(Map.put(Map.empty(), state.n, [0])))\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> (Text, Text, N) {\n",
+        "  let shallow = nested(2)\n",
+        "  (Debug.render(nested(100000)), Debug.render_indented(shallow), shallow)\n",
+        "}\n",
+    );
+    let outcome = run_both("deep-map-keys", source);
+    let levels = 100_000;
+    let rendered = format!(
+        "\"{}N.Leaf{}\"",
+        "N.W(Map { ".repeat(levels),
+        ": [0] })".repeat(levels)
+    );
+    let indented = concat!(
+        "\"N.W(\\n  Map {\\n    N.W(Map { N.Leaf: [0] }): [\\n      0,\\n    ],\\n  },\\n)\"",
+    );
+    assert!(
+        outcome.starts_with(&format!(
+            "\"outcome\":\"success\",\"value\":{{\"tuple\":[{rendered},{indented},"
+        )),
+        "{}",
+        &outcome[outcome.len().saturating_sub(400)..]
+    );
+}
+
 // O1, O3, O4, O5, O6, O7: declaration-order structs and enums, list prefixes,
 // `None` before `Some`, `False` before `True`, and text by UTF-8 bytes. Each
 // pair is also checked the other way round, which a constant answer would fail.
