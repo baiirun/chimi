@@ -5,11 +5,13 @@ import std/process as Process
 import std/process.{Inbox}
 import std/supervisor as Supervisor
 
-// RA04: under `restarts(1, 30s)`, `worker` defects at 0s and restarts, then
-// defects again exactly 30 s after that restart. A restart exactly `within`
-// later is outside the window (as in the prototype), so the second defect
-// restarts too, with attempts_in_window=1, and main finishes normally. An
-// off-by-one window that still counts the first restart would escalate.
+// RA04: under `restarts(2, 30s)`, `worker` defects at 0s, 10.001s, and 30s.
+// A restart exactly `within` after a counted one is outside the window (as in
+// the prototype), so at 30s only the 10.001s restart still counts: the third
+// defect restarts with attempts_in_window=2, and main finishes normally.
+// - An off-by-one window that still counts the 0s restart escalates at 30s.
+// - A tumbling window, which forgets every restart once the oldest expires,
+//   shows attempts_in_window=1 at 30s.
 
 pub enum Message {
   Crash
@@ -33,9 +35,11 @@ pub fn main() -> Int needs { clock: Clock } {
   let member = Process.spec(wait_for_crash, 1, Duration.seconds(1))
     |> Process.register(worker)
     |> Supervisor.process(Supervisor.Restart.OnDefect)
-  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(2, Duration.seconds(30))))
   Process.send(worker, Message.Crash)
-  Clock.sleep(Duration.seconds(30))
+  Clock.sleep(Duration.milliseconds(10001))
+  Process.send(worker, Message.Crash)
+  Clock.sleep(Duration.milliseconds(19999))
   Process.send(worker, Message.Crash)
   settle()
   Supervisor.stop(root)

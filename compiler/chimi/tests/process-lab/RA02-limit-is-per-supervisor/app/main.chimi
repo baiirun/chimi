@@ -5,11 +5,13 @@ import std/process as Process
 import std/process.{Inbox}
 import std/supervisor as Supervisor
 
-// RA02: under `restarts(2, 30s)`, members `a` and `b` each defect once, which
-// spends the supervisor's two restarts (attempts 1 and 2). A second defect of
-// `a` is the third in the window, so the supervisor escalates, and at the root
-// that ends the program with `Supervisor.RestartLimitExceeded` while main is
-// asleep in `settle`. A limit kept per member would restart `a` a second time.
+// RA02: under `restarts(2, 30s)`, member `a` defects at 0s and member `b` at
+// 10.001s, which spends the supervisor's two restarts (attempts 1 and 2). A
+// second defect of `a` at 29.999s is the third in the window, 1 ms before the
+// first restart leaves it, so the supervisor escalates, and at the root that
+// ends the program with `Supervisor.RestartLimitExceeded` while main is asleep
+// in `settle`. A limit kept per member would restart `a` a second time, and a
+// window that let the 0s restart go early would too.
 
 pub enum Message {
   Crash
@@ -39,8 +41,9 @@ pub fn main() -> Int needs { clock: Clock } {
     |> Supervisor.process(Supervisor.Restart.OnDefect)
   let root = Supervisor.start(Supervisor.policy([first, second], 2, Supervisor.restarts(2, Duration.seconds(30))))
   Process.send(a, Message.Crash)
+  Clock.sleep(Duration.milliseconds(10001))
   Process.send(b, Message.Crash)
-  settle()
+  Clock.sleep(Duration.milliseconds(19998))
   Process.send(a, Message.Crash)
   settle()
   Supervisor.stop(root)

@@ -292,7 +292,8 @@ capability and supervisor identity, never as expected failures:
 - U6 (ts-6ccbc9): the non-literal range defects above are checked at the call
   that receives the value, before anything is started (lab MB10, SV11). A
   root escalation ends the program with `Supervisor.RestartLimitExceeded`
-  wherever main is parked, not only in `Supervisor.wait`.
+  whether main is parked (in `Supervisor.wait` or anywhere else) or
+  runnable.
 
 ## Capability rules as checked
 

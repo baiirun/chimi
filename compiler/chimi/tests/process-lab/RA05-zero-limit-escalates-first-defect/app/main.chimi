@@ -1,15 +1,23 @@
+import std/channel as Channel
+import std/channel.{Receive}
 import std/clock as Clock
 import std/clock.{Clock}
 import std/duration as Duration
 import std/process as Process
 import std/process.{Inbox}
 import std/supervisor as Supervisor
+import std/task as Task
 
 // RA05: under `restarts(0, 30s)`, the first defect of an `OnDefect` member
 // already exceeds the limit. No restart is attempted: the supervisor
 // escalates, and at the root that ends the program with
 // `Supervisor.RestartLimitExceeded`. A free first restart would show
 // `restart_attempted` and let main finish.
+//
+// Main is runnable, not parked, when the root escalates: a child task sends
+// `Crash` and then a value on main's channel, which wakes main before the
+// member runs and defects. The escalation must end main wherever it is, so
+// main never reaches `settle` or returns 101.
 
 pub enum Message {
   Crash
@@ -34,8 +42,19 @@ pub fn main() -> Int needs { clock: Clock } {
     |> Process.register(worker)
     |> Supervisor.process(Supervisor.Restart.OnDefect)
   let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))
-  Process.send(worker, Message.Crash)
+  let wake = Channel.bounded(1)
+  let sender = wake.sender
+  let crasher = Task.start(fn() -> Int {
+    Process.send(worker, Message.Crash)
+    Channel.send(sender, 1)
+    1
+  })
+  let woken = Channel.receive(wake.receiver)
+  let value = case woken {
+    Receive.Received(number) -> number
+    Receive.Drained -> 0
+  }
   settle()
   Supervisor.stop(root)
-  0
+  value + 100
 }

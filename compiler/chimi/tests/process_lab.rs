@@ -27,18 +27,16 @@ fn statuses(report: &str) -> Vec<(String, String)> {
 }
 
 // The lab's own gate: every unlocked scenario of every kind passes, and each
-// kind reports each of its scenarios once.
+// kind reports each of its scenarios once. One `all` run covers every kind, so
+// OB04 reuses the executables the earlier kinds built.
 #[test]
 fn every_scenario_through_the_current_stage_passes() {
-    for kind in Kind::ALL
-        .into_iter()
-        .filter(|kind| *kind != Kind::Performance)
-    {
-        let output = lab(&[kind.name()]);
-        let report = String::from_utf8(output.stdout).unwrap();
-        assert!(output.status.success(), "{}: {report}", kind.name());
-        assert!(output.stderr.is_empty(), "{}", kind.name());
-        assert_eq!(report.lines().count(), 1);
+    let output = lab(&["all"]);
+    let reports = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{reports}");
+    assert!(output.stderr.is_empty());
+    assert_eq!(reports.lines().count(), Kind::ALL.len());
+    for (kind, report) in Kind::ALL.into_iter().zip(reports.lines()) {
         assert!(report.starts_with(&format!(
             "{{\"schema\":\"chimi.process-conformance.v1\",\"kind\":\"{}\",\"stage\":\"{}\",\"scenarios\":[",
             kind.name(),

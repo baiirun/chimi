@@ -23,9 +23,11 @@ pub(super) fn check(scenario: &Scenario, options: &Options) -> Result<(), String
 
 /// OB04: every transcript fixture unlocked at `CURRENT_STAGE` runs twice under
 /// `--trace=full`, and the two telemetry files are byte-identical once
-/// `execution_id` is removed (`fixture::deterministic`). Scheduling order,
-/// identities, virtual times, and sequences all appear in that telemetry, so
-/// any nondeterminism in them fails here.
+/// `execution_id` is removed. A fixture this lab process already ran supplies
+/// the second run from its own executable (`fixture::determinism`); only the
+/// others are built again. Scheduling order, identities, virtual times, and
+/// sequences all appear in that telemetry, so any nondeterminism in them
+/// fails here.
 pub(super) fn transcripts_are_deterministic() -> Result<(), String> {
     let mut checked = 0;
     for scenario in &catalogue::SCENARIOS {
@@ -35,7 +37,7 @@ pub(super) fn transcripts_are_deterministic() -> Result<(), String> {
         {
             continue;
         }
-        fixture::deterministic(scenario).map_err(|error| format!("{}: {error}", scenario.id))?;
+        fixture::determinism(scenario).map_err(|error| format!("{}: {error}", scenario.id))?;
         checked += 1;
     }
     if checked == 0 {

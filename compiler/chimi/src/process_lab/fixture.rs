@@ -205,6 +205,15 @@ pub(super) fn execute(scenario: &Scenario, options: &Options) -> Result<Vec<Run>
                 &super::transcript::boundaries(transcript),
                 &actual,
             )?;
+            // OB04's evidence, gathered on the executable this run built: the
+            // first run's telemetry against a second full run's.
+            if index == 0 {
+                let again = run(Trace::Full, 3).map(|second| second.telemetry);
+                record_determinism(
+                    scenario,
+                    again.and_then(|second| same_telemetry(&full.telemetry, &second)),
+                );
+            }
             full_telemetry = full.telemetry;
         }
         if let Some(events) = &events {
@@ -370,10 +379,35 @@ fn event_classes(transcript: &[String]) -> Vec<String> {
     lines
 }
 
+/// The OB04 results of the transcript fixtures this lab process has already
+/// run, by scenario ID, so OB04 need not rebuild them.
+static DETERMINISM: std::sync::Mutex<Vec<(&'static str, Result<(), String>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn record_determinism(scenario: &Scenario, result: Result<(), String>) {
+    let mut results = DETERMINISM
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    results.retain(|(id, _)| *id != scenario.id);
+    results.push((scenario.id, result));
+}
+
+/// OB04 for one transcript fixture: the result its own run recorded in this
+/// process, or else a fresh build run twice (`deterministic`).
+pub(super) fn determinism(scenario: &Scenario) -> Result<(), String> {
+    let recorded = DETERMINISM
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .iter()
+        .find(|(id, _)| *id == scenario.id)
+        .map(|(_, result)| result.clone());
+    recorded.unwrap_or_else(|| deterministic(scenario))
+}
+
 /// OB04 for one transcript fixture: builds it and runs it twice under
 /// `--trace=full`, with no arguments or with its first, and requires
 /// byte-identical telemetry apart from `execution_id`.
-pub(super) fn deterministic(scenario: &Scenario) -> Result<(), String> {
+fn deterministic(scenario: &Scenario) -> Result<(), String> {
     let scratch = Scratch::new(scenario)?;
     let executable = build(scenario, scratch.path())?;
     let argument = scenario.arguments.first().copied();

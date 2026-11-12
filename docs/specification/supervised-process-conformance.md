@@ -548,10 +548,10 @@ did for each of its tests.
 | ID | Unlock | Scenario | Rejects |
 | --- | --- | --- | --- |
 | RA01 | U6 | One member defects. Its replacement starts with fresh state, and the peer keeps its state. Transcript order is `process_terminated`, `restart_attempted attempts_in_window=1`, `process_started` | Peers restarted, state kept, or the restart charged after the start |
-| RA02 | U6 | `restarts(2, 30s)`. Members A and B each defect once. A third defect of A escalates | A limit per member instead of per supervisor |
+| RA02 | U6 | `restarts(2, 30s)`. A defects at 0s and B at 10.001s. A's second defect, at 29.999s, is the third in the window and escalates | A limit per member instead of per supervisor, or a window that drops a restart early |
 | RA03 | U6 | `restarts(1, 30s)`. Defect, sleep 31 s, defect. Both restart, and each shows `attempts_in_window=1` | A window that never rolls |
-| RA04 | U6 | `restarts(1, 30s)`. The second defect comes exactly 30 s after the first restart and restarts | Off-by-one at the window edge. A restart at exactly `within` later is outside the window, as in the prototype |
-| RA05 | U6 | `restarts(0, 30s)`. The first defect escalates | A free first restart |
+| RA04 | U6 | `restarts(2, 30s)`. Defects at 0s, 10.001s, and 30s all restart, the third with `attempts_in_window=2`: at exactly `within` after it, the 0s restart is outside the window, as in the prototype, and the 10.001s one still counts | Off-by-one at the window edge, or a tumbling window that forgets every restart once the oldest expires |
+| RA05 | U6 | `restarts(0, 30s)`. The first defect escalates while main is runnable: a child task sends `Crash`, then wakes main through a channel | A free first restart, or an escalation that ends only parked root tasks |
 | RA06 | U7 | C harness: the replacement's start fails by injected fault. The attempt shows in `attempts_in_window`, and the next defect counts it | Uncharged failed replacements |
 | RA07 | U8 | A body starts a child task that sleeps, then defects. The child's `task_terminal` (cancelled, so `cause=-`) appears before the replacement's `process_started` (`extra_events = ["task_terminal"]`) | Overlap of a child task with the replacement |
 | RA08 | U6 | 1,000 defect cycles, with a 31 s sleep after every second one. The lab runs it twice and compares telemetry byte for byte, ignoring `execution_id`. It also checks the counts of each event kind (`expected.events`) | Nondeterminism under a restart storm |
@@ -566,10 +566,12 @@ starts, and the member's next defect is attempt 3 under `restarts(3, 30s)`.
 The scheduler gains no fault-injection entry point.
 
 An escalation that reaches the root ends the program with the defect
-`Supervisor.RestartLimitExceeded` (exit code 70), wherever main is parked:
-in `Supervisor.wait` (ES01, ES05) or in a sleep (RA02, RA05). The scheduler
-ends every root task with its restart-limit code, and the runner reports that
-code as this defect (U6 decision).
+`Supervisor.RestartLimitExceeded` (exit code 70), whatever main is doing
+when it happens. The scheduler ends every root task that is parked or
+runnable with its restart-limit code, and the runner reports that code as
+this defect (U6 decision). Main is parked in `Supervisor.wait` in ES01 and
+ES05, parked in a sleep in RA02, and runnable (just woken by a channel send)
+in RA05.
 
 ### Runtime: escalation
 
@@ -732,9 +734,13 @@ outcome, a dynamic member, a stop); FP01 adds the same check at U10.
 
 As built at U6:
 
-- OB04 reruns every transcript fixture whose unlock stage is at or below
-  `CURRENT_STAGE`: one build, two `--trace=full` runs, with the scenario's
-  first argument when it has runs.
+- OB04 covers every transcript fixture whose unlock stage is at or below
+  `CURRENT_STAGE`: two `--trace=full` runs of one build, with the scenario's
+  first argument when it has runs. A fixture's own run makes the second full
+  run on the executable it built and keeps the result for OB04 in the lab
+  process. OB04 builds only the fixtures that process has not run, so
+  `chimi-process-lab all` (which `tests/process_lab.rs` runs once) builds each
+  fixture once.
 - OB06 runs 2m35s of virtual time (five restart cycles of 31 s, with 5 s
   deadlines). The lab's 60 s limit on every run fails a runtime that waits for
   real. The default suite asserts no wall-clock bound, because the machine

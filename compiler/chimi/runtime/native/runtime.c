@@ -5457,7 +5457,7 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
       runtime->deadlock_waiters)
     return defect(runtime->deadlock_waiters, -1);
   /* A root supervisor escalated: the scheduler ends every root task with this code,
-     wherever it was parked, and the program ends with the escalation's defect. */
+     parked or runnable, and the program ends with the escalation's defect. */
   if (outcome.state == CHIMI_FIBER_DEFECTED &&
       outcome.defect_code == CHIMI_SCHEDULER_DEFECT_RESTART_LIMIT_EXCEEDED)
     return defect("Supervisor.RestartLimitExceeded", -1);

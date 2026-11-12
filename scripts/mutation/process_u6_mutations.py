@@ -79,6 +79,22 @@ MUTATIONS = [
             "            .is_some_and(|at| at.saturating_add(restarts.within) < now)")]),
     lab("the window never rolls", KERNEL, "RA03",
         [TRANSCRIPT, EXITED], [(WINDOW_PRUNE, "            .is_some_and(|_| false)")]),
+    lab("the window tumbles: every restart is forgotten once the oldest expires", KERNEL, "RA04",
+        [TRANSCRIPT], [(
+            """        while supervision
+            .restart_times
+            .front()
+            .is_some_and(|at| at.saturating_add(restarts.within) <= now)
+        {
+            supervision.restart_times.pop_front();
+        }""",
+            """        if supervision
+            .restart_times
+            .front()
+            .is_some_and(|at| at.saturating_add(restarts.within) <= now)
+        {
+            supervision.restart_times.clear();
+        }""")]),
     lab("returned and failed members restart", KERNEL, "SV03",
         [TRANSCRIPT, OUTCOME], [(
             RESTART_RULE,
@@ -95,6 +111,10 @@ MUTATIONS = [
     # Escalation.
     lab("escalation stops declared members before dynamic ones", KERNEL, "ES05",
         [TRANSCRIPT], [(STOP_ORDER, "                    for membership in dynamic.into_iter().chain(declared) {")]),
+    lab("a root escalation ends only parked root tasks", KERNEL, "RA05",
+        [OUTCOME, EXITED], [(
+            "                    && matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked)",
+            "                    && matches!(record.phase, TaskPhase::Parked)")]),
     lab("a root escalation ends the program as a scheduler failure", RUNTIME, "RA02",
         [OUTCOME], [(ESCALATION_OUTCOME, "")]),
     # Range checks at the call that receives the value.
@@ -118,6 +138,15 @@ MUTATIONS = [
         ["telemetry of the second --trace=full run"], [(
             "          event->waiter_depth, event->discard_count);",
             "          event->waiter_depth, event->discard_count + (uint64_t)getpid());")]),
+    # The same mutant through `all`, where OB04 reads the result MB01's own
+    # run recorded in the runtime kind instead of rebuilding it.
+    dict(name="OB04 (recorded runs): telemetry carries the process id", file=RUNTIME,
+         edits=[(
+             "          event->waiter_depth, event->discard_count);",
+             "          event->waiter_depth, event->discard_count + (uint64_t)getpid());")],
+         command=["cargo", "run", "--quiet", "--bin", "chimi-process-lab", "--",
+                  "all", "--through", "U6"],
+         expect=["\"OB04\",\"status\":\"fail\",\"detail\":\"MB01: telemetry of the second"]),
     lab("event classes ignore their class fields", FIXTURE, "RA08",
         ["expected.events line"], [(
             'const CLASS_FIELDS: [&str; 4] = ["cause", "reason", "outcome", "attempts_in_window"];',
