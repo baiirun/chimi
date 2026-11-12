@@ -1,0 +1,54 @@
+import std/channel as Channel
+import std/channel.{Receive}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/task as Task
+
+// SV08: main starts a dynamic member and sends its exclusive `ManagedProcess`
+// through a channel to a child task, which removes it (removed = 1). The
+// handle is not bound to the task that created it. The removal frees the only
+// slot, so main's next start succeeds (restarted = 1).
+
+pub enum Message {
+  Ping
+}
+
+fn ignore(inbox: Inbox<Message>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      Message.Ping -> pings + 1
+    }
+  }
+}
+
+pub struct Handoff {
+  removed: Int,
+  restarted: Int,
+}
+
+pub fn main() -> Handoff {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(ignore, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  let handles = Channel.bounded(1)
+  Channel.send(handles.sender, managed)
+  let receiver = handles.receiver
+  let remover = Task.start(fn() -> Int {
+    let received = Channel.receive(receiver)
+    case received {
+      Receive.Received(handle) -> {
+        Supervisor.remove_process(root, handle)
+        1
+      }
+      Receive.Drained -> 0
+    }
+  })
+  let removed = Task.result(remover)
+  let restarted = case Supervisor.start_process(root, Process.spec(ignore, 1, Duration.seconds(1)), Supervisor.Restart.Never) {
+    Success(_) -> 1
+    Failure(_) -> 0
+  }
+  Supervisor.stop(root)
+  Handoff(removed, restarted)
+}

@@ -365,7 +365,7 @@ fn prebuilt_runtime_archive(key: &str, process_kernel: bool) -> Option<&'static 
     (!prebuilt_key.is_empty() && prebuilt_key == key).then_some(archive)
 }
 
-fn bundled_fiber_archive() -> Result<PathBuf, String> {
+pub(crate) fn bundled_fiber_archive() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("CHIMI_FIBER_RUNTIME_ARCHIVE") {
         let path = PathBuf::from(path);
         return path

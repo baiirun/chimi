@@ -1,0 +1,48 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// RR01: `worker` is parked in `receive` when main removes it. The removal
+// returns only after the incarnation has terminated (`cancelled`) and the
+// membership is gone, and the name is already free when it returns: a named
+// send right after it is `Unavailable`, and a new member registers `worker`
+// at once (outcome 1).
+
+pub enum Message {
+  Ping
+}
+
+fn ignore(inbox: Inbox<Message>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      Message.Ping -> pings + 1
+    }
+  }
+}
+
+pub process name worker: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  let spec = Process.spec(ignore, 1, Duration.seconds(1)) |> Process.register(worker)
+  let managed = Supervisor.start_process(root, spec, Supervisor.Restart.Never)
+  settle()
+  Supervisor.remove_process(root, managed)
+  let unavailable = case Process.send(worker, Message.Ping) {
+    Success(_) -> 0
+    Failure(_) -> 1
+  }
+  let restarted = case Supervisor.start_process(root, spec, Supervisor.Restart.Never) {
+    Success(_) -> 1
+    Failure(_) -> 0
+  }
+  Supervisor.stop(root)
+  unavailable * restarted
+}

@@ -1,0 +1,4 @@
+@0s process_started supervisor=S1 membership=M1 incarnation=I1
+@0s process_terminated membership=M1 incarnation=I1 cause=cancelled
+@0s supervisor_stopped supervisor=S1
+@0s admission_rejected supervisor=S1 reason=stopped

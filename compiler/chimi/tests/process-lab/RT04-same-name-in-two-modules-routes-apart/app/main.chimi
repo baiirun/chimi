@@ -1,0 +1,30 @@
+import std/duration as Duration
+import std/process as Process
+import std/supervisor as Supervisor
+import app/left as Left
+import app/right as Right
+
+// RT04: `app/left` and `app/right` each declare `process name counter`. Both
+// register in one policy at once, because a name's identity is its
+// declaration, not its text. Each name routes only to its own process: Left
+// counts 1 and Right counts 10, and the trace labels differ.
+
+pub struct Counts {
+  left: Int,
+  right: Int,
+}
+
+pub fn main() -> Counts {
+  let left = Process.spec(Left.count, 2, Duration.seconds(1))
+    |> Process.register(Left.counter)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let right = Process.spec(Right.count, 2, Duration.seconds(1))
+    |> Process.register(Right.counter)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([left, right], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(Left.counter, Left.Message.Add(1))
+  Process.send(Right.counter, Right.Message.Add(10))
+  let counts = Counts(Left.ask(), Right.ask())
+  Supervisor.stop(root)
+  counts
+}

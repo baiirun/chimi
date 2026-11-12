@@ -138,7 +138,29 @@ fn manifest_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
+/// A runtime-kind C harness (`kernel_faults.c`, RA06 and SD04): it drives the
+/// scheduler's C ABI directly, so it links the scheduler archive the compiler
+/// bundles.
+pub(super) fn kernel_harness(scenario: &Scenario, file: &str) -> Result<Option<String>, String> {
+    let archive = crate::backend::native::bundled_fiber_archive()?;
+    let mut libraries = vec![archive.into_os_string()];
+    if cfg!(target_os = "linux") {
+        libraries.extend(["-ldl".into(), "-lpthread".into(), "-lm".into()]);
+    }
+    run_harness(scenario, file, &libraries)
+}
+
 fn harness(scenario: &Scenario, file: &str) -> Result<Option<String>, String> {
+    run_harness(scenario, file, &[])
+}
+
+/// Compiles the harness `file` (with AddressSanitizer when the compiler
+/// supports it), links `libraries` after it, and runs it for the scenario.
+fn run_harness(
+    scenario: &Scenario,
+    file: &str,
+    libraries: &[std::ffi::OsString],
+) -> Result<Option<String>, String> {
     let scratch = Scratch::new(scenario)?;
     let executable = scratch.path().join("harness");
     let source = manifest_path("tests/process-lab/c").join(file);
@@ -151,6 +173,7 @@ fn harness(scenario: &Scenario, file: &str) -> Result<Option<String>, String> {
             .arg("-I")
             .arg(manifest_path("../../runtime/chimi-fiber/include"))
             .arg(&source)
+            .args(libraries)
             .arg("-o")
             .arg(&executable)
             .output()

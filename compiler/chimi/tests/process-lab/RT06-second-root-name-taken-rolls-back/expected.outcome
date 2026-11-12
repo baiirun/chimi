@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"success","value":{"type":"Rollback","fields":{"taken":"app/main.counter","reused":1}}}

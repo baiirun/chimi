@@ -1,0 +1,42 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// RR03: an `OnDefect` member, parked, is sent `Crash` and removed before it
+// runs. Removal begins, the body drains the queued `Crash` and defects. The
+// end is `defected`, but a membership under removal is never restarted: no
+// `restart_attempted` follows, the membership is removed, and its slot is
+// free, so the next start at capacity 1 succeeds (outcome 1).
+
+pub enum Message {
+  Crash
+}
+
+fn wait_for_crash(inbox: Inbox<Message>) -> Void {
+  let divisor = case Process.receive(inbox) {
+    Message.Crash -> 0
+  }
+  let quotient = 1 / divisor
+  Void
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(5, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(wait_for_crash, 1, Duration.seconds(1)), Supervisor.Restart.OnDefect)
+  settle()
+  Process.send(Supervisor.address(managed), Message.Crash)
+  Supervisor.remove_process(root, managed)
+  let started = case Supervisor.start_process(root, Process.spec(wait_for_crash, 1, Duration.seconds(1)), Supervisor.Restart.Never) {
+    Success(_) -> 1
+    Failure(_) -> 0
+  }
+  Supervisor.stop(root)
+  started
+}

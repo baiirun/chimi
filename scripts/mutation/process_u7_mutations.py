@@ -1,0 +1,97 @@
+"""Mutants of supervised-process stage U7 (ts-6ccbc9): admission, names,
+removal, `Supervisor.wait`, and drain on cancellation, as runtime.c reports
+them and the scheduler applies them, and the RA06 fault-injection harness. Each
+mutant breaks one decision a U7 scenario guards and must turn that scenario red
+with the failure it names.
+
+Run: scripts/mutation/mutate.py scripts/mutation/process_u7_mutations.py
+Results: compiler/chimi/tests/process-lab/MUTATION-RESULTS.txt.
+
+Every mutant runs one scenario through the lab binary with `--through U7`.
+"""
+
+CRATE = "compiler/chimi"
+
+RUNTIME = "runtime/native/runtime.c"
+KERNEL = "../../runtime/chimi-fiber/src/scheduler/process.rs"
+
+TRANSCRIPT = "expected.transcript line"
+OUTCOME = "expected.outcome line"
+EXITED = "exited with"
+
+
+def lab(name, file, scenario, expect, edits):
+    """`expect` is the failure the mutant must cause, as the scenario's detail
+    prints it; a compile error or another failure does not count as a kill."""
+    command = ["cargo", "run", "--quiet", "--bin", "chimi-process-lab", "--",
+               "--scenario", scenario, "--through", "U7"]
+    return dict(name=f"{scenario}: {name}", file=file, edits=edits, command=command,
+                expect=expect)
+
+
+ROLLBACK = """                let rolled_back = self.execute(Plan::from([
+                    Step::StopMembers(supervisor),
+                    Step::Emit(ProcessEventKind::Stopped { supervisor }),
+                ]));
+                debug_assert_eq!(rolled_back, Progress::Done);
+"""
+FAILED_REPLACEMENT = """        if let Err(error) = self.start_incarnation(membership) {
+            self.emit_process(ProcessEventKind::AdmissionRejected { supervisor, error });"""
+DRAIN = """                stopping.pending = false;
+                match record.mailbox.pop_front() {"""
+REMOVE_WAIT = """      if (process_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
+      if (request.owner != 0)"""
+
+MUTATIONS = [
+    # Admission.
+    lab("admission lets a start past capacity", KERNEL, "SV02",
+        [TRANSCRIPT, OUTCOME], [(
+            "        if members >= supervision.policy.capacity.get() as usize {",
+            "        if members > supervision.policy.capacity.get() as usize {")]),
+    lab("Stopped is reported as CapacityReached", RUNTIME, "SV06",
+        [OUTCOME], [(
+            "case CHIMI_RESPONSE_STOPPED: return failure(standard_value(CHIMI_CONSTRUCTOR_START_STOPPED, NULL, 0));",
+            "case CHIMI_RESPONSE_STOPPED: return failure(standard_value(CHIMI_CONSTRUCTOR_START_CAPACITY_REACHED, NULL, 0));")]),
+    # Names.
+    lab("NameTaken carries a text other than the trace label", RUNTIME, "RT03",
+        [OUTCOME], [('{text_value(label ? label : "")}', '{text_value("counter")}')]),
+    lab("every process name is one scheduler name", RUNTIME, "RT04",
+        [TRANSCRIPT, OUTCOME, EXITED], [(
+            "      return success(process_address_value(CHIMI_ADDRESS_NAMED, (uint64_t)symbol + 1));",
+            "      return success(process_address_value(CHIMI_ADDRESS_NAMED, 1));")]),
+    lab("a root whose member start fails is left running", KERNEL, "RT06",
+        [TRANSCRIPT, OUTCOME, EXITED], [(ROLLBACK, "")]),
+    lab("a second register replaces the name", RUNTIME, "RT07",
+        [OUTCOME, EXITED], [(
+            "      if (name->as.constructed.length != 0)\n        return defect(\"Process.register: spec already has a name\", call_node);",
+            "      if (false)\n        return defect(\"Process.register: spec already has a name\", call_node);")]),
+    # Removal.
+    lab("removal returns before its target terminates", RUNTIME, "RR01",
+        [TRANSCRIPT, OUTCOME, EXITED], [(
+            REMOVE_WAIT,
+            """      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (request.status == CHIMI_RESPONSE_OK || request.status == CHIMI_RESPONSE_PENDING) return success(void_value());
+      if (request.owner != 0)""")]),
+    lab("the foreign-owner defect names one supervisor", RUNTIME, "SV12",
+        [OUTCOME], [(
+            "function, request.owner, arguments[0]->as.managed.supervisor),",
+            "function, request.owner, request.owner),")]),
+    # Restart accounting with a failed replacement (C harness).
+    lab("a failed replacement is refunded", KERNEL, "RA06",
+        ["attempts_in_window"], [(
+            FAILED_REPLACEMENT,
+            """        if let Err(error) = self.start_incarnation(membership) {
+            if let Some(record) = self.kernel.supervisors.get_mut(&supervisor) {
+                record.restart_times.pop_back();
+            }
+            self.emit_process(ProcessEventKind::AdmissionRejected { supervisor, error });""")]),
+    # Drain on cancellation.
+    lab("cleanup receives nothing", KERNEL, "MB08",
+        [OUTCOME, TRANSCRIPT, EXITED], [(
+            DRAIN, "                stopping.pending = false;\n                match None::<u64> {")]),
+    lab("routing is kept during cleanup", KERNEL, "MB09",
+        [OUTCOME, TRANSCRIPT, EXITED], [(
+            "        let task = record.task;\n        self.unroute(incarnation);",
+            "        let task = record.task;")]),
+]

@@ -1,0 +1,51 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{Running, StartError}
+
+// SV02: capacity 2. Two dynamic starts fill it, and a third returns
+// `CapacityReached` at once, with an `admission_rejected` event, instead of
+// waiting for a slot (waiting would park main forever). After one removal a
+// start succeeds, so the removal released its slot. Outcome: one rejection,
+// then one start.
+
+pub enum Message {
+  Ping
+}
+
+fn ignore(inbox: Inbox<Message>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      Message.Ping -> pings + 1
+    }
+  }
+}
+
+pub struct Admission {
+  rejected: Int,
+  started: Int,
+}
+
+// 1 when admission refused the start for capacity, 0 when it started.
+fn rejected(root: Running) -> Int {
+  case Supervisor.start_process(root, Process.spec(ignore, 1, Duration.seconds(1)), Supervisor.Restart.Never) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      StartError.CapacityReached -> 1
+      StartError.NameTaken(_) -> 2
+      StartError.Stopped -> 3
+    }
+  }
+}
+
+pub fn main() -> Admission {
+  let root = Supervisor.start(Supervisor.policy([], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  let first = Supervisor.start_process(root, Process.spec(ignore, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  let second = Supervisor.start_process(root, Process.spec(ignore, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  let refused = rejected(root)
+  Supervisor.remove_process(root, first)
+  let after = 1 - rejected(root)
+  Supervisor.stop(root)
+  Admission(refused, after)
+}

@@ -1,0 +1,63 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox}
+import std/supervisor as Supervisor
+
+// MB09: `selfish` is removed with a queued `Probe`. While draining it, the
+// body sends `Ping` to its own name and to a direct address of itself. Routing
+// is gone for the whole cleanup, so both return `Unavailable`, and the body
+// reports 2. A runtime that kept routing until the body ended would accept
+// them.
+
+pub enum Message {
+  Ping
+  Probe(own: Address<Message>, report: Sender<Int>)
+}
+
+pub process name selfish: Message
+
+// 1 when the send was refused, 0 when it was accepted.
+fn refused(address: Address<Message>) -> Int {
+  case Process.send(address, Message.Ping) {
+    Success(_) -> 0
+    Failure(_) -> 1
+  }
+}
+
+fn probe_self(inbox: Inbox<Message>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      Message.Ping -> pings + 1
+      Message.Probe(own, report) -> {
+        Channel.send(report, refused(selfish) + refused(own))
+        pings
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let spec = Process.spec(probe_self, 2, Duration.seconds(1)) |> Process.register(selfish)
+  let managed = Supervisor.start_process(root, spec, Supervisor.Restart.Never)
+  let own = Supervisor.address(managed)
+  let reports = Channel.bounded(1)
+  settle()
+  Process.send(own, Message.Probe(own, reports.sender))
+  Supervisor.remove_process(root, managed)
+  let report = Channel.receive(reports.receiver)
+  let unavailable = case report {
+    Receive.Received(count) -> count
+    Receive.Drained -> -1
+  }
+  Supervisor.stop(root)
+  unavailable
+}

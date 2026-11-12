@@ -1,0 +1,39 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{StartError}
+
+// SV06: after `Supervisor.stop`, a start fails with `Stopped` (an
+// `admission_rejected reason=stopped` event, outcome 1), while
+// `remove_process` of a member the stop already ended and a second `stop`
+// both return `Void` and add no event.
+
+pub enum Message {
+  Ping
+}
+
+fn ignore(inbox: Inbox<Message>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      Message.Ping -> pings + 1
+    }
+  }
+}
+
+pub fn main() -> Int {
+  let root = Supervisor.start(Supervisor.policy([], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  let member = Supervisor.start_process(root, Process.spec(ignore, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  Supervisor.stop(root)
+  let stopped = case Supervisor.start_process(root, Process.spec(ignore, 1, Duration.seconds(1)), Supervisor.Restart.Never) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      StartError.CapacityReached -> 2
+      StartError.NameTaken(_) -> 3
+      StartError.Stopped -> 1
+    }
+  }
+  Supervisor.remove_process(root, member)
+  Supervisor.stop(root)
+  stopped
+}

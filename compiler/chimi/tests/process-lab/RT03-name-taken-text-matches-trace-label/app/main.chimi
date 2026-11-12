@@ -1,0 +1,44 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{StartError}
+
+// RT03: `counter` is held by a declared member, so a dynamic start that
+// registers it fails fast with `NameTaken`. The failure's text is the trace
+// label, `app/main.counter`, and the rejection is an `admission_rejected`
+// event with the same name. The rejected start allocates no membership: the
+// next start is M2.
+
+pub enum Message {
+  Ping
+}
+
+fn ignore(inbox: Inbox<Message>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      Message.Ping -> pings + 1
+    }
+  }
+}
+
+pub process name counter: Message
+
+pub fn main() -> Text {
+  let member = Process.spec(ignore, 1, Duration.seconds(1))
+    |> Process.register(counter)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([member], 3, Supervisor.restarts(0, Duration.seconds(30))))
+  let duplicate = Process.spec(ignore, 1, Duration.seconds(1)) |> Process.register(counter)
+  let taken = case Supervisor.start_process(root, duplicate, Supervisor.Restart.Never) {
+    Success(_) -> "started"
+    Failure(error) -> case error {
+      StartError.CapacityReached -> "capacity reached"
+      StartError.NameTaken(name) -> name
+      StartError.Stopped -> "stopped"
+    }
+  }
+  let unnamed = Supervisor.start_process(root, Process.spec(ignore, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  Supervisor.stop(root)
+  taken
+}

@@ -1,0 +1,55 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{StartError}
+
+// RT06: the first root holds `counter`. A second root declares `other` and
+// then a member that also registers `counter`. `other` starts, the duplicate
+// is rejected with `NameTaken`, and `Supervisor.start` stops `other` and the
+// second root before it returns the failure: no partial root is left running.
+// `other` is free again afterwards, so the first root can start a member that
+// registers it (reused = 1).
+
+pub enum Message {
+  Ping
+}
+
+fn ignore(inbox: Inbox<Message>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      Message.Ping -> pings + 1
+    }
+  }
+}
+
+pub process name counter: Message
+pub process name other: Message
+
+pub struct Rollback {
+  taken: Text,
+  reused: Int,
+}
+
+pub fn main() -> Rollback {
+  let holder = Process.spec(ignore, 1, Duration.seconds(1))
+    |> Process.register(counter)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let first = Supervisor.start(Supervisor.policy([holder], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  let other_member = Process.spec(ignore, 1, Duration.seconds(1))
+    |> Process.register(other)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let duplicate = Process.spec(ignore, 1, Duration.seconds(1))
+    |> Process.register(counter)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let taken = case Supervisor.start(Supervisor.policy([other_member, duplicate], 2, Supervisor.restarts(0, Duration.seconds(30)))) {
+    Success(_) -> "started"
+    Failure(StartError.NameTaken(name)) -> name
+  }
+  let reused = case Supervisor.start_process(first, Process.spec(ignore, 1, Duration.seconds(1)) |> Process.register(other), Supervisor.Restart.Never) {
+    Success(_) -> 1
+    Failure(_) -> 0
+  }
+  Supervisor.stop(first)
+  Rollback(taken, reused)
+}

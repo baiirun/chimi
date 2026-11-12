@@ -1,0 +1,33 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+
+// RT07: a spec registered as `counter` reaches a second
+// `Process.register(_, counter)` through a `case` on the run's argument count,
+// a flow the compiler does not follow. The second register defects with "spec
+// already has a name". The spec is never started, so only `Process.register`
+// can catch it; a register that silently replaced the name would let main
+// return 1.
+
+pub enum Message {
+  Ping
+}
+
+fn ignore(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.Ping -> Void
+  }
+}
+
+pub process name counter: Message
+
+pub fn main(arguments: List<Text>) -> Int {
+  let plain = Process.spec(ignore, 1, Duration.seconds(1))
+  let once = plain |> Process.register(counter)
+  let chosen = case List.length(arguments) {
+    0 -> once
+    _ -> plain
+  }
+  let twice = chosen |> Process.register(counter)
+  1
+}

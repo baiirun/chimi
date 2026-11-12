@@ -556,6 +556,15 @@ did for each of its tests.
 | RA07 | U8 | A body starts a child task that sleeps, then defects. The child's `task_terminal` (cancelled, so `cause=-`) appears before the replacement's `process_started` (`extra_events = ["task_terminal"]`) | Overlap of a child task with the replacement |
 | RA08 | U6 | 1,000 defect cycles, with a 31 s sleep after every second one. The lab runs it twice and compares telemetry byte for byte, ignoring `execution_id`. It also checks the counts of each event kind (`expected.events`) | Nondeterminism under a restart storm |
 
+RA06 as built (U7): `kernel_faults.c` drives the scheduler's C ABI with C
+process bodies and links the bundled `libchimi_fiber.a`. The scheduler
+allocates each fiber stack with one `PROT_NONE` anonymous `mmap`, so the
+harness defines `mmap`, which the static archive binds to, and fails the next
+such call. The replacement then fails to start as it would without stack
+memory: attempt 1 shows `admission_rejected reason=start_failed`, attempt 2
+starts, and the member's next defect is attempt 3 under `restarts(3, 30s)`.
+The scheduler gains no fault-injection entry point.
+
 An escalation that reaches the root ends the program with the defect
 `Supervisor.RestartLimitExceeded` (exit code 70), wherever main is parked:
 in `Supervisor.wait` (ES01, ES05) or in a sleep (RA02, RA05). The scheduler

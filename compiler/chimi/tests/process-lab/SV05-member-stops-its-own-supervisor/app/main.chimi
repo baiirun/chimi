@@ -1,0 +1,37 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{Running}
+
+// SV05: main parks in `Supervisor.wait(root)`. The declared member `stopper`
+// receives the shared `Running` and calls `Supervisor.stop` on its own
+// supervisor. The stop does not wait for its caller: `peer` is stopped, then
+// `stopper` itself ends `cancelled` as part of the stop, the supervisor
+// stops, and main's wait returns `Void` (outcome 1).
+
+pub enum Message {
+  Stop(root: Running)
+}
+
+fn stop_on_request(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.Stop(root) -> Supervisor.stop(root)
+  }
+}
+
+pub process name stopper: Message
+pub process name peer: Message
+
+pub fn main() -> Int {
+  let first = Process.spec(stop_on_request, 1, Duration.seconds(1))
+    |> Process.register(stopper)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let second = Process.spec(stop_on_request, 1, Duration.seconds(1))
+    |> Process.register(peer)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([first, second], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(stopper, Message.Stop(root))
+  Supervisor.wait(root)
+  1
+}

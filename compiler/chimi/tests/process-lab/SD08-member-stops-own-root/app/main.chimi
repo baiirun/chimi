@@ -1,0 +1,44 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{Running, StartError}
+
+// SD08: a dynamic member calls `Supervisor.stop` on its own root while main
+// sleeps. The stop completes without waiting for its caller, which ends
+// `cancelled`, and the root is stopped: main's next start returns `Stopped`
+// (outcome 1). A stop that waited for its own caller would deadlock.
+
+pub enum Message {
+  Stop(root: Running)
+}
+
+fn stop_on_request(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.Stop(root) -> Supervisor.stop(root)
+  }
+}
+
+pub process name stopper: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  let spec = Process.spec(stop_on_request, 1, Duration.seconds(1)) |> Process.register(stopper)
+  let managed = Supervisor.start_process(root, spec, Supervisor.Restart.Never)
+  Process.send(stopper, Message.Stop(root))
+  settle()
+  case Supervisor.start_process(root, spec, Supervisor.Restart.Never) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      StartError.CapacityReached -> 2
+      StartError.NameTaken(_) -> 3
+      StartError.Stopped -> 1
+    }
+  }
+}

@@ -213,6 +213,7 @@ fn status(scenario: &Scenario, options: &Options) -> Status {
         (Kind::Static, Form::Fixture) => static_kind::check(scenario, options).map(|()| None),
         (Kind::Heap, Form::Fixture | Form::CHarness(_)) => heap_kind::check(scenario, options),
         (Kind::Runtime, Form::Fixture) => fixture::check(scenario, options).map(|_| None),
+        (Kind::Runtime, Form::CHarness(file)) => heap_kind::kernel_harness(scenario, file),
         (Kind::Observability, Form::Fixture) => {
             observability_kind::check(scenario, options).map(|()| None)
         }

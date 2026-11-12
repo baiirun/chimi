@@ -1,0 +1,75 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{Running}
+
+// SV07: main shares its `Running` with the member `starter`, which uses it to
+// start a sibling dynamic member, `sibling`, under the same supervisor (S1,
+// membership M2). `Running` is not bound to the task that started the root:
+// main then counts Add(5) in the sibling and reads it back (5).
+
+pub enum StarterMessage {
+  Start(root: Running, done: Sender<Int>)
+}
+
+pub enum Message {
+  Add(amount: Int)
+  Report(reply: Sender<Int>)
+}
+
+pub process name starter: StarterMessage
+pub process name sibling: Message
+
+fn count_messages(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+    }
+  }
+}
+
+fn start_sibling(inbox: Inbox<StarterMessage>) -> Void {
+  loop started = 0 {
+    case Process.receive(inbox) {
+      StarterMessage.Start(root, done) -> {
+        let spec = Process.spec(count_messages, 2, Duration.seconds(1)) |> Process.register(sibling)
+        let outcome = case Supervisor.start_process(root, spec, Supervisor.Restart.Never) {
+          Success(_) -> 1
+          Failure(_) -> 0
+        }
+        Channel.send(done, outcome)
+        started + outcome
+      }
+    }
+  }
+}
+
+fn received(value: Receive<Int>) -> Int {
+  case value {
+    Receive.Received(number) -> number
+    Receive.Drained -> -1
+  }
+}
+
+pub fn main() -> Int {
+  let member = Process.spec(start_sibling, 1, Duration.seconds(1))
+    |> Process.register(starter)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([member], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  let done = Channel.bounded(1)
+  Process.send(starter, StarterMessage.Start(root, done.sender))
+  let started = received(Channel.receive(done.receiver))
+  Process.send(sibling, Message.Add(5))
+  let replies = Channel.bounded(1)
+  Process.send(sibling, Message.Report(replies.sender))
+  let total = received(Channel.receive(replies.receiver))
+  Supervisor.stop(root)
+  started * total
+}

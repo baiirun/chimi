@@ -1,0 +1,31 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// SV12: a handle started under the first root (supervisor 1) is removed
+// through the second root's `Running` (supervisor 2). The runtime defects at
+// `remove_process`, naming both supervisors. Removing it anyway would leave
+// main to return 1.
+
+pub enum Message {
+  Ping
+}
+
+fn ignore(inbox: Inbox<Message>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      Message.Ping -> pings + 1
+    }
+  }
+}
+
+pub fn main() -> Int {
+  let owner = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let stranger = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(owner, Process.spec(ignore, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  Supervisor.remove_process(stranger, managed)
+  Supervisor.stop(owner)
+  Supervisor.stop(stranger)
+  1
+}

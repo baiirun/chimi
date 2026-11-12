@@ -1,0 +1,58 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox}
+import std/supervisor as Supervisor
+
+// MB08: the body is parked when main queues Add(1), Add(2), and Add(3), each
+// carrying the report channel, and removes it before it runs. Removal begins,
+// and `Process.receive` still returns the three accepted messages, oldest
+// first; the body reports each one, and the next receive ends the body with
+// cancellation (`cancelled`). Main reads 1, 2, 3 back (outcome 123). A body
+// cancelled without draining would report nothing.
+
+pub enum Message {
+  Add(amount: Int, report: Sender<Int>)
+}
+
+fn report_each(inbox: Inbox<Message>) -> Void {
+  loop reported = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount, report) -> {
+        Channel.send(report, amount)
+        reported + 1
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn received(value: Receive<Int>) -> Int {
+  case value {
+    Receive.Received(number) -> number
+    Receive.Drained -> 0
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(report_each, 3, Duration.seconds(1)), Supervisor.Restart.Never)
+  let address = Supervisor.address(managed)
+  let reports = Channel.bounded(3)
+  settle()
+  Process.send(address, Message.Add(1, reports.sender))
+  Process.send(address, Message.Add(2, reports.sender))
+  Process.send(address, Message.Add(3, reports.sender))
+  Supervisor.remove_process(root, managed)
+  let first = received(Channel.receive(reports.receiver))
+  let second = received(Channel.receive(reports.receiver))
+  let third = received(Channel.receive(reports.receiver))
+  Supervisor.stop(root)
+  first * 100 + second * 10 + third
+}

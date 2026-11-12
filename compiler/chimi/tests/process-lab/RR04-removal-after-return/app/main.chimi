@@ -1,0 +1,34 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// RR04: a dynamic member returns on `End`. Removing its membership afterwards
+// returns `Void` and records only `membership_removed`: the incarnation that
+// already ended is not terminated a second time.
+
+pub enum Message {
+  End
+}
+
+fn return_on_end(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.End -> Void
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(return_on_end, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  Process.send(Supervisor.address(managed), Message.End)
+  settle()
+  Supervisor.remove_process(root, managed)
+  Supervisor.stop(root)
+  1
+}

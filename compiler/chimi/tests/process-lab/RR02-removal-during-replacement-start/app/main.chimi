@@ -1,0 +1,67 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{ManagedProcess, Running}
+
+// RR02, the lab specification's pattern. P (`p`, OnDefect) and Q (`q`, Never)
+// are dynamic members under `restarts(2, 30s)`. Main queues `Crash` for P and
+// `Remove(root, managed_p)` for Q, then settles. P runs first and defects: the
+// kernel charges attempt 1 and creates P's replacement I3 at the tail of the
+// ready queue, behind Q. Q runs and removes P before I3 ever runs, so I3 ends
+// `cancelled` and the membership is removed. R (unnamed, OnDefect) then
+// defects once: its restart shows attempts_in_window=2, so the interrupted
+// attempt for P still consumed budget.
+
+pub enum PMessage {
+  Crash
+}
+
+pub enum QMessage {
+  Remove(root: Running, managed: ManagedProcess<PMessage>)
+}
+
+fn wait_for_crash(inbox: Inbox<PMessage>) -> Void {
+  let divisor = case Process.receive(inbox) {
+    PMessage.Crash -> 0
+  }
+  let quotient = 1 / divisor
+  Void
+}
+
+fn remove_on_request(inbox: Inbox<QMessage>) -> Void {
+  loop removed = 0 {
+    case Process.receive(inbox) {
+      QMessage.Remove(root, managed) -> {
+        Supervisor.remove_process(root, managed)
+        removed + 1
+      }
+    }
+  }
+}
+
+pub process name p: PMessage
+pub process name q: QMessage
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 3, Supervisor.restarts(2, Duration.seconds(30))))
+  let spec_p = Process.spec(wait_for_crash, 1, Duration.seconds(1)) |> Process.register(p)
+  let spec_q = Process.spec(remove_on_request, 1, Duration.seconds(1)) |> Process.register(q)
+  let spec_r = Process.spec(wait_for_crash, 1, Duration.seconds(1))
+  let managed_p = Supervisor.start_process(root, spec_p, Supervisor.Restart.OnDefect)
+  let managed_q = Supervisor.start_process(root, spec_q, Supervisor.Restart.Never)
+  Process.send(p, PMessage.Crash)
+  Process.send(q, QMessage.Remove(root, managed_p))
+  settle()
+  let managed_r = Supervisor.start_process(root, spec_r, Supervisor.Restart.OnDefect)
+  Process.send(Supervisor.address(managed_r), PMessage.Crash)
+  settle()
+  Supervisor.stop(root)
+  0
+}
