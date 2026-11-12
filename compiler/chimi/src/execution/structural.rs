@@ -184,7 +184,5 @@ mod tests {
         let (left, same, larger) = (nested(depth, 1), nested(depth, 1), nested(depth, 2));
         assert_eq!(structural_order(&left, &same, &|_| 0), Ordering::Equal);
         assert_eq!(structural_order(&left, &larger, &|_| 0), Ordering::Less);
-        // The interpreter's derived `Drop` recurses, so a value this deep is leaked.
-        std::mem::forget((left, same, larger));
     }
 }

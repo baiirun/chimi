@@ -3,6 +3,7 @@ mod debug;
 mod durations;
 mod persistent_list;
 mod structural;
+mod teardown;
 
 use crate::executable::{
     CoreArm, CoreLiteral, CoreOperation, CorePattern, CoreProgram, CoreStep, CoreSymbolKind,
@@ -373,6 +374,54 @@ enum RuntimeValue {
     Map(RuntimeMap),
     JsonNumber(String),
     Callable(RuntimeCallable),
+}
+
+thread_local! {
+    static RUNTIME_VALUE_RELEASES: teardown::ReleaseQueue<RuntimeValue> =
+        const { teardown::ReleaseQueue::new() };
+    static EXECUTION_VALUE_RELEASES: teardown::ReleaseQueue<ExecutionValue> =
+        const { teardown::ReleaseQueue::new() };
+}
+
+impl RuntimeValue {
+    /// Whether the value can hold other values, so freeing it could recurse.
+    fn has_parts(&self) -> bool {
+        matches!(
+            self,
+            Self::List(_)
+                | Self::Tuple(_)
+                | Self::Record(_)
+                | Self::Constructed { .. }
+                | Self::Map(_)
+                | Self::Callable(_)
+        )
+    }
+}
+
+/// Frees a value of any nesting depth in bounded host stack (E18; see `teardown`).
+impl Drop for RuntimeValue {
+    fn drop(&mut self) {
+        if self.has_parts() {
+            teardown::release(&RUNTIME_VALUE_RELEASES, self, |value| {
+                std::mem::replace(value, Self::Void)
+            });
+        }
+    }
+}
+
+/// A program's outcome value is freed by the caller, often on a thread with a small
+/// stack, so it is freed without recursing too.
+impl Drop for ExecutionValue {
+    fn drop(&mut self) {
+        if matches!(
+            self,
+            Self::List(_) | Self::Tuple(_) | Self::Record(_) | Self::Constructed { .. }
+        ) {
+            teardown::release(&EXECUTION_VALUE_RELEASES, self, |value| {
+                std::mem::replace(value, Self::Void)
+            });
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -823,7 +872,7 @@ impl<'core> Evaluator<'core> {
             CoreOperation::Reference(symbol) => self.eval_reference(symbol, span, environment),
             CoreOperation::Select { receiver, member } => {
                 let value = success_or_return!(self.eval_node(receiver, span, environment));
-                select_field(value, &member).unwrap_or_else(|| Control::Defect {
+                select_field(&value, &member).unwrap_or_else(|| Control::Defect {
                     message: format!("verified value has no field {member}"),
                     node: Some(node_id),
                 })
@@ -838,9 +887,8 @@ impl<'core> Evaluator<'core> {
                 let callable = if let Some(provider) =
                     environment.requirements.get(&requirement_name).cloned()
                 {
-                    let Some(Control::Success(RuntimeValue::Callable(callable))) =
-                        select_field(provider, &name)
-                    else {
+                    let selected = select_field(&provider, &name);
+                    let Some(Control::Success(RuntimeValue::Callable(callable))) = &selected else {
                         return Control::Defect {
                             message: format!(
                                 "provider {requirement_name} has no callable field {name}"
@@ -848,7 +896,7 @@ impl<'core> Evaluator<'core> {
                             node: Some(node_id),
                         };
                     };
-                    callable
+                    callable.clone()
                 } else if let Some(host) = self.host_function(interface, method) {
                     RuntimeCallable::Host(host)
                 } else {
@@ -882,12 +930,13 @@ impl<'core> Evaluator<'core> {
             CoreOperation::Call { callee, arguments } => {
                 let callable =
                     success_or_return!(self.eval_node(callee, span, environment.clone()));
-                let RuntimeValue::Callable(callable) = callable else {
+                let RuntimeValue::Callable(callable) = &callable else {
                     return Control::Defect {
                         message: "verified call target is not callable".to_owned(),
                         node: Some(node_id),
                     };
                 };
+                let callable = callable.clone();
                 let mut values = Vec::with_capacity(arguments.len());
                 for argument in arguments {
                     values.push(success_or_return!(self.eval_node(
@@ -2033,10 +2082,10 @@ impl<'core> Evaluator<'core> {
                 RuntimeValue::Map(fields) => fields
                     .entries()
                     .into_iter()
-                    .map(|(name, value)| match name {
-                        RuntimeValue::Text(name) => {
-                            self.runtime_to_json(&value).map(|value| (name, value))
-                        }
+                    .map(|(name, value)| match &name {
+                        RuntimeValue::Text(name) => self
+                            .runtime_to_json(&value)
+                            .map(|value| (name.clone(), value)),
                         _ => Err(()),
                     })
                     .collect::<Result<Vec<_>, _>>()
@@ -2435,7 +2484,7 @@ fn literal_matches(literal: &CoreLiteral, value: &RuntimeValue) -> bool {
     }
 }
 
-fn select_field(value: RuntimeValue, member: &str) -> Option<Control> {
+fn select_field(value: &RuntimeValue, member: &str) -> Option<Control> {
     let fields = match value {
         RuntimeValue::Record(fields) | RuntimeValue::Constructed { fields, .. } => fields,
         _ => return None,
@@ -2586,61 +2635,111 @@ fn semantic_attribute(name: impl Into<String>, value: SemanticId) -> ExecutionAt
     }
 }
 
+/// One step of writing an outcome value as JSON. The writer keeps its own stack, so
+/// a value of any nesting depth costs heap, not host stack: the caller of an
+/// execution renders its outcome on whatever thread it has.
+enum JsonStep<'value> {
+    Value(&'value ExecutionValue),
+    Punctuation(&'static str),
+    /// A field name and its `:`.
+    Name(&'value str),
+}
+
 fn write_json_value(output: &mut String, value: &ExecutionValue) {
-    match value {
-        ExecutionValue::Void => output.push_str("{\"type\":\"Void\"}"),
-        ExecutionValue::Integer(value) => {
-            write!(output, "{value}").expect("writing JSON to a string cannot fail")
-        }
-        ExecutionValue::Float(value) => output.push_str(&render_float(value.0)),
-        ExecutionValue::Text(value) => write_json_string(output, value),
-        ExecutionValue::Boolean(value) => output.push_str(if *value { "true" } else { "false" }),
-        ExecutionValue::List(values) => {
-            output.push('[');
-            for (index, value) in values.iter().enumerate() {
-                if index > 0 {
-                    output.push(',');
+    let mut steps = vec![JsonStep::Value(value)];
+    while let Some(step) = steps.pop() {
+        let value = match step {
+            JsonStep::Punctuation(text) => {
+                output.push_str(text);
+                continue;
+            }
+            JsonStep::Name(name) => {
+                write_json_string(output, name);
+                output.push(':');
+                continue;
+            }
+            JsonStep::Value(value) => value,
+        };
+        match value {
+            ExecutionValue::Void => output.push_str("{\"type\":\"Void\"}"),
+            ExecutionValue::Integer(value) => {
+                write!(output, "{value}").expect("writing JSON to a string cannot fail")
+            }
+            ExecutionValue::Float(value) => output.push_str(&render_float(value.0)),
+            ExecutionValue::Text(value) => write_json_string(output, value),
+            ExecutionValue::Boolean(value) => {
+                output.push_str(if *value { "true" } else { "false" })
+            }
+            ExecutionValue::List(values) => {
+                output.push('[');
+                push_json_elements(&mut steps, values, "]");
+            }
+            ExecutionValue::Tuple(values) => {
+                output.push_str("{\"tuple\":[");
+                push_json_elements(&mut steps, values, "]}");
+            }
+            ExecutionValue::Range { start, end } => {
+                write!(output, "{{\"range\":{{\"start\":{start},\"end\":{end}}}}}")
+                    .expect("writing JSON to a string cannot fail")
+            }
+            ExecutionValue::Duration(nanoseconds) => {
+                write!(output, "{{\"duration\":{nanoseconds}}}")
+                    .expect("writing JSON to a string cannot fail")
+            }
+            ExecutionValue::Record(fields) => {
+                output.push('{');
+                push_json_fields(&mut steps, fields, "}");
+            }
+            ExecutionValue::Constructed {
+                type_name,
+                variant_name,
+                fields,
+            } => {
+                output.push_str("{\"type\":");
+                write_json_string(output, type_name);
+                if let Some(variant_name) = variant_name {
+                    output.push_str(",\"variant\":");
+                    write_json_string(output, variant_name);
                 }
-                write_json_value(output, value);
+                output.push_str(",\"fields\":{");
+                push_json_fields(&mut steps, fields, "}}");
             }
-            output.push(']');
-        }
-        ExecutionValue::Tuple(values) => {
-            output.push_str("{\"tuple\":[");
-            for (index, value) in values.iter().enumerate() {
-                if index > 0 {
-                    output.push(',');
-                }
-                write_json_value(output, value);
+            ExecutionValue::Callable { name } => {
+                output.push_str("{\"callable\":");
+                write_json_string(output, name);
+                output.push('}');
             }
-            output.push_str("]}");
         }
-        ExecutionValue::Range { start, end } => {
-            write!(output, "{{\"range\":{{\"start\":{start},\"end\":{end}}}}}")
-                .expect("writing JSON to a string cannot fail")
+    }
+}
+
+/// Queues `values` comma-separated, then `close`. Steps pop in reverse.
+fn push_json_elements<'value>(
+    steps: &mut Vec<JsonStep<'value>>,
+    values: &'value [ExecutionValue],
+    close: &'static str,
+) {
+    steps.push(JsonStep::Punctuation(close));
+    for (index, value) in values.iter().enumerate().rev() {
+        steps.push(JsonStep::Value(value));
+        if index > 0 {
+            steps.push(JsonStep::Punctuation(","));
         }
-        ExecutionValue::Duration(nanoseconds) => write!(output, "{{\"duration\":{nanoseconds}}}")
-            .expect("writing JSON to a string cannot fail"),
-        ExecutionValue::Record(fields) => write_json_fields(output, fields),
-        ExecutionValue::Constructed {
-            type_name,
-            variant_name,
-            fields,
-        } => {
-            output.push_str("{\"type\":");
-            write_json_string(output, type_name);
-            if let Some(variant_name) = variant_name {
-                output.push_str(",\"variant\":");
-                write_json_string(output, variant_name);
-            }
-            output.push_str(",\"fields\":");
-            write_json_fields(output, fields);
-            output.push('}');
-        }
-        ExecutionValue::Callable { name } => {
-            output.push_str("{\"callable\":");
-            write_json_string(output, name);
-            output.push('}');
+    }
+}
+
+/// Queues `fields` as comma-separated `"name":value` pairs, then `close`.
+fn push_json_fields<'value>(
+    steps: &mut Vec<JsonStep<'value>>,
+    fields: &'value [ValueField],
+    close: &'static str,
+) {
+    steps.push(JsonStep::Punctuation(close));
+    for (index, field) in fields.iter().enumerate().rev() {
+        steps.push(JsonStep::Value(&field.value));
+        steps.push(JsonStep::Name(&field.name));
+        if index > 0 {
+            steps.push(JsonStep::Punctuation(","));
         }
     }
 }
@@ -2655,19 +2754,6 @@ fn write_json_attribute(output: &mut String, value: &ExecutionAttributeValue) {
             write!(output, "{value}").expect("writing JSON to a string cannot fail");
         }
     }
-}
-
-fn write_json_fields(output: &mut String, fields: &[ValueField]) {
-    output.push('{');
-    for (index, field) in fields.iter().enumerate() {
-        if index > 0 {
-            output.push(',');
-        }
-        write_json_string(output, &field.name);
-        output.push(':');
-        write_json_value(output, &field.value);
-    }
-    output.push('}');
 }
 
 fn optional_u32(value: Option<u32>) -> String {
@@ -2727,7 +2813,12 @@ const fn file_id(identifier: FileId) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionConfig, RuntimeMap, RuntimeValue, TraceMode};
+    use super::{
+        Environment, ExecutionConfig, ExecutionValue, RuntimeCallable, RuntimeField, RuntimeMap,
+        RuntimeValue, TraceMode, ValueField, write_json_value,
+    };
+    use crate::ids::{CoreNodeId, SymbolId};
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     #[test]
@@ -2804,5 +2895,130 @@ mod tests {
 
         assert!(map.root.as_ref().unwrap().height <= 20);
         assert_eq!(map.entries().len(), 10_000);
+    }
+
+    /// Nesting depth for the teardown tests: far more levels than `SMALL_STACK` holds
+    /// frames, so freeing or writing that recurses once per level overflows it.
+    const DEPTH: usize = 100_000;
+    const SMALL_STACK: usize = 256 * 1024;
+
+    fn on_small_stack(work: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(SMALL_STACK)
+            .spawn(work)
+            .expect("spawn a test thread")
+            .join()
+            .expect("the test thread finishes");
+    }
+
+    fn field(value: RuntimeValue) -> Arc<Vec<RuntimeField>> {
+        Arc::new(vec![RuntimeField {
+            name: "inner".to_owned(),
+            value,
+        }])
+    }
+
+    /// One level of each kind of value that holds other values.
+    const WRAPPERS: [fn(RuntimeValue) -> RuntimeValue; 7] = [
+        |inner| RuntimeValue::List(std::iter::once(inner).collect()),
+        |inner| RuntimeValue::Tuple(Arc::new(vec![inner, RuntimeValue::Void])),
+        |inner| RuntimeValue::Record(field(inner)),
+        |inner| RuntimeValue::Constructed {
+            constructor: SymbolId::new(0),
+            type_name: "Nest".to_owned(),
+            variant_name: Some("Wrap".to_owned()),
+            fields: field(inner),
+        },
+        |inner| {
+            RuntimeValue::Map(RuntimeMap::default().put(RuntimeValue::Integer(0), inner, &order))
+        },
+        |inner| {
+            RuntimeValue::Callable(RuntimeCallable::Closure {
+                parameters: Vec::new(),
+                body: CoreNodeId::new(0),
+                environment: Arc::new(Environment {
+                    locals: HashMap::from([(SymbolId::new(0), inner)]),
+                    requirements: HashMap::new(),
+                }),
+                name: "closure".to_owned(),
+            })
+        },
+        |inner| {
+            RuntimeValue::Callable(RuntimeCallable::Declared {
+                symbol: SymbolId::new(0),
+                requirements: HashMap::from([("Provider".to_owned(), inner)]),
+            })
+        },
+    ];
+
+    // ts-0e026f, E18: a value nested far deeper than the stack has frames frees
+    // without recursing, through every kind of part that holds other values.
+    #[test]
+    fn freeing_a_deeply_nested_value_does_not_recurse_on_the_host_stack() {
+        for wrap in WRAPPERS {
+            let mut value = RuntimeValue::Integer(0);
+            for _ in 0..DEPTH {
+                value = wrap(value);
+            }
+            on_small_stack(move || drop(value));
+        }
+    }
+
+    // A part another value still holds survives the release of its first owner.
+    #[test]
+    fn freeing_one_owner_keeps_parts_that_another_value_shares() {
+        let shared = RuntimeValue::List((0..3).map(RuntimeValue::Integer).collect());
+        let outer = RuntimeValue::Tuple(Arc::new(vec![shared.clone(), shared.clone()]));
+        drop(outer);
+        let RuntimeValue::List(values) = &shared else {
+            unreachable!("built as a list");
+        };
+        assert_eq!(values.len(), 3);
+        assert!(matches!(values.get(2), Some(RuntimeValue::Integer(2))));
+    }
+
+    // A program's outcome is freed and written as JSON by the caller, so neither may
+    // recurse per level either.
+    #[test]
+    fn deep_outcome_values_write_and_free_without_recursing() {
+        let wrappers: [fn(ExecutionValue) -> ExecutionValue; 4] = [
+            |inner| ExecutionValue::List(vec![inner]),
+            |inner| ExecutionValue::Tuple(vec![inner, ExecutionValue::Void]),
+            |inner| {
+                ExecutionValue::Record(vec![ValueField {
+                    name: "inner".to_owned(),
+                    value: inner,
+                }])
+            },
+            |inner| ExecutionValue::Constructed {
+                type_name: "Nest".to_owned(),
+                variant_name: None,
+                fields: vec![ValueField {
+                    name: "inner".to_owned(),
+                    value: inner,
+                }],
+            },
+        ];
+        let levels = [
+            ("[", "]"),
+            ("{\"tuple\":[", ",{\"type\":\"Void\"}]}"),
+            ("{\"inner\":", "}"),
+            ("{\"type\":\"Nest\",\"fields\":{\"inner\":", "}}"),
+        ];
+        for (wrap, (open, close)) in wrappers.into_iter().zip(levels) {
+            let mut value = ExecutionValue::Integer(7);
+            for _ in 0..DEPTH {
+                value = wrap(value);
+            }
+            on_small_stack(move || {
+                let mut json = String::new();
+                write_json_value(&mut json, &value);
+                assert_eq!(
+                    json,
+                    format!("{}7{}", open.repeat(DEPTH), close.repeat(DEPTH))
+                );
+                drop(value);
+            });
+        }
     }
 }

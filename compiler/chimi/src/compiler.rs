@@ -691,12 +691,12 @@ mod tests {
             type_name,
             variant_name,
             fields,
-        }) = report.outcome
+        }) = &report.outcome
         else {
             panic!("legacy execution returns its constructed success value")
         };
         assert_eq!(type_name, "Answer");
-        assert_eq!(variant_name, None);
+        assert_eq!(*variant_name, None);
         assert_eq!(fields[0].name, "value");
         assert_eq!(fields[0].value, ExecutionValue::Integer(42));
     }
@@ -1617,7 +1617,7 @@ mod tests {
             variant_name,
             fields,
             ..
-        }) = report.outcome
+        }) = &report.outcome
         else {
             panic!("main returns the constructed charge")
         };
@@ -3762,7 +3762,7 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
         )
         .expect("fallible roots execute");
         assert!(matches!(
-            failure.outcome,
+            &failure.outcome,
             ExecutionOutcome::ExpectedFailure(ExecutionValue::Constructed {
                 type_name,
                 variant_name: Some(variant),
