@@ -1,0 +1,21 @@
+# Command: scripts/mutation/mutate.py scripts/mutation/process_lab_mutations.py
+# mutation run at 9c1b5877d9a9f2ea6b6254ce7d58cb7329beb83b
+# process_lab_mutations.py: 16 mutants against compiler/chimi
+BASELINE ok (367s)
+KILLED       supervisor_started kept before U9 [lib -- process_lab::transcript] (3s)
+KILLED       clock advances printed [lib -- process_lab::transcript] (3s)
+KILLED       time not tracked from advances [lib -- process_lab::transcript] (3s)
+KILLED       sequence order unchecked [lib -- process_lab::transcript] (2s)
+KILLED       event time not checked against the clock [lib -- process_lab::transcript] (2s)
+KILLED       unknown cause word accepted [lib -- process_lab::transcript] (3s)
+KILLED       named send without a name accepted [lib -- process_lab::transcript] (2s)
+KILLED       root escalation parent printed as - [lib -- process_lab::transcript] (2s)
+KILLED       boundaries keep sends [lib -- process_lab::transcript] (2s)
+KILLED       duration keeps trailing zeros [lib -- process_lab::transcript] (2s)
+KILLED       duration drops the zero minute [lib -- process_lab::transcript] (2s)
+KILLED       extra events ignored [lib -- process_lab::transcript] (3s)
+KILLED       catalogue unlock typo [lib -- process_lab::catalogue] (4s)
+KILLED       catalogue extra event dropped [lib -- process_lab::catalogue] (4s)
+KILLED       locked scenarios run [process_lab] (7s)
+KILLED       unlocked failures pass [process_lab] (6s)
+# result: every mutant killed
