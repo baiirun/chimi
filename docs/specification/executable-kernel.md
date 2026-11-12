@@ -443,6 +443,10 @@ These patterns inspect the same outcome constructors. A failure case MAY handle
 selected variants; unmatched failure variants continue bubbling. This differs
 from ordinary enum matching, which remains exhaustive.
 
+A multi-subject `case` MAY match any of its subjects this way. Coverage then
+applies per combination of outcomes, as specified in
+[patterns and function clauses](patterns-and-function-clauses.md#outcome-patterns-in-a-multi-subject-case).
+
 Failure rows retain variant identities. Tooling MAY display a whole error enum
 when every variant remains and individual variants after selective handling.
 

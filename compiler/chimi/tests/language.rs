@@ -9231,3 +9231,146 @@ fn let_wildcard_evaluates_its_value_and_binds_nothing() {
             .contains(&"E_UNRESOLVED_VALUE".to_owned())
     );
 }
+
+// ts-d017ce, OC-01..OC-06: a multi-subject case may match any subject as an outcome; coverage
+// is the single-subject rule per Success/Failure combination (patterns and
+// function clauses, "Outcome patterns in a multi-subject case").
+const MULTI_SUBJECT_OUTCOMES: &str = concat!(
+    "enum Minor {\n",
+    "  Bad\n",
+    "}\n",
+    "enum Major {\n",
+    "  Worse\n",
+    "}\n",
+    "fn get(n: Int) -> Int {\n",
+    "  case n {\n",
+    "    0 -> Failure(Minor.Bad)\n",
+    "    1 -> Failure(Major.Worse)\n",
+    "    n -> n\n",
+    "  }\n",
+    "}\n",
+    "fn pick(n: Int, previous: Int) -> Int {\n",
+    "  case get(n), previous {\n",
+    "    Success(value), 0 -> value\n",
+    "    Success(value), p -> value + p\n",
+    "    Failure(Bad), p -> p\n",
+    "    Failure(Worse), p if p > 5 -> 1000\n",
+    "  }\n",
+    "}\n",
+    "fn later(previous: Int, n: Int) -> Int {\n",
+    "  case previous, get(n) {\n",
+    "    0, Success(value) -> value\n",
+    "    _, Success(value) -> value * 2\n",
+    "    _, Failure(_) -> -1\n",
+    "  }\n",
+    "}\n",
+    "fn both(a: Int, b: Int) -> Int {\n",
+    "  case get(a), get(b) {\n",
+    "    Success(x), Success(y) -> x + y\n",
+    "    Success(_), Failure(_) -> 0\n",
+    "    Failure(Bad), Success(_) -> -5\n",
+    "    Failure(Bad), Failure(_) -> -6\n",
+    "  }\n",
+    "}\n",
+);
+
+#[test]
+fn a_multi_subject_case_matches_an_outcome_in_any_subject() {
+    let program = |main: &str| format!("{MULTI_SUBJECT_OUTCOMES}pub fn main() -> {main}\n");
+    assert_eq!(
+        run_both(
+            "multi-subject-outcome",
+            &program(concat!(
+                "List<Int> {\n",
+                "  [pick(7, 0), pick(7, 3), pick(0, 40), pick(1, 9),\n",
+                "   later(0, 4), later(2, 4), later(2, 1),\n",
+                "   both(2, 3), both(2, 1), both(0, 3), both(0, 1)]\n",
+                "}",
+            ))
+        ),
+        "\"outcome\":\"success\",\"value\":[7,10,40,1000,4,8,-1,5,0,-5,-6]"
+    );
+    // No arm matches `Failure(Worse), 2`, so the failure bubbles; for `both`
+    // the first subject's failure bubbles when no arm matches.
+    assert_eq!(
+        run_both(
+            "multi-subject-outcome-bubbles",
+            &program("Int { pick(1, 2) }")
+        ),
+        failure("Major", "Worse")
+    );
+    assert_eq!(
+        run_both(
+            "multi-subject-outcome-first",
+            &program("Int { both(1, 0) }")
+        ),
+        failure("Major", "Worse")
+    );
+}
+
+#[test]
+fn a_multi_subject_outcome_case_subtracts_only_fully_covered_failures() {
+    let program = |function: &str, row: &str| {
+        format!(
+            "{MULTI_SUBJECT_OUTCOMES}fn call(operation: fn() -> Int{row}) -> Int {{ operation() }}\n\
+             pub fn main() -> Int {{ call(fn() {{ {function} }}) }}\n"
+        )
+    };
+    // `Bad` is covered for every `previous`; `Worse` only under a guard.
+    assert!(check_codes(&program("pick(1, 2)", " errors Major")).is_empty());
+    assert_eq!(check_codes(&program("pick(1, 2)", "")), ["T4203"]);
+    // The first subject's `Worse` bubbles. The second subject fails only after the
+    // first succeeded, and every such case is matched, so it adds nothing.
+    assert!(check_codes(&program("both(1, 2)", " errors Major")).is_empty());
+    // `later` handles every failure of its second subject.
+    assert!(check_codes(&program("later(1, 2)", "")).is_empty());
+    // A variant covered only for some values of the other subject stays in the row.
+    let partial = MULTI_SUBJECT_OUTCOMES.replace("Failure(Bad), p -> p", "Failure(Bad), 0 -> 0");
+    let partial = format!(
+        "{partial}fn call(operation: fn() -> Int errors Major) -> Int {{ operation() }}\n\
+         pub fn main() -> Int {{ call(fn() {{ pick(1, 2) }}) }}\n"
+    );
+    assert_eq!(check_codes(&partial), ["T4203"]);
+}
+
+#[test]
+fn a_multi_subject_outcome_case_reports_what_it_does_not_cover() {
+    let case = |arms: &str| {
+        format!(
+            "enum Oops {{\n  Bad\n}}\n\
+             fn get(n: Int) -> Int {{ case n {{\n  0 -> Failure(Oops.Bad)\n  n -> n\n}} }}\n\
+             pub fn main() -> Int {{\n  case get(1), 2 {{\n{arms}  }}\n}}\n"
+        )
+    };
+    // The all-Success combination must be exhaustive, and the witness names it.
+    let messages = check_messages(&case("    Success(v), 0 -> v\n    Failure(_), p -> p\n"));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].starts_with("T4223")
+            && messages[0].contains("`Success(_), ")
+            && messages[0].ends_with("` is not matched"),
+        "{messages:?}"
+    );
+    // A fallible subject matched as an outcome needs a Failure arm.
+    let messages = check_messages(&case("    Success(v), _ -> v\n"));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].starts_with("T4223") && messages[0].contains("Failure of subject 1"),
+        "{messages:?}"
+    );
+    // Once a subject is matched as an outcome, every arm must match it that way:
+    // a plain pattern never matches a captured outcome.
+    assert_eq!(
+        check_codes(&case(
+            "    Success(v), _ -> v\n    Failure(_), _ -> 0\n    other, _ -> 1\n"
+        )),
+        ["T4222"]
+    );
+    // Reachability is per combination.
+    assert_eq!(
+        check_codes(&case(
+            "    Success(v), _ -> v\n    Failure(_), _ -> 0\n    Failure(Bad), 2 -> 1\n"
+        )),
+        ["T4232"]
+    );
+}

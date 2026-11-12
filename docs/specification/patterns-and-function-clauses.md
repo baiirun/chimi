@@ -559,6 +559,47 @@ pattern narrows that type: `LineTooLong(_, _) as error` binds a failure-set
 value whose only variant is `LineTooLong`, so `Failure(error)` re-raises
 exactly that variant.
 
+### Outcome patterns in a multi-subject case
+
+Any subject of a multi-subject `case` MAY be matched as an outcome, as a single
+subject can:
+
+<!-- chimi: fragment -->
+```chimi
+case Json.number_to_int(raw), previous {
+  Success(n), 0 -> n
+  Success(n), p -> n + p
+  Failure(_), p -> p
+}
+```
+
+Rules:
+
+- A subject is an outcome subject when some arm matches it with `Success(...)`
+  or `Failure(...)`. Every arm MUST then match it that way. Any other pattern in
+  that position is `T4222`, because a plain pattern, `_` included, never matches
+  a captured outcome.
+- Subjects are evaluated left to right. An outcome subject's failure is
+  captured for matching. A failure of any other subject propagates at once, as
+  it does in an ordinary `case`.
+- Coverage is the single-subject rule applied to each combination of `Success`
+  and `Failure` over the outcome subjects. The all-`Success` combination MUST be
+  exhaustive (`T4223`, with a witness). Each fallible outcome subject MUST have
+  at least one `Failure` arm (`T4223`). An arm that adds no coverage within its
+  own combination is `T4232`.
+- When no arm matches, the failure of the first failing outcome subject bubbles,
+  unchanged.
+- A failure variant leaves an outcome subject's row only when every combination
+  in which that subject is the first to fail covers the variant fully, with
+  unguarded arms. A variant matched only for some values of the other subjects
+  stays in the row. A later subject's failures can bubble only after every
+  earlier outcome subject succeeded, so combinations where an earlier subject
+  failed do not keep them in the row.
+
+Rationale: this is the coverage rule of a single-subject outcome case with the
+other subjects as extra columns, so no new matching semantics is needed. Both
+execution paths already evaluate each subject this way.
+
 ### Irrefutable patterns
 
 A pattern is irrefutable when it matches every value of its type: `_`, a
@@ -781,6 +822,12 @@ specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2023`:
 | FP-07 | `case error` with `FileError` and `TraceError` arms after `Failure(error)` | Compiles; omitting one is `T4231` |
 | FP-08 | `count: Text` matching an `Int` | `T4283` |
 | FP-09 | Defect raised inside the operation | Runtime: bypasses every failure-type arm |
+| OC-01 | `case get(n), previous` with `Success` and `Failure` arms in the first position | Compiles; runs each arm on both execution paths |
+| OC-02 | `case previous, get(n)` with outcome arms in the second position | Compiles; runs |
+| OC-03 | `Success(v), 0` and `Failure(_), p` only | `T4223`; witness `Success(_), …` |
+| OC-04 | An arm with a plain pattern where other arms match an outcome | `T4222` |
+| OC-05 | `Failure(Bad), 0` only, with the other subject an `Int` | Compiles; `Bad` stays in the row and bubbles at run time for other values |
+| OC-06 | `case get(a), get(b)` where every second-subject failure after a first-subject success is matched | Compiles; the row is the first subject's unhandled failures only |
 | RU-01 | `{ ..config, jobs: jobs }` | Compiles; type `Config` |
 | RU-02 | `{ ..config, job: 4 }` | `T4205` |
 | RU-03 | `{ ..config, jobs: 1, jobs: 2 }` | `T4211` |

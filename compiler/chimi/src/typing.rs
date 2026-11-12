@@ -4065,19 +4065,28 @@ impl ProjectTypeChecker {
                 bindings,
             );
         }
-        let has_outcome_pattern = arms.iter().any(|arm| {
-            arm.patterns.first().is_some_and(|pattern| {
-                self.pattern_is_builtin(module_id, pattern, "Success")
-                    || self.pattern_is_builtin(module_id, pattern, "Failure")
+        let outcome_columns = (0..subjects.len())
+            .map(|index| {
+                arms.iter().any(|arm| {
+                    arm.patterns.get(index).is_some_and(|pattern| {
+                        self.pattern_is_builtin(module_id, pattern, "Success")
+                            || self.pattern_is_builtin(module_id, pattern, "Failure")
+                    })
+                })
             })
-        });
-        if subjects.len() == 1 && has_outcome_pattern {
-            self.infer_outcome_case(module_id, subject_facts[0], arms, range, generics, bindings)
+            .collect::<Vec<_>>();
+        if outcome_columns.contains(&true) {
+            self.infer_outcome_case(
+                module_id,
+                &subject_facts,
+                &outcome_columns,
+                arms,
+                range,
+                generics,
+                bindings,
+            )
         } else {
-            if subjects.len() == 1
-                && !has_outcome_pattern
-                && !self.failure_row_is_empty(subject_facts[0].failures)
-            {
+            if subjects.len() == 1 && !self.failure_row_is_empty(subject_facts[0].failures) {
                 let failures = self.formatter().format_failure_row(
                     &self.failure_rows[subject_facts[0].failures.raw() as usize],
                 );
@@ -6271,10 +6280,20 @@ impl ProjectTypeChecker {
         )
     }
 
+    /// Types a `case` that matches outcomes. `outcome_columns[i]` marks a subject
+    /// that some arm matches with `Success(...)` or `Failure(...)`; every arm must
+    /// then match that subject that way (`T4222`). Coverage is the single-subject
+    /// rule applied per combination of Success and Failure across the outcome
+    /// subjects: the all-Success combination must be exhaustive (`T4223`), and a
+    /// failure no arm matches bubbles. Since the first failing subject is the one
+    /// that bubbles, a failure variant leaves a subject's row only when every
+    /// combination in which that subject is the first to fail covers it fully.
+    #[allow(clippy::too_many_arguments)]
     fn infer_outcome_case(
         &mut self,
         module_id: ModuleId,
-        subject: ExpressionFact,
+        subjects: &[ExpressionFact],
+        outcome_columns: &[bool],
         arms: &[ModuleCaseArm],
         range: TextRange,
         generics: &HashMap<String, SymbolId>,
@@ -6285,22 +6304,82 @@ impl ProjectTypeChecker {
             clause_head: false,
             nested: false,
         };
+        let single = subjects.len() == 1;
+        let failure_types = subjects
+            .iter()
+            .zip(outcome_columns)
+            .map(|(subject, outcome)| {
+                if *outcome {
+                    self.failure_value_type(subject.failures)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        // The column types of one Success (`true`) / Failure (`false`) combination
+        // over the outcome columns, in order.
+        let column_types = |signature: &[bool]| {
+            let mut kinds = signature.iter();
+            subjects
+                .iter()
+                .zip(outcome_columns)
+                .zip(&failure_types)
+                .map(|((subject, outcome), failure_type)| {
+                    match outcome.then(|| *kinds.next().expect("one kind per outcome column")) {
+                        Some(false) => failure_type.unwrap_or(TypeId::new(0)),
+                        Some(true) | None => subject.success,
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
         let mut arm_facts = Vec::new();
         let mut success = None;
-        let mut success_coverage = Vec::<Vec<MatchPattern>>::new();
-        let failure_type = self.failure_value_type(subject.failures);
-        let mut failure_coverage = Vec::<Vec<MatchPattern>>::new();
-        let mut fallback_handled_variants = Vec::new();
-        let mut candidate_failure_variants = Vec::new();
-        let mut handles_unknown_row = false;
-        let mut saw_failure = false;
+        let mut coverage = HashMap::<Vec<bool>, Vec<Vec<MatchPattern>>>::new();
+        let mut candidate_failure_variants = vec![Vec::<SymbolId>::new(); subjects.len()];
+        let mut catches_unknown_columns = vec![false; subjects.len()];
+        let mut saw_failure = vec![false; subjects.len()];
         for arm in arms {
-            let Some(pattern) = arm.patterns.first() else {
-                continue;
-            };
             let mut arm_bindings = bindings.clone();
-            if self.pattern_is_builtin(module_id, pattern, "Success") {
-                if let Some(inner) = self.single_outcome_pattern_argument(module_id, pattern) {
+            let mut covers = arm.patterns.len() == subjects.len();
+            if !covers {
+                self.type_error_range(
+                    module_id,
+                    "T4230",
+                    arm.range,
+                    format!(
+                        "case arm has {} patterns for {} subjects",
+                        arm.patterns.len(),
+                        subjects.len()
+                    ),
+                );
+            }
+            let mut signature = Vec::new();
+            let mut alternatives = Vec::<Vec<MatchPattern>>::new();
+            let mut catches_unknown = vec![false; subjects.len()];
+            for (index, (pattern, subject)) in arm.patterns.iter().zip(subjects).enumerate() {
+                if !outcome_columns[index] {
+                    let normalized = self.normalize_pattern(
+                        module_id,
+                        pattern,
+                        subject.success,
+                        context,
+                        &mut arm_bindings,
+                    );
+                    let rows = self.expand_failure_type_rows(
+                        module_id,
+                        std::slice::from_ref(pattern),
+                        vec![normalized],
+                    );
+                    alternatives.push(rows.into_iter().flatten().collect());
+                    continue;
+                }
+                if self.pattern_is_builtin(module_id, pattern, "Success") {
+                    signature.push(true);
+                    let Some(inner) = self.single_outcome_pattern_argument(module_id, pattern)
+                    else {
+                        covers = false;
+                        continue;
+                    };
                     let normalized = self.normalize_pattern(
                         module_id,
                         inner,
@@ -6311,85 +6390,97 @@ impl ProjectTypeChecker {
                         },
                         &mut arm_bindings,
                     );
-                    let row = vec![normalized];
-                    let useful =
-                        self.pattern_row_is_useful(&success_coverage, &row, &[subject.success]);
-                    if !useful {
-                        self.type_error_range(
-                            module_id,
-                            "T4232",
-                            arm.range,
-                            "outcome case arm is unreachable",
-                        );
-                    } else if arm.guard.is_none() {
-                        success_coverage.push(row);
-                    }
-                }
-            } else if self.pattern_is_builtin(module_id, pattern, "Failure") {
-                saw_failure = true;
-                if let Some(inner) = self.single_outcome_pattern_argument(module_id, pattern) {
-                    let (mut variants, catches_unknown) = self.handled_failure_pattern(
+                    alternatives.push(vec![normalized]);
+                } else if self.pattern_is_builtin(module_id, pattern, "Failure") {
+                    signature.push(false);
+                    saw_failure[index] = true;
+                    let Some(inner) = self.single_outcome_pattern_argument(module_id, pattern)
+                    else {
+                        covers = false;
+                        continue;
+                    };
+                    let (variants, unknown) = self.handled_failure_pattern(
                         module_id,
                         inner,
                         subject.failures,
                         context,
                         &mut arm_bindings,
                     );
-                    candidate_failure_variants.extend(variants.iter().copied());
-                    let row = &self.failure_rows[subject.failures.raw() as usize];
-                    let cannot_fail = row.variants.is_empty() && row.parameters.is_empty();
-                    if catches_unknown && cannot_fail {
-                        self.type_error_range(
-                            module_id,
-                            "T4232",
-                            arm.range,
-                            "outcome case arm is unreachable: the subject cannot fail",
-                        );
-                    } else if variants.is_empty() && !catches_unknown {
-                        // The owning diagnostic already explains why this pattern cannot
-                        // participate in failure-channel coverage.
-                    } else if let Some(failure_type) = failure_type {
-                        // Coverage normalization binds again; the bindings
-                        // `handled_failure_pattern` made, with narrowed alias and
-                        // failure-type bindings, are the ones the arm keeps.
-                        let mut scratch = arm_bindings.clone();
-                        let rows = self.failure_coverage_rows(
-                            module_id,
-                            inner,
-                            failure_type,
-                            context,
-                            &mut scratch,
-                        );
-                        let useful_rows = rows
-                            .into_iter()
-                            .filter(|row| {
-                                self.pattern_row_is_useful(&failure_coverage, row, &[failure_type])
-                            })
-                            .collect::<Vec<_>>();
-                        if useful_rows.is_empty() {
+                    candidate_failure_variants[index].extend(variants.iter().copied());
+                    match failure_types[index] {
+                        None if unknown => {
                             self.type_error_range(
                                 module_id,
                                 "T4232",
                                 arm.range,
-                                "outcome case arm is unreachable",
+                                "outcome case arm is unreachable: the subject cannot fail",
                             );
-                        } else if arm.guard.is_none() {
-                            handles_unknown_row |= catches_unknown;
-                            failure_coverage.extend(useful_rows);
+                            covers = false;
                         }
-                    } else if arm.guard.is_none() {
-                        fallback_handled_variants.append(&mut variants);
-                        handles_unknown_row |= catches_unknown;
+                        // The owning diagnostic already explains why this pattern
+                        // cannot participate in failure-channel coverage.
+                        _ if variants.is_empty() && !unknown => covers = false,
+                        None => covers = false,
+                        Some(failure_type) => {
+                            // Coverage normalization binds again; the bindings
+                            // `handled_failure_pattern` made, with narrowed alias and
+                            // failure-type bindings, are the ones the arm keeps.
+                            let mut scratch = arm_bindings.clone();
+                            let rows = self.failure_coverage_rows(
+                                module_id,
+                                inner,
+                                failure_type,
+                                context,
+                                &mut scratch,
+                            );
+                            alternatives.push(rows.into_iter().flatten().collect());
+                            catches_unknown[index] = unknown;
+                        }
                     }
+                } else {
+                    signature.push(true);
+                    covers = false;
+                    let message = if single {
+                        "a fallible case arm must begin with Success(...) or Failure(...)"
+                    } else {
+                        "another arm matches this subject as an outcome, so every arm must \
+                         match it with Success(...) or Failure(...)"
+                    };
+                    self.type_error_range(module_id, "T4222", pattern.head_range(), message);
                 }
-            } else {
-                let pattern_range = pattern.head_range();
-                self.type_error_range(
-                    module_id,
-                    "T4222",
-                    pattern_range,
-                    "a fallible case arm must begin with Success(...) or Failure(...)",
-                );
+            }
+            if covers {
+                let rows = alternatives.iter().fold(vec![Vec::new()], |rows, column| {
+                    rows.into_iter()
+                        .flat_map(|row| {
+                            column.iter().map(move |alternative| {
+                                let mut row = row.clone();
+                                row.push(alternative.clone());
+                                row
+                            })
+                        })
+                        .collect()
+                });
+                let types = column_types(&signature);
+                let matrix = coverage.get(&signature).cloned().unwrap_or_default();
+                let useful_rows = rows
+                    .into_iter()
+                    .filter(|row| self.pattern_row_is_useful(&matrix, row, &types))
+                    .collect::<Vec<_>>();
+                if useful_rows.is_empty() {
+                    self.type_error_range(
+                        module_id,
+                        "T4232",
+                        arm.range,
+                        "outcome case arm is unreachable",
+                    );
+                } else if arm.guard.is_none() {
+                    for (column, unknown) in catches_unknown_columns.iter_mut().zip(catches_unknown)
+                    {
+                        *column |= unknown;
+                    }
+                    coverage.entry(signature).or_default().extend(useful_rows);
+                }
             }
             if let Some(guard) = &arm.guard {
                 arm_facts.push(self.infer_case_guard(
@@ -6403,55 +6494,132 @@ impl ProjectTypeChecker {
             self.join_arm_type(module_id, &arm.body, body.success, &mut success);
             arm_facts.push(body);
         }
-        let missing_success = vec![MatchPattern::Wildcard];
-        if self.pattern_row_is_useful(&success_coverage, &missing_success, &[subject.success]) {
-            self.type_error_range(
-                module_id,
-                "T4223",
-                range,
-                "outcome case does not fully handle Success",
-            );
+        let outcome_indices = outcome_columns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, outcome)| outcome.then_some(index))
+            .collect::<Vec<_>>();
+        let all_success = vec![true; outcome_indices.len()];
+        let missing = vec![MatchPattern::Wildcard; subjects.len()];
+        let witness = self.pattern_row_witness(
+            coverage.get(&all_success).map_or(&[][..], Vec::as_slice),
+            &missing,
+            &column_types(&all_success),
+        );
+        if let Some(witness) = witness {
+            let message = if single {
+                "outcome case does not fully handle Success".to_owned()
+            } else {
+                let witness = witness
+                    .iter()
+                    .zip(outcome_columns)
+                    .map(|(pattern, outcome)| {
+                        let rendered = self.render_witness(pattern);
+                        if *outcome {
+                            format!("Success({rendered})")
+                        } else {
+                            rendered
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("outcome case does not fully handle Success; `{witness}` is not matched")
+            };
+            self.type_error_range(module_id, "T4223", range, message);
         }
-        if !saw_failure && !self.failure_row_is_empty(subject.failures) {
-            self.type_error_range(
-                module_id,
-                "T4223",
-                range,
-                "outcome case does not handle Failure",
-            );
+        for &index in &outcome_indices {
+            if !saw_failure[index] && !self.failure_row_is_empty(subjects[index].failures) {
+                let message = if single {
+                    "outcome case does not handle Failure".to_owned()
+                } else {
+                    format!(
+                        "outcome case does not handle Failure of subject {}",
+                        index + 1
+                    )
+                };
+                self.type_error_range(module_id, "T4223", range, message);
+            }
         }
-        let mut handled_variants = fallback_handled_variants;
-        if let Some(failure_type) = failure_type {
-            let subject_variants = self.failure_rows[subject.failures.raw() as usize]
-                .variants
-                .clone();
-            candidate_failure_variants.extend(subject_variants);
-            candidate_failure_variants.sort_unstable();
-            candidate_failure_variants.dedup();
-            for variant in candidate_failure_variants {
+        let mut remaining_rows = Vec::new();
+        for (position, &index) in outcome_indices.iter().enumerate() {
+            let subject = subjects[index];
+            let Some(failure_type) = failure_types[index] else {
+                remaining_rows.push(subject.failures);
+                continue;
+            };
+            // Combinations where this subject is the first to fail: earlier outcome
+            // subjects succeeded, later ones may do either.
+            let later = outcome_indices.len() - position - 1;
+            let signatures = (0..1_usize << later)
+                .map(|bits| {
+                    (0..outcome_indices.len())
+                        .map(|other| match other.cmp(&position) {
+                            std::cmp::Ordering::Less => true,
+                            std::cmp::Ordering::Equal => false,
+                            std::cmp::Ordering::Greater => bits >> (other - position - 1) & 1 == 0,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let fully_covered = |this: &mut Self, column: MatchPattern| {
+                signatures.iter().all(|signature| {
+                    let mut row = missing.clone();
+                    row[index] = column.clone();
+                    !this.pattern_row_is_useful(
+                        coverage.get(signature).map_or(&[][..], Vec::as_slice),
+                        &row,
+                        &column_types(signature),
+                    )
+                })
+            };
+            let mut candidates = std::mem::take(&mut candidate_failure_variants[index]);
+            candidates.extend(
+                self.failure_rows[subject.failures.raw() as usize]
+                    .variants
+                    .iter()
+                    .copied(),
+            );
+            candidates.sort_unstable();
+            candidates.dedup();
+            let mut handled_variants = Vec::new();
+            for variant in candidates {
                 let field_count = self
                     .instantiate_pattern_constructor(variant, failure_type)
                     .map_or(0, |fields| fields.len());
-                let candidate = vec![MatchPattern::Constructor {
+                let candidate = MatchPattern::Constructor {
                     tag: MatchTag::EnumVariant(variant),
                     fields: vec![MatchPattern::Wildcard; field_count],
-                }];
-                if !self.pattern_row_is_useful(&failure_coverage, &candidate, &[failure_type]) {
+                };
+                if fully_covered(self, candidate) {
                     handled_variants.push(variant);
                 }
             }
+            let handles_unknown_row =
+                catches_unknown_columns[index] && fully_covered(self, MatchPattern::Wildcard);
+            remaining_rows.push(self.remove_handled_failures(
+                subject.failures,
+                &handled_variants,
+                handles_unknown_row,
+            ));
         }
-        handled_variants.sort_unstable();
-        handled_variants.dedup();
-        let remaining =
-            self.remove_handled_failures(subject.failures, &handled_variants, handles_unknown_row);
+        let plain_subjects = subjects
+            .iter()
+            .zip(outcome_columns)
+            .filter(|(_, outcome)| !**outcome)
+            .map(|(subject, _)| subject.failures);
         ExpressionFact {
-            success: success.unwrap_or(subject.success),
+            success: success.unwrap_or(subjects[outcome_indices[0]].success),
             failures: self.union_failure_rows(
-                std::iter::once(remaining).chain(arm_facts.iter().map(|fact| fact.failures)),
+                remaining_rows
+                    .into_iter()
+                    .chain(plain_subjects)
+                    .chain(arm_facts.iter().map(|fact| fact.failures)),
             ),
             needs: self.union_needs_rows(
-                std::iter::once(subject.needs).chain(arm_facts.iter().map(|fact| fact.needs)),
+                subjects
+                    .iter()
+                    .map(|subject| subject.needs)
+                    .chain(arm_facts.iter().map(|fact| fact.needs)),
             ),
         }
     }
