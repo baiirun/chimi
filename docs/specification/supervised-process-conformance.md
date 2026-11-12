@@ -89,6 +89,10 @@ docs/performance/supervised-process-conformance-baseline.md   written by ts-1765
   check.
 - `Cargo.toml` gains a `chimi-process-lab` binary with
   `required-features = ["native-backend"]`.
+- Each kind module and `fixture.rs` land with the first stage that runs
+  them (`static_kind.rs` and `fixture.rs` at U1, `core_kind.rs` at U2,
+  `heap_kind.rs` at U3, `performance.rs` at U10). Until then an unlocked
+  scenario of that kind fails with "runner has not landed".
 
 ## Harness entry points
 
@@ -113,14 +117,23 @@ pub struct Scenario {
 	pub id: &'static str,          // "RR02"
 	pub slug: &'static str,        // "removal-during-replacement-start"
 	pub unlock: Stage,
-	pub form: Form,                // Fixture, CHarness(&str), CoreCheck(fn), Gate(fn)
+	pub form: Form,                // Fixture, CHarness(&str), Check(fn), Gate(fn)
 	pub exit_code: i32,            // 0 success, 1 expected failure, 70 defect
-	pub arguments: &'static [&'static str],
+	pub arguments: &'static [&'static str], // one run per entry
 	pub extra_events: &'static [&'static str], // e.g. ["task_terminal"]
 }
 
 pub fn project(telemetry: &str, extra_events: &[&str]) -> Result<Vec<String>, String>;
 ```
+
+- `Check(fn)` is a Rust check for a scenario with no fixture of its own:
+  CO01 to CO04 over verified Core, MF06 over built executables, OB04 over
+  other fixtures' telemetry, and OB07 over the trace ABI.
+- Each entry of `arguments` is one run, passed to `main(arguments)`.
+  Empty means one run with no arguments. MF01, MF02, MF03, and MF05 run once
+  per size. SV11 runs once per out-of-range value.
+- `exit_code` applies to every run of an executed fixture. Static and Core
+  scenarios do not run and keep 0.
 
 `compiler/chimi/tests/process_lab.rs` runs each kind through the binary and
 fails if any scenario at or below `CURRENT_STAGE` reports `fail`. Each
@@ -167,7 +180,8 @@ match byte for byte, for example:
 ```
 
 For a `defect`, the file holds the two compared fields, `outcome` and
-`message`, and the scenario's `exit_code` is 70.
+`message`, and the scenario's `exit_code` is 70. A scenario with several
+runs has one line per run, in `arguments` order.
 
 ### `expected.transcript`
 
@@ -197,7 +211,18 @@ The canonical transcript. The lab builds it from runner telemetry with
 | `membership_removed` | `membership` |
 | `supervisor_stopped` | `supervisor` |
 | `process_send` | `kind` (`named`, `direct`), `name` (only for `named`), `incarnation` (accepting incarnation or `-`), `outcome` (`accepted`, `full`, `unavailable`) |
-| `task_terminal` (extra) | `task`, `parent`, `cause` |
+| `task_terminal` (extra) | `task`, `parent`, `cause` (the task whose defect ended it, or `-`) |
+
+- `admission_rejected` also takes `reason=start_failed`, the scheduler's
+  `CHIMI_ADMISSION_START_FAILED`, which only the RA06 fault injection
+  reaches.
+- `supervisor_started` (trace kind 10) is dropped until U9 (coordinator
+  decision 5 on `ts-6ccbc9`). U9 adds it to this table and to the
+  transcripts.
+- A kept process event's own `time_ns` must equal the time tracked from the
+  advance events, and `sequence` must increase on every line. `project`
+  rejects telemetry that breaks either rule, or that has a missing or
+  unknown field on a kept event.
 
 Every transcript scenario runs in three trace modes:
 
@@ -206,6 +231,31 @@ Every transcript scenario runs in three trace modes:
   line removed. Lifecycle events are boundary events. Send events are motion
   events, like channel motion today.
 - `off` must produce an empty telemetry file.
+
+### Runner telemetry for process and clock events
+
+The runner writes each `ChimiSchedulerTraceEvent` as one JSON line with the
+envelope that `emit_scheduler_event` in `runtime.c` already uses for task and
+channel events: `schema`, `event`, `sequence`, `computation`,
+`execution_id`, `task_id`, `parent_task_id`, `cause_task_id`, and
+`channel_id`, then `attributes` with `scheduler_sequence`. An identity of 0
+is `null`. The process and clock families add these fields. `project`
+reads them, and U5 implements them in `runtime.c`:
+
+- Process family (3). The event names are the transcript table's names, in
+  kind order, with `supervisor_started` as kind 10. Top-level
+  `supervisor_id`, `membership_id`, `incarnation_id`, and
+  `parent_supervisor_id`. `attributes` adds `time_ns` (the event's `time`),
+  `cause` (the terminal cause word or the admission reason word),
+  `name` (the name's label, `<module path>.<identifier>`), `address_kind`
+  (`named` or `direct`), `outcome` (`accepted`, `full`, or `unavailable`),
+  and `attempts_in_window`. A field the kind does not set is `null`, and
+  `attempts_in_window` is 0. `cause_task_id` is `null`, because the
+  process family's `cause` is a code, not a task.
+- Clock family (4): `clock_advanced`, `clock_timer_started`,
+  `clock_timer_fired`, `clock_timer_cancelled`, and
+  `clock_deadlock_waiter`. `attributes` adds `time_ns` and `request_kind`
+  (the waiter's request kind, otherwise 0).
 
 ### Determinism obligations on the runtime
 
@@ -390,7 +440,7 @@ did for each of its tests.
 | RA04 | U6 | `restarts(1, 30s)`. The second defect comes exactly 30 s after the first restart and restarts | Off-by-one at the window edge. A restart at exactly `within` later is outside the window, as in the prototype |
 | RA05 | U6 | `restarts(0, 30s)`. The first defect escalates | A free first restart |
 | RA06 | U7 | C harness: the replacement's start fails by injected fault. The attempt shows in `attempts_in_window`, and the next defect counts it | Uncharged failed replacements |
-| RA07 | U8 | A body starts a child task that sleeps, then defects. The child's `task_terminal cause=cancelled` appears before the replacement's `process_started` (`extra_events = ["task_terminal"]`) | Overlap of a child task with the replacement |
+| RA07 | U8 | A body starts a child task that sleeps, then defects. The child's `task_terminal` (cancelled, so `cause=-`) appears before the replacement's `process_started` (`extra_events = ["task_terminal"]`) | Overlap of a child task with the replacement |
 | RA08 | U6 | 1,000 defect cycles, with a 31 s sleep after every second one. The lab runs it twice and compares telemetry byte for byte, ignoring `execution_id`. It also checks the counts of each event kind | Nondeterminism under a restart storm |
 
 ### Runtime: escalation
@@ -852,6 +902,12 @@ implementation must match:
 - `NameTaken` text and trace labels use the form `<module path>.<identifier>`.
 
 ## Open questions
+
+The coordinator resolved all five on `ts-6ccbc9` and accepted each
+recommendation (`docs/decisions.md`, "Processes and runtime"). The clock
+slice for open question 2 is `Clock.sleep(Duration)` with a `clock: Clock`
+need closed by the runner, and the runner flag `--clock=real|virtual`
+(default `real`).
 
 1. **Should the reference interpreter run processes?** The time contract
    already asks the interpreter to model timers and virtual time, which needs

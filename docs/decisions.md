@@ -60,6 +60,11 @@ from the philosophy and earlier decisions; any of these can be overruled.
 | 2026-11-11 | Small in-transit messages share slabs instead of a 64 KiB chunk each. | User | `ts-df67fb` |
 | 2026-11-11 | `receive` after cancellation returns already-accepted messages, then `Cancelled` without parking. | Coordinator | `process-execution-and-mailboxes.md` |
 | 2026-11-11 | Processes run native-only at first; the interpreter reports them unsupported until it has a scheduler. | Coordinator | `supervised-process-conformance.md`; `ts-b9cbe1` |
+| 2026-11-11 | Process cancellation interrupts every park except `Process.receive` while accepted messages remain; the non-zero `shutdown_within` forced path is tested in C (SD04). | Coordinator | `supervised-process-conformance.md` open question 2; `ts-6ccbc9` |
+| 2026-11-11 | A non-literal mailbox capacity below 1 defects at `Process.spec`, the call that receives it. | Coordinator | `supervised-process-conformance.md` open question 3; `ts-6ccbc9` |
+| 2026-11-11 | Cleanup accepts no new messages, and the body may drain the ones already accepted. | Coordinator | `supervised-process-conformance.md` open question 4; `ts-6ccbc9` |
+| 2026-11-11 | Transcripts keep the prototype event set through U8; `supervisor_started` joins them at U9. | Coordinator | `supervised-process-conformance.md` open question 5; `ts-6ccbc9` |
+| 2026-11-11 | The lab's clock is `Clock.sleep(Duration)` under a root-closed `clock: Clock` need and runner `--clock=real\|virtual` (default real), native-only; nothing more of `std/clock` yet. | Coordinator | `time-and-outcomes.md`; `ts-6ccbc9`; `ts-80cbfb` |
 | 2026-11-10 | One `Supervisor.Member` type without the message type; `Supervisor.Restart` is an argument (`Never`/`OnDefect`). | User | `process-and-supervisor-static-contracts.md`; `ts-5961ee` |
 | 2026-11-10 | Bounded FIFO mailboxes; `Process.send` never parks and returns the message on `Full`/`Unavailable`; no selective receive. | User | `process-execution-and-mailboxes.md` |
 | 2026-11-10 | Names are `process name` declarations; one `Process.Address<M>` with named or direct routing. | User | `process-identity-and-routing.md` |

@@ -53,6 +53,11 @@ name = "chimi-concurrency-lab"
 path = "src/bin/concurrency_lab.rs"
 required-features = ["native-backend"]
 
+[[bin]]
+name = "chimi-process-lab"
+path = "src/bin/process_lab.rs"
+required-features = ["native-backend"]
+
 [[bench]]
 name = "frontend"
 harness = false

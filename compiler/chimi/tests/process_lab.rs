@@ -1,0 +1,176 @@
+//! Runs the supervised-process conformance lab through its binary. Every
+//! scenario at or below `CURRENT_STAGE` must pass; later ones report
+//! `locked`. Performance gates run only on request
+//! (`chimi-process-lab performance`), not here.
+
+use chimi::process_lab::catalogue::{CURRENT_STAGE, SCENARIOS, Stage};
+use chimi::process_lab::{Kind, transcript};
+use std::process::{Command, Output};
+
+fn lab(arguments: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_chimi-process-lab"))
+        .args(arguments)
+        .output()
+        .expect("run chimi-process-lab")
+}
+
+fn statuses(report: &str) -> Vec<(String, String)> {
+    report
+        .split("{\"id\":\"")
+        .skip(1)
+        .map(|entry| {
+            let (id, rest) = entry.split_once('"').unwrap();
+            let status = rest.split("\"status\":\"").nth(1).unwrap();
+            (id.to_owned(), status.split('"').next().unwrap().to_owned())
+        })
+        .collect()
+}
+
+// The lab's own gate: every unlocked scenario of every kind passes, and each
+// kind reports each of its scenarios once.
+#[test]
+fn every_scenario_through_the_current_stage_passes() {
+    for kind in Kind::ALL
+        .into_iter()
+        .filter(|kind| *kind != Kind::Performance)
+    {
+        let output = lab(&[kind.name()]);
+        let report = String::from_utf8(output.stdout).unwrap();
+        assert!(output.status.success(), "{}: {report}", kind.name());
+        assert!(output.stderr.is_empty(), "{}", kind.name());
+        assert_eq!(report.lines().count(), 1);
+        assert!(report.starts_with(&format!(
+            "{{\"schema\":\"chimi.process-conformance.v1\",\"kind\":\"{}\",\"stage\":\"{}\",\"scenarios\":[",
+            kind.name(),
+            CURRENT_STAGE.name()
+        )));
+        let expected = SCENARIOS
+            .iter()
+            .filter(|scenario| scenario.kind() == kind)
+            .map(|scenario| {
+                let status = if scenario.unlock <= CURRENT_STAGE {
+                    "pass"
+                } else {
+                    "locked"
+                };
+                (scenario.id.to_owned(), status.to_owned())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(statuses(&report), expected, "{}", kind.name());
+    }
+}
+
+// Rejects a lab that exits 0 or reports `pass` for an unlocked scenario it
+// cannot run.
+#[test]
+fn an_unlocked_scenario_that_cannot_pass_fails_the_lab() {
+    let output = lab(&["--through", "U10", "--scenario", "RR02"]);
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    assert!(
+        report.contains("\"kind\":\"runtime\",\"stage\":\"U10\""),
+        "{report}"
+    );
+    assert_eq!(statuses(&report), [("RR02".to_owned(), "fail".to_owned())]);
+    assert!(report.contains("\"detail\":\""), "{report}");
+}
+
+#[test]
+fn all_prints_one_report_per_kind_in_order() {
+    let output = lab(&["all", "--through", Stage::U0.name()]);
+    let report = String::from_utf8(output.stdout).unwrap();
+    let kinds = report
+        .lines()
+        .map(|line| {
+            line.split("\"kind\":\"")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, Kind::ALL.map(Kind::name));
+    assert_eq!(statuses(&report).len(), SCENARIOS.len());
+}
+
+#[test]
+fn malformed_arguments_are_usage_errors() {
+    for arguments in [
+        &[][..],
+        &["sideways"],
+        &["static", "--through", "U11"],
+        &["--scenario", "XX99"],
+    ] {
+        let output = lab(arguments);
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}");
+        assert!(output.stdout.is_empty(), "{arguments:?}");
+    }
+}
+
+// Projects telemetry the native runner really writes, so the projector is
+// held to the runner's envelope rather than to hand-written lines alone.
+// Task identities count from 1 in creation order: the root is T1 and its
+// child T2. Neither defects, so neither terminal names a cause.
+#[test]
+fn the_projector_reads_real_runner_telemetry() {
+    let scratch = std::env::temp_dir().join(format!("chimi-process-lab-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let source = scratch.join("main.chimi");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/task as Task\n",
+            "pub fn main() -> Int {\n",
+            "  let child = Task.start(fn() -> Int { 41 })\n",
+            "  Task.result(child) + 1\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let executable = scratch.join("main");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let telemetry = scratch.join("telemetry.jsonl");
+    let run = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=full")
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg(format!(
+            "--outcome-file={}",
+            scratch.join("outcome.jsonl").display()
+        ))
+        .arg("--")
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let telemetry = std::fs::read_to_string(&telemetry).unwrap();
+    std::fs::remove_dir_all(&scratch).unwrap();
+
+    assert_eq!(
+        transcript::project(&telemetry, &[]).unwrap(),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        transcript::project(&telemetry, &["task_terminal"]).unwrap(),
+        [
+            "@0s task_terminal task=T2 parent=T1 cause=-",
+            "@0s task_terminal task=T1 parent=- cause=-",
+        ]
+    );
+}
