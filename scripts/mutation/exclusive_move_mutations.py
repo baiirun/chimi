@@ -23,6 +23,8 @@ READS = "reading_or_owning"
 PARTS = "an_exclusive_part_has_one_owner"
 CALLS = "a_call_of_a_function_that_transfers"
 RECEIVED = "a_received_value"
+RECURSION = "recursion_over_parts"
+LOOP = "building_a_value_from_an_outer"
 
 MUTATIONS = [
     # What a value carries.
@@ -31,7 +33,7 @@ MUTATIONS = [
         "            let _ = place;")], "a_send_moves"),
     language("a read of a shareable place carries it too", [(
         "        if let Some(place) = place\n"
-        "            && value.properties.capability == CapabilityClass::Exclusive\n",
+        "            && owned(&value)\n",
         "        if let Some(place) = place\n")], "a_send_moves_the_exclusive"),
     language("combining values drops what the later one carries", [(
         "        self.carries.append(&mut other.carries);",
@@ -107,18 +109,26 @@ MUTATIONS = [
         "            BTreeSet::new()")], MOVES),
     # Where carried bindings move.
     language("a let binding moves nothing", [(
-        "                TransferBoundary::IntoBinding(owner),\n                environment,\n            );",
-        "                TransferBoundary::IntoBinding(owner),\n                &mut environment.clone(),\n            );")],
+        "            self.transfer_place(place, at, TransferBoundary::IntoBinding(owner), environment);",
+        "            let into = TransferBoundary::IntoBinding(owner);\n"
+        "            self.transfer_place(place, at, into, &mut environment.clone());")],
         MOVES),
     language("a loop state moves nothing", [(
         "            self.transfer_carried(&initial_value, initial.range(), boundary, environment);",
         "            let _ = boundary;")], MOVES),
     language("a destructured or matched built value moves nothing", [(
-        "                    if place.is_none() {",
-        "                    if false {")], MOVES),
+        "                            TransferBoundary::IntoPattern,\n"
+        "                            environment,",
+        "                            TransferBoundary::IntoPattern,\n"
+        "                            &mut environment.clone(),")], MOVES),
     language("matching a binding moves it", [(
-        "                    if place.is_none() {",
-        "                    if true {")], READS),
+        "                        self.record(module_id, subject, value);\n"
+        "                        subject_carries.push(BTreeSet::new());",
+        "                        let at = subject.range();\n"
+        "                        let into = TransferBoundary::IntoPattern;\n"
+        "                        self.transfer_carried(&value, at, into, environment);\n"
+        "                        self.record(module_id, subject, value);\n"
+        "                        subject_carries.push(BTreeSet::new());")], READS),
     language("a using provider transfers nothing", [(
         "                    self.transfer_carried(\n"
         "                        &provided,",
@@ -140,10 +150,11 @@ MUTATIONS = [
         "            }\n"
         "            closure = closure.combine(captured);")], RECEIVED),
     # Parts of a binding (ts-05c0da).
-    language("a field read of a binding is not checked or carried", [(
-        "                    self.read_place(module_id, expression, &text, *range, environment)",
-        "                    let _ = (text, range);\n"
-        "                    self.place_value(module_id, expression, environment)")], PARTS),
+    language("a field read of a binding is not checked", [(
+        "                        *range,\n"
+        "                        ReadCheck::Whole,",
+        "                        *range,\n"
+        "                        ReadCheck::Paths(&BTreeSet::new()),")], PARTS),
     language("a moved part leaves its whole binding usable", [(
         "    left.iter()\n"
         "        .zip(right)\n"
@@ -179,14 +190,53 @@ MUTATIONS = [
         "            let _ = paths;\n"
         "            Some((index, BTreeSet::from([Vec::new()])))")], READS),
     language("a closure's parameter transfers are dropped", [(
-        "        closure.parameter_transfers = parameter_transfers(&parameters, &function_environment);",
-        "        let _ = parameter_transfers(&parameters, &function_environment);")], CALLS),
+        "        closure.parameter_transfers = parameter_paths(&parameters, &self.escaped);",
+        "        let _ = parameter_paths(&parameters, &self.escaped);")], CALLS),
     language("one call may take a place for two parameters", [(
-        "                if taken.iter().any(|taken| taken.overlaps(&place)) {",
-        "                if false {")], CALLS),
+        "                .find(|place| taken.iter().any(|taken| taken.overlaps(place)))",
+        "                .find(|_| false)")], CALLS),
     language("a call moves the whole argument, not the transferred parts", [(
         "                Some(place) => paths.iter().map(|path| place.joined(path)).collect(),",
         "                Some(place) => paths.iter().map(|_| place.clone()).collect(),")], READS),
+    # Review fixes: bounded paths, list and tuple parts, escapes, reads, generics.
+    language("paths are not cut to a bounded depth", [(
+        "        place.path.truncate(MAX_PATH_DEPTH);",
+        "        let _ = MAX_PATH_DEPTH;")], RECURSION),
+    language("list steps always overlap", [(
+        "                            (Some((a, b)), Some((c, d))) => a < d && c < b,",
+        "                            (Some(_), Some(_)) => true,")], RECURSION),
+    language("list steps never overlap", [(
+        "                            (Some((a, b)), Some((c, d))) => a < d && c < b,",
+        "                            (Some(_), Some(_)) => false,")], PARTS),
+    language("tuple positions overlap", [(
+        "            (Self::Position(a), Self::Position(b)) => a == b,",
+        "            (Self::Position(_), Self::Position(_)) => true,")], READS),
+    language("a move into a local escapes", [(
+        "        !matches!(self, Self::IntoBinding(_) | Self::IntoPattern)",
+        "        let _ = self;\n        true")], READS),
+    language("an escape does not follow what a binding took", [(
+        "        for taken in &took {",
+        "        for taken in took.iter().take(0) {")], LOOP),
+    language("a call checks the whole argument", [(
+        "                    .filter(|symbol| self.is_project_function(*symbol))",
+        "                    .filter(|_| false)")], READS),
+    language("read summaries are empty", [(
+        "            let reads = parameter_paths(&parameters, &self.read_places);",
+        "            let reads = ParameterPaths::new();")], CALLS),
+    language("a case subject is checked whole", [(
+        "                            self.read_argument(module_id, subject, ReadCheck::Tag, environment);",
+        "                            self.read_argument(module_id, subject, ReadCheck::Whole, environment);")],
+        READS),
+    language("values of a type parameter are not tracked", [(
+        "        || (value.holds_type_parameter\n",
+        "        || (false\n")], CALLS),
+    language("function values are tracked like a type parameter", [(
+        "        || (value.holds_type_parameter\n"
+        "            && value.properties.shareable",
+        "        || (value.properties.shareable")], READS),
+    language("a type parameter is not a held type parameter", [(
+        "            CanonicalType::Generic(_) => true,",
+        "            CanonicalType::Generic(_) => false,")], CALLS, file=T),
     # `Channel.Receive<T>` (ts-bb95dc).
     language("Receive<T> is shareable whatever T is", [(
         "                StandardType::ProcessSendError | StandardType::ChannelReceive,",
