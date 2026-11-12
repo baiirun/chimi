@@ -4856,9 +4856,8 @@ fn debug_render_nests_through_map_keys() {
         "N.W(Map { ".repeat(levels),
         ": [0] })".repeat(levels)
     );
-    let indented = concat!(
-        "\"N.W(\\n  Map {\\n    N.W(Map { N.Leaf: [0] }): [\\n      0,\\n    ],\\n  },\\n)\"",
-    );
+    let indented =
+        "\"N.W(\\n  Map {\\n    N.W(Map { N.Leaf: [0] }): [\\n      0,\\n    ],\\n  },\\n)\"";
     assert!(
         outcome.starts_with(&format!(
             "\"outcome\":\"success\",\"value\":{{\"tuple\":[{rendered},{indented},"
