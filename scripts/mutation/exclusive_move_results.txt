@@ -1,0 +1,31 @@
+# Command: scripts/mutation/mutate.py --scratch <scratch>/mutation scripts/mutation/exclusive_move_mutations.py scripts/mutation/process_u2_mutations.py
+# Commit: 8d1c83e (ts-184972); the process U2 half of this run is in
+# compiler/chimi/tests/process-lab/MUTATION-RESULTS.txt
+
+# mutation run at 8d1c83e1ac0d7817ac027cd29875ab792e993dc6
+# exclusive_move_mutations.py: 23 mutants against compiler/chimi
+BASELINE ok (250s)
+KILLED       a name of an exclusive binding carries nothing [language -- a_send_moves] (5s)
+KILLED       a name of a shareable binding carries it too [language -- a_send_moves_the_exclusive] (3s)
+KILLED       combining values drops what the later one carries [language -- a_send_moves_bindings] (3s)
+KILLED       a case carries only its first arm's value [language -- an_exclusive_binding_moves] (4s)
+KILLED       a case carries only its last arm's value [language -- an_exclusive_binding_moves] (4s)
+KILLED       a record update carries only its base [language -- an_exclusive_binding_moves] (4s)
+KILLED       a call's result never carries its arguments [language -- an_exclusive_binding_moves] (4s)
+KILLED       a call's result does not carry its callee [language -- an_exclusive_binding_moves] (3s)
+KILLED       a call with a shareable result carries its arguments [language -- reading_or_owning] (3s)
+KILLED       any exclusive argument flows into a non-shareable result [language -- reading_or_owning] (5s)
+KILLED       no argument type is held by a result type [language -- an_exclusive_binding_moves] (3s)
+KILLED       held types ignore struct and variant fields [language -- an_exclusive_binding_moves] (4s)
+KILLED       a type parameter of the container may hold anything [language -- reading_or_owning] (5s)
+KILLED       type identity ignores type arguments [language -- reading_or_owning] (4s)
+KILLED       a break value carries nothing out of its loop [language -- an_exclusive_binding_moves] (5s)
+KILLED       a field read out of a binding carries the binding [language -- reading_or_owning] (4s)
+KILLED       a field read out of a built value carries nothing [language -- an_exclusive_binding_moves] (4s)
+KILLED       a let binding moves nothing [language -- an_exclusive_binding_moves] (4s)
+KILLED       a loop state moves nothing [language -- an_exclusive_binding_moves] (3s)
+KILLED       a destructured or matched built value moves nothing [language -- an_exclusive_binding_moves] (4s)
+KILLED       matching a binding moves it [language -- reading_or_owning] (3s)
+KILLED       a using provider transfers nothing [language -- an_exclusive_binding_moves] (3s)
+KILLED       a send transfers nothing it carries [language -- a_send_moves] (3s)
+# result: every mutant killed

@@ -98,3 +98,28 @@ KILLED       MF05: loops reclaim every second pass [cargo run --quiet --bin chim
 KILLED       Channel.send queues the sender's original value [cli -- native_a_value_a_finished_task_put_on_a_channel_survives_its_heap] (4s)
 KILLED       every program links the fiber runtime [cli -- native_only_a_task_program_links_the_fiber_runtime] (5s)
 # result: every mutant killed
+
+# Command: scripts/mutation/mutate.py --scratch <scratch>/mutation scripts/mutation/exclusive_move_mutations.py scripts/mutation/process_u2_mutations.py
+# Rerun after ts-184972 replaced the payload-syntax walk; its payload mutants moved to
+# exclusive_move_mutations.py (results: scripts/mutation/exclusive_move_results.txt).
+# mutation run at 8d1c83e1ac0d7817ac027cd29875ab792e993dc6
+# process_u2_mutations.py: 17 mutants against compiler/chimi
+BASELINE ok (256s)
+KILLED       T4260 capture check dropped [process_lab] (6s)
+KILLED       T4260 provider attached to the body not checked [language -- a_spec_provider] (4s)
+KILLED       T4260 provider bound by an outer using not checked [process_lab] (6s)
+KILLED       T4260 flags every non-shareable provider, not only a spec's [language -- a_spec_provider] (3s)
+KILLED       spec needs not followed through function calls (no fixed point) [process_lab] (6s)
+KILLED       Process.send is not a transfer boundary [process_lab] (6s)
+KILLED       remove_process does not consume [process_lab] (6s)
+KILLED       remove_supervisor does not consume [language -- removing_a_supervisor] (4s)
+KILLED       T4240 for a body failure type dropped [process_lab] (6s)
+KILLED       verifier CO02 check dropped [process_lab] (6s)
+KILLED       verifier CO04 check dropped [process_lab] (7s)
+KILLED       verifier accepts an inbox read from any symbol [process_lab] (7s)
+KILLED       verifier accepts an inbox made from a literal [process_lab] (6s)
+KILLED       verifier spec-body rule dropped [lib -- the_verifier_rejects] (3s)
+KILLED       process names keyed by text in Core (CO01) [process_lab] (6s)
+KILLED       a user function named like a process operation is an intrinsic (CO03) [process_lab] (6s)
+KILLED       static runner reads project contracts as standard ones [process_lab] (7s)
+# result: every mutant killed
