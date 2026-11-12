@@ -736,6 +736,11 @@ reference. That reuse MUST NOT be observable.
   Full tracing MUST record the selected clause's source identity on the match
   operation (not yet implemented; see Status). It MUST NOT emit one call or
   span per clause.
+- A multi-clause function MUST NOT allocate more per call than the function
+  that takes plain parameters and writes the same patterns as one `case` over
+  the parameters it inspects. A clause pattern that only names its parameter
+  binds nothing. The body reads the parameter, and a parameter that no clause
+  inspects is not matched.
 - Lowering expresses clauses, failure-type patterns, and updates through
   existing Core matching and construction, plus list length, index, and view
   operations. They add no runtime tag or row object.
@@ -795,6 +800,7 @@ specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2023`:
 | PC-15 | `List.map(counts, describe)` and `count \|> describe` | Compiles; one function value |
 | PC-16 | `break` in a clause body called from a loop | `E_BREAK_OUTSIDE_LOOP` |
 | PC-17 | `fn same(x, x)` | `E_DUPLICATE_LOCAL` |
+| PC-18 | `fn step(tally, "a")` clauses against `fn step(tally, event) { case event { ... } }` on native | Runtime: equal allocated bytes |
 | LP-01 | `[]` and `[first, ..rest]` | Compiles; exhaustive |
 | LP-02 | `[_, ..]` alone | `T4231`; witness `[]` |
 | LP-03 | `[]`, `[_]`, `[_, _, ..]` | Compiles; exhaustive |
