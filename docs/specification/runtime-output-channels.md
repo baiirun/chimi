@@ -78,6 +78,13 @@ outcome sink; exit status does not copy it into an application stream.
 and exits with the same status for the same outcome (0, 1, 70, or 130), so a
 script sees one contract on both backends. A program that does not compile
 exits 1 with diagnostics on stderr and no outcome record.
+`chimi run <path> -- <arguments>` (or `chimi run --root <dir> <entry> --
+<arguments>`) passes every argument after the first `--` to `main` exactly as
+a native runner does: later `--` and option-shaped words are application data,
+and a zero-input `main` given arguments exits 64 with `program entry does not
+accept application arguments` on stderr and no outcome record. Without `--`,
+`chimi run` takes no arguments after its input. Arguments must be valid UTF-8;
+otherwise `chimi run` exits 2 with a usage error.
 
 `--memory-report-file` is an optional runner-owned diagnostic sink. It writes
 one `chimi.runtime-memory.v1` record after execution and MUST be distinct from

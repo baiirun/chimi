@@ -40,6 +40,16 @@ impl BackendProgram {
         BackendProfile::from_core(&self.core)
     }
 
+    /// Whether the entry function takes the application arguments
+    /// (`main(arguments: List<Text>)`) rather than no input.
+    pub fn entry_accepts_arguments(&self) -> bool {
+        self.core
+            .functions
+            .iter()
+            .find(|function| function.symbol == self.core.entry)
+            .is_some_and(|function| !function.parameters.is_empty())
+    }
+
     /// Execute through the disposable interpreter used as the backend conformance oracle.
     pub fn execute_oracle(&self, config: ExecutionConfig) -> ExecutionReport {
         execute(&self.core, config)

@@ -11,9 +11,10 @@ const VERSION: &str = concat!("chimi ", env!("CARGO_PKG_VERSION"), "-bootstrap")
 const USAGE: &str = concat!(
     "usage: chimi --version | chimi format <path> | chimi inspect <path> <byte-offset> | ",
     "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
-    "chimi check [--json] <path> | chimi run <path> | chimi build <path> [-o <executable>] | ",
+    "chimi check [--json] <path> | chimi run <path> [-- <argument>...] | ",
+    "chimi build <path> [-o <executable>] | ",
     "chimi check [--json] --root <project-dir> <entry-module> | chimi run --root ",
-    "<project-dir> <entry-module> | chimi build --root <project-dir> <entry-module> ",
+    "<project-dir> <entry-module> [-- <argument>...] | chimi build --root <project-dir> <entry-module> ",
     "[-o <executable>]"
 );
 
@@ -40,6 +41,8 @@ enum Command {
     },
     Run {
         input: Input,
+        /// Everything after `--`: the `List<Text>` passed to `main`.
+        arguments: Vec<String>,
     },
     Build {
         input: Input,
@@ -223,14 +226,37 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
                 })
             };
         }
+        if command == "run" {
+            let application_arguments = match arguments.next() {
+                None => Vec::new(),
+                Some(separator) if separator == "--" => {
+                    let Ok(values) = arguments
+                        .map(OsString::into_string)
+                        .collect::<Result<Vec<_>, _>>()
+                    else {
+                        return Err(UsageError {
+                            message: "application arguments must be valid UTF-8",
+                        });
+                    };
+                    values
+                }
+                Some(_) => {
+                    return Err(UsageError {
+                        message: "run received unexpected arguments; pass application arguments after --",
+                    });
+                }
+            };
+            return Ok(Command::Run {
+                input,
+                arguments: application_arguments,
+            });
+        }
         return if arguments.next().is_some() {
             Err(UsageError {
                 message: "check and run received unexpected arguments",
             })
-        } else if command == "check" {
-            Ok(Command::Check { input, output })
         } else {
-            Ok(Command::Run { input })
+            Ok(Command::Check { input, output })
         };
     }
 
@@ -256,7 +282,7 @@ fn execute(command: Command) -> ExitCode {
             offset,
         } => inspect(input, &module_path, offset),
         Command::Check { input, output } => check(input, output),
-        Command::Run { input } => run(input),
+        Command::Run { input, arguments } => run(input, arguments),
         Command::Build { input, output } => build(input, output),
     }
 }
@@ -328,20 +354,27 @@ fn check(input: Input, output: DiagnosticOutput) -> ExitCode {
     }
 }
 
-fn run(input: Input) -> ExitCode {
+fn run(input: Input, arguments: Vec<String>) -> ExitCode {
     let Some(project) = load_project(input) else {
         return ExitCode::FAILURE;
     };
-    match Compiler::run_project(project.sources(), ExecutionConfig::for_process()) {
-        Ok(report) => {
-            print!("{}", report.render_json_lines());
-            outcome_exit_code(&report.outcome)
-        }
+    let program = match Compiler::prepare_backend(project.sources()) {
+        Ok(program) => program,
         Err(diagnostics) => {
             eprint!("{}", project.render_diagnostics(&diagnostics));
-            ExitCode::FAILURE
+            return ExitCode::FAILURE;
         }
+    };
+    // As the native runner does: a zero-input `main` rejects arguments rather
+    // than dropping them, with the runner-configuration status 64.
+    if !arguments.is_empty() && !program.entry_accepts_arguments() {
+        eprintln!("chimi: program entry does not accept application arguments");
+        return ExitCode::from(64);
     }
+    let config = ExecutionConfig::for_process().with_application_arguments(arguments);
+    let report = program.execute_oracle(config);
+    print!("{}", report.render_json_lines());
+    outcome_exit_code(&report.outcome)
 }
 
 /// The process status a native runner exits with for the same outcome, per
@@ -474,7 +507,23 @@ mod tests {
             Ok(Command::Run {
                 input: Input::File {
                     path: PathBuf::from("program.chimi")
-                }
+                },
+                arguments: Vec::new(),
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["run", "program.chimi", "--", "a", "--", "-o"])),
+            Ok(Command::Run {
+                input: Input::File {
+                    path: PathBuf::from("program.chimi")
+                },
+                arguments: vec!["a".to_owned(), "--".to_owned(), "-o".to_owned()],
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["run", "program.chimi", "a"])),
+            Err(UsageError {
+                message: "run received unexpected arguments; pass application arguments after --"
             })
         );
     }
@@ -572,7 +621,18 @@ mod tests {
                 input: Input::Project {
                     root: PathBuf::from("project"),
                     entry: "app/main".to_owned()
-                }
+                },
+                arguments: Vec::new(),
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["run", "--root", "project", "app/main", "--"])),
+            Ok(Command::Run {
+                input: Input::Project {
+                    root: PathBuf::from("project"),
+                    entry: "app/main".to_owned()
+                },
+                arguments: Vec::new(),
             })
         );
         assert_eq!(

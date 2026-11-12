@@ -2331,14 +2331,123 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "usage: chimi --version | chimi format <path> | ",
             "chimi inspect <path> <byte-offset> | ",
             "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
-            "chimi check [--json] <path> | chimi run <path> | ",
+            "chimi check [--json] <path> | chimi run <path> [-- <argument>...] | ",
             "chimi build <path> [-o <executable>] | ",
             "chimi check [--json] --root <project-dir> <entry-module> | ",
-            "chimi run --root <project-dir> <entry-module> | ",
+            "chimi run --root <project-dir> <entry-module> [-- <argument>...] | ",
             "chimi build --root <project-dir> <entry-module> ",
             "[-o <executable>]\n"
         )
     );
+}
+
+/// Runs `chimi run <args>` from `scratch` and returns the process output and
+/// its last stdout line (the outcome record when the program ran).
+fn chimi_run(scratch: &Path, args: &[&str]) -> (Output, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(scratch)
+        .arg("run")
+        .args(args)
+        .output()
+        .expect("run chimi run");
+    let outcome = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .last()
+        .map(|line| format!("{line}\n"))
+        .unwrap_or_default();
+    (output, outcome)
+}
+
+#[test]
+fn run_passes_arguments_after_the_separator_to_main_like_a_native_build() {
+    let scratch = scratch_directory("run-arguments");
+    std::fs::write(
+        scratch.join("echo.chimi"),
+        "pub fn main(arguments: List<Text>) -> List<Text> {\n  arguments\n}\n",
+    )
+    .unwrap();
+    // A second `--` and option-shaped words are application data, not flags.
+    let application = ["first", "two words", "--", "-o", ""];
+    let mut run_args = vec!["echo.chimi", "--"];
+    run_args.extend(application);
+    let (interpreted, outcome) = chimi_run(&scratch, &run_args);
+    assert!(
+        interpreted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&interpreted.stderr)
+    );
+    assert_eq!(
+        outcome,
+        concat!(
+            "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",",
+            "\"value\":[\"first\",\"two words\",\"--\",\"-o\",\"\"]}\n"
+        )
+    );
+
+    let executable = scratch.join("echo");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", "echo.chimi", "-o"])
+        .arg(&executable)
+        .output()
+        .expect("build echo");
+    assert!(build.status.success());
+    let native_outcome = scratch.join("native-outcome.jsonl");
+    let native = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg(format!("--outcome-file={}", native_outcome.display()))
+        .arg("--")
+        .args(application)
+        .output()
+        .expect("run native echo");
+    assert!(native.status.success());
+    assert_eq!(std::fs::read_to_string(native_outcome).unwrap(), outcome);
+
+    let (empty, empty_outcome) = chimi_run(&scratch, &["echo.chimi"]);
+    assert!(empty.status.success());
+    assert!(
+        empty_outcome.ends_with("\"value\":[]}\n"),
+        "{empty_outcome}"
+    );
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn run_rejects_arguments_a_zero_input_main_cannot_take_and_unseparated_arguments() {
+    let scratch = scratch_directory("run-argument-errors");
+    std::fs::write(
+        scratch.join("answer.chimi"),
+        "pub fn main() -> Int {\n  42\n}\n",
+    )
+    .unwrap();
+
+    let (plain, outcome) = chimi_run(&scratch, &["answer.chimi"]);
+    assert!(plain.status.success());
+    assert_eq!(
+        outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+    let (separated, _) = chimi_run(&scratch, &["answer.chimi", "--"]);
+    assert!(separated.status.success());
+
+    // Same status and message as the native runner, and no outcome record.
+    let (rejected, _) = chimi_run(&scratch, &["answer.chimi", "--", "extra"]);
+    assert_eq!(rejected.status.code(), Some(64));
+    assert!(rejected.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&rejected.stderr),
+        "chimi: program entry does not accept application arguments\n"
+    );
+
+    let (unseparated, _) = chimi_run(&scratch, &["answer.chimi", "extra"]);
+    assert_eq!(unseparated.status.code(), Some(2));
+    assert!(unseparated.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&unseparated.stderr).starts_with(
+        "chimi: run received unexpected arguments; pass application arguments after --\n"
+    ));
+
+    std::fs::remove_dir_all(scratch).unwrap();
 }
 
 #[test]
