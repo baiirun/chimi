@@ -4,6 +4,7 @@
 pub mod catalogue;
 mod core_kind;
 mod fixture;
+mod heap_kind;
 mod static_kind;
 pub mod transcript;
 
@@ -64,6 +65,27 @@ impl Kind {
     }
 }
 
+/// The backend that executes runtime, heap, observability, and forcing
+/// fixtures. Static and Core scenarios, C harnesses, and checks do not depend
+/// on it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Backend {
+    Native,
+    /// The reference interpreter has no process runtime, so every executed
+    /// fixture reports `unsupported` (coordinator decision 1 on `ts-6ccbc9`).
+    Interpreter,
+}
+
+impl Backend {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "native" => Some(Self::Native),
+            "interpreter" => Some(Self::Interpreter),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     /// Scenarios unlocked at or below this stage must pass.
@@ -72,6 +94,7 @@ pub struct Options {
     pub scenario: Option<&'static Scenario>,
     /// Print actual diagnostics, outcomes, and transcripts to stderr.
     pub print_actual: bool,
+    pub backend: Backend,
 }
 
 impl Default for Options {
@@ -80,6 +103,7 @@ impl Default for Options {
             through: catalogue::CURRENT_STAGE,
             scenario: None,
             print_actual: false,
+            backend: Backend::Native,
         }
     }
 }
@@ -172,9 +196,15 @@ fn status(scenario: &Scenario, options: &Options) -> Status {
     if scenario.unlock > options.through {
         return Status::Locked;
     }
+    let executed = !matches!(scenario.kind(), Kind::Static | Kind::Core);
+    if executed && matches!(scenario.form, Form::Fixture) && options.backend == Backend::Interpreter
+    {
+        return Status::Unsupported;
+    }
     let result = match (scenario.kind(), scenario.form) {
         (_, Form::Check(check) | Form::Gate(check)) => check(),
         (Kind::Static, Form::Fixture) => static_kind::check(scenario, options),
+        (Kind::Heap, Form::Fixture | Form::CHarness(_)) => heap_kind::check(scenario, options),
         (kind, form) => Err(format!(
             "the {} runner for {form:?} scenarios has not landed",
             kind.name()

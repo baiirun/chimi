@@ -86,11 +86,33 @@ fn malformed_arguments_are_usage_errors() {
         &["sideways"],
         &["static", "--through", "U11"],
         &["--scenario", "XX99"],
+        &["heap", "--backend", "bytecode"],
     ] {
         let output = lab(arguments);
         assert_eq!(output.status.code(), Some(2), "{arguments:?}");
         assert!(output.stdout.is_empty(), "{arguments:?}");
     }
+}
+
+// Coordinator decision 1: the interpreter has no process runtime, so a fixture
+// that executes reports `unsupported`, which is never a pass and never a failure.
+// MF05 is a native fixture that passes; the interpreter must not run it or count it.
+#[test]
+fn the_interpreter_backend_reports_executed_fixtures_unsupported() {
+    let output = lab(&[
+        "--scenario",
+        "MF05",
+        "--through",
+        Stage::U3.name(),
+        "--backend",
+        "interpreter",
+    ]);
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{report}");
+    assert_eq!(
+        statuses(&report),
+        [("MF05".to_owned(), "unsupported".to_owned())]
+    );
 }
 
 // Projects task telemetry the native runner really writes. This covers the

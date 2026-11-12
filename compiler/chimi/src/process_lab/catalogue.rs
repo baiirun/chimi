@@ -301,7 +301,7 @@ pub static SCENARIOS: [Scenario; 131] = [
     fixture("CB01", "message-survives-sender-reclamation", U5),
     fixture("CB02", "copy-preserves-sharing", U5),
     fixture("CB03", "failed-send-returns-intact-value", U5),
-    fixture("CB04", "channel-value-survives-process-removal", U4),
+    fixture("CB04", "channel-value-survives-process-removal", U7),
     fixture("CB05", "task-result-survives-child-heap", U8),
     c_harness("CB06", "foreign-pointer-not-followed", U3, HEAP_BOUNDARY),
     c_harness(
@@ -317,7 +317,7 @@ pub static SCENARIOS: [Scenario; 131] = [
     fixture("MF03", "memory-flat-over-memberships", U10).runs(&["100", "10000"]),
     fixture("MF04", "small-fragments-share-slabs", U5),
     fixture("MF05", "task-loop-reclaims", U3).runs(&["10000", "1000000"]),
-    check("MF06", "pay-for-play-linking", U3),
+    check("MF06", "pay-for-play-linking", U5),
     // Observability and backend support.
     fixture("OB01", "trace-off-constructs-nothing", U5),
     fixture("OB02", "boundaries-omit-sends", U5),

@@ -1,0 +1,32 @@
+// MF05: a program that uses tasks and no processes, so it links the
+// scheduler. A child task runs a loop of N passes, each of which allocates a
+// list it drops. Loops reclaim every pass in every tier, so the peak live
+// bytes are the same for N = 10,000 and N = 1,000,000.
+import std/int as Int
+import std/task as Task
+
+struct Pass {
+  left: Int,
+  total: Int,
+}
+
+fn churn(passes: Int) -> Int {
+  loop state = Pass(passes, 0) {
+    case state.left {
+      0 -> break state.total
+      _ -> {
+        let garbage = [state.left, state.total, state.left + state.total]
+        Pass(state.left - 1, state.total + List.length(garbage) - 2)
+      }
+    }
+  }
+}
+
+pub fn main(arguments: List<Text>) -> Int {
+  let passes = case List.first(arguments) {
+    Some(text) -> Int.parse(text)
+    None -> 0
+  }
+  let child = Task.start(fn() -> Int { churn(passes) })
+  Task.result(child)
+}

@@ -1,10 +1,10 @@
-//! `chimi-process-lab <kind> [--through <stage>] [--scenario <ID>] [--print-actual]`
+//! `chimi-process-lab <kind> [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual]`
 
 use chimi::process_lab::catalogue::{self, Stage};
-use chimi::process_lab::{Kind, Options, run};
+use chimi::process_lab::{Backend, Kind, Options, run};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: chimi-process-lab <static|core|runtime|heap|observability|forcing|performance|all> [--through <stage>] [--scenario <ID>] [--print-actual]";
+const USAGE: &str = "usage: chimi-process-lab <static|core|runtime|heap|observability|forcing|performance|all> [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual]";
 
 fn main() -> ExitCode {
     match lab() {
@@ -50,6 +50,11 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<(Vec<Kind>, Options)
                 let id = value("--scenario")?;
                 options.scenario =
                     Some(catalogue::find(&id).ok_or_else(|| format!("unknown scenario `{id}`"))?);
+            }
+            "--backend" => {
+                let backend = value("--backend")?;
+                options.backend = Backend::parse(&backend)
+                    .ok_or_else(|| format!("unknown backend `{backend}`"))?;
             }
             "--print-actual" => options.print_actual = true,
             "all" if kinds.is_none() => kinds = Some(Kind::ALL.to_vec()),

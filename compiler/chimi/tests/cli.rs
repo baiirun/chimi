@@ -3093,6 +3093,67 @@ fn build_native(scratch: &Path, name: &str, source_text: &str) -> PathBuf {
     executable
 }
 
+// Pay-for-play linking, the no-concurrency and tasks-only half of lab MF06 (MF06
+// itself waits for process programs, U5): only a program that uses tasks links
+// libchimi_fiber.a. `chimi_fiber_create` is defined only in that archive; runtime.c
+// has weak fallbacks for the two entry points it calls, not for this one.
+#[test]
+fn native_only_a_task_program_links_the_fiber_runtime() {
+    let scratch = scratch_directory("native-pay-for-play-linking");
+    let links_fiber_runtime = |name: &str, source: &str| {
+        let source_path = scratch.join(format!("{name}.chimi"));
+        let executable = scratch.join(name);
+        std::fs::write(&source_path, source).unwrap();
+        let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .arg("build")
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .expect("build native program");
+        assert!(
+            build.status.success(),
+            "{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let report = String::from_utf8(build.stdout).unwrap();
+        let symbols = Command::new("nm")
+            .arg(&executable)
+            .output()
+            .expect("run nm");
+        assert!(symbols.status.success());
+        let defined = String::from_utf8(symbols.stdout)
+            .unwrap()
+            .lines()
+            .any(|line| {
+                let mut columns = line.split_whitespace().rev();
+                matches!(
+                    columns.next(),
+                    Some("chimi_fiber_create" | "_chimi_fiber_create")
+                ) && matches!(columns.next(), Some("T" | "t"))
+            });
+        let archived = !report.contains("\"fiber_runtime_archive\":null");
+        assert_eq!(archived, defined, "{name}: {report}");
+        defined
+    };
+    assert!(!links_fiber_runtime(
+        "plain",
+        "pub fn main() -> Int {\n  List.length([1, 2, 3]) - 1\n}\n"
+    ));
+    assert!(links_fiber_runtime(
+        "tasks",
+        concat!(
+            "import std/task as Task\n",
+            "pub fn main() -> Int {\n",
+            "  let child = Task.start(fn() -> Int { 41 })\n",
+            "  Task.result(child) + 1\n",
+            "}\n",
+        )
+    ));
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // Guards: native loops run passes without growing the C stack (recursion overflowed here).
 #[test]
 fn native_loop_runs_a_million_passes() {
@@ -4100,6 +4161,68 @@ fn native_task_result_can_be_read_on_every_pass_of_a_loop() {
     );
     let (outcome, _) = execute_with_memory_report(&executable, &scratch);
     assert!(outcome.contains("\"value\":42000"), "{outcome}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Lab CB04's task analogue (CB04 itself needs `remove_process`, U7): a child puts a
+// value it built in its own heap on a buffered channel and finishes, so its heap is
+// destroyed. Main then reuses the freed blocks with garbage of the same sizes before
+// it receives. A message that pointed into the child's heap would read reused,
+// zeroed blocks instead of the label and the list.
+#[test]
+fn native_a_value_a_finished_task_put_on_a_channel_survives_its_heap() {
+    let scratch = scratch_directory("native-channel-value-outlives-task-heap");
+    let executable = build_native(
+        &scratch,
+        "outlives-heap",
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Receive}\n",
+            "import std/task as Task\n",
+            "struct Reply {\n",
+            "  label: Text,\n",
+            "  values: List<Int>,\n",
+            "}\n",
+            "fn churn(passes: Int) -> Int {\n",
+            "  loop left = passes {\n",
+            "    case left {\n",
+            "      0 -> break 0\n",
+            "      _ -> {\n",
+            "        let garbage = Reply(Text.append(\"xx\", \"xxx\"), [left, left, left])\n",
+            "        left - List.length(garbage.values) + 2\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  let sender = channel.sender\n",
+            "  let base = 40\n",
+            "  let child = Task.start(fn() -> Int {\n",
+            "    Channel.send(sender, Reply(Text.append(\"re\", \"ply\"), [base, base + 1, base + 2]))\n",
+            "    1\n",
+            "  })\n",
+            "  let finished = Task.result(child)\n",
+            "  let churned = churn(1000)\n",
+            "  let got = Channel.receive(channel.receiver)\n",
+            "  case got {\n",
+            "    Receive.Received(reply) -> case reply.label {\n",
+            "      \"reply\" -> case List.first(reply.values) {\n",
+            "        Some(first) -> first * 100 + List.length(reply.values) * 10 + finished + churned\n",
+            "        None -> 0 - 3\n",
+            "      }\n",
+            "      _ -> 0 - 1\n",
+            "    }\n",
+            "    Receive.Drained -> 0 - 2\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let (outcome, _) = execute_with_memory_report(&executable, &scratch);
+    assert_eq!(
+        outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":4031}\n"
+    );
     std::fs::remove_dir_all(scratch).unwrap();
 }
 

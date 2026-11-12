@@ -31,7 +31,10 @@ A mutant list is a Python file defining:
 that revision; a mutant whose text no longer matches is reported STALE so the
 list is updated instead of silently testing nothing. `targets` are
 `cargo test --test` names ("lib" means `--lib`); empty runs every target.
-`filter` is passed to the test binaries.
+`filter` is passed to the test binaries. A mutant may instead give `command`, an
+argv run in CRATE with the shared target directory (for example a `cargo run` of
+a lab binary with flags the default tests do not pass); it is killed when the
+command exits nonzero. Each distinct command must pass at the baseline.
 
 Before any mutant, the unmutated tests must pass (BASELINE). Output is one line
 per mutant: KILLED (a test failed), KILLED-BUILD (the mutant did not compile,
@@ -97,6 +100,13 @@ def cargo_test(crate: Path, args, targets, test_filter, target_dir: Path, timeou
     )
 
 
+def run_command(crate: Path, command, target_dir: Path, timeout):
+    environment = dict(os.environ, CARGO_TARGET_DIR=str(target_dir))
+    return subprocess.run(
+        command, cwd=crate, env=environment, capture_output=True, text=True, timeout=timeout
+    )
+
+
 def tests_run(output: str) -> int:
     return sum(int(count) for count in re.findall(r"^running (\d+) tests?$", output, re.M))
 
@@ -118,6 +128,12 @@ def run_list(path: Path, tree: Path, target_dir: Path, only, timeout) -> bool:
         print(f"BASELINE FAILED ({time.monotonic() - started:.0f}s)", flush=True)
         print(baseline.stdout[-4000:] + baseline.stderr[-4000:])
         return False
+    for command in dict.fromkeys(tuple(m["command"]) for m in mutations if "command" in m):
+        result = run_command(crate, list(command), target_dir, timeout)
+        if result.returncode != 0:
+            print(f"BASELINE FAILED: {' '.join(command)}", flush=True)
+            print(result.stdout[-4000:] + result.stderr[-4000:])
+            return False
     print(f"BASELINE ok ({time.monotonic() - started:.0f}s)", flush=True)
 
     ok = True
@@ -139,15 +155,24 @@ def run_list(path: Path, tree: Path, target_dir: Path, only, timeout) -> bool:
             mutated = mutated.replace(old, new)
         targets = mutation.get("targets", [])
         test_filter = mutation.get("filter", "")
+        command = mutation.get("command")
         scope = " ".join(targets) or "all targets"
         if test_filter:
             scope += f" -- {test_filter}"
+        if command:
+            scope = " ".join(command)
         source.write_text(mutated)
         started = time.monotonic()
         try:
-            result = cargo_test(crate, args, targets, test_filter, target_dir, timeout)
+            if command:
+                result = run_command(crate, command, target_dir, timeout)
+            else:
+                result = cargo_test(crate, args, targets, test_filter, target_dir, timeout)
             output = result.stdout + result.stderr
-            if result.returncode == 0 and tests_run(output) == 0:
+            if command and result.returncode == 0:
+                status = "SURVIVED"
+                ok = False
+            elif result.returncode == 0 and tests_run(output) == 0:
                 status = "NO-TESTS"
                 ok = False
             elif result.returncode == 0:

@@ -71,6 +71,7 @@ compiler/chimi/tests/process-lab/<ID>-<slug>/app/main.chimi
 compiler/chimi/tests/process-lab/<ID>-<slug>/expected.diagnostics
 compiler/chimi/tests/process-lab/<ID>-<slug>/expected.outcome
 compiler/chimi/tests/process-lab/<ID>-<slug>/expected.transcript
+compiler/chimi/tests/process-lab/<ID>-<slug>/expected.memory
 compiler/chimi/tests/process-lab/c/heap_boundary.c
 compiler/chimi/tests/process-lab/c/kernel_faults.c
 compiler/chimi/tests/process_lab.rs          cargo test that runs every kind
@@ -86,7 +87,9 @@ docs/performance/supervised-process-conformance-baseline.md   written by ts-1765
 - The white-box C harnesses follow the precedent of
   `compiler/chimi/tests/fixtures/native-list-runtime.c`: they include
   `runtime.c`, supply empty program data, and exit nonzero on the first failed
-  check.
+  check. A harness takes the scenario ID as its only argument, runs that
+  scenario's checks, and prints `ok`. An unknown ID exits 2. The lab compiles
+  it with AddressSanitizer when the C compiler supports it.
 - `Cargo.toml` gains a `chimi-process-lab` binary with
   `required-features = ["native-backend"]`.
 - Each kind module and `fixture.rs` land with the first stage that runs
@@ -97,15 +100,21 @@ docs/performance/supervised-process-conformance-baseline.md   written by ts-1765
 ## Harness entry points
 
 ```text
-chimi-process-lab <kind> [--through <stage>] [--scenario <ID>] [--print-actual]
+chimi-process-lab <kind> [--through <stage>] [--scenario <ID>]
+                  [--backend <native|interpreter>] [--print-actual]
 ```
 
 - `--through` defaults to `CURRENT_STAGE` from `catalogue.rs`. Scenarios
   whose unlock stage is at or below it must pass. Later scenarios report
   `locked` and do not run.
 - `--scenario` runs one scenario, regardless of its kind.
-- `--print-actual` prints the actual diagnostics, outcome, and transcript
-  next to the expected ones. The lab never writes expected files. Expected
+- `--backend` selects the backend that executes fixtures. The default is
+  `native`. With `interpreter`, every fixture of the runtime, heap,
+  observability, and forcing kinds reports `unsupported` and does not run
+  (see [Backends](#backends)). Static and Core scenarios, C harnesses, and
+  checks do not depend on the backend.
+- `--print-actual` prints the actual diagnostics, outcome, transcript, and
+  memory reports next to the expected ones. The lab never writes expected files. Expected
   files are written by hand from the contracts and reviewed like code.
 
 Rust shapes:
@@ -200,6 +209,23 @@ match byte for byte, for example:
 For a `defect`, the file holds the two compared fields, `outcome` and
 `message`, and the scenario's `exit_code` is 70. A scenario with several
 runs has one line per run, in `arguments` order.
+
+Each run is `<executable> --chimi-runner --trace=off --outcome-file=<path>
+--memory-report-file=<path> -- <argument>`, and must exit with the
+scenario's `exit_code`. Defect outcomes are compared from U5; until then a
+fixture whose `expected.outcome` holds a defect fails with "lands with U5".
+
+### `expected.memory`
+
+Memory-flatness fixtures (`MF`) only. One assertion per line over the
+`--memory-report-file` reports of the scenario's runs:
+
+```text
+equal scoped_peak_live_bytes
+```
+
+`equal <field>` requires the top-level integer field to have the same value
+in every run. MF04 adds a bound form when it lands at U5.
 
 ### `expected.transcript`
 
@@ -348,7 +374,8 @@ interleaving. RR02 shows the pattern.
   `execution.rs` defects with "requires the finite Task runtime". IP01
   requires the interpreter to reject process programs the same way, with
   "requires the supervised process runtime". The lab reports each runtime
-  fixture on the interpreter as `unsupported`, never as `pass`.
+  fixture on the interpreter (`--backend interpreter`) as `unsupported`,
+  never as `pass`.
 - When the interpreter gains a scheduler, every runtime fixture must produce
   the same `expected.outcome` and `expected.transcript` on both backends, with
   no backend-specific expected files. See open question 1.
@@ -585,7 +612,7 @@ consumed budget.
 | CB01 | U5 | Main sends a list of 1,000 Ints, then runs 10,000 loop passes that allocate and drop garbage. The process then reports the list's sum correctly | A message that points into the sender's reclaimed region |
 | CB02 | U5 | A message whose graph has 2^20 paths and 21 distinct values. The memory report shows `copied_values = 21` | A copy that ignores sharing |
 | CB03 | U5 | `Full` and `Unavailable` return a value equal to the original, usable by the sender. `fragments_live = 0` at exit | A lost or leaked failed send |
-| CB04 | U4 | A process puts a reply on a buffered channel, and main removes the process before receiving. The received value is intact | A channel value that points into a destroyed heap |
+| CB04 | U7 | A process puts a reply on a buffered channel, and main removes the process before receiving. The received value is intact | A channel value that points into a destroyed heap |
 | CB05 | U8 | A body reads `Task.result` of a child after the child's heap is destroyed | A task result that points into a destroyed heap |
 | CB06 | U3 | C harness: a graph in heap A that points into heap B. Fragment copy and region pass both return the foreign-pointer status and do not follow the pointer | Following a pointer into another heap |
 | CB07 | U5 | C harness: `Process.send` with a foreign pointer in the message. The sender defects with a message that names both owners. The receiver's mailbox is unchanged, and no `process_send` is recorded | A foreign pointer that reaches a mailbox, or a defect charged to the receiver |
@@ -607,7 +634,7 @@ take their size from `main(arguments)`.
 | MF03 | U10 | N `start_process` and `remove_process` cycles, for N = 100 and N = 10,000. Equal `heap_chunks_live`, and no live memberships at exit | Leaks per membership |
 | MF04 | U5 | 64 queued Int messages hold less than 256 KiB of `fragment_bytes_peak` | One 64 KiB chunk per small fragment. Coordinator decision 6 on `ts-a6b43b` requires small-fragment slabs |
 | MF05 | U3 | A program that uses tasks but no processes runs a 1,000,000-pass loop with equal peak live bytes at 10,000 passes | Loop reclamation still disabled under `CHIMI_REQUIRES_SCHEDULER` (`prog show ts-da83af`) |
-| MF06 | U3 | Build three programs: no concurrency, tasks only, and processes. Only the process program links process-kernel symbols, and only the last two link `libchimi_fiber.a` | Pay-for-play linking broken |
+| MF06 | U5 | Build three programs: no concurrency, tasks only, and processes. Only the process program links process-kernel symbols, and only the last two link `libchimi_fiber.a` | Pay-for-play linking broken |
 
 ### Observability
 
@@ -921,14 +948,25 @@ scenarios pass and `CURRENT_STAGE` names it.
 | U0 | Lab skeleton: catalogue, transcript projector with unit tests on hand-written telemetry, report, and the cargo test. Every scenario is `locked` | none |
 | U1 | `std/process` and `std/supervisor` types and functions, `process name` declarations, typing, and the literal range checks | SP01, SP03, SP07–SP09, SF04–SF18, SF25, SF26 |
 | U2 | Capability checking for specs, inboxes, and managed handles, and lowering to verified Core | SP02, SP04–SP06, SF01–SF03, SF19–SF24, CO01–CO04 |
-| U3 | Per-owner heaps, regions, and fragments in `runtime.c`, with loop reclamation on in every tier. The concurrency lab stays green | CB06, MF05, MF06 |
-| U4 | Copy on transfer for `Task.start`, `Task.result`, and `Channel.send` | CB04 |
-| U5 | The process kernel: `Process.spec`, `send`, `receive`, `Supervisor.start`, `start_process`, `stop`, the trace family, ABI version 5, and the memory-report fields | MB01–MB04, MB06, MB07, MB11, RT08, SV01, SD01, SD09, CB01–CB03, CB07, MF01, MF04, OB01–OB03, OB05, OB07, IP01 |
+| U3 | Per-owner heaps, regions, and fragments in `runtime.c`, with loop reclamation on in every tier. The concurrency lab stays green | CB06, MF05 |
+| U4 | Copy on transfer for `Task.start`, `Task.result`, and `Channel.send` | none |
+| U5 | The process kernel: `Process.spec`, `send`, `receive`, `Supervisor.start`, `start_process`, `stop`, the trace family, ABI version 5, and the memory-report fields | MB01–MB04, MB06, MB07, MB11, RT08, SV01, SD01, SD09, CB01–CB03, CB07, MF01, MF04, MF06, OB01–OB03, OB05, OB07, IP01 |
 | U6 | Restart accounting and escalation at the root. Needs `Duration` and `--clock=virtual` from ts-f31a20 | MB05, MB10, RT01, RT02, SV03, SV04, SV11, RA01–RA05, RA08, ES01, ES05, CB08, OB04, OB06 |
-| U7 | Admission, names, removal, `Supervisor.wait`, drain on cancellation | MB08, MB09, RT03–RT07, SV02, SV05–SV08, SV12, RA06, RR01–RR04, SD08 |
+| U7 | Admission, names, removal, `Supervisor.wait`, drain on cancellation | MB08, MB09, RT03–RT07, SV02, SV05–SV08, SV12, RA06, RR01–RR04, SD08, CB04 |
 | U8 | `shutdown_within` deadlines, forced termination, and structured child tasks inside processes | RA07, RR05, RR06, SD02–SD07, CB05 |
 | U9 | Declared and dynamic nested supervisors | SV09, SV10, ES02–ES04 |
 | U10 | `programs/supervised-pool` and the performance harness | FP01, MF02, MF03, PG01–PG10 |
+
+Two scenarios moved stage (coordinator decisions on `ts-6ccbc9`). MF06
+moved from U3 to U5, because a process program cannot be built natively
+before the kernel lands. Its no-concurrency and tasks-only half is
+`native_only_a_task_program_links_the_fiber_runtime` in `tests/cli.rs`.
+CB04 moved from U4 to U7, because it needs `remove_process`. Its task
+analogue is
+`native_a_value_a_finished_task_put_on_a_channel_survives_its_heap` in
+`tests/cli.rs`. U4 therefore unlocks no scenario: copy on transfer is
+already in `runtime.c`, and the task and channel tests in `tests/cli.rs`
+guard it.
 
 ts-1765ba runs `chimi-process-lab all` in release and debug builds, writes
 the baseline record, and opens a decision ticket for every failure instead of
