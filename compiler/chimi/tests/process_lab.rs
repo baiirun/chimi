@@ -54,7 +54,7 @@ fn every_scenario_through_the_current_stage_passes() {
                 (scenario.id.to_owned(), status.to_owned())
             })
             .collect::<Vec<_>>();
-        assert_eq!(statuses(&report), expected, "{}", kind.name());
+        assert_eq!(statuses(report), expected, "{}", kind.name());
     }
 }
 

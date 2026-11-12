@@ -224,3 +224,50 @@ KILLED       RA06: a failed replacement is refunded [cargo run --quiet --bin chi
 KILLED       MB08: cleanup receives nothing [cargo run --quiet --bin chimi-process-lab -- --scenario MB08 --through U7] (4s)
 KILLED       MB09: routing is kept during cleanup [cargo run --quiet --bin chimi-process-lab -- --scenario MB09 --through U7] (4s)
 # result: every mutant killed
+
+# Command: scripts/mutation/mutate.py --scratch <scratch>/mutation scripts/mutation/process_u6_mutations.py
+# Rerun after the U6/U7 review fixes: adds the tumbling-window (RA04) and parked-only escalation (RA05) mutants
+# and the OB04 mutant through `all` (recorded-run path). 21 mutants, all KILLED.
+# mutation run at fd124ebf92ce6e65888a0b93765dd759982e4bbc
+# process_u6_mutations.py: 21 mutants against compiler/chimi
+BASELINE ok (413s)
+KILLED       RA01: declared members always marshal as Restart.Never [cargo run --quiet --bin chimi-process-lab -- --scenario RA01 --through U6] (6s)
+KILLED       SV04: declared members always marshal as OnDefect [cargo run --quiet --bin chimi-process-lab -- --scenario SV04 --through U6] (5s)
+KILLED       RT01: dynamic members always marshal as Restart.Never [cargo run --quiet --bin chimi-process-lab -- --scenario RT01 --through U6] (6s)
+KILLED       RA01: the restart limit marshals as 0 [cargo run --quiet --bin chimi-process-lab -- --scenario RA01 --through U6] (5s)
+KILLED       RA02: the restart window marshals as 1 ns [cargo run --quiet --bin chimi-process-lab -- --scenario RA02 --through U6] (5s)
+KILLED       RA04: a restart exactly `within` later is inside the window [cargo run --quiet --bin chimi-process-lab -- --scenario RA04 --through U6] (5s)
+KILLED       RA03: the window never rolls [cargo run --quiet --bin chimi-process-lab -- --scenario RA03 --through U6] (4s)
+KILLED       RA04: the window tumbles: every restart is forgotten once the oldest expires [cargo run --quiet --bin chimi-process-lab -- --scenario RA04 --through U6] (4s)
+KILLED       SV03: returned and failed members restart [cargo run --quiet --bin chimi-process-lab -- --scenario SV03 --through U6] (5s)
+KILLED       RA01: the restart is charged after the replacement starts [cargo run --quiet --bin chimi-process-lab -- --scenario RA01 --through U6] (5s)
+KILLED       RT02: a name outlives its incarnation [cargo run --quiet --bin chimi-process-lab -- --scenario RT02 --through U6] (4s)
+KILLED       ES05: escalation stops declared members before dynamic ones [cargo run --quiet --bin chimi-process-lab -- --scenario ES05 --through U6] (5s)
+KILLED       RA05: a root escalation ends only parked root tasks [cargo run --quiet --bin chimi-process-lab -- --scenario RA05 --through U6] (4s)
+KILLED       RA02: a root escalation ends the program as a scheduler failure [cargo run --quiet --bin chimi-process-lab -- --scenario RA02 --through U6] (5s)
+KILLED       MB10: Process.spec accepts a computed zero capacity [cargo run --quiet --bin chimi-process-lab -- --scenario MB10 --through U6] (5s)
+KILLED       SV11: Supervisor.policy accepts members over capacity [cargo run --quiet --bin chimi-process-lab -- --scenario SV11 --through U6] (5s)
+KILLED       CB08: the first incarnation takes the spec's body instead of a copy [cargo run --quiet --bin chimi-process-lab -- --scenario CB08 --through U6] (5s)
+KILLED       OB06: the runner ignores --clock=virtual [cargo run --quiet --bin chimi-process-lab -- --scenario OB06 --through U6] (65s)
+KILLED       OB04: telemetry carries the process id [cargo run --quiet --bin chimi-process-lab -- --scenario OB04 --through U6] (5s)
+KILLED       OB04 (recorded runs): telemetry carries the process id [cargo run --quiet --bin chimi-process-lab -- all --through U6] (39s)
+KILLED       RA08: event classes ignore their class fields [cargo run --quiet --bin chimi-process-lab -- --scenario RA08 --through U6] (9s)
+# result: every mutant killed
+
+# Command: scripts/mutation/mutate.py --scratch <scratch>/mutation scripts/mutation/process_u7_mutations.py
+# Rerun after the U6/U7 review fixes. 11 mutants, all KILLED.
+# mutation run at fd124ebf92ce6e65888a0b93765dd759982e4bbc
+# process_u7_mutations.py: 11 mutants against compiler/chimi
+BASELINE ok (345s)
+KILLED       SV02: admission lets a start past capacity [cargo run --quiet --bin chimi-process-lab -- --scenario SV02 --through U7] (9s)
+KILLED       SV06: Stopped is reported as CapacityReached [cargo run --quiet --bin chimi-process-lab -- --scenario SV06 --through U7] (12s)
+KILLED       RT03: NameTaken carries a text other than the trace label [cargo run --quiet --bin chimi-process-lab -- --scenario RT03 --through U7] (13s)
+KILLED       RT04: every process name is one scheduler name [cargo run --quiet --bin chimi-process-lab -- --scenario RT04 --through U7] (13s)
+KILLED       RT06: a root whose member start fails is left running [cargo run --quiet --bin chimi-process-lab -- --scenario RT06 --through U7] (17s)
+KILLED       RT07: a second register replaces the name [cargo run --quiet --bin chimi-process-lab -- --scenario RT07 --through U7] (15s)
+KILLED       RR01: removal finishes before its target terminates [cargo run --quiet --bin chimi-process-lab -- --scenario RR01 --through U7] (13s)
+KILLED       SV12: the foreign-owner defect names one supervisor [cargo run --quiet --bin chimi-process-lab -- --scenario SV12 --through U7] (13s)
+KILLED       RA06: a failed replacement is refunded [cargo run --quiet --bin chimi-process-lab -- --scenario RA06 --through U7] (15s)
+KILLED       MB08: cleanup receives nothing [cargo run --quiet --bin chimi-process-lab -- --scenario MB08 --through U7] (7s)
+KILLED       MB09: routing is kept during cleanup [cargo run --quiet --bin chimi-process-lab -- --scenario MB09 --through U7] (6s)
+# result: every mutant killed
