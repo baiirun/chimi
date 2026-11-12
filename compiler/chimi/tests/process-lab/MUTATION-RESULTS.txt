@@ -85,16 +85,16 @@ KILLED       a user function named like a process operation is an intrinsic (CO0
 KILLED       static runner reads project contracts as standard ones [process_lab] (4s)
 # Command: scripts/mutation/mutate.py --scratch <scratch>/mutation --timeout 1500 scripts/mutation/process_heap_mutations.py
 # Command mutants are KILLED only on their `expect` failure text (see mutate.py).
-# mutation run at adfb1fc48fc9e61dd9341a443104d8c23dc0f000
+# mutation run at 71893ebc25e2fd8c62b76d7043564892326d7dc9
 # process_heap_mutations.py: 9 mutants against compiler/chimi
-BASELINE ok (473s)
-KILLED       CB06: a region pass ignores foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (10s)
-KILLED       CB06: a region pass reports and then follows foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (10s)
-KILLED       CB06: a fragment copy ignores foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (10s)
-KILLED       CB06: a fragment copy reports and then follows foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (9s)
-KILLED       MF05: loop passes skipped under CHIMI_REQUIRES_SCHEDULER [cargo run --quiet --bin chimi-process-lab -- --scenario MF05 --through U4] (11s)
-KILLED       MF05: loops reclaim every 1000th pass [cargo run --quiet --bin chimi-process-lab -- --scenario MF05 --through U4] (6s)
+BASELINE ok (350s)
+KILLED       CB06: a region pass ignores foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (5s)
+KILLED       CB06: a region pass reports and then follows foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (4s)
+KILLED       CB06: a fragment copy ignores foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (4s)
+KILLED       CB06: a fragment copy reports and then follows foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (4s)
+KILLED       MF05: loop passes skipped under CHIMI_REQUIRES_SCHEDULER [cargo run --quiet --bin chimi-process-lab -- --scenario MF05 --through U4] (6s)
+KILLED       MF05: loops reclaim every 1000th pass [cargo run --quiet --bin chimi-process-lab -- --scenario MF05 --through U4] (5s)
 KILLED       MF05: loops reclaim every second pass [cargo run --quiet --bin chimi-process-lab -- --scenario MF05 --through U4] (4s)
-KILLED       Channel.send queues the sender's original value [cli -- native_a_value_a_finished_task_put_on_a_channel_survives_its_heap] (5s)
+KILLED       Channel.send queues the sender's original value [cli -- native_a_value_a_finished_task_put_on_a_channel_survives_its_heap] (4s)
 KILLED       every program links the fiber runtime [cli -- native_only_a_task_program_links_the_fiber_runtime] (5s)
 # result: every mutant killed
