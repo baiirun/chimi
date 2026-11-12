@@ -15,15 +15,15 @@ MUTATIONS = [
     dict(
         name="prebuilt archive used whatever its key",
         file="src/backend/native.rs",
-        edits=[("(!PREBUILT_RUNTIME_KEY.is_empty() && PREBUILT_RUNTIME_KEY == key)",
-                "(!PREBUILT_RUNTIME_KEY.is_empty() || PREBUILT_RUNTIME_KEY == key)")],
+        edits=[("(!prebuilt_key.is_empty() && prebuilt_key == key)",
+                "(!prebuilt_key.is_empty() || prebuilt_key == key)")],
         targets=TESTS, filter=FILTER,
     ),
     dict(
         name="prebuilt archive never used",
         file="src/backend/native.rs",
-        edits=[("(!PREBUILT_RUNTIME_KEY.is_empty() && PREBUILT_RUNTIME_KEY == key)",
-                "(PREBUILT_RUNTIME_KEY.is_empty() && PREBUILT_RUNTIME_KEY == key)")],
+        edits=[("(!prebuilt_key.is_empty() && prebuilt_key == key)",
+                "(prebuilt_key.is_empty() && prebuilt_key == key)")],
         targets=TESTS, filter=FILTER,
     ),
     dict(

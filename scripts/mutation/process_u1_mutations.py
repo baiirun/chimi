@@ -100,12 +100,8 @@ MUTATIONS = [
         '.map(|((module, line, column, code), _)| format!("{code} {module}.chimi:{line}:{column}"))',
         '.map(|((module, line, _column, code), _)| format!("{code} {module}.chimi:{line}:1"))')]),
     # Review follow-ups.
-    cli("native build accepts process programs", N, [(
-        "    if requires_process_runtime(&program.core) {",
-        "    if false && requires_process_runtime(&program.core) {")]),
-    cli("native refusal misses a program that only names a process", N, [(
-        "        symbol.kind == crate::executable::CoreSymbolKind::ProcessName\n",
-        "        false\n")]),
+    # The native refusal of process programs and its two mutants ended at U5,
+    # when the native build began to run them (process_u5_mutations.py).
     language("Supervisor.policy accepts more members than its computed capacity", I, [(
         "                } else if list.len() as i64 > *capacity {",
         "                } else if false {")]),

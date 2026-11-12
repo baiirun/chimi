@@ -90,7 +90,7 @@ MUTATIONS = [
         "        if self.trace_mode == TraceMode::Off {\n            return;\n        }\n        self.emit_clock(")],
         filter="native_virtual_sleep_advances"),
     native("clock request kind written as a cause task", RUNTIME, [(
-        '  if (clock || event->cause == 0) fputs("null", output);',
-        '  if (event->cause == 0) fputs("null", output);')],
+        '  if (clock || process || event->cause == 0) fputs("null", output);',
+        '  if (process || event->cause == 0) fputs("null", output);')],
         filter="native_virtual_deadlock"),
 ]

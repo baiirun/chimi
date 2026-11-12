@@ -1244,8 +1244,10 @@ static void *copy_forward(FragmentCopy *copy, void *pointer, AllocationKind kind
   AllocationHeader *header = allocation_header(pointer);
   if (header->kind != kind) allocation_graph_inconsistent();
   if (header->area->role == AREA_STATIC) return pointer;
+  if (!copy_owns(copy, header->area) && copy->status == HEAP_OK)
+    copy->foreign_owner = header->area->heap ? header->area->heap->owner : 0;
   if (!copy_owns(copy, header->area)) {
-    copy_foreign(copy, header->area);
+    copy->status = HEAP_FOREIGN_POINTER;
     return NULL;
   }
   void *existing = copy_table_find(copy, pointer);
