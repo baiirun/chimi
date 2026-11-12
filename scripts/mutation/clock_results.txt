@@ -1,24 +1,26 @@
 # Command: scripts/mutation/mutate.py --scratch <scratch> scripts/mutation/clock_fiber_mutations.py scripts/mutation/clock_mutations.py
-# Commit: 3db9304 (source of 83ec78f plus the mutant lists)
+# Commit: 169c3f9
 
-# mutation run at 3db93047f29867c1dd9f0b8772356e9524f6fa46
+# mutation run at 169c3f9b93a0f6144884658a68fc6af69f59397d
 # clock_fiber_mutations.py: 4 mutants against runtime/chimi-fiber
-BASELINE ok (12s)
+BASELINE ok (4s)
 KILLED       run drops the task value hook [lib -- release_tests] (1s)
 KILLED       run drops the channel value hook [lib -- release_tests] (1s)
 KILLED       run drops the unrun context hook [lib -- release_tests] (1s)
 KILLED       run releases the outcome value it hands out [lib -- release_tests] (1s)
-# clock_mutations.py: 10 mutants against compiler/chimi
-BASELINE ok (386s)
+# clock_mutations.py: 12 mutants against compiler/chimi
+BASELINE ok (302s)
 KILLED       virtual clock advances while runnable work exists [cli -- native_] (21s)
-KILLED       timers fire in registration order [cli -- native_] (24s)
-KILLED       virtual deadlock detection off [cli -- native_] (23s)
-KILLED       deadlock waiters dropped from the root's cause [cli -- native_] (21s)
-KILLED       root closure ignores the fixed need name [language -- the_runner_closes_only_a_root_clock_need] (3s)
-KILLED       root closure stays off for clock [language -- the_runner_closes_only_a_root_clock_need] (2s)
-KILLED       a negative duration sleeps its magnitude [cli -- native_virtual_sleep_advances] (4s)
-KILLED       --clock=virtual ignored [cli -- native_virtual_sleepers_wake] (4s)
-KILLED       timer events are boundary events [cli -- native_virtual_sleep_advances] (4s)
-KILLED       clock request kind written as a cause task [cli -- native_virtual_deadlock] (4s)
+KILLED       timers fire in registration order [cli -- native_] (27s)
+KILLED       virtual deadlock detection off [cli -- native_] (26s)
+KILLED       deadlock waiters dropped from the root's cause [cli -- native_] (20s)
+KILLED       root closure ignores the fixed need name [language -- the_runner_closes_only_a_root_clock_need] (4s)
+KILLED       root closure stays off for clock [language -- the_runner_closes_only_a_root_clock_need] (3s)
+KILLED       a negative duration sleeps its magnitude [cli -- native_virtual_sleep_advances] (6s)
+KILLED       Instant overflow unchecked [cli -- native_sleep_past_the_instant_range] (5s)
+KILLED       sleep ignores cancellation and parks again [cli -- native_cancelling_a_sleeping_task] (6s)
+KILLED       --clock=virtual ignored [cli -- native_virtual_sleepers_wake] (5s)
+KILLED       timer events are boundary events [cli -- native_virtual_sleep_advances] (7s)
+KILLED       clock request kind written as a cause task [cli -- native_virtual_deadlock] (6s)
 # result: every mutant killed
 EXIT 0
