@@ -1,0 +1,16 @@
+# Command: scripts/mutation/mutate.py scripts/mutation/compiler_small_mutations.py
+# mutation run at b819003e42a8f6b73e06430fdd5b3faf324d788a
+# compiler_small_mutations.py: 11 mutants against compiler/chimi
+BASELINE ok (264s)
+KILLED       outcome case only for a single subject [language -- multi_subject] (4s)
+KILLED       a later subject's failure must be covered even after an earlier failure [language -- multi_subject] (34s)
+KILLED       subtract a variant whatever the other subjects hold [language -- multi_subject] (24s)
+KILLED       accept a plain pattern in an outcome column silently [language -- multi_subject] (18s)
+KILLED       clause bindings stay bindings [cli -- native_function_clauses_allocate_what_the_equivalent_case_allocates] (5s)
+KILLED       keep every clause subject [cli -- native_function_clauses_allocate_what_the_equivalent_case_allocates] (6s)
+KILLED       aliased clause bindings keep their slots [cli -- native_function_clauses_allocate_what_the_equivalent_case_allocates] (5s)
+KILLED       always bind the update base [cli -- native_record_update_allocates_what_the_written_out_constructor_allocates] (5s)
+KILLED       always bind the update values [cli -- native_record_update_allocates_what_the_written_out_constructor_allocates] (5s)
+KILLED       unbound update temporaries keep their slots [cli -- native_record_update_allocates_what_the_written_out_constructor_allocates] (6s)
+KILLED       inline update values out of declaration order [language -- update] (14s)
+# result: every mutant killed
