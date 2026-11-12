@@ -150,6 +150,28 @@ Assessment at 2026-11-11, after about 20 completed agents:
   directly (N19); implementers report to it. Throughput held with three
   implementers at a time.
 
+## Paired review: Sonnet vs Opus (2026-11-12)
+
+Same prompt, same branch (capability per-place moves, 495b56e), separate scratch
+directories, run concurrently.
+
+| | Sonnet | Opus |
+| --- | --- | --- |
+| Tokens | 74k | 106k |
+| Wall time | 3.3 min | 11.5 min |
+| Programs probed | ~35 | ~40, with a both-builds comparison script |
+| HIGH | 0 | 1: two tasks can own one receiver through a loop's next state (a regression main rejected, plus an older hole on both) |
+| MEDIUM | 2: generic helpers like `dup<T>` rejected; record update replacing a moved field rejected | 2: recursive worker-pool shape rejected by the depth cut; no test pins the claimed depth (any cut 1-4 passes) |
+| LOW | 1: depth cut on 5-level structs | 2: depth cut merges tuple positions; corpus claim cannot cover generics |
+| Overlap | generic-helper break, depth-cut imprecision | same |
+| Unique | record-update false rejection | loop-state aliasing (the only soundness hole found), recursive-pool rejection, depth test gap |
+
+Reading: both were useful and neither found everything. Opus found the one
+soundness hole and the most consequential false rejection; Sonnet found a real
+false rejection Opus missed, at about a third of the time and tokens. Neither
+produced noise. For soundness-critical changes (type and capability rules,
+runtime memory), run both; for routine branches, Sonnet alone.
+
 ## Open hypotheses
 
 - Publishing cross-cutting conventions before a fan-out will cut spec conflicts
