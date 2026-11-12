@@ -663,6 +663,7 @@ impl CapabilityChecker<'_> {
                 if let Some(parameter) = parameter
                     && let Some(binding) = environment.get(parameter)
                     && binding.value.properties.capability != CapabilityClass::Exclusive
+                    && binding.value.holds_type_parameter
                     && owned(&binding.value)
                 {
                     self.type_parameters.insert(*parameter, index);

@@ -10359,8 +10359,9 @@ fn an_exclusive_part_has_one_owner() {
 // that moves every argument (`spawn_other` keeps `r`), a closure that transfers
 // its parameter but leaves the argument usable, a call that takes one place for
 // two transferred parameters, a generic helper whose `T` parameter is sent (a `T`
-// may be exclusive), and a record passed to a function that reads the part of it
-// that moved.
+// may be exclusive), a value sent after a loop's `break` built it (the loop's value
+// carries what the `break` took), and a record passed to a function that reads the
+// part of it that moved.
 #[test]
 fn a_call_of_a_function_that_transfers_its_parameter_moves_the_argument() {
     let source = process_program(&format!(
@@ -10388,6 +10389,10 @@ fn a_call_of_a_function_that_transfers_its_parameter_moves_the_argument() {
             "fn stash<T>(x: T, s: Sender<T>) -> Int {{\n  Channel.send(s, x)\n  1\n}}\n",
             "fn generic(r: Receiver<Int>, s: Sender<Receiver<Int>>) -> Receiver<Int> {{\n",
             "  stash(r, s)\n  r\n}}\n",
+            "fn sends_broken(r: Receiver<Int>, s: Sender<Hand>) -> Int {{\n",
+            "  let m = loop n = 0 {{\n    break Hand.Over(r)\n  }}\n  Channel.send(s, m)\n  1\n}}\n",
+            "fn after_broken(r: Receiver<Int>, s: Sender<Hand>) -> Receiver<Int> {{\n",
+            "  sends_broken(r, s)\n  r\n}}\n",
             "fn reads_inner(b: Box) -> Int {{\n  Channel.receive(b.inner)\n  1\n}}\n",
             "fn reads_moved_part(b: Box) -> Int {{\n",
             "  let r = b.inner\n",
@@ -10415,6 +10420,7 @@ fn a_call_of_a_function_that_transfers_its_parameter_moves_the_argument() {
                 "`r` is taken twice here; an exclusive value has one owner"
             ),
             ("T4241", "r", "by a call of `stash`"),
+            ("T4241", "r", "by a call of `sends_broken`"),
             ("T4241", "b", "into `r`"),
         ],
         "{found:?}"
@@ -10511,7 +10517,8 @@ fn recursion_and_nesting_keep_sibling_parts_apart() {
 // `T` at each call, like an inferred equatable requirement. Rejects a body check
 // that rejects `dup` itself (ordinary generic code would not compile), and a call
 // check that accepts a receiver for that `T`, directly or through another generic
-// function (`use_twice`) or a loop (`repeat`).
+// function (`use_twice`, and `dup_via`, which passes its `T` on to `dup`) or a
+// loop (`repeat`).
 #[test]
 fn a_generic_function_that_duplicates_a_value_requires_it_to_be_shareable() {
     let source = process_program(&format!(
@@ -10522,13 +10529,15 @@ fn a_generic_function_that_duplicates_a_value_requires_it_to_be_shareable() {
             "fn pick<T>(x: T) -> (T, T) {{\n  let y = x\n  (x, y)\n}}\n",
             "fn same<T>(x: T, y: T) -> (T, T) {{\n  (x, y)\n}}\n",
             "fn use_twice<T>(x: T) -> Int {{\n  let a = same(x, x)\n  1\n}}\n",
+            "fn dup_via<T>(x: T) -> (T, T) {{\n  dup(x)\n}}\n",
             "fn repeat<T>(x: T, n: Int) -> List<T> {{\n",
             "  loop acc = [] {{\n    case n >= 3 {{\n      True -> break acc\n      False -> [x]\n    }}\n  }}\n}}\n",
             "fn ints() -> Int {{\n",
             "  let a = dup(5)\n  let b = listed(1)\n  let c = pick(2)\n  let d = use_twice(3)\n  let e = repeat(4, 1)\n",
+            "  let g = dup_via(6)\n",
             "  let f = same(Channel.bounded(1).receiver, Channel.bounded(1).receiver)\n  1\n}}\n",
-            "fn receivers(r: Receiver<Int>, q: Receiver<Int>, s: Receiver<Int>) -> Int {{\n",
-            "  let a = dup(r)\n  let c = use_twice(q)\n  let d = repeat(s, 1)\n  1\n}}\n",
+            "fn receivers(r: Receiver<Int>, q: Receiver<Int>, s: Receiver<Int>, v: Receiver<Int>) -> Int {{\n",
+            "  let a = dup(r)\n  let c = use_twice(q)\n  let d = repeat(s, 1)\n  let e = dup_via(v)\n  1\n}}\n",
         ),
         program = HAND_PROGRAM,
     ));
@@ -10546,6 +10555,7 @@ fn a_generic_function_that_duplicates_a_value_requires_it_to_be_shareable() {
             ("T4241", "r", "dup"),
             ("T4241", "q", "use_twice"),
             ("T4241", "s", "repeat"),
+            ("T4241", "v", "dup_via"),
         ],
         "{found:?}"
     );

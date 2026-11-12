@@ -102,7 +102,7 @@ MUTATIONS = [
         "                    && arguments.len() == other_arguments.len()")], READS, file=T),
     language("a break value carries nothing out of its loop", [(
         "                        breaks.extend(carries);",
-        "                        let _ = (breaks, carries);")], MOVES),
+        "                        let _ = (breaks, carries);")], CALLS),
     language("a field read out of a binding is the whole binding", [(
         "                self.expression_place(module_id, receiver, environment)?\n"
         "                    .child(PathSegment::Field(member.text.clone())),",
@@ -208,7 +208,7 @@ MUTATIONS = [
         "const MAX_PATH_DEPTH: usize = 4;")], NESTING),
     language("recursive steps never collapse", [(
         "        matches!(self, Self::Field(_) | Self::Rest { .. })",
-        "        let _ = self;\n        false")], RECURSION),
+        "        let _ = self;\n        false")], NESTING),
     language("list steps always overlap", [(
         "                            (Some((a, b)), Some((c, d))) => a < d && c < b,",
         "                            (Some(_), Some(_)) => true,")], RECURSION),
