@@ -70,7 +70,8 @@ MUTATIONS = [
         "      if (!CHIMI_REQUIRES_SCHEDULER && allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {")]),
     # Equality across sizes accepts batched reclamation; the 7 KiB bound does not.
     lab("loops reclaim every 1000th pass", RUNTIME, "MF05",
-        ["scoped_peak_live_bytes exceeds 7168"], [(LOOP_PASS, batched(1000))]),
+        ["scoped_peak_live_bytes differs", "scoped_peak_live_bytes exceeds 7168"],
+        [(LOOP_PASS, batched(1000))]),
     lab("loops reclaim every second pass", RUNTIME, "MF05",
         ["scoped_peak_live_bytes exceeds 7168"], [(LOOP_PASS, batched(2))]),
     # CB04's task analogue: a channel value is a copy, not a pointer into the sender's heap.
