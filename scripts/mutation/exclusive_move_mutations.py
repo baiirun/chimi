@@ -25,6 +25,10 @@ CALLS = "a_call_of_a_function_that_transfers"
 RECEIVED = "a_received_value"
 RECURSION = "recursion_over_parts"
 LOOP = "building_a_value_from_an_outer"
+NESTING = "recursion_and_nesting_keep"
+STATE = "a_loop_state_takes"
+GENERIC = "a_generic_function_that_duplicates"
+UPDATE = "a_record_update_takes"
 
 MUTATIONS = [
     # What a value carries.
@@ -55,11 +59,11 @@ MUTATIONS = [
         "                    .last()\n"
         "                    .unwrap_or_else(FlowValue::shareable)")], MOVES),
     language("a record update carries only its base", [(
-        "                let mut value = self.evaluate(module_id, base, environment);\n"
+        "                let mut value = self.evaluate_update_base(module_id, base, fields, environment);\n"
         "                for field in fields {\n"
         "                    let part = self.evaluate(module_id, &field.value, environment);\n"
         "                    value = self.join_part(module_id, value, field.value.range(), part);",
-        "                let mut value = self.evaluate(module_id, base, environment);\n"
+        "                let mut value = self.evaluate_update_base(module_id, base, fields, environment);\n"
         "                for field in fields {\n"
         "                    let part = self.evaluate(module_id, &field.value, environment);\n"
         "                    let _ = part;")], MOVES),
@@ -156,9 +160,9 @@ MUTATIONS = [
         "                        *range,\n"
         "                        ReadCheck::Paths(&BTreeSet::new()),")], PARTS),
     language("a moved part leaves its whole binding usable", [(
-        "    left.iter()\n"
-        "        .zip(right)\n"
-        "        .all(|(left, right)| left.may_reach_the_same_part(right))",
+        "    paths_meet(left, right, |left_ended, right_ended| {\n"
+        "        left_ended || right_ended\n"
+        "    })",
         "    left == right")], PARTS),
     language("sibling fields reach the same part", [(
         "            (Self::Field(a), Self::Field(b)) => a == b,",
@@ -196,12 +200,15 @@ MUTATIONS = [
         "                .find(|place| taken.iter().any(|taken| taken.overlaps(place)))",
         "                .find(|_| false)")], CALLS),
     language("a call moves the whole argument, not the transferred parts", [(
-        "                Some(place) => paths.iter().map(|path| place.joined(path)).collect(),",
+        "                Some(place) => paths.iter().map(|path| place.through_call(path)).collect(),",
         "                Some(place) => paths.iter().map(|_| place.clone()).collect(),")], READS),
     # Review fixes: bounded paths, list and tuple parts, escapes, reads, generics.
-    language("paths are not cut to a bounded depth", [(
-        "        place.path.truncate(MAX_PATH_DEPTH);",
-        "        let _ = MAX_PATH_DEPTH;")], RECURSION),
+    language("paths are cut at depth four", [(
+        "const MAX_PATH_DEPTH: usize = 32;",
+        "const MAX_PATH_DEPTH: usize = 4;")], NESTING),
+    language("recursive steps never collapse", [(
+        "        matches!(self, Self::Field(_) | Self::Rest { .. })",
+        "        let _ = self;\n        false")], RECURSION),
     language("list steps always overlap", [(
         "                            (Some((a, b)), Some((c, d))) => a < d && c < b,",
         "                            (Some(_), Some(_)) => true,")], RECURSION),
@@ -212,7 +219,10 @@ MUTATIONS = [
         "            (Self::Position(a), Self::Position(b)) => a == b,",
         "            (Self::Position(_), Self::Position(_)) => true,")], READS),
     language("a move into a local escapes", [(
-        "        !matches!(self, Self::IntoBinding(_) | Self::IntoPattern)",
+        "        !matches!(\n"
+        "            self,\n"
+        "            Self::IntoBinding(_) | Self::IntoPattern | Self::IntoLoopValue\n"
+        "        )",
         "        let _ = self;\n        true")], READS),
     language("an escape does not follow what a binding took", [(
         "        for taken in &took {",
@@ -237,6 +247,39 @@ MUTATIONS = [
     language("a type parameter is not a held type parameter", [(
         "            CanonicalType::Generic(_) => true,",
         "            CanonicalType::Generic(_) => false,")], CALLS, file=T),
+    # Second review: loop states, collapsed recursion, generics, record updates.
+    language("the next state does not reach what its bindings took", [(
+        "                self.reach(place, &mut into_state);",
+        "                into_state.insert(place.clone());")], STATE),
+    language("the next state takes nothing", [(
+        "                    TransferBoundary::IntoBinding(state),\n"
+        "                    &mut pass,",
+        "                    TransferBoundary::IntoBinding(state),\n"
+        "                    &mut pass.clone(),")], STATE),
+    language("a break value takes nothing", [(
+        "                            TransferBoundary::IntoLoopValue,\n"
+        "                            environment,",
+        "                            TransferBoundary::IntoLoopValue,\n"
+        "                            &mut environment.clone(),")], MOVES),
+    language("a record update reads its whole base", [(
+        "        let (Some(place), Some(kept)) = (place, kept) else {",
+        "        let (Some(place), Some(kept), false) = (place, kept, true) else {")], UPDATE),
+    language("a record update checks no kept field", [(
+        "        let mut value = self.read_argument(module_id, base, ReadCheck::Paths(&paths), environment);",
+        "        let _ = &paths;\n"
+        "        let mut value =\n"
+        "            self.read_argument(module_id, base, ReadCheck::Paths(&BTreeSet::new()), environment);")],
+        UPDATE),
+    language("a generic body that duplicates its T is rejected", [(
+        "            Some(origins) => self.shared.extend(origins),",
+        "            Some(_) => self.diagnostics.push(diagnostic),")], GENERIC),
+    language("calls do not check the shareable requirement", [(
+        "                    self.check_shared_arguments(module_id, callee, &arguments);",
+        "                    let _ = (callee, &arguments);")], GENERIC),
+    language("a generic caller does not pass the requirement on", [(
+        "                if let Some(origins) = self.type_parameter_origins(place, &mut BTreeSet::new()) {",
+        "                if let Some(origins) = None::<BTreeSet<usize>> {\n"
+        "                    let _ = place;")], GENERIC),
     # `Channel.Receive<T>` (ts-bb95dc).
     language("Receive<T> is shareable whatever T is", [(
         "                StandardType::ProcessSendError | StandardType::ChannelReceive,",
