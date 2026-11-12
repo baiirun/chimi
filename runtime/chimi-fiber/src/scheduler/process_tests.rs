@@ -6,8 +6,7 @@
 
 use super::process_abi::{
     ADDRESS_DIRECT, ADDRESS_NAMED, CLOCK_VIRTUAL, MEMBER_PROCESS, MEMBER_SUPERVISOR, RESTART_NEVER,
-    RESTART_ON_DEFECT,
-    chimi_scheduler_run,
+    RESTART_ON_DEFECT, chimi_scheduler_run,
 };
 use super::*;
 use crate::{ChimiFiberResult, FIXTURE_LOCK, chimi_fiber_park, chimi_fiber_request};
@@ -362,7 +361,10 @@ fn cleanup(behavior: Behavior, me: u64) -> ChimiFiberResult {
             }
         },
         OnCancel::SendToSelf(label) => {
-            let direct = send(Address::Direct(IncarnationId::from_raw(me)), message(Msg::Add(1)));
+            let direct = send(
+                Address::Direct(IncarnationId::from_raw(me)),
+                message(Msg::Add(1)),
+            );
             let by_name = send(named(label), message(Msg::Add(1)));
             log(|log| log.outcomes.extend([direct, by_name]));
         }
@@ -606,6 +608,7 @@ fn render(time: i64, kind: ProcessEventKind) -> String {
             membership,
             incarnation,
             cause,
+            ..
         } => format!(
             "process_terminated membership=M{} incarnation=I{} cause={}",
             membership.get(),
@@ -646,7 +649,10 @@ fn render(time: i64, kind: ProcessEventKind) -> String {
                 parent.get(),
                 membership.get()
             ),
-            _ => format!("supervisor_started supervisor=S{} parent=root", supervisor.get()),
+            _ => format!(
+                "supervisor_started supervisor=S{} parent=root",
+                supervisor.get()
+            ),
         },
         ProcessEventKind::Sent {
             address,
@@ -699,6 +705,7 @@ fn render_trace(events: &[SchedulerTraceEvent]) -> Vec<String> {
                     membership,
                     incarnation,
                     cause,
+                    stack_overflow: event.outcome == 1,
                 },
                 4 => ProcessEventKind::RestartAttempted {
                     supervisor,
@@ -753,7 +760,10 @@ fn lines(text: &str) -> Vec<String> {
 fn mb01_delivery_follows_acceptance_order_across_senders() {
     let mut lab = Lab::new();
     lab.scheduler
-        .start_supervisor(policy(vec![counter_member(COUNTER), counter_member(PEER)], 0))
+        .start_supervisor(policy(
+            vec![counter_member(COUNTER), counter_member(PEER)],
+            0,
+        ))
         .expect("started");
     lab.deliver(named(COUNTER), Msg::Add(1));
     lab.deliver(named(PEER), Msg::SendTo(named(COUNTER), 2));
@@ -786,7 +796,10 @@ fn mb02_a_full_mailbox_returns_the_message_and_records_no_incarnation() {
     );
     lab.settle();
     assert_eq!(adds_of(lab.started()[0].1), [1, 2]);
-    assert!(!log(|log| log.released.contains(&third)), "the sender owns a rejected message");
+    assert!(
+        !log(|log| log.released.contains(&third)),
+        "the sender owns a rejected message"
+    );
 }
 
 #[test]
@@ -802,7 +815,10 @@ fn mb03_a_send_from_a_body_never_parks_and_reports_a_full_mailbox() {
     // slot between them. A send that yielded would let it, and both succeed.
     lab.deliver(named(COUNTER), Msg::RelayTwice(named(PEER), 6));
     lab.settle();
-    assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_OK, RESPONSE_FULL]);
+    assert_eq!(
+        log(|log| log.outcomes.clone()),
+        [RESPONSE_OK, RESPONSE_FULL]
+    );
     assert_eq!(total(lab.started()[1].1), 6);
 }
 
@@ -830,7 +846,9 @@ fn mb05_messages_queued_before_a_defect_are_discarded_not_carried_over() {
         .expect("started");
     lab.deliver(named(COUNTER), Msg::Crash);
     let add = message(Msg::Add(5));
-    lab.scheduler.process_send(named(COUNTER), add).expect("accepted");
+    lab.scheduler
+        .process_send(named(COUNTER), add)
+        .expect("accepted");
     lab.settle();
     let [_, (_, replacement)] = lab.started()[..] else {
         panic!("{:?}", lab.kinds())
@@ -889,7 +907,10 @@ fn mb08_removal_drains_messages_accepted_before_it_then_cancels() {
     for value in [1, 2, 3] {
         lab.deliver(direct, Msg::Add(value));
     }
-    assert_eq!(lab.scheduler.remove_process(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.scheduler.remove_process(root, managed),
+        Ok(Progress::Done)
+    );
     let (membership, incarnation) = lab.started()[0];
     assert_eq!(adds_of(incarnation), [1, 2, 3]);
     assert_eq!(lab.terminations(), [(membership, TerminalCause::Cancelled)]);
@@ -906,7 +927,11 @@ fn mb09_sends_to_itself_during_cleanup_are_unavailable() {
     let root = lab.scheduler.start_supervisor(policy(vec![], 0)).unwrap();
     let managed = lab
         .scheduler
-        .start_process(root, spec_with(&SELF_SENDER, Some(COUNTER), 8), Restart::Never)
+        .start_process(
+            root,
+            spec_with(&SELF_SENDER, Some(COUNTER), 8),
+            Restart::Never,
+        )
         .unwrap();
     lab.settle();
     lab.scheduler.remove_process(root, managed).unwrap();
@@ -952,7 +977,9 @@ fn rt01_names_follow_the_replacement_and_direct_addresses_stay_unavailable() {
 fn rt02_a_never_member_that_defects_releases_its_name() {
     let mut lab = Lab::new();
     let member = Member::Process(spec(Some(COUNTER), 8), Restart::Never);
-    lab.scheduler.start_supervisor(policy(vec![member], 5)).unwrap();
+    lab.scheduler
+        .start_supervisor(policy(vec![member], 5))
+        .unwrap();
     lab.deliver(named(COUNTER), Msg::Crash);
     lab.settle();
     assert!(lab.send(named(COUNTER), Msg::Add(1)).is_err());
@@ -975,7 +1002,11 @@ fn rt03_a_held_name_rejects_admission_with_its_label() {
         lab.transcript().last().map(String::as_str),
         Some("@0s admission_rejected supervisor=S1 reason=name_taken name=app/main.counter")
     );
-    assert_eq!(lab.scheduler.process_metrics().memberships, 1, "no membership allocated");
+    assert_eq!(
+        lab.scheduler.process_metrics().memberships,
+        1,
+        "no membership allocated"
+    );
 }
 
 #[test]
@@ -1003,7 +1034,11 @@ fn sv01_declared_members_start_in_list_order() {
     let mut lab = Lab::new();
     lab.scheduler
         .start_supervisor(policy(
-            vec![counter_member(COUNTER), counter_member(PEER), counter_member(THIRD)],
+            vec![
+                counter_member(COUNTER),
+                counter_member(PEER),
+                counter_member(THIRD),
+            ],
             0,
         ))
         .unwrap();
@@ -1030,7 +1065,8 @@ fn sv02_sv06_admission_fails_fast_and_a_stopped_supervisor_ignores_repeats() {
         .start_process(small, spec(Some(PEER), 8), Restart::Never)
         .unwrap();
     assert_eq!(
-        lab.scheduler.start_process(small, spec(None, 8), Restart::Never),
+        lab.scheduler
+            .start_process(small, spec(None, 8), Restart::Never),
         Err(StartError::CapacityReached)
     );
     assert!(matches!(
@@ -1047,13 +1083,21 @@ fn sv02_sv06_admission_fails_fast_and_a_stopped_supervisor_ignores_repeats() {
         .expect("removal freed the slot and the name");
     assert_eq!(lab.scheduler.stop_supervisor(small), Ok(Progress::Done));
     assert_eq!(
-        lab.scheduler.start_process(small, spec(None, 8), Restart::Never),
+        lab.scheduler
+            .start_process(small, spec(None, 8), Restart::Never),
         Err(StartError::Stopped)
     );
     let events = lab.kinds().len();
     assert_eq!(lab.scheduler.stop_supervisor(small), Ok(Progress::Done));
-    assert_eq!(lab.scheduler.remove_process(small, reused), Ok(Progress::Done));
-    assert_eq!(lab.kinds().len(), events, "repeat stop and removal record nothing");
+    assert_eq!(
+        lab.scheduler.remove_process(small, reused),
+        Ok(Progress::Done)
+    );
+    assert_eq!(
+        lab.kinds().len(),
+        events,
+        "repeat stop and removal record nothing"
+    );
     assert_eq!(
         lab.scheduler.supervisor_state(small),
         Some(SupervisorState::Stopped)
@@ -1130,12 +1174,17 @@ fn sv05_sd08_a_member_that_stops_its_own_root_is_cancelled_and_wait_returns() {
     let mut lab = Lab::new();
     let main = lab.scheduler.start_root(sv05_main).unwrap();
     assert_eq!(
-        lab.scheduler.run_root(main, DEADLOCK_DEFECT_CODE).outcome.state,
+        lab.scheduler
+            .run_root(main, DEADLOCK_DEFECT_CODE)
+            .outcome
+            .state,
         ChimiFiberState::Succeeded as u32
     );
     assert_eq!(
         lab.scheduler.result(None, main),
-        Ok(TaskResult::Ready(TaskOutcome::Succeeded(i64::from(RESPONSE_OK))))
+        Ok(TaskResult::Ready(TaskOutcome::Succeeded(i64::from(
+            RESPONSE_OK
+        ))))
     );
     let member = lab.started()[0].0;
     assert_eq!(lab.terminations(), [(member, TerminalCause::Cancelled)]);
@@ -1143,7 +1192,10 @@ fn sv05_sd08_a_member_that_stops_its_own_root_is_cancelled_and_wait_returns() {
         lab.lifecycle().last(),
         Some(ProcessEventKind::Stopped { .. })
     ));
-    assert!(log(|log| log.outcomes.is_empty()), "the stop never returned to its caller");
+    assert!(
+        log(|log| log.outcomes.is_empty()),
+        "the stop never returned to its caller"
+    );
 }
 
 #[test]
@@ -1280,7 +1332,10 @@ fn sv12_removal_through_another_supervisor_names_both() {
 fn ra01_a_defect_restarts_only_that_member_with_fresh_state() {
     let mut lab = Lab::new();
     lab.scheduler
-        .start_supervisor(policy(vec![counter_member(COUNTER), counter_member(PEER)], 2))
+        .start_supervisor(policy(
+            vec![counter_member(COUNTER), counter_member(PEER)],
+            2,
+        ))
         .unwrap();
     lab.deliver(named(COUNTER), Msg::Add(5));
     lab.deliver(named(PEER), Msg::Add(7));
@@ -1315,7 +1370,10 @@ fn ra01_a_defect_restarts_only_that_member_with_fresh_state() {
 fn ra02_the_restart_limit_is_shared_by_every_member() {
     let mut lab = Lab::new();
     lab.scheduler
-        .start_supervisor(policy(vec![counter_member(COUNTER), counter_member(PEER)], 2))
+        .start_supervisor(policy(
+            vec![counter_member(COUNTER), counter_member(PEER)],
+            2,
+        ))
         .unwrap();
     for target in [COUNTER, PEER] {
         lab.deliver(named(target), Msg::Crash);
@@ -1392,7 +1450,10 @@ fn ra06_a_replacement_that_fails_to_start_is_still_charged() {
     );
     lab.deliver(named(COUNTER), Msg::Crash);
     lab.settle();
-    assert!(lab.scheduler.program_terminated(), "the failed start used budget");
+    assert!(
+        lab.scheduler.program_terminated(),
+        "the failed start used budget"
+    );
 }
 
 #[test]
@@ -1423,13 +1484,20 @@ fn ra07_child_tasks_drain_before_the_replacement_starts() {
         .expect("a replacement")
         .sequence;
     assert!(child_terminal < replacement);
-    assert_eq!(lab.scheduler.process_metrics().timers, 0, "the child's sleep was removed");
+    assert_eq!(
+        lab.scheduler.process_metrics().timers,
+        0,
+        "the child's sleep was removed"
+    );
 }
 
 fn restart_storm() -> Vec<(i64, String)> {
     let mut lab = Lab::new();
     lab.scheduler
-        .start_supervisor(policy(vec![counter_member(COUNTER), counter_member(PEER)], 2))
+        .start_supervisor(policy(
+            vec![counter_member(COUNTER), counter_member(PEER)],
+            2,
+        ))
         .unwrap();
     for cycle in 0..1_000 {
         lab.deliver(named(COUNTER), Msg::Crash);
@@ -1444,7 +1512,12 @@ fn restart_storm() -> Vec<(i64, String)> {
     lab.scheduler
         .process_events()
         .iter()
-        .map(|event| (event.sequence as i64, render(event.time.as_nanos(), event.kind)))
+        .map(|event| {
+            (
+                event.sequence as i64,
+                render(event.time.as_nanos(), event.kind),
+            )
+        })
         .collect()
 }
 
@@ -1494,7 +1567,10 @@ fn es03_a_nested_never_supervisor_stays_stopped_and_its_parent_continues() {
     let root = lab
         .scheduler
         .start_supervisor(policy(
-            vec![Member::Supervisor(nested, Restart::Never), counter_member(PEER)],
+            vec![
+                Member::Supervisor(nested, Restart::Never),
+                counter_member(PEER),
+            ],
             1,
         ))
         .unwrap();
@@ -1596,7 +1672,10 @@ fn rr01_rt05_removing_a_parked_process_cancels_it_and_frees_its_name() {
         .unwrap();
     lab.deliver(named(COUNTER), Msg::Add(5));
     lab.settle();
-    assert_eq!(lab.scheduler.remove_process(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.scheduler.remove_process(root, managed),
+        Ok(Progress::Done)
+    );
     assert_eq!(
         lab.transcript()[lab.transcript().len() - 2..],
         lines(
@@ -1680,7 +1759,8 @@ fn rr03_a_defect_while_draining_for_removal_is_not_restarted() {
             ProcessEventKind::Terminated {
                 membership: managed,
                 incarnation: IncarnationId::from_raw(1),
-                cause: TerminalCause::Defected
+                cause: TerminalCause::Defected,
+                stack_overflow: false,
             },
             ProcessEventKind::Removed {
                 membership: managed
@@ -1702,7 +1782,10 @@ fn rr04_removing_a_membership_that_returned_records_only_the_removal() {
     lab.deliver(direct, Msg::Return);
     lab.settle();
     let before = lab.lifecycle().len();
-    assert_eq!(lab.scheduler.remove_process(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.scheduler.remove_process(root, managed),
+        Ok(Progress::Done)
+    );
     assert_eq!(
         lab.lifecycle()[before..],
         [ProcessEventKind::Removed {
@@ -1724,7 +1807,10 @@ fn rr05_removal_interrupts_a_sleeping_handler_without_advancing_time() {
     lab.deliver(direct, Msg::Sleep(Duration::from_secs(60)));
     lab.scheduler.drive();
     assert_eq!(lab.scheduler.process_metrics().timers, 1);
-    assert_eq!(lab.scheduler.remove_process(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.scheduler.remove_process(root, managed),
+        Ok(Progress::Done)
+    );
     lab.settle();
     assert_eq!(lab.terminations()[0].1, TerminalCause::Cancelled);
     assert_eq!(lab.scheduler.now(), Instant::ORIGIN);
@@ -1767,7 +1853,10 @@ fn sd01_stop_runs_newest_dynamic_first_then_declared_in_reverse_and_frees_unread
     let mut lab = Lab::new();
     let root = lab
         .scheduler
-        .start_supervisor(policy(vec![counter_member(COUNTER), counter_member(PEER)], 2))
+        .start_supervisor(policy(
+            vec![counter_member(COUNTER), counter_member(PEER)],
+            2,
+        ))
         .unwrap();
     lab.scheduler
         .start_process(root, spec(None, 8), Restart::Never)
@@ -1809,7 +1898,10 @@ fn removal_with_queued_messages(shutdown_within: Duration) -> (Lab, IncarnationI
     for handle in &handles {
         lab.scheduler.process_send(direct, *handle).unwrap();
     }
-    assert_eq!(lab.scheduler.remove_process(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.scheduler.remove_process(root, managed),
+        Ok(Progress::Done)
+    );
     let Address::Direct(incarnation) = direct else {
         unreachable!()
     };
@@ -1822,7 +1914,10 @@ fn sd02_a_zero_deadline_forces_at_once_and_discards_unread_messages() {
     assert_eq!(lab.terminations()[0].1, TerminalCause::Forced);
     assert!(adds_of(incarnation).is_empty());
     assert_eq!(log(|log| log.released.clone()), handles);
-    assert!(lab.restarts().is_empty(), "SD07: a forced end never restarts");
+    assert!(
+        lab.restarts().is_empty(),
+        "SD07: a forced end never restarts"
+    );
 }
 
 #[test]
@@ -1840,7 +1935,10 @@ fn sd02_a_zero_deadline_forces_a_sleeping_handler_without_running_its_cleanup() 
     lab.scheduler.drive();
     // The handler returns however its sleep ends; only a forced reply makes
     // that end `forced` rather than `cancelled`.
-    assert_eq!(lab.scheduler.remove_process(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.scheduler.remove_process(root, managed),
+        Ok(Progress::Done)
+    );
     assert_eq!(timed_terminations(&lab), [(0, TerminalCause::Forced)]);
     assert!(lab.restarts().is_empty());
 }
@@ -1851,7 +1949,10 @@ fn sd03_cleanup_within_its_deadline_drains_everything_and_time_stays_put() {
     assert_eq!(lab.terminations()[0].1, TerminalCause::Cancelled);
     assert_eq!(adds_of(incarnation), [1, 2, 3]);
     assert_eq!(lab.scheduler.now(), Instant::ORIGIN);
-    assert!(lab.restarts().is_empty(), "SD07: a cancelled end never restarts");
+    assert!(
+        lab.restarts().is_empty(),
+        "SD07: a cancelled end never restarts"
+    );
 }
 
 #[test]
@@ -1860,11 +1961,21 @@ fn sd04_cleanup_that_parks_again_is_forced_at_its_deadline() {
     let root = lab.scheduler.start_supervisor(policy(vec![], 3)).unwrap();
     let managed = lab
         .scheduler
-        .start_process(root, spec_with(&STUBBORN, Some(COUNTER), 8), Restart::OnDefect)
+        .start_process(
+            root,
+            spec_with(&STUBBORN, Some(COUNTER), 8),
+            Restart::OnDefect,
+        )
         .unwrap();
     lab.settle();
-    assert_eq!(lab.scheduler.remove_process(root, managed), Ok(Progress::Pending));
-    assert!(lab.send(named(COUNTER), Msg::Add(1)).is_err(), "unrouted while forcing");
+    assert_eq!(
+        lab.scheduler.remove_process(root, managed),
+        Ok(Progress::Pending)
+    );
+    assert!(
+        lab.send(named(COUNTER), Msg::Add(1)).is_err(),
+        "unrouted while forcing"
+    );
     lab.settle();
     assert_eq!(lab.scheduler.now(), Instant::from_nanos(5_000_000_000));
     assert_eq!(
@@ -1939,7 +2050,10 @@ fn sd07_shutdown_of_on_defect_members_never_restarts_them() {
     let root = lab
         .scheduler
         .start_supervisor(policy(
-            vec![counter_member(COUNTER), Member::Process(zero, Restart::OnDefect)],
+            vec![
+                counter_member(COUNTER),
+                Member::Process(zero, Restart::OnDefect),
+            ],
             5,
         ))
         .unwrap();
@@ -1976,8 +2090,15 @@ fn a_handle_outlives_a_stop_and_an_escalation_of_its_supervisor() {
         assert_eq!(lab.scheduler.process_address(managed), Ok(direct));
         assert!(lab.send(direct, Msg::Add(1)).is_err());
         let events = lab.lifecycle().len();
-        assert_eq!(lab.scheduler.remove_process(root, managed), Ok(Progress::Done));
-        assert_eq!(lab.lifecycle().len(), events, "removing an ended membership records nothing");
+        assert_eq!(
+            lab.scheduler.remove_process(root, managed),
+            Ok(Progress::Done)
+        );
+        assert_eq!(
+            lab.lifecycle().len(),
+            events,
+            "removing an ended membership records nothing"
+        );
     }
 }
 
@@ -1994,7 +2115,10 @@ fn membership_bookkeeping_does_not_grow_with_ended_removed_or_rebuilt_members() 
         ))
         .unwrap();
     lab.settle();
-    let baseline = (lab.scheduler.process_metrics(), lab.scheduler.metrics().tasks);
+    let baseline = (
+        lab.scheduler.process_metrics(),
+        lab.scheduler.metrics().tasks,
+    );
     for _ in 0..300 {
         lab.deliver(named(PEER), Msg::Crash);
         lab.settle();
@@ -2015,7 +2139,10 @@ fn membership_bookkeeping_does_not_grow_with_ended_removed_or_rebuilt_members() 
     }
     assert!(!lab.scheduler.program_terminated());
     assert_eq!(
-        (lab.scheduler.process_metrics(), lab.scheduler.metrics().tasks),
+        (
+            lab.scheduler.process_metrics(),
+            lab.scheduler.metrics().tasks
+        ),
         baseline
     );
 }
@@ -2056,13 +2183,20 @@ impl Lab {
 fn a_stack_overflowing_body_is_a_contained_defect() {
     let mut lab = Lab::new();
     lab.scheduler
-        .start_supervisor(policy(vec![counter_member(COUNTER), counter_member(PEER)], 1))
+        .start_supervisor(policy(
+            vec![counter_member(COUNTER), counter_member(PEER)],
+            1,
+        ))
         .unwrap();
     lab.deliver(named(COUNTER), Msg::Overflow);
     lab.deliver(named(PEER), Msg::Add(4));
     lab.settle();
     assert_eq!(lab.terminations()[0].1, TerminalCause::Defected);
-    assert_eq!(lab.started().len(), 3, "the overflowing member restarted once");
+    assert_eq!(
+        lab.started().len(),
+        3,
+        "the overflowing member restarted once"
+    );
     assert_eq!(total(lab.started()[1].1), 4);
 }
 
@@ -2082,7 +2216,10 @@ fn spec_contexts_are_released_once_when_no_record_needs_them() {
     let root = lab
         .scheduler
         .start_supervisor(policy(
-            vec![Member::Process(spec_with(&A, Some(COUNTER), 8), Restart::OnDefect)],
+            vec![Member::Process(
+                spec_with(&A, Some(COUNTER), 8),
+                Restart::OnDefect,
+            )],
             1,
         ))
         .unwrap();
@@ -2090,7 +2227,11 @@ fn spec_contexts_are_released_once_when_no_record_needs_them() {
         .scheduler
         .start_process(root, spec_with(&B, Some(COUNTER), 8), Restart::Never);
     assert!(taken.is_err());
-    assert_eq!(log(|log| log.released_specs.clone()), [b], "a rejected spec is released");
+    assert_eq!(
+        log(|log| log.released_specs.clone()),
+        [b],
+        "a rejected spec is released"
+    );
     lab.deliver(named(COUNTER), Msg::Crash);
     lab.settle();
     assert_eq!(
@@ -2225,7 +2366,10 @@ fn real_time_sleeps_until_the_timer() {
     ));
     let deadline = scheduler.now().saturating_add(Duration::from_millis(20));
     scheduler
-        .start_root_with_context(recording_sleeper, deadline.as_nanos() as usize as *mut c_void)
+        .start_root_with_context(
+            recording_sleeper,
+            deadline.as_nanos() as usize as *mut c_void,
+        )
         .unwrap();
     let started = std::time::Instant::now();
     assert_eq!(scheduler.run_until_idle(), Idle::Quiescent);
@@ -2278,10 +2422,7 @@ unsafe extern "C" fn collect_trace(context: *mut c_void, event: *const Scheduler
     events.push(unsafe { std::ptr::read(event) });
 }
 
-fn run_c(
-    entry: ChimiFiberEntry,
-    trace_mode: u32,
-) -> (SchedulerOutcome, Vec<SchedulerTraceEvent>) {
+fn run_c(entry: ChimiFiberEntry, trace_mode: u32) -> (SchedulerOutcome, Vec<SchedulerTraceEvent>) {
     let mut events: Vec<SchedulerTraceEvent> = Vec::new();
     let config = ChimiSchedulerConfig {
         entry: Some(entry),
@@ -2333,7 +2474,10 @@ fn es01_ob01_ob02_ob05_the_c_entry_reproduces_the_root_escalation_transcript() {
         sequences.windows(2).all(|pair| pair[0] < pair[1]),
         "one strictly increasing sequence across families"
     );
-    assert!(full.iter().any(|event| event.family == SCHEDULER_TRACE_TASK));
+    assert!(
+        full.iter()
+            .any(|event| event.family == SCHEDULER_TRACE_TASK)
+    );
     assert!(full.iter().any(|event| {
         event.family == SCHEDULER_TRACE_CLOCK && event.kind == ClockEventKind::Advanced as u32 + 1
     }));
@@ -2533,8 +2677,14 @@ unsafe extern "C" fn sends_on_an_unknown_channel(_context: *mut c_void) -> Chimi
 #[test]
 fn a_contract_violation_defects_its_caller_without_writing_into_the_destroyed_stack() {
     let cases: [(ChimiFiberEntry, i64); 2] = [
-        (awaits_a_task_it_does_not_own, CAPABILITY_VIOLATION_DEFECT_CODE),
-        (sends_on_an_unknown_channel, CHANNEL_CAPABILITY_VIOLATION_DEFECT_CODE),
+        (
+            awaits_a_task_it_does_not_own,
+            CAPABILITY_VIOLATION_DEFECT_CODE,
+        ),
+        (
+            sends_on_an_unknown_channel,
+            CHANNEL_CAPABILITY_VIOLATION_DEFECT_CODE,
+        ),
     ];
     for (entry, code) in cases {
         let mut scheduler = Scheduler::new(STACK, TraceMode::Off);
@@ -2542,7 +2692,10 @@ fn a_contract_violation_defects_its_caller_without_writing_into_the_destroyed_st
         scheduler.drive();
         assert_eq!(
             scheduler.result(None, root),
-            Ok(TaskResult::Ready(TaskOutcome::Defected { origin: root, code }))
+            Ok(TaskResult::Ready(TaskOutcome::Defected {
+                origin: root,
+                code
+            }))
         );
     }
 }
@@ -2570,9 +2723,16 @@ unsafe extern "C" fn awaits_a_sleeping_child(_context: *mut c_void) -> ChimiFibe
 #[test]
 fn shutdown_drains_child_tasks_so_a_finishing_child_cannot_wake_cleanup() {
     let mut lab = Lab::new();
-    let root = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("root");
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("root");
     lab.scheduler
-        .start_process(root, process_spec(awaits_a_sleeping_child, ptr::null_mut()), Restart::Never)
+        .start_process(
+            root,
+            process_spec(awaits_a_sleeping_child, ptr::null_mut()),
+            Restart::Never,
+        )
         .expect("admitted");
     lab.scheduler.drive();
     assert_eq!(lab.scheduler.stop_supervisor(root), Ok(Progress::Pending));
@@ -2584,7 +2744,10 @@ fn shutdown_drains_child_tasks_so_a_finishing_child_cannot_wake_cleanup() {
     assert!(child_ended, "the child is cancelled when shutdown starts");
     let _ = lab.scheduler.run_until_idle();
     assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_FORCED]);
-    assert_eq!(timed_terminations(&lab), [(5_000_000_000, TerminalCause::Forced)]);
+    assert_eq!(
+        timed_terminations(&lab),
+        [(5_000_000_000, TerminalCause::Forced)]
+    );
 }
 
 /// A child that defects however its sleep ends.
@@ -2617,7 +2780,10 @@ fn a_child_defect_during_shutdown_stays_inside_the_shutdown_protocol() {
         (1, (5_000_000_000, TerminalCause::Forced)),
     ] {
         let mut lab = Lab::new();
-        let root = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("root");
+        let root = lab
+            .scheduler
+            .start_supervisor(policy(vec![], 3))
+            .expect("root");
         let spec = process_spec(awaits_a_defecting_child, stubborn as *mut c_void);
         lab.scheduler
             .start_process(root, spec, Restart::OnDefect)
@@ -2627,7 +2793,10 @@ fn a_child_defect_during_shutdown_stays_inside_the_shutdown_protocol() {
         let _ = lab.scheduler.run_until_idle();
         assert_eq!(timed_terminations(&lab), [expected]);
         assert!(lab.restarts().is_empty(), "shutdown never restarts");
-        assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
+        assert_eq!(
+            lab.scheduler.supervisor_state(root),
+            Some(SupervisorState::Stopped)
+        );
     }
 }
 
@@ -2671,9 +2840,16 @@ unsafe extern "C" fn sends_later(_context: *mut c_void) -> ChimiFiberResult {
 #[test]
 fn shutdown_cancels_a_pending_channel_receive_so_a_later_send_does_not_reach_cleanup() {
     let mut lab = Lab::new();
-    let root = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("root");
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("root");
     lab.scheduler
-        .start_process(root, process_spec(receives_on_its_channel, ptr::null_mut()), Restart::Never)
+        .start_process(
+            root,
+            process_spec(receives_on_its_channel, ptr::null_mut()),
+            Restart::Never,
+        )
         .expect("admitted");
     lab.scheduler.drive();
     assert_eq!(lab.scheduler.stop_supervisor(root), Ok(Progress::Pending));
@@ -2681,11 +2857,16 @@ fn shutdown_cancels_a_pending_channel_receive_so_a_later_send_does_not_reach_cle
     let _ = lab.scheduler.run_until_idle();
     assert_eq!(
         lab.scheduler.result(None, sender),
-        Ok(TaskResult::Ready(TaskOutcome::Succeeded(i64::from(RESPONSE_OK)))),
+        Ok(TaskResult::Ready(TaskOutcome::Succeeded(i64::from(
+            RESPONSE_OK
+        )))),
         "the value is queued, not handed to the interrupted receive"
     );
     assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_FORCED]);
-    assert_eq!(timed_terminations(&lab), [(5_000_000_000, TerminalCause::Forced)]);
+    assert_eq!(
+        timed_terminations(&lab),
+        [(5_000_000_000, TerminalCause::Forced)]
+    );
 }
 
 /// Parks bare until the host wakes it, then waits on the supervisor in its
@@ -2702,8 +2883,14 @@ unsafe extern "C" fn parks_then_waits(context: *mut c_void) -> ChimiFiberResult 
 #[test]
 fn an_incarnation_runnable_when_shutdown_begins_is_cancelled_at_its_next_park() {
     let mut lab = Lab::new();
-    let other = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("other");
-    let root = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("root");
+    let other = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("other");
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("root");
     let spec = process_spec(parks_then_waits, other.get() as usize as *mut c_void);
     lab.scheduler
         .start_process(root, spec, Restart::Never)
@@ -2738,8 +2925,14 @@ unsafe extern "C" fn remover(_context: *mut c_void) -> ChimiFiberResult {
 #[test]
 fn a_removal_reply_for_an_interrupted_park_never_reaches_a_later_park() {
     let mut lab = Lab::new();
-    let a = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("a");
-    let b = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("b");
+    let a = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("a");
+    let b = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("b");
     let mut stubborn = spec_with(&STUBBORN, None, 4);
     stubborn.shutdown_within = Duration::from_secs(1);
     let target = lab
@@ -2839,7 +3032,10 @@ unsafe extern "C" fn hands_over_contexts_in_bad_requests(context: *mut c_void) -
 #[test]
 fn every_error_reply_releases_each_context_it_was_handed_once() {
     let mut lab = Lab::new();
-    let supervisor = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("root");
+    let supervisor = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("root");
     let main = lab
         .scheduler
         .start_root_with_context(
@@ -2848,7 +3044,10 @@ fn every_error_reply_releases_each_context_it_was_handed_once() {
         )
         .expect("main");
     lab.scheduler.drive();
-    assert!(matches!(lab.scheduler.result(None, main), Ok(TaskResult::Ready(_))));
+    assert!(matches!(
+        lab.scheduler.result(None, main),
+        Ok(TaskResult::Ready(_))
+    ));
     assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_ERROR; 5]);
     let mut released = log(|log| log.released_specs.clone());
     released.sort_unstable();
@@ -2878,7 +3077,10 @@ fn process_started_trace_events_carry_the_task_that_parents_its_child_tasks() {
         Some(collect_trace),
         (&mut events as *mut Vec<SchedulerTraceEvent>).cast(),
     );
-    let root = lab.scheduler.start_supervisor(policy(vec![], 3)).expect("root");
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("root");
     let managed = lab
         .scheduler
         .start_process(root, spec(None, 4), Restart::Never)
@@ -2939,11 +3141,15 @@ fn a_root_supervisor_stops_when_the_task_that_started_it_ends() {
         .start_root(starts_a_supervisor_and_returns)
         .expect("main");
     lab.scheduler.drive();
-    let Ok(TaskResult::Ready(TaskOutcome::Succeeded(raw))) = lab.scheduler.result(None, main) else {
+    let Ok(TaskResult::Ready(TaskOutcome::Succeeded(raw))) = lab.scheduler.result(None, main)
+    else {
         panic!("main returned its supervisor");
     };
     let supervisor = SupervisorId::from_raw(raw as u64);
-    assert_eq!(lab.scheduler.supervisor_state(supervisor), Some(SupervisorState::Stopped));
+    assert_eq!(
+        lab.scheduler.supervisor_state(supervisor),
+        Some(SupervisorState::Stopped)
+    );
     assert_eq!(timed_terminations(&lab), [(0, TerminalCause::Cancelled)]);
     let stopped = lab
         .scheduler
@@ -2959,13 +3165,18 @@ fn a_root_supervisor_stops_when_the_task_that_started_it_ends() {
         .find(|event| event.task == main && event.kind == TaskEventKind::Terminal)
         .expect("main terminal")
         .sequence;
-    assert!(stopped < main_terminal, "the supervisor stops before its owner is terminal");
+    assert!(
+        stopped < main_terminal,
+        "the supervisor stops before its owner is terminal"
+    );
 }
 
 // ----- Dynamic nested supervisors (SV10) ---------------------------------
 
 fn nested_of(lab: &Lab, managed: MembershipId) -> SupervisorId {
-    lab.scheduler.nested_supervisor(managed).expect("a nested supervisor")
+    lab.scheduler
+        .nested_supervisor(managed)
+        .expect("a nested supervisor")
 }
 
 #[test]
@@ -2986,7 +3197,8 @@ fn sv10_a_dynamic_nested_supervisor_takes_a_parent_slot_and_removal_stops_its_su
         .start_nested_supervisor(root, nested, Restart::Never)
         .unwrap();
     assert_eq!(
-        lab.scheduler.start_process(root, spec(None, 8), Restart::Never),
+        lab.scheduler
+            .start_process(root, spec(None, 8), Restart::Never),
         Err(StartError::CapacityReached),
         "the nested supervisor holds one of the parent's two slots"
     );
@@ -2996,7 +3208,10 @@ fn sv10_a_dynamic_nested_supervisor_takes_a_parent_slot_and_removal_stops_its_su
     );
     lab.settle();
     lab.deliver(named(PEER), Msg::Add(1));
-    assert_eq!(lab.scheduler.remove_supervisor(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.scheduler.remove_supervisor(root, managed),
+        Ok(Progress::Done)
+    );
     assert_eq!(
         lab.transcript(),
         lines(
@@ -3013,7 +3228,10 @@ fn sv10_a_dynamic_nested_supervisor_takes_a_parent_slot_and_removal_stops_its_su
              @0s membership_removed membership=M2"
         )
     );
-    assert!(lab.send(named(PEER), Msg::Add(1)).is_err(), "the subtree's names are free");
+    assert!(
+        lab.send(named(PEER), Msg::Add(1)).is_err(),
+        "the subtree's names are free"
+    );
     assert_eq!(
         lab.scheduler.supervisor_state(SupervisorId::from_raw(2)),
         Some(SupervisorState::Stopped)
@@ -3094,12 +3312,24 @@ fn sv10_the_request_abi_starts_a_nested_supervisor_and_removal_parks_until_its_s
     let mut lab = Lab::new();
     let main = lab.scheduler.start_root(sv10_abi_main).unwrap();
     let run = lab.scheduler.run_root(main, DEADLOCK_DEFECT_CODE);
-    assert_eq!((run.outcome.state, run.outcome.value), (ChimiFiberState::Succeeded as u32, 2));
+    assert_eq!(
+        (run.outcome.state, run.outcome.value),
+        (ChimiFiberState::Succeeded as u32, 2)
+    );
     assert_eq!(
         log(|log| log.outcomes.clone()),
-        [RESPONSE_OK, RESPONSE_CAPACITY_REACHED, RESPONSE_ERROR, RESPONSE_OK]
+        [
+            RESPONSE_OK,
+            RESPONSE_CAPACITY_REACHED,
+            RESPONSE_ERROR,
+            RESPONSE_OK
+        ]
     );
-    assert_eq!(log(|log| log.woke.clone()), [(1, 5_001_000_000)], "removal waited for the deadline");
+    assert_eq!(
+        log(|log| log.woke.clone()),
+        [(1, 5_001_000_000)],
+        "removal waited for the deadline"
+    );
     assert_eq!(
         lab.transcript(),
         lines(
@@ -3124,14 +3354,27 @@ fn sv10_stopping_a_nested_supervisor_ends_its_membership_without_a_restart() {
         .unwrap();
     let managed = lab
         .scheduler
-        .start_nested_supervisor(root, policy(vec![counter_member(PEER)], 0), Restart::OnDefect)
+        .start_nested_supervisor(
+            root,
+            policy(vec![counter_member(PEER)], 0),
+            Restart::OnDefect,
+        )
         .unwrap();
     let nested = nested_of(&lab, managed);
     lab.settle();
     assert_eq!(lab.scheduler.stop_supervisor(nested), Ok(Progress::Done));
-    assert!(lab.restarts().is_empty(), "a requested stop is not a defect");
-    assert_eq!(lab.scheduler.supervisor_state(nested), Some(SupervisorState::Stopped));
-    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Running));
+    assert!(
+        lab.restarts().is_empty(),
+        "a requested stop is not a defect"
+    );
+    assert_eq!(
+        lab.scheduler.supervisor_state(nested),
+        Some(SupervisorState::Stopped)
+    );
+    assert_eq!(
+        lab.scheduler.supervisor_state(root),
+        Some(SupervisorState::Running)
+    );
     assert_eq!(
         lab.lifecycle()[lab.lifecycle().len() - 2..],
         [
@@ -3139,6 +3382,7 @@ fn sv10_stopping_a_nested_supervisor_ends_its_membership_without_a_restart() {
                 membership: MembershipId::from_raw(2),
                 incarnation: IncarnationId::from_raw(1),
                 cause: TerminalCause::Cancelled,
+                stack_overflow: false,
             },
             ProcessEventKind::Stopped { supervisor: nested },
         ]
@@ -3146,10 +3390,15 @@ fn sv10_stopping_a_nested_supervisor_ends_its_membership_without_a_restart() {
     lab.scheduler
         .start_process(root, spec(None, 8), Restart::Never)
         .expect("the stopped nested supervisor freed its slot");
-    assert_eq!(lab.scheduler.remove_supervisor(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.scheduler.remove_supervisor(root, managed),
+        Ok(Progress::Done)
+    );
     assert_eq!(
         lab.lifecycle().last(),
-        Some(&ProcessEventKind::Removed { membership: managed }),
+        Some(&ProcessEventKind::Removed {
+            membership: managed
+        }),
         "a handle whose supervisor stopped on its own is still removed visibly"
     );
 }
@@ -3191,7 +3440,11 @@ fn sv10_a_dynamic_nested_supervisor_escalates_to_its_parent_which_replaces_it() 
         .unwrap();
     let managed = lab
         .scheduler
-        .start_nested_supervisor(root, policy(vec![counter_member(COUNTER)], 0), Restart::OnDefect)
+        .start_nested_supervisor(
+            root,
+            policy(vec![counter_member(COUNTER)], 0),
+            Restart::OnDefect,
+        )
         .unwrap();
     let first = nested_of(&lab, managed);
     lab.deliver(named(PEER), Msg::Add(4));
@@ -3212,11 +3465,21 @@ fn sv10_a_dynamic_nested_supervisor_escalates_to_its_parent_which_replaces_it() 
         membership: Some(managed),
     }));
     assert_eq!(lab.restarts(), [(managed, 1)], "one parent-level restart");
-    assert_eq!(lab.scheduler.supervisor_state(first), Some(SupervisorState::Stopped));
+    assert_eq!(
+        lab.scheduler.supervisor_state(first),
+        Some(SupervisorState::Stopped)
+    );
     let (_, rebuilt) = *lab.started().last().unwrap();
     assert_eq!(total(rebuilt), 2);
-    assert_eq!(total(lab.started()[0].1), 4, "the parent's other member kept its state");
-    assert_eq!(lab.scheduler.remove_supervisor(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        total(lab.started()[0].1),
+        4,
+        "the parent's other member kept its state"
+    );
+    assert_eq!(
+        lab.scheduler.remove_supervisor(root, managed),
+        Ok(Progress::Done)
+    );
     assert_eq!(
         lab.lifecycle()[lab.lifecycle().len() - 3..],
         [
@@ -3224,9 +3487,14 @@ fn sv10_a_dynamic_nested_supervisor_escalates_to_its_parent_which_replaces_it() 
                 membership: lab.started().last().unwrap().0,
                 incarnation: rebuilt,
                 cause: TerminalCause::Cancelled,
+                stack_overflow: false,
             },
-            ProcessEventKind::Stopped { supervisor: replacement },
-            ProcessEventKind::Removed { membership: managed },
+            ProcessEventKind::Stopped {
+                supervisor: replacement
+            },
+            ProcessEventKind::Removed {
+                membership: managed
+            },
         ]
     );
 
@@ -3235,7 +3503,11 @@ fn sv10_a_dynamic_nested_supervisor_escalates_to_its_parent_which_replaces_it() 
     let root = lab.scheduler.start_supervisor(policy(vec![], 0)).unwrap();
     let managed = lab
         .scheduler
-        .start_nested_supervisor(root, policy(vec![counter_member(COUNTER)], 0), Restart::OnDefect)
+        .start_nested_supervisor(
+            root,
+            policy(vec![counter_member(COUNTER)], 0),
+            Restart::OnDefect,
+        )
         .unwrap();
     let nested = nested_of(&lab, managed);
     lab.deliver(named(COUNTER), Msg::Crash);
@@ -3281,7 +3553,9 @@ fn sv10_a_wait_on_a_nested_supervisor_returns_when_its_parent_stops_it() {
     lab.scheduler.drive();
     assert_eq!(
         lab.scheduler.result(None, waiter),
-        Ok(TaskResult::Ready(TaskOutcome::Succeeded(i64::from(RESPONSE_OK))))
+        Ok(TaskResult::Ready(TaskOutcome::Succeeded(i64::from(
+            RESPONSE_OK
+        ))))
     );
 }
 
@@ -3333,14 +3607,13 @@ const ESCALATOR: u64 = 77;
 /// there exceeds the limit, and the escalation then waits on the lingering
 /// member's cleanup.
 fn start_escalating_root() -> u32 {
-    start_root_of(&[
-        root_member(&STUBBORN, 0),
-        root_member(&PLAIN, ESCALATOR),
-    ])
+    start_root_of(&[root_member(&STUBBORN, 0), root_member(&PLAIN, ESCALATOR)])
 }
 
 /// Starts a lingering root, lets its member park, then returns.
-unsafe extern "C" fn starts_a_lingering_root_and_returns(_context: *mut c_void) -> ChimiFiberResult {
+unsafe extern "C" fn starts_a_lingering_root_and_returns(
+    _context: *mut c_void,
+) -> ChimiFiberResult {
     assert_eq!(start_lingering_root(), RESPONSE_OK);
     sleep_until(now() + 1_000_000);
     ended(0)
@@ -3371,7 +3644,8 @@ fn timeline(lab: &Lab, tasks: &[(TaskId, &str)]) -> Vec<String> {
         .collect();
     lines.extend(lab.scheduler.events().iter().filter_map(|event| {
         let (_, label) = tasks.iter().find(|(task, _)| *task == event.task)?;
-        (event.kind == TaskEventKind::Terminal).then(|| (event.sequence, format!("{label} terminal")))
+        (event.kind == TaskEventKind::Terminal)
+            .then(|| (event.sequence, format!("{label} terminal")))
     }));
     lines.sort();
     lines.into_iter().map(|(_, line)| line).collect()
@@ -3384,7 +3658,10 @@ fn structured_stop_run() -> (Vec<String>, Instant) {
         .start_root(starts_a_lingering_root_and_returns)
         .unwrap();
     let run = lab.scheduler.run_root(main, DEADLOCK_DEFECT_CODE);
-    assert_eq!((run.outcome.state, run.outcome.value), (ChimiFiberState::Succeeded as u32, 0));
+    assert_eq!(
+        (run.outcome.state, run.outcome.value),
+        (ChimiFiberState::Succeeded as u32, 0)
+    );
     (timeline(&lab, &[(main, "main")]), lab.scheduler.now())
 }
 
@@ -3402,7 +3679,11 @@ fn an_owner_task_stays_draining_until_the_supervisor_it_started_has_stopped() {
         )
     );
     assert_eq!(ended_at, Instant::from_nanos(5_001_000_000));
-    assert_eq!(structured_stop_run(), (timeline, ended_at), "deterministic under virtual time");
+    assert_eq!(
+        structured_stop_run(),
+        (timeline, ended_at),
+        "deterministic under virtual time"
+    );
 }
 
 #[test]
@@ -3445,8 +3726,14 @@ fn removing_a_process_that_started_a_root_waits_for_that_root_to_stop() {
     lab.deliver(named(COUNTER), Msg::StartLingeringRoot);
     lab.scheduler.drive();
     assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_OK]);
-    assert_eq!(lab.scheduler.remove_process(outer_root, managed), Ok(Progress::Pending));
-    assert!(lab.send(named(COUNTER), Msg::Add(1)).is_err(), "unrouted while the root it started stops");
+    assert_eq!(
+        lab.scheduler.remove_process(outer_root, managed),
+        Ok(Progress::Pending)
+    );
+    assert!(
+        lab.send(named(COUNTER), Msg::Add(1)).is_err(),
+        "unrouted while the root it started stops"
+    );
     lab.settle();
     assert_eq!(
         lab.transcript()
@@ -3473,7 +3760,10 @@ fn es02_a_parent_stop_during_a_nested_escalation_waits_for_it_instead_of_stoppin
     let nested = policy(vec![lingering, counter_member(COUNTER)], 0);
     let root = lab
         .scheduler
-        .start_supervisor(policy(vec![Member::Supervisor(nested, Restart::OnDefect)], 1))
+        .start_supervisor(policy(
+            vec![Member::Supervisor(nested, Restart::OnDefect)],
+            1,
+        ))
         .unwrap();
     lab.settle();
     lab.deliver(named(COUNTER), Msg::Crash);
@@ -3494,7 +3784,10 @@ fn es02_a_parent_stop_during_a_nested_escalation_waits_for_it_instead_of_stoppin
              @5s supervisor_stopped supervisor=S1"
         )
     );
-    assert!(lab.restarts().is_empty(), "a stopping parent does not replace it");
+    assert!(
+        lab.restarts().is_empty(),
+        "a stopping parent does not replace it"
+    );
 }
 
 // ----- A stop or removal that meets a nested escalation -----------------
@@ -3517,7 +3810,10 @@ fn nested_escalation_in_flight(lab: &mut Lab) -> (SupervisorId, MembershipId, Su
     lab.settle();
     lab.deliver(named(COUNTER), Msg::Crash);
     lab.scheduler.drive();
-    assert_eq!(lab.scheduler.supervisor_state(nested), Some(SupervisorState::Stopping));
+    assert_eq!(
+        lab.scheduler.supervisor_state(nested),
+        Some(SupervisorState::Stopping)
+    );
     (root, managed, nested)
 }
 
@@ -3535,13 +3831,22 @@ fn supervisors_started(lab: &Lab) -> Vec<SupervisorId> {
 fn sv10_removing_a_nested_supervisor_during_its_escalation_starts_no_replacement() {
     let mut lab = Lab::new();
     let (root, managed, nested) = nested_escalation_in_flight(&mut lab);
-    assert_eq!(lab.scheduler.remove_supervisor(root, managed), Ok(Progress::Pending));
+    assert_eq!(
+        lab.scheduler.remove_supervisor(root, managed),
+        Ok(Progress::Pending)
+    );
     lab.settle();
-    assert_eq!(supervisors_started(&lab), [root, nested], "no replacement started");
+    assert_eq!(
+        supervisors_started(&lab),
+        [root, nested],
+        "no replacement started"
+    );
     assert!(lab.restarts().is_empty());
     assert_eq!(
         lab.lifecycle().last(),
-        Some(&ProcessEventKind::Removed { membership: managed })
+        Some(&ProcessEventKind::Removed {
+            membership: managed
+        })
     );
     assert_eq!(
         lab.scheduler.nested_supervisor(managed),
@@ -3549,7 +3854,9 @@ fn sv10_removing_a_nested_supervisor_during_its_escalation_starts_no_replacement
         "the handle is consumed"
     );
     assert_eq!(
-        lab.scheduler.start_process(root, spec(None, 8), Restart::Never).map(|_| ()),
+        lab.scheduler
+            .start_process(root, spec(None, 8), Restart::Never)
+            .map(|_| ()),
         Ok(()),
         "the removed membership's slot is free"
     );
@@ -3562,14 +3869,29 @@ fn sv10_stopping_a_nested_supervisor_during_its_escalation_does_not_restart_it()
     let (root, managed, nested) = nested_escalation_in_flight(&mut lab);
     assert_eq!(lab.scheduler.stop_supervisor(nested), Ok(Progress::Pending));
     lab.settle();
-    assert_eq!(supervisors_started(&lab), [root, nested], "no replacement started");
+    assert_eq!(
+        supervisors_started(&lab),
+        [root, nested],
+        "no replacement started"
+    );
     assert!(lab.restarts().is_empty());
-    assert_eq!(lab.scheduler.supervisor_state(nested), Some(SupervisorState::Stopped));
-    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Running));
-    assert_eq!(lab.scheduler.remove_supervisor(root, managed), Ok(Progress::Done));
+    assert_eq!(
+        lab.scheduler.supervisor_state(nested),
+        Some(SupervisorState::Stopped)
+    );
+    assert_eq!(
+        lab.scheduler.supervisor_state(root),
+        Some(SupervisorState::Running)
+    );
+    assert_eq!(
+        lab.scheduler.remove_supervisor(root, managed),
+        Ok(Progress::Done)
+    );
     assert_eq!(
         lab.lifecycle().last(),
-        Some(&ProcessEventKind::Removed { membership: managed }),
+        Some(&ProcessEventKind::Removed {
+            membership: managed
+        }),
         "a stopped nested supervisor's handle is still removed visibly"
     );
 }
@@ -3580,7 +3902,11 @@ fn sv10_a_wait_on_a_nested_supervisor_returns_when_it_escalates() {
     let root = lab.scheduler.start_supervisor(policy(vec![], 1)).unwrap();
     let managed = lab
         .scheduler
-        .start_nested_supervisor(root, policy(vec![counter_member(COUNTER)], 0), Restart::OnDefect)
+        .start_nested_supervisor(
+            root,
+            policy(vec![counter_member(COUNTER)], 0),
+            Restart::OnDefect,
+        )
         .unwrap();
     let nested = nested_of(&lab, managed);
     let waiter = lab
@@ -3594,7 +3920,9 @@ fn sv10_a_wait_on_a_nested_supervisor_returns_when_it_escalates() {
     assert_ne!(nested_of(&lab, managed), nested, "the parent replaced it");
     assert_eq!(
         lab.scheduler.result(None, waiter),
-        Ok(TaskResult::Ready(TaskOutcome::Succeeded(i64::from(RESPONSE_OK))))
+        Ok(TaskResult::Ready(TaskOutcome::Succeeded(i64::from(
+            RESPONSE_OK
+        ))))
     );
 }
 
@@ -3604,7 +3932,11 @@ fn sv10_a_retired_handle_is_still_kind_checked() {
     let root = lab.scheduler.start_supervisor(policy(vec![], 1)).unwrap();
     let managed = lab
         .scheduler
-        .start_nested_supervisor(root, policy(vec![counter_member(COUNTER)], 0), Restart::Never)
+        .start_nested_supervisor(
+            root,
+            policy(vec![counter_member(COUNTER)], 0),
+            Restart::Never,
+        )
         .unwrap();
     let process = lab
         .scheduler
@@ -3626,8 +3958,14 @@ fn sv10_a_retired_handle_is_still_kind_checked() {
         lab.scheduler.remove_supervisor(root, process),
         Err(ProcessError::WrongMemberKind(process))
     );
-    assert_eq!(lab.scheduler.remove_supervisor(root, managed), Ok(Progress::Done));
-    assert_eq!(lab.scheduler.remove_process(root, process), Ok(Progress::Done));
+    assert_eq!(
+        lab.scheduler.remove_supervisor(root, managed),
+        Ok(Progress::Done)
+    );
+    assert_eq!(
+        lab.scheduler.remove_process(root, process),
+        Ok(Progress::Done)
+    );
     let removed: Vec<_> = lab
         .lifecycle()
         .into_iter()
@@ -3636,8 +3974,12 @@ fn sv10_a_retired_handle_is_still_kind_checked() {
     assert_eq!(
         removed,
         [
-            ProcessEventKind::Removed { membership: managed },
-            ProcessEventKind::Removed { membership: process },
+            ProcessEventKind::Removed {
+                membership: managed
+            },
+            ProcessEventKind::Removed {
+                membership: process
+            },
         ],
         "a wrong-kind attempt does not consume the handle"
     );
@@ -3666,7 +4008,10 @@ fn owner_of_an_escalating_root(lab: &mut Lab) -> (SupervisorId, MembershipId) {
 fn removing_an_owner_whose_root_escalates_while_it_drains_finishes() {
     let mut lab = Lab::new();
     let (outer_root, managed) = owner_of_an_escalating_root(&mut lab);
-    assert_eq!(lab.scheduler.remove_process(outer_root, managed), Ok(Progress::Pending));
+    assert_eq!(
+        lab.scheduler.remove_process(outer_root, managed),
+        Ok(Progress::Pending)
+    );
     lab.settle();
     assert!(lab.scheduler.program_terminated());
     assert!(!lab.scheduler.has_blocked_plans(), "the removal finished");
@@ -3693,12 +4038,17 @@ fn removing_an_owner_whose_root_escalates_while_it_drains_finishes() {
 fn tearing_down_with_an_owner_draining_under_an_escalating_root_finishes_the_owner() {
     let mut lab = Lab::new();
     let (outer_root, managed) = owner_of_an_escalating_root(&mut lab);
-    assert_eq!(lab.scheduler.remove_process(outer_root, managed), Ok(Progress::Pending));
-    lab.scheduler.tear_down_processes();
-    assert!(lab.scheduler.kernel.incarnations.is_empty(), "no incarnation outlives teardown");
-    assert!(!lab.scheduler.has_blocked_plans());
-    assert!(
-        lab.lifecycle()
-            .contains(&ProcessEventKind::Removed { membership: managed })
+    assert_eq!(
+        lab.scheduler.remove_process(outer_root, managed),
+        Ok(Progress::Pending)
     );
+    lab.scheduler.tear_down_processes();
+    assert!(
+        lab.scheduler.kernel.incarnations.is_empty(),
+        "no incarnation outlives teardown"
+    );
+    assert!(!lab.scheduler.has_blocked_plans());
+    assert!(lab.lifecycle().contains(&ProcessEventKind::Removed {
+        membership: managed
+    }));
 }

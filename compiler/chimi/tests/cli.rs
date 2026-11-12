@@ -4915,3 +4915,124 @@ fn native_process_programs_build_and_an_unregistered_name_is_unavailable() {
         std::fs::remove_dir_all(scratch).unwrap();
     }
 }
+
+// Scheduler fibers get a 1 MiB guarded stack, and an incarnation's defect is named
+// in its `process_terminated` telemetry. Each run sends one request to `worker` and
+// then asks for its result: a worker that ended answers `Unavailable` (-1), so main
+// never waits on a dead process.
+// - Recursion 1,000 calls deep succeeds in the body and in main, which runs as a
+//   scheduler task. Rejects the old 64 KiB stack, which overflowed near 150 calls.
+// - Recursion 100,000 calls deep overflows the body's stack. The incarnation ends
+//   `defected` with defect "Process stack overflow", and main still finishes.
+// - A body that divides by zero ends `defected` with its own defect message.
+#[test]
+fn native_process_stack_depth_and_named_defects() {
+    let scratch = scratch_directory("native-process-stack");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/int as Int\n",
+            "import std/channel as Channel\n",
+            "import std/channel.{Receive, Sender}\n",
+            "import std/clock as Clock\n",
+            "import std/clock.{Clock}\n",
+            "import std/duration as Duration\n",
+            "import std/process as Process\n",
+            "import std/supervisor as Supervisor\n",
+            "import std/process.{Inbox}\n",
+            "pub enum Message {\n  Deep(depth: Int)\n  Report(reply: Sender<Int>)\n}\n",
+            "pub process name worker: Message\n",
+            "fn deep(n: Int) -> Int {\n  case n {\n    0 -> 0\n    _ -> 1 + deep(n - 1)\n  }\n}\n",
+            "fn work(inbox: Inbox<Message>) -> Void {\n",
+            "  loop last = 0 {\n",
+            "    case Process.receive(inbox) {\n",
+            "      Message.Deep(depth) -> case depth {\n        0 -> 1 / depth\n        _ -> deep(depth)\n      }\n",
+            "      Message.Report(reply) -> {\n        Channel.send(reply, last)\n        last\n      }\n",
+            "    }\n  }\n}\n",
+            "pub fn main(arguments: List<Text>) -> Int needs { clock: Clock } {\n",
+            "  let depth = case List.first(arguments) {\n    Some(text) -> Int.parse(text)\n    None -> 0\n  }\n",
+            "  let member = Process.spec(work, 2, Duration.seconds(1))\n",
+            "    |> Process.register(worker)\n",
+            "    |> Supervisor.process(Supervisor.Restart.Never)\n",
+            "  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))\n",
+            "  Process.send(worker, Message.Deep(depth))\n",
+            "  Clock.sleep(Duration.milliseconds(1))\n",
+            "  let replies = Channel.bounded(1)\n",
+            "  let answered = case Process.send(worker, Message.Report(replies.sender)) {\n",
+            "    Success(_) -> {\n      let received = Channel.receive(replies.receiver)\n",
+            "      case received {\n        Receive.Received(value) -> value\n        Receive.Drained -> -2\n      }\n    }\n",
+            "    Failure(_) -> -1\n  }\n",
+            "  Supervisor.stop(root)\n",
+            "  answered + deep(1000) - 1000\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    for (depth, value, defect) in [
+        ("1000", "1000", None),
+        (
+            "100000",
+            "-1",
+            Some("\"defect\":\"Process stack overflow\""),
+        ),
+        ("0", "-1", Some("\"defect\":\"integer division by zero")),
+    ] {
+        let telemetry = scratch.join(format!("telemetry-{depth}.jsonl"));
+        let outcome = scratch.join(format!("outcome-{depth}.jsonl"));
+        let run = Command::new(&executable)
+            .arg("--chimi-runner")
+            .arg("--clock=virtual")
+            .arg("--trace=boundaries")
+            .arg(format!("--telemetry-file={}", telemetry.display()))
+            .arg(format!("--outcome-file={}", outcome.display()))
+            .arg("--")
+            .arg(depth)
+            .output()
+            .unwrap();
+        assert!(run.status.success(), "depth {depth}: {run:?}");
+        assert_eq!(
+            std::fs::read_to_string(&outcome).unwrap(),
+            format!(
+                "{{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":{value}}}\n"
+            ),
+            "depth {depth}"
+        );
+        let telemetry = std::fs::read_to_string(&telemetry).unwrap();
+        let terminated = telemetry
+            .lines()
+            .find(|line| line.contains("\"event\":\"process_terminated\""))
+            .unwrap_or_else(|| panic!("depth {depth}: no process_terminated"));
+        match defect {
+            Some(defect) => {
+                assert!(
+                    terminated.contains("\"cause\":\"defected\""),
+                    "{terminated}"
+                );
+                assert!(terminated.contains(defect), "{terminated}");
+            }
+            None => {
+                assert!(
+                    terminated.contains("\"cause\":\"cancelled\""),
+                    "{terminated}"
+                );
+                assert!(terminated.contains("\"defect\":null"), "{terminated}");
+            }
+        }
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}

@@ -248,6 +248,12 @@ enum {
   CHIMI_ADMISSION_START_FAILED = 4,
 };
 
+/* `outcome` of a terminated event whose cause is defected: 0, or why the
+   scheduler saw the body end without returning from its entry. */
+enum {
+  CHIMI_PROCESS_DEFECT_STACK_OVERFLOW = 1,
+};
+
 /* `outcome` of a send event. */
 enum {
   CHIMI_SEND_ACCEPTED = 1,

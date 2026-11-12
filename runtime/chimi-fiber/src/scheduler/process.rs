@@ -222,6 +222,9 @@ pub enum ProcessEventKind {
         membership: MembershipId,
         incarnation: IncarnationId,
         cause: TerminalCause,
+        /// The body overflowed its fiber stack: a defect the host cannot see,
+        /// because the body never returns from its entry.
+        stack_overflow: bool,
     },
     RestartAttempted {
         supervisor: SupervisorId,
@@ -631,7 +634,10 @@ impl Scheduler {
 
     /// The supervisor currently running for a nested-supervisor membership.
     /// It changes when the parent replaces the supervisor after a defect.
-    pub fn nested_supervisor(&self, membership: MembershipId) -> Result<SupervisorId, ProcessError> {
+    pub fn nested_supervisor(
+        &self,
+        membership: MembershipId,
+    ) -> Result<SupervisorId, ProcessError> {
         match self.last_instance(membership) {
             Some(Instance::Supervisor(supervisor)) => Ok(supervisor),
             Some(Instance::Process(_)) => Err(ProcessError::WrongMemberKind(membership)),
@@ -705,7 +711,12 @@ impl Scheduler {
             .memberships
             .get(&membership)
             .and_then(|entry| entry.last)
-            .or_else(|| self.kernel.retired.get(&membership).map(|retired| retired.last))
+            .or_else(|| {
+                self.kernel
+                    .retired
+                    .get(&membership)
+                    .map(|retired| retired.last)
+            })
     }
 
     /// Never parks. Accepted messages belong to the mailbox; a rejected
@@ -1365,6 +1376,7 @@ impl Scheduler {
             membership,
             incarnation,
             cause,
+            stack_overflow: matches!(outcome, TaskOutcome::StackOverflow { .. }),
         });
         if record.stopping.is_none() {
             self.member_ended(membership, cause);
@@ -1660,7 +1672,12 @@ impl Scheduler {
             .copied()
             .collect();
         for membership in members {
-            match self.kernel.memberships.get(&membership).and_then(|e| e.current) {
+            match self
+                .kernel
+                .memberships
+                .get(&membership)
+                .and_then(|e| e.current)
+            {
                 Some(Instance::Process(incarnation)) => self.unroute(incarnation),
                 Some(Instance::Supervisor(child)) => self.close_and_unroute(child),
                 None => {}
@@ -1767,8 +1784,8 @@ impl Scheduler {
             forced,
         });
         let phase = self.tasks[&task].phase;
-        let receiving = phase == TaskPhase::Parked
-            && self.kernel.incarnations[&incarnation].receiving;
+        let receiving =
+            phase == TaskPhase::Parked && self.kernel.incarnations[&incarnation].receiving;
         if phase == TaskPhase::Parked {
             self.disarm_wake_sources(task);
         }
@@ -1825,7 +1842,10 @@ impl Scheduler {
             return;
         };
         let task = record.task;
-        let stopping = record.stopping.as_mut().expect("only stopping incarnations are forced");
+        let stopping = record
+            .stopping
+            .as_mut()
+            .expect("only stopping incarnations are forced");
         stopping.timer = None;
         if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) {
             // The body finished its cleanup in time; only supervisors it
@@ -1917,11 +1937,8 @@ impl Scheduler {
             kind,
         };
         self.kernel.events.push(event);
-        let mut trace = SchedulerTraceEvent::blank(
-            SCHEDULER_TRACE_PROCESS,
-            kind.trace_kind(),
-            event.sequence,
-        );
+        let mut trace =
+            SchedulerTraceEvent::blank(SCHEDULER_TRACE_PROCESS, kind.trace_kind(), event.sequence);
         trace.time = event.time.as_nanos();
         match kind {
             ProcessEventKind::Started {
@@ -1953,10 +1970,12 @@ impl Scheduler {
                 membership,
                 incarnation,
                 cause,
+                stack_overflow,
             } => {
                 trace.membership = membership.0;
                 trace.incarnation = incarnation.0;
                 trace.cause = cause.code();
+                trace.outcome = u32::from(stack_overflow);
             }
             ProcessEventKind::RestartAttempted {
                 supervisor,
@@ -2014,18 +2033,23 @@ impl Scheduler {
         // ended and waits only on supervisors it started cannot be forced.
         // A plan whose blocker is already gone is resumed.
         loop {
-            let next = self.kernel.blocked.keys().copied().find(|blocker| match blocker {
-                Blocker::Incarnation(incarnation) => self
-                    .kernel
-                    .incarnations
-                    .get(incarnation)
-                    .is_none_or(|record| {
-                        !matches!(self.tasks[&record.task].phase, TaskPhase::Draining(_))
-                    }),
-                Blocker::Supervisor(supervisor) => {
-                    !self.kernel.supervisors.contains_key(supervisor)
-                }
-            });
+            let next = self
+                .kernel
+                .blocked
+                .keys()
+                .copied()
+                .find(|blocker| match blocker {
+                    Blocker::Incarnation(incarnation) => self
+                        .kernel
+                        .incarnations
+                        .get(incarnation)
+                        .is_none_or(|record| {
+                            !matches!(self.tasks[&record.task].phase, TaskPhase::Draining(_))
+                        }),
+                    Blocker::Supervisor(supervisor) => {
+                        !self.kernel.supervisors.contains_key(supervisor)
+                    }
+                });
             match next {
                 Some(Blocker::Incarnation(incarnation))
                     if self.kernel.incarnations.contains_key(&incarnation) =>

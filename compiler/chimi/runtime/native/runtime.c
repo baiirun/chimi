@@ -15,6 +15,9 @@
 #include <time.h>
 #include <unistd.h>
 
+/* The stack of every scheduler fiber: the root task, child tasks, and incarnations. */
+#define CHIMI_FIBER_STACK_BYTES (1024u * 1024u)
+
 /* Process programs build this runtime with CHIMI_PROCESS_KERNEL=1 (see invoke_process). */
 #ifndef CHIMI_PROCESS_KERNEL
 #define CHIMI_PROCESS_KERNEL 0
@@ -3750,6 +3753,33 @@ typedef struct {
 /* The largest peak of live payload bytes of any incarnation's heap. */
 static size_t process_heap_peak_value_bytes;
 
+/* The defect messages of incarnations whose body defected, kept while tracing so
+   the `process_terminated` event that follows can carry them (`defect`). */
+typedef struct { uint64_t incarnation; char *message; } ProcessDefect;
+static ProcessDefect *process_defects;
+static size_t process_defect_count;
+
+static void remember_process_defect(const char *message) {
+  ChimiProcessRequest self = {.kind = CHIMI_REQUEST_PROCESS_SELF};
+  if (scheduler_request(&self) == CHIMI_FIBER_CANCEL || self.status != CHIMI_RESPONSE_OK) return;
+  ProcessDefect *grown = realloc(process_defects, (process_defect_count + 1) * sizeof(*grown));
+  char *copy = strdup(message ? message : "defect");
+  if (!grown || !copy) exhausted_memory();
+  process_defects = grown;
+  process_defects[process_defect_count++] = (ProcessDefect){self.address, copy};
+}
+
+/* The remembered message of `incarnation`, handed to the caller to free, or NULL. */
+static char *take_process_defect(uint64_t incarnation) {
+  for (size_t index = 0; index < process_defect_count; ++index)
+    if (process_defects[index].incarnation == incarnation) {
+      char *message = process_defects[index].message;
+      process_defects[index] = process_defects[--process_defect_count];
+      return message;
+    }
+  return NULL;
+}
+
 /* The entry of every incarnation (CHIMI_PROCESS_END_* for a body that ends). The name
    is external so a built executable shows that it links the process kernel (MF06). */
 ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
@@ -3770,7 +3800,10 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
     case CONTROL_FAILURE: result.value = CHIMI_PROCESS_END_FAILED; break;
     case CONTROL_CANCEL: result = (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED}; break;
     case CONTROL_DEFECT:
-    case CONTROL_BREAK: result = (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1}; break;
+    case CONTROL_BREAK:
+      if (!runtime->silent) remember_process_defect(control->message);
+      result = (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1};
+      break;
   }
   if (heap->peak_live_bytes > process_heap_peak_value_bytes)
     process_heap_peak_value_bytes = heap->peak_live_bytes;
@@ -5292,6 +5325,19 @@ static void emit_process_fields(FILE *output, const ChimiSchedulerTraceEvent *ev
             : event->address_kind == CHIMI_ADDRESS_DIRECT ? "direct" : NULL);
   json_word(output, "outcome", send && event->outcome >= 1 && event->outcome <= 3 ? outcomes[event->outcome - 1] : NULL);
   fprintf(output, ",\"attempts_in_window\":%" PRIu64, event->attempts_in_window);
+  /* `defect`: why a defected incarnation ended. A stack overflow ends the body
+     without returning, so the scheduler reports it (CHIMI_PROCESS_DEFECT_*). */
+  char *defect = NULL;
+  const char *named = NULL;
+  if (event->kind == CHIMI_PROCESS_TRACE_TERMINATED && event->cause == CHIMI_PROCESS_CAUSE_DEFECTED) {
+    if (event->outcome == CHIMI_PROCESS_DEFECT_STACK_OVERFLOW) named = "Process stack overflow";
+#if CHIMI_PROCESS_KERNEL
+    defect = take_process_defect(event->incarnation);
+    if (!named) named = defect;
+#endif
+  }
+  json_word(output, "defect", named);
+  free(defect);
 }
 
 static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *event) {
@@ -5370,7 +5416,9 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
   ChimiSchedulerConfig config = {
     .entry = chimi_task_entry,
     .context = &context,
-    .stack_bytes = 64u * 1024u,
+    /* Every task and incarnation gets a guarded 1 MiB stack. Pages are touched on
+       use, so a parked fiber's resident cost follows its deepest call. */
+    .stack_bytes = CHIMI_FIBER_STACK_BYTES,
     .trace_mode = runtime->silent ? 0 : (runtime->full_trace ? 2 : 1),
     .clock_mode = runtime->virtual_clock ? CHIMI_SCHEDULER_CLOCK_VIRTUAL : CHIMI_SCHEDULER_CLOCK_REAL,
     .trace_sink = emit_scheduler_event,

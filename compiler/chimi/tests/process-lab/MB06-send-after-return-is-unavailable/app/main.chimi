@@ -9,7 +9,9 @@ import std/supervisor as Supervisor
 
 // MB06: `once` returns after its first message. A later send fails with
 // `Unavailable` and hands back the original message, whose amount (42) is the
-// outcome.
+// outcome. The second message, `Add(7)`, was accepted before the body ran and is
+// discarded unread when the body ends: no fragment outlives the run
+// (expected.memory).
 pub enum Message {
   Quit
   Add(amount: Int)
@@ -29,11 +31,12 @@ fn settle() -> Void needs { clock: Clock } {
 }
 
 pub fn main() -> Int needs { clock: Clock } {
-  let member = Process.spec(stop_on_first, 1, Duration.seconds(1))
+  let member = Process.spec(stop_on_first, 2, Duration.seconds(1))
     |> Process.register(once)
     |> Supervisor.process(Supervisor.Restart.Never)
   let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))
   Process.send(once, Message.Quit)
+  Process.send(once, Message.Add(7))
   settle()
   let returned = case Process.send(once, Message.Add(42)) {
     Success(_) -> 0

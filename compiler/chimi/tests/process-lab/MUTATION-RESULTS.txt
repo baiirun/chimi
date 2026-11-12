@@ -125,7 +125,7 @@ KILLED       static runner reads project contracts as standard ones [process_lab
 # result: every mutant killed
 
 # Command: scripts/mutation/mutate.py --scratch <scratch>/mutation scripts/mutation/process_u5_mutations.py
-# CB02 is a TIMEOUT kill: a copy that ignores sharing copies 2^21 - 1 values and does not finish in 600 s.
+# 16 mutants KILLED and 1 TIMEOUT (CB02: a copy that ignores sharing did not finish in 600 s); the runner counts a timeout as a kill.
 # mutation run at 3cd28d2fde9449ba248d9c3d5c43e8d70fc12f8c
 # process_u5_mutations.py: 17 mutants against compiler/chimi
 BASELINE ok (416s)

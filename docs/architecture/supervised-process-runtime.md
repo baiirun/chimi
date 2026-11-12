@@ -772,7 +772,14 @@ symbols of the three tiers.
   the fragment for the next incarnation), and the body called with an inbox
   value. Return, `Failure`, defect, and cancellation map to
   `CHIMI_PROCESS_END_RETURNED`, `CHIMI_PROCESS_END_FAILED`, a defected fiber,
-  and a cancelled fiber. The heap is destroyed when the body ends.
+  and a cancelled fiber. The heap is destroyed when the body ends. Under
+  tracing, a defected body's message is kept for its `process_terminated`
+  event (`defect`). A body that overflows its stack never returns from the
+  entry, so the scheduler flags that end on the event instead, and the
+  runtime names it `Process stack overflow`.
+- Every scheduler fiber (the root task, child tasks, and incarnations) has a
+  guarded 1 MiB stack, about 1,000 nested Chimi calls. Pages are touched on
+  use: 1,000 parked processes peaked at 23 MB resident.
 - `Process.send` copies the message into a fragment in the sender's heap,
   before the request. Only `OK` hands it to the scheduler; `Full`,
   `Unavailable`, and errors leave it with the sender, which frees it and

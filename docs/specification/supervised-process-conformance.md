@@ -322,7 +322,15 @@ from U5, the process family:
   - `address_kind`, `named` for `CHIMI_ADDRESS_NAMED` (1) or `direct` for
     `CHIMI_ADDRESS_DIRECT` (2);
   - `outcome`, `accepted`, `full`, or `unavailable` (`CHIMI_SEND_*`);
-  - `attempts_in_window`.
+  - `attempts_in_window`;
+  - `defect`, on a `process_terminated` whose cause is `defected`: the
+    defect's message, or `Process stack overflow` when the body overflowed
+    its stack (the scheduler marks that end with
+    `CHIMI_PROCESS_DEFECT_STACK_OVERFLOW` in the event's `outcome`). It is
+    `null` on every other event, and also for a defect the runtime did not
+    see, such as a child task's during shutdown. Transcripts keep the
+    prototype's fields and do not print it; `project` checks that it is
+    `null` unless the cause is `defected` (U5 decision).
 
   A field the kind does not set is `null`, and `attempts_in_window` is 0.
 - Clock family (4): `clock_advanced`, `clock_timer_started`,

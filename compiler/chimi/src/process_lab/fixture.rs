@@ -8,11 +8,14 @@ use crate::backend::native::build_application;
 use crate::json::{JsonData, decode_json};
 use crate::project::LoadedProject;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 const OUTCOME: &str = "expected.outcome";
 const TRANSCRIPT: &str = "expected.transcript";
 const MEMORY: &str = "expected.memory";
+/// The longest one fixture run may take (see `run_once`).
+const RUN_LIMIT: Duration = Duration::from_secs(60);
 
 /// The project root of a fixture scenario.
 pub(super) fn root(scenario: &Scenario) -> PathBuf {
@@ -216,7 +219,9 @@ fn run_once(
     let outcome_path = scratch.join(format!("outcome-{name}.jsonl"));
     let memory_path = scratch.join(format!("memory-{name}.json"));
     let telemetry_path = scratch.join(format!("telemetry-{name}.jsonl"));
-    let output = Command::new(executable)
+    let run_name = format!("{} {}", argument.unwrap_or("<no arguments>"), trace.flag());
+    let stderr_path = scratch.join(format!("stderr-{name}.txt"));
+    let mut child = Command::new(executable)
         .arg("--chimi-runner")
         .arg("--clock=virtual")
         .arg(trace.flag())
@@ -225,15 +230,42 @@ fn run_once(
         .arg(format!("--memory-report-file={}", memory_path.display()))
         .arg("--")
         .args(argument)
-        .output()
+        .stdout(Stdio::null())
+        .stderr(
+            std::fs::File::create(&stderr_path)
+                .map_err(|error| format!("create {}: {error}", stderr_path.display()))?,
+        )
+        .spawn()
         .map_err(|error| format!("run {}: {error}", executable.display()))?;
-    let run_name = format!("{} {}", argument.unwrap_or("<no arguments>"), trace.flag());
-    if output.status.code() != Some(scenario.exit_code) {
+    // Fixtures run under virtual time, so none needs long: a run past the limit is
+    // a runtime that lost a fast path, reported as a failure instead of a hang.
+    let started = Instant::now();
+    while child
+        .try_wait()
+        .map_err(|error| format!("run `{run_name}`: {error}"))?
+        .is_none()
+    {
+        if started.elapsed() > RUN_LIMIT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "run `{run_name}` exceeded the {} s run limit",
+                RUN_LIMIT.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let status = child
+        .wait()
+        .map_err(|error| format!("run `{run_name}`: {error}"))?;
+    if status.code() != Some(scenario.exit_code) {
         return Err(format!(
             "run `{run_name}` exited with {}, expected {}: {}",
-            output.status,
+            status,
             scenario.exit_code,
-            String::from_utf8_lossy(&output.stderr).trim_end()
+            std::fs::read_to_string(&stderr_path)
+                .unwrap_or_default()
+                .trim_end()
         ));
     }
     let read = |path: &Path| {

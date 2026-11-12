@@ -40,6 +40,7 @@ const PROCESS_ATTRIBUTES: &[&str] = &[
     "address_kind",
     "outcome",
     "attempts_in_window",
+    "defect",
 ];
 const CLOCK_ATTRIBUTES: &[&str] = &["time_ns", "request_kind"];
 
@@ -337,15 +338,28 @@ impl Event {
                 }
                 fields
             }
-            "process_terminated" => format!(
-                "membership={} incarnation={} cause={}",
-                self.required_identity("membership_id", 'M')?,
-                self.required_identity("incarnation_id", 'I')?,
-                self.word(
+            "process_terminated" => {
+                let cause = self.word(
                     "cause",
-                    &["returned", "failed", "defected", "cancelled", "forced"]
-                )?,
-            ),
+                    &["returned", "failed", "defected", "cancelled", "forced"],
+                )?;
+                // The defect message stays in the telemetry; the transcript
+                // keeps the prototype's fields.
+                match lookup(&self.attributes, "defect") {
+                    Some(JsonData::Null) => {}
+                    Some(JsonData::Text(_)) if cause == "defected" => {}
+                    other => {
+                        return Err(format!(
+                            "`process_terminated` with cause {cause} has defect {other:?}"
+                        ));
+                    }
+                }
+                format!(
+                    "membership={} incarnation={} cause={cause}",
+                    self.required_identity("membership_id", 'M')?,
+                    self.required_identity("incarnation_id", 'I')?,
+                )
+            }
             "restart_attempted" => format!(
                 "supervisor={} membership={} attempts_in_window={}",
                 self.required_identity("supervisor_id", 'S')?,
@@ -476,7 +490,7 @@ mod tests {
                 id(parent)
             ),
             &format!(
-                r#""scheduler_sequence":{sequence},"capacity":0,"queue_depth":0,"waiter_depth":0,"discard_count":0,"time_ns":{time},"cause":{},"name":{},"address_kind":{},"outcome":{},"attempts_in_window":{attempts}"#,
+                r#""scheduler_sequence":{sequence},"capacity":0,"queue_depth":0,"waiter_depth":0,"discard_count":0,"time_ns":{time},"cause":{},"name":{},"address_kind":{},"outcome":{},"attempts_in_window":{attempts},"defect":null"#,
                 text(cause),
                 text(name),
                 text(send.map(|send| send.0)),
