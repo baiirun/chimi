@@ -28,7 +28,6 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
-    println!("cargo:rerun-if-env-changed=PATH");
     let target = std::env::var("TARGET").expect("cargo sets TARGET");
     println!("cargo:rustc-env=CHIMI_RUNTIME_TARGET={target}");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));

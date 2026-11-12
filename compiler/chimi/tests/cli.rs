@@ -1915,7 +1915,9 @@ fn a_fresh_project_links_the_compilers_prebuilt_runtime_without_compiling_it() {
     assert_eq!(
         cache_list(&cache, "prebuilt"),
         "\"libchimi_rt.a\"",
-        "{cache}"
+        "precondition: build.rs prebuilt the runtime (no `native runtime not prebuilt` \
+         cargo warning) and the test-time `cc --version` matches the one build.rs saw \
+         (rebuild the chimi crate after a toolchain change); cache report: {cache}"
     );
     assert!(
         !cache_list(&cache, "misses").contains("libchimi_rt"),

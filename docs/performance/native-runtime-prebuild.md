@@ -79,7 +79,10 @@ The per-project path still exists and is tested
 in `compiler/chimi/tests/cli.rs`). A build takes it, and pays the old cold cost
 once per project, when:
 
-- `cc --version` differs from the compiler's build (a toolchain update);
+- the host `cc` changed after the compiler was built (e.g. a toolchain
+  update; detected through `cc --version`): every build silently takes the
+  per-project path until the compiler is rebuilt. `cache.prebuilt` is then
+  empty and `libchimi_rt.a` is a hit or miss;
 - the compiler was built without a prebuilt archive: the `native-backend`
   feature off, a cross-compile (`HOST != TARGET`), no `cc`, or a runtime that
   did not compile (the build script prints a cargo warning);
