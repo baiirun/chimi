@@ -294,8 +294,11 @@ capability and supervisor identity, never as expected failures:
   enclosing function; a closure value is not followed through a later call.
   As with `Task.start` (`T4242`), shareability is judged from the provider's
   flow when it is a local binding and from its type otherwise.
-- `Process.send` moves every exclusive binding its message is built from, as
-  `Channel.send` does ([task and channel capabilities](task-and-channel-capabilities.md)).
+- `Process.send` moves the exclusive bindings named directly in its message
+  expression (the message itself, or list, tuple, record, and constructor
+  literals written in it), as `Channel.send` does
+  ([task and channel capabilities](task-and-channel-capabilities.md)). A
+  `let`-bound or function-built message moves nothing (`ts-184972`).
   A shareable value in a message (a `Running`, an `Address`) stays usable.
 - `Supervisor.remove_process` and `remove_supervisor` consume a handle passed
   as a binding: a later use is `T4241`, and a removal inside a loop of a

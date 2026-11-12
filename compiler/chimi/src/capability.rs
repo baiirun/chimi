@@ -669,8 +669,9 @@ impl CapabilityChecker<'_> {
     /// `Channel.send` and `Process.send`: the payload moves to the receiver.
     ///
     /// Ensures: `T4243` when the payload is never transferable; otherwise every exclusive
-    /// binding the payload is built from (the payload itself, or a constructor, record,
-    /// list, or tuple argument at any depth) is transferred, so a later use is `T4241`.
+    /// binding named directly in the payload expression (see `payload_bindings`) is
+    /// transferred, so a later use is `T4241`. A `let`-bound or function-built payload
+    /// moves nothing (`ts-184972`).
     fn check_message_transfer(
         &mut self,
         module_id: ModuleId,

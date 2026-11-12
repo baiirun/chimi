@@ -133,10 +133,14 @@ compiler diagnoses provable aliasing and use-after-transfer.
 
 `Channel.send(sender, value)` is a transfer boundary. Acceptance moves the
 value into the channel; receive moves it to the receiver task. The compiler
-treats every exclusive binding the payload is built from as moved: the payload
-itself when it names a binding, and the arguments of constructors, records,
-lists, and tuples that build it, at any depth. A payload returned by another
-function call is a new value, so that call's arguments are not followed. If close or abort
+marks an exclusive binding as moved when the payload expression names it
+directly: the payload is the binding, or the binding appears as an element of a
+list or tuple literal, a field of a record literal, or an argument of a struct
+or enum constructor call written in the payload, nested in any of these and in
+parentheses at any depth. Nothing else moves a binding. A payload bound to a
+`let` before the send, or returned by a function call such as `wrap(r)`, leaves
+`r` usable after the send; that aliasing hole is `ts-184972` and is not closed
+by this rule. If close or abort
 wins before acceptance, `Channel.SendError.Closed(value)` or
 `Channel.SendError.Aborted(value)` returns the unaccepted value through the
 ordinary failure channel. Cancellation before acceptance removes the waiter

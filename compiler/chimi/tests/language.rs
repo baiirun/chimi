@@ -9898,3 +9898,93 @@ fn a_send_moves_the_exclusive_values_its_payload_is_built_from() {
         "{diagnostics:?}"
     );
 }
+
+// Each payload shape that moves a binding, one function each, plus the shape that
+// does not. Rejects a transfer that drops the list, tuple, record, or parenthesis
+// case, or follows constructors only one level deep. The last function records the
+// current limit: a payload built by a project function call is a new value, so its
+// argument stays usable (the aliasing hole is ts-184972, not fixed here).
+#[test]
+fn a_send_moves_bindings_through_every_payload_shape_but_not_through_calls() {
+    let source = process_program(concat!(
+        "import std/channel as Channel\n",
+        "import std/channel.{Receiver, Sender}\n",
+        "enum Hand {\n  Over(receiver: Receiver<Int>)\n}\n",
+        "enum Parcel {\n  Hold(hand: Hand)\n}\n",
+        "fn list(sender: Sender<List<Receiver<Int>>>, r: Receiver<Int>) -> Receiver<Int> {\n",
+        "  Channel.send(sender, [r])\n  r\n}\n",
+        "fn tuple(sender: Sender<(Receiver<Int>, Int)>, r: Receiver<Int>) -> Receiver<Int> {\n",
+        "  Channel.send(sender, (r, 1))\n  r\n}\n",
+        "fn record(sender: Sender<{ r: Receiver<Int> }>, r: Receiver<Int>) -> Receiver<Int> {\n",
+        "  Channel.send(sender, { r: r })\n  r\n}\n",
+        "fn grouped(to: Process.Address<Hand>, r: Receiver<Int>) -> Receiver<Int> {\n",
+        "  Process.send(to, (Hand.Over(r)))\n  r\n}\n",
+        "fn nested(to: Process.Address<Parcel>, r: Receiver<Int>) -> Receiver<Int> {\n",
+        "  Process.send(to, Parcel.Hold(Hand.Over(r)))\n  r\n}\n",
+        "fn wrap(r: Receiver<Int>) -> Hand {\n  Hand.Over(r)\n}\n",
+        "fn through_call(to: Process.Address<Hand>, r: Receiver<Int>) -> Receiver<Int> {\n",
+        "  Process.send(to, wrap(r))\n  r\n}\n",
+    ));
+    let diagnostics = check_diagnostics(&source);
+    // One `T4241` per moving function, at the use of `r` after its send; none in
+    // `through_call`.
+    let found = diagnostics
+        .iter()
+        .map(|(code, text, message)| {
+            let boundary = if message.contains("by Channel.send") {
+                "Channel.send"
+            } else if message.contains("by Process.send") {
+                "Process.send"
+            } else {
+                "other"
+            };
+            (code.as_str(), text.as_str(), boundary)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            ("T4241", "r", "Channel.send"),
+            ("T4241", "r", "Channel.send"),
+            ("T4241", "r", "Channel.send"),
+            ("T4241", "r", "Process.send"),
+            ("T4241", "r", "Process.send"),
+        ],
+        "{diagnostics:?}"
+    );
+}
+
+// Removing a managed supervisor consumes its handle, as removing a process does.
+// Rejects a `remove_supervisor` that leaves the handle usable after removal or
+// across loop passes.
+#[test]
+fn removing_a_supervisor_consumes_its_handle() {
+    let source = process_program(concat!(
+        "fn after(root: Supervisor.Running, child: Supervisor.ManagedSupervisor) -> Void {\n",
+        "  Supervisor.remove_supervisor(root, child)\n",
+        "  Supervisor.remove_supervisor(root, child)\n",
+        "}\n",
+        "fn each(root: Supervisor.Running, child: Supervisor.ManagedSupervisor) -> Int {\n",
+        "  loop count = 0 {\n",
+        "    Supervisor.remove_supervisor(root, child)\n",
+        "    case count >= 3 {\n      True -> break count\n      False -> count + 1\n    }\n",
+        "  }\n",
+        "}\n",
+    ));
+    let diagnostics = check_diagnostics(&source);
+    let found = diagnostics
+        .iter()
+        .map(|(code, text, message)| {
+            (
+                code.as_str(),
+                text.as_str(),
+                message.contains("Supervisor.remove_supervisor"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [("T4241", "child", true), ("T4250", "child", true)],
+        "{diagnostics:?}"
+    );
+}
