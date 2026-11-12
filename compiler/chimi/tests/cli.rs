@@ -4238,3 +4238,65 @@ fn native_debug_render_names_capabilities_without_their_contents() {
     );
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+/// Counts events into a `Tally` with `step`, which the caller defines either as
+/// function clauses or as one `case`.
+fn tally_program(step: &str) -> String {
+    format!(
+        concat!(
+            "struct Tally {{\n",
+            "  a: Int,\n",
+            "  b: Int,\n",
+            "  other: Int,\n",
+            "}}\n",
+            "{step}\n",
+            "pub fn main() -> Int {{\n",
+            "  loop state = (0, Tally(0, 0, 0)) {{\n",
+            "    let (i, tally) = state\n",
+            "    case i {{\n",
+            "      2000 -> break tally.a + 10 * tally.b + 100 * tally.other\n",
+            "      _ -> (i + 1, step(step(step(tally, \"a\"), \"b\"), \"c\"))\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+        ),
+        step = step
+    )
+}
+
+// ts-6c5e9e: a clause group lowers to the Match of the `case` written over the
+// parameters it inspects. Before, each clause rebound every plain parameter, so
+// each call cloned its environment, matched one more subject, and every
+// environment carried a slot per clause binding.
+#[test]
+fn native_function_clauses_allocate_what_the_equivalent_case_allocates() {
+    let measure = |name: &str, step: &str| {
+        let scratch = scratch_directory(&format!("native-clause-allocation-{name}"));
+        let executable = build_native(&scratch, "tally", &tally_program(step));
+        let (outcome, report) = execute_with_memory_report(&executable, &scratch);
+        assert!(outcome.contains("\"value\":222000"), "{name}: {outcome}");
+        std::fs::remove_dir_all(scratch).unwrap();
+        json_u64_field(&report, "scoped_total_allocated_bytes")
+    };
+    let clauses = measure(
+        "clauses",
+        concat!(
+            "fn step(tally: Tally, \"a\") -> Tally { { ..tally, a: tally.a + 1 } }\n",
+            "fn step(tally, \"b\") { { ..tally, b: tally.b + 1 } }\n",
+            "fn step(tally, _) { { ..tally, other: tally.other + 1 } }\n",
+        ),
+    );
+    let case = measure(
+        "case",
+        concat!(
+            "fn step(tally: Tally, event: Text) -> Tally {\n",
+            "  case event {\n",
+            "    \"a\" -> { ..tally, a: tally.a + 1 }\n",
+            "    \"b\" -> { ..tally, b: tally.b + 1 }\n",
+            "    _ -> { ..tally, other: tally.other + 1 }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(clauses, case, "clauses {clauses} bytes, case {case} bytes");
+}

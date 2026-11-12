@@ -4,8 +4,8 @@ use crate::resolution::{
     Namespace, ProjectSymbolKind, ReferenceResolution, Resolution, SymbolKind,
 };
 use crate::semantic::{
-    BinaryOperator, Literal, ModuleBlockItem, ModuleDeclarationKind, ModuleExpression, Pattern,
-    PatternLiteral, UnaryOperator,
+    BinaryOperator, CaseOrigin, Literal, ModuleBlockItem, ModuleCaseArm, ModuleDeclarationKind,
+    ModuleExpression, Pattern, PatternLiteral, UnaryOperator,
 };
 use crate::standard::{StandardConstant, StandardFunction, StandardSymbol};
 use crate::typing::{CanonicalType, TypeFact, TypedProgram, TypedProject};
@@ -1117,7 +1117,7 @@ fn type_is_nonpoisoned(
 /// A constant whose evaluation breaks a build-time rule yields its `E52xx` diagnostic.
 pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> {
     let computation = root.typed.resolved.symbol(root.entry).name.clone();
-    let symbols = lower_core_symbols(&root.typed);
+    let mut symbols = lower_core_symbols(&root.typed);
     let origin_ids = root
         .origins
         .iter()
@@ -1127,6 +1127,7 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
         typed: Arc::clone(&root.typed),
         origin_ids,
         nodes: Vec::new(),
+        clause_parameter_aliases: HashMap::new(),
     };
     let mut functions = Vec::new();
     let mut constant_initializers = Vec::new();
@@ -1190,6 +1191,13 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
             }
         }
     }
+    // A name aliased to its clause parameter binds nothing, so it takes no
+    // environment slot.
+    for symbol in &mut symbols {
+        if lowerer.clause_parameter_aliases.contains_key(&symbol.id) {
+            symbol.kind = CoreSymbolKind::Other;
+        }
+    }
     let core = CoreProgram {
         computation,
         entry: root.entry,
@@ -1211,6 +1219,9 @@ struct CoreLowerer {
     typed: Arc<TypedProject>,
     origin_ids: HashMap<(ModuleId, SemanticId), OriginId>,
     nodes: Vec<CoreNode>,
+    /// A clause pattern that only names its parameter (`fn f(state, "a")`) binds
+    /// nothing in Core: references to that name read the generated parameter.
+    clause_parameter_aliases: HashMap<SymbolId, SymbolId>,
 }
 
 impl CoreLowerer {
@@ -1429,29 +1440,17 @@ impl CoreLowerer {
                 captures: self.closure_captures(module_id, body),
                 body: self.expression(module_id, body),
             },
-            ModuleExpression::Case { subjects, arms, .. } => CoreOperation::Match {
-                subjects: subjects
-                    .iter()
-                    .map(|subject| self.expression(module_id, subject))
-                    .collect(),
-                arms: arms
-                    .iter()
-                    .flat_map(|arm| {
-                        let guard = arm
-                            .guard
-                            .as_ref()
-                            .map(|guard| self.expression(module_id, guard));
-                        let body = self.expression(module_id, &arm.body);
-                        self.arm_alternatives(module_id, &arm.patterns)
-                            .into_iter()
-                            .map(move |patterns| CoreArm {
-                                patterns,
-                                guard,
-                                body,
-                            })
-                    })
-                    .collect(),
-            },
+            ModuleExpression::Case {
+                subjects,
+                arms,
+                origin,
+                ..
+            } => self.lower_case(
+                module_id,
+                subjects,
+                arms,
+                matches!(origin, CaseOrigin::Clauses { .. }),
+            ),
             ModuleExpression::Loop {
                 state_id,
                 initial,
@@ -1565,6 +1564,84 @@ impl CoreLowerer {
     /// The Core pattern rows one source arm becomes. A failure-type pattern covers
     /// several variants, so its arm becomes one arm per variant, tried in order and
     /// sharing the source arm's guard and body nodes. Every other arm is one row.
+    /// Lowers a `case`. For a clause group's case (`clauses`), whose subjects are
+    /// the generated parameters, a pattern that only binds a parameter becomes a
+    /// wildcard and the name an alias of the parameter, and a subject every arm
+    /// then matches with a wildcard is dropped. A clause group therefore lowers to
+    /// the same Match as the `case` written over the parameters it inspects: an
+    /// arm binds, and the runtime clones the environment, only for names its
+    /// patterns take apart.
+    fn lower_case(
+        &mut self,
+        module_id: ModuleId,
+        subjects: &[ModuleExpression],
+        arms: &[ModuleCaseArm],
+        clauses: bool,
+    ) -> CoreOperation {
+        let parameters = subjects
+            .iter()
+            .map(|subject| match subject {
+                ModuleExpression::Name { semantic_id, .. } if clauses => {
+                    self.value_symbol(module_id, *semantic_id)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut lowered = Vec::new();
+        for arm in arms {
+            let mut alternatives = self.arm_alternatives(module_id, &arm.patterns);
+            for row in &mut alternatives {
+                for (pattern, parameter) in row.iter_mut().zip(&parameters) {
+                    if let (CorePattern::Binding(binding), Some(parameter)) = (&*pattern, parameter)
+                    {
+                        self.clause_parameter_aliases.insert(*binding, *parameter);
+                        *pattern = CorePattern::Wildcard;
+                    }
+                }
+            }
+            let guard = arm
+                .guard
+                .as_ref()
+                .map(|guard| self.expression(module_id, guard));
+            let body = self.expression(module_id, &arm.body);
+            lowered.extend(alternatives.into_iter().map(|patterns| CoreArm {
+                patterns,
+                guard,
+                body,
+            }));
+        }
+        let mut kept = (0..subjects.len())
+            .map(|column| {
+                !clauses
+                    || lowered
+                        .iter()
+                        .any(|arm| !matches!(arm.patterns[column], CorePattern::Wildcard))
+            })
+            .collect::<Vec<_>>();
+        // A Match keeps one subject, so a group of catch-all clauses stays a Match.
+        if !kept.contains(&true)
+            && let Some(first) = kept.first_mut()
+        {
+            *first = true;
+        }
+        for arm in &mut lowered {
+            let mut column = 0;
+            arm.patterns.retain(|_| {
+                column += 1;
+                kept[column - 1]
+            });
+        }
+        CoreOperation::Match {
+            subjects: subjects
+                .iter()
+                .zip(&kept)
+                .filter(|(_, kept)| **kept)
+                .map(|(subject, _)| self.expression(module_id, subject))
+                .collect(),
+            arms: lowered,
+        }
+    }
+
     fn arm_alternatives(&self, module_id: ModuleId, patterns: &[Pattern]) -> Vec<Vec<CorePattern>> {
         let mut rows = vec![Vec::new()];
         for pattern in patterns {
@@ -2127,7 +2204,12 @@ impl CoreLowerer {
             .resolved
             .reference_resolution(module_id, semantic_id, Namespace::Value)
             .and_then(|resolution| match resolution {
-                ReferenceResolution::Resolved(symbol) => Some(symbol),
+                ReferenceResolution::Resolved(symbol) => Some(
+                    self.clause_parameter_aliases
+                        .get(&symbol)
+                        .copied()
+                        .unwrap_or(symbol),
+                ),
                 ReferenceResolution::Unresolved
                 | ReferenceResolution::Ambiguous
                 | ReferenceResolution::Inaccessible(_)
