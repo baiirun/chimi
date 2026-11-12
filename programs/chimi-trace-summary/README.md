@@ -96,13 +96,6 @@ forcing program, so it exercises these language features:
 | List patterns | the single `[path]` argument in `main` |
 | Failure-type and alias patterns | the `TraceError`, `LineTooLong`, `FileError`, and `Utf8Error` arms in `main` |
 
-The functions that run once per input line (`add_line`, `add_record`,
-`add_event`, and `same_identity`) use `case` rather than function clauses. On
-the native backend a multi-clause function with two or more parameters
-allocates more per call than the same `case`. On this path that extra
-allocation would break the per-record allocation budget in
-`compiler/chimi/tests/cli.rs`.
-
 ## Contributing
 
 Run the compiler and end-to-end gates.
