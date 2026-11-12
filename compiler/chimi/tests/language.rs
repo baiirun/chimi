@@ -9324,6 +9324,20 @@ fn a_multi_subject_outcome_case_subtracts_only_fully_covered_failures() {
     assert!(check_codes(&program("both(1, 2)", " errors Major")).is_empty());
     // `later` handles every failure of its second subject.
     assert!(check_codes(&program("later(1, 2)", "")).is_empty());
+    // A later subject that cannot fail has no failing combination to cover, so an
+    // earlier subject's handled failures still leave the row.
+    let infallible_later = format!(
+        "{MULTI_SUBJECT_OUTCOMES}fn safe(n: Int) -> Int {{ n + 1 }}\n\
+         fn guarded(a: Int, b: Int) -> Int {{\n\
+         \x20 case get(a), safe(b) {{\n\
+         \x20   Success(x), Success(y) -> x + y\n\
+         \x20   Failure(_), Success(y) -> y\n\
+         \x20 }}\n\
+         }}\n\
+         fn call(operation: fn() -> Int) -> Int {{ operation() }}\n\
+         pub fn main() -> Int {{ call(fn() {{ guarded(0, 1) }}) }}\n"
+    );
+    assert!(check_codes(&infallible_later).is_empty());
     // A variant covered only for some values of the other subject stays in the row.
     let partial = MULTI_SUBJECT_OUTCOMES.replace("Failure(Bad), p -> p", "Failure(Bad), 0 -> 0");
     let partial = format!(
@@ -9421,4 +9435,32 @@ fn an_update_of_a_local_base_evaluates_values_in_source_order() {
         run_both("local-update-success", &program("False", "False")),
         "\"outcome\":\"success\",\"value\":2"
     );
+}
+
+// ts-6c5e9e: a clause pattern that only names its parameter reads the parameter,
+// so a closure that captures that name and a guard that reads it see the argument.
+// `factor` is never inspected, so its column is not matched at all.
+#[test]
+fn clause_parameter_names_reach_closures_and_guards() {
+    let outcome = run_both(
+        "clause-parameter-aliases",
+        concat!(
+            "fn scale(factor: Int, 0) -> fn(Int) -> Int {\n",
+            "  fn(x) { x * factor }\n",
+            "}\n",
+            "fn scale(factor, n) if factor > n {\n",
+            "  fn(x) { x * factor + n }\n",
+            "}\n",
+            "fn scale(_, n) {\n",
+            "  fn(x) { x - n }\n",
+            "}\n",
+            "pub fn main() -> List<Int> {\n",
+            "  let triple = scale(3, 0)\n",
+            "  let shifted = scale(5, 1)\n",
+            "  let lowered = scale(1, 4)\n",
+            "  [triple(2), shifted(2), lowered(10)]\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[6,11,6]");
 }

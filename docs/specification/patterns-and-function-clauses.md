@@ -595,6 +595,8 @@ Rules:
   stays in the row. A later subject's failures can bubble only after every
   earlier outcome subject succeeded, so combinations where an earlier subject
   failed do not keep them in the row.
+- An outcome subject that cannot fail has no `Failure` combination. It counts
+  as succeeding in every combination.
 
 Rationale: this is the coverage rule of a single-subject outcome case with the
 other subjects as extra columns, so no new matching semantics is needed. Both

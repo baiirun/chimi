@@ -6548,19 +6548,25 @@ impl ProjectTypeChecker {
                 continue;
             };
             // Combinations where this subject is the first to fail: earlier outcome
-            // subjects succeeded, later ones may do either.
+            // subjects succeeded, later ones may do either, except that a subject
+            // that cannot fail always succeeds.
             let later = outcome_indices.len() - position - 1;
-            let signatures = (0..1_usize << later)
+            let mut signatures = (0..1_usize << later)
                 .map(|bits| {
                     (0..outcome_indices.len())
                         .map(|other| match other.cmp(&position) {
                             std::cmp::Ordering::Less => true,
                             std::cmp::Ordering::Equal => false,
-                            std::cmp::Ordering::Greater => bits >> (other - position - 1) & 1 == 0,
+                            std::cmp::Ordering::Greater => {
+                                failure_types[outcome_indices[other]].is_none()
+                                    || bits >> (other - position - 1) & 1 == 0
+                            }
                         })
                         .collect::<Vec<_>>()
                 })
                 .collect::<Vec<_>>();
+            signatures.sort_unstable();
+            signatures.dedup();
             let fully_covered = |this: &mut Self, column: MatchPattern| {
                 signatures.iter().all(|signature| {
                     let mut row = missing.clone();
