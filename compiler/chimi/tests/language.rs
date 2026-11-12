@@ -9050,7 +9050,9 @@ fn constant_duration_arguments_are_checked_at_build_time() {
              fn computed(name: Text, hours: Int) -> Duration {{\n{body}\n}}\n"
         )
     };
-    let cases: [(&str, &[&str], &[&str]); 8] = [
+    // The last case folds to text at build time but is neither a literal nor a module
+    // constant, so it is not checked.
+    let cases: [(&str, &[&str], &[&str]); 9] = [
         ("  Duration.parse(\"5x\")", &["T4349"], &[]),
         ("  Duration.parse(\"\")", &["T4349"], &[]),
         ("  Duration.parse(\"2562048h\")", &["T4349"], &[]),
@@ -9059,6 +9061,11 @@ fn constant_duration_arguments_are_checked_at_build_time() {
         ("  Duration.hours(count)", &["T4348"], &[]),
         ("  Duration.hours(-2562048)", &["T4348"], &[]),
         ("  Duration.hours(hours)", &[], &[]),
+        (
+            "  Duration.parse(Duration.to_text(Duration.seconds(5)))",
+            &[],
+            &[],
+        ),
     ];
     for (body, errors, warnings) in cases {
         let source = program(body);
