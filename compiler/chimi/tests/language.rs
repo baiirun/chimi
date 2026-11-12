@@ -9100,3 +9100,33 @@ fn constant_duration_arguments_are_checked_at_build_time() {
         );
     }
 }
+
+// ts-40e675: `let _ = value` used to panic the compiler while lowering to Core.
+#[test]
+fn let_wildcard_evaluates_its_value_and_binds_nothing() {
+    let outcome = run_both(
+        "let-wildcard-evaluates",
+        concat!(
+            "fn boom() -> Int {\n",
+            "  1 / 0\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let _ = boom()\n",
+            "  7\n",
+            "}\n",
+        ),
+    );
+    assert!(
+        outcome.starts_with("\"outcome\":\"defect\""),
+        "the discarded value must still run: {outcome}"
+    );
+    let outcome = run_both(
+        "let-wildcard-repeats",
+        "pub fn main() -> Int {\n  let _ = 1\n  let _ = 2\n  7\n}\n",
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":7");
+    assert!(
+        check_codes("pub fn main() -> Int {\n  let _ = 1\n  _\n}\n")
+            .contains(&"E_UNRESOLVED_VALUE".to_owned())
+    );
+}

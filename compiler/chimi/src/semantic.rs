@@ -2312,6 +2312,12 @@ impl ProjectLowerer {
             let pattern = match direct_child(&child, NodeKind::Pattern) {
                 Some(pattern) => self.lower_pattern(&pattern),
                 None => match direct_identifier(&child) {
+                    // `let _ = value` binds nothing; it lowers like any other
+                    // non-binding pattern, to a `case` over the value.
+                    Some(name) if name.text == "_" => Pattern::Wildcard {
+                        semantic_id: self.allocate_semantic_id(),
+                        range: name.range,
+                    },
                     Some(name) => Pattern::Binding {
                         semantic_id: self.allocate_semantic_id(),
                         range: name.range,
