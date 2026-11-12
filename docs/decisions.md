@@ -12,6 +12,7 @@ from the philosophy and earlier decisions; any of these can be overruled.
 
 | Date | Decision | By | Detail |
 | --- | --- | --- | --- |
+| 2026-11-11 | `Duration.ParseError` is `Empty \| Invalid \| OutOfRange`, all nullary (no copy of the parsed text); `Duration.parse` accepts a fraction in any unit when it is exact, the literal `0`, and nothing else (`-0`, `+`, spaces are `Invalid`). | Coordinator (conventions) and implementer | `time-and-outcomes.md` Text form; `ts-f31a20` |
 | 2026-11-11 | Standard library conventions: `Module.verb` plain-verb names, no functional jargon (`List.reduce` replaces `fold`); subject first, callbacks last; conversions owned by the importing type (`Int.to_text`, `T.parse`); `_checked` returns `Option`; `length` for List/Range, `size` for Map/Set. | Coordinator (conventions owner) | `standard-library-conventions.md`; `ts-de8a01` |
 | 2026-11-11 | Option helpers `map`, `and_then`, `or`, `unwrap_or`, `unwrap_or_else`, `unwrap_or_fail`, `is_some`, `is_none`; `Result` is storage only (`capture`, `get`, `map`, `map_error`, `unwrap_or`, `to_option`), chaining goes through failure rows. | Coordinator (conventions owner) | `standard-library-conventions.md` |
 | 2026-11-11 | Text positions are UTF-8 bytes named as such (`byte_length`, `byte_slice`); display widths count graphemes; no bare `Text.length`. Error payloads carry identifiers and limits, never copies of content input. | Coordinator (conventions owner) | `standard-library-conventions.md` |

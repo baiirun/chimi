@@ -50,7 +50,7 @@ pub fn seconds(count: Int) -> Duration {
 }
 ```
 
-<!-- chimi: pending ts-975ca3 ep-a6f138 -->
+<!-- chimi: check -->
 ```chimi
 // app/worker.chimi
 import std/duration as Duration
