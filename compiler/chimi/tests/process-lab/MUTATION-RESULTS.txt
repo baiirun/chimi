@@ -24,3 +24,28 @@ KILLED       unexpected keys accepted [lib -- process_lab::transcript] (2s)
 KILLED       locked scenarios run [lib -- process_lab::tests] (2s)
 KILLED       unlocked failures pass [lib -- process_lab::tests] (2s)
 # result: every mutant killed
+
+# Command: scripts/mutation/mutate.py --scratch <scratch>/mutation scripts/mutation/process_u1_mutations.py
+# mutation run at 51029957e61ef294c5ea17a6bb2d0de735f56ed7
+# process_u1_mutations.py: 19 mutants against compiler/chimi
+BASELINE ok (342s)
+KILLED       T4261 dropped [process_lab] (4s)
+KILLED       T4261 only at declarations, not at Process.spec [process_lab] (4s)
+KILLED       T4262 dropped [process_lab] (5s)
+KILLED       T4262 accepts a constant holding a name [language] (228s)
+KILLED       T4263 mailbox capacity bound off by one [process_lab] (5s)
+KILLED       T4263 restart window accepts zero [process_lab] (5s)
+KILLED       T4263 members-over-capacity check dropped [process_lab] (6s)
+KILLED       T4263 literal test loosened to any folded integer [language] (168s)
+KILLED       T4263 literal duration test loosened to any folded duration [language] (244s)
+KILLED       T4264 dropped [process_lab] (7s)
+KILLED       T4264 misses the constant follow [process_lab] (7s)
+KILLED       T4264 keys names by text [process_lab] (8s)
+KILLED       Supervisor.start row has every StartError variant [process_lab] (9s)
+KILLED       Process.spec drops the body's needs [language] (227s)
+KILLED       Inbox is shareable [language] (240s)
+KILLED       Process.spec accepts a computed zero capacity [language] (147s)
+KILLED       Process.register overwrites an existing name [language] (234s)
+KILLED       process runtime operations are pure at build time [language] (179s)
+KILLED       static runner ignores diagnostic columns [process_lab] (4s)
+# result: every mutant killed
