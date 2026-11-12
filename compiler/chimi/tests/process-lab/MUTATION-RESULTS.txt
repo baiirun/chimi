@@ -147,3 +147,33 @@ KILLED       IP01: defect outcomes compared as whole lines [cargo run --quiet --
 KILLED       IP01: the interpreter names no process runtime [cargo run --quiet --bin chimi-process-lab -- --scenario IP01 --through U5] (4s)
 KILLED       SendError has no variant domain [language -- process_standard_enum_values_match_exhaustively] (4s)
 # result: every mutant killed
+
+# Command: scripts/mutation/mutate.py --scratch <scratch>/mutation scripts/mutation/process_u5_mutations.py
+# Rerun after the review fixes (1 MiB stacks, named process defects, MB06 discard check, 60 s run limit).
+# 22 mutants, all KILLED; CB02 now fails on the lab run limit (64 s) instead of timing out.
+# mutation run at 47b84439bc9f128348effac47507faa9a47f0695
+# process_u5_mutations.py: 22 mutants against compiler/chimi
+BASELINE ok (255s)
+KILLED       CB01: the message is the sender's original value [cargo run --quiet --bin chimi-process-lab -- --scenario CB01 --through U5] (7s)
+KILLED       MB01: an accepted message is freed by its sender [cargo run --quiet --bin chimi-process-lab -- --scenario MB01 --through U5] (4s)
+KILLED       CB03: a refused message is never freed [cargo run --quiet --bin chimi-process-lab -- --scenario CB03 --through U5] (4s)
+KILLED       CB02: a message copy ignores sharing [cargo run --quiet --bin chimi-process-lab -- --scenario CB02 --through U5] (64s)
+KILLED       MB02: Full is reported as Unavailable [cargo run --quiet --bin chimi-process-lab -- --scenario MB02 --through U5] (5s)
+KILLED       MB06: discarded messages are never freed [cargo run --quiet --bin chimi-process-lab -- --scenario MB06 --through U5] (4s)
+KILLED       scheduler fibers keep a 64 KiB stack [cli -- native_process_stack_depth_and_named_defects] (5s)
+KILLED       a stack overflow is not named [cli -- native_process_stack_depth_and_named_defects] (5s)
+KILLED       the scheduler does not flag an overflowed body [cli -- native_process_stack_depth_and_named_defects] (5s)
+KILLED       a body's defect message is dropped [cli -- native_process_stack_depth_and_named_defects] (5s)
+KILLED       CB07: a send skips the foreign-pointer check [cargo run --quiet --bin chimi-process-lab -- --scenario CB07 --through U5] (6s)
+KILLED       CB07: the defect names only the sender [cargo run --quiet --bin chimi-process-lab -- --scenario CB07 --through U5] (6s)
+KILLED       MF01: received messages join the heap's base area [cargo run --quiet --bin chimi-process-lab -- --scenario MF01 --through U5] (8s)
+KILLED       MF04: each small fragment costs a 64 KiB chunk [cargo run --quiet --bin chimi-process-lab -- --scenario MF04 --through U5] (4s)
+KILLED       OB07: the incarnation is written from the task field [cargo run --quiet --bin chimi-process-lab -- --scenario OB07 --through U5] (4s)
+KILLED       MB01: a name id is the bare symbol index [cargo run --quiet --bin chimi-process-lab -- --scenario MB01 --through U5] (4s)
+KILLED       OB02: boundaries mode runs the scheduler in full mode [cargo run --quiet --bin chimi-process-lab -- --scenario OB02 --through U5] (4s)
+KILLED       OB01: trace off still traces the scheduler [cargo run --quiet --bin chimi-process-lab -- --scenario OB01 --through U5] (4s)
+KILLED       MF06: every program links the process kernel [cargo run --quiet --bin chimi-process-lab -- --scenario MF06 --through U5] (4s)
+KILLED       IP01: defect outcomes compared as whole lines [cargo run --quiet --bin chimi-process-lab -- --scenario IP01 --through U5] (2s)
+KILLED       IP01: the interpreter names no process runtime [cargo run --quiet --bin chimi-process-lab -- --scenario IP01 --through U5] (2s)
+KILLED       SendError has no variant domain [language -- process_standard_enum_values_match_exhaustively] (2s)
+# result: every mutant killed
