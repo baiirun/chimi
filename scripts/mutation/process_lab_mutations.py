@@ -44,7 +44,7 @@ MUTATIONS = [
         [('                if kind == "named" {\n                    fields.push_str(&format!(" name={}", self.required_label()?));', '                if kind == "named" {\n                    fields.push_str(&format!(" name={}", self.label()?.unwrap_or_default()));')],
         "process_lab::transcript"),
     lib("root escalation parent printed as -", T,
-        [('if parent == "-" { "root".to_owned() } else { parent }', 'parent')],
+        [('                        "root".to_owned()\n', '                        parent.clone()\n')],
         "process_lab::transcript"),
     lib("boundaries keep sends", T,
         [('        .filter(|line| line.split(\' \').nth(1) != Some(PROCESS_SEND))', '        .filter(|_| true)')],
