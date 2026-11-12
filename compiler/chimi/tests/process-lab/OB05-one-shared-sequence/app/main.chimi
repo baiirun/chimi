@@ -1,0 +1,66 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+import std/task as Task
+// OB05: a task, a channel, and a process each write events into one telemetry
+// file. Every event carries the next value of one shared `sequence`, which the
+// transcript projector checks across all of them. The outcome is the 5 the
+// task sent through the process.
+
+pub enum Message {
+  Add(amount: Int)
+  Report(reply: Sender<Int>)
+}
+
+fn counter(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+    }
+  }
+}
+
+pub process name tally: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn reply_value(received: Receive<Int>) -> Int {
+  case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+fn ask(address: Address<Message>) -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(address, Message.Report(replies.sender))
+  let received = Channel.receive(replies.receiver)
+  reply_value(received)
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let member = Process.spec(counter, 2, Duration.seconds(1))
+    |> Process.register(tally)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let child = Task.start(fn() -> Int {
+    Process.send(tally, Message.Add(5))
+    1
+  })
+  let sent = Task.result(child)
+  settle()
+  let total = ask(tally)
+  Supervisor.stop(root)
+  total * sent
+}

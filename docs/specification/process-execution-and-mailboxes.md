@@ -18,7 +18,7 @@ restart, shutdown, and expected failure distinct.
 
 ## Example
 
-<!-- chimi: pending ts-6ccbc9 -->
+<!-- chimi: check -->
 ```chimi
 import std/channel as Channel
 import std/channel.{Sender}

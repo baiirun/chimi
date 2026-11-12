@@ -5,6 +5,7 @@ pub mod catalogue;
 mod core_kind;
 mod fixture;
 mod heap_kind;
+mod observability_kind;
 mod static_kind;
 pub mod transcript;
 
@@ -200,7 +201,9 @@ fn status(scenario: &Scenario, options: &Options) -> Status {
     if scenario.unlock > options.through {
         return Status::Locked;
     }
-    let executed = !matches!(scenario.kind(), Kind::Static | Kind::Core);
+    // IP01 is the interpreter's own scenario: it runs on the interpreter always.
+    let executed =
+        !matches!(scenario.kind(), Kind::Static | Kind::Core) && !scenario.id.starts_with("IP");
     if executed && matches!(scenario.form, Form::Fixture) && options.backend == Backend::Interpreter
     {
         return Status::Unsupported;
@@ -209,6 +212,10 @@ fn status(scenario: &Scenario, options: &Options) -> Status {
         (_, Form::Check(check) | Form::Gate(check)) => check().map(|()| None),
         (Kind::Static, Form::Fixture) => static_kind::check(scenario, options).map(|()| None),
         (Kind::Heap, Form::Fixture | Form::CHarness(_)) => heap_kind::check(scenario, options),
+        (Kind::Runtime, Form::Fixture) => fixture::check(scenario, options).map(|_| None),
+        (Kind::Observability, Form::Fixture) => {
+            observability_kind::check(scenario, options).map(|()| None)
+        }
         (kind, form) => Err(format!(
             "the {} runner for {form:?} scenarios has not landed",
             kind.name()

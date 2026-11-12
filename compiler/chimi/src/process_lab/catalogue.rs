@@ -6,7 +6,7 @@ use super::Kind;
 
 /// The last stage whose scenarios must pass. Each ts-6ccbc9 commit that
 /// completes a stage bumps this in the same commit.
-pub const CURRENT_STAGE: Stage = Stage::U4;
+pub const CURRENT_STAGE: Stage = Stage::U5;
 
 /// An implementation stage from the lab's unlock order.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -317,7 +317,12 @@ pub static SCENARIOS: [Scenario; 131] = [
     fixture("MF03", "memory-flat-over-memberships", U10).runs(&["100", "10000"]),
     fixture("MF04", "small-fragments-share-slabs", U5),
     fixture("MF05", "task-loop-reclaims", U3).runs(&["10000", "1000000"]),
-    check("MF06", "pay-for-play-linking", U5),
+    Scenario::new(
+        "MF06",
+        "pay-for-play-linking",
+        U5,
+        Form::Check(super::heap_kind::pay_for_play_linking),
+    ),
     // Observability and backend support.
     fixture("OB01", "trace-off-constructs-nothing", U5),
     fixture("OB02", "boundaries-omit-sends", U5),
@@ -325,7 +330,12 @@ pub static SCENARIOS: [Scenario; 131] = [
     check("OB04", "transcripts-are-deterministic", U6),
     fixture("OB05", "one-shared-sequence", U5),
     fixture("OB06", "virtual-time-costs-no-wall-time", U6),
-    check("OB07", "trace-abi-version-five", U5),
+    Scenario::new(
+        "OB07",
+        "trace-abi-version-five",
+        U5,
+        Form::Check(super::observability_kind::trace_abi_version_five),
+    ),
     fixture("IP01", "interpreter-rejects-processes", U5).defects(),
     // Forcing program.
     fixture("FP01", "supervised-pool", U10),

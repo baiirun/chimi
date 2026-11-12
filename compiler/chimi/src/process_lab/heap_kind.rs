@@ -7,31 +7,131 @@
 //! scenario even when its bytes look right. When it is not, the harness runs
 //! unsanitized and the pass carries a note saying so.
 //!
-//! A fixture scenario runs natively once per argument (`fixture::execute`),
-//! then checks `expected.memory` against the runs' memory reports. Each line
-//! names a top-level integer field of the report:
-//! - `equal <field>`: the field has the same value in every run;
-//! - `at_most <field> <limit>`: the field is at most `limit` in every run.
+//! A fixture scenario runs natively once per argument and checks its
+//! `expected.memory` against the runs' memory reports (`fixture::check`).
+//!
+//! MF06 (`pay_for_play_linking`) builds three programs and reads their symbol
+//! tables.
 
 use super::Options;
 use super::catalogue::{Form, Scenario};
-use super::fixture::{self, Run, Scratch};
-use crate::json::{JsonData, decode_json};
+use super::fixture::{self, Scratch};
+use crate::Compiler;
+use crate::backend::native::build_application;
+use crate::project::LoadedProject;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-const MEMORY: &str = "expected.memory";
 
 /// `Ok(Some(note))` is a pass with a caveat the report shows as its detail.
 pub(super) fn check(scenario: &Scenario, options: &Options) -> Result<Option<String>, String> {
     match scenario.form {
         Form::CHarness(file) => harness(scenario, file),
-        Form::Fixture => {
-            let runs = fixture::execute(scenario, options)?;
-            check_memory(scenario, &runs, options).map(|()| None)
-        }
+        Form::Fixture => fixture::check(scenario, options).map(|_| None),
         form => Err(format!("the heap runner does not run {form:?} scenarios")),
     }
+}
+
+/// A symbol only the scheduler archive `libchimi_fiber.a` defines.
+const FIBER_SYMBOL: &str = "chimi_fiber_abi_version";
+/// The entry of every incarnation, which only the process-kernel runtime defines.
+const PROCESS_KERNEL_SYMBOL: &str = "chimi_rt_process_entry";
+
+/// MF06: a program without concurrency links neither the scheduler nor the
+/// process kernel, a tasks-only program links the scheduler alone, and a
+/// process program links both.
+pub(super) fn pay_for_play_linking() -> Result<(), String> {
+    let programs = [
+        (
+            "no concurrency",
+            "pub fn main() -> Int { 1 }\n",
+            false,
+            false,
+        ),
+        (
+            "tasks only",
+            "import std/task as Task\npub fn main() -> Int {\n  Task.result(Task.start(fn() -> Int { 1 }))\n}\n",
+            true,
+            false,
+        ),
+        (
+            "processes",
+            concat!(
+                "import std/duration as Duration\n",
+                "import std/process as Process\n",
+                "import std/process.{Inbox}\n",
+                "import std/supervisor as Supervisor\n",
+                "fn idle(inbox: Inbox<Int>) -> Void {\n  let message = Process.receive(inbox)\n  Void\n}\n",
+                "pub fn main() -> Void {\n",
+                "  let member = Supervisor.process(Process.spec(idle, 1, Duration.zero), Supervisor.Restart.Never)\n",
+                "  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(1))))\n",
+                "  Supervisor.stop(root)\n",
+                "}\n",
+            ),
+            true,
+            true,
+        ),
+    ];
+    let scratch =
+        std::env::temp_dir().join(format!("chimi-process-lab-{}-MF06", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let result = programs
+        .iter()
+        .try_for_each(|(name, source, fiber, kernel)| {
+            let symbols = defined_symbols(&scratch.join(name.replace(' ', "-")), source)
+                .map_err(|error| format!("{name}: {error}"))?;
+            for (symbol, expected) in [(FIBER_SYMBOL, fiber), (PROCESS_KERNEL_SYMBOL, kernel)] {
+                if symbols.iter().any(|defined| defined == symbol) != *expected {
+                    return Err(format!(
+                        "the {name} program {} `{symbol}`",
+                        if *expected {
+                            "does not define"
+                        } else {
+                            "defines"
+                        }
+                    ));
+                }
+            }
+            Ok(())
+        });
+    let _ = std::fs::remove_dir_all(&scratch);
+    result
+}
+
+/// Builds `source` as `app/main` in `directory` and lists the external symbols
+/// its executable defines, without the platform's leading underscore.
+fn defined_symbols(directory: &Path, source: &str) -> Result<Vec<String>, String> {
+    std::fs::create_dir_all(directory.join("app"))
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    std::fs::write(directory.join("app/main.chimi"), source)
+        .map_err(|error| format!("write the program: {error}"))?;
+    let project = LoadedProject::load(directory, "app/main")
+        .map_err(|error| format!("load the program: {error}"))?;
+    let program = Compiler::prepare_backend(project.sources()).map_err(|diagnostics| {
+        format!(
+            "does not compile: {}",
+            project.render_diagnostics(&diagnostics).trim_end()
+        )
+    })?;
+    let executable = directory.join("program");
+    build_application(&program, &executable, &directory.join("artifacts"))
+        .map_err(|error| format!("native build failed: {error}"))?;
+    let output = Command::new("nm")
+        .arg("-g")
+        .arg("-U")
+        .arg(&executable)
+        .output()
+        .map_err(|error| format!("run nm: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "nm failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().last())
+        .map(|symbol| symbol.strip_prefix('_').unwrap_or(symbol).to_owned())
+        .collect())
 }
 
 fn manifest_path(relative: &str) -> PathBuf {
@@ -113,81 +213,4 @@ fn first_error_line(bytes: &[u8]) -> String {
         .or_else(|| text.lines().next())
         .unwrap_or("")
         .to_owned()
-}
-
-fn check_memory(scenario: &Scenario, runs: &[Run], options: &Options) -> Result<(), String> {
-    let lines = fixture::expected_lines(scenario, MEMORY)?;
-    let reports = runs
-        .iter()
-        .map(|run| match decode_json(&run.memory_report) {
-            Ok(JsonData::Object(fields)) => Ok(fields),
-            _ => Err(format!(
-                "memory report is not a JSON object: {}",
-                run.memory_report
-            )),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if options.print_actual {
-        eprintln!("== {} memory reports", scenario.id);
-        for run in runs {
-            eprint!("{}", run.memory_report);
-        }
-    }
-    for (index, line) in lines.iter().enumerate() {
-        let malformed = || {
-            format!(
-                "{MEMORY} line {}: `{line}` is not `equal <field>` or `at_most <field> <limit>`",
-                index + 1
-            )
-        };
-        let (field, limit) = match line.split(' ').collect::<Vec<_>>().as_slice() {
-            ["equal", field] => (*field, None),
-            ["at_most", field, limit] => {
-                (*field, Some(limit.parse::<u64>().map_err(|_| malformed())?))
-            }
-            _ => return Err(malformed()),
-        };
-        let values = reports
-            .iter()
-            .map(|fields| {
-                fields
-                    .iter()
-                    .find(|(key, _)| key == field)
-                    .and_then(|(_, value)| match value {
-                        JsonData::Number(text) => text.parse::<u64>().ok(),
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        format!("{MEMORY} line {}: no integer field `{field}`", index + 1)
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let runs = || {
-            scenario
-                .arguments
-                .iter()
-                .zip(&values)
-                .map(|(argument, value)| format!("{argument}: {value}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        match limit {
-            None if values.windows(2).any(|pair| pair[0] != pair[1]) => {
-                return Err(format!(
-                    "{MEMORY} line {}: {field} differs ({})",
-                    index + 1,
-                    runs()
-                ));
-            }
-            Some(limit) if values.iter().any(|value| *value > limit) => {
-                return Err(format!(
-                    "{MEMORY} line {}: {field} exceeds {limit} ({})",
-                    index + 1,
-                    runs()
-                ));
-            }
-            _ => {}
-        }
-    }
-    Ok(())
 }

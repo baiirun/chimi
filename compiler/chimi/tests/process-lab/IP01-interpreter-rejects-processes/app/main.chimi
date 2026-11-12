@@ -1,0 +1,23 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// IP01: the reference interpreter has no process runtime. `chimi run` defects
+// at the first operation that needs one, naming it, rather than running the
+// program some other way.
+pub enum Message {
+  Ping
+}
+
+fn idle(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.Ping -> Void
+  }
+}
+
+pub fn main() -> Void {
+  let member = Supervisor.process(Process.spec(idle, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  Supervisor.stop(root)
+}

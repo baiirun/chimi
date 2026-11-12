@@ -6452,6 +6452,9 @@ impl ProjectTypeChecker {
                     | StandardType::DecodeError
                     | StandardType::NumberError
                     | StandardType::ChannelSendError
+                    | StandardType::ProcessSendError
+                    | StandardType::SupervisorRestart
+                    | StandardType::SupervisorStartError
                     | StandardType::ChannelReceive
                     | StandardType::ChannelError
                     | StandardType::IntParseError

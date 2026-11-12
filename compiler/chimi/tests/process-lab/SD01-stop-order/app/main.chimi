@@ -1,0 +1,61 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// SD01: two declared and two dynamic members, all parked in `receive`. `stop`
+// ends the dynamic ones newest first, then the declared ones in reverse, then
+// reports the supervisor stopped.
+
+pub enum Message {
+  Add(amount: Int)
+  Report(reply: Sender<Int>)
+}
+
+fn counter(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+    }
+  }
+}
+
+pub process name declared_a: Message
+pub process name declared_b: Message
+pub process name dynamic_a: Message
+pub process name dynamic_b: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let a = Process.spec(counter, 1, Duration.seconds(1)) |> Process.register(declared_a)
+  let b = Process.spec(counter, 1, Duration.seconds(1)) |> Process.register(declared_b)
+  let members = [
+    Supervisor.process(a, Supervisor.Restart.Never),
+    Supervisor.process(b, Supervisor.Restart.Never),
+  ]
+  let root = Supervisor.start(Supervisor.policy(members, 4, Supervisor.restarts(0, Duration.seconds(30))))
+  let c = Supervisor.start_process(
+    root,
+    Process.spec(counter, 1, Duration.seconds(1)) |> Process.register(dynamic_a),
+    Supervisor.Restart.Never,
+  )
+  let d = Supervisor.start_process(
+    root,
+    Process.spec(counter, 1, Duration.seconds(1)) |> Process.register(dynamic_b),
+    Supervisor.Restart.Never,
+  )
+  settle()
+  Supervisor.stop(root)
+  4
+}

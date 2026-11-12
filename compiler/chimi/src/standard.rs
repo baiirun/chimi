@@ -326,8 +326,8 @@ pub(crate) enum StandardFunction {
     DurationToText,
     DurationParse,
     /// Declared before the process functions: declaration order is the
-    /// native runtime's `CHIMI_INTRINSIC_*` order (`runtime_id`), which has
-    /// `Clock.sleep` and no process operation yet.
+    /// native runtime's `CHIMI_INTRINSIC_*` order (`runtime_id`), and the
+    /// process intrinsics follow `CHIMI_INTRINSIC_CLOCK_SLEEP` there.
     ClockSleep,
     ProcessSpec,
     ProcessRegister,
@@ -644,8 +644,7 @@ impl StandardFunction {
                 | Self::ChannelClose
                 | Self::ChannelAbort
                 | Self::ChannelBounded
-                | Self::ClockSleep
-        )
+        ) || self.requires_process_runtime()
     }
 
     /// The unit of a `Duration` constructor (`Duration.seconds`) or of a whole-unit

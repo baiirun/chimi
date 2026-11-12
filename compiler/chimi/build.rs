@@ -1,8 +1,9 @@
 //! Prebuilds the native runtime archive once per compiler build, so `chimi build`
 //! does not compile `runtime.c` per project (it dominated a cold build).
 //!
-//! Writes `$OUT_DIR/libchimi_rt.a` and `$OUT_DIR/libchimi_rt.key`, which the
-//! compiler embeds. The key is computed from the exact bytes compiled here; the
+//! Writes `$OUT_DIR/libchimi_rt.a` and `$OUT_DIR/libchimi_rt.key`, and the
+//! process-kernel variant `libchimi_rt_process.a` and `libchimi_rt_process.key`
+//! (`PROCESS_KERNEL_FLAG`), which the compiler embeds. The key is computed from the exact bytes compiled here; the
 //! compiler recomputes it from the sources it embeds and its current `cc`, and
 //! uses the prebuilt archive only when the two agree. When no archive can be
 //! built here (feature off, cross-compiling, no `cc`, a compile error), both
@@ -31,24 +32,30 @@ fn main() {
     let target = std::env::var("TARGET").expect("cargo sets TARGET");
     println!("cargo:rustc-env=CHIMI_RUNTIME_TARGET={target}");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
-    let archive = out.join("libchimi_rt.a");
-    let key_path = out.join("libchimi_rt.key");
-    let (bytes, key) = match prebuild(&out, &target) {
-        Ok(Some(built)) => built,
-        Ok(None) => (Vec::new(), String::new()),
-        Err(error) => {
-            println!(
-                "cargo:warning=native runtime not prebuilt ({error}); chimi build will compile it per project"
-            );
-            (Vec::new(), String::new())
-        }
-    };
-    std::fs::write(&archive, bytes).expect("write prebuilt runtime archive");
-    std::fs::write(&key_path, key).expect("write prebuilt runtime key");
+    for (name, process_kernel) in [("libchimi_rt", false), ("libchimi_rt_process", true)] {
+        let (bytes, key) = match prebuild(&out, &target, name, process_kernel) {
+            Ok(Some(built)) => built,
+            Ok(None) => (Vec::new(), String::new()),
+            Err(error) => {
+                println!(
+                    "cargo:warning=native runtime {name} not prebuilt ({error}); chimi build will compile it per project"
+                );
+                (Vec::new(), String::new())
+            }
+        };
+        std::fs::write(out.join(format!("{name}.a")), bytes)
+            .expect("write prebuilt runtime archive");
+        std::fs::write(out.join(format!("{name}.key")), key).expect("write prebuilt runtime key");
+    }
 }
 
 /// Returns `None` when this build does not prebuild (by design, not failure).
-fn prebuild(out: &Path, target: &str) -> Result<Option<(Vec<u8>, String)>, String> {
+fn prebuild(
+    out: &Path,
+    target: &str,
+    name: &str,
+    process_kernel: bool,
+) -> Result<Option<(Vec<u8>, String)>, String> {
     if std::env::var_os("CARGO_FEATURE_NATIVE_BACKEND").is_none()
         || std::env::var("HOST").ok().as_deref() != Some(target)
     {
@@ -60,7 +67,7 @@ fn prebuild(out: &Path, target: &str) -> Result<Option<(Vec<u8>, String)>, Strin
     let fiber_header = read(FIBER_HEADER)?;
     // Compile the bytes that are hashed, not the files again: the sources may
     // change while this script runs.
-    let directory = out.join("runtime");
+    let directory = out.join(name);
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("create {directory:?}: {error}"))?;
     let write = |name: &str, bytes: &[u8]| {
@@ -73,10 +80,10 @@ fn prebuild(out: &Path, target: &str) -> Result<Option<(Vec<u8>, String)>, Strin
     let abi_version = abi_version(&runtime_header)?;
     let compiler_identity = compiler_identity()?;
     let object = directory.join("runtime.o");
-    let archive = directory.join("libchimi_rt.a");
+    let archive = directory.join(format!("{name}.a"));
     let _ = std::fs::remove_file(&archive);
     run(Command::new(RUNTIME_C_COMPILER)
-        .args(RUNTIME_C_FLAGS)
+        .args(runtime_c_flags(process_kernel))
         .arg("-I")
         .arg(&directory)
         .arg("-c")
@@ -92,6 +99,7 @@ fn prebuild(out: &Path, target: &str) -> Result<Option<(Vec<u8>, String)>, Strin
         runtime_source: &runtime_source,
         runtime_header: &runtime_header,
         fiber_header: &fiber_header,
+        process_kernel,
     });
     Ok(Some((bytes, key)))
 }

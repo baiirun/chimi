@@ -1,0 +1,54 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// MB07: `fragile` ends with `Failure(Problem.Broken)`. The failure ends the
+// process only: later sends return `Unavailable`, and main finishes with
+// `success`, its value the amount handed back (5).
+pub enum Message {
+  Break
+  Add(amount: Int)
+}
+
+pub enum Problem {
+  Broken
+}
+
+pub process name fragile: Message
+
+fn break_on_request(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.Break -> Failure(Problem.Broken)
+    Message.Add(_) -> Void
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let member = Process.spec(break_on_request, 1, Duration.seconds(1))
+    |> Process.register(fragile)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(fragile, Message.Break)
+  settle()
+  let returned = case Process.send(fragile, Message.Add(5)) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      SendError.Full(_) -> -1
+      SendError.Unavailable(message) -> case message {
+        Message.Add(amount) -> amount
+        Message.Break -> -2
+      }
+    }
+  }
+  Supervisor.stop(root)
+  returned
+}

@@ -1,0 +1,90 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// RT08: main stores a named and a direct address of `target` in a struct and
+// sends the struct to `courier`, which sends through both. Addresses are plain
+// shareable values, so both sends reach the same incarnation and each records
+// its own routing kind. The target adds 1 and 10: the outcome is 11.
+
+pub enum Message {
+  Add(amount: Int)
+  Report(reply: Sender<Int>)
+}
+
+fn counter(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+    }
+  }
+}
+
+struct Route {
+  named: Address<Message>,
+  direct: Address<Message>,
+}
+
+pub enum CourierMessage {
+  Deliver(route: Route)
+}
+
+pub process name courier: CourierMessage
+pub process name target: Message
+
+fn carry(inbox: Inbox<CourierMessage>) -> Void {
+  loop delivered = 0 {
+    case Process.receive(inbox) {
+      CourierMessage.Deliver(route) -> {
+        Process.send(route.named, Message.Add(1))
+        Process.send(route.direct, Message.Add(10))
+        delivered + 1
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn reply_value(received: Receive<Int>) -> Int {
+  case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+fn ask(address: Address<Message>) -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(address, Message.Report(replies.sender))
+  let received = Channel.receive(replies.receiver)
+  reply_value(received)
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let carrying = Process.spec(carry, 1, Duration.seconds(1))
+    |> Process.register(courier)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([carrying], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(
+    root,
+    Process.spec(counter, 4, Duration.seconds(1)) |> Process.register(target),
+    Supervisor.Restart.Never,
+  )
+  let route = Route(target, Supervisor.address(managed))
+  Process.send(courier, CourierMessage.Deliver(route))
+  settle()
+  let total = ask(target)
+  Supervisor.stop(root)
+  total
+}

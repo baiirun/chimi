@@ -66,6 +66,7 @@ compiler/chimi/src/process_lab/fixture.rs    build, run, and compare one fixture
 compiler/chimi/src/process_lab/static_kind.rs
 compiler/chimi/src/process_lab/core_kind.rs
 compiler/chimi/src/process_lab/heap_kind.rs
+compiler/chimi/src/process_lab/observability_kind.rs
 compiler/chimi/src/process_lab/performance.rs
 compiler/chimi/tests/process-lab/<ID>-<slug>/app/main.chimi
 compiler/chimi/tests/process-lab/<ID>-<slug>/expected.diagnostics
@@ -94,7 +95,8 @@ docs/performance/supervised-process-conformance-baseline.md   written by ts-1765
   `required-features = ["native-backend"]`.
 - Each kind module and `fixture.rs` land with the first stage that runs
   them (`static_kind.rs` and `fixture.rs` at U1, `core_kind.rs` at U2,
-  `heap_kind.rs` at U3, `performance.rs` at U10). Until then an unlocked
+  `heap_kind.rs` at U3, `observability_kind.rs` at U5, `performance.rs` at
+  U10; runtime fixtures run through `fixture.rs` alone). Until then an unlocked
   scenario of that kind fails with "runner has not landed".
 
 ## Harness entry points
@@ -213,24 +215,30 @@ For a `defect`, the file holds the two compared fields, `outcome` and
 `message`, and the scenario's `exit_code` is 70. A scenario with several
 runs has one line per run, in `arguments` order.
 
-Each run is `<executable> --chimi-runner --trace=off --outcome-file=<path>
---memory-report-file=<path> -- <argument>`, and must exit with the
-scenario's `exit_code`. Defect outcomes are compared from U5; until then a
-fixture whose `expected.outcome` holds a defect fails with "lands with U5".
+Each run is `<executable> --chimi-runner --clock=virtual --trace=off
+--telemetry-file=<path> --outcome-file=<path> --memory-report-file=<path> --
+<argument>`, and must exit with the scenario's `exit_code`. Its telemetry
+file must stay empty. `--clock=virtual` is on every run, not only the
+transcript runs (U5 decision): a fixture that sleeps then gets the same
+outcome and memory report in every mode. A transcript fixture's
+`--trace=full` and `--trace=boundaries` runs must exit with the same code.
 
 ### `expected.memory`
 
-Memory-flatness fixtures (`MF`) only. One assertion per line over the
-`--memory-report-file` reports of the scenario's runs:
+Any executed fixture may have one (memory-flatness, copy-boundary, and
+observability fixtures use it). One assertion per line over the
+`--memory-report-file` reports of the scenario's `--trace=off` runs:
 
 ```text
 equal scoped_peak_live_bytes
 at_most scoped_peak_live_bytes 7168
+exactly copied_values 21
 ```
 
 `equal <field>` requires the top-level integer field to have the same value
 in every run. `at_most <field> <limit>` requires it to be at most `limit` in
-every run. Equality across sizes proves that memory does not grow with
+every run. `exactly <field> <value>` requires it to be `value` in every run
+(U5 decision, for CB02, CB03, and OB01, whose counts are exact). Equality across sizes proves that memory does not grow with
 uptime, but it also accepts reclamation in batches of k passes. MF05
 therefore also bounds its peak below two passes' allocations on top of the
 4 KiB full-pass minimum, so that only per-pass reclamation passes.
@@ -292,8 +300,8 @@ channel events: `schema`, `event`, `sequence`, `computation`,
 `execution_id`, `task_id`, `parent_task_id`, `cause_task_id`, and
 `channel_id`, then `attributes` with `scheduler_sequence`. An identity of 0
 is `null`. The process and clock families add these fields. `project`
-reads them. `runtime.c` writes the clock family (ts-6ccbc9 decision 6),
-and U5 implements the process family there:
+reads them. `runtime.c` writes the clock family (ts-6ccbc9 decision 6) and,
+from U5, the process family:
 
 - The envelope's `capacity`, `queue_depth`, `waiter_depth`, and
   `discard_count` attributes stay on process and clock events, and are 0.
@@ -383,7 +391,10 @@ interleaving. RR02 shows the pattern.
   requires the interpreter to reject process programs the same way, with
   "requires the supervised process runtime". The lab reports each runtime
   fixture on the interpreter (`--backend interpreter`) as `unsupported`,
-  never as `pass`.
+  never as `pass`. IP01 itself always runs on the interpreter, whatever
+  `--backend` names: it executes its fixture in process through the
+  interpreter (`chimi run`'s path) and compares `expected.outcome` as for a
+  native run, with exit code 70 for its defect.
 - When the interpreter gains a scheduler, every runtime fixture must produce
   the same `expected.outcome` and `expected.transcript` on both backends, with
   no backend-specific expected files. See open question 1.
@@ -633,7 +644,27 @@ report gains these fields in ts-6ccbc9: `heap_chunks_live`,
 `heap_chunk_bytes_peak`, `fragments_live`, `fragment_bytes_peak`,
 `process_heap_peak_value_bytes` (the maximum over all incarnations),
 `copied_values`, `copied_bytes`, and `trace_events_constructed`. Fixtures
-take their size from `main(arguments)`.
+take their size from `main(arguments)`. As built in `runtime.c` (U5):
+
+- `runtime.c` has no chunks: an allocation is its unit of heap memory.
+  `heap_chunks_live` is the live allocations at exit, in every heap and
+  fragment, and `heap_chunk_bytes_peak` is `peak_footprint_bytes`.
+- `fragments_live` is the fragments live at exit, and `fragment_bytes_peak`
+  is `peak_fragment_footprint_bytes`.
+- `process_heap_peak_value_bytes` is the largest peak of live payload bytes
+  of any incarnation's heap.
+- `copied_values` counts the values `Process.send` copied into messages, and
+  `copied_bytes` their payload bytes. Other copies (task captures and
+  results, channel messages, each incarnation's copy of its spec) do not
+  count, so CB02 measures one message.
+- `trace_events_constructed` counts the telemetry events the runner built,
+  its own and the scheduler's.
+
+MF01 rounds N down to whole batches of 64 (9,984 for 10,000), so that both
+runs repeat one batch shape; a final partial batch changes the incarnation's
+peak by a few bytes without any growth. OB01 runs its own fixture at U5,
+with the forcing program's ingredients (named and direct sends of every
+outcome, a dynamic member, a stop); FP01 adds the same check at U10.
 
 | ID | Unlock | Scenario | Rejects |
 | --- | --- | --- | --- |
@@ -642,7 +673,7 @@ take their size from `main(arguments)`.
 | MF03 | U10 | N `start_process` and `remove_process` cycles, for N = 100 and N = 10,000. Equal `heap_chunks_live`, and no live memberships at exit | Leaks per membership |
 | MF04 | U5 | 64 queued Int messages hold less than 256 KiB of `fragment_bytes_peak` | One 64 KiB chunk per small fragment. Coordinator decision 6 on `ts-a6b43b` requires small-fragment slabs |
 | MF05 | U3 | A program that uses tasks but no processes runs a 1,000,000-pass loop with equal peak live bytes at 10,000 passes | Loop reclamation still disabled under `CHIMI_REQUIRES_SCHEDULER` (`prog show ts-da83af`) |
-| MF06 | U5 | Build three programs: no concurrency, tasks only, and processes. Only the process program links process-kernel symbols, and only the last two link `libchimi_fiber.a` | Pay-for-play linking broken |
+| MF06 | U5 | Build three programs: no concurrency, tasks only, and processes. Only the process program links process-kernel symbols, and only the last two link `libchimi_fiber.a`. As built, the process kernel is the runtime variant compiled with `CHIMI_PROCESS_KERNEL`, whose `chimi_rt_process_entry` only process programs define; `chimi_fiber_abi_version` marks the scheduler archive. The scheduler's own process code is part of `libchimi_fiber.a` and is not split out | Pay-for-play linking broken |
 
 ### Observability
 

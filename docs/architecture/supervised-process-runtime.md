@@ -745,6 +745,45 @@ kind of check. Processes extend this in three tiers:
 Fragment copy and owner checks live in the heap object that every tier links.
 The supervisor code is the only addition that processes bring.
 
+As built (ts-6ccbc9 U5), the process tier is a second variant of the runtime
+archive, `libchimi_rt_process.a`, compiled from `runtime.c` with
+`-DCHIMI_PROCESS_KERNEL=1`. `build.rs` prebuilds both variants. The variant
+holds the code that talks to the scheduler's process kernel: marshalling,
+`Process.send` and `receive`, the supervisor requests, the incarnation entry
+`chimi_rt_process_entry`, and the `release_message` and
+`release_spec_context` hooks. The pure data constructors and the trace
+family's encoding are in both variants. The scheduler's supervisor records,
+name table, and mailboxes are Rust code in `libchimi_fiber.a`, which every
+scheduler program links, and are not split out. Lab scenario MF06 checks the
+symbols of the three tiers.
+
+### The process glue as built in `runtime.c`
+
+- Specs, members, policies, and restart limits are records with the field
+  names the interpreter uses, so build-time constants and run-time values are
+  the same. `Supervisor.start` and `start_process` marshal them into
+  `ChimiSupervisorPolicy` and `ChimiProcessSpec`. Each spec's context holds a
+  detached fragment with a copy of the body callable, which carries the
+  providers it captured. The scheduler owns the context from the request on;
+  a request that is never issued (its task is cancelled first) frees its
+  contexts in the runtime.
+- Every incarnation runs `chimi_rt_process_entry`: a new heap, a copy of the
+  body from the context's fragment (`fragment_copy_into_current`, which leaves
+  the fragment for the next incarnation), and the body called with an inbox
+  value. Return, `Failure`, defect, and cancellation map to
+  `CHIMI_PROCESS_END_RETURNED`, `CHIMI_PROCESS_END_FAILED`, a defected fiber,
+  and a cancelled fiber. The heap is destroyed when the body ends.
+- `Process.send` copies the message into a fragment in the sender's heap,
+  before the request. Only `OK` hands it to the scheduler; `Full`,
+  `Unavailable`, and errors leave it with the sender, which frees it and
+  returns its own original value. A message that points into another heap
+  defects in the sender, naming both owners, and no request is issued
+  (CB07). `Process.receive` adopts the delivered fragment in O(1).
+- Addresses, `Running`, and managed handles are plain values holding
+  scheduler identities, so they copy as they are. A scheduler name id is the
+  `process name` symbol index plus 1; that Core symbol's name is its trace
+  label, which `runtime.c` prints and puts in `NameTaken`.
+
 ## Risks
 
 ### Performance

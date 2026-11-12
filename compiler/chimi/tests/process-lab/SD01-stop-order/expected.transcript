@@ -1,0 +1,9 @@
+@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.declared_a
+@0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.declared_b
+@0s process_started supervisor=S1 membership=M3 incarnation=I3 name=app/main.dynamic_a
+@0s process_started supervisor=S1 membership=M4 incarnation=I4 name=app/main.dynamic_b
+@1ms process_terminated membership=M4 incarnation=I4 cause=cancelled
+@1ms process_terminated membership=M3 incarnation=I3 cause=cancelled
+@1ms process_terminated membership=M2 incarnation=I2 cause=cancelled
+@1ms process_terminated membership=M1 incarnation=I1 cause=cancelled
+@1ms supervisor_stopped supervisor=S1

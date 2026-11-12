@@ -2366,9 +2366,16 @@ fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
             } else {
                 (None, None)
             };
+            // A `process name` carries its trace label, which the native runtime
+            // prints and puts in `NameTaken`.
+            let name = if kind == CoreSymbolKind::ProcessName {
+                crate::typing::process::process_name_label(typed, symbol.id)
+            } else {
+                symbol.name.clone()
+            };
             let symbol = CoreSymbol {
                 id: symbol.id,
-                name: symbol.name.clone(),
+                name,
                 kind,
                 constructor,
                 standard: typed.resolved.standard_symbol(symbol.id),

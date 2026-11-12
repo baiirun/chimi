@@ -10182,3 +10182,40 @@ fn removing_a_supervisor_consumes_its_handle() {
         "{diagnostics:?}"
     );
 }
+
+// A `SendError`, `Restart`, or `StartError` value is a closed enum: a `case` that
+// names every variant is exhaustive, as for `Channel.SendError`. Rejects a checker
+// that knows no variant domain for these standard enums and asks for a `_` arm.
+#[test]
+fn process_standard_enum_values_match_exhaustively() {
+    let program = process_program(concat!(
+        "fn sent(error: Process.SendError<Message>) -> Int {\n",
+        "  case error {\n",
+        "    Process.SendError.Full(_) -> 1\n",
+        "    Process.SendError.Unavailable(_) -> 2\n",
+        "  }\n",
+        "}\n",
+        "fn restart(policy: Supervisor.Restart) -> Int {\n",
+        "  case policy {\n",
+        "    Supervisor.Restart.Never -> 1\n",
+        "    Supervisor.Restart.OnDefect -> 2\n",
+        "  }\n",
+        "}\n",
+        "fn started(error: Supervisor.StartError) -> Int {\n",
+        "  case error {\n",
+        "    Supervisor.StartError.CapacityReached -> 1\n",
+        "    Supervisor.StartError.NameTaken(_) -> 2\n",
+        "    Supervisor.StartError.Stopped -> 3\n",
+        "  }\n",
+        "}\n",
+    ));
+    assert_eq!(check_codes(&program), Vec::<String>::new());
+    let missing = process_program(concat!(
+        "fn sent(error: Process.SendError<Message>) -> Int {\n",
+        "  case error {\n",
+        "    Process.SendError.Full(_) -> 1\n",
+        "  }\n",
+        "}\n",
+    ));
+    assert_eq!(check_codes(&missing), ["T4231"]);
+}

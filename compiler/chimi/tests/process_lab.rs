@@ -116,9 +116,8 @@ fn the_interpreter_backend_reports_executed_fixtures_unsupported() {
 }
 
 // Projects task telemetry the native runner really writes. This covers the
-// shared envelope, `sequence` order, and the `task_terminal` extra event. The
-// process and clock families are not emitted before U5, so their encoding is
-// covered only by the hand-written unit tests until then. Task identities
+// shared envelope, `sequence` order, and the `task_terminal` extra event; every
+// runtime transcript fixture projects the process family's. Task identities
 // count from 1 in creation order: the root is T1 and its child T2, and
 // neither terminal names a defect cause.
 #[test]

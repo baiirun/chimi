@@ -1,0 +1,3 @@
+@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.only
+@1ms process_terminated membership=M1 incarnation=I1 cause=cancelled
+@1ms supervisor_stopped supervisor=S1

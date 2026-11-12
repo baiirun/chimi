@@ -1,0 +1,42 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// OB02: lifecycle events (start, termination, stop) are boundary events and
+// sends are motion events: under --trace=boundaries the transcript keeps the
+// lifecycle lines and drops every `process_send` line.
+pub enum Message {
+  Quit
+}
+
+pub process name quitter: Message
+pub process name stayer: Message
+
+fn quit_on_message(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.Quit -> Void
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let first = Process.spec(quit_on_message, 1, Duration.seconds(1))
+    |> Process.register(quitter)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let second = Process.spec(quit_on_message, 1, Duration.seconds(1))
+    |> Process.register(stayer)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([first, second], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(quitter, Message.Quit)
+  settle()
+  Supervisor.stop(root)
+  1
+}

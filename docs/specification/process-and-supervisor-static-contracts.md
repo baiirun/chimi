@@ -270,14 +270,25 @@ capability and supervisor identity, never as expected failures:
   `restarts`) run at build time, so module constants may hold specs,
   members, and policies; every other operation is a run-time operation
   (`E5201` in a constant). The interpreter defects at the first run-time
-  operation. The native build refuses process programs until the process
-  kernel lands (U5).
+  operation. The native build refused process programs until the process
+  kernel landed (U5).
 - U2 (ts-6ccbc9): capability checking for processes in
   `compiler/chimi/src/capability.rs`, `T4240` for a body failure type in
   `typing/process.rs`, and the Core verifier
   (`compiler/chimi/src/executable/verify.rs`), which `lower` runs in debug
   builds and tests and the conformance lab runs on hand-built Core. See
   "Capability rules as checked" below.
+- U5 (ts-6ccbc9): the native runtime runs processes on the scheduler's
+  process kernel (`compiler/chimi/runtime/native/runtime.c`, "std/process and
+  std/supervisor"). The range defects above are the native texts too. Two
+  more limits come from the scheduler's 32-bit fields: a mailbox capacity, a
+  policy capacity, or a restart limit above 4,294,967,295 defects at
+  `Supervisor.start` or `Supervisor.start_process`, for example
+  `Supervisor.start: mailbox capacity must be at most 4294967295, got
+  4294967296`. `Supervisor.wait` on a root that escalated defects with
+  `Supervisor.RestartLimitExceeded`. A `SendError`, `Restart`, or
+  `StartError` value is a closed enum in a `case`, so naming every variant is
+  exhaustive.
 
 ## Capability rules as checked
 

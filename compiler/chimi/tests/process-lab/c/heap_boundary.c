@@ -4,8 +4,32 @@
    reachable, and supplies an empty program so the runtime links.
 
    usage: heap_boundary <scenario ID>   runs that scenario's checks; prints "ok"
-   Exits 1 on the first failed check and 2 for an unknown scenario. */
+   Exits 1 on the first failed check and 2 for an unknown scenario.
+
+   It builds the process-kernel runtime and stands in for the scheduler: its
+   chimi_fiber_request (which replaces the runtime's weak fallback) records each
+   request it is handed and accepts it, so a check can see whether a request ever
+   reached the scheduler. */
+#define CHIMI_PROCESS_KERNEL 1
+#define CHIMI_HARNESS_FIBER_REQUEST 1
 #include "runtime.c"
+
+static uint32_t scheduler_requests[64];
+static size_t scheduler_request_count;
+
+ChimiFiberCommand chimi_fiber_request(void *request, const ChimiRootFrame *roots) {
+  (void)roots;
+  ChimiSchedulerRequest *record = request;
+  if (scheduler_request_count < sizeof(scheduler_requests) / sizeof(*scheduler_requests))
+    scheduler_requests[scheduler_request_count++] = record->kind;
+  if (record->kind == CHIMI_REQUEST_PROCESS_SEND) {
+    /* An accepted message would be the scheduler's; this one frees it at once. */
+    ChimiProcessRequest *send = request;
+    if (send->message) fragment_free((RuntimeFragment *)(uintptr_t)send->message);
+  }
+  record->status = CHIMI_RESPONSE_OK;
+  return CHIMI_FIBER_RESUME;
+}
 
 const char *CHIMI_COMPUTATION = "process-lab-heap-boundary";
 const uint32_t CHIMI_REQUIRES_SCHEDULER = 0;
@@ -148,6 +172,41 @@ static void cb06_foreign_pointer_not_followed(void) {
         (unsigned long long)small.pass_scanned, (unsigned long long)large.pass_scanned);
 }
 
+/* CB07: Process.send of a message that points into another heap defects in the
+   sender, naming both owners, and never reaches the scheduler: no request is
+   issued, so the receiver's mailbox is unchanged and no `process_send` event is
+   recorded. No fragment is left behind. A control send of a message the sender
+   owns is handed to the scheduler, so the check can tell the two apart. */
+static void cb07_foreign_pointer_send_defects_in_the_sender(void) {
+  RuntimeHeap *heap_b = heap_create(), *heap_a = heap_create();
+  RuntimeHeap *previous = enter(heap_b);
+  ChimiValue *foreign = counting_list(8);
+  enter(heap_a);
+  ChimiRuntime runtime = {0};
+  ChimiValue *arguments[] = {process_address_value(CHIMI_ADDRESS_DIRECT, 1),
+                             triple(integer_value(1), foreign, integer_value(2))};
+  size_t fragments = heap_totals.live_fragments;
+  ChimiControl *sent = invoke_process(&runtime, CHIMI_INTRINSIC_PROCESS_SEND, arguments, 2, 0);
+  CHECK(sent->kind == CONTROL_DEFECT, "a send with a foreign pointer did not defect (control %d)",
+        (int)sent->kind);
+  char owner_a[32], owner_b[32];
+  snprintf(owner_a, sizeof(owner_a), "owner %" PRIu64, heap_a->owner);
+  snprintf(owner_b, sizeof(owner_b), "owner %" PRIu64, heap_b->owner);
+  CHECK(strstr(sent->message, owner_a) && strstr(sent->message, owner_b),
+        "the defect does not name both owners: %s", sent->message);
+  CHECK(scheduler_request_count == 0, "the send reached the scheduler (%zu requests)",
+        scheduler_request_count);
+  CHECK(heap_totals.live_fragments == fragments, "the refused send left a fragment");
+  ChimiValue *own[] = {arguments[0], triple(integer_value(1), integer_value(2), integer_value(3))};
+  ChimiControl *accepted = invoke_process(&runtime, CHIMI_INTRINSIC_PROCESS_SEND, own, 2, 0);
+  CHECK(accepted->kind == CONTROL_SUCCESS, "a send of an owned message failed");
+  CHECK(scheduler_request_count == 1 && scheduler_requests[0] == CHIMI_REQUEST_PROCESS_SEND,
+        "an owned message did not reach the scheduler as one send");
+  enter(previous);
+  heap_destroy(heap_a);
+  heap_destroy(heap_b);
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
     fputs("usage: heap_boundary <scenario ID>\n", stderr);
@@ -155,6 +214,8 @@ int main(int argc, char **argv) {
   }
   if (strcmp(argv[1], "CB06") == 0) {
     cb06_foreign_pointer_not_followed();
+  } else if (strcmp(argv[1], "CB07") == 0) {
+    cb07_foreign_pointer_send_defects_in_the_sender();
   } else {
     fprintf(stderr, "heap_boundary: no scenario %s\n", argv[1]);
     return 2;

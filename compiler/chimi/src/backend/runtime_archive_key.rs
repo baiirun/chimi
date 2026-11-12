@@ -11,6 +11,20 @@
 pub const RUNTIME_C_COMPILER: &str = "cc";
 pub const RUNTIME_C_FLAGS: [&str; 2] = ["-std=c11", "-O2"];
 
+/// Added to `RUNTIME_C_FLAGS` for the process-kernel variant of the runtime,
+/// which only programs that reach `std/process` or `std/supervisor` link
+/// (pay-for-play; supervised-process-conformance.md, MF06).
+pub const PROCESS_KERNEL_FLAG: &str = "-DCHIMI_PROCESS_KERNEL=1";
+
+/// The C flags of one runtime variant.
+pub fn runtime_c_flags(process_kernel: bool) -> Vec<&'static str> {
+    let mut flags = RUNTIME_C_FLAGS.to_vec();
+    if process_kernel {
+        flags.push(PROCESS_KERNEL_FLAG);
+    }
+    flags
+}
+
 /// The inputs that decide the bytes of the runtime archive.
 pub struct RuntimeArchiveInputs<'a> {
     /// `CHIMI_RUNTIME_ABI_VERSION` as the compiler states it.
@@ -22,12 +36,14 @@ pub struct RuntimeArchiveInputs<'a> {
     pub runtime_source: &'a [u8],
     pub runtime_header: &'a [u8],
     pub fiber_header: &'a [u8],
+    /// The process-kernel variant (`PROCESS_KERNEL_FLAG`).
+    pub process_kernel: bool,
 }
 
 /// Ensures: equal keys only for equal inputs (each part is length-prefixed,
 /// so moving bytes between parts changes the key).
 pub fn runtime_archive_key(inputs: &RuntimeArchiveInputs<'_>) -> String {
-    let flags = RUNTIME_C_FLAGS.join(" ");
+    let flags = runtime_c_flags(inputs.process_kernel).join(" ");
     let parts: [&[u8]; 10] = [
         b"chimi.runtime-archive.v1",
         RUNTIME_C_COMPILER.as_bytes(),

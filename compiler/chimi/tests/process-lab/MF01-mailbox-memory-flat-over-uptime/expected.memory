@@ -1,0 +1,2 @@
+equal process_heap_peak_value_bytes
+equal heap_chunks_live

@@ -1,0 +1,67 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// CB02: a tree 20 levels deep whose two branches at every level are the same
+// value: 2^20 paths, 21 distinct values (20 nodes and one leaf). A copy that
+// keeps sharing copies 21 values (expected.memory); one that follows each path
+// would copy 2^21 - 1. The walker reports the depth it walked (20).
+pub enum Tree {
+  Leaf
+  Node(left: Tree, right: Tree)
+}
+
+fn grow(depth: Int) -> Tree {
+  case depth {
+    0 -> Tree.Leaf
+    _ -> {
+      let child = grow(depth - 1)
+      Tree.Node(child, child)
+    }
+  }
+}
+
+struct Walk {
+  tree: Tree,
+  depth: Int,
+}
+
+fn depth(tree: Tree) -> Int {
+  loop state = Walk(tree, 0) {
+    case state.tree {
+      Tree.Leaf -> break state.depth
+      Tree.Node(left, _) -> Walk(left, state.depth + 1)
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let replies = Channel.bounded(1)
+  let reply = replies.sender
+  let walker = fn(inbox: Inbox<Tree>) -> Void {
+    loop walked = 0 {
+      let tree = Process.receive(inbox)
+      Channel.send(reply, depth(tree))
+      walked + 1
+    }
+  }
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(walker, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  Process.send(Supervisor.address(managed), grow(20))
+  let received = Channel.receive(replies.receiver)
+  let walked = case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+  Supervisor.stop(root)
+  walked
+}

@@ -1,0 +1,10 @@
+@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.pusher
+@0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.peer
+@0s process_send kind=named name=app/main.pusher incarnation=I1 outcome=accepted
+@0s process_send kind=named name=app/main.peer incarnation=I2 outcome=accepted
+@0s process_send kind=named name=app/main.peer incarnation=- outcome=full
+@1ms process_send kind=named name=app/main.pusher incarnation=I1 outcome=accepted
+@1ms process_send kind=named name=app/main.peer incarnation=I2 outcome=accepted
+@1ms process_terminated membership=M2 incarnation=I2 cause=cancelled
+@1ms process_terminated membership=M1 incarnation=I1 cause=cancelled
+@1ms supervisor_stopped supervisor=S1

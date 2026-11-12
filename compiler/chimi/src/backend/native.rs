@@ -1,14 +1,14 @@
 //! Native AOT object emission and host linking behind the backend-neutral program boundary.
 
 use super::BackendProgram;
-use super::program_data::render_program_data;
+use super::program_data::{render_program_data, requires_process_runtime};
 use super::runtime_archive_key::{
-    RUNTIME_C_COMPILER, RUNTIME_C_FLAGS, RuntimeArchiveInputs, runtime_archive_key,
+    RUNTIME_C_COMPILER, RuntimeArchiveInputs, runtime_archive_key, runtime_c_flags,
 };
 use crate::executable::{CoreOperation, CoreProgram};
 use crate::json::write_json_string;
 use crate::semantic::{BinaryOperator, UnaryOperator};
-use crate::standard::{StandardModule, StandardSymbol};
+use crate::standard::StandardSymbol;
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     AbiParam, Function, InstBuilder, Signature, UserFuncName, Value, types,
@@ -28,8 +28,8 @@ const CACHE_SCHEMA: &str = "chimi.native-cache.v1";
 const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
 const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
 const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
-const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v5-clock";
-const RUNTIME_ABI_VERSION: u32 = 17;
+const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v5-process-kernel";
+const RUNTIME_ABI_VERSION: u32 = 18;
 const FIBER_RUNTIME_ABI_VERSION: u32 = chimi_fiber::ABI_VERSION;
 static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -165,13 +165,7 @@ fn build_to_path(
     output_directory: &Path,
     executable_path: &Path,
 ) -> Result<NativeArtifact, String> {
-    if requires_process_runtime(&program.core) {
-        return Err(
-            "this program uses std/process or std/supervisor, which require the \
-             supervised process runtime; the native build does not include it yet"
-                .to_owned(),
-        );
-    }
+    let process_kernel = requires_process_runtime(&program.core);
     std::fs::create_dir_all(output_directory)
         .map_err(|error| format!("create native artifact directory: {error}"))?;
     if let Some(parent) = executable_path
@@ -184,7 +178,12 @@ fn build_to_path(
     let data_source_path = output_directory.join("program_data.c");
     let data_object_path = output_directory.join("program_data.o");
     let runtime_object_path = output_directory.join("runtime.o");
-    let runtime_archive_path = output_directory.join("libchimi_rt.a");
+    let runtime_archive_name = if process_kernel {
+        "libchimi_rt_process.a"
+    } else {
+        "libchimi_rt.a"
+    };
+    let runtime_archive_path = output_directory.join(runtime_archive_name);
     let fiber_runtime_archive_path =
         requires_fiber_runtime(&program.core).then(|| output_directory.join("libchimi_fiber.a"));
     let include_directory = output_directory.to_path_buf();
@@ -241,11 +240,12 @@ fn build_to_path(
         runtime_source: RUNTIME_SOURCE.as_bytes(),
         runtime_header: RUNTIME_HEADER.as_bytes(),
         fiber_header: FIBER_RUNTIME_HEADER.as_bytes(),
+        process_kernel,
     });
-    if let Some(archive) = prebuilt_runtime_archive(&runtime_key) {
+    if let Some(archive) = prebuilt_runtime_archive(&runtime_key, process_kernel) {
         std::fs::write(&runtime_archive_path, archive)
             .map_err(|error| format!("materialize prebuilt native runtime: {error}"))?;
-        cache.record_prebuilt("libchimi_rt.a");
+        cache.record_prebuilt(runtime_archive_name);
     } else {
         std::fs::write(include_directory.join("runtime.c"), RUNTIME_SOURCE)
             .map_err(|error| format!("write embedded runtime source: {error}"))?;
@@ -253,11 +253,11 @@ fn build_to_path(
             &runtime_key,
             "a",
             &runtime_archive_path,
-            "libchimi_rt.a",
+            runtime_archive_name,
             |temporary| {
                 run(
                     Command::new(RUNTIME_C_COMPILER)
-                        .args(RUNTIME_C_FLAGS)
+                        .args(runtime_c_flags(process_kernel))
                         .arg("-I")
                         .arg(&include_directory)
                         .arg("-c")
@@ -342,16 +342,27 @@ const RUNTIME_SOURCE: &str = include_str!("../../runtime/native/runtime.c");
 const RUNTIME_HEADER: &str = include_str!("../../runtime/native/runtime.h");
 const FIBER_RUNTIME_HEADER: &str =
     include_str!("../../../../runtime/chimi-fiber/include/chimi_fiber.h");
-// Written by `build.rs`; both are empty when the compiler was built without one.
+// Written by `build.rs`; each is empty when the compiler was built without it.
 const PREBUILT_RUNTIME_ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libchimi_rt.a"));
 const PREBUILT_RUNTIME_KEY: &str = include_str!(concat!(env!("OUT_DIR"), "/libchimi_rt.key"));
+const PREBUILT_PROCESS_RUNTIME_ARCHIVE: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/libchimi_rt_process.a"));
+const PREBUILT_PROCESS_RUNTIME_KEY: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/libchimi_rt_process.key"));
 
-/// The archive `build.rs` compiled, when it was compiled from exactly the inputs
-/// `key` names (the embedded sources and today's `cc`); otherwise `None`, and
-/// the caller compiles the runtime into the project cache.
-fn prebuilt_runtime_archive(key: &str) -> Option<&'static [u8]> {
-    (!PREBUILT_RUNTIME_KEY.is_empty() && PREBUILT_RUNTIME_KEY == key)
-        .then_some(PREBUILT_RUNTIME_ARCHIVE)
+/// The archive of the variant `build.rs` compiled, when it was compiled from
+/// exactly the inputs `key` names (the embedded sources and today's `cc`);
+/// otherwise `None`, and the caller compiles the runtime into the project cache.
+fn prebuilt_runtime_archive(key: &str, process_kernel: bool) -> Option<&'static [u8]> {
+    let (archive, prebuilt_key) = if process_kernel {
+        (
+            PREBUILT_PROCESS_RUNTIME_ARCHIVE,
+            PREBUILT_PROCESS_RUNTIME_KEY,
+        )
+    } else {
+        (PREBUILT_RUNTIME_ARCHIVE, PREBUILT_RUNTIME_KEY)
+    };
+    (!prebuilt_key.is_empty() && prebuilt_key == key).then_some(archive)
 }
 
 fn bundled_fiber_archive() -> Result<PathBuf, String> {
@@ -400,25 +411,6 @@ fn bundled_fiber_archive() -> Result<PathBuf, String> {
         format!(
             "bundled Chimi fiber runtime ABI {FIBER_RUNTIME_ABI_VERSION} is missing; set CHIMI_FIBER_RUNTIME_ARCHIVE"
         )
-    })
-}
-
-/// Whether any reachable node calls into `std/process` or `std/supervisor`, or
-/// names a `process name`. `Clock.sleep` runs on the scheduler alone.
-fn requires_process_runtime(core: &CoreProgram) -> bool {
-    core.nodes.iter().any(|node| {
-        let CoreOperation::Reference(symbol) = node.operation else {
-            return false;
-        };
-        let symbol = core.symbol(symbol);
-        symbol.kind == crate::executable::CoreSymbolKind::ProcessName
-            || matches!(
-                symbol.standard,
-                Some(StandardSymbol::Function(function)) if matches!(
-                    function.module(),
-                    Some(StandardModule::Process | StandardModule::Supervisor)
-                )
-            )
     })
 }
 

@@ -1,0 +1,47 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// SV01: `Supervisor.start` starts the three declared members in list order,
+// before main continues; `stop` then ends them before any has run, so each ends
+// `cancelled`.
+
+pub enum Message {
+  Add(amount: Int)
+  Report(reply: Sender<Int>)
+}
+
+fn counter(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+    }
+  }
+}
+
+pub process name first: Message
+pub process name second: Message
+pub process name third: Message
+
+pub fn main() -> Int {
+  let one = Process.spec(counter, 1, Duration.seconds(1)) |> Process.register(first)
+  let two = Process.spec(counter, 1, Duration.seconds(1)) |> Process.register(second)
+  let three = Process.spec(counter, 1, Duration.seconds(1)) |> Process.register(third)
+  let members = [
+    Supervisor.process(one, Supervisor.Restart.Never),
+    Supervisor.process(two, Supervisor.Restart.Never),
+    Supervisor.process(three, Supervisor.Restart.Never),
+  ]
+  let root = Supervisor.start(Supervisor.policy(members, 3, Supervisor.restarts(0, Duration.seconds(30))))
+  Supervisor.stop(root)
+  3
+}

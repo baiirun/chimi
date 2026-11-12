@@ -1,0 +1,5 @@
+@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.once
+@0s process_send kind=named name=app/main.once incarnation=I1 outcome=accepted
+@0s process_terminated membership=M1 incarnation=I1 cause=returned
+@1ms process_send kind=named name=app/main.once incarnation=- outcome=unavailable
+@1ms supervisor_stopped supervisor=S1

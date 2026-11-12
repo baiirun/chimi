@@ -1,0 +1,66 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// MB11: three members end differently on `End`: `returning` returns,
+// `failing` ends with `Failure`, and `defecting` divides by zero. Each end is a
+// lifecycle event only; none reaches main, which finishes with `success`.
+pub enum Message {
+  End
+}
+
+pub enum Problem {
+  Broken
+}
+
+pub process name returning: Message
+pub process name failing: Message
+pub process name defecting: Message
+
+fn return_on_end(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.End -> Void
+  }
+}
+
+fn fail_on_end(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.End -> Failure(Problem.Broken)
+  }
+}
+
+fn defect_on_end(inbox: Inbox<Message>) -> Void {
+  let divisor = case Process.receive(inbox) {
+    Message.End -> 0
+  }
+  let quotient = 1 / divisor
+  Void
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let first = Process.spec(return_on_end, 1, Duration.seconds(1))
+    |> Process.register(returning)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let second = Process.spec(fail_on_end, 1, Duration.seconds(1))
+    |> Process.register(failing)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let third = Process.spec(defect_on_end, 1, Duration.seconds(1))
+    |> Process.register(defecting)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([first, second, third], 3, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(returning, Message.End)
+  Process.send(failing, Message.End)
+  Process.send(defecting, Message.End)
+  settle()
+  Supervisor.stop(root)
+  0
+}

@@ -1,0 +1,101 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// MB03: `pusher` runs before `peer` (declared order) and, on `Kick`, sends two
+// values to `peer`, whose mailbox holds one. The second send returns `Full`
+// inside pusher's own fiber, and pusher keeps running: it counts the refusal and
+// later answers `Report`. Outcome: pusher's refusals * 10 + peer's total (1).
+
+pub enum Message {
+  Add(amount: Int)
+  Report(reply: Sender<Int>)
+}
+
+fn counter(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+    }
+  }
+}
+
+pub enum PushMessage {
+  Kick
+  Tell(reply: Sender<Int>)
+}
+
+pub process name pusher: PushMessage
+pub process name peer: Message
+
+fn push(inbox: Inbox<PushMessage>) -> Void {
+  loop refused = 0 {
+    case Process.receive(inbox) {
+      PushMessage.Kick -> {
+        let first = case Process.send(peer, Message.Add(1)) {
+          Success(_) -> 0
+          Failure(_) -> 1
+        }
+        let second = case Process.send(peer, Message.Add(1)) {
+          Success(_) -> 0
+          Failure(_) -> 1
+        }
+        refused + first + second
+      }
+      PushMessage.Tell(reply) -> {
+        Channel.send(reply, refused)
+        refused
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn reply_value(received: Receive<Int>) -> Int {
+  case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+fn ask(address: Address<Message>) -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(address, Message.Report(replies.sender))
+  let received = Channel.receive(replies.receiver)
+  reply_value(received)
+}
+
+fn ask_pusher() -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(pusher, PushMessage.Tell(replies.sender))
+  let received = Channel.receive(replies.receiver)
+  reply_value(received)
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let pushing = Process.spec(push, 4, Duration.seconds(1))
+    |> Process.register(pusher)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let counting = Process.spec(counter, 1, Duration.seconds(1))
+    |> Process.register(peer)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([pushing, counting], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(pusher, PushMessage.Kick)
+  settle()
+  let refused = ask_pusher()
+  let total = ask(peer)
+  Supervisor.stop(root)
+  refused * 10 + total
+}

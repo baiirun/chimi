@@ -5,7 +5,7 @@ use crate::executable::{
     CoreStep, CoreSymbolKind,
 };
 use crate::semantic::{BinaryOperator, UnaryOperator};
-use crate::standard::StandardSymbol;
+use crate::standard::{StandardModule, StandardSymbol};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -58,8 +58,7 @@ impl ProgramData {
             ConstantValue::Void => (0, 0, 0, 0, 0),
             ConstantValue::Integer(value) => (1, 0, 0, 0, *value),
             ConstantValue::Duration(value) => (16, 0, 0, 0, *value),
-            // Decoded by the process kernel (U5); until then the native build refuses
-            // process programs before emitting data.
+            // A named address: the runtime's name id is the symbol index plus 1.
             ConstantValue::ProcessAddress(symbol) => (17, symbol.raw(), 0, 0, 0),
             // The runtime reads the IEEE 754 bits back with `memcpy`.
             ConstantValue::Float(value) => (2, 0, 0, 0, value.to_bits() as i64),
@@ -457,6 +456,7 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         u32::from(requires_scheduler(core))
     )
     .unwrap();
+
     render_array(
         &mut output,
         "const char *CHIMI_STRINGS[]",
@@ -617,6 +617,26 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
     }
     output.push_str("\n};\n");
     output
+}
+
+/// Whether any reachable node calls into `std/process` or `std/supervisor`, or
+/// names a `process name`: such a program links the process-kernel runtime.
+/// `Clock.sleep` runs on the scheduler alone.
+pub(super) fn requires_process_runtime(core: &CoreProgram) -> bool {
+    core.nodes.iter().any(|node| {
+        let CoreOperation::Reference(symbol) = node.operation else {
+            return false;
+        };
+        let symbol = core.symbol(symbol);
+        symbol.kind == CoreSymbolKind::ProcessName
+            || matches!(
+                symbol.standard,
+                Some(StandardSymbol::Function(function)) if matches!(
+                    function.module(),
+                    Some(StandardModule::Process | StandardModule::Supervisor)
+                )
+            )
+    })
 }
 
 fn requires_scheduler(core: &CoreProgram) -> bool {

@@ -1,0 +1,71 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// CB03: a `Full` and an `Unavailable` send each hand back a message equal to
+// the original, which main still uses. Neither refused copy is leaked: no
+// fragment is live at exit (expected.memory). The outcome counts the returned
+// messages equal to their originals (2) and adds the item count of each (3 + 3).
+pub enum Message {
+  Batch(label: Text, items: List<Int>)
+  Quit
+}
+
+pub process name gate: Message
+
+fn until_quit(inbox: Inbox<Message>) -> Void {
+  loop batches = 0 {
+    case Process.receive(inbox) {
+      Message.Batch(_, _) -> batches + 1
+      Message.Quit -> break
+    }
+  }
+}
+
+fn returned(message: Message) -> Message {
+  case Process.send(gate, message) {
+    Success(_) -> Message.Quit
+    Failure(error) -> case error {
+      SendError.Full(back) -> back
+      SendError.Unavailable(back) -> back
+    }
+  }
+}
+
+fn items(message: Message) -> Int {
+  case message {
+    Message.Batch(_, items) -> List.length(items)
+    Message.Quit -> 0
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let member = Process.spec(until_quit, 1, Duration.seconds(1))
+    |> Process.register(gate)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let full = Message.Batch("full", [1, 2, 3])
+  Process.send(gate, Message.Quit)
+  let refused_full = returned(full)
+  settle()
+  let late = Message.Batch("late", [4, 5, 6])
+  let refused_late = returned(late)
+  Supervisor.stop(root)
+  let equal = case refused_full == full {
+    True -> 1
+    False -> 0
+  } + case refused_late == late {
+    True -> 1
+    False -> 0
+  }
+  equal * 100 + items(refused_full) + items(refused_late)
+}

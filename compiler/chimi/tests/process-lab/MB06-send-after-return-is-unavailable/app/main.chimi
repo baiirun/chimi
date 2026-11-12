@@ -1,0 +1,50 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// MB06: `once` returns after its first message. A later send fails with
+// `Unavailable` and hands back the original message, whose amount (42) is the
+// outcome.
+pub enum Message {
+  Quit
+  Add(amount: Int)
+}
+
+pub process name once: Message
+
+fn stop_on_first(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.Quit -> Void
+    Message.Add(_) -> Void
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let member = Process.spec(stop_on_first, 1, Duration.seconds(1))
+    |> Process.register(once)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(once, Message.Quit)
+  settle()
+  let returned = case Process.send(once, Message.Add(42)) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      SendError.Full(_) -> -1
+      SendError.Unavailable(message) -> case message {
+        Message.Add(amount) -> amount
+        Message.Quit -> -2
+      }
+    }
+  }
+  Supervisor.stop(root)
+  returned
+}

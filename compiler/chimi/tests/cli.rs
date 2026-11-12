@@ -4851,47 +4851,67 @@ fn native_record_update_allocates_what_the_written_out_constructor_allocates() {
     );
 }
 
-// Until the process kernel lands (ts-6ccbc9 U5), the native build refuses a process
-// program instead of emitting data the runtime cannot decode. Covers both triggers:
-// a call into std/process, and a program whose only process use is a `process name`
-// reference. Rejects a build that silently produces an executable.
+// The native build runs process programs (ts-6ccbc9 U5). Covers both reasons a
+// program links the process kernel: a call into std/process, and a program whose
+// only process use is a `process name` reference. A send to a name no process has
+// registered returns `Unavailable` rather than being accepted. Rejects a build that
+// still refuses process programs, and a named address that routes without a
+// registration.
 #[test]
-fn native_build_refuses_process_programs_until_the_kernel_lands() {
+fn native_process_programs_build_and_an_unregistered_name_is_unavailable() {
     let prelude = concat!(
         "import std/process as Process\n",
+        "import std/process.{SendError}\n",
         "enum Message {\n  Ping\n}\n",
         "process name pinger: Message\n",
     );
-    for (name, main) in [
+    for (name, main, value) in [
         (
             "process-send",
             "pub fn main() -> Int {\n  case Process.send(pinger, Message.Ping) {\n    \
-             Success(_) -> 0\n    Failure(_) -> 1\n  }\n}\n",
+             Success(_) -> 0\n    Failure(error) -> case error {\n      \
+             SendError.Full(_) -> 1\n      SendError.Unavailable(_) -> 2\n    }\n  }\n}\n",
+            "2",
         ),
         (
             "process-name-only",
             "fn keep(address: Process.Address<Message>) -> Int {\n  0\n}\n\
              pub fn main() -> Int {\n  keep(pinger)\n}\n",
+            "0",
         ),
     ] {
         let scratch = scratch_directory(name);
         let source = scratch.join("main.chimi");
+        let executable = scratch.join("program");
         std::fs::write(&source, format!("{prelude}{main}")).unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
             .current_dir(&scratch)
             .arg("build")
             .arg(&source)
             .arg("-o")
-            .arg(scratch.join("program"))
+            .arg(&executable)
             .output()
             .unwrap();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "{name}: {stderr}");
         assert!(
-            stderr.contains("supervised process runtime"),
-            "{name}: {stderr}"
+            build.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&build.stderr)
         );
-        assert!(!scratch.join("program").exists(), "{name}");
+        let outcome = scratch.join("outcome.jsonl");
+        let run = Command::new(&executable)
+            .arg("--chimi-runner")
+            .arg(format!("--outcome-file={}", outcome.display()))
+            .arg("--")
+            .output()
+            .unwrap();
+        assert!(run.status.success(), "{name}: {run:?}");
+        assert_eq!(
+            std::fs::read_to_string(&outcome).unwrap(),
+            format!(
+                "{{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":{value}}}\n"
+            ),
+            "{name}"
+        );
         std::fs::remove_dir_all(scratch).unwrap();
     }
 }

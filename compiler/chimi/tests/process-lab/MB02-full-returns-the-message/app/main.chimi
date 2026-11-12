@@ -1,0 +1,72 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// MB02: a mailbox of capacity 2 that has not run yet accepts two messages, and
+// the third send fails with `Full`, handing back the message: main reads its
+// amount (3) from it. The counter then holds 1 + 2. The outcome is 3 * 100 + 3.
+
+pub enum Message {
+  Add(amount: Int)
+  Report(reply: Sender<Int>)
+}
+
+fn counter(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+    }
+  }
+}
+
+pub process name tally: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn reply_value(received: Receive<Int>) -> Int {
+  case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+fn ask(address: Address<Message>) -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(address, Message.Report(replies.sender))
+  let received = Channel.receive(replies.receiver)
+  reply_value(received)
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let member = Process.spec(counter, 2, Duration.seconds(1))
+    |> Process.register(tally)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(tally, Message.Add(1))
+  Process.send(tally, Message.Add(2))
+  let refused = case Process.send(tally, Message.Add(3)) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      SendError.Full(message) -> case message {
+        Message.Add(amount) -> amount
+        Message.Report(_) -> -1
+      }
+      SendError.Unavailable(_) -> -2
+    }
+  }
+  settle()
+  let total = ask(tally)
+  Supervisor.stop(root)
+  refused * 100 + total
+}

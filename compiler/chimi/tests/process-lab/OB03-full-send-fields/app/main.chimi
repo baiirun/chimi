@@ -1,0 +1,61 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// OB03: under --trace=full every send records its routing kind, the name of a
+// named address, the accepting incarnation (or `-`), and its outcome. The sends
+// cover both kinds with each outcome: accepted, full, and unavailable.
+pub enum Message {
+  Quit
+  Ping
+}
+
+pub process name pinged: Message
+
+fn quit_on_quit(inbox: Inbox<Message>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      Message.Quit -> break
+      Message.Ping -> pings + 1
+    }
+  }
+}
+
+fn outcome(address: Address<Message>, message: Message) -> Int {
+  case Process.send(address, message) {
+    Success(_) -> 1
+    Failure(error) -> case error {
+      SendError.Full(_) -> 2
+      SendError.Unavailable(_) -> 3
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(
+    root,
+    Process.spec(quit_on_quit, 1, Duration.seconds(1)) |> Process.register(pinged),
+    Supervisor.Restart.Never,
+  )
+  let direct = Supervisor.address(managed)
+  let a = outcome(pinged, Message.Ping)
+  let b = outcome(direct, Message.Ping)
+  let c = outcome(pinged, Message.Ping)
+  settle()
+  let d = outcome(direct, Message.Quit)
+  settle()
+  let e = outcome(pinged, Message.Ping)
+  let f = outcome(direct, Message.Ping)
+  Supervisor.stop(root)
+  a * 100000 + b * 10000 + c * 1000 + d * 100 + e * 10 + f
+}

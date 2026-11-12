@@ -1,0 +1,80 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// MB04: declared member `early` sends to the later member `late` at the top of
+// its first run, before `late` has ever run. `late` is registered when it is
+// created, so the send is accepted and `late` adds it: the outcome is 7.
+
+pub enum Message {
+  Add(amount: Int)
+  Report(reply: Sender<Int>)
+}
+
+fn counter(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+    }
+  }
+}
+
+pub enum EarlyMessage {
+  Nothing
+}
+
+pub process name early: EarlyMessage
+pub process name late: Message
+
+fn greet(inbox: Inbox<EarlyMessage>) -> Void {
+  let sent = case Process.send(late, Message.Add(7)) {
+    Success(_) -> 1
+    Failure(_) -> 0
+  }
+  loop seen = sent {
+    case Process.receive(inbox) {
+      EarlyMessage.Nothing -> seen
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn reply_value(received: Receive<Int>) -> Int {
+  case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+fn ask(address: Address<Message>) -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(address, Message.Report(replies.sender))
+  let received = Channel.receive(replies.receiver)
+  reply_value(received)
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let greeting = Process.spec(greet, 1, Duration.seconds(1))
+    |> Process.register(early)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let counting = Process.spec(counter, 1, Duration.seconds(1))
+    |> Process.register(late)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([greeting, counting], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  settle()
+  let total = ask(late)
+  Supervisor.stop(root)
+  total
+}

@@ -1,0 +1,7 @@
+@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.tally
+@0s process_send kind=named name=app/main.tally incarnation=I1 outcome=accepted
+@0s process_send kind=named name=app/main.tally incarnation=I1 outcome=accepted
+@0s process_send kind=named name=app/main.tally incarnation=- outcome=full
+@1ms process_send kind=named name=app/main.tally incarnation=I1 outcome=accepted
+@1ms process_terminated membership=M1 incarnation=I1 cause=cancelled
+@1ms supervisor_stopped supervisor=S1
