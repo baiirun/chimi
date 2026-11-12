@@ -3750,6 +3750,166 @@ fn native_a_task_keeps_what_it_captured_after_the_parents_pass_ends() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// E18 across tasks and channels on native, where each task runs on a 64 KiB fiber
+// stack. A child task captures a value 100,000 levels deep, renders it with
+// `Debug.render`, encodes a Json.Value as deep with `Json.encode`, and sends a
+// third deep value back over a Channel, which the parent compares with its own.
+// A second child captures a Receiver held 100,000 levels down and reads from it,
+// so `Task.start`'s capability transfer must reach the bottom of the capture.
+// Before, the transfer recursed per level and the capture defected with "Task
+// stack overflow"; a walk that stopped early would leave the Receiver with the
+// parent and the read would fail.
+#[test]
+fn native_tasks_capture_render_encode_and_send_deeply_nested_values() {
+    let scratch = scratch_directory("native-deep-task-values");
+    let executable = build_native(
+        &scratch,
+        "deep-tasks",
+        concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Receive, Receiver}\n",
+            "import std/debug as Debug\n",
+            "import std/json as Json\n",
+            "import std/task as Task\n",
+            "enum Nest {\n",
+            "  Leaf\n",
+            "  Wrap(children: List<Nest>)\n",
+            "}\n",
+            "enum Holder {\n",
+            "  Bottom(receiver: Receiver<Int>)\n",
+            "  Around(inner: List<Holder>)\n",
+            "}\n",
+            "struct Build { depth: Int, nest: Nest }\n",
+            "struct Hold { depth: Int, holder: Holder }\n",
+            "struct JsonBuild { depth: Int, value: Json.Value }\n",
+            "fn nested(depth: Int) -> Nest {\n",
+            "  loop state = Build(depth, Leaf) {\n",
+            "    case state.depth {\n",
+            "      0 -> break state.nest\n",
+            "      _ -> Build(state.depth - 1, Wrap([state.nest]))\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "fn json_nested(depth: Int) -> Json.Value {\n",
+            "  loop state = JsonBuild(depth, Json.Null) {\n",
+            "    case state.depth {\n",
+            "      0 -> break state.value\n",
+            "      _ -> JsonBuild(state.depth - 1, Json.Array([state.value]))\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "fn innermost(holder: Holder) -> Int {\n",
+            "  loop current = holder {\n",
+            "    case current {\n",
+            "      Bottom(receiver) -> {\n",
+            "        let next = Channel.receive(receiver)\n",
+            "        break case next {\n",
+            "          Receive.Received(value) -> value\n",
+            "          Receive.Drained -> 0\n",
+            "        }\n",
+            "      }\n",
+            "      Around([inner]) -> inner\n",
+            "      Around(_) -> break -1\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> (Bool, (Text, Text), Int) {\n",
+            "  let deep = nested(100000)\n",
+            "  let replies = Channel.bounded(1)\n",
+            "  let reply_sender = replies.sender\n",
+            "  let reply_receiver = replies.receiver\n",
+            "  let reply_completion = replies.completion\n",
+            "  let child = Task.start(fn() -> (Text, Text) {\n",
+            "    Channel.send(reply_sender, nested(100000))\n",
+            "    (Debug.render(deep), Json.encode(json_nested(100000)))\n",
+            "  })\n",
+            "  let reply = Channel.receive(reply_receiver)\n",
+            "  let received = case reply {\n",
+            "    Receive.Received(value) -> value == deep\n",
+            "    Receive.Drained -> False\n",
+            "  }\n",
+            "  Channel.close(reply_completion)\n",
+            "  let numbers = Channel.bounded(1)\n",
+            "  let number_sender = numbers.sender\n",
+            "  let held = loop state = Hold(100000, Bottom(numbers.receiver)) {\n",
+            "    case state.depth {\n",
+            "      0 -> break state.holder\n",
+            "      _ -> Hold(state.depth - 1, Around([state.holder]))\n",
+            "    }\n",
+            "  }\n",
+            "  let reader = Task.start(fn() -> Int { innermost(held) })\n",
+            "  Channel.send(number_sender, 42)\n",
+            "  Channel.close(numbers.completion)\n",
+            "  (received, Task.result(child), Task.result(reader))\n",
+            "}\n",
+        ),
+    );
+    let (outcome, _) = execute_with_memory_report(&executable, &scratch);
+    let levels = 100_000;
+    let rendered = format!(
+        "{}Nest.Leaf{}",
+        "Nest.Wrap([".repeat(levels),
+        "])".repeat(levels)
+    );
+    let encoded = format!("{}null{}", "[".repeat(levels), "]".repeat(levels));
+    assert_eq!(
+        outcome.trim_end(),
+        format!(
+            "{{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":{{\"tuple\":[true,{{\"tuple\":[\"{rendered}\",\"{encoded}\"]}},42]}}}}"
+        )
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// `Task.start`'s capability transfer visits each captured part once through a
+// hashed visited set, so its work is linear in the capture: sixteen times the
+// tree costs about sixteen times the probes. The earlier list scan compared each
+// part with every part before it, about 256 times as many probes here.
+#[test]
+fn native_capture_transfer_work_is_linear_in_the_captured_parts() {
+    let measure = |depth: u64| {
+        let scratch = scratch_directory(&format!("native-capture-transfer-{depth}"));
+        let source = format!(
+            concat!(
+                "import std/task as Task\n",
+                "enum Tree {{\n  Leaf(value: Int)\n  Node(left: Tree, right: Tree)\n}}\n",
+                "fn build(depth: Int) -> Tree {{\n",
+                "  case depth {{\n",
+                "    0 -> Leaf(1)\n",
+                "    _ -> Node(build(depth - 1), build(depth - 1))\n",
+                "  }}\n",
+                "}}\n",
+                "fn size(tree: Tree) -> Int {{\n",
+                "  case tree {{\n",
+                "    Leaf(value) -> value\n",
+                "    Node(left, right) -> size(left) + size(right)\n",
+                "  }}\n",
+                "}}\n",
+                "pub fn main() -> Int {{\n",
+                "  let tree = build({depth})\n",
+                "  let child = Task.start(fn() -> Int {{ size(tree) }})\n",
+                "  Task.result(child)\n",
+                "}}\n",
+            ),
+            depth = depth
+        );
+        let executable = build_native(&scratch, "capture", &source);
+        let (outcome, report) = execute_with_memory_report(&executable, &scratch);
+        assert!(
+            outcome.contains(&format!("\"value\":{}", 1u64 << depth)),
+            "{outcome}"
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
+        json_u64_field(&report, "capture_transfer_probes")
+    };
+    let small = measure(8);
+    let large = measure(12);
+    assert!(
+        small > 0 && large <= 64 * small,
+        "2^12 leaves took {large} probes, 2^8 leaves {small}"
+    );
+}
+
 // A message crosses to the receiver as a copy, so the sender's later passes may
 // reclaim the original while the message still waits in the channel. Here every
 // message is sent from its own pass and read only after the sender has run all

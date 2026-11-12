@@ -640,6 +640,11 @@ headers and fragment records included, with static constants excluded.
 `scoped_scanned_allocations` counts the allocations marking visited across
 all passes, so a test can bound collection work without timing it: building
 a value N levels deep in a loop scans O(N) allocations, not O(N^2).
+`capture_transfer_probes` counts the visited-set slots that `Task.start`'s
+capability transfer examined. The transfer walks the child's copy of its
+captures with its own stack and a hashed visited set, so the count is linear
+in the captured parts, and a capture of any nesting depth costs heap, not the
+parent fiber's stack.
 
 **Evidence.** `compiler/chimi/tests/fixtures/native-heap.c` reproduces every
 scenario of the prototype's `tests/heap.rs` and `c/stress.c` against
