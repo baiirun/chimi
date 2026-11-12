@@ -2,6 +2,9 @@
 
 use super::BackendProgram;
 use super::program_data::render_program_data;
+use super::runtime_archive_key::{
+    RUNTIME_C_COMPILER, RUNTIME_C_FLAGS, RuntimeArchiveInputs, runtime_archive_key,
+};
 use crate::executable::{CoreOperation, CoreProgram};
 use crate::json::write_json_string;
 use crate::semantic::{BinaryOperator, UnaryOperator};
@@ -42,6 +45,8 @@ pub struct NativeArtifact {
     pub linking: Duration,
     pub cache_hits: Vec<String>,
     pub cache_misses: Vec<String>,
+    /// Artifacts taken from the compiler itself instead of the project cache.
+    pub prebuilt: Vec<String>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -57,6 +62,7 @@ pub struct NativeBuildReport {
     pub fully_static: bool,
     pub cache_hits: Vec<String>,
     pub cache_misses: Vec<String>,
+    pub prebuilt: Vec<String>,
 }
 
 impl NativeBuildReport {
@@ -112,6 +118,8 @@ impl NativeBuildReport {
         write_strings(&mut output, &self.cache_hits);
         output.push_str("],\"misses\":[");
         write_strings(&mut output, &self.cache_misses);
+        output.push_str("],\"prebuilt\":[");
+        write_strings(&mut output, &self.prebuilt);
         output.push_str("]}");
         output.push_str("}\n");
         output
@@ -138,6 +146,7 @@ pub fn build_application(
         dynamic_dependencies,
         cache_hits: artifact.cache_hits,
         cache_misses: artifact.cache_misses,
+        prebuilt: artifact.prebuilt,
     };
     std::fs::write(&manifest_path, report.render_json())
         .map_err(|error| format!("write native build manifest: {error}"))?;
@@ -178,7 +187,7 @@ fn build_to_path(
         .join(".cache/native-v1");
     let mut cache = ArtifactCache::new(cache_directory)?;
     let target = native_target_fingerprint()?;
-    let cc = command_identity("cc")?;
+    let cc = command_identity(RUNTIME_C_COMPILER)?;
 
     let started = Instant::now();
     let mut object_paths = Vec::new();
@@ -208,8 +217,6 @@ fn build_to_path(
     let data_source = render_program_data(&program.core, false);
     std::fs::write(&data_source_path, &data_source)
         .map_err(|error| format!("write native program data: {error}"))?;
-    std::fs::write(output_directory.join("runtime.c"), RUNTIME_SOURCE)
-        .map_err(|error| format!("write embedded runtime source: {error}"))?;
     std::fs::write(output_directory.join("runtime.h"), RUNTIME_HEADER)
         .map_err(|error| format!("write embedded runtime header: {error}"))?;
     std::fs::write(output_directory.join("chimi_fiber.h"), FIBER_RUNTIME_HEADER)
@@ -219,34 +226,49 @@ fn build_to_path(
             .map_err(|error| format!("materialize bundled fiber runtime: {error}"))?;
     }
     let started = Instant::now();
-    let runtime_key = runtime_cache_key(&target, &cc);
-    cache.materialize(
-        &runtime_key,
-        "a",
-        &runtime_archive_path,
-        "libchimi_rt.a",
-        |temporary| {
-            run(
-                Command::new("cc")
-                    .arg("-std=c11")
-                    .arg("-O2")
-                    .arg("-I")
-                    .arg(&include_directory)
-                    .arg("-c")
-                    .arg(include_directory.join("runtime.c"))
-                    .arg("-o")
-                    .arg(&runtime_object_path),
-                "compile native backend runtime",
-            )?;
-            run(
-                Command::new("ar")
-                    .arg("rcs")
-                    .arg(temporary)
-                    .arg(&runtime_object_path),
-                "archive native backend runtime",
-            )
-        },
-    )?;
+    let runtime_abi = RUNTIME_ABI_VERSION.to_string();
+    let runtime_key = runtime_archive_key(&RuntimeArchiveInputs {
+        abi_version: &runtime_abi,
+        target_triple: env!("CHIMI_RUNTIME_TARGET"),
+        compiler_identity: &cc,
+        runtime_source: RUNTIME_SOURCE.as_bytes(),
+        runtime_header: RUNTIME_HEADER.as_bytes(),
+        fiber_header: FIBER_RUNTIME_HEADER.as_bytes(),
+    });
+    if let Some(archive) = prebuilt_runtime_archive(&runtime_key) {
+        std::fs::write(&runtime_archive_path, archive)
+            .map_err(|error| format!("materialize prebuilt native runtime: {error}"))?;
+        cache.record_prebuilt("libchimi_rt.a");
+    } else {
+        std::fs::write(include_directory.join("runtime.c"), RUNTIME_SOURCE)
+            .map_err(|error| format!("write embedded runtime source: {error}"))?;
+        cache.materialize(
+            &runtime_key,
+            "a",
+            &runtime_archive_path,
+            "libchimi_rt.a",
+            |temporary| {
+                run(
+                    Command::new(RUNTIME_C_COMPILER)
+                        .args(RUNTIME_C_FLAGS)
+                        .arg("-I")
+                        .arg(&include_directory)
+                        .arg("-c")
+                        .arg(include_directory.join("runtime.c"))
+                        .arg("-o")
+                        .arg(&runtime_object_path),
+                    "compile native backend runtime",
+                )?;
+                run(
+                    Command::new("ar")
+                        .arg("rcs")
+                        .arg(temporary)
+                        .arg(&runtime_object_path),
+                    "archive native backend runtime",
+                )
+            },
+        )?;
+    }
     let runtime_compilation = started.elapsed();
 
     let started = Instant::now();
@@ -291,7 +313,7 @@ fn build_to_path(
     link.arg("-lm").arg("-o").arg(executable_path);
     run(&mut link, "link native backend executable")?;
     let linking = started.elapsed();
-    let (cache_hits, cache_misses) = cache.finish();
+    let (cache_hits, cache_misses, prebuilt) = cache.finish();
 
     Ok(NativeArtifact {
         object_paths,
@@ -305,6 +327,7 @@ fn build_to_path(
         linking,
         cache_hits,
         cache_misses,
+        prebuilt,
     })
 }
 
@@ -312,6 +335,17 @@ const RUNTIME_SOURCE: &str = include_str!("../../runtime/native/runtime.c");
 const RUNTIME_HEADER: &str = include_str!("../../runtime/native/runtime.h");
 const FIBER_RUNTIME_HEADER: &str =
     include_str!("../../../../runtime/chimi-fiber/include/chimi_fiber.h");
+// Written by `build.rs`; both are empty when the compiler was built without one.
+const PREBUILT_RUNTIME_ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libchimi_rt.a"));
+const PREBUILT_RUNTIME_KEY: &str = include_str!(concat!(env!("OUT_DIR"), "/libchimi_rt.key"));
+
+/// The archive `build.rs` compiled, when it was compiled from exactly the inputs
+/// `key` names (the embedded sources and today's `cc`); otherwise `None`, and
+/// the caller compiles the runtime into the project cache.
+fn prebuilt_runtime_archive(key: &str) -> Option<&'static [u8]> {
+    (!PREBUILT_RUNTIME_KEY.is_empty() && PREBUILT_RUNTIME_KEY == key)
+        .then_some(PREBUILT_RUNTIME_ARCHIVE)
+}
 
 fn bundled_fiber_archive() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("CHIMI_FIBER_RUNTIME_ARCHIVE") {
@@ -433,6 +467,7 @@ struct ArtifactCache {
     directory: PathBuf,
     hits: Vec<String>,
     misses: Vec<String>,
+    prebuilt: Vec<String>,
 }
 
 impl ArtifactCache {
@@ -443,6 +478,7 @@ impl ArtifactCache {
             directory,
             hits: Vec::new(),
             misses: Vec::new(),
+            prebuilt: Vec::new(),
         })
     }
 
@@ -484,8 +520,12 @@ impl ArtifactCache {
         Ok(())
     }
 
-    fn finish(self) -> (Vec<String>, Vec<String>) {
-        (self.hits, self.misses)
+    fn record_prebuilt(&mut self, label: &str) {
+        self.prebuilt.push(label.to_owned());
+    }
+
+    fn finish(self) -> (Vec<String>, Vec<String>, Vec<String>) {
+        (self.hits, self.misses, self.prebuilt)
     }
 }
 
@@ -552,22 +592,6 @@ fn metadata_cache_key(source: &str, target: &str, cc: &str) -> String {
             cc.as_bytes(),
             RUNTIME_HEADER.as_bytes(),
             source.as_bytes(),
-        ],
-    )
-}
-
-fn runtime_cache_key(target: &str, cc: &str) -> String {
-    let runtime_abi = RUNTIME_ABI_VERSION.to_string();
-    cache_key(
-        "runtime-archive",
-        &[
-            C_SETTINGS.as_bytes(),
-            target.as_bytes(),
-            cc.as_bytes(),
-            runtime_abi.as_bytes(),
-            RUNTIME_HEADER.as_bytes(),
-            RUNTIME_SOURCE.as_bytes(),
-            b"ar:rcs",
         ],
     )
 }

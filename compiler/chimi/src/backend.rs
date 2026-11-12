@@ -11,6 +11,9 @@ mod program_data;
 #[cfg(feature = "native-backend")]
 pub mod native;
 
+#[cfg(feature = "native-backend")]
+mod runtime_archive_key;
+
 #[cfg(feature = "native-aot-prototype")]
 #[doc(hidden)]
 pub mod native_aot_prototype;

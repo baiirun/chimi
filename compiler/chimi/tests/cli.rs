@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -1843,6 +1844,152 @@ fn native_chimi_code_classifies_and_aggregates_trace_records() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// Writes the two-module build-cache fixture under `scratch/project`.
+fn write_two_module_project(scratch: &Path) -> PathBuf {
+    let project = scratch.join("project");
+    std::fs::create_dir_all(project.join("app")).unwrap();
+    std::fs::create_dir_all(project.join("lib")).unwrap();
+    std::fs::write(
+        project.join("app/main.chimi"),
+        "import lib/answer as Answer\n\npub fn main() -> Int {\n  Answer.value()\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("lib/answer.chimi"),
+        "pub fn value() -> Int {\n  42\n}\n",
+    )
+    .unwrap();
+    project
+}
+
+/// Builds `project` from `scratch` (so the project cache is `scratch/target`)
+/// with `path` as `PATH`, and returns the build report's `cache` object.
+fn build_cache_report(scratch: &Path, project: &Path, executable: &Path, path: &OsStr) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(scratch)
+        .env("PATH", path)
+        .args(["build", "--root"])
+        .arg(project)
+        .args(["app/main", "-o"])
+        .arg(executable)
+        .output()
+        .expect("build project");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = String::from_utf8(output.stdout).unwrap();
+    report.split("\"cache\":").nth(1).unwrap().to_owned()
+}
+
+/// The `[...]` list named `field` in a build report's `cache` object.
+fn cache_list<'a>(cache: &'a str, field: &str) -> &'a str {
+    let start = cache.find(&format!("\"{field}\":[")).unwrap() + field.len() + 4;
+    &cache[start..start + cache[start..].find(']').unwrap()]
+}
+
+/// The archives in the project's native artifact cache under `scratch`.
+fn cached_archives(scratch: &Path) -> Vec<PathBuf> {
+    let cache = scratch.join("target/chimi/.cache/native-v1");
+    std::fs::read_dir(&cache)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "a"))
+        .collect()
+}
+
+#[test]
+fn a_fresh_project_links_the_compilers_prebuilt_runtime_without_compiling_it() {
+    let scratch = scratch_directory("prebuilt-runtime");
+    let project = write_two_module_project(&scratch);
+    let executable = scratch.join("app");
+
+    let cache = build_cache_report(
+        &scratch,
+        &project,
+        &executable,
+        &std::env::var_os("PATH").unwrap(),
+    );
+
+    assert_eq!(
+        cache_list(&cache, "prebuilt"),
+        "\"libchimi_rt.a\"",
+        "{cache}"
+    );
+    assert!(
+        !cache_list(&cache, "misses").contains("libchimi_rt"),
+        "{cache}"
+    );
+    assert_eq!(cached_archives(&scratch), Vec::<PathBuf>::new());
+    assert!(
+        !scratch.join("target/chimi/app/runtime.c").exists(),
+        "the runtime source is only written when it is compiled"
+    );
+    let execution = execute_native(&executable, &scratch, "prebuilt", "off");
+    assert!(execution.process.status.success());
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_c_compiler_unlike_the_one_that_prebuilt_the_runtime_compiles_it_per_project() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = scratch_directory("prebuilt-runtime-mismatch");
+    let project = write_two_module_project(&scratch);
+    let executable = scratch.join("app");
+    // A `cc` that reports a different identity and otherwise is the real one:
+    // the prebuilt archive's key no longer matches, as after a toolchain update.
+    let real_cc = Command::new("sh")
+        .args(["-c", "command -v cc"])
+        .output()
+        .expect("locate cc");
+    let real_cc = String::from_utf8(real_cc.stdout).unwrap();
+    let bin = scratch.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let wrapper = bin.join("cc");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'updated cc 99'; fi\nexec {} \"$@\"\n",
+            real_cc.trim()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut path = bin.into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap());
+
+    let cold = build_cache_report(&scratch, &project, &executable, &path);
+    assert_eq!(cache_list(&cold, "prebuilt"), "", "{cold}");
+    assert!(
+        cache_list(&cold, "misses").contains("libchimi_rt.a"),
+        "{cold}"
+    );
+    assert_eq!(cached_archives(&scratch).len(), 1);
+    let execution = execute_native(&executable, &scratch, "fallback", "off");
+    assert!(execution.process.status.success());
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+
+    let warm = build_cache_report(&scratch, &project, &executable, &path);
+    assert!(
+        cache_list(&warm, "hits").contains("libchimi_rt.a"),
+        "{warm}"
+    );
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn build_reuses_unchanged_artifacts_and_invalidates_only_changed_core_inputs() {
     let scratch = scratch_directory("build-cache");
@@ -1880,15 +2027,13 @@ fn build_reuses_unchanged_artifacts_and_invalidates_only_changed_core_inputs() {
     assert!(cold_cache.starts_with("{\"hits\":[],\"misses\":["));
     assert_eq!(cold_cache.matches("module-").count(), 2);
     assert!(cold_cache.contains("entry.o"));
-    assert!(cold_cache.contains("libchimi_rt.a"));
     assert!(cold_cache.contains("program_data.o"));
 
     let unchanged = build();
     let unchanged_cache = unchanged.split("\"cache\":").nth(1).unwrap();
-    assert!(unchanged_cache.ends_with("\"misses\":[]}}\n"));
+    assert!(unchanged_cache.contains("\"misses\":[],"));
     assert_eq!(unchanged_cache.matches("module-").count(), 2);
     assert!(unchanged_cache.contains("entry.o"));
-    assert!(unchanged_cache.contains("libchimi_rt.a"));
     assert!(unchanged_cache.contains("program_data.o"));
 
     std::fs::write(&answer, "pub fn value() -> Int {\n  43\n}\n").unwrap();
@@ -1897,7 +2042,6 @@ fn build_reuses_unchanged_artifacts_and_invalidates_only_changed_core_inputs() {
     let (hits, misses) = changed_cache.split_once("],\"misses\":[").unwrap();
     assert_eq!(hits.matches("module-").count(), 1);
     assert!(hits.contains("entry.o"));
-    assert!(hits.contains("libchimi_rt.a"));
     assert_eq!(misses.matches("module-").count(), 1);
     assert!(misses.contains("program_data.o"));
     let execution = execute_native(&executable, &scratch, "cache", "off");
