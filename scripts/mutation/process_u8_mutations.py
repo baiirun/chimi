@@ -31,7 +31,17 @@ def lab(name, file, scenario, expect, edits):
 
 
 # An incarnation's children are dropped from its child set instead of being
-# cancelled, so they outlive it (the chimi-fiber mutant of the same name).
+# cancelled when the body ends, so they outlive it (the chimi-fiber mutant
+# "replacement before children drain"). In RA07 the replacement then starts
+# while the child sleeps, and the orphan aborts the program when it ends at
+# teardown, so the run exits nonzero before the transcript is compared.
+#
+# SD05 has no mutant here. A stop cancels the body's children twice over:
+# `begin_shutdown` cancels them, and the body's own end cancels any left.
+# Breaking either one alone leaves SD05's transcript unchanged (this mutant
+# survived against SD05 in the list's first run, and dropping `cancel_children` from
+# `begin_shutdown` is equivalent by the same argument); breaking both needs
+# edits in two files, which mutate.py does not model.
 CHILDREN_LEFT_RUNNING = [(
     "        for child in children {\n            self.begin_terminal(child, TaskOutcome::Cancelled, false);\n        }",
     "        if self.incarnation_of(task).is_some() {\n            self.tasks.get_mut(&task).unwrap().children.clear();\n        } else {\n            for child in children {\n                self.begin_terminal(child, TaskOutcome::Cancelled, false);\n            }\n        }")]
@@ -52,9 +62,7 @@ REMOVAL_ENTRY = """            return Ok(self.execute(plan));
 MUTATIONS = [
     # Structured child tasks.
     lab("a defected body's children outlive it into the replacement", SCHEDULER, "RA07",
-        [TRANSCRIPT], CHILDREN_LEFT_RUNNING),
-    lab("a stopped member's children outlive it", SCHEDULER, "SD05",
-        [TRANSCRIPT], CHILDREN_LEFT_RUNNING),
+        [TRANSCRIPT, EXITED], CHILDREN_LEFT_RUNNING),
     lab("a task result points into the child's destroyed heap", RUNTIME, "CB05",
         [OUTCOME, EXITED], [(
             "  ChimiFiberResult result = child_task_result(control);",
@@ -72,11 +80,18 @@ MUTATIONS = [
                 "        if self.kernel.supervisors.get(&supervisor).is_some_and(|record| record.members_taken) {\n            return Ok(self.execute(Plan::from([Step::Reply(requester)])));\n        }\n        let entry = self\n",
                 1))]),
     # Deadlines.
+    # The deadline is checked where shutdown begins and again by `receive`;
+    # a zero deadline lets cleanup drain only when both checks are gone (a
+    # mutant of the first alone survived the list's first run).
     lab("a zero deadline lets cleanup drain", KERNEL, "SD02",
-        [TRANSCRIPT, OUTCOME], [(
-            "        let forced = deadline <= now;", "        let forced = false && deadline <= now;")]),
+        [TRANSCRIPT, OUTCOME], [
+            ("        let forced = deadline <= now;", "        let forced = false && deadline <= now;"),
+            ("            Some(stopping) if stopping.forced || now >= stopping.deadline => {",
+             "            Some(stopping) if stopping.forced => {")]),
+    # Nothing is drained, so main waits on an empty report channel and the
+    # run ends in the deadlock defect (exit 70).
     lab("a non-zero deadline forces at once", KERNEL, "SD03",
-        [TRANSCRIPT, OUTCOME], [(
+        [TRANSCRIPT, OUTCOME, EXITED], [(
             "        let forced = deadline <= now;", "        let forced = deadline > now;")]),
     lab("a forced body that parks again is destroyed", KERNEL, "SD04",
         [EXITED], [(
