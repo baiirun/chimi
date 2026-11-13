@@ -49,7 +49,7 @@ MUTATIONS = [
         [('                if kind == "named" {\n                    fields.push_str(&format!(" name={}", self.required_label()?));', '                if kind == "named" {\n                    fields.push_str(&format!(" name={}", self.label()?.unwrap_or_default()));')],
         "process_lab::transcript"),
     lib("root escalation parent printed as -", T,
-        [('                        "root".to_owned()\n', '                        parent.clone()\n')],
+        [('            "root".to_owned()\n        } else {\n            parent\n        })', '            parent.clone()\n        } else {\n            parent\n        })')],
         "process_lab::transcript"),
     lib("boundaries keep sends", T,
         [('        .filter(|line| line.split(\' \').nth(1) != Some(PROCESS_SEND))', '        .filter(|_| true)')],
@@ -87,5 +87,5 @@ MUTATIONS = [
     lab("locked scenarios run", M,
         [('    if scenario.unlock > options.through {', '    if false {')]),
     lab("unlocked failures pass", M,
-        [('        Err(detail) => Status::Fail { detail },', '        Err(_) => Status::Pass,')]),
+        [('        Err(detail) => Status::Fail { detail },', '        Err(_) => Status::Pass { note: None },')]),
 ]
