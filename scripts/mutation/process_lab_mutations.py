@@ -22,8 +22,13 @@ def lab(name, file, edits):
 
 
 MUTATIONS = [
-    lib("supervisor_started kept before U9", T,
-        [('            _ => return Ok(None),\n        };\n        let time', '            "supervisor_started" => format!("supervisor={}", self.required_identity("supervisor_id", \'S\')?),\n            _ => return Ok(None),\n        };\n        let time')],
+    # From U9 the transcripts keep supervisor_started (it was dropped through
+    # U8, and this mutant kept it).
+    lib("supervisor_started dropped", T,
+        [('            "supervisor_started" => {\n', '            "supervisor_started_dropped" => {\n')],
+        "process_lab::transcript"),
+    lib("nested supervisor_started without its membership", T,
+        [('                    _ => fields.push_str(&format!(" membership={membership}")),', '                    _ => {}')],
         "process_lab::transcript"),
     lib("clock advances printed", T,
         [('            now = time;\n            None\n', '            now = time;\n            Some(String::new())\n')],

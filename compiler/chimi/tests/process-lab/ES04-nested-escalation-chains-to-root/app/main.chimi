@@ -1,0 +1,41 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// ES04: as ES02, but the root's own limit is `restarts(0, 30s)`. The nested
+// supervisor escalates to the root, and restarting it would be the root's
+// first restart, which its limit refuses: the root stops `peer` and escalates
+// in turn, which ends the program with `Supervisor.RestartLimitExceeded`
+// while main waits. A chain that stopped at one level would leave the root
+// running and main parked in `wait` (a deadlock defect instead).
+
+pub enum Message {
+  Crash
+}
+
+fn wait_for_crash(inbox: Inbox<Message>) -> Void {
+  let divisor = case Process.receive(inbox) {
+    Message.Crash -> 0
+  }
+  let quotient = 1 / divisor
+  Void
+}
+
+pub process name counter: Message
+pub process name peer: Message
+
+pub fn main() -> Int {
+  let counting_member = Process.spec(wait_for_crash, 1, Duration.seconds(1))
+    |> Process.register(counter)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let nested = Supervisor.policy([counting_member], 1, Supervisor.restarts(0, Duration.seconds(30)))
+  let peer_member = Process.spec(wait_for_crash, 1, Duration.seconds(1))
+    |> Process.register(peer)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let members = [Supervisor.supervisor(nested, Supervisor.Restart.OnDefect), peer_member]
+  let root = Supervisor.start(Supervisor.policy(members, 2, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(counter, Message.Crash)
+  Supervisor.wait(root)
+  0
+}

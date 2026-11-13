@@ -1,0 +1,55 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// SV09: the root declares `first`, a nested supervisor with `inner_a` and
+// `inner_b`, and `last`, in that order. Start follows the list depth first:
+// `first`, then the nested supervisor (`supervisor_started` with its parent
+// and its membership in the root) and its two members, then `last`. `stop`
+// runs in reverse: `last`, then the nested subtree (its members in reverse,
+// then its `supervisor_stopped`), then `first`, then the root. Nested
+// supervisors flattened into the root would start `inner_a` and `inner_b` as
+// root members and stop them without a nested `supervisor_stopped`; a stop
+// that left the subtree for last would end `first` before `inner_b`.
+
+pub enum Message {
+  Ping
+}
+
+fn idle(inbox: Inbox<Message>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      Message.Ping -> pings + 1
+    }
+  }
+}
+
+pub process name first: Message
+pub process name inner_a: Message
+pub process name inner_b: Message
+pub process name last: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let window = Supervisor.restarts(0, Duration.seconds(30))
+  let inner_members = [
+    Supervisor.process(Process.spec(idle, 1, Duration.seconds(1)) |> Process.register(inner_a), Supervisor.Restart.Never),
+    Supervisor.process(Process.spec(idle, 1, Duration.seconds(1)) |> Process.register(inner_b), Supervisor.Restart.Never),
+  ]
+  let inner = Supervisor.policy(inner_members, 2, window)
+  let members = [
+    Supervisor.process(Process.spec(idle, 1, Duration.seconds(1)) |> Process.register(first), Supervisor.Restart.Never),
+    Supervisor.supervisor(inner, Supervisor.Restart.Never),
+    Supervisor.process(Process.spec(idle, 1, Duration.seconds(1)) |> Process.register(last), Supervisor.Restart.Never),
+  ]
+  let root = Supervisor.start(Supervisor.policy(members, 3, window))
+  settle()
+  Supervisor.stop(root)
+  9
+}

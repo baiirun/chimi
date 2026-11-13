@@ -47,8 +47,7 @@ void *mmap(void *address, size_t length, int protection, int flags, int descript
   return system_mmap(address, length, protection, flags, descriptor, offset);
 }
 
-/* The process events the scheduler emitted, in order (supervisor_started, kind
-   10, is left out, as in the lab's transcripts before U9). */
+/* The process events the scheduler emitted, in order. */
 typedef struct {
   uint32_t kind;
   uint64_t membership;
@@ -62,8 +61,7 @@ static size_t event_count;
 
 static void record_event(void *context, const ChimiSchedulerTraceEvent *event) {
   (void)context;
-  if (event->family != CHIMI_SCHEDULER_TRACE_PROCESS || event->kind == CHIMI_PROCESS_TRACE_SUPERVISOR_STARTED)
-    return;
+  if (event->family != CHIMI_SCHEDULER_TRACE_PROCESS) return;
   CHECK(event_count < sizeof(events) / sizeof(*events), "more than %zu process events", event_count);
   events[event_count++] = (Event){event->kind, event->membership, event->incarnation, event->cause,
                                   event->attempts_in_window};
@@ -175,6 +173,7 @@ static void ra06(void) {
   CHECK(outcome.state == CHIMI_FIBER_SUCCEEDED, "root ended in state %u (defect %lld)", outcome.state,
         (long long)outcome.defect_code);
   const Event expected[] = {
+    {CHIMI_PROCESS_TRACE_SUPERVISOR_STARTED, 0, 0, 0, 0},
     {CHIMI_PROCESS_TRACE_STARTED, 1, 1, 0, 0},
     {CHIMI_PROCESS_TRACE_TERMINATED, 1, 1, CHIMI_PROCESS_CAUSE_DEFECTED, 0},
     {CHIMI_PROCESS_TRACE_RESTART_ATTEMPTED, 1, 0, 0, 1},
@@ -295,6 +294,7 @@ static void sd04(void) {
   CHECK(sd04_forced_replies == 1, "%d forced replies, expected 1", sd04_forced_replies);
   CHECK(sd04_ran_after_forced == 0, "the body ran on after its forced reply");
   const uint32_t expected[] = {
+    CHIMI_PROCESS_TRACE_SUPERVISOR_STARTED,
     CHIMI_PROCESS_TRACE_STARTED,
     CHIMI_PROCESS_TRACE_TERMINATED,
     CHIMI_PROCESS_TRACE_MEMBERSHIP_REMOVED,
@@ -305,8 +305,8 @@ static void sd04(void) {
   for (size_t index = 0; index < count; ++index)
     CHECK(events[index].kind == expected[index], "event %zu: kind %u, expected %u", index, events[index].kind,
           expected[index]);
-  CHECK(events[1].cause == CHIMI_PROCESS_CAUSE_FORCED, "the member ended with cause %llu, not forced",
-        (unsigned long long)events[1].cause);
+  CHECK(events[2].cause == CHIMI_PROCESS_CAUSE_FORCED, "the member ended with cause %llu, not forced",
+        (unsigned long long)events[2].cause);
 }
 
 int main(int argc, char **argv) {

@@ -4,4 +4,5 @@ process_terminated cause=defected 1000
 process_terminated cause=cancelled 1
 restart_attempted attempts_in_window=1 500
 restart_attempted attempts_in_window=2 500
+supervisor_started 1
 supervisor_stopped 1

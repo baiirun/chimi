@@ -1,0 +1,82 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// ES03: as ES02, but the nested supervisor is declared `Restart.Never`. Its
+// escalation ends the membership: no `restart_attempted`, no new supervisor,
+// and `counter` stays unrouted (a named send returns `Unavailable`, 100). The
+// root keeps running: `peer` keeps its 4, and the slot the subtree held takes
+// a new process at capacity 2 (10): 114. A `Never` supervisor that was
+// restarted would route the send; an escalation that went on to the root
+// would end the program; a slot kept by the stopped subtree would refuse the
+// new process.
+
+pub enum Message {
+  Add(amount: Int)
+  Report(reply: Sender<Int>)
+  Crash
+}
+
+fn counting(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+      Message.Crash -> total / 0
+    }
+  }
+}
+
+pub process name counter: Message
+pub process name peer: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn ask(address: Address<Message>) -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(address, Message.Report(replies.sender))
+  let received = Channel.receive(replies.receiver)
+  case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let counting_member = Process.spec(counting, 2, Duration.seconds(1))
+    |> Process.register(counter)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let nested = Supervisor.policy([counting_member], 1, Supervisor.restarts(0, Duration.seconds(30)))
+  let peer_member = Process.spec(counting, 2, Duration.seconds(1))
+    |> Process.register(peer)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let members = [Supervisor.supervisor(nested, Supervisor.Restart.Never), peer_member]
+  let root = Supervisor.start(Supervisor.policy(members, 2, Supervisor.restarts(1, Duration.seconds(30))))
+  Process.send(peer, Message.Add(4))
+  Process.send(counter, Message.Crash)
+  settle()
+  let stale = case Process.send(counter, Message.Add(1)) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      SendError.Full(_) -> 200
+      SendError.Unavailable(_) -> 100
+    }
+  }
+  let kept = ask(peer)
+  let started = case Supervisor.start_process(root, Process.spec(counting, 1, Duration.seconds(1)), Supervisor.Restart.Never) {
+    Success(_) -> 10
+    Failure(_) -> 0
+  }
+  Supervisor.stop(root)
+  stale + started + kept
+}

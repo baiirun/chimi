@@ -299,6 +299,16 @@ impl Event {
             .ok_or_else(|| format!("`{}` has no name", self.name))
     }
 
+    /// `S<n>`, or `root` for a supervisor with no parent.
+    fn parent_supervisor(&self) -> Result<String, String> {
+        let parent = self.identity("parent_supervisor_id", 'S')?;
+        Ok(if parent == "-" {
+            "root".to_owned()
+        } else {
+            parent
+        })
+    }
+
     fn render_task(&self) -> Result<String, String> {
         Ok(format!(
             "task={} parent={} cause={}",
@@ -371,17 +381,33 @@ impl Event {
                 "supervisor={}",
                 self.required_identity("supervisor_id", 'S')?
             ),
-            "supervisor_escalated" => {
-                let parent = self.identity("parent_supervisor_id", 'S')?;
-                format!(
-                    "supervisor={} parent={}",
+            "supervisor_escalated" => format!(
+                "supervisor={} parent={}",
+                self.required_identity("supervisor_id", 'S')?,
+                self.parent_supervisor()?,
+            ),
+            // A nested supervisor also names the membership it fills in its
+            // parent; a root has none.
+            "supervisor_started" => {
+                let parent = self.parent_supervisor()?;
+                let membership = self.identity("membership_id", 'M')?;
+                let mut fields = format!(
+                    "supervisor={} parent={parent}",
                     self.required_identity("supervisor_id", 'S')?,
-                    if parent == "-" {
-                        "root".to_owned()
-                    } else {
-                        parent
-                    },
-                )
+                );
+                match (parent.as_str(), membership.as_str()) {
+                    ("root", "-") => {}
+                    ("root", _) => {
+                        return Err(format!(
+                            "root `supervisor_started` has membership {membership}"
+                        ));
+                    }
+                    (_, "-") => {
+                        return Err("nested `supervisor_started` has a null membership_id".into());
+                    }
+                    _ => fields.push_str(&format!(" membership={membership}")),
+                }
+                fields
             }
             "membership_removed" => format!(
                 "membership={}",
@@ -551,8 +577,8 @@ mod tests {
         ]
     }
 
-    /// The ES01 run as the runner writes it, with task, clock, and
-    /// supervisor-start events the transcript drops.
+    /// The ES01 run as the runner writes it, with the task and clock events
+    /// the transcript drops.
     fn es01_telemetry() -> String {
         const MS: u64 = 1_000_000;
         let counter = Some("app/main.counter");
@@ -694,6 +720,7 @@ mod tests {
     #[test]
     fn es01_telemetry_projects_onto_the_specified_transcript() {
         let expected = [
+            "@0s supervisor_started supervisor=S1 parent=root",
             "@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.counter",
             "@0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.peer",
             "@0s process_send kind=named name=app/main.counter incarnation=I1 outcome=accepted",
@@ -715,6 +742,68 @@ mod tests {
                 .map(|line| (*line).to_owned())
                 .collect::<Vec<_>>()
         );
+    }
+
+    // The U9 form of `supervisor_started` (lab open question 5): a root
+    // names `parent=root` and no membership; a nested supervisor names its
+    // parent and the membership it fills. Rejects a projector that drops the
+    // event, prints a nested one as a root, or omits or invents a membership.
+    #[test]
+    fn supervisor_started_names_its_parent_and_nested_membership() {
+        let telemetry = [
+            process(
+                "supervisor_started",
+                1,
+                0,
+                [None, Some(1), None, None, None],
+                None,
+                None,
+                None,
+                0,
+            ),
+            process(
+                "supervisor_started",
+                2,
+                0,
+                [None, Some(2), Some(3), None, Some(1)],
+                None,
+                None,
+                None,
+                0,
+            ),
+        ]
+        .join("\n");
+        assert_eq!(
+            project(&telemetry, &[]).unwrap(),
+            [
+                "@0s supervisor_started supervisor=S1 parent=root",
+                "@0s supervisor_started supervisor=S2 parent=S1 membership=M3",
+            ]
+        );
+        for malformed in [
+            process(
+                "supervisor_started",
+                1,
+                0,
+                [None, Some(1), Some(2), None, None],
+                None,
+                None,
+                None,
+                0,
+            ),
+            process(
+                "supervisor_started",
+                1,
+                0,
+                [None, Some(2), None, None, Some(1)],
+                None,
+                None,
+                None,
+                0,
+            ),
+        ] {
+            assert!(project(&malformed, &[]).is_err(), "{malformed}");
+        }
     }
 
     // Rejects dropping the extra events a scenario asks for, keeping them
@@ -936,9 +1025,18 @@ mod tests {
                 started(1, 0).replace(r#""channel_id":null"#, r#""channel_id":null,"region_id":3"#),
             ),
             (
-                "unexpected key on a dropped process event",
-                process("supervisor_started", 1, 0, NONE, None, None, None, 0)
-                    .replace(r#""channel_id":null"#, r#""channel_id":null,"region_id":3"#),
+                "unexpected key on supervisor_started",
+                process(
+                    "supervisor_started",
+                    1,
+                    0,
+                    [None, Some(1), None, None, None],
+                    None,
+                    None,
+                    None,
+                    0,
+                )
+                .replace(r#""channel_id":null"#, r#""channel_id":null,"region_id":3"#),
             ),
             (
                 "clock request kind in cause_task_id",

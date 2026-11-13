@@ -1,0 +1,70 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox, SendError}
+import std/supervisor as Supervisor
+import std/supervisor.{StartError}
+
+// SV10: a root of capacity 2 starts a dynamic nested supervisor, whose one
+// member registers `inner`, and then one dynamic process. The nested
+// supervisor takes one of the root's two slots, so a third start returns
+// `CapacityReached` (100). `remove_supervisor` returns once the subtree has
+// stopped: `inner` ends, the nested supervisor reports stopped, and only then
+// is its membership removed. A named send to `inner` then returns
+// `Unavailable` (10), and the freed slot takes a new process (1): 111. A
+// nested supervisor outside its parent's capacity would let the third start
+// succeed; a removal that left the subtree running would keep `inner`
+// routable and the slot taken.
+
+pub enum Message {
+  Add(amount: Int)
+}
+
+fn counting(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+    }
+  }
+}
+
+pub process name inner: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let window = Supervisor.restarts(0, Duration.seconds(30))
+  let root = Supervisor.start(Supervisor.policy([], 2, window))
+  let inner_member = Process.spec(counting, 1, Duration.seconds(1))
+    |> Process.register(inner)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let nested = Supervisor.start_supervisor(root, Supervisor.policy([inner_member], 1, window), Supervisor.Restart.Never)
+  let worker = Supervisor.start_process(root, Process.spec(counting, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  let rejected = case Supervisor.start_process(root, Process.spec(counting, 1, Duration.seconds(1)), Supervisor.Restart.Never) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      StartError.CapacityReached -> 100
+      StartError.NameTaken(_) -> 200
+      StartError.Stopped -> 300
+    }
+  }
+  Process.send(inner, Message.Add(5))
+  settle()
+  Supervisor.remove_supervisor(root, nested)
+  let stale = case Process.send(inner, Message.Add(1)) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      SendError.Full(_) -> 20
+      SendError.Unavailable(_) -> 10
+    }
+  }
+  let restarted = case Supervisor.start_process(root, Process.spec(counting, 1, Duration.seconds(1)), Supervisor.Restart.Never) {
+    Success(_) -> 1
+    Failure(_) -> 0
+  }
+  Supervisor.stop(root)
+  rejected + stale + restarted
+}

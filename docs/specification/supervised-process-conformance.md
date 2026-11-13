@@ -289,6 +289,7 @@ The canonical transcript. The lab builds it from runner telemetry with
 | `supervisor_escalated` | `supervisor`, `parent` (`S<n>` or `root`) |
 | `membership_removed` | `membership` |
 | `supervisor_stopped` | `supervisor` |
+| `supervisor_started` | `supervisor`, `parent` (`S<n>` or `root`), `membership` (only for a nested supervisor: the membership it fills in its parent) |
 | `process_send` | `kind` (`named`, `direct`), `name` (only for `named`), `incarnation` (accepting incarnation or `-`), `outcome` (`accepted`, `full`, `unavailable`) |
 | `task_terminal` (extra) | `task`, `parent`, `cause` (the task whose defect ended it, or `-`) |
 
@@ -300,9 +301,13 @@ The canonical transcript. The lab builds it from runner telemetry with
 - `admission_rejected` also takes `reason=start_failed`, the scheduler's
   `CHIMI_ADMISSION_START_FAILED`, which only the RA06 fault injection
   reaches.
-- `supervisor_started` (trace kind 10) is dropped until U9 (coordinator
-  decision 5 on `ts-6ccbc9`). U9 adds it to this table and to the
-  transcripts.
+- `supervisor_started` (trace kind 10) joined the transcripts at U9
+  (coordinator decision 5 on `ts-6ccbc9`). It precedes the supervisor's
+  declared members' starts, so every transcript begins with
+  `supervisor_started supervisor=S1 parent=root`. A nested supervisor that
+  its parent replaces after an escalation starts again under a new
+  identity, with the same membership (ES02). Through U8 the projector
+  dropped it.
 - A kept process event's own `time_ns` must equal the time tracked from the
   advance events, and `sequence` must increase on every line. `project`
   rejects telemetry that breaks either rule, or that has a missing or
@@ -593,6 +598,7 @@ Expected transcript for ES01. Members `counter` and `peer` are declared with
 calls `settle`, sends `Crash` again, and calls `Supervisor.wait(root)`:
 
 ```text
+@0s supervisor_started supervisor=S1 parent=root
 @0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.counter
 @0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.peer
 @0s process_send kind=named name=app/main.counter incarnation=I1 outcome=accepted
@@ -637,6 +643,7 @@ P wakes first and defects. The kernel creates I3 at the tail of the ready
 queue, behind Q. Q runs and removes P before I3 ever runs:
 
 ```text
+@0s supervisor_started supervisor=S1 parent=root
 @0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.p
 @0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.q
 @0s process_send kind=named name=app/main.p incarnation=I1 outcome=accepted
@@ -958,6 +965,7 @@ Exit code 0, and this outcome line:
 Under `--clock=virtual --trace=full`:
 
 ```text
+@0s supervisor_started supervisor=S1 parent=root
 @0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.worker_a
 @0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.worker_b
 @0s process_started supervisor=S1 membership=M3 incarnation=I3 name=app/main.worker_c
@@ -984,8 +992,8 @@ Under `--clock=virtual --trace=full`:
 @2ms supervisor_stopped supervisor=S1
 ```
 
-The `boundaries` transcript is the same 24 lines without the 12
-`process_send` lines, which leaves 12 lines. `off` mode writes no telemetry.
+The `boundaries` transcript is the same 25 lines without the 12
+`process_send` lines, which leaves 13 lines. `off` mode writes no telemetry.
 FP01 also runs OB04's double run and OB01's zero-event check on this program.
 
 ## Performance gates
@@ -1176,4 +1184,7 @@ need closed by the runner, and the runner flag `--clock=real|virtual`
    a supervisor with no members leaves no trace until it stops.
    *Recommendation:* add `supervisor_started` with `supervisor` and `parent`
    fields when nested supervisors land (U9). Until then, keep the prototype
-   set so that U5 to U8 match the reference transcript.
+   set so that U5 to U8 match the reference transcript. As built (U9), a
+   nested supervisor's event also names its `membership`, so a transcript
+   ties `membership_removed` and `restart_attempted` for that membership to
+   the supervisor.

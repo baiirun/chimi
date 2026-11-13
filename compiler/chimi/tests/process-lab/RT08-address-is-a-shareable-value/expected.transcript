@@ -1,3 +1,4 @@
+@0s supervisor_started supervisor=S1 parent=root
 @0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.courier
 @0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.target
 @0s process_send kind=named name=app/main.courier incarnation=I1 outcome=accepted
