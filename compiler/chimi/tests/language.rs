@@ -10085,9 +10085,8 @@ fn building_a_value_from_an_outer_binding_inside_a_loop_is_reported() {
 // `slot_of`, through a generic struct's field), so calling them on every pass or
 // twice moves nothing, and calling a one-shot closure whose result is shareable
 // does not move the closure.
-// `handles` guards a later change: `Receive<T>` is typed shareable whatever `T` is
-// today, and if it comes to follow `T`, `Channel.receive` must still not carry its
-// receiver.
+// `handles` guards the typing of `Receive<T>`, which follows `T` (ts-bb95dc):
+// `Channel.receive` must still not carry its receiver.
 #[test]
 fn reading_or_owning_an_exclusive_binding_does_not_move_it() {
     let source = process_program(&format!(
@@ -10146,6 +10145,35 @@ fn reading_or_owning_an_exclusive_binding_does_not_move_it() {
     ));
     let diagnostics = check_diagnostics(&source);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+// ts-bb95dc: `Channel.Receive<T>` is what `T` is, so a received exclusive value is
+// exclusive while it is still wrapped. Rejects a `Receive<T>` that is shareable
+// whatever `T` is (two children could capture one received receiver), and one that
+// is never shareable (a received `Int` captured twice is fine).
+#[test]
+fn a_received_value_has_the_capability_class_of_its_payload() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "import std/channel.{{Receive}}\n",
+            "fn captured_twice(rs: Receiver<Receiver<Int>>) -> Int {{\n",
+            "  let got = Channel.receive(rs)\n",
+            "  let a = Task.start(fn() -> Int {{\n    got\n    1\n  }})\n",
+            "  let b = Task.start(fn() -> Int {{\n    got\n    2\n  }})\n  1\n}}\n",
+            "fn ints_twice(rs: Receiver<Int>) -> Int {{\n",
+            "  let got = Channel.receive(rs)\n",
+            "  let a = Task.start(fn() -> Int {{\n    got\n    1\n  }})\n",
+            "  let b = Task.start(fn() -> Int {{\n    got\n    2\n  }})\n  1\n}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let found = check_diagnostics(&source);
+    let found = found
+        .iter()
+        .map(|(code, _, message)| (code.as_str(), message.contains("`got` was transferred")))
+        .collect::<Vec<_>>();
+    assert_eq!(found, [("T4241", true)], "{found:?}");
 }
 
 // Removing a managed supervisor consumes its handle, as removing a process does.
