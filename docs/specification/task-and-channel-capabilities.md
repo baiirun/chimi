@@ -179,13 +179,14 @@ crosses a task boundary. The compiler follows this through a function body
   `case`, gives a new, independent binding and moves nothing, so the record that
   `Channel.bounded` returns can be split into its three capabilities.
 
-Three flows are outside this rule, and the runtime owner token is their only
-backstop: a capability read out of the same binding twice (two reads of
-`channel.receiver`, or a pattern binding beside the binding it matched); a
-called function that transfers its parameter, which leaves the caller's
-argument usable; and `Channel.Receive<T>`, which the compiler treats as
-shareable whatever `T` is, so a received exclusive value can be captured by two
-children.
+- `Channel.Receive<T>` has the concurrent properties of `T`, as
+  `Process.SendError<M>` has those of `M`: a received `Receive<Receiver<Int>>`
+  is exclusive while it is still wrapped, so two children cannot capture it,
+  and a received `Receive<Int>` stays shareable (`ts-bb95dc`).
+
+This rule stops at the function boundary. The flows it does not follow are
+checked at run time; [where each rule is checked](#where-each-rule-is-checked)
+lists them.
 
 Capacity, FIFO admission, graceful drain, abort, and cancellation
 linearization follow [bounded channel semantics](../research/channel-semantics.md).
@@ -244,6 +245,69 @@ wrong owner or an overlapping exclusive operation defects with a precise
 capability-violation cause and trace event. It is a programmer/runtime contract
 violation, not an expected channel failure. Chimi exposes no unsafe escape hatch
 that disables these checks.
+
+### Where each rule is checked
+
+Decision (Byron, 2026-11-12): the compiler checks exclusive moves within one
+function body and does not summarize what a called function does with its
+parameters. Aliasing that crosses a function boundary is caught at run time by
+the owner token.
+
+Rationale: a cross-function rule needs a transfer summary for every function,
+iterated to a fixed point with recursion, generics, and function values. The
+attempt on `archive/capability-places-summaries` did not converge: its fixed
+point hung on a recursive struct walk, it rejected a plain binary-tree walk,
+and it still missed calls through a function value or a generic `dup`. Each
+fix exposed the next case. The owner token already decides every one of these
+programs at the operation that breaks ownership, so a second, partial static
+proof would add rejected programs without closing the class.
+
+Checked at compile time (within the function that holds the binding):
+
+- every rule in [moving exclusive values](#moving-exclusive-values): a value
+  built from an exclusive binding takes it; a `let`, loop state, or pattern on
+  a built value moves it; a send, `Task.start`, `using` provider, or removal
+  transfers what its operand carries; a call's result carries an argument whose
+  type can occur in the result type;
+- capturing one exclusive capability into two children, or using it after a
+  transfer, in the same function (`T4241`), and moving an outer binding from
+  inside a loop (`T4250`);
+- the concurrent properties of every type, including `Channel.Receive<T>`
+  following `T`.
+
+Checked at run time (native, by the owner token):
+
+- a callee that hands its parameter to a task while the caller keeps using the
+  argument: the caller's next operation on it defects;
+- a capability duplicated by code the checker does not follow: a generic
+  `dup<T>` reached through a function value (`let f = dup; f(r)`), a
+  higher-order `twice(x, f)`, or any other call through a function parameter;
+  the second `Task.start` that captures it defects;
+- one capability read out of the same binding twice (two reads of
+  `channel.receiver`, or a pattern binding beside the binding it matched) and
+  handed to two tasks: the second hand-off defects.
+
+The defect names the capability, the task that broke the contract, and the task
+that owns the capability, for example
+`channel capability violation: task 1 cannot hand the Receiver of channel 1 to
+task 3: task 2 owns it`, or
+`channel capability violation: task 1 cannot use the Receiver of channel 1 in
+Channel.receive: task 2 owns it`. A child's violation defects its owner, so the
+program ends with the child's message. `tests/cli.rs` `native_backstop_*`
+build and run one program per route.
+
+Not yet covered:
+
+- the interpreter has no bounded-channel runtime (`Channel.bounded` defects with
+  "requires the bounded Channel runtime"), so these routes run natively only;
+- a Receiver or Completion sent through a channel keeps its sender as owner in
+  the native runtime: the task that receives it defects on first use, even when
+  the sender has not touched it since (a legitimate hand-off fails), and a
+  sender that keeps using it after the send is not the one that defects;
+- `Channel.SendError<T>` is shareable whatever `T` is, so the payload handed
+  back by `Closed(value)` or `Aborted(value)` is not exclusive to the checker;
+- a violation emits no dedicated trace event; the trace shows only the
+  defected task's cancellation and terminal events.
 
 ## Conformance matrix
 
