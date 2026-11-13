@@ -1,0 +1,68 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{ManagedProcess, Running}
+
+// RR06: two dynamic members. Main queues `Remove(root, older)` on the newest
+// one and calls `stop` before it runs. `stop` unroutes both and stops the
+// newest first, which drains the queued request and removes its older
+// sibling: the sibling ends `cancelled` once, then `membership_removed`, and
+// the removal returns, so the newest reports 1 before its next `receive`
+// cancels it. `stop` then skips the removed sibling. A stop that terminated
+// the sibling again would print a second `process_terminated` for M1; a
+// removal blocked by the ongoing stop would deadlock or never report.
+
+pub enum OlderMessage {
+  Ping
+}
+
+pub enum NewestMessage {
+  Remove(running: Running, older: ManagedProcess<OlderMessage>, report: Sender<Int>)
+}
+
+fn idle(inbox: Inbox<OlderMessage>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      OlderMessage.Ping -> pings + 1
+    }
+  }
+}
+
+fn remover(inbox: Inbox<NewestMessage>) -> Void {
+  loop removed = 0 {
+    case Process.receive(inbox) {
+      NewestMessage.Remove(running, older, report) -> {
+        Supervisor.remove_process(running, older)
+        Channel.send(report, 1)
+        removed + 1
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn received(value: Receive<Int>) -> Int {
+  case value {
+    Receive.Received(number) -> number
+    Receive.Drained -> 0
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 2, Supervisor.restarts(2, Duration.seconds(30))))
+  let older = Supervisor.start_process(root, Process.spec(idle, 1, Duration.seconds(1)), Supervisor.Restart.OnDefect)
+  let newest = Supervisor.start_process(root, Process.spec(remover, 1, Duration.seconds(1)), Supervisor.Restart.OnDefect)
+  let reports = Channel.bounded(1)
+  settle()
+  Process.send(Supervisor.address(newest), NewestMessage.Remove(root, older, reports.sender))
+  Supervisor.stop(root)
+  received(Channel.receive(reports.receiver)) + 40
+}

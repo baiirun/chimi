@@ -1,0 +1,58 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// SD02: as SD03, but with `shutdown_within = Duration.zero`. Main queues
+// `Add(1)`, `Add(2)`, and `Add(3)` and removes the body before it runs. A
+// zero deadline leaves no time for cleanup: the end is `forced`, the body
+// reports none of the three, and the three unread messages are freed
+// (`fragments_live` is 0 at exit). Main then puts 9 on the report channel and
+// reads it back first, so a body that drained past the deadline would make
+// the outcome 1. A leaked unread message would leave a fragment live.
+
+pub enum Message {
+  Add(amount: Int, report: Sender<Int>)
+}
+
+fn report_each(inbox: Inbox<Message>) -> Void {
+  loop reported = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount, report) -> {
+        Channel.send(report, amount)
+        reported + 1
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn received(value: Receive<Int>) -> Int {
+  case value {
+    Receive.Received(number) -> number
+    Receive.Drained -> 0
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(report_each, 3, Duration.zero), Supervisor.Restart.OnDefect)
+  let address = Supervisor.address(managed)
+  let reports = Channel.bounded(4)
+  settle()
+  Process.send(address, Message.Add(1, reports.sender))
+  Process.send(address, Message.Add(2, reports.sender))
+  Process.send(address, Message.Add(3, reports.sender))
+  Supervisor.remove_process(root, managed)
+  Channel.send(reports.sender, 9)
+  let first = received(Channel.receive(reports.receiver))
+  Supervisor.stop(root)
+  first
+}

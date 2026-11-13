@@ -1,0 +1,86 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/task as Task
+
+// CB05: on `Sum(report)` the body starts a child task that builds the list
+// 1..20 in its own heap and returns it. `Task.result` returns once the child
+// is terminal, so the child's heap is gone when the body reads the list. The
+// body then allocates and drops 1,000 lists of the same shape, which would
+// reuse the child's freed memory, and only then sums the result: 210. A
+// task result that pointed into the destroyed heap would read whatever those
+// lists left there.
+
+pub enum Message {
+  Sum(report: Sender<Int>)
+}
+
+struct Tally {
+  rest: List<Int>,
+  total: Int,
+}
+
+fn sum(values: List<Int>) -> Int {
+  loop state = Tally(values, 0) {
+    case state.rest {
+      [] -> break state.total
+      [first, ..rest] -> Tally(rest, state.total + first)
+    }
+  }
+}
+
+fn numbers(base: Int) -> List<Int> {
+  [base + 0, base + 1, base + 2, base + 3, base + 4, base + 5, base + 6, base + 7, base + 8, base + 9, base + 10, base + 11, base + 12, base + 13, base + 14, base + 15, base + 16, base + 17, base + 18, base + 19]
+}
+
+fn build() -> List<Int> {
+  numbers(1)
+}
+
+fn churn(passes: Int) -> Int {
+  loop left = passes {
+    case left {
+      0 -> break 0
+      _ -> {
+        let garbage = numbers(left)
+        left - 1
+      }
+    }
+  }
+}
+
+fn summing(inbox: Inbox<Message>) -> Void {
+  loop answered = 0 {
+    case Process.receive(inbox) {
+      Message.Sum(report) -> {
+        let child = Task.start(build)
+        let values = Task.result(child)
+        let ignored = churn(1000)
+        Channel.send(report, sum(values) + ignored)
+        answered + 1
+      }
+    }
+  }
+}
+
+fn received(value: Receive<Int>) -> Int {
+  case value {
+    Receive.Received(number) -> number
+    Receive.Drained -> 0
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(summing, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  let reports = Channel.bounded(1)
+  Process.send(Supervisor.address(managed), Message.Sum(reports.sender))
+  let total = received(Channel.receive(reports.receiver))
+  Supervisor.stop(root)
+  total
+}

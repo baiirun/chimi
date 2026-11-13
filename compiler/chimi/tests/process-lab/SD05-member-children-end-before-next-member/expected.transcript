@@ -1,0 +1,10 @@
+@0s process_started supervisor=S1 membership=M1 incarnation=I1
+@0s process_started supervisor=S1 membership=M2 incarnation=I2
+@0s process_send kind=direct incarnation=I1 outcome=accepted
+@0s process_send kind=direct incarnation=I2 outcome=accepted
+@1ms task_terminal task=T5 parent=T3 cause=-
+@1ms process_terminated membership=M2 incarnation=I2 cause=cancelled
+@1ms task_terminal task=T4 parent=T2 cause=-
+@1ms process_terminated membership=M1 incarnation=I1 cause=cancelled
+@1ms supervisor_stopped supervisor=S1
+@1ms task_terminal task=T1 parent=- cause=-

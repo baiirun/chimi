@@ -1,0 +1,48 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// SD07: two declared `OnDefect` members under `restarts(5, 30s)`, both parked
+// in `receive`. `stop` ends `hasty` (zero deadline) `forced` and `patient`
+// (1 s deadline, nothing to drain) `cancelled`. Neither end is a defect, so no
+// `restart_attempted` and no new incarnation appear between them and
+// `supervisor_stopped`. Shutdown treated as a defect would restart each one
+// inside the stop.
+
+pub enum Message {
+  Ping
+}
+
+fn idle(inbox: Inbox<Message>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      Message.Ping -> pings + 1
+    }
+  }
+}
+
+pub process name patient: Message
+pub process name hasty: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let members = [
+    Process.spec(idle, 1, Duration.seconds(1))
+      |> Process.register(patient)
+      |> Supervisor.process(Supervisor.Restart.OnDefect),
+    Process.spec(idle, 1, Duration.zero)
+      |> Process.register(hasty)
+      |> Supervisor.process(Supervisor.Restart.OnDefect),
+  ]
+  let root = Supervisor.start(Supervisor.policy(members, 2, Supervisor.restarts(5, Duration.seconds(30))))
+  settle()
+  Supervisor.stop(root)
+  Supervisor.wait(root)
+  5
+}

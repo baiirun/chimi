@@ -1,6 +1,7 @@
 /* White-box kernel scenarios of the supervised-process conformance lab
-   (docs/specification/supervised-process-conformance.md, "Runtime: restart
-   accounting"). It drives the scheduler's C ABI (chimi_fiber.h) directly, with
+   (docs/specification/supervised-process-conformance.md: RA06 under "Runtime:
+   restart accounting", SD04 under "Runtime: shutdown and forced
+   termination"). It drives the scheduler's C ABI (chimi_fiber.h) directly, with
    C process bodies, and links libchimi_fiber.a.
 
    usage: kernel_faults <scenario ID>   runs that scenario's checks; prints "ok"
@@ -210,6 +211,104 @@ static void ra06(void) {
   CHECK(index == count, "%zu process events, expected %zu", index, count);
 }
 
+/* SD04: cleanup that parks again after cancellation. */
+static int sd04_forced_replies;
+static int sd04_ran_after_forced;
+
+static int64_t now(void) {
+  ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TIMER_NOW};
+  CHECK(chimi_fiber_request(&request, NULL) == CHIMI_FIBER_RESUME && request.status == CHIMI_RESPONSE_OK,
+        "TIMER_NOW");
+  return request.value;
+}
+
+/* Receives until the removal cancels it, then ignores the cancellation and
+   sleeps far beyond its deadline. The deadline answers that sleep FORCED; the
+   body then parks once more instead of unwinding. The scheduler must abandon
+   it there, neither resuming it (the counter after the park stays 0) nor
+   destroying its parked fiber, which would abort the process. */
+static ChimiFiberResult sd04_stubborn(void *context) {
+  (void)context;
+  for (;;) {
+    ChimiProcessRequest receive = {.kind = CHIMI_REQUEST_PROCESS_RECEIVE};
+    if (process_request(&receive) != CHIMI_RESPONSE_SUCCEEDED) break;
+  }
+  ChimiSchedulerRequest sleep = {.kind = CHIMI_REQUEST_TIMER_SLEEP_UNTIL, .value = INT64_MAX};
+  for (;;) {
+    sleep.status = CHIMI_RESPONSE_UNSET;
+    chimi_fiber_request(&sleep, NULL);
+    if (sleep.status == CHIMI_RESPONSE_FORCED) break;
+  }
+  ++sd04_forced_replies;
+  chimi_fiber_park(NULL);
+  ++sd04_ran_after_forced;
+  return (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED};
+}
+
+/* One dynamic member with shutdown_within 3s, removed at 1ms. The removal
+   returns at the deadline, 3.001s, with the member ended `forced`. */
+static ChimiFiberResult sd04_root(void *context) {
+  (void)context;
+  ChimiSupervisorPolicy policy = {.capacity = 1, .restart_limit = 1, .restart_within = INT64_C(30000000000)};
+  ChimiProcessRequest start = {.kind = CHIMI_REQUEST_SUPERVISOR_START, .policy = &policy};
+  CHECK(process_request(&start) == CHIMI_RESPONSE_OK, "start answered %u", start.status);
+  ChimiProcessSpec spec = {
+    .entry = sd04_stubborn,
+    .context = &spec,
+    .mailbox_capacity = 1,
+    .shutdown_within = INT64_C(3000000000),
+  };
+  ChimiProcessRequest add = {
+    .kind = CHIMI_REQUEST_SUPERVISOR_START_PROCESS,
+    .supervisor = start.supervisor,
+    .restart = CHIMI_RESTART_ON_DEFECT,
+    .spec = &spec,
+  };
+  CHECK(process_request(&add) == CHIMI_RESPONSE_OK, "start_process answered %u", add.status);
+  sleep_for(1000000);
+  ChimiProcessRequest remove = {
+    .kind = CHIMI_REQUEST_SUPERVISOR_REMOVE_PROCESS,
+    .supervisor = start.supervisor,
+    .membership = add.membership,
+  };
+  CHECK(process_request(&remove) == CHIMI_RESPONSE_OK, "remove answered %u", remove.status);
+  CHECK(now() == INT64_C(3001000000), "the removal returned at %lld ns, not at the 3.001s deadline",
+        (long long)now());
+  ChimiProcessRequest stop = {.kind = CHIMI_REQUEST_SUPERVISOR_STOP, .supervisor = start.supervisor};
+  CHECK(process_request(&stop) == CHIMI_RESPONSE_OK, "stop answered %u", stop.status);
+  return (ChimiFiberResult){.state = CHIMI_FIBER_SUCCEEDED, .value = 0};
+}
+
+static void sd04(void) {
+  ChimiSchedulerConfig config = {
+    .entry = sd04_root,
+    .stack_bytes = 256 * 1024,
+    .trace_mode = 1,
+    .clock_mode = CHIMI_SCHEDULER_CLOCK_VIRTUAL,
+    .trace_sink = record_event,
+    .release_message = release_message,
+    .release_spec_context = release_spec_context,
+  };
+  ChimiSchedulerOutcome outcome = chimi_scheduler_run(&config);
+  CHECK(outcome.state == CHIMI_FIBER_SUCCEEDED, "root ended in state %u (defect %lld)", outcome.state,
+        (long long)outcome.defect_code);
+  CHECK(sd04_forced_replies == 1, "%d forced replies, expected 1", sd04_forced_replies);
+  CHECK(sd04_ran_after_forced == 0, "the body ran on after its forced reply");
+  const uint32_t expected[] = {
+    CHIMI_PROCESS_TRACE_STARTED,
+    CHIMI_PROCESS_TRACE_TERMINATED,
+    CHIMI_PROCESS_TRACE_MEMBERSHIP_REMOVED,
+    CHIMI_PROCESS_TRACE_SUPERVISOR_STOPPED,
+  };
+  size_t count = sizeof(expected) / sizeof(*expected);
+  CHECK(event_count == count, "%zu process events, expected %zu", event_count, count);
+  for (size_t index = 0; index < count; ++index)
+    CHECK(events[index].kind == expected[index], "event %zu: kind %u, expected %u", index, events[index].kind,
+          expected[index]);
+  CHECK(events[1].cause == CHIMI_PROCESS_CAUSE_FORCED, "the member ended with cause %llu, not forced",
+        (unsigned long long)events[1].cause);
+}
+
 int main(int argc, char **argv) {
   system_mmap = (MmapFunction)dlsym(RTLD_NEXT, "mmap");
   if (!system_mmap) {
@@ -221,6 +320,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   if (strcmp(argv[1], "RA06") == 0) ra06();
+  else if (strcmp(argv[1], "SD04") == 0) sd04();
   else {
     fprintf(stderr, "unknown scenario %s\n", argv[1]);
     return 2;

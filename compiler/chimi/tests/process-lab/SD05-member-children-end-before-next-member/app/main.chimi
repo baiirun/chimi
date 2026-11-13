@@ -1,0 +1,51 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/task as Task
+
+// SD05: two dynamic members each start a child task that sleeps for 60 s.
+// `stop` takes the newest member first: its child (T5) is cancelled and
+// drained, then the member ends; only then does the older member's child (T4)
+// end, then the older member. Shutdown that cancelled members without their
+// children would print no child `task_terminal` before the members' ends, and
+// one that stopped every member before any child would print both members
+// first. (Incarnation tasks have no task events of their own: the process
+// events stand for them, so T2 and T3 appear only as the children's parents.)
+
+pub enum Message {
+  Spawn
+}
+
+fn nap() -> Int needs { clock: Clock } {
+  Clock.sleep(Duration.seconds(60))
+  1
+}
+
+fn spawning(inbox: Inbox<Message>) -> Void needs { clock: Clock } {
+  loop spawned = 0 {
+    case Process.receive(inbox) {
+      Message.Spawn -> {
+        let child = Task.start(nap)
+        spawned + 1
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  let older = Supervisor.start_process(root, Process.spec(spawning, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  let newest = Supervisor.start_process(root, Process.spec(spawning, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  Process.send(Supervisor.address(older), Message.Spawn)
+  Process.send(Supervisor.address(newest), Message.Spawn)
+  settle()
+  Supervisor.stop(root)
+  2
+}

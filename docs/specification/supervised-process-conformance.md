@@ -292,6 +292,11 @@ The canonical transcript. The lab builds it from runner telemetry with
 | `process_send` | `kind` (`named`, `direct`), `name` (only for `named`), `incarnation` (accepting incarnation or `-`), `outcome` (`accepted`, `full`, `unavailable`) |
 | `task_terminal` (extra) | `task`, `parent`, `cause` (the task whose defect ended it, or `-`) |
 
+- `task_terminal` lines come only from tasks that are not incarnations. An
+  incarnation runs on a scheduler task too, but the scheduler emits no task
+  events for it: its `process_started` and `process_terminated` stand for it.
+  Its identity still appears as the `parent` of the child tasks its body
+  starts (U8 decision; RA07, SD05).
 - `admission_rejected` also takes `reason=start_failed`, the scheduler's
   `CHIMI_ADMISSION_START_FAILED`, which only the RA06 fault injection
   reaches.
@@ -663,10 +668,18 @@ consumed budget.
 | SD03 | U8 | `shutdown_within = 5s` with three queued messages. The body drains all three, cause `cancelled`, and virtual time does not move | A deadline that waits when cleanup is done |
 | SD04 | U8 | C harness: a body that parks again after cancellation is forced at `now + shutdown_within`. Virtual time jumps to the deadline. Cause `forced`. The body runs no code after the forced reply | Fiber destruction while parked (it aborts the process), or code that runs after forcing |
 | SD05 | U8 | Each member owns a sleeping child task. During `stop`, each member's children terminate before the next member's `process_terminated` (`extra_events = ["task_terminal"]`) | Children left running across members |
-| SD06 | U8 | `stop` begins. The oldest member, stopped last, drains a message and sends to a named sibling that is still running. The send returns `Unavailable` | Routing removed member by member instead of for the whole subtree first |
+| SD06 | U8 | `stop` begins. The newest member, stopped first, drains a message and sends to the named oldest member, which `stop` ends last and is still running. The send returns `Unavailable` | Routing removed member by member instead of for the whole subtree first |
 | SD07 | U8 | `OnDefect` members ended by `cancelled` and by `forced` are not restarted | Shutdown treated as a defect |
 | SD08 | U7 | A member calls `Supervisor.stop` on its own root. The stop completes and the member ends `cancelled` | Self-deadlock |
 | SD09 | U5 | A second `stop` returns `Void` and emits nothing | Duplicate stop events |
+
+SD04 as built (U8): `kernel_faults.c` starts one dynamic member with
+`shutdown_within = 3s` and removes it at 1ms. The body ignores the
+cancellation and sleeps until `INT64_MAX`. The removal returns at 3.001s, the
+member ends `forced`, and the body sees exactly one `FORCED` reply. It then
+parks once more, and the scheduler never resumes it (a counter after that park
+stays 0) and does not destroy its parked fiber, which would abort the harness.
+The scheduler's own C fixture covers the same rule through `stop`.
 
 ### Heap: copy-boundary safety
 

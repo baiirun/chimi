@@ -1,0 +1,57 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/task as Task
+
+// RA07: on `Spawn` the body starts a child task that sleeps for 60 s and goes
+// back to `receive`; on `Crash` it defects. The child belongs to the
+// incarnation, so it is cancelled and drained (its `task_terminal`, cancelled,
+// so `cause=-`) before the incarnation's own task ends and before the
+// supervisor starts the replacement. A replacement started while the child
+// still sleeps would show I2's `process_started` before the child's
+// `task_terminal`, and a child that outlived its parent would end only with
+// the program.
+
+pub enum Message {
+  Spawn
+  Crash
+}
+
+fn nap() -> Int needs { clock: Clock } {
+  Clock.sleep(Duration.seconds(60))
+  1
+}
+
+fn spawning(inbox: Inbox<Message>) -> Void needs { clock: Clock } {
+  loop spawned = 0 {
+    case Process.receive(inbox) {
+      Message.Spawn -> {
+        let child = Task.start(nap)
+        spawned + 1
+      }
+      Message.Crash -> spawned / 0
+    }
+  }
+}
+
+pub process name worker: Message
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let member = Process.spec(spawning, 1, Duration.seconds(1))
+    |> Process.register(worker)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  Process.send(worker, Message.Spawn)
+  settle()
+  Process.send(worker, Message.Crash)
+  settle()
+  Supervisor.stop(root)
+  7
+}

@@ -1,0 +1,60 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// SD03: `shutdown_within = 5s`. Main queues `Add(1)`, `Add(2)`, and `Add(3)`
+// and removes the body before it runs. Cleanup drains the three accepted
+// messages, reporting each, and the next `receive` ends the body `cancelled`.
+// Cleanup that finishes before its deadline does not wait for it: the end and
+// `membership_removed` are at 1ms, and main's next `settle` ends at 2ms. A
+// deadline that waited would put them at 5.001s. Main reads 1, 2, 3 back
+// (outcome 123).
+
+pub enum Message {
+  Add(amount: Int, report: Sender<Int>)
+}
+
+fn report_each(inbox: Inbox<Message>) -> Void {
+  loop reported = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount, report) -> {
+        Channel.send(report, amount)
+        reported + 1
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn received(value: Receive<Int>) -> Int {
+  case value {
+    Receive.Received(number) -> number
+    Receive.Drained -> 0
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(report_each, 3, Duration.seconds(5)), Supervisor.Restart.OnDefect)
+  let address = Supervisor.address(managed)
+  let reports = Channel.bounded(3)
+  settle()
+  Process.send(address, Message.Add(1, reports.sender))
+  Process.send(address, Message.Add(2, reports.sender))
+  Process.send(address, Message.Add(3, reports.sender))
+  Supervisor.remove_process(root, managed)
+  let first = received(Channel.receive(reports.receiver))
+  let second = received(Channel.receive(reports.receiver))
+  let third = received(Channel.receive(reports.receiver))
+  settle()
+  Supervisor.stop(root)
+  first * 100 + second * 10 + third
+}
