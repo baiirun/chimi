@@ -9,13 +9,14 @@ import std/supervisor.{StartError}
 // SV10: a root of capacity 2 starts a dynamic nested supervisor, whose one
 // member registers `inner`, and then one dynamic process. The nested
 // supervisor takes one of the root's two slots, so a third start returns
-// `CapacityReached` (100). `remove_supervisor` returns once the subtree has
-// stopped: `inner` ends, the nested supervisor reports stopped, and only then
-// is its membership removed. A named send to `inner` then returns
-// `Unavailable` (10), and the freed slot takes a new process (1): 111. A
-// nested supervisor outside its parent's capacity would let the third start
-// succeed; a removal that left the subtree running would keep `inner`
-// routable and the slot taken.
+// `CapacityReached` (100), and so does a second nested supervisor at that
+// capacity (1000). `remove_supervisor` returns once the subtree has stopped:
+// `inner` ends, the nested supervisor reports stopped, and only then is its
+// membership removed. A named send to `inner` then returns `Unavailable`
+// (10), and the freed slot takes a new process (1): 1111. A nested supervisor
+// outside its parent's capacity would let the third process start or the
+// second nested supervisor start; a removal that left the subtree running
+// would keep `inner` routable and the slot taken.
 
 pub enum Message {
   Add(amount: Int)
@@ -51,6 +52,14 @@ pub fn main() -> Int needs { clock: Clock } {
       StartError.Stopped -> 300
     }
   }
+  let nested_rejected = case Supervisor.start_supervisor(root, Supervisor.policy([], 1, window), Supervisor.Restart.Never) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      StartError.CapacityReached -> 1000
+      StartError.NameTaken(_) -> 2000
+      StartError.Stopped -> 3000
+    }
+  }
   Process.send(inner, Message.Add(5))
   settle()
   Supervisor.remove_supervisor(root, nested)
@@ -66,5 +75,5 @@ pub fn main() -> Int needs { clock: Clock } {
     Failure(_) -> 0
   }
   Supervisor.stop(root)
-  rejected + stale + restarted
+  nested_rejected + rejected + stale + restarted
 }

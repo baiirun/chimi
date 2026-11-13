@@ -55,8 +55,10 @@ MUTATIONS = [
             "managed_value(VALUE_MANAGED_SUPERVISOR, arguments[0]->as.managed.supervisor,\n                                              request.membership)",
             "managed_value(VALUE_MANAGED_SUPERVISOR, arguments[0]->as.managed.supervisor,\n                                              request.supervisor)")]),
     # Nested escalation.
+    # Never restarted, `counter` stays unrouted, so main's `Report` send
+    # fails and main ends with that failure (exit 1).
     lab("a declared nested supervisor is marshalled as Never", RUNTIME, "ES02",
-        [TRANSCRIPT, OUTCOME], [(
+        [TRANSCRIPT, OUTCOME, EXITED], [(
             NESTED_MEMBER, NESTED_MEMBER + "      array[index].restart = CHIMI_RESTART_NEVER;\n")]),
     lab("a declared nested supervisor is marshalled as OnDefect", RUNTIME, "ES03",
         [TRANSCRIPT, OUTCOME], [(

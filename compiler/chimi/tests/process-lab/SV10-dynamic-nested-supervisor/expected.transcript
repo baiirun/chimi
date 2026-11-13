@@ -3,6 +3,7 @@
 @0s process_started supervisor=S2 membership=M2 incarnation=I1 name=app/main.inner
 @0s process_started supervisor=S1 membership=M3 incarnation=I2
 @0s admission_rejected supervisor=S1 reason=capacity_reached
+@0s admission_rejected supervisor=S1 reason=capacity_reached
 @0s process_send kind=named name=app/main.inner incarnation=I1 outcome=accepted
 @1ms process_terminated membership=M2 incarnation=I1 cause=cancelled
 @1ms supervisor_stopped supervisor=S2
