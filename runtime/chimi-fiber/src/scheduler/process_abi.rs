@@ -12,7 +12,10 @@ use super::{
     SCHEDULER_DEFECT_CODE, Scheduler, SchedulerOptions, SchedulerOutcome, SchedulerTraceSink,
     ParkedTask, TaskId, TaskOutcome, TaskPhase, TaskResult, TraceMode,
 };
-use super::{MessageRelease, SendFailure, SpecContextRelease, TaskContextRelease, ValueRelease};
+use super::{
+    CapabilityViolationReport, MessageRelease, SendFailure, SpecContextRelease, TaskContextRelease,
+    ValueRelease,
+};
 use crate::{ChimiFiberCommand, ChimiFiberEntry, ChimiFiberState};
 use std::ffi::c_void;
 use std::num::NonZeroU32;
@@ -112,6 +115,8 @@ pub struct ChimiSchedulerConfig {
     pub release_task_value: Option<ValueRelease>,
     pub release_channel_value: Option<ValueRelease>,
     pub release_task_context: Option<TaskContextRelease>,
+    pub capability_violation_report: Option<CapabilityViolationReport>,
+    pub capability_violation_context: *mut c_void,
 }
 
 /// One task parked in a detected deadlock and the request kind it waits on
@@ -617,6 +622,8 @@ pub unsafe extern "C" fn chimi_scheduler_run(
         release_channel_value: config.release_channel_value,
         release_task_context: config.release_task_context,
         release_context: config.release_context,
+        capability_violation_report: config.capability_violation_report,
+        violation_context: config.capability_violation_context,
     });
     scheduler.set_trace_sink(config.trace_sink, config.trace_context);
     let Ok(root) = scheduler.start_root_with_context(entry, config.context) else {

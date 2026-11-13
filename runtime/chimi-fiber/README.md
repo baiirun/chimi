@@ -17,7 +17,11 @@ The scheduler also owns bounded MPSC channels. Capacity zero rendezvous never
 buffers; positive capacities bound accepted unread values exactly. Parked
 senders are admitted FIFO without barging. Separate exclusive receiver and
 completion capabilities provide destructive abort and graceful close/drain,
-and owner exit aborts abandoned channels. Cancellation and channel operations
+and owner exit aborts abandoned channels. A request that uses or hands on a
+receiver or completion the requesting task does not own defects that task, and
+the config's `capability_violation_report` receives the capability, the task,
+and the current owner first, so the host can name them in the defect.
+Cancellation and channel operations
 have one deterministic winner, rejected sends retain their payload, and trace
 events record identities, causes, depths, capacity, and discard counts without
 recording payloads.

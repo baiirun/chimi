@@ -180,6 +180,95 @@ pub type ValueRelease = unsafe extern "C" fn(*mut c_void, i64);
 /// `ChimiTaskContextRelease` in `include/chimi_fiber.h`.
 pub type TaskContextRelease = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
+/// Why a channel request broke the capability contract. See
+/// `ChimiCapabilityViolation` in `include/chimi_fiber.h`.
+pub const VIOLATION_WRONG_OWNER: u32 = 1;
+pub const VIOLATION_OVERLAPPING_OPERATION: u32 = 2;
+pub const VIOLATION_PENDING_OPERATION: u32 = 3;
+pub const VIOLATION_UNKNOWN_CHANNEL: u32 = 4;
+pub const VIOLATION_CHANNEL_STILL_LIVE: u32 = 5;
+pub const CAPABILITY_NONE: u32 = 0;
+pub const CAPABILITY_RECEIVER: u32 = 1;
+pub const CAPABILITY_COMPLETION: u32 = 2;
+
+/// One channel capability violation, reported the moment the scheduler
+/// defects the task that made it. Identities are 0 when absent.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChimiCapabilityViolation {
+    /// The task whose request broke the contract; it defects.
+    pub task: u64,
+    pub channel: u64,
+    /// The task that owns the capability now, or 0 when its last owner ended.
+    pub owner: u64,
+    /// For a transfer, the task it was to be handed to.
+    pub destination: u64,
+    /// The request kind (`REQUEST_CHANNEL_RECEIVE`, ...).
+    pub request_kind: u32,
+    pub capability: u32,
+    pub reason: u32,
+}
+
+impl ChimiCapabilityViolation {
+    fn new(
+        task: TaskId,
+        error: ChannelError,
+        request_kind: u32,
+        destination: Option<TaskId>,
+    ) -> Self {
+        let (reason, capability, channel, owner) = match error {
+            ChannelError::WrongReceiverOwner {
+                channel, expected, ..
+            } => (
+                VIOLATION_WRONG_OWNER,
+                CAPABILITY_RECEIVER,
+                Some(channel),
+                expected,
+            ),
+            ChannelError::WrongCompletionOwner {
+                channel, expected, ..
+            } => (
+                VIOLATION_WRONG_OWNER,
+                CAPABILITY_COMPLETION,
+                Some(channel),
+                expected,
+            ),
+            ChannelError::OverlappingOperation(_) => {
+                (VIOLATION_OVERLAPPING_OPERATION, CAPABILITY_NONE, None, None)
+            }
+            ChannelError::CapabilityHasPendingOperation(_) => {
+                (VIOLATION_PENDING_OPERATION, CAPABILITY_NONE, None, None)
+            }
+            ChannelError::UnknownChannel(channel) => (
+                VIOLATION_UNKNOWN_CHANNEL,
+                CAPABILITY_NONE,
+                Some(channel),
+                None,
+            ),
+            ChannelError::ChannelStillLive(channel) => (
+                VIOLATION_CHANNEL_STILL_LIVE,
+                CAPABILITY_NONE,
+                Some(channel),
+                None,
+            ),
+        };
+        Self {
+            task: task.get(),
+            channel: channel.map_or(0, ChannelId::get),
+            owner: owner.map_or(0, TaskId::get),
+            destination: destination.map_or(0, TaskId::get),
+            request_kind,
+            capability,
+            reason,
+        }
+    }
+}
+
+/// Receives each channel capability violation as it defects its task. See
+/// `ChimiCapabilityViolationReport` in `include/chimi_fiber.h`.
+pub type CapabilityViolationReport =
+    unsafe extern "C" fn(*mut c_void, *const ChimiCapabilityViolation);
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct TaskId(u64);
 
@@ -397,6 +486,10 @@ pub struct SchedulerOptions {
     /// started whose entry never runs.
     pub release_task_context: Option<TaskContextRelease>,
     pub release_context: *mut c_void,
+    /// Called once for every channel capability violation, with
+    /// `violation_context`, when the scheduler defects the violating task.
+    pub capability_violation_report: Option<CapabilityViolationReport>,
+    pub violation_context: *mut c_void,
 }
 
 impl SchedulerOptions {
@@ -411,6 +504,8 @@ impl SchedulerOptions {
             release_channel_value: None,
             release_task_context: None,
             release_context: std::ptr::null_mut(),
+            capability_violation_report: None,
+            violation_context: std::ptr::null_mut(),
         }
     }
 }
@@ -451,6 +546,7 @@ pub struct Scheduler {
     release_task_value: Option<(ValueRelease, *mut c_void)>,
     release_channel_value: Option<(ValueRelease, *mut c_void)>,
     release_task_context: Option<(TaskContextRelease, *mut c_void)>,
+    capability_violation_report: Option<(CapabilityViolationReport, *mut c_void)>,
     /// The value each task's fiber ended with, kept only while
     /// `release_task_value` is set. `Task.result` copies a value without
     /// consuming it, so every one stays until the scheduler is dropped.
@@ -487,6 +583,8 @@ impl Scheduler {
             release_channel_value,
             release_task_context,
             release_context,
+            capability_violation_report,
+            violation_context,
         } = options;
         let kernel = ProcessKernel::new(
             release_message.map(|release| (release, release_context)),
@@ -515,6 +613,8 @@ impl Scheduler {
             release_task_value: release_task_value.map(|release| (release, release_context)),
             release_channel_value: release_channel_value.map(|release| (release, release_context)),
             release_task_context: release_task_context.map(|release| (release, release_context)),
+            capability_violation_report: capability_violation_report
+                .map(|report| (report, violation_context)),
             task_values: BTreeMap::new(),
         }
     }
@@ -855,7 +955,7 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(result)
             }
-            Err(error) => self.channel_violation(task, error),
+            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_SEND, None),
         }
     }
 
@@ -870,7 +970,7 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(result)
             }
-            Err(error) => self.channel_violation(task, error),
+            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_RECEIVE, None),
         }
     }
 
@@ -886,7 +986,7 @@ impl Scheduler {
                 self.wake(task)?;
                 Ok(())
             }
-            Err(error) => self.channel_violation(task, error),
+            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_CLOSE, None),
         }
     }
 
@@ -902,7 +1002,7 @@ impl Scheduler {
                 self.wake(task)?;
                 Ok(())
             }
-            Err(error) => self.channel_violation(task, error),
+            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_ABORT, None),
         }
     }
 
@@ -921,7 +1021,7 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(())
             }
-            Err(error) => self.channel_violation(task, error),
+            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_RELEASE, None),
         }
     }
 
@@ -938,7 +1038,12 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(receiver)
             }
-            Err(error) => self.channel_violation(task, error),
+            Err(error) => self.channel_violation(
+                task,
+                error,
+                REQUEST_CHANNEL_TRANSFER_RECEIVER,
+                Some(new_owner),
+            ),
         }
     }
 
@@ -958,7 +1063,12 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(completion)
             }
-            Err(error) => self.channel_violation(task, error),
+            Err(error) => self.channel_violation(
+                task,
+                error,
+                REQUEST_CHANNEL_TRANSFER_COMPLETION,
+                Some(new_owner),
+            ),
         }
     }
 
@@ -1738,11 +1848,21 @@ impl Scheduler {
         }
     }
 
+    /// Defects `task` for a channel request that broke the capability
+    /// contract, and tells the host which capability, owner, and request.
     fn channel_violation<T>(
         &mut self,
         task: TaskId,
         error: ChannelError,
+        request_kind: u32,
+        destination: Option<TaskId>,
     ) -> Result<T, SchedulerError> {
+        if let Some((report, context)) = self.capability_violation_report {
+            let violation = ChimiCapabilityViolation::new(task, error, request_kind, destination);
+            // SAFETY: the host keeps the hook and its context valid while the
+            // scheduler runs; the record lives for the call.
+            unsafe { report(context, &violation) };
+        }
         self.begin_terminal(
             task,
             TaskOutcome::Defected {
@@ -2629,6 +2749,100 @@ mod tests {
         );
         assert_eq!(receiver.owner(), new_owner);
         assert_eq!(completion.owner(), new_owner);
+    }
+
+    unsafe extern "C" fn collect_violation(
+        context: *mut c_void,
+        violation: *const ChimiCapabilityViolation,
+    ) {
+        let violations = unsafe { &mut *context.cast::<Vec<ChimiCapabilityViolation>>() };
+        violations.push(unsafe { *violation });
+    }
+
+    // The host's capability-violation message names the capability, the task
+    // that broke the contract, and the task that owns the capability, so the
+    // hook must carry all three. A stale copy handed to a third task reports the
+    // transfer's destination; a stale completion reports the completion; a
+    // receiver whose owner ended reports no owner. Rejects a report that is
+    // missing, sent for the wrong task, or that names the old owner.
+    #[test]
+    fn a_channel_capability_violation_reports_the_capability_and_its_owner() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut violations: Vec<ChimiCapabilityViolation> = Vec::new();
+        let mut scheduler = Scheduler::with_options(SchedulerOptions {
+            capability_violation_report: Some(collect_violation),
+            violation_context: (&mut violations as *mut Vec<ChimiCapabilityViolation>).cast(),
+            ..SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Real)
+        });
+        let parent = start_parked(&mut scheduler);
+        let first = start_parked(&mut scheduler);
+        let second = start_parked(&mut scheduler);
+        let channel = scheduler.create_channel(parent, 1).expect("channel");
+        scheduler
+            .transfer_receiver(parent, channel.receiver, first)
+            .expect("first transfer");
+        assert!(
+            scheduler
+                .transfer_receiver(parent, channel.receiver, second)
+                .is_err()
+        );
+        let other = start_parked(&mut scheduler);
+        let other_channel = scheduler.create_channel(other, 1).expect("channel");
+        scheduler
+            .transfer_completion(other, other_channel.completion, first)
+            .expect("completion transfer");
+        assert!(
+            scheduler
+                .channel_close(other, other_channel.completion)
+                .is_err()
+        );
+        let reader = start_parked(&mut scheduler);
+        let ended = start_parked(&mut scheduler);
+        let third_channel = scheduler.create_channel(reader, 1).expect("channel");
+        scheduler
+            .transfer_receiver(reader, third_channel.receiver, ended)
+            .expect("transfer to the task that ends");
+        scheduler.cancel(None, ended).expect("owner ends");
+        scheduler.drive();
+        assert!(
+            scheduler
+                .channel_receive(reader, third_channel.receiver)
+                .is_err()
+        );
+
+        let channel_id = |capabilities: &ChannelCapabilities| capabilities.sender.channel().get();
+        assert_eq!(
+            violations,
+            [
+                ChimiCapabilityViolation {
+                    task: parent.get(),
+                    channel: channel_id(&channel),
+                    owner: first.get(),
+                    destination: second.get(),
+                    request_kind: REQUEST_CHANNEL_TRANSFER_RECEIVER,
+                    capability: CAPABILITY_RECEIVER,
+                    reason: VIOLATION_WRONG_OWNER,
+                },
+                ChimiCapabilityViolation {
+                    task: other.get(),
+                    channel: channel_id(&other_channel),
+                    owner: first.get(),
+                    destination: 0,
+                    request_kind: REQUEST_CHANNEL_CLOSE,
+                    capability: CAPABILITY_COMPLETION,
+                    reason: VIOLATION_WRONG_OWNER,
+                },
+                ChimiCapabilityViolation {
+                    task: reader.get(),
+                    channel: channel_id(&third_channel),
+                    owner: 0,
+                    destination: 0,
+                    request_kind: REQUEST_CHANNEL_RECEIVE,
+                    capability: CAPABILITY_RECEIVER,
+                    reason: VIOLATION_WRONG_OWNER,
+                },
+            ]
+        );
     }
 
     #[test]

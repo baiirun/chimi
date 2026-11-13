@@ -180,6 +180,9 @@ struct ChimiRuntime {
   bool virtual_clock;
   /* The parked tasks of a virtual-time deadlock, from the scheduler's report. */
   char *deadlock_waiters;
+  /* The defect message of each task the scheduler defected for a channel
+     capability violation, from its report. */
+  struct CapabilityViolationNote *capability_violations;
   bool cancel;
   bool silent;
   FILE *telemetry;
@@ -5387,6 +5390,102 @@ static const char *waited_operation(uint32_t request_kind) {
   }
 }
 
+/* A task the scheduler defected for a channel capability violation and the defect
+   message that names the capability, the task, and the capability's owner. */
+typedef struct CapabilityViolationNote {
+  uint64_t task;
+  char *message;
+  struct CapabilityViolationNote *next;
+} CapabilityViolationNote;
+
+static const char *capability_name(uint32_t capability) {
+  switch (capability) {
+    case CHIMI_CAPABILITY_RECEIVER: return "Receiver";
+    case CHIMI_CAPABILITY_COMPLETION: return "Completion";
+    default: return "capability";
+  }
+}
+
+/* The surface operation behind a channel request kind. */
+static const char *channel_operation(uint32_t request_kind) {
+  switch (request_kind) {
+    case CHIMI_REQUEST_CHANNEL_SEND: return "Channel.send";
+    case CHIMI_REQUEST_CHANNEL_RECEIVE: return "Channel.receive";
+    case CHIMI_REQUEST_CHANNEL_CLOSE: return "Channel.close";
+    case CHIMI_REQUEST_CHANNEL_ABORT: return "aborting the channel";
+    case CHIMI_REQUEST_CHANNEL_RELEASE: return "releasing the channel";
+    default: return "a channel request";
+  }
+}
+
+/* Records the defect message of a channel capability violation
+   (task-and-channel-capabilities.md, "Checked at run time"). The exclusive-move
+   rule does not follow a capability across function boundaries, so this is the
+   check that turns two owners of one Receiver or Completion into a defect. */
+static void record_capability_violation(void *context, const ChimiCapabilityViolation *violation) {
+  ChimiRuntime *runtime = context;
+  char holder[96];
+  if (violation->owner == 0)
+    snprintf(holder, sizeof(holder), "the task it was handed to has ended");
+  else if (violation->owner == violation->task)
+    snprintf(holder, sizeof(holder), "this copy is stale, because task %" PRIu64
+             " handed it on and got it back", violation->task);
+  else
+    snprintf(holder, sizeof(holder), "task %" PRIu64 " owns it", violation->owner);
+  char text[320];
+  bool transfer = violation->request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER ||
+                  violation->request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_COMPLETION;
+  switch (violation->reason) {
+    case CHIMI_VIOLATION_WRONG_OWNER:
+      if (transfer)
+        snprintf(text, sizeof(text),
+                 "channel capability violation: task %" PRIu64 " cannot hand the %s of channel %"
+                 PRIu64 " to task %" PRIu64 ": %s", violation->task,
+                 capability_name(violation->capability), violation->channel,
+                 violation->destination, holder);
+      else
+        snprintf(text, sizeof(text),
+                 "channel capability violation: task %" PRIu64 " cannot use the %s of channel %"
+                 PRIu64 " in %s: %s", violation->task, capability_name(violation->capability),
+                 violation->channel, channel_operation(violation->request_kind), holder);
+      break;
+    case CHIMI_VIOLATION_OVERLAPPING_OPERATION:
+      snprintf(text, sizeof(text),
+               "channel capability violation: task %" PRIu64
+               " started a channel operation while its previous one was still pending",
+               violation->task);
+      break;
+    case CHIMI_VIOLATION_PENDING_OPERATION:
+      snprintf(text, sizeof(text),
+               "channel capability violation: task %" PRIu64 " cannot hand a channel capability to task %"
+               PRIu64 " while an operation on it is pending", violation->task, violation->destination);
+      break;
+    case CHIMI_VIOLATION_UNKNOWN_CHANNEL:
+      snprintf(text, sizeof(text),
+               "channel capability violation: task %" PRIu64 " used channel %" PRIu64
+               " after it was released", violation->task, violation->channel);
+      break;
+    default:
+      snprintf(text, sizeof(text),
+               "channel capability violation: task %" PRIu64 " released channel %" PRIu64
+               " while a task still holds it", violation->task, violation->channel);
+      break;
+  }
+  CapabilityViolationNote *note = malloc(sizeof(*note));
+  char *message = strdup(text);
+  if (!note || !message) { fputs("Chimi runtime allocation failed\n", stderr); exit(70); }
+  *note = (CapabilityViolationNote){
+    .task = violation->task, .message = message, .next = runtime->capability_violations};
+  runtime->capability_violations = note;
+}
+
+/* The capability-violation message of the task the scheduler defected, if any. */
+static const char *capability_violation_of(ChimiRuntime *runtime, uint64_t task) {
+  for (CapabilityViolationNote *note = runtime->capability_violations; note; note = note->next)
+    if (note->task == task) return note->message;
+  return NULL;
+}
+
 /* Builds the root's virtual-time deadlock defect: each parked task and the
    operation it waits on (time-and-outcomes.md, "Virtual time"). */
 static void record_deadlock(void *context, const ChimiDeadlockWaiter *waiters, size_t count) {
@@ -5426,6 +5525,8 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .release_context = runtime,
     .deadlock_report = record_deadlock,
     .deadlock_context = runtime,
+    .capability_violation_report = record_capability_violation,
+    .capability_violation_context = runtime,
     .release_task_value = release_task_word,
     .release_channel_value = release_channel_word,
     .release_task_context = release_task_context,
@@ -5456,6 +5557,9 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
   if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code == CHIMI_SCHEDULER_DEFECT_DEADLOCK &&
       runtime->deadlock_waiters)
     return defect(runtime->deadlock_waiters, -1);
+  const char *violation = outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0
+    ? capability_violation_of(runtime, outcome.origin) : NULL;
+  if (violation) return defect(violation, -1);
   /* A root supervisor escalated: the scheduler ends every root task with this code,
      parked or runnable, and the program ends with the escalation's defect. */
   if (outcome.state == CHIMI_FIBER_DEFECTED &&

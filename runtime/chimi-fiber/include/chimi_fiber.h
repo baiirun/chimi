@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 5u
+#define CHIMI_FIBER_ABI_VERSION 6u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -309,6 +309,48 @@ typedef void (*ChimiDeadlockReport)(void *context,
                                     const ChimiDeadlockWaiter *waiters,
                                     size_t count);
 
+/* Why a channel request broke the capability contract. */
+enum {
+  /* The capability is not the requesting task's: another task owns it, its
+     last owner ended, or this copy's token is stale. */
+  CHIMI_VIOLATION_WRONG_OWNER = 1,
+  /* The task issued a channel request while its previous one was pending. */
+  CHIMI_VIOLATION_OVERLAPPING_OPERATION = 2,
+  /* The capability was handed on while an operation on it was pending. */
+  CHIMI_VIOLATION_PENDING_OPERATION = 3,
+  /* The request named a channel that was released. */
+  CHIMI_VIOLATION_UNKNOWN_CHANNEL = 4,
+  /* A release named a channel some task still holds. */
+  CHIMI_VIOLATION_CHANNEL_STILL_LIVE = 5,
+};
+
+enum {
+  CHIMI_CAPABILITY_NONE = 0,
+  CHIMI_CAPABILITY_RECEIVER = 1,
+  CHIMI_CAPABILITY_COMPLETION = 2,
+};
+
+/* One channel capability violation. The scheduler defects `task` with a
+   channel capability violation code and reports this record first.
+   Identities are 0 when absent: `owner` is 0 when the capability's last
+   owner ended, and `destination` is set only for a transfer. */
+typedef struct {
+  uint64_t task;
+  uint64_t channel;
+  uint64_t owner;
+  uint64_t destination;
+  uint32_t request_kind;
+  uint32_t capability;
+  uint32_t reason;
+} ChimiCapabilityViolation;
+
+/* Called once per violation, before the violating task begins to end, under
+   the conditions of ChimiValueRelease: on the scheduler's thread with no task
+   running, and it must not call back into the scheduler. The record lives
+   for the call. */
+typedef void (*ChimiCapabilityViolationReport)(void *context,
+                                               const ChimiCapabilityViolation *violation);
+
 enum {
   CHIMI_SCHEDULER_CLOCK_REAL = 0,
   CHIMI_SCHEDULER_CLOCK_VIRTUAL = 1,
@@ -402,6 +444,9 @@ typedef struct {
   ChimiValueRelease release_task_value;
   ChimiValueRelease release_channel_value;
   ChimiTaskContextRelease release_task_context;
+  /* Called for each channel capability violation; may be null. */
+  ChimiCapabilityViolationReport capability_violation_report;
+  void *capability_violation_context;
 } ChimiSchedulerConfig;
 
 /* The arguments of chimi_scheduler_execute_with_config. The release hooks

@@ -2440,6 +2440,8 @@ fn run_c(entry: ChimiFiberEntry, trace_mode: u32) -> (SchedulerOutcome, Vec<Sche
         release_task_value: None,
         release_channel_value: None,
         release_task_context: None,
+        capability_violation_report: None,
+        capability_violation_context: ptr::null_mut(),
     };
     let outcome = unsafe { chimi_scheduler_run(&config) };
     (outcome, events)
@@ -2543,7 +2545,7 @@ fn a_c_root_with_nothing_to_wake_it_defects_with_the_deadlock_code() {
 #[test]
 fn ob07_the_process_abi_layouts_match_the_c_header() {
     use std::mem::{offset_of, size_of};
-    let mut c = [0_usize; 64];
+    let mut c = [0_usize; 96];
     let count = unsafe { chimi_fixture_process_layouts(c.as_mut_ptr()) };
     let rust = [
         size_of::<ChimiProcessRequest>(),
@@ -2597,8 +2599,21 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiSchedulerConfig, release_task_value),
         offset_of!(ChimiSchedulerConfig, release_channel_value),
         offset_of!(ChimiSchedulerConfig, release_task_context),
+        offset_of!(ChimiSchedulerConfig, capability_violation_report),
+        offset_of!(ChimiSchedulerConfig, capability_violation_context),
         size_of::<ChimiDeadlockWaiter>(),
         offset_of!(ChimiDeadlockWaiter, request_kind),
+        size_of::<ChimiCapabilityViolation>(),
+        offset_of!(ChimiCapabilityViolation, channel),
+        offset_of!(ChimiCapabilityViolation, owner),
+        offset_of!(ChimiCapabilityViolation, destination),
+        offset_of!(ChimiCapabilityViolation, request_kind),
+        offset_of!(ChimiCapabilityViolation, capability),
+        offset_of!(ChimiCapabilityViolation, reason),
+        VIOLATION_WRONG_OWNER as usize,
+        VIOLATION_CHANNEL_STILL_LIVE as usize,
+        CAPABILITY_RECEIVER as usize,
+        CAPABILITY_COMPLETION as usize,
         REQUEST_SUPERVISOR_START_SUPERVISOR as usize,
         REQUEST_SUPERVISOR_REMOVE_SUPERVISOR as usize,
         ProcessEventKind::SupervisorStarted {
@@ -2609,7 +2624,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         .trace_kind() as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 5);
+    assert_eq!(crate::chimi_fiber_abi_version(), 6);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------

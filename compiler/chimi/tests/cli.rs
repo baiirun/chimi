@@ -4266,6 +4266,171 @@ fn native_a_task_keeps_what_it_captured_after_the_parents_pass_ends() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// A helper that starts a task reading from `r`: the task, not the caller, owns
+/// the Receiver once `worker` returns.
+const WORKER_PROGRAM: &str = concat!(
+    "import std/channel as Channel\n",
+    "import std/channel.{Receive, Receiver}\n",
+    "import std/task as Task\n",
+    "fn worker(r: Receiver<Int>) -> Int {\n",
+    "  let child = Task.start(fn() -> Int {\n",
+    "    let got = Channel.receive(r)\n",
+    "    case got {\n",
+    "      Receive.Received(v) -> v\n",
+    "      Receive.Drained -> 0\n",
+    "    }\n",
+    "  })\n",
+    "  1\n",
+    "}\n",
+);
+
+/// Builds a program the checker accepts, runs it natively, and returns the
+/// defect message of its outcome. Panics unless the run defects (exit 70).
+fn native_capability_defect(name: &str, main: &str) -> String {
+    let scratch = scratch_directory(name);
+    let executable = build_native(&scratch, name, &format!("{WORKER_PROGRAM}{main}"));
+    let execution = execute_native(&executable, &scratch, name, "boundaries");
+    assert_eq!(
+        execution.process.status.code(),
+        Some(70),
+        "{}",
+        execution.outcome
+    );
+    let outcome = execution.outcome.trim_end().to_owned();
+    let prefix = "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"defect\",\"message\":\"";
+    let message = outcome
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.split_once('"'))
+        .map(|(message, _)| message.to_owned())
+        .unwrap_or_else(|| panic!("not a defect outcome: {outcome}"));
+    std::fs::remove_dir_all(scratch).unwrap();
+    message
+}
+
+// task-and-channel-capabilities.md, "Checked at run time": the exclusive-move rule
+// does not follow a capability into a called function, so a callee that hands its
+// parameter to a task leaves the caller's argument usable to the checker. The
+// owner token catches the caller's next use. Task 1 (main) passes `r` to `worker`,
+// whose child, task 2, now owns it; main's own `Channel.receive(r)` must defect
+// naming the Receiver, main, and task 2. A child that does the same to its own
+// grandchild defects the same way and takes the program down with it. Rejects a
+// runtime that lets the old owner read (main would print 5 or block), and a
+// defect that does not say which capability and tasks are involved.
+#[test]
+fn native_backstop_a_callee_that_hands_its_parameter_to_a_task_defects_the_caller_on_reuse() {
+    let message = native_capability_defect(
+        "callee-hands-off",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  let c = Channel.bounded(1)\n",
+            "  let r = c.receiver\n",
+            "  worker(r)\n",
+            "  Channel.send(c.sender, 5)\n",
+            "  let got = Channel.receive(r)\n",
+            "  case got {\n",
+            "    Receive.Received(v) -> v\n",
+            "    Receive.Drained -> 0\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        message,
+        "channel capability violation: task 1 cannot use the Receiver of channel 1 \
+         in Channel.receive: task 2 owns it"
+    );
+    let message = native_capability_defect(
+        "child-callee-hands-off",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  let c = Channel.bounded(1)\n",
+            "  let r = c.receiver\n",
+            "  let s = c.sender\n",
+            "  let child = Task.start(fn() -> Int {\n",
+            "    worker(r)\n",
+            "    Channel.send(s, 5)\n",
+            "    let got = Channel.receive(r)\n",
+            "    case got {\n",
+            "      Receive.Received(v) -> v\n",
+            "      Receive.Drained -> 0\n",
+            "    }\n",
+            "  })\n",
+            "  Task.result(child)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        message,
+        "channel capability violation: task 2 cannot use the Receiver of channel 1 \
+         in Channel.receive: task 3 owns it"
+    );
+}
+
+// task-and-channel-capabilities.md, "Checked at run time": a generic function
+// reached through a function value is not followed either, so `dup` called as
+// `f(c.receiver)` or a higher-order `twice(x, f)` can give two tasks one Receiver.
+// The first `Task.start` hands it to task 2; starting task 3 with the stale copy
+// must defect. Rejects a runtime that lets both children read one channel.
+#[test]
+fn native_backstop_a_generic_function_value_that_duplicates_a_receiver_defects_the_second_start() {
+    let expected = "channel capability violation: task 1 cannot hand the Receiver of \
+                    channel 1 to task 3: task 2 owns it";
+    let message = native_capability_defect(
+        "dup-through-function-value",
+        concat!(
+            "fn dup<T>(x: T) -> (T, T) {\n",
+            "  (x, x)\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let c = Channel.bounded(1)\n",
+            "  let f = dup\n",
+            "  let p = f(c.receiver)\n",
+            "  case p {\n",
+            "    (a, b) -> worker(a) + worker(b)\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(message, expected);
+    let message = native_capability_defect(
+        "higher-order-twice",
+        concat!(
+            "fn twice<T>(x: T, f: fn(T) -> Int) -> Int {\n",
+            "  f(x) + f(x)\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let c = Channel.bounded(1)\n",
+            "  twice(c.receiver, worker)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(message, expected);
+}
+
+// task-and-channel-capabilities.md, "Checked at run time": reading a field of a
+// binding moves nothing, so `c.receiver` read twice gives two bindings the checker
+// treats as independent. Handing both to tasks must defect at the second hand-off.
+// Rejects a runtime that lets two children own one Receiver.
+#[test]
+fn native_backstop_reading_one_receiver_field_into_two_tasks_defects_the_second_start() {
+    let message = native_capability_defect(
+        "field-read-twice",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  let c = Channel.bounded(1)\n",
+            "  let a = c.receiver\n",
+            "  let b = c.receiver\n",
+            "  worker(a) + worker(b)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        message,
+        "channel capability violation: task 1 cannot hand the Receiver of channel 1 \
+         to task 3: task 2 owns it"
+    );
+}
+
 // E18 across tasks and channels on native, where each task runs on a 64 KiB fiber
 // stack. A child task captures a value 100,000 levels deep, renders it with
 // `Debug.render`, encodes a Json.Value as deep with `Json.encode`, and sends a
