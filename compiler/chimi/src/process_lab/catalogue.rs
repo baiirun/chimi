@@ -335,7 +335,7 @@ pub static SCENARIOS: [Scenario; 131] = [
         "OB07",
         "trace-abi-version-five",
         U5,
-        Form::Check(super::observability_kind::trace_abi_version_five),
+        Form::Check(super::observability_kind::trace_abi_version_six),
     ),
     fixture("IP01", "interpreter-rejects-processes", U5).defects(),
     // Forcing program.
