@@ -5428,10 +5428,11 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
   if (violation->owner == 0)
     snprintf(holder, sizeof(holder), "the task it was handed to has ended");
   /* The task owns the capability, so the copy it used failed the token check:
-     another copy has replaced it. */
+     another copy has replaced it. The owner may already have closed or aborted
+     the current copy, so the message names ownership, not a live copy. */
   else if (violation->owner == violation->task)
-    snprintf(holder, sizeof(holder), "this copy is stale, and task %" PRIu64
-             " holds the current one", violation->task);
+    snprintf(holder, sizeof(holder), "this copy is stale; task %" PRIu64
+             " owns the capability", violation->task);
   else
     snprintf(holder, sizeof(holder), "task %" PRIu64 " owns it", violation->owner);
   char text[320];

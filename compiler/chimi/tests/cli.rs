@@ -4436,7 +4436,7 @@ fn native_backstop_reading_one_receiver_field_into_two_tasks_defects_the_second_
 // copies of one Receiver; the child captures `a`, so it owns the Receiver, and main
 // then sends the stale `b` to that same child over a side channel. The child's
 // receive on `b` must defect, and since the owner is the task using the copy, the
-// message must say this copy is stale and the task holds the current one, not that
+// message must say this copy is stale and the task owns the capability, not that
 // it handed the Receiver on and got it back (task 2 never handed it on). Rejects a
 // runtime that accepts the stale copy because its user owns the channel (the child
 // would read 5 and main return it).
@@ -4481,7 +4481,7 @@ fn native_backstop_a_stale_copy_sent_to_the_owner_defects() {
     assert_eq!(
         message,
         "channel capability violation: task 2 cannot use the Receiver of channel 1 \
-         in Channel.receive: this copy is stale, and task 2 holds the current one"
+         in Channel.receive: this copy is stale; task 2 owns the capability"
     );
 }
 

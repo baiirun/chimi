@@ -1207,8 +1207,8 @@ program.
     `--clock=virtual` before `--`. `runtime.c` enters the scheduler through
     `chimi_scheduler_run`, which gained the task and channel release hooks
     of `chimi_scheduler_execute_with_config`. The new fields change the
-    config's layout, so `CHIMI_FIBER_ABI_VERSION` is 5, and the lab's OB07
-    expects 5.
+    config's layout, so `CHIMI_FIBER_ABI_VERSION` became 5 (it is now 6; the
+    lab's OB07 checks the current version).
   - **Virtual deadlock.** The root defects with
     `virtual-time deadlock: every task is parked and no timer is pending:`
     followed by ` task <id> waits on <operation>` for each parked task,

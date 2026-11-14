@@ -292,7 +292,7 @@ Checked at run time (native, by the owner token):
 - a stale copy that reaches the task that owns the capability (a duplicate
   sent to the child that captured the other copy): the owner's use of the
   stale copy defects, and the message says this copy is stale and that task
-  holds the current one.
+  owns the capability (it may already have closed or aborted the current copy).
 
 The defect names the capability, the task that broke the contract, and the task
 that owns the capability, for example
