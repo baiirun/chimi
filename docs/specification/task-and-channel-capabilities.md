@@ -288,7 +288,11 @@ Checked at run time (native, by the owner token):
   handed to two tasks: the second hand-off defects;
 - any of these after the task that was handed the capability has ended: its
   cleanup aborted the channel and dropped the capability, so the stale copy
-  still defects, and the message says the owner ended instead of naming one.
+  still defects, and the message says the owner ended instead of naming one;
+- a stale copy that reaches the task that owns the capability (a duplicate
+  sent to the child that captured the other copy): the owner's use of the
+  stale copy defects, and the message says this copy is stale and that task
+  holds the current one.
 
 The defect names the capability, the task that broke the contract, and the task
 that owns the capability, for example
@@ -310,7 +314,9 @@ Not yet covered:
   a child that ends after sending it, or that returns it as its `Task.result`,
   aborts the channel in its cleanup, so the task that receives it holds a
   Receiver of an aborted channel (a later `Channel.send` on it fails with
-  `SendError.Aborted`);
+  `SendError.Aborted`). Ownership moves only when `Task.start` captures a
+  capability, so making it follow a hand-back needs a new transfer protocol
+  (ts-f4e749);
 - `Channel.SendError<T>` is shareable whatever `T` is, so the payload handed
   back by `Closed(value)` or `Aborted(value)` is not exclusive to the checker;
 - a violation emits no dedicated trace event; the trace shows only the
