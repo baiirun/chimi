@@ -7,6 +7,7 @@ import std/int as Int
 import std/process as Process
 import std/process.{Inbox}
 import std/supervisor as Supervisor
+import std/list as List
 
 // MF02: `worker` defects N times under `restarts(1, 1s)`, one defect per
 // virtual second, so each restart rolls the previous one out of the window

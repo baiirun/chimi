@@ -6,6 +6,7 @@ import std/process as Process
 import std/process.{Inbox}
 import std/supervisor as Supervisor
 import std/supervisor.{StartError}
+import std/list as List
 
 // MF03: N cycles of `start_process` and `remove_process` under a root of
 // capacity 1. Each cycle registers `counter`, sends it Add(1), and removes

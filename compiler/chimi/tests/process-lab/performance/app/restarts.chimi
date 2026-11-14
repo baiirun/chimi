@@ -5,6 +5,7 @@ import std/int as Int
 import std/process as Process
 import std/process.{Inbox}
 import std/supervisor as Supervisor
+import std/list as List
 
 // PG03: N restart cycles. Each cycle sends `Crash`, and the settle lets the
 // worker defect, terminate, restart, and park its replacement on its first

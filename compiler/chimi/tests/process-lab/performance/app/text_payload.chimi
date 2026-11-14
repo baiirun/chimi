@@ -1,5 +1,6 @@
 import std/clock.{Clock}
 import app/payload as Workload
+import std/text as Text
 
 // PG06: a 4 KiB Text payload (8 bytes doubled 9 times). The outcome is N.
 

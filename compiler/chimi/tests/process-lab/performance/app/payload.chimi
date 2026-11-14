@@ -7,6 +7,7 @@ import std/process as Process
 import std/process.{Address, Inbox}
 import std/int as Int
 import std/supervisor as Supervisor
+import std/list as List
 
 // The PG06 workload, shared by `text_payload`, `list_payload`, and
 // `dag_payload`: main sends one payload value N times to a process, in

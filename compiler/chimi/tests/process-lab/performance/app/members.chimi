@@ -5,6 +5,7 @@ import std/int as Int
 import std/process as Process
 import std/process.{Inbox}
 import std/supervisor as Supervisor
+import std/list as List
 
 // PG04, PG05, PG08: N dynamic processes start under one root, each parking
 // on its first receive, and `stop` then ends them all. The last one started
