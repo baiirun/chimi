@@ -25,6 +25,7 @@ LAB = "src/process_lab/mod.rs"
 
 TRANSCRIPT = "expected.transcript line"
 OUTCOME = "expected.outcome line"
+EXITED = "exited with"
 
 
 def lab(name, file, scenario, expect, edits):
@@ -65,8 +66,10 @@ MUTATIONS = [
             FINISH_REMOVAL,
             FINISH_REMOVAL.replace(
                 "                        self.kernel.memberships.remove(&membership);\n", ""))]),
+    # The kept slot fails every later start, so the final send finds no
+    # `counter` and the run defects: the exit-code check reports it first.
     lab("removal keeps the capacity slot", KERNEL, "MF03",
-        [OUTCOME], [(
+        [OUTCOME, EXITED], [(
             "            supervision.dynamic.retain(|m| *m != membership);\n", "")]),
     lab("memberships_live ignores the kernel", ABI, "MF03",
         ["memberships_live is not 0"], [(
