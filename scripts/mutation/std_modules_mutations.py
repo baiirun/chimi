@@ -75,7 +75,7 @@ MUTATIONS = [
         "        if false {")], filter="under_std"),
     std("std imports of std modules are not followed", "src/standard_tree.rs", [(
         "        pending.extend(imports(&module));",
-        "        let _ = imports(&module);")], filter="standard_programs"),
+        "        let _ = imports(&module);")], filter="transitive_standard_imports"),
     std("a function named native is read as a native fn", "src/semantic.rs", [(
         "            .take_while(|token| token.kind() != TokenKind::Fn)\n",
         "")], filter="ordinary_name"),

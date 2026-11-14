@@ -268,3 +268,19 @@ fn a_standard_function_requirement_is_reported_at_the_call() {
     );
     assert!(diagnostics[0].labels().is_empty());
 }
+
+// A program names only the modules it uses; the standard modules those import
+// (std/text needs std/list, which needs std/order) are loaded with them.
+#[test]
+fn transitive_standard_imports_are_loaded() {
+    for source in [
+        "import std/text as Text\npub fn main() -> List<Text> { Text.lines(\"a\\nb\") }\n",
+        "import std/list as List\npub fn main() -> List<Int> { List.sort([2, 1]) }\n",
+    ] {
+        assert_eq!(
+            diagnostic_codes(vec![module("main", source)]),
+            Vec::<String>::new(),
+            "{source}"
+        );
+    }
+}
