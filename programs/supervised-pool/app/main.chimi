@@ -39,7 +39,9 @@ fn worker(inbox: Inbox<WorkerMessage>) -> Void {
   }
 }
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
@@ -50,22 +52,27 @@ fn reply_value(received: Receive<Int>) -> Int {
   }
 }
 
-pub fn main() -> PoolResult needs { clock: Clock } {
+pub fn main() -> PoolResult needs {
+  clock: Clock
+} {
   let pool = Supervisor.policy([], 3, Supervisor.restarts(2, Duration.seconds(30)))
   let root = Supervisor.start(pool)
   let a = Supervisor.start_process(
     root,
-    Process.spec(worker, 8, Duration.seconds(1)) |> Process.register(worker_a),
+    Process.spec(worker, 8, Duration.seconds(1))
+    |> Process.register(worker_a),
     Supervisor.Restart.OnDefect,
   )
   let b = Supervisor.start_process(
     root,
-    Process.spec(worker, 8, Duration.seconds(1)) |> Process.register(worker_b),
+    Process.spec(worker, 8, Duration.seconds(1))
+    |> Process.register(worker_b),
     Supervisor.Restart.OnDefect,
   )
   let c = Supervisor.start_process(
     root,
-    Process.spec(worker, 8, Duration.seconds(1)) |> Process.register(worker_c),
+    Process.spec(worker, 8, Duration.seconds(1))
+    |> Process.register(worker_c),
     Supervisor.Restart.OnDefect,
   )
   let rejected = case Supervisor.start_process(
