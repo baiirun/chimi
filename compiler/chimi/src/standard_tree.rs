@@ -49,6 +49,16 @@ pub(crate) fn is_embedded(module_path: &str, source: &SourceSnapshot) -> bool {
     })
 }
 
+/// The alias a program conventionally imports `module_path` under, as
+/// `std/list` is `List`; diagnostics name standard functions with it.
+pub(crate) fn conventional_alias(module_path: &str) -> String {
+    let name = module_path.rsplit('/').next().unwrap_or(module_path);
+    let mut characters = name.chars();
+    characters.next().map_or_else(String::new, |first| {
+        first.to_ascii_uppercase().to_string() + characters.as_str()
+    })
+}
+
 /// Adds every embedded module that `sources` import, directly or through
 /// another standard module, and that is not already present.
 ///

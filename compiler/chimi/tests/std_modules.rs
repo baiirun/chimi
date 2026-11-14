@@ -248,3 +248,23 @@ fn native_is_an_ordinary_name_elsewhere() {
         Vec::<String>::new()
     );
 }
+
+// A property that a standard function written in Chimi needs is reported at the
+// caller's call, naming the function as the caller wrote it, never at the
+// operator inside the standard source.
+#[test]
+fn a_standard_function_requirement_is_reported_at_the_call() {
+    let report = Compiler::type_project(vec![module(
+        "main",
+        "import std/list as List\npub fn main() -> List<{ a: Int }> { List.sort([{ a: 1 }]) }\n",
+    )]);
+    let diagnostics = report.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{}", report.render_diagnostics());
+    assert_eq!(diagnostics[0].code(), "T4301");
+    assert!(
+        diagnostics[0].message().starts_with("`List.sort` needs `T` to be ordered"),
+        "{}",
+        diagnostics[0].message()
+    );
+    assert!(diagnostics[0].labels().is_empty());
+}

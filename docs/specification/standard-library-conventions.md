@@ -671,7 +671,7 @@ The conventions for every module that sorts or compares:
 - Comparator combinators are subject-first, so a compound order reads as a
   pipeline:
 
-<!-- chimi: pending ts-0ba63e -->
+<!-- chimi: check -->
 ```chimi
 import std/list as List
 import std/order as Order

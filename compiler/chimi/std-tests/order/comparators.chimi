@@ -1,0 +1,37 @@
+// std/order: the structural Ordering, min and max, and comparators
+// composed with by, reverse, and then, applied by List.sort_by.
+import std/debug as Debug
+import std/list as List
+import std/order as Order
+import std/order.{Equal, Ordering}
+
+struct User {
+  name: Text,
+  age: Int,
+}
+
+struct Tagged {
+  key: Int,
+  tag: Text,
+}
+
+fn names(users: List<User>) -> List<Text> {
+  List.map(users, fn(user) { user.name })
+}
+
+pub fn main() -> Text {
+  let users = [User("cy", 30), User("ada", 41), User("bo", 30), User("di", 41)]
+  let by_age = Order.by(fn(user: User) { user.age })
+  let by_name = Order.by(fn(user: User) { user.name })
+  let results = [
+    Debug.render([Order.compare(1, 2), Order.compare("b", "a"), Order.compare(Some(1), Some(1)), Order.compare(None, Some(0))]),
+    Debug.render([Order.min(Tagged(2, "x"), Tagged(1, "y")), Order.min(Tagged(1, "a"), Tagged(1, "b"))]),
+    Debug.render([Order.max(3, 9), Order.max(9, 3)]),
+    Debug.render(names(List.sort_by(users, by_age))),
+    Debug.render(names(List.sort_by(users, Order.reverse(by_age)))),
+    Debug.render(names(List.sort_by(users, by_age |> Order.then(by_name)))),
+    Debug.render(names(List.sort_by(users, Order.reverse(by_age) |> Order.then(by_name)))),
+    Debug.render([Ordering.Less < Ordering.Equal, Ordering.Equal < Ordering.Greater, Order.compare(2, 2) == Equal]),
+  ]
+  Debug.render(results)
+}

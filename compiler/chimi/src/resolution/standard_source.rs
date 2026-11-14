@@ -11,7 +11,7 @@ use crate::standard::{StandardConstructor, StandardSymbol, StandardType};
 use crate::standard_tree;
 
 impl ProjectResolver {
-    fn is_standard_module(&self, module_index: usize) -> bool {
+    pub(super) fn is_standard_module(&self, module_index: usize) -> bool {
         let module = &self.semantic.modules[module_index];
         standard_tree::is_embedded(&module.path, &module.source)
     }

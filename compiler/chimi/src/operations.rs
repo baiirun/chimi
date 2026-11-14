@@ -97,6 +97,10 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     known_type("std/option.Option", StandardType::Option),
     known_constructor("std/option.Option.None", StandardConstructor::OptionNone),
     known_constructor("std/option.Option.Some", StandardConstructor::OptionSome),
+    known_type("std/order.Ordering", StandardType::Ordering),
+    known_constructor("std/order.Ordering.Less", StandardConstructor::OrderingLess),
+    known_constructor("std/order.Ordering.Equal", StandardConstructor::OrderingEqual),
+    known_constructor("std/order.Ordering.Greater", StandardConstructor::OrderingGreater),
     known_type("std/int.ParseError", StandardType::IntParseError),
     known_constructor("std/int.ParseError.Empty", StandardConstructor::IntParseEmpty),
     known_constructor(

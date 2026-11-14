@@ -1,0 +1,18 @@
+// A comparator's failure passes through Order.by and List.sort_by unchanged.
+import std/list as List
+import std/order as Order
+
+enum KeyError {
+  Negative(value: Int)
+}
+
+fn key(value: Int) -> Int {
+  case value < 0 {
+    True -> Failure(KeyError.Negative(value))
+    False -> value
+  }
+}
+
+pub fn main() -> List<Int> {
+  List.sort_by([3, 1, -4, 2], Order.by(key))
+}

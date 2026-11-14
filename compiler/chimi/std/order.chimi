@@ -1,0 +1,91 @@
+/// Orders between values: the structural `Ordering` of two values, and
+/// comparators, the `fn(A, A) -> Ordering` values that sorts and searches take
+/// for every other order, built with `Order.by`, `Order.reverse`, and
+/// `Order.then`.
+
+// 1. Public types.
+
+/// How one value compares with another. The variants are declared from least
+/// to greatest, so `Ordering` itself is ordered that way.
+pub enum Ordering {
+  Less
+  Equal
+  Greater
+}
+
+// 5. Queries.
+
+/// Returns the structural `Ordering` of `left` against `right`.
+///
+/// Cost: O(size of the smaller value).
+pub fn compare<A>(left: A, right: A) -> Ordering {
+  case left < right {
+    True -> Ordering.Less
+    False -> case left > right {
+      True -> Ordering.Greater
+      False -> Ordering.Equal
+    }
+  }
+}
+
+/// Returns the smaller of `left` and `right` in structural order, and
+/// `left` when they are equal.
+///
+/// Cost: O(size of the smaller value).
+pub fn min<A>(left: A, right: A) -> A {
+  case right < left {
+    True -> right
+    False -> left
+  }
+}
+
+/// Returns the larger of `left` and `right` in structural order, and `left`
+/// when they are equal.
+///
+/// Cost: O(size of the smaller value).
+pub fn max<A>(left: A, right: A) -> A {
+  case right > left {
+    True -> right
+    False -> left
+  }
+}
+
+// 6. Comparators.
+
+/// Returns the comparator that orders values by the structural order of the
+/// key `key` extracts.
+///
+/// Calls: `key` twice per comparison, on the left value first.
+pub fn by<A, B, E, R>(key: fn(A) -> B errors E needs R) -> fn(A, A) -> Ordering errors E needs R {
+  fn(left, right) {
+    compare(key(left), key(right))
+  }
+}
+
+/// Returns `comparator` with `Less` and `Greater` swapped, for descending
+/// order.
+///
+/// Calls: `comparator` once per comparison.
+pub fn reverse<A, E, R>(
+  comparator: fn(A, A) -> Ordering errors E needs R,
+) -> fn(A, A) -> Ordering errors E needs R {
+  fn(left, right) { comparator(right, left) }
+}
+
+/// Returns the comparator that uses `first`, and `second` only when `first`
+/// returns `Equal`.
+///
+/// Calls: `first` once per comparison, then `second` once when `first`
+/// returns `Equal`.
+pub fn then<A, E, R>(
+  first: fn(A, A) -> Ordering errors E needs R,
+  second: fn(A, A) -> Ordering errors E needs R,
+) -> fn(A, A) -> Ordering errors E needs R {
+  fn(left, right) {
+    let order = first(left, right)
+    case order {
+      Ordering.Equal -> second(left, right)
+      decided -> decided
+    }
+  }
+}

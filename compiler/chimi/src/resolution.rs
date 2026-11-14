@@ -247,9 +247,15 @@ pub(crate) struct ResolvedProject {
     /// Each `native fn` of the standard tree and the intrinsic its registry
     /// operation runs.
     native_operations: HashMap<SymbolId, StandardFunction>,
+    standard_modules: HashSet<ModuleId>,
 }
 
 impl ResolvedProject {
+    /// Whether the module is loaded from the embedded standard tree.
+    pub(crate) fn is_standard_module(&self, module_id: ModuleId) -> bool {
+        self.standard_modules.contains(&module_id)
+    }
+
     /// The intrinsic a `native fn` symbol runs; `None` for every other symbol.
     pub(crate) fn native_operation(&self, symbol: SymbolId) -> Option<StandardFunction> {
         self.native_operations.get(&symbol).copied()
@@ -398,6 +404,10 @@ pub(crate) fn resolve_project(semantic: SemanticProject) -> ResolvedProject {
     resolver
         .diagnostics
         .sort_by_key(|diagnostic| (diagnostic.file_id().raw(), diagnostic.range().start()));
+    let standard_modules = (0..resolver.semantic.modules.len())
+        .filter(|index| resolver.is_standard_module(*index))
+        .map(|index| resolver.semantic.modules[index].id)
+        .collect();
     let mut symbols_by_origin: HashMap<(ModuleId, SemanticId), Vec<SymbolId>> = HashMap::new();
     for symbol in &resolver.symbols {
         if let (Some(module_id), Some(semantic_id)) = (symbol.module_id, symbol.semantic_id) {
@@ -433,6 +443,7 @@ pub(crate) fn resolve_project(semantic: SemanticProject) -> ResolvedProject {
         standard_callable_parameters: resolver.standard_callable_parameters,
         break_targets: resolver.break_targets,
         native_operations: resolver.native_operations,
+        standard_modules,
     }
 }
 

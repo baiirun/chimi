@@ -8502,7 +8502,7 @@ impl ProjectTypeChecker {
             }
             for parameter in &parameters {
                 let (Some(requirement), Some(argument)) = (
-                    self.generic_requirements.get(parameter).cloned(),
+                    self.instantiated_requirement(*parameter),
                     substitution.values.get(parameter).copied(),
                 ) else {
                     continue;
@@ -8563,8 +8563,31 @@ impl ProjectTypeChecker {
     }
 
     /// `Map.put` for a standard function, the declared name otherwise.
+    /// The requirement a use of generic `parameter` checks. An operator use
+    /// inside a standard module is not the caller's to fix: the use of the
+    /// standard function is, as for an intrinsic, so the diagnostic and every
+    /// requirement it propagates stay in the caller's source.
+    fn instantiated_requirement(&self, parameter: SymbolId) -> Option<GenericRequirement> {
+        let mut requirement = self.generic_requirements.get(&parameter).cloned()?;
+        if requirement
+            .origin
+            .as_ref()
+            .is_some_and(|origin| self.resolved.is_standard_module(origin.module_id))
+        {
+            requirement.origin = None;
+        }
+        Some(requirement)
+    }
+
     fn callable_display_name(&self, symbol: SymbolId) -> String {
-        let name = self.resolved.symbol(symbol).name.clone();
+        let declared = self.resolved.symbol(symbol);
+        let name = declared.name.clone();
+        if let Some(module_id) = declared.module_id
+            && self.resolved.is_standard_module(module_id)
+        {
+            let path = &self.resolved.semantic.modules[module_id.raw() as usize].path;
+            return format!("{}.{name}", crate::standard_tree::conventional_alias(path));
+        }
         match self.resolved.standard_symbol(symbol) {
             Some(StandardSymbol::Function(function)) => match function.module() {
                 Some(module) => format!("{}.{name}", module.qualifier()),
@@ -9859,7 +9882,7 @@ impl ProjectTypeChecker {
                 |symbol| self.callable_display_name(symbol),
             );
             let (Some(requirement), Some(argument)) = (
-                self.generic_requirements.get(parameter).cloned(),
+                self.instantiated_requirement(*parameter),
                 substitution.values.get(parameter).copied(),
             ) else {
                 continue;
