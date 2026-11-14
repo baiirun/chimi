@@ -1,0 +1,33 @@
+# Produced by: scripts/heavy.sh python3 scripts/mutation/mutate.py --scratch <scratch>/mutation scripts/mutation/std_modules_mutations.py
+# First run at 516f883 (lane-std-phase2), on 2026-11-14: 15 killed, 2 survived.
+#   SURVIVED native byte_slice skips the UTF-8 boundary check: only the end bound was tested.
+#   SURVIVED std imports of std modules are not followed: the std-tests programs load
+#            through repeated add_imported_modules calls, which reach transitive modules.
+# Both killed by the tests added in e754e46 (start-bound defect program; transitive
+# import type_project test, which the import mutant now targets). Full rerun at e754e46:
+# mutation run at e754e46ee54824597c431aa5e9de5e3b576a3b64
+# std_modules_mutations.py: 17 mutants against compiler/chimi
+BASELINE ok  [std_modules -- native_fn_outside] (6s)
+BASELINE ok  [std_modules -- under_std] (0s)
+BASELINE ok  [std_modules -- ordinary_name] (0s)
+BASELINE ok  [std_modules -- reported_at_the_call] (0s)
+BASELINE ok  [lib -- embedded_standard_modules] (2s)
+BASELINE ok  [cli -- native_draining_loop_allocates] (2s)
+KILLED       native byte_slice skips the UTF-8 boundary check [std_modules -- standard_programs] (12s)
+KILLED       interpreter byte_slice skips the UTF-8 boundary check [std_modules -- standard_programs] (19s)
+KILLED       native trim misses ideographic space [std_modules -- standard_programs] (15s)
+KILLED       interpreter split accepts an empty separator [std_modules -- standard_programs] (15s)
+KILLED       native List.set accepts the index equal to the length [std_modules -- standard_programs] (14s)
+KILLED       native unwrap_or_fail fails on Some [std_modules -- standard_programs] (9s)
+KILLED       native Debug.crash drops the caller's message [std_modules -- standard_programs] (14s)
+KILLED       Text.lines keeps a final empty line [std_modules -- standard_programs] (13s)
+KILLED       List.sort_by merges the right half first, losing stability [std_modules -- standard_programs] (13s)
+KILLED       runtime-known declarations keep their source identity [std_modules -- standard_programs] (5s)
+KILLED       a native fn outside the standard tree is accepted [std_modules -- native_fn_outside] (2s)
+KILLED       a workspace std/ module is accepted [std_modules -- under_std] (2s)
+KILLED       std imports of std modules are not followed [std_modules -- transitive_standard_imports] (2s)
+KILLED       a function named native is read as a native fn [std_modules -- ordinary_name] (3s)
+KILLED       a standard requirement is reported inside std source [std_modules -- reported_at_the_call] (3s)
+KILLED       the formatter joins `>` and a following word [lib -- embedded_standard_modules] (2s)
+KILLED       every program local takes a frame slot [cli -- native_draining_loop_allocates] (4s)
+# result: every mutant killed
