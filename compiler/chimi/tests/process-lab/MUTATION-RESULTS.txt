@@ -318,3 +318,77 @@ KILLED       RA06: a failed replacement is refunded [cargo run --quiet --bin chi
 KILLED       MB08: cleanup receives nothing [cargo run --quiet --bin chimi-process-lab -- --scenario MB08 --through U7] (6s)
 KILLED       MB09: routing is kept during cleanup [cargo run --quiet --bin chimi-process-lab -- --scenario MB09 --through U7] (6s)
 # result: every mutant killed
+
+# Command: scripts/mutation/mutate.py --scratch <scratch>/mutation scripts/mutation/process_lab_mutations.py
+# U8/U9 branch rebased onto main 5a0726d (fiber ABI 6, owner-token backstop). Adds the U9 supervisor_started
+# projector mutants. 22 mutants, all KILLED.
+# mutation run at 5d38f95387e7931fbb82c2f910124a5fb8026838
+# process_lab_mutations.py: 22 mutants against compiler/chimi
+BASELINE ok (342s)
+KILLED       supervisor_started dropped [lib -- process_lab::transcript] (2s)
+KILLED       nested supervisor_started without its membership [lib -- process_lab::transcript] (2s)
+KILLED       clock advances printed [lib -- process_lab::transcript] (2s)
+KILLED       time not tracked from advances [lib -- process_lab::transcript] (2s)
+KILLED       sequence order unchecked [lib -- process_lab::transcript] (2s)
+KILLED       event time not checked against the clock [lib -- process_lab::transcript] (2s)
+KILLED       unknown cause word accepted [lib -- process_lab::transcript] (2s)
+KILLED       named send without a name accepted [lib -- process_lab::transcript] (2s)
+KILLED       root escalation parent printed as - [lib -- process_lab::transcript] (2s)
+KILLED       boundaries keep sends [lib -- process_lab::transcript] (2s)
+KILLED       duration keeps trailing zeros [lib -- process_lab::transcript] (2s)
+KILLED       duration drops the zero minute [lib -- process_lab::transcript] (2s)
+KILLED       extra events ignored [lib -- process_lab::transcript] (2s)
+KILLED       catalogue unlock typo [lib -- process_lab::catalogue] (2s)
+KILLED       catalogue extra event dropped [lib -- process_lab::catalogue] (2s)
+KILLED       catalogue exit code dropped [lib -- process_lab::catalogue] (2s)
+KILLED       catalogue runs truncated [lib -- process_lab::catalogue] (2s)
+KILLED       catalogue harness file swapped [lib -- process_lab::catalogue] (2s)
+KILLED       clock request kind read from cause_task_id [lib -- process_lab::transcript] (2s)
+KILLED       unexpected keys accepted [lib -- process_lab::transcript] (2s)
+KILLED       locked scenarios run [lib -- process_lab::tests] (2s)
+KILLED       unlocked failures pass [lib -- process_lab::tests] (2s)
+# result: every mutant killed
+
+# Command: scripts/mutation/mutate.py --scratch <scratch>/mutation --only <name> ... scripts/mutation/process_u8_mutations.py
+# U8: deadlines, forced ends, child tasks, Clock.sleep cancellation, removal during stop. Run in three --only pieces
+# (2 + 5 + 4 mutants, each with its own baseline) to keep each piece under 10 minutes. 11 mutants, all KILLED.
+# mutation run at 5d38f95387e7931fbb82c2f910124a5fb8026838
+# process_u8_mutations.py: 2 mutants against compiler/chimi
+BASELINE ok (314s)
+KILLED       RA07: a defected body's children outlive it into the replacement [cargo run --quiet --bin chimi-process-lab -- --scenario RA07 --through U8] (4s)
+KILLED       CB05: a task result points into the child's destroyed heap [cargo run --quiet --bin chimi-process-lab -- --scenario CB05 --through U8] (4s)
+# result: every mutant killed
+# process_u8_mutations.py: 5 mutants against compiler/chimi
+BASELINE ok (316s)
+KILLED       RR05: Clock.sleep ignores cancellation [cargo run --quiet --bin chimi-process-lab -- --scenario RR05 --through U8] (5s)
+KILLED       RR06: a removal during stop is ignored [cargo run --quiet --bin chimi-process-lab -- --scenario RR06 --through U8] (4s)
+KILLED       SD02: a zero deadline lets cleanup drain [cargo run --quiet --bin chimi-process-lab -- --scenario SD02 --through U8] (3s)
+KILLED       SD03: a non-zero deadline forces at once [cargo run --quiet --bin chimi-process-lab -- --scenario SD03 --through U8] (3s)
+KILLED       SD04: a forced body that parks again is destroyed [cargo run --quiet --bin chimi-process-lab -- --scenario SD04 --through U8] (5s)
+# result: every mutant killed
+# process_u8_mutations.py: 4 mutants against compiler/chimi
+BASELINE ok (317s)
+KILLED       SD04: a forced body that parks again is kept waiting [cargo run --quiet --bin chimi-process-lab -- --scenario SD04 --through U8] (6s)
+KILLED       SD06: routing is removed member by member [cargo run --quiet --bin chimi-process-lab -- --scenario SD06 --through U8] (5s)
+KILLED       SD07: a forced end is reported as a defect [cargo run --quiet --bin chimi-process-lab -- --scenario SD07 --through U8] (3s)
+KILLED       SD07: a cancelled shutdown end is reported as a defect [cargo run --quiet --bin chimi-process-lab -- --scenario SD07 --through U8] (3s)
+# result: every mutant killed
+
+# Command: scripts/mutation/mutate.py --scratch <scratch>/mutation --only <name> ... scripts/mutation/process_u9_mutations.py
+# U9: nested supervisors, supervisor_started, parent slots, remove_supervisor, nested escalation marshalling.
+# Run in two --only pieces of 4 mutants each. 8 mutants, all KILLED.
+# mutation run at 5d38f95387e7931fbb82c2f910124a5fb8026838
+# process_u9_mutations.py: 4 mutants against compiler/chimi
+BASELINE ok (315s)
+KILLED       SV09: a stopped nested supervisor reports no stop [cargo run --quiet --bin chimi-process-lab -- --scenario SV09 --through U9] (4s)
+KILLED       SV09: supervisor_started names no parent [cargo run --quiet --bin chimi-process-lab -- --scenario SV09 --through U9] (4s)
+KILLED       SV10: a nested supervisor takes no parent slot [cargo run --quiet --bin chimi-process-lab -- --scenario SV10 --through U9] (4s)
+KILLED       SV10: remove_supervisor leaves the subtree running [cargo run --quiet --bin chimi-process-lab -- --scenario SV10 --through U9] (3s)
+# result: every mutant killed
+# process_u9_mutations.py: 4 mutants against compiler/chimi
+BASELINE ok (316s)
+KILLED       SV10: the ManagedSupervisor handle holds the nested supervisor, not its membership [cargo run --quiet --bin chimi-process-lab -- --scenario SV10 --through U9] (5s)
+KILLED       ES02: a declared nested supervisor is marshalled as Never [cargo run --quiet --bin chimi-process-lab -- --scenario ES02 --through U9] (4s)
+KILLED       ES03: a declared nested supervisor is marshalled as OnDefect [cargo run --quiet --bin chimi-process-lab -- --scenario ES03 --through U9] (4s)
+KILLED       ES04: a nested escalation ends its membership as a requested end [cargo run --quiet --bin chimi-process-lab -- --scenario ES04 --through U9] (4s)
+# result: every mutant killed
