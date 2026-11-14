@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"success","value":{"type":"PoolResult","fields":{"a":3,"b":30,"c":300,"stale":99,"rejected":1}}}

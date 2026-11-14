@@ -217,6 +217,7 @@ fn status(scenario: &Scenario, options: &Options) -> Status {
         (Kind::Observability, Form::Fixture) => {
             observability_kind::check(scenario, options).map(|()| None)
         }
+        (Kind::Forcing, Form::Fixture) => fixture::check(scenario, options).map(|_| None),
         (kind, form) => Err(format!(
             "the {} runner for {form:?} scenarios has not landed",
             kind.name()

@@ -42,6 +42,8 @@ __attribute__((weak)) ChimiSchedulerOutcome chimi_scheduler_run(
   return (ChimiSchedulerOutcome){.state = CHIMI_FIBER_DEFECTED};
 }
 
+__attribute__((weak)) size_t chimi_scheduler_live_memberships(void) { return 0; }
+
 typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
                VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER, VALUE_TASK,
                VALUE_CHANNEL_SENDER, VALUE_CHANNEL_RECEIVER,
@@ -5211,7 +5213,7 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           ",\"heap_chunks_live\":%zu,\"heap_chunk_bytes_peak\":%zu,\"fragments_live\":%zu"
           ",\"fragment_bytes_peak\":%zu,\"process_heap_peak_value_bytes\":%zu"
           ",\"copied_values\":%" PRIu64 ",\"copied_bytes\":%" PRIu64
-          ",\"trace_events_constructed\":%" PRIu64 "}\n",
+          ",\"trace_events_constructed\":%" PRIu64 ",\"memberships_live\":%zu}\n",
           runtime->scoped_total_allocated_bytes,
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_BYTES],
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_VALUE],
@@ -5244,7 +5246,12 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
 #endif
           copied_values,
           copied_bytes,
-          runtime->trace_events_constructed);
+          runtime->trace_events_constructed,
+#if CHIMI_PROCESS_KERNEL
+          chimi_scheduler_live_memberships());
+#else
+          (size_t)0);
+#endif
   return close_output(output);
 }
 

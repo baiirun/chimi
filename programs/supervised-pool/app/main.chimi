@@ -1,0 +1,127 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox, SendError}
+import std/supervisor as Supervisor
+import std/supervisor.{StartError}
+
+pub enum WorkerMessage {
+  Add(amount: Int)
+  Crash
+  Report(reply: Sender<Int>)
+}
+
+pub process name worker_a: WorkerMessage
+pub process name worker_b: WorkerMessage
+pub process name worker_c: WorkerMessage
+
+struct PoolResult {
+  a: Int,
+  b: Int,
+  c: Int,
+  stale: Int,
+  rejected: Int,
+}
+
+fn worker(inbox: Inbox<WorkerMessage>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      WorkerMessage.Add(amount) -> total + amount
+      WorkerMessage.Crash -> total / 0
+      WorkerMessage.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn reply_value(received: Receive<Int>) -> Int {
+  case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+pub fn main() -> PoolResult needs { clock: Clock } {
+  let pool = Supervisor.policy([], 3, Supervisor.restarts(2, Duration.seconds(30)))
+  let root = Supervisor.start(pool)
+  let a = Supervisor.start_process(
+    root,
+    Process.spec(worker, 8, Duration.seconds(1)) |> Process.register(worker_a),
+    Supervisor.Restart.OnDefect,
+  )
+  let b = Supervisor.start_process(
+    root,
+    Process.spec(worker, 8, Duration.seconds(1)) |> Process.register(worker_b),
+    Supervisor.Restart.OnDefect,
+  )
+  let c = Supervisor.start_process(
+    root,
+    Process.spec(worker, 8, Duration.seconds(1)) |> Process.register(worker_c),
+    Supervisor.Restart.OnDefect,
+  )
+  let rejected = case Supervisor.start_process(
+    root,
+    Process.spec(worker, 8, Duration.seconds(1)),
+    Supervisor.Restart.Never,
+  ) {
+    Success(extra) -> {
+      Supervisor.remove_process(root, extra)
+      0
+    }
+    Failure(error) -> case error {
+      StartError.CapacityReached -> 1
+      StartError.NameTaken(_) -> 0
+      StartError.Stopped -> 0
+    }
+  }
+
+  Process.send(worker_a, WorkerMessage.Add(1))
+  Process.send(worker_b, WorkerMessage.Add(10))
+  Process.send(worker_c, WorkerMessage.Add(100))
+  settle()
+
+  let b_first = Supervisor.address(b)
+  Process.send(b_first, WorkerMessage.Crash)
+  Process.send(worker_b, WorkerMessage.Add(20))
+  settle()
+
+  Process.send(worker_a, WorkerMessage.Add(2))
+  Process.send(worker_b, WorkerMessage.Add(30))
+  Process.send(worker_c, WorkerMessage.Add(200))
+  let stale = case Process.send(b_first, WorkerMessage.Add(99)) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      SendError.Full(_) -> -1
+      SendError.Unavailable(message) -> case message {
+        WorkerMessage.Add(amount) -> amount
+        WorkerMessage.Crash -> -2
+        WorkerMessage.Report(_) -> -2
+      }
+    }
+  }
+
+  let replies = Channel.bounded(3)
+  let reply_sender = replies.sender
+  let reply_receiver = replies.receiver
+  let reply_completion = replies.completion
+  Process.send(worker_a, WorkerMessage.Report(reply_sender))
+  Process.send(worker_b, WorkerMessage.Report(reply_sender))
+  Process.send(worker_c, WorkerMessage.Report(reply_sender))
+  let total_a = reply_value(Channel.receive(reply_receiver))
+  let total_b = reply_value(Channel.receive(reply_receiver))
+  let total_c = reply_value(Channel.receive(reply_receiver))
+  Channel.close(reply_completion)
+
+  Supervisor.remove_process(root, c)
+  Supervisor.stop(root)
+  PoolResult(total_a, total_b, total_c, stale, rejected)
+}

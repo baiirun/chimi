@@ -1,0 +1,80 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/duration as Duration
+import std/int as Int
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{StartError}
+
+// MF03: N cycles of `start_process` and `remove_process` under a root of
+// capacity 1. Each cycle registers `counter`, sends it Add(1), and removes
+// it, so a start succeeds only if the previous removal released both the
+// capacity slot and the name. The outcome counts the cycles whose start
+// succeeded, plus the final member's report of Add(7): N + 7. The live
+// allocations at exit do not grow with N, and the kernel holds no
+// membership once the root has stopped (expected.memory).
+
+pub enum Message {
+  Add(amount: Int)
+  Report(reply: Sender<Int>)
+}
+
+fn count_messages(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Add(amount) -> total + amount
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+    }
+  }
+}
+
+pub process name counter: Message
+
+fn ask() -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(counter, Message.Report(replies.sender))
+  let reply = Channel.receive(replies.receiver)
+  case reply {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+pub fn main(arguments: List<Text>) -> Int {
+  let cycles = case List.first(arguments) {
+    Some(text) -> Int.parse(text)
+    None -> 0
+  }
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let spec = Process.spec(count_messages, 2, Duration.seconds(1)) |> Process.register(counter)
+  let started = loop state = (cycles, 0) {
+    let (left, count) = state
+    case left {
+      0 -> break count
+      _ -> {
+        let next = case Supervisor.start_process(root, spec, Supervisor.Restart.Never) {
+          Success(member) -> {
+            Process.send(counter, Message.Add(1))
+            Supervisor.remove_process(root, member)
+            count + 1
+          }
+          Failure(error) -> case error {
+            StartError.CapacityReached -> count
+            StartError.NameTaken(_) -> count
+            StartError.Stopped -> count
+          }
+        }
+        (left - 1, next)
+      }
+    }
+  }
+  let last = Supervisor.start_process(root, spec, Supervisor.Restart.Never)
+  Process.send(counter, Message.Add(7))
+  let total = ask()
+  Supervisor.stop(root)
+  started + total
+}

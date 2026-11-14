@@ -1,0 +1,2 @@
+equal heap_chunks_live
+exactly memberships_live 0

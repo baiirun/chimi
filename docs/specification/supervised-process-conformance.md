@@ -723,6 +723,10 @@ take their size from `main(arguments)`. As built in `runtime.c` (U5):
   count, so CB02 measures one message.
 - `trace_events_constructed` counts the telemetry events the runner built,
   its own and the scheduler's.
+- `memberships_live` (added at U10 for MF03) is the memberships the process
+  kernel still held when the scheduler finished the root and stopped every
+  supervisor, read through `chimi_scheduler_live_memberships`. It is 0 in a
+  program without processes.
 
 MF01 rounds N down to whole batches of 64 (9,984 for 10,000), so that both
 runs repeat one batch shape; a final partial batch changes the incarnation's

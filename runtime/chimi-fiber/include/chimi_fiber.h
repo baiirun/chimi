@@ -491,5 +491,9 @@ ChimiSchedulerOutcome chimi_scheduler_execute_with_config(
    arrive: the call returns state CHIMI_FIBER_PARKED and leaves the
    suspended execution in place. */
 ChimiSchedulerOutcome chimi_scheduler_run(const ChimiSchedulerConfig *config);
+/* The memberships the process kernel still held when the last
+   chimi_scheduler_run finished its root and stopped every supervisor: zero
+   unless a removal or stop leaked one. Zero before any run. */
+size_t chimi_scheduler_live_memberships(void);
 
 #endif

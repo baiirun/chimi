@@ -19,6 +19,7 @@ use super::{
 use crate::{ChimiFiberCommand, ChimiFiberEntry, ChimiFiberState};
 use std::ffi::c_void;
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 pub const ADDRESS_NAMED: u32 = 1;
@@ -582,6 +583,18 @@ fn parked_outcome() -> SchedulerOutcome {
     }
 }
 
+/// See `chimi_scheduler_live_memberships`.
+static LAST_RUN_MEMBERSHIPS: AtomicUsize = AtomicUsize::new(0);
+
+#[unsafe(no_mangle)]
+/// The memberships the process kernel still held when the last
+/// `chimi_scheduler_run` finished its root and stopped every supervisor.
+/// Removal and stop each release theirs, so a nonzero count is a leaked
+/// membership (lab scenario MF03). Zero before any run.
+pub extern "C" fn chimi_scheduler_live_memberships() -> usize {
+    LAST_RUN_MEMBERSHIPS.load(Ordering::Relaxed)
+}
+
 #[unsafe(no_mangle)]
 /// Executes one root with the configured clock, trace sink, and release
 /// hooks, then stops every supervisor still running.
@@ -630,6 +643,7 @@ pub unsafe extern "C" fn chimi_scheduler_run(
         return defect_outcome(SCHEDULER_DEFECT_CODE);
     };
     let run = scheduler.run_root(root, DEADLOCK_DEFECT_CODE);
+    LAST_RUN_MEMBERSHIPS.store(scheduler.process_metrics().memberships, Ordering::Relaxed);
     if let Some(report) = config.deadlock_report
         && !run.deadlock.is_empty()
     {
