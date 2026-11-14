@@ -3139,7 +3139,7 @@ fn native_only_a_task_program_links_the_fiber_runtime() {
     };
     assert!(!links_fiber_runtime(
         "plain",
-        "pub fn main() -> Int {\n  List.length([1, 2, 3]) - 1\n}\n"
+        "import std/list as List\npub fn main() -> Int {\n  List.length([1, 2, 3]) - 1\n}\n"
     ));
     assert!(links_fiber_runtime(
         "tasks",
@@ -3423,6 +3423,7 @@ fn native_lists_longer_than_one_vector_leaf_round_trip_through_json() {
         concat!(
             "import std/json as Json\n",
             "import std/json.{{Value}}\n",
+            "import std/list as List\n",
             "\n",
             "fn summarize(values: List<Value>) -> Text {{\n",
             "  case List.first(values) {{\n",
@@ -3562,6 +3563,7 @@ fn million_element_list_program(run: &str) -> String {
         concat!(
             "import std/json as Json\n",
             "import std/json.{{Value}}\n",
+            "import std/text as Text\n",
             "fn ones(doublings: Int) -> Text {{\n",
             "  loop state = {{ text: \"1\", left: doublings }} {{\n",
             "    case state.left {{\n",
@@ -3747,6 +3749,7 @@ fn native_concurrency_pipeline_runs_in_flat_memory() {
 /// A Chimi function `payload()` returning a Text of about 16 KiB, so a message
 /// that leaks shows up in the fragment footprint.
 const PAYLOAD_FUNCTION: &str = concat!(
+    "import std/text as Text\n",
     "fn payload() -> Text {\n",
     "  loop state = { text: \"1\", left: 13 } {\n",
     "    case state.left {\n",
@@ -3823,6 +3826,7 @@ fn native_cancelled_sends_free_their_messages() {
             "import std/channel as Channel\n",
             "import std/channel.{{Receive, Sender}}\n",
             "import std/task as Task\n",
+            "import std/list as List\n",
             "{payload}",
             "fn spam(out: Sender<Text>, message: Text) -> Int {{\n",
             "  loop sent = 0 {{\n",
@@ -3865,6 +3869,7 @@ fn native_aborting_a_channel_frees_its_queued_messages() {
     let source = format!(
         concat!(
             "import std/channel as Channel\n",
+            "import std/list as List\n",
             "{payload}",
             "pub fn main(arguments: List<Text>) -> Int {{\n",
             "  let message = payload()\n",
@@ -3904,6 +3909,7 @@ fn native_cancelling_a_child_before_it_runs_frees_its_captures() {
     let source = format!(
         concat!(
             "import std/task as Task\n",
+            "import std/list as List\n",
             "{payload}",
             "pub fn main(arguments: List<Text>) -> Int {{\n",
             "  let message = payload()\n",
@@ -3941,6 +3947,7 @@ fn abandoned_channels_program() -> String {
             "import std/channel as Channel\n",
             "import std/channel.{{Receive, Sender}}\n",
             "import std/task as Task\n",
+            "import std/list as List\n",
             "{payload}",
             "fn spam(out: Sender<Text>, message: Text) -> Int {{\n",
             "  loop sent = 0 {{\n",
@@ -4179,6 +4186,8 @@ fn native_a_value_a_finished_task_put_on_a_channel_survives_its_heap() {
             "import std/channel as Channel\n",
             "import std/channel.{Receive}\n",
             "import std/task as Task\n",
+            "import std/list as List\n",
+            "import std/text as Text\n",
             "struct Reply {\n",
             "  label: Text,\n",
             "  values: List<Int>,\n",
@@ -4788,6 +4797,7 @@ fn native_repeated_drains_of_a_list_built_outside_loops_do_not_accumulate_copies
                 concat!(
                     "import std/json as Json\n",
                     "import std/json.{{Value}}\n",
+                    "import std/text as Text\n",
                     "fn ones(doublings: Int) -> Text {{\n",
                     "  loop state = {{ text: \"1\", left: doublings }} {{\n",
                     "    case state.left {{\n",
@@ -4867,6 +4877,8 @@ fn native_matching_one_boundary_window_repeatedly_copies_it_once() {
                 concat!(
                     "import std/json as Json\n",
                     "import std/json.{{Value}}\n",
+                    "import std/list as List\n",
+                    "import std/text as Text\n",
                     "fn ones(doublings: Int) -> Text {{\n",
                     "  loop state = {{ text: \"1\", left: doublings }} {{\n",
                     "    case state.left {{\n",
@@ -5233,6 +5245,7 @@ fn native_process_stack_depth_and_named_defects() {
             "import std/process as Process\n",
             "import std/supervisor as Supervisor\n",
             "import std/process.{Inbox}\n",
+            "import std/list as List\n",
             "pub enum Message {\n  Deep(depth: Int)\n  Report(reply: Sender<Int>)\n}\n",
             "pub process name worker: Message\n",
             "fn deep(n: Int) -> Int {\n  case n {\n    0 -> 0\n    _ -> 1 + deep(n - 1)\n  }\n}\n",

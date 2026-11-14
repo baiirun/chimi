@@ -6,6 +6,7 @@ import std/duration as Duration
 import std/process as Process
 import std/process.{Address, Inbox, SendError}
 import std/supervisor as Supervisor
+import std/list as List
 
 // CB01: on its first loop pass main builds a list of 1,000 Ints and sends it to
 // `summer`; the list is not part of the loop state, so the pass reclaims it.

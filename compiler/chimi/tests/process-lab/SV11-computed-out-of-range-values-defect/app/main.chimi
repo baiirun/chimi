@@ -2,6 +2,7 @@ import std/duration as Duration
 import std/process as Process
 import std/process.{Inbox}
 import std/supervisor as Supervisor
+import std/list as List
 
 // SV11: one run per out-of-range value, each computed from the run's argument
 // count (`zero` is 0 at run time), so the compiler cannot reject it. Each call

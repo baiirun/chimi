@@ -278,6 +278,7 @@ fn boolean_operators_bind_more_loosely_than_pipelines() {
     let outcome = run_both(
         "boolean-pipeline-precedence",
         concat!(
+            "import std/list as List\n",
             "fn is_empty(values: List<Int>) -> Bool {\n",
             "  List.length(values) < 1\n",
             "}\n",
@@ -1008,6 +1009,7 @@ fn pipeline_into_member_constructor_and_empty_calls() {
     let outcome = run_both(
         "pipe-member-constructor-empty",
         concat!(
+            "import std/text as Text\n",
             "struct Pair {\n",
             "  left: Int\n",
             "  right: Int\n",
@@ -1817,6 +1819,7 @@ fn float_text_round_trips_through_parse_for_sampled_values() {
     let outcome = std_outcome(
         "float-round-trip",
         concat!(
+            "import std/text as Text\n",
             "fn same(a: Float, b: Float) -> Bool { not (a < b) and not (a > b) }\n",
             "struct Walk { x: Float, steps: Int, rendered: Text, misses: Int }\n",
             "fn walk(start: Float, factor: Float, steps: Int) -> Text {\n",
@@ -2105,6 +2108,7 @@ fn prefix_rest_and_suffix_bind_their_parts() {
     let outcome = run_both(
         "list-pattern-parts",
         concat!(
+            "import std/list as List\n",
             "fn parts(values: List<Int>) -> List<Int> {\n",
             "  case values {\n",
             "    [first, ..inner, last] -> [last, List.length(inner), first]\n",
@@ -2139,6 +2143,7 @@ fn list_patterns_nest_inside_and_around_constructor_patterns() {
     let outcome = run_both(
         "list-pattern-nesting",
         concat!(
+            "import std/list as List\n",
             "enum Slot { Full(value: Int), Hole(width: Int) }\n",
             "fn score(values: List<Slot>) -> Int {\n",
             "  case values {\n",
@@ -2176,6 +2181,7 @@ fn list_patterns_match_inside_outcome_patterns() {
         concat!(
             "import std/json as Json\n",
             "import std/json.{Value}\n",
+            "import std/list as List\n",
             "fn count(source: Text) -> Int {\n",
             "  case Json.decode(source) {\n",
             "    Success(Value.Array([])) -> 0\n",
@@ -2260,6 +2266,7 @@ fn large_list_module(doublings: u32, rest: &str) -> String {
         concat!(
             "import std/json as Json\n",
             "import std/json.{{Value}}\n",
+            "import std/text as Text\n",
             "fn ones(doublings: Int) -> Text {{\n",
             "  let start = {{ text: \"1\", left: doublings }}\n",
             "  loop state = start {{\n",
@@ -2465,6 +2472,7 @@ fn inspection_shows_equatable_and_ordered_properties() {
 #[test]
 fn hovering_a_list_pattern_binding_reports_its_type() {
     let source = concat!(
+        "import std/list as List\n",
         "fn f(values: List<Int>) -> Int {\n",
         "  case values {\n",
         "    [] -> 0\n",
@@ -3331,6 +3339,7 @@ fn constants_of_every_representable_kind_load_the_built_value() {
         concat!(
             "import std/map as Map\n",
             "import std/json as Json\n",
+            "import std/text as Text\n",
             "struct Money {\n",
             "  cents: Int\n",
             "}\n",
@@ -3682,6 +3691,7 @@ fn a_constant_that_doubles_each_step_stops_at_the_size_budget() {
         "pub fn main() -> Int { 0 }\n",
     );
     let text = concat!(
+        "import std/text as Text\n",
         "fn grow(limit: Int) -> Text {\n",
         "  loop state = { n: 0, value: \"a\" } {\n",
         "    case state.n < limit {\n",
@@ -3825,6 +3835,7 @@ fn interpolation_inserts_text_and_numbers_in_canonical_form() {
     let outcome = run_both(
         "interpolation",
         concat!(
+            "import std/text as Text\n",
             "fn blame_argument(line: Int) -> Text {\n",
             "  \"-L ${line},${line}\"\n",
             "}\n",
@@ -4204,6 +4215,7 @@ fn debug_render_follows_the_format_table_on_both_backends() {
         "import std/debug as Debug\n",
         "import std/map as Map\n",
         "import std/json as Json\n",
+        "import std/text as Text\n",
         "struct Money {\n  cents: Int\n}\n",
         "struct Path {\n  text: Text\n}\n",
         "enum PaymentError {\n  GatewayUnavailable\n  Declined(reason: Text)\n}\n",
@@ -5403,6 +5415,7 @@ const SHAPES: &str = concat!(
 );
 
 const DESCRIBE: &str = concat!(
+    "import std/text as Text\n",
     "enum CountError {\n",
     "  Negative(count: Int)\n",
     "}\n",

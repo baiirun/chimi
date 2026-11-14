@@ -5,6 +5,7 @@
 // EXPECT-SPAN: money.cents
 
 import modules/money as Money
+import std/int as Int
 
 fn display(cents: Int) {
   let money = Money.from_cents(cents)

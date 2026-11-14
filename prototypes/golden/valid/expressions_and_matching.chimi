@@ -3,6 +3,9 @@
 // EXPECT-SHAPE: normalize = fn(Text) -> Text
 // EXPECT-SHAPE: authorize = fn(AccountState, Request) -> Decision
 
+import std/text as Text
+import std/int as Int
+
 struct Money {
   cents: Int
 }

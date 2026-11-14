@@ -232,7 +232,7 @@ therefore takes its **subject** first. The subject is the value the function
 is about: the collection, the text, the option, the result, the duration, or
 the operation thunk of a combinator.
 
-<!-- chimi: pending ts-0ba63e -->
+<!-- chimi: check -->
 ```chimi
 import std/list as List
 import std/text as Text
@@ -441,7 +441,7 @@ Helpers stay a small, fixed set. Anything with more than one decision is a
 the standard library. `unwrap_or_fail` turns absence into a failure in the
 row, which is how most service code meets a missing record:
 
-<!-- chimi: pending ts-0ba63e -->
+<!-- chimi: pending ts-0ba63e ts-80cbfb -->
 ```chimi
 import std/map as Map
 import std/map.{Map}
@@ -607,7 +607,7 @@ Use a collection function when one name says the whole traversal. Write a
   or search does;
 - each step needs several pieces of state that a struct would hold anyway.
 
-<!-- chimi: pending ts-0ba63e -->
+<!-- chimi: check -->
 ```chimi
 import std/list as List
 

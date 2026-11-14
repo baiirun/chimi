@@ -5,6 +5,7 @@ import std/json as Json
 import std/json.{Value}
 import std/map as Map
 import std/map.{Map}
+import std/list as List
 
 enum UsageError {
   MissingPath

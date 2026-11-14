@@ -6,6 +6,7 @@
 
 import modules/money as Money
 import modules/money.{Money}
+import std/int as Int
 
 pub fn display(cents: Int) {
   let money = Money.from_cents(cents)

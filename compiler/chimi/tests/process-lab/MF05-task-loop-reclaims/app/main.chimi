@@ -8,6 +8,7 @@
 // peaks at 6,088 bytes; reclaiming every second pass peaks at 7,776.
 import std/int as Int
 import std/task as Task
+import std/list as List
 
 struct Pass {
   left: Int,

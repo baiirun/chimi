@@ -2,6 +2,9 @@
 // EXPECT-COMPILE: success
 // EXPECT-SHAPE: describe = fn(CheckoutState) -> Text
 
+import std/text as Text
+import std/int as Int
+
 struct OrderId {
   value: Text
 }

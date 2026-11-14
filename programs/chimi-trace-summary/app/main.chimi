@@ -9,6 +9,7 @@ import std/json.{Number}
 import std/json.{Value}
 import std/map as Map
 import std/map.{Map}
+import std/list as List
 
 const runtime_schema = "chimi.runtime.v1"
 const summary_schema = "chimi.trace-summary.v1"

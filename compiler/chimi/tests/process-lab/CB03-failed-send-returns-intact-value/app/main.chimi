@@ -6,6 +6,7 @@ import std/duration as Duration
 import std/process as Process
 import std/process.{Address, Inbox, SendError}
 import std/supervisor as Supervisor
+import std/list as List
 
 // CB03: a `Full` and an `Unavailable` send each hand back a message equal to
 // the original, which main still uses. Neither refused copy is leaked: no

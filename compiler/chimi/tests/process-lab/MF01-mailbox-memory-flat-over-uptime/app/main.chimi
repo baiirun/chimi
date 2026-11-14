@@ -7,6 +7,7 @@ import std/process as Process
 import std/process.{Address, Inbox, SendError}
 import std/supervisor as Supervisor
 import std/int as Int
+import std/list as List
 // MF01: one process receives N Int messages, 64 at a time: main fills the
 // mailbox, then settles so the process drains it. N rounds down to whole
 // batches, so every run repeats the same batch. The process's heap peak and the
