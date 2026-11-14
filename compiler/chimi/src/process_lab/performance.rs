@@ -170,10 +170,9 @@ pub(super) fn pg09() -> Result<Measurement, String> {
 }
 
 pub(super) fn pg10() -> Result<Measurement, String> {
-    let evidence = messages()?;
     Ok(Measurement::gates(vec![GateResult::exactly(
         "pg10_trace_off_events",
-        evidence.trace_off_events,
+        trace_off_events()?,
         0.0,
     )]))
 }
@@ -189,12 +188,9 @@ struct MessageEvidence {
     full_ratio: f64,
     resident_at_n1: f64,
     resident_growth: f64,
-    /// Events the runner constructed under `--trace=off` at N2, plus the
-    /// telemetry lines it wrote (both must be 0).
-    trace_off_events: f64,
 }
 
-/// PG01, PG02, PG07, PG10 on MF01's program. MF01 rounds N down to whole
+/// PG01, PG02, and PG07 on MF01's program. MF01 rounds N down to whole
 /// batches of 64, so the outcome (and the message count) is that rounded N.
 fn messages() -> Result<&'static MessageEvidence, String> {
     static EVIDENCE: OnceLock<Result<MessageEvidence, String>> = OnceLock::new();
@@ -205,11 +201,9 @@ fn messages() -> Result<&'static MessageEvidence, String> {
         let (n1, n2) = (sizes(10_000), sizes(1_000_000));
         let off = Run::new(Trace::Off);
         let ns_per_message = workload.differential(&off, &n1, &n2)?;
-        // One run per size for memory, and the trace-off event count at N2.
-        let at_n1 = workload.run(&off.with_reports(), &n1.0, n1.1)?;
-        let at_n2 = workload.run(&off.with_reports(), &n2.0, n2.1)?;
-        let constructed = report_field(&at_n2.memory_report, "trace_events_constructed")?;
-        let written = at_n2.telemetry.lines().count() as f64;
+        // One run per size for memory.
+        let at_n1 = workload.run(&off, &n1.0, n1.1)?;
+        let at_n2 = workload.run(&off, &n2.0, n2.1)?;
         // Trace overhead is measured at smaller sizes, because full mode
         // records every Core operation: about 15 KB of telemetry per message,
         // so 1,000,000 messages would write 15 GB per run. Off and boundaries
@@ -237,10 +231,26 @@ fn messages() -> Result<&'static MessageEvidence, String> {
             full_ratio: ratio(trace_ns[2], trace_ns[0]),
             resident_at_n1: at_n1.max_resident as f64,
             resident_growth: at_n2.max_resident.saturating_sub(at_n1.max_resident) as f64,
-            trace_off_events: constructed + written,
         })
     })
     .map_err(|error| format!("PG01 workload: {error}"))
+}
+
+/// PG10: the events the runner constructed in one `--trace=off` run of
+/// PG01's workload at N2, plus the telemetry lines it wrote; both must be 0.
+/// Its own build, so a runtime that traces under `off` fails this gate and
+/// not only the timing runs.
+fn trace_off_events() -> Result<f64, String> {
+    static EVIDENCE: OnceLock<Result<f64, String>> = OnceLock::new();
+    cached(&EVIDENCE, || {
+        let mf01 = catalogue::find("MF01").ok_or("the catalogue has no MF01")?;
+        let workload = Workload::build("PG-trace-off", &fixture::root(mf01), "app/main")?;
+        let run = workload.run(&Run::new(Trace::Off).with_reports(), "1000000", 1_000_000)?;
+        let constructed = report_field(&run.memory_report, "trace_events_constructed")?;
+        Ok(constructed + run.telemetry.lines().count() as f64)
+    })
+    .copied()
+    .map_err(|error| format!("PG10 workload: {error}"))
 }
 
 /// PG03: µs per restart cycle.
