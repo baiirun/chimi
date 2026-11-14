@@ -379,10 +379,18 @@ pub(crate) fn bundled_fiber_archive() -> Result<PathBuf, String> {
         .parent()
         .ok_or_else(|| "compiler executable has no parent directory".to_owned())?;
     let mut directories = vec![parent.to_path_buf(), parent.join("deps")];
+    let mut profile = parent;
     if parent.file_name().is_some_and(|name| name == "deps")
-        && let Some(profile) = parent.parent()
+        && let Some(above) = parent.parent()
     {
-        directories.push(profile.to_path_buf());
+        directories.push(above.to_path_buf());
+        profile = above;
+    }
+    // Cargo's build-directory layout keeps a dependency's artifacts in
+    // `<profile>/build/<package>/<hash>/out` instead of `<profile>/deps`, so a
+    // compiler built without chimi-fiber as a root package finds it only there.
+    if let Ok(builds) = std::fs::read_dir(profile.join("build").join("chimi-fiber")) {
+        directories.extend(builds.flatten().map(|build| build.path().join("out")));
     }
     let mut candidates = Vec::new();
     for directory in directories {
