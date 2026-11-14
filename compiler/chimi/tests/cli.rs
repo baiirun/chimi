@@ -4431,6 +4431,78 @@ fn native_backstop_reading_one_receiver_field_into_two_tasks_defects_the_second_
     );
 }
 
+/// A helper whose child reads one value from `r` and ends, returning its handle so
+/// the caller can wait for the end.
+const HAND_AND_JOIN: &str = concat!(
+    "import std/channel.{ChannelError}\n",
+    "import std/task.{Task}\n",
+    "fn hand(r: Receiver<Int>) -> Task<Int, ChannelError> {\n",
+    "  Task.start(fn() -> Int {\n",
+    "    let got = Channel.receive(r)\n",
+    "    case got {\n",
+    "      Receive.Received(v) -> v\n",
+    "      Receive.Drained -> 0\n",
+    "    }\n",
+    "  })\n",
+    "}\n",
+);
+
+// task-and-channel-capabilities.md, "Checked at run time": the callee route when
+// the task the callee handed the Receiver to has already ended. Its cleanup took
+// the capability with it, so the caller's stale argument must still defect, both
+// when handed to a new task and when used directly, and the message must say the
+// owner ended rather than name a live owner. Rejects a runtime that frees a
+// capability for reuse once its owner ends (the second child would read 6 and
+// main return 56, or main would read from the dead owner's channel).
+#[test]
+fn native_backstop_a_stale_capability_whose_owner_has_ended_defects() {
+    let message = native_capability_defect(
+        "ended-owner-hand-off",
+        &format!(
+            "{HAND_AND_JOIN}{}",
+            concat!(
+                "pub fn main() -> Int {\n",
+                "  let c = Channel.bounded(2)\n",
+                "  let r = c.receiver\n",
+                "  Channel.send(c.sender, 5)\n",
+                "  Channel.send(c.sender, 6)\n",
+                "  let v = Task.result(hand(r))\n",
+                "  v * 10 + Task.result(hand(r))\n",
+                "}\n",
+            )
+        ),
+    );
+    assert_eq!(
+        message,
+        "channel capability violation: task 1 cannot hand the Receiver of channel 1 \
+         to task 3: the task it was handed to has ended"
+    );
+    let message = native_capability_defect(
+        "ended-owner-use",
+        &format!(
+            "{HAND_AND_JOIN}{}",
+            concat!(
+                "pub fn main() -> Int {\n",
+                "  let c = Channel.bounded(2)\n",
+                "  let r = c.receiver\n",
+                "  Channel.send(c.sender, 5)\n",
+                "  let v = Task.result(hand(r))\n",
+                "  let got = Channel.receive(r)\n",
+                "  case got {\n",
+                "    Receive.Received(w) -> v * 10 + w\n",
+                "    Receive.Drained -> v\n",
+                "  }\n",
+                "}\n",
+            )
+        ),
+    );
+    assert_eq!(
+        message,
+        "channel capability violation: task 1 cannot use the Receiver of channel 1 \
+         in Channel.receive: the task it was handed to has ended"
+    );
+}
+
 // E18 across tasks and channels on native, where each task runs on a 64 KiB fiber
 // stack. A child task captures a value 100,000 levels deep, renders it with
 // `Debug.render`, encodes a Json.Value as deep with `Json.encode`, and sends a

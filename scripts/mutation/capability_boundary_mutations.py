@@ -65,6 +65,18 @@ MUTATIONS = [
         targets=["cli"], filter=BACKSTOP,
     ),
     dict(
+        name="an ended owner keeps the Receiver it was handed",
+        file=CHANNELS,
+        edits=[("                channel.receiver_owner = None;\n", "")],
+        targets=["cli"], filter=BACKSTOP,
+    ),
+    dict(
+        name="the report names task 0 instead of saying the owner ended",
+        file=RUNTIME_C,
+        edits=[("  if (violation->owner == 0)\n", "  if (false)\n")],
+        targets=["cli"], filter=BACKSTOP,
+    ),
+    dict(
         name="a failed transfer is reported as a use",
         file=RUNTIME_C,
         edits=[("  bool transfer = violation->request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER ||\n",
