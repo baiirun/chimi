@@ -1026,6 +1026,21 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                     "False" => TokenKind::False,
                     _ => TokenKind::Identifier,
                 };
+                // A word operator names a member or function after `.` or `fn`, so
+                // `Option.or` can follow the plain-verb naming rule.
+                let kind = if matches!(kind, TokenKind::And | TokenKind::Or | TokenKind::Not)
+                    && tokens
+                        .iter()
+                        .rev()
+                        .find(|token| {
+                            !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment)
+                        })
+                        .is_some_and(|token| matches!(token.kind, TokenKind::Dot | TokenKind::Fn))
+                {
+                    TokenKind::Identifier
+                } else {
+                    kind
+                };
                 emit(kind, start, offset, &mut tokens);
             }
             _ => {
@@ -1390,6 +1405,9 @@ impl<'source> Parser<'source> {
                     self.parse_process_name_declaration()
                 }
                 TokenKind::Fn if self.fn_starts_declaration() => self.parse_declaration(),
+                TokenKind::Identifier if self.native_starts_at(self.position) => {
+                    self.parse_declaration()
+                }
                 TokenKind::Const => self.parse_const_declaration(),
                 TokenKind::Let => self.parse_let_binding(),
                 _ => {
@@ -1495,6 +1513,9 @@ impl<'source> Parser<'source> {
             TokenKind::Interface => Some((NodeKind::InterfaceDeclaration, TokenKind::Interface)),
             TokenKind::Fn => Some((NodeKind::FunctionDeclaration, TokenKind::Fn)),
             TokenKind::Const => Some((NodeKind::ConstDeclaration, TokenKind::Const)),
+            TokenKind::Identifier if self.native_starts_at(index) => {
+                Some((NodeKind::FunctionDeclaration, TokenKind::Fn))
+            }
             TokenKind::Identifier if self.process_name_starts_at(index) => {
                 Some((NodeKind::ProcessNameDeclaration, TokenKind::Identifier))
             }
@@ -1615,6 +1636,12 @@ impl<'source> Parser<'source> {
     fn parse_function(&mut self) {
         self.start(NodeKind::FunctionDeclaration);
         self.parse_visibility();
+        if self.native_starts_at(self.position) {
+            self.bump();
+            self.parse_native_function_rest();
+            self.finish();
+            return;
+        }
         self.expect(TokenKind::Fn);
         self.expect(TokenKind::Identifier);
         self.parse_optional_generic_parameters();
@@ -1630,6 +1657,52 @@ impl<'source> Parser<'source> {
         self.skip_newlines();
         self.parse_block();
         self.finish();
+    }
+
+    /// Parses `fn name<...>(...) -> T [errors F] [needs R]` after `native`, which
+    /// has no body. Ensures: the line break after the header is left for the file
+    /// loop; a body is still parsed, so later stages see it, and is `S1102`.
+    fn parse_native_function_rest(&mut self) {
+        self.expect(TokenKind::Fn);
+        self.expect(TokenKind::Identifier);
+        self.parse_optional_generic_parameters();
+        self.skip_newlines();
+        self.parse_value_parameters();
+        self.start(NodeKind::ImplementationContract);
+        if self.accept(TokenKind::Arrow) {
+            self.skip_newlines();
+            self.parse_type();
+        }
+        if self.accept_after_newlines(TokenKind::Errors) {
+            self.skip_newlines();
+            self.parse_type();
+        }
+        if self.at_after_newlines(TokenKind::Needs) {
+            self.skip_newlines();
+            self.parse_requirement_clause();
+        }
+        self.finish();
+        if self.at(TokenKind::LeftBrace) {
+            let start = self.current().range.start() as usize;
+            self.parse_block();
+            let end = self.tokens[self.significant[self.position - 1]].range.end() as usize;
+            self.syntax_error(
+                "S1102",
+                TextRange::new(start, end),
+                "a `native fn` has no body; its runtime registers the implementation",
+            );
+        }
+    }
+
+    /// Whether `native fn` starts at significant token `index`. `native` is read
+    /// only there, so a value or module named `native` is unaffected.
+    fn native_starts_at(&self, index: usize) -> bool {
+        self.kind_at(index) == TokenKind::Identifier
+            && self
+                .significant
+                .get(index)
+                .is_some_and(|raw| &*self.tokens[*raw].text == "native")
+            && self.kind_at(index + 1) == TokenKind::Fn
     }
 
     fn parse_visibility(&mut self) {
@@ -2049,7 +2122,7 @@ impl<'source> Parser<'source> {
                 | TokenKind::Fn
                 | TokenKind::Let
                 | TokenKind::Const
-        )
+        ) || self.native_starts_at(self.position)
     }
 
     /// Equality and ordering operators are non-associative: one operator per

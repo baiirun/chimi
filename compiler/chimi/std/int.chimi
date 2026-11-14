@@ -1,0 +1,85 @@
+/// Operations on `Int`, the 64-bit signed integer: reading it from text,
+/// writing it as text, arithmetic that reports overflow as `None`, and
+/// aggregates such as `Int.sum`.
+
+// 2. Failure types.
+
+/// Failures of `Int.parse`.
+pub enum ParseError {
+  /// The text is empty.
+  Empty
+  /// A character is not an ASCII digit, apart from one leading `-`.
+  InvalidDigit
+  /// The number does not fit in 64 bits.
+  OutOfRange
+}
+
+// 5. Queries.
+
+/// Returns the sum of `numbers`, which is `0` for an empty list.
+///
+/// Defects when: the sum overflows `Int`.
+/// Cost: O(n).
+pub fn sum(numbers: List<Int>) -> Int {
+  loop (remaining, total) = (numbers, 0) {
+    case remaining {
+      [] -> break total
+      [number, ..rest] -> (rest, total + number)
+    }
+  }
+}
+
+// 6. Arithmetic.
+
+/// Returns `left + right`, or `None` when the exact sum does not fit in `Int`.
+///
+/// Cost: O(1).
+pub native fn add_checked(left: Int, right: Int) -> Option<Int>
+
+/// Returns `left - right`, or `None` when the exact difference does not fit
+/// in `Int`.
+///
+/// Cost: O(1).
+pub native fn subtract_checked(left: Int, right: Int) -> Option<Int>
+
+/// Returns `left * right`, or `None` when the exact product does not fit in
+/// `Int`.
+///
+/// Cost: O(1).
+pub native fn multiply_checked(left: Int, right: Int) -> Option<Int>
+
+/// Returns `left / right` truncated toward zero, or `None` when `right` is
+/// `0` or the quotient does not fit in `Int`.
+///
+/// Cost: O(1).
+pub native fn divide_checked(left: Int, right: Int) -> Option<Int>
+
+/// Returns the remainder of `left / right`, with the sign of `left`, or
+/// `None` when `right` is `0` or the division overflows.
+///
+/// Cost: O(1).
+pub native fn remainder_checked(left: Int, right: Int) -> Option<Int>
+
+/// Returns `value` modulo `modulus`, with the sign of `modulus`, for clock
+/// arithmetic and bucket indexes.
+///
+/// Defects when: `modulus` is `0`.
+/// Cost: O(1).
+pub native fn modulo(value: Int, modulus: Int) -> Int
+
+// 7. Conversions.
+
+/// Returns `value` in canonical decimal form, such as `-42`.
+///
+/// Cost: O(1).
+pub native fn to_text(value: Int) -> Text
+
+/// Reads an `Int` from decimal digits with an optional leading `-`, and
+/// nothing else: no `+`, spaces, or `_`.
+/// `Int.parse(Int.to_text(value))` returns `value`.
+///
+/// Fails with: `ParseError.Empty` for empty text; `ParseError.InvalidDigit`
+/// when a character is not a digit; `ParseError.OutOfRange` when the number
+/// does not fit in 64 bits.
+/// Cost: O(n).
+pub native fn parse(text: Text) -> Int errors ParseError

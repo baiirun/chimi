@@ -1,0 +1,183 @@
+/// Operations on `Text`, which is always valid UTF-8. Positions and lengths
+/// count UTF-8 bytes and say so in their names (`Text.byte_length`,
+/// `Text.byte_slice`); most work needs no positions: `Text.split`,
+/// `Text.join`, `Text.trim`, `Text.starts_with`, `Text.replace`.
+
+import std/list as List
+
+// 4. Building.
+
+/// Returns the texts of `parts` joined in order, with nothing between them.
+///
+/// Cost: O(n) in the total length.
+pub native fn concat(parts: List<Text>) -> Text
+
+/// Returns `text` followed by `other`.
+///
+/// Cost: O(n) in the total length, with no intermediate list.
+pub native fn append(text: Text, other: Text) -> Text
+
+/// Returns the texts of `parts` joined in order, with `separator` between
+/// each two.
+///
+/// Cost: O(n) in the total length.
+pub fn join(parts: List<Text>, separator: Text) -> Text {
+  case parts {
+    [] -> ""
+    [first, ..rest] -> loop (remaining, pieces) = (rest, [first]) {
+      case remaining {
+        [] -> break concat(pieces)
+        [part, ..more] -> (more, pieces |> List.push(separator) |> List.push(part))
+      }
+    }
+  }
+}
+
+/// Returns `text` repeated `count` times; empty when `count` is `0` or less.
+///
+/// Cost: O(n) in the result length.
+pub fn repeat(text: Text, count: Int) -> Text {
+  loop (remaining, pieces) = (count, []) {
+    case remaining {
+      n if n <= 0 -> break concat(pieces)
+      n -> (n - 1, List.push(pieces, text))
+    }
+  }
+}
+
+// 5. Queries and predicates.
+
+/// Returns `True` when `text` has no bytes.
+///
+/// Cost: O(1).
+pub fn is_empty(text: Text) -> Bool {
+  byte_length(text) == 0
+}
+
+/// Returns the number of UTF-8 bytes in `text`, the unit of every `Text`
+/// position.
+///
+/// Cost: O(1).
+pub native fn byte_length(text: Text) -> Int
+
+/// Returns `True` when `needle` occurs in `text`.
+///
+/// Defects when: `needle` is empty.
+/// Cost: O(n * m).
+pub native fn contains(text: Text, needle: Text) -> Bool
+
+/// Returns `True` when `text` begins with `prefix`; every text begins with
+/// the empty text.
+///
+/// Cost: O(m) in the prefix length.
+pub native fn starts_with(text: Text, prefix: Text) -> Bool
+
+/// Returns `True` when `text` ends with `suffix`; every text ends with the
+/// empty text.
+///
+/// Cost: O(m) in the suffix length.
+pub native fn ends_with(text: Text, suffix: Text) -> Bool
+
+// 6. Taking apart.
+
+/// Returns the parts of `text` between occurrences of `separator`, in order.
+/// Adjacent separators give an empty part, so the result always has one
+/// more part than `text` has separators.
+///
+/// Defects when: `separator` is empty.
+/// Cost: O(n * m).
+pub native fn split(text: Text, separator: Text) -> List<Text>
+
+/// Returns the part of `text` before the first `separator` and the part
+/// after it, or `None` when `separator` does not occur.
+///
+/// Defects when: `separator` is empty.
+/// Cost: O(n * m).
+pub fn split_once(text: Text, separator: Text) -> Option<(Text, Text)> {
+  let parts = split(text, separator)
+  case parts {
+    [first, _, ..] -> Some((first, join(List.drop(parts, 1), separator)))
+    _ -> None
+  }
+}
+
+/// Returns the lines of `text`, split on `\n` and `\r\n`. One final empty
+/// line is dropped, so `"a\nb\n"` has the lines `"a"` and `"b"`.
+///
+/// Cost: O(n).
+pub fn lines(text: Text) -> List<Text> {
+  let parts = case split(text, "\n") {
+    [..most, ""] -> most
+    all -> all
+  }
+  loop (remaining, done) = (parts, []) {
+    case remaining {
+      [] -> break done
+      [line, ..rest] -> (rest, List.push(done, strip_carriage_return(line)))
+    }
+  }
+}
+
+/// Returns `text` without `prefix`, or `None` when `text` does not begin
+/// with it.
+///
+/// Cost: O(n).
+pub fn strip_prefix(text: Text, prefix: Text) -> Option<Text> {
+  case starts_with(text, prefix) {
+    True -> Some(byte_slice(text, byte_length(prefix)..byte_length(text)))
+    False -> None
+  }
+}
+
+/// Returns `text` without `suffix`, or `None` when `text` does not end with
+/// it.
+///
+/// Cost: O(n).
+pub fn strip_suffix(text: Text, suffix: Text) -> Option<Text> {
+  case ends_with(text, suffix) {
+    True -> Some(byte_slice(text, 0..byte_length(text) - byte_length(suffix)))
+    False -> None
+  }
+}
+
+/// Returns the bytes of `text` in `range`, clamped to the text, so a range
+/// past either end never fails.
+///
+/// Defects when: a clamped bound falls inside a UTF-8 sequence.
+/// Cost: O(n) in the result length.
+pub native fn byte_slice(text: Text, range: Range) -> Text
+
+// 7. Changing.
+
+/// Returns `text` without leading and trailing Unicode `White_Space`.
+///
+/// Cost: O(n).
+pub fn trim(text: Text) -> Text {
+  trim_end(trim_start(text))
+}
+
+/// Returns `text` without leading Unicode `White_Space`.
+///
+/// Cost: O(n).
+pub native fn trim_start(text: Text) -> Text
+
+/// Returns `text` without trailing Unicode `White_Space`.
+///
+/// Cost: O(n).
+pub native fn trim_end(text: Text) -> Text
+
+/// Returns `text` with every occurrence of `old` replaced by `new`, scanning
+/// left to right without overlap.
+///
+/// Defects when: `old` is empty.
+/// Cost: O(n * m).
+pub native fn replace(text: Text, old: Text, new: Text) -> Text
+
+// 8. Private helpers.
+
+fn strip_carriage_return(line: Text) -> Text {
+  case strip_suffix(line, "\r") {
+    Some(stripped) -> stripped
+    None -> line
+  }
+}

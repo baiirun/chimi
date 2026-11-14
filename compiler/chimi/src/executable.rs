@@ -816,7 +816,10 @@ fn collect_reachable_program(
         ..ReachabilityState::default()
     };
     while let Some(symbol_id) = state.queue.pop_front() {
-        if !state.seen_declarations.insert(symbol_id) {
+        // A `native fn` has no body: a call to it is an intrinsic call.
+        if typed.resolved.native_operation(symbol_id).is_some()
+            || !state.seen_declarations.insert(symbol_id)
+        {
             continue;
         }
         let symbol = typed.resolved.symbol(symbol_id);
@@ -1209,11 +1212,14 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
             }
         }
     }
-    // A name aliased to its clause parameter, or an update temporary left
-    // unbound, binds nothing, so it takes no environment slot.
+    // A name aliased to its clause parameter, an update temporary left unbound,
+    // or a local of an unreachable function binds nothing, so it takes no
+    // environment slot: a frame holds only the locals reachable code binds.
+    let bound = bound_locals(&functions, &lowerer.nodes);
     for symbol in &mut symbols {
         if lowerer.clause_parameter_aliases.contains_key(&symbol.id)
             || lowerer.unbound_temporaries.contains(&symbol.id)
+            || (symbol.kind == CoreSymbolKind::Local && !bound.contains(&symbol.id))
         {
             symbol.kind = CoreSymbolKind::Other;
         }
@@ -2327,6 +2333,11 @@ fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
         .iter()
         .map(|symbol| {
             let kind = match symbol.kind {
+                ProjectSymbolKind::Function
+                    if typed.resolved.native_operation(symbol.id).is_some() =>
+                {
+                    CoreSymbolKind::Intrinsic
+                }
                 ProjectSymbolKind::Function => CoreSymbolKind::Function,
                 ProjectSymbolKind::Constant => CoreSymbolKind::Constant,
                 ProjectSymbolKind::ProcessName => CoreSymbolKind::ProcessName,
@@ -2378,13 +2389,80 @@ fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
                 name,
                 kind,
                 constructor,
-                standard: typed.resolved.standard_symbol(symbol.id),
+                standard: typed.resolved.standard_symbol(symbol.id).or_else(|| {
+                    typed
+                        .resolved
+                        .native_operation(symbol.id)
+                        .map(StandardSymbol::Function)
+                }),
             };
             (symbol, owner)
         })
         .collect::<Vec<_>>();
     number_constructors_across_types(&mut symbols);
     symbols.into_iter().map(|(symbol, _)| symbol).collect()
+}
+
+/// Every local symbol that lowered code binds: function and closure parameters,
+/// closure captures, block bindings, loop states, and pattern bindings.
+fn bound_locals(functions: &[CoreFunction], nodes: &[CoreNode]) -> HashSet<SymbolId> {
+    fn pattern_bindings(pattern: &CorePattern, bound: &mut HashSet<SymbolId>) {
+        match pattern {
+            CorePattern::Wildcard | CorePattern::Literal(_) => {}
+            CorePattern::Binding(symbol) => {
+                bound.insert(*symbol);
+            }
+            CorePattern::Constructor { fields, .. } | CorePattern::Tuple(fields) => {
+                fields.iter().for_each(|field| pattern_bindings(field, bound));
+            }
+            CorePattern::Outcome { value, .. } => pattern_bindings(value, bound),
+            CorePattern::List {
+                prefix,
+                rest,
+                suffix,
+            } => {
+                for element in prefix.iter().chain(rest.as_deref()).chain(suffix) {
+                    pattern_bindings(element, bound);
+                }
+            }
+            CorePattern::Alias { pattern, binding } => {
+                bound.insert(*binding);
+                pattern_bindings(pattern, bound);
+            }
+        }
+    }
+    let mut bound = functions
+        .iter()
+        .flat_map(|function| function.parameters.iter().copied())
+        .collect::<HashSet<_>>();
+    for node in nodes {
+        match &node.operation {
+            CoreOperation::Closure {
+                parameters,
+                captures,
+                ..
+            } => bound.extend(parameters.iter().chain(captures).copied()),
+            CoreOperation::Sequence(steps) => {
+                for step in steps {
+                    if let CoreStep::Bind { symbol, .. } = step {
+                        bound.insert(*symbol);
+                    }
+                }
+            }
+            CoreOperation::Loop { state, .. } => {
+                bound.insert(*state);
+            }
+            CoreOperation::Match { arms, .. } => {
+                for arm in arms {
+                    arm.patterns
+                        .iter()
+                        .for_each(|pattern| pattern_bindings(pattern, &mut bound));
+                }
+            }
+            _ => {}
+        }
+    }
+    bound
 }
 
 /// Turns each constructor's position within its type into its program-wide

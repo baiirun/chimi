@@ -857,13 +857,10 @@ static ChimiValue *list_get(const ChimiValue *list, uint32_t index) {
   index += list->as.list.start;
   return vector_leaf(list->as.list.vector, index)->slots[index & LIST_MASK];
 }
-/* list_push is reached from Chimi once the standard-library mechanism (G1)
-   exposes it; until then only tests call it. */
-
 /* Returns a new list with `item` appended; `list` is unchanged. A window that
    ends before its vector does writes slot `end` into a path copy instead, so
    the shared vector every other window sees is untouched. */
-__attribute__((unused)) static ChimiValue *list_push(const ChimiValue *list, ChimiValue *item) {
+static ChimiValue *list_push(const ChimiValue *list, ChimiValue *item) {
   ListVector vector = list->as.list.vector;
   uint32_t end = list->as.list.start + list->as.list.length;
   vector = end == vector.length ? vector_push(vector, item) : vector_set(vector, end, item);
@@ -2777,6 +2774,166 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
                             uint32_t argument_count, uint64_t span, uint32_t call_node,
                             ChimiEnvironment *call_environment);
 
+static ChimiControl *intrinsic_shape_defect(uint32_t call_node);
+
+/* Unicode White_Space, the characters Text.trim_start and Text.trim_end remove; the
+   interpreter's core_operations::is_white_space keeps the same table. */
+static bool is_white_space(uint32_t code) {
+  return (code >= 0x9 && code <= 0xd) || code == 0x20 || code == 0x85 || code == 0xa0 ||
+         code == 0x1680 || (code >= 0x2000 && code <= 0x200a) || code == 0x2028 ||
+         code == 0x2029 || code == 0x202f || code == 0x205f || code == 0x3000;
+}
+/* Decodes the valid UTF-8 sequence at `text`, storing its length in `length`. */
+static uint32_t utf8_decode(const unsigned char *text, size_t *length) {
+  if (text[0] < 0x80) { *length = 1; return text[0]; }
+  if (text[0] < 0xe0) { *length = 2; return ((uint32_t)(text[0] & 0x1f) << 6) | (text[1] & 0x3f); }
+  if (text[0] < 0xf0) {
+    *length = 3;
+    return ((uint32_t)(text[0] & 0x0f) << 12) | ((uint32_t)(text[1] & 0x3f) << 6) | (text[2] & 0x3f);
+  }
+  *length = 4;
+  return ((uint32_t)(text[0] & 0x07) << 18) | ((uint32_t)(text[1] & 0x3f) << 12) |
+         ((uint32_t)(text[2] & 0x3f) << 6) | (text[3] & 0x3f);
+}
+static bool utf8_boundary(const char *text, size_t length, size_t offset) {
+  return offset == length || ((unsigned char)text[offset] & 0xc0) != 0x80;
+}
+/* Clamps [start, end) to [0, length]; a reversed range clamps to empty. */
+static void clamp_range(int64_t start, int64_t end, size_t length, size_t *from, size_t *to) {
+  size_t low = start <= 0 ? 0 : (uint64_t)start > length ? length : (size_t)start;
+  size_t high = end <= 0 ? 0 : (uint64_t)end > length ? length : (size_t)end;
+  *from = low; *to = high < low ? low : high;
+}
+static ChimiValue *text_from_bytes(const char *bytes, size_t length) {
+  char *raw = allocate(length + 1, 1);
+  memcpy(raw, bytes, length);
+  ChimiValue *v = new_value(VALUE_TEXT); v->as.text = raw; return v;
+}
+
+/* Debug.crash, Option.unwrap_or_fail, and the native cores of std/text and std/list.
+   Defect messages match the interpreter's (execution/core_operations.rs). */
+static ChimiControl *invoke_core_operation(uint32_t intrinsic, ChimiValue **arguments,
+                                           uint32_t argument_count, uint32_t call_node) {
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_DEBUG_CRASH:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
+      return defect(copy_text(arguments[0]->as.text), call_node);
+    case CHIMI_INTRINSIC_OPTION_UNWRAP_OR_FAIL:
+      if (argument_count != 2 || arguments[0]->kind != VALUE_CONSTRUCTED) break;
+      if (arguments[0]->as.constructed.length == 1) return success(arguments[0]->as.constructed.fields[0].value);
+      return failure(arguments[1]);
+    case CHIMI_INTRINSIC_TEXT_CONCAT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST) break;
+      TextBuffer buffer = {0};
+      for (uint32_t i = 0; i < list_length(arguments[0]); ++i) {
+        ChimiValue *part = list_get(arguments[0], i);
+        if (part->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
+        buffer_bytes(&buffer, part->as.text, strlen(part->as.text));
+      }
+      return success(buffer.data ? text_from_bytes(buffer.data, buffer.length) : text_value(""));
+    }
+    case CHIMI_INTRINSIC_TEXT_BYTE_LENGTH:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
+      return success(integer_value((int64_t)strlen(arguments[0]->as.text)));
+    case CHIMI_INTRINSIC_TEXT_BYTE_SLICE: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_RANGE) break;
+      const char *text = arguments[0]->as.text; size_t length = strlen(text), from, to;
+      clamp_range(arguments[1]->as.range.start, arguments[1]->as.range.end, length, &from, &to);
+      if (!utf8_boundary(text, length, from))
+        return defect(numeric_message("Text.byte_slice: bound %zu falls inside a UTF-8 sequence", from), call_node);
+      if (!utf8_boundary(text, length, to))
+        return defect(numeric_message("Text.byte_slice: bound %zu falls inside a UTF-8 sequence", to), call_node);
+      return success(text_from_bytes(text + from, to - from));
+    }
+    case CHIMI_INTRINSIC_TEXT_CONTAINS:
+      if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_TEXT) break;
+      if (!arguments[1]->as.text[0]) return defect("Text.contains: needle must not be empty", call_node);
+      return success(boolean_value(strstr(arguments[0]->as.text, arguments[1]->as.text) != NULL));
+    case CHIMI_INTRINSIC_TEXT_STARTS_WITH: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_TEXT) break;
+      size_t prefix = strlen(arguments[1]->as.text);
+      return success(boolean_value(strncmp(arguments[0]->as.text, arguments[1]->as.text, prefix) == 0));
+    }
+    case CHIMI_INTRINSIC_TEXT_ENDS_WITH: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_TEXT) break;
+      size_t length = strlen(arguments[0]->as.text), suffix = strlen(arguments[1]->as.text);
+      return success(boolean_value(suffix <= length &&
+                                   memcmp(arguments[0]->as.text + length - suffix, arguments[1]->as.text, suffix) == 0));
+    }
+    case CHIMI_INTRINSIC_TEXT_SPLIT: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_TEXT) break;
+      const char *text = arguments[0]->as.text, *separator = arguments[1]->as.text;
+      size_t width = strlen(separator);
+      if (!width) return defect("Text.split: separator must not be empty", call_node);
+      ChimiValue *parts = list_value((ListVector){NULL, NULL, 0}, 0, 0);
+      for (const char *found; (found = strstr(text, separator)); text = found + width)
+        parts = list_push(parts, text_from_bytes(text, (size_t)(found - text)));
+      return success(list_push(parts, text_value(text)));
+    }
+    case CHIMI_INTRINSIC_TEXT_REPLACE: {
+      if (argument_count != 3 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_TEXT ||
+          arguments[2]->kind != VALUE_TEXT) break;
+      const char *text = arguments[0]->as.text, *old = arguments[1]->as.text, *new_text = arguments[2]->as.text;
+      size_t width = strlen(old), replacement = strlen(new_text);
+      if (!width) return defect("Text.replace: pattern must not be empty", call_node);
+      TextBuffer buffer = {0};
+      for (const char *found; (found = strstr(text, old)); text = found + width) {
+        buffer_bytes(&buffer, text, (size_t)(found - text));
+        buffer_bytes(&buffer, new_text, replacement);
+      }
+      buffer_bytes(&buffer, text, strlen(text));
+      return success(text_from_bytes(buffer.data, buffer.length));
+    }
+    case CHIMI_INTRINSIC_TEXT_TRIM_START: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
+      const unsigned char *text = (const unsigned char *)arguments[0]->as.text;
+      size_t width;
+      while (*text && is_white_space(utf8_decode(text, &width))) text += width;
+      return success(text_value((const char *)text));
+    }
+    case CHIMI_INTRINSIC_TEXT_TRIM_END: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
+      const char *text = arguments[0]->as.text;
+      size_t end = strlen(text), width;
+      while (end > 0) {
+        size_t start = end - 1;
+        while (start > 0 && !utf8_boundary(text, end, start)) --start;
+        if (!is_white_space(utf8_decode((const unsigned char *)text + start, &width))) break;
+        end = start;
+      }
+      return success(text_from_bytes(text, end));
+    }
+    case CHIMI_INTRINSIC_LIST_GET: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_LIST || arguments[1]->kind != VALUE_INTEGER) break;
+      int64_t index = arguments[1]->as.integer;
+      if (index < 0 || (uint64_t)index >= list_length(arguments[0]))
+        return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
+      ChimiValue *fields[] = {list_get(arguments[0], (uint32_t)index)};
+      return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
+    }
+    case CHIMI_INTRINSIC_LIST_PUSH:
+      if (argument_count != 2 || arguments[0]->kind != VALUE_LIST) break;
+      return success(list_push(arguments[0], arguments[1]));
+    case CHIMI_INTRINSIC_LIST_SLICE: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_LIST || arguments[1]->kind != VALUE_RANGE) break;
+      size_t from, to;
+      clamp_range(arguments[1]->as.range.start, arguments[1]->as.range.end, list_length(arguments[0]), &from, &to);
+      return success(list_slice(arguments[0], (uint32_t)from, (uint32_t)to));
+    }
+    case CHIMI_INTRINSIC_LIST_SET: {
+      if (argument_count != 3 || arguments[0]->kind != VALUE_LIST || arguments[1]->kind != VALUE_INTEGER) break;
+      ChimiValue *list = arguments[0];
+      int64_t index = arguments[1]->as.integer;
+      if (index < 0 || (uint64_t)index >= list_length(list))
+        return defect(numeric_message("List.set: index must be in 0..%" PRIu32 ", got %" PRId64,
+                                      list_length(list), index), call_node);
+      ListVector vector = vector_set(list->as.list.vector, list->as.list.start + (uint32_t)index, arguments[2]);
+      return success(list_value(vector, list->as.list.start, list_length(list)));
+    }
+  }
+  return intrinsic_shape_defect(call_node);
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
@@ -4162,6 +4319,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
     return invoke_process(runtime, intrinsic, arguments, argument_count, call_node);
+  if (intrinsic >= CHIMI_INTRINSIC_DEBUG_CRASH && intrinsic <= CHIMI_INTRINSIC_LIST_SET)
+    return invoke_core_operation(intrinsic, arguments, argument_count, call_node);
   switch (intrinsic) {
     case CHIMI_INTRINSIC_IO_PATH:
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT)

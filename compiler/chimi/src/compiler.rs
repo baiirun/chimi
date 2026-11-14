@@ -638,7 +638,8 @@ impl Compiler {
     }
 }
 
-pub(crate) fn resolve_project_sources(sources: Vec<ProjectSource>) -> ResolvedProject {
+pub(crate) fn resolve_project_sources(mut sources: Vec<ProjectSource>) -> ResolvedProject {
+    crate::standard_tree::add_imported_modules(&mut sources);
     let semantic = semantic::lower_project(
         sources
             .into_iter()
@@ -988,7 +989,7 @@ mod tests {
         assert_eq!(first.references(), second.references());
         assert_eq!(
             first.dependency_order(),
-            ["modules/money", "modules/use_money"]
+            ["modules/money", "std/int", "modules/use_money"]
         );
         assert!(first.references().iter().any(|reference| {
             reference.text() == "from_cents"
@@ -3901,6 +3902,7 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
             concat!(
                 "import std/json as Json\n",
                 "import std/json.{{Value}}\n",
+                "import std/text as Text\n",
                 "fn ones(doublings: Int) -> Text {{\n",
                 "  loop state = {{ text: \"1\", left: doublings }} {{\n",
                 "    case state.left {{\n",
@@ -4200,6 +4202,7 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
             concat!(
                 "import std/json as Json\n",
                 "import std/json.{{Value}}\n",
+                "import std/list as List\n",
                 "\n",
                 "fn summarize(values: List<Value>) -> Text {{\n",
                 "  case List.first(values) {{\n",

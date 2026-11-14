@@ -73,6 +73,9 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/int.divide_checked", 2, StandardFunction::IntDivideChecked),
     pure("std/int.remainder_checked", 2, StandardFunction::IntRemainderChecked),
     pure("std/int.modulo", 2, StandardFunction::IntModulo),
+    // Native rather than `concat([text, other])`: appending in a loop is the
+    // common way to build text, and the list would be one allocation per step.
+    pure("std/text.append", 2, StandardFunction::TextAppend),
     pure("std/text.concat", 1, StandardFunction::TextConcat),
     pure("std/text.byte_length", 1, StandardFunction::TextByteLength),
     pure("std/text.byte_slice", 2, StandardFunction::TextByteSlice),
@@ -134,16 +137,4 @@ pub(crate) fn runtime_known(id: &str) -> Option<RuntimeIdentity> {
         .iter()
         .find(|declaration| declaration.id == id)
         .map(|declaration| declaration.identity)
-}
-
-/// Whether a loaded module provides the runtime-known declarations of this
-/// standard type, so the compiler must not synthesize a built-in one.
-pub(crate) fn declared_in_source(kind: StandardType, module_path: &str) -> bool {
-    RUNTIME_KNOWN.iter().any(|declaration| {
-        declaration.identity == RuntimeIdentity::Type(kind)
-            && declaration
-                .id
-                .split_once('.')
-                .is_some_and(|(module, _)| module == module_path)
-    })
 }

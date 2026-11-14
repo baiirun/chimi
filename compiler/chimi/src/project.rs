@@ -4,7 +4,6 @@ use crate::ids::{FileId, TextRange};
 use crate::json::write_json_string;
 use crate::semantic::{self, ImportBinding};
 use crate::source::SourceSnapshot;
-use crate::standard::StandardModule;
 use std::collections::HashMap;
 use std::fmt::{self, Write};
 use std::io;
@@ -23,11 +22,11 @@ impl LoadedProject {
             path: path.to_owned(),
             source,
         })?;
-        let module = ProjectSource::new("main", source)
+        let module = ProjectSource::parsed("main", source)
             .expect("the reserved single-file module path is valid");
-        Ok(Self {
-            modules: vec![module],
-        })
+        let mut modules = vec![module];
+        crate::standard_tree::add_imported_modules(&mut modules);
+        Ok(Self { modules })
     }
 
     pub fn load(
@@ -68,9 +67,9 @@ impl LoadedProject {
             modules: Vec::new(),
         };
         loader.load_module(&entry_module)?;
-        Ok(Self {
-            modules: loader.modules,
-        })
+        let mut modules = loader.modules;
+        crate::standard_tree::add_imported_modules(&mut modules);
+        Ok(Self { modules })
     }
 
     pub fn sources(&self) -> Vec<ProjectSource> {
@@ -386,11 +385,10 @@ impl Loader<'_> {
         self.states
             .insert(module_path.to_owned(), LoadState::Loading);
         self.stack.push(module_path.to_owned());
+        // `std/` imports come from the compiler's embedded tree, never from the
+        // workspace; `add_imported_modules` adds them once the workspace is loaded.
         for import in imports {
-            if !StandardModule::ALL
-                .iter()
-                .any(|module| module.path() == import)
-            {
+            if !import.starts_with("std/") {
                 self.load_module(&import)?;
             }
         }

@@ -143,6 +143,7 @@ impl CompilerSession {
     }
 
     pub fn analyze_project(&mut self, mut sources: Vec<ProjectSource>) -> IncrementalTypeReport {
+        crate::standard_tree::add_imported_modules(&mut sources);
         if has_duplicate_module_paths(&sources) {
             return self.analyze_uncached(sources);
         }

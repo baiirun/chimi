@@ -512,7 +512,11 @@ pub(crate) struct ValueParameter {
 pub(crate) struct FunctionSignature {
     pub(crate) parameters: Vec<ValueParameter>,
     pub(crate) success: Option<TypeUse>,
+    /// The declared failure row; only a `native fn` header writes one.
+    pub(crate) failures: Option<TypeUse>,
     pub(crate) requirements: RequirementRowUse,
+    /// `native fn`: no body; the operation registry supplies the implementation.
+    pub(crate) native: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1236,7 +1240,8 @@ impl ProjectLowerer {
             .collect();
         let function =
             (kind == ModuleDeclarationKind::Function).then(|| self.lower_function_signature(node));
-        let body = if kind == ModuleDeclarationKind::Function {
+        let native = function.as_ref().is_some_and(|function| function.native);
+        let body = if kind == ModuleDeclarationKind::Function && !native {
             direct_child(node, NodeKind::BlockExpression).map(|body| self.lower_expression(&body))
         } else {
             None
@@ -1657,9 +1662,39 @@ impl ProjectLowerer {
             })
             .unwrap_or_default();
         let contract = direct_child(node, NodeKind::ImplementationContract);
-        let success = contract
+        let native = node.child_tokens().iter().any(|token| {
+            token.kind() == TokenKind::Identifier && token.text() == "native"
+        });
+        let has_success = contract.as_ref().is_some_and(|contract| {
+            contract
+                .child_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::Arrow)
+        });
+        let has_failures = contract.as_ref().is_some_and(|contract| {
+            contract
+                .child_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::Errors)
+        });
+        let mut types = contract
             .as_ref()
-            .and_then(|contract| direct_child(contract, NodeKind::Type))
+            .map(|contract| {
+                contract
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|child| child.kind() == NodeKind::Type)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+            .into_iter();
+        let success = has_success
+            .then(|| types.next())
+            .flatten()
+            .map(|type_node| self.lower_type(&type_node));
+        let failures = has_failures
+            .then(|| types.next())
+            .flatten()
             .map(|type_node| self.lower_type(&type_node));
         let requirements = contract
             .as_ref()
@@ -1669,7 +1704,9 @@ impl ProjectLowerer {
         FunctionSignature {
             parameters,
             success,
+            failures,
             requirements,
+            native,
         }
     }
 

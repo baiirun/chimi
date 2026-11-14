@@ -1,0 +1,511 @@
+/// Operations on `List<T>`, an immutable sequence with zero-based `Int`
+/// indexes. Every function is eager and returns a new list. Functions that
+/// take a callback call it in element order, in the calling task, and stop
+/// at its first failure.
+
+import std/debug as Debug
+import std/order.{Ordering}
+
+// 5. Queries and predicates.
+
+/// Returns the number of elements in `list`.
+///
+/// Cost: O(1).
+pub native fn length<T>(list: List<T>) -> Int
+
+/// Returns `True` when `list` has no elements.
+///
+/// Cost: O(1).
+pub fn is_empty<T>(list: List<T>) -> Bool {
+  length(list) == 0
+}
+
+/// Returns the element at `index`, or `None` when `index` is negative or not
+/// less than the length.
+///
+/// Cost: O(log n).
+pub native fn get<T>(list: List<T>, index: Int) -> Option<T>
+
+/// Returns the first element of `list`, or `None` when it is empty.
+///
+/// Cost: O(1).
+pub fn first<T>(list: List<T>) -> Option<T> {
+  get(list, 0)
+}
+
+/// Returns the last element of `list`, or `None` when it is empty.
+///
+/// Cost: O(log n).
+pub fn last<T>(list: List<T>) -> Option<T> {
+  get(list, length(list) - 1)
+}
+
+/// Returns `True` when an element of `list` equals `item`.
+///
+/// Cost: O(n).
+pub fn contains<T>(list: List<T>, item: T) -> Bool {
+  any(list, fn(element) { element == item })
+}
+
+/// Returns the smallest element of `list` in structural order, the first of
+/// equal ones, or `None` when it is empty.
+///
+/// Cost: O(n).
+pub fn min<T>(list: List<T>) -> Option<T> {
+  case list {
+    [] -> None
+    [first, ..rest] -> Some(reduce(rest, first, fn(smallest, item) {
+      case item < smallest {
+        True -> item
+        False -> smallest
+      }
+    }))
+  }
+}
+
+/// Returns the largest element of `list` in structural order, the first of
+/// equal ones, or `None` when it is empty.
+///
+/// Cost: O(n).
+pub fn max<T>(list: List<T>) -> Option<T> {
+  case list {
+    [] -> None
+    [first, ..rest] -> Some(reduce(rest, first, fn(largest, item) {
+      case item > largest {
+        True -> item
+        False -> largest
+      }
+    }))
+  }
+}
+
+// 4. Building.
+
+/// Returns a list of `count` copies of `item`; empty when `count` is `0` or
+/// less.
+///
+/// Cost: O(n).
+pub fn repeat<T>(item: T, count: Int) -> List<T> {
+  loop (remaining, done) = (count, []) {
+    case remaining {
+      n if n <= 0 -> break done
+      n -> (n - 1, push(done, item))
+    }
+  }
+}
+
+/// Returns `list` with `item` added at the end.
+///
+/// Cost: O(1) amortized.
+pub native fn push<T>(list: List<T>, item: T) -> List<T>
+
+/// Returns the elements of `list` followed by the elements of `other`.
+///
+/// Cost: O(m) in the length of `other`.
+pub fn append<T>(list: List<T>, other: List<T>) -> List<T> {
+  reduce(other, list, push)
+}
+
+/// Returns the elements of every list in `lists`, in order.
+///
+/// Cost: O(n) in the total length.
+pub fn concat<T>(lists: List<List<T>>) -> List<T> {
+  reduce(lists, [], append)
+}
+
+/// Returns `list` with the element at `index` replaced by `item`.
+///
+/// Defects when: `index` is outside `0..List.length(list)`.
+/// Cost: O(log n).
+pub native fn set<T>(list: List<T>, index: Int, item: T) -> List<T>
+
+/// Returns the elements of `list` in `range`, clamped to the list, so a range
+/// past either end never fails.
+///
+/// Cost: O(1) amortized; a short window of a long list is copied.
+pub native fn slice<T>(list: List<T>, range: Range) -> List<T>
+
+/// Returns the first `count` elements of `list`, or all of them when it is
+/// shorter.
+///
+/// Cost: O(1) amortized.
+pub fn take<T>(list: List<T>, count: Int) -> List<T> {
+  slice(list, 0..count)
+}
+
+/// Returns `list` without its first `count` elements.
+///
+/// Cost: O(1) amortized.
+pub fn drop<T>(list: List<T>, count: Int) -> List<T> {
+  slice(list, count..length(list))
+}
+
+/// Returns the elements of `list` in reverse order.
+///
+/// Cost: O(n).
+pub fn reverse<T>(list: List<T>) -> List<T> {
+  loop (remaining, done) = (list, []) {
+    case remaining {
+      [] -> break done
+      [..rest, item] -> (rest, push(done, item))
+    }
+  }
+}
+
+/// Returns each element of `list` paired with its index.
+///
+/// Cost: O(n).
+pub fn enumerate<T>(list: List<T>) -> List<(Int, T)> {
+  loop (remaining, done) = (list, []) {
+    case remaining {
+      [] -> break done
+      [item, ..rest] -> (rest, push(done, (length(done), item)))
+    }
+  }
+}
+
+/// Returns the elements of `list` and `other` paired by index, stopping at
+/// the end of the shorter one.
+///
+/// Cost: O(n) in the shorter length.
+pub fn zip<A, B>(list: List<A>, other: List<B>) -> List<(A, B)> {
+  loop (left, right, done) = (list, other, []) {
+    case (left, right) {
+      ([a, ..left_rest], [b, ..right_rest]) -> (left_rest, right_rest, push(done, (a, b)))
+      _ -> break done
+    }
+  }
+}
+
+/// Returns `list` cut into lists of `size` elements; the last one is shorter
+/// when the length is not a multiple of `size`.
+///
+/// Defects when: `size` is less than `1`.
+/// Cost: O(n).
+pub fn chunks<T>(list: List<T>, size: Int) -> List<List<T>> {
+  case size < 1 {
+    True -> Debug.crash("List.chunks: size must be positive, got ${size}")
+    False -> loop (remaining, done) = (list, []) {
+      case remaining {
+        [] -> break done
+        _ -> (drop(remaining, size), push(done, take(remaining, size)))
+      }
+    }
+  }
+}
+
+/// Returns `list` without repeated elements, keeping the first of each.
+///
+/// Cost: O(n²), because elements are only equatable.
+pub fn unique<T>(list: List<T>) -> List<T> {
+  reduce(list, [], fn(kept, item) {
+    case contains(kept, item) {
+      True -> kept
+      False -> push(kept, item)
+    }
+  })
+}
+
+// 6. Transformations, with callbacks last.
+
+/// Returns `change` applied to each element of `list`.
+///
+/// Calls: `change` once per element, in order; stops at its first failure.
+/// Cost: O(n).
+pub fn map<T, U, E, R>(list: List<T>, change: fn(T) -> U errors E needs R) -> List<U> {
+  reduce(list, [], fn(done, item) { push(done, change(item)) })
+}
+
+/// Returns the elements of `list` for which `keep` returns `True`.
+///
+/// Calls: `keep` once per element, in order; stops at its first failure.
+/// Cost: O(n).
+pub fn filter<T, E, R>(list: List<T>, keep: fn(T) -> Bool errors E needs R) -> List<T> {
+  reduce(list, [], fn(done, item) {
+    let kept_item = keep(item)
+    case kept_item {
+      True -> push(done, item)
+      False -> done
+    }
+  })
+}
+
+/// Returns the values `change` returns as `Some`, in order.
+///
+/// Calls: `change` once per element, in order; stops at its first failure.
+/// Cost: O(n).
+pub fn filter_map<T, U, E, R>(
+  list: List<T>,
+  change: fn(T) -> Option<U> errors E needs R,
+) -> List<U> {
+  reduce(list, [], fn(done, item) {
+    let changed = change(item)
+    case changed {
+      Some(value) -> push(done, value)
+      None -> done
+    }
+  })
+}
+
+/// Returns the elements of the lists `change` returns, in order.
+///
+/// Calls: `change` once per element, in order; stops at its first failure.
+/// Cost: O(n) in the result length.
+pub fn flat_map<T, U, E, R>(
+  list: List<T>,
+  change: fn(T) -> List<U> errors E needs R,
+) -> List<U> {
+  reduce(list, [], fn(done, item) { append(done, change(item)) })
+}
+
+/// Combines the elements of `list` into one value: `step` receives the state
+/// so far, starting at `initial`, and each element, and returns the next
+/// state.
+///
+/// Calls: `step` once per element, in order; stops at its first failure.
+/// Cost: O(n).
+pub fn reduce<T, S, E, R>(list: List<T>, initial: S, step: fn(S, T) -> S errors E needs R) -> S {
+  loop (remaining, state) = (list, initial) {
+    case remaining {
+      [] -> break state
+      [item, ..rest] -> (rest, step(state, item))
+    }
+  }
+}
+
+/// Calls `action` with each element of `list`, for its effect.
+///
+/// Calls: `action` once per element, in order; stops at its first failure.
+/// Cost: O(n).
+pub fn each<T, E, R>(list: List<T>, action: fn(T) -> Void errors E needs R) -> Void {
+  reduce(list, Void, fn(_done, item) { action(item) })
+}
+
+/// Returns the first element for which `matches` returns `True`, or `None`.
+///
+/// Calls: `matches` once per element, in order, until it returns `True`;
+/// stops at its first failure.
+/// Cost: O(n).
+pub fn find<T, E, R>(list: List<T>, matches: fn(T) -> Bool errors E needs R) -> Option<T> {
+  find_map(list, fn(item) {
+    let matched = matches(item)
+    case matched {
+      True -> Some(item)
+      False -> None
+    }
+  })
+}
+
+/// Returns the first value `change` returns as `Some`, or `None`.
+///
+/// Calls: `change` once per element, in order, until it returns `Some`;
+/// stops at its first failure.
+/// Cost: O(n).
+pub fn find_map<T, U, E, R>(
+  list: List<T>,
+  change: fn(T) -> Option<U> errors E needs R,
+) -> Option<U> {
+  loop remaining = list {
+    case remaining {
+      [] -> break None
+      [item, ..rest] -> {
+        let changed = change(item)
+        case changed {
+          Some(value) -> break Some(value)
+          None -> rest
+        }
+      }
+    }
+  }
+}
+
+/// Returns the index of the first element for which `matches` returns
+/// `True`, or `None`.
+///
+/// Calls: `matches` once per element, in order, until it returns `True`;
+/// stops at its first failure.
+/// Cost: O(n).
+pub fn find_index<T, E, R>(list: List<T>, matches: fn(T) -> Bool errors E needs R) -> Option<Int> {
+  loop (remaining, index) = (list, 0) {
+    case remaining {
+      [] -> break None
+      [item, ..rest] -> {
+        let matched = matches(item)
+        case matched {
+          True -> break Some(index)
+          False -> (rest, index + 1)
+        }
+      }
+    }
+  }
+}
+
+/// Returns `True` when `matches` returns `True` for some element; `False`
+/// for an empty list.
+///
+/// Calls: `matches` once per element, in order, until it returns `True`;
+/// stops at its first failure.
+/// Cost: O(n).
+pub fn any<T, E, R>(list: List<T>, matches: fn(T) -> Bool errors E needs R) -> Bool {
+  let found = find_index(list, matches)
+  case found {
+    Some(_) -> True
+    None -> False
+  }
+}
+
+/// Returns `True` when `matches` returns `True` for every element; `True`
+/// for an empty list.
+///
+/// Calls: `matches` once per element, in order, until it returns `False`;
+/// stops at its first failure.
+/// Cost: O(n).
+pub fn all<T, E, R>(list: List<T>, matches: fn(T) -> Bool errors E needs R) -> Bool {
+  let found = find_index(list, fn(item) { not matches(item) })
+  case found {
+    Some(_) -> False
+    None -> True
+  }
+}
+
+/// Returns the number of elements for which `matches` returns `True`.
+///
+/// Calls: `matches` once per element, in order; stops at its first failure.
+/// Cost: O(n).
+pub fn count<T, E, R>(list: List<T>, matches: fn(T) -> Bool errors E needs R) -> Int {
+  reduce(list, 0, fn(total, item) {
+    let matched = matches(item)
+    case matched {
+      True -> total + 1
+      False -> total
+    }
+  })
+}
+
+/// Returns the elements for which `keep` returns `True`, then the rest, each
+/// in order.
+///
+/// Calls: `keep` once per element, in order; stops at its first failure.
+/// Cost: O(n).
+pub fn partition<T, E, R>(
+  list: List<T>,
+  keep: fn(T) -> Bool errors E needs R,
+) -> (List<T>, List<T>) {
+  loop (remaining, kept, rejected) = (list, [], []) {
+    case remaining {
+      [] -> break (kept, rejected)
+      [item, ..rest] -> {
+        let kept_item = keep(item)
+        case kept_item {
+          True -> (rest, push(kept, item), rejected)
+          False -> (rest, kept, push(rejected, item))
+        }
+      }
+    }
+  }
+}
+
+// 6. Ordering.
+
+/// Returns the elements of `list` in ascending structural order. The sort is
+/// stable: equal elements keep their order.
+///
+/// Cost: O(n log n).
+pub fn sort<T>(list: List<T>) -> List<T> {
+  sort_by(list, fn(left, right) {
+    case left < right {
+      True -> Ordering.Less
+      False -> case left > right {
+        True -> Ordering.Greater
+        False -> Ordering.Equal
+      }
+    }
+  })
+}
+
+/// Returns the elements of `list` ordered by `compare`. The sort is stable:
+/// elements that compare `Equal` keep their order.
+///
+/// Calls: `compare` an unspecified number of times in an unspecified order;
+/// stops at its first failure.
+/// Cost: O(n log n) calls of `compare`.
+pub fn sort_by<T, E, R>(
+  list: List<T>,
+  compare: fn(T, T) -> Ordering errors E needs R,
+) -> List<T> {
+  case length(list) < 2 {
+    True -> list
+    False -> {
+      let middle = length(list) / 2
+      merge(sort_by(take(list, middle), compare), sort_by(drop(list, middle), compare), compare)
+    }
+  }
+}
+
+/// Returns the first smallest element of `list` under `compare`, or `None`
+/// when it is empty.
+///
+/// Calls: `compare` an unspecified number of times in an unspecified order;
+/// stops at its first failure.
+/// Cost: O(n) calls of `compare`.
+pub fn min_by<T, E, R>(
+  list: List<T>,
+  compare: fn(T, T) -> Ordering errors E needs R,
+) -> Option<T> {
+  case list {
+    [] -> None
+    [first, ..rest] -> Some(reduce(rest, first, fn(smallest, item) {
+      let order = compare(item, smallest)
+      case order {
+        Ordering.Less -> item
+        _ -> smallest
+      }
+    }))
+  }
+}
+
+/// Returns the first largest element of `list` under `compare`, or `None`
+/// when it is empty.
+///
+/// Calls: `compare` an unspecified number of times in an unspecified order;
+/// stops at its first failure.
+/// Cost: O(n) calls of `compare`.
+pub fn max_by<T, E, R>(
+  list: List<T>,
+  compare: fn(T, T) -> Ordering errors E needs R,
+) -> Option<T> {
+  case list {
+    [] -> None
+    [first, ..rest] -> Some(reduce(rest, first, fn(largest, item) {
+      let order = compare(item, largest)
+      case order {
+        Ordering.Greater -> item
+        _ -> largest
+      }
+    }))
+  }
+}
+
+// 8. Private helpers.
+
+/// Merges two sorted lists, taking from `left` unless `right` is strictly
+/// smaller, which keeps the sort stable.
+fn merge<T, E, R>(
+  left: List<T>,
+  right: List<T>,
+  compare: fn(T, T) -> Ordering errors E needs R,
+) -> List<T> {
+  loop (lefts, rights, done) = (left, right, []) {
+    case (lefts, rights) {
+      ([], _) -> break append(done, rights)
+      (_, []) -> break append(done, lefts)
+      ([a, ..left_rest], [b, ..right_rest]) -> {
+        let order = compare(b, a)
+        case order {
+          Ordering.Less -> (lefts, right_rest, push(done, b))
+          _ -> (left_rest, rights, push(done, a))
+        }
+      }
+    }
+  }
+}

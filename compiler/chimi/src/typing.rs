@@ -2149,6 +2149,17 @@ impl ProjectTypeChecker {
                 },
             );
         }
+        let never = self.builtin_type("Never");
+        let crash = self.standard_function_symbol(StandardFunction::DebugCrash);
+        self.contracts.insert(
+            crash,
+            CallableContract {
+                inputs: vec![text],
+                success: never,
+                failures: pure.0,
+                needs: pure.1,
+            },
+        );
         let list_length = self.standard_function_symbol(StandardFunction::ListLength);
         let any_list_value = self.standard_generic_type(StandardGeneric::ListLengthValue);
         let any_list = self.builtin_type_with_arguments("List", vec![any_list_value]);
@@ -2882,7 +2893,10 @@ impl ProjectTypeChecker {
                         Some(variant.semantic_id),
                         ProjectSymbolKind::EnumConstructor,
                         &variant.name.text,
-                    ) {
+                    ) && self.resolved.standard_symbol(constructor).is_none()
+                    {
+                        // A runtime-known variant keeps its registry contract, which
+                        // every standard signature shares.
                         let contract = CallableContract {
                             inputs,
                             success: declaration_type,
@@ -3314,11 +3328,17 @@ impl ProjectTypeChecker {
             Some(type_use) => self.lower_value_type(module_id, type_use, generics),
             None => self.fresh_inference_type(),
         };
+        let failures = signature
+            .failures
+            .as_ref()
+            .map_or(FailureRowId::new(0), |failures| {
+                self.lower_failure_row(module_id, failures, generics)
+            });
         let needs = self.lower_needs_row(module_id, &signature.requirements, generics);
         CallableContract {
             inputs,
             success,
-            failures: FailureRowId::new(0),
+            failures,
             needs,
         }
     }
@@ -9453,10 +9473,16 @@ impl ProjectTypeChecker {
             exclusions: Vec::new(),
         })];
         for parameter in row.parameters {
+            // A failure set bound through a value argument, as `error: E` binds
+            // it in `Option.unwrap_or_fail`, raises that value's type.
             let replacement = substitution
                 .failures
                 .get(&parameter)
                 .copied()
+                .or_else(|| {
+                    let value = substitution.values.get(&parameter).copied()?;
+                    self.failure_row_for_type(value)
+                })
                 .unwrap_or_else(|| {
                     self.intern_failure_row(FailureRow {
                         variants: Vec::new(),

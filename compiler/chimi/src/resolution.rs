@@ -12,6 +12,8 @@ use crate::standard::{
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+mod standard_source;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SymbolKind {
     Struct,
@@ -242,9 +244,17 @@ pub(crate) struct ResolvedProject {
     standard_generics: HashMap<StandardGeneric, SymbolId>,
     standard_callable_parameters: HashMap<SymbolId, Vec<SymbolId>>,
     break_targets: HashMap<(ModuleId, SemanticId), SemanticId>,
+    /// Each `native fn` of the standard tree and the intrinsic its registry
+    /// operation runs.
+    native_operations: HashMap<SymbolId, StandardFunction>,
 }
 
 impl ResolvedProject {
+    /// The intrinsic a `native fn` symbol runs; `None` for every other symbol.
+    pub(crate) fn native_operation(&self, symbol: SymbolId) -> Option<StandardFunction> {
+        self.native_operations.get(&symbol).copied()
+    }
+
     /// The `state_id` of the loop a `break` leaves. `None` only for a break that
     /// resolution rejected, so a verified root always has a target for every break.
     pub(crate) fn break_target(
@@ -361,6 +371,10 @@ struct ProjectResolver {
     type_members: HashMap<(SymbolId, String), SymbolId>,
     standard_generics: HashMap<StandardGeneric, SymbolId>,
     standard_callable_parameters: HashMap<SymbolId, Vec<SymbolId>>,
+    /// Runtime identities that a loaded standard module declares in source, so
+    /// the resolver must not synthesize built-in symbols for them.
+    source_identities: HashMap<(ModuleId, SemanticId), StandardSymbol>,
+    native_operations: HashMap<SymbolId, StandardFunction>,
     references: Vec<ProjectReference>,
     break_targets: HashMap<(ModuleId, SemanticId), SemanticId>,
     diagnostics: Vec<Diagnostic>,
@@ -370,6 +384,7 @@ pub(crate) fn resolve_project(semantic: SemanticProject) -> ResolvedProject {
     let semantic = Arc::new(semantic);
     let mut resolver = ProjectResolver::new(semantic.clone());
     resolver.index_modules();
+    resolver.index_standard_callable_parameters();
     let dependency_order = resolver.dependency_order();
     resolver.bind_imports();
     resolver.resolve_bodies();
@@ -417,6 +432,7 @@ pub(crate) fn resolve_project(semantic: SemanticProject) -> ResolvedProject {
         standard_generics: resolver.standard_generics,
         standard_callable_parameters: resolver.standard_callable_parameters,
         break_targets: resolver.break_targets,
+        native_operations: resolver.native_operations,
     }
 }
 
@@ -438,18 +454,31 @@ impl ProjectResolver {
             type_members: HashMap::new(),
             standard_generics: HashMap::new(),
             standard_callable_parameters: HashMap::new(),
+            source_identities: HashMap::new(),
+            native_operations: HashMap::new(),
             references: Vec::new(),
             break_targets: HashMap::new(),
             diagnostics: Vec::new(),
         };
+        resolver.find_source_identities();
         resolver.index_builtins();
         resolver
+    }
+
+    /// Whether a loaded module declares the runtime identity `standard`.
+    fn declared_in_source(&self, standard: StandardSymbol) -> bool {
+        self.source_identities.values().any(|identity| *identity == standard)
     }
 
     fn index_builtins(&mut self) {
         for name in [
             "Bool", "Float", "Int", "List", "Never", "Option", "Range", "Text", "Void",
         ] {
+            if name == "Option"
+                && self.declared_in_source(StandardSymbol::Type(StandardType::Option))
+            {
+                continue;
+            }
             let id = self.add_symbol(
                 None,
                 None,
@@ -465,48 +494,37 @@ impl ProjectResolver {
                     .insert(id, StandardSymbol::Type(StandardType::Option));
             }
         }
-        for module_name in ["Int", "List", "Text"] {
-            let module = self.add_symbol(
+        // The language itself calls these intrinsics (interpolation lowers to
+        // `Text.append`), but no module qualifier binds them: `List`, `Text`, and
+        // `Int` are modules a program imports from the standard tree.
+        for function in [
+            StandardFunction::ListFirst,
+            StandardFunction::ListLength,
+            StandardFunction::TextAppend,
+            StandardFunction::TextEqual,
+        ] {
+            let member = self.add_symbol(
                 None,
                 None,
-                Namespace::Module,
-                ProjectSymbolKind::BuiltinModule,
-                module_name,
+                Namespace::Value,
+                ProjectSymbolKind::BuiltinValue,
+                function.name(),
                 true,
             );
-            let member_names: &[&str] = match module_name {
-                "Int" => &["to_text"],
-                "List" => &["first", "length"],
-                "Text" => &["append", "equal"],
-                _ => unreachable!(),
-            };
-            let mut members = HashMap::new();
-            for member_name in member_names {
-                let member = self.add_symbol(
-                    None,
-                    None,
-                    Namespace::Value,
-                    ProjectSymbolKind::BuiltinValue,
-                    member_name,
-                    true,
-                );
-                members.insert((*member_name).to_owned(), member);
-                let standard = match (module_name, *member_name) {
-                    ("List", "first") => Some(StandardFunction::ListFirst),
-                    ("List", "length") => Some(StandardFunction::ListLength),
-                    ("Text", "append") => Some(StandardFunction::TextAppend),
-                    ("Text", "equal") => Some(StandardFunction::TextEqual),
-                    _ => None,
-                };
-                if let Some(standard) = standard {
-                    self.standard_symbols
-                        .insert(member, StandardSymbol::Function(standard));
-                }
-            }
-            self.builtin_modules
-                .insert(module_name.to_owned(), (module, members));
+            self.standard_symbols
+                .insert(member, StandardSymbol::Function(function));
         }
         for name in ["Failure", "False", "None", "Some", "Success", "True"] {
+            let constructor = match name {
+                "None" => Some(StandardConstructor::OptionNone),
+                "Some" => Some(StandardConstructor::OptionSome),
+                _ => None,
+            };
+            if constructor.is_some_and(|constructor| {
+                self.declared_in_source(StandardSymbol::Constructor(constructor))
+            }) {
+                continue;
+            }
             let id = self.add_symbol(
                 None,
                 None,
@@ -516,11 +534,6 @@ impl ProjectResolver {
                 true,
             );
             self.prelude_values.insert(name.to_owned(), id);
-            let constructor = match name {
-                "None" => Some(StandardConstructor::OptionNone),
-                "Some" => Some(StandardConstructor::OptionSome),
-                _ => None,
-            };
             if let Some(constructor) = constructor {
                 self.standard_symbols
                     .insert(id, StandardSymbol::Constructor(constructor));
@@ -602,6 +615,9 @@ impl ProjectResolver {
             ),
             (StandardType::Clock, StandardModule::Clock),
         ] {
+            if self.declared_in_source(StandardSymbol::Type(kind)) {
+                continue;
+            }
             let symbol = self.add_symbol(
                 None,
                 None,
@@ -660,7 +676,8 @@ impl ProjectResolver {
             if matches!(
                 constructor,
                 StandardConstructor::OptionSome | StandardConstructor::OptionNone
-            ) {
+            ) || self.declared_in_source(StandardSymbol::Constructor(constructor))
+            {
                 continue;
             }
             let symbol = self.add_symbol(
@@ -698,7 +715,12 @@ impl ProjectResolver {
             self.standard_symbols
                 .insert(symbol, StandardSymbol::Generic(generic));
         }
+    }
 
+    /// Records the generic parameters of each standard callable, in contract
+    /// order. Runs after module indexing, because a runtime-known constructor may
+    /// be a source declaration.
+    fn index_standard_callable_parameters(&mut self) {
         for (callable, parameters) in [
             (
                 self.standard_function_symbol(StandardFunction::ListFirst),
@@ -933,6 +955,7 @@ impl ProjectResolver {
                 &path,
                 true,
             );
+            self.reject_workspace_standard_path(module_index);
         }
 
         for module_index in 0..self.semantic.modules.len() {
@@ -1038,6 +1061,10 @@ impl ProjectResolver {
             declaration.public,
         );
         self.add_to_namespace(module_index, namespace, &declaration.name, id);
+        self.bind_source_identity(module_id, declaration.semantic_id, id);
+        if let Some(signature) = declaration.function.as_ref().filter(|function| function.native) {
+            self.bind_native_function(module_index, declaration, signature, id);
+        }
 
         if declaration.kind == ModuleDeclarationKind::Struct {
             let constructor = self.add_symbol(
@@ -1068,6 +1095,7 @@ impl ProjectResolver {
                 self.add_to_namespace(module_index, Namespace::Value, &variant.name, constructor);
                 self.type_members
                     .insert((id, variant.name.text.clone()), constructor);
+                self.bind_source_identity(module_id, variant.semantic_id, constructor);
             }
         }
     }
@@ -1439,6 +1467,9 @@ impl ProjectResolver {
             }
             if let Some(success) = &signature.success {
                 self.resolve_type(module_index, success, &generics);
+            }
+            if let Some(failures) = &signature.failures {
+                self.resolve_type(module_index, failures, &generics);
             }
             self.resolve_requirement_row(
                 module_index,
