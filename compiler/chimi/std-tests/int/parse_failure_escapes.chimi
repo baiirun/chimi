@@ -1,0 +1,7 @@
+// A failing Int.parse is an expected failure of its source-declared
+// ParseError enum.
+import std/int as Int
+
+pub fn main() -> Int {
+  Int.parse("1 2")
+}

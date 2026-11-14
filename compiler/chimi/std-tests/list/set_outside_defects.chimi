@@ -1,0 +1,6 @@
+// A List.set index outside 0..length is a defect that names the bounds.
+import std/list as List
+
+pub fn main() -> List<Int> {
+  List.set([1, 2], 2, 0)
+}

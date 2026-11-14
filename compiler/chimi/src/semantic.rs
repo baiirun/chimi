@@ -1662,9 +1662,12 @@ impl ProjectLowerer {
             })
             .unwrap_or_default();
         let contract = direct_child(node, NodeKind::ImplementationContract);
-        let native = node.child_tokens().iter().any(|token| {
-            token.kind() == TokenKind::Identifier && token.text() == "native"
-        });
+        // `native` before `fn`; after it, `native` is the function's name.
+        let native = node
+            .child_tokens()
+            .iter()
+            .take_while(|token| token.kind() != TokenKind::Fn)
+            .any(|token| token.kind() == TokenKind::Identifier && token.text() == "native");
         let has_success = contract.as_ref().is_some_and(|contract| {
             contract
                 .child_tokens()

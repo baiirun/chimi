@@ -24,7 +24,7 @@ pub(crate) fn embedded_module(module_path: &str) -> Option<&'static str> {
 }
 
 /// Every embedded module path, in ascending order.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn embedded_module_paths() -> impl Iterator<Item = &'static str> {
     EMBEDDED_MODULES.iter().map(|(path, _)| *path)
 }

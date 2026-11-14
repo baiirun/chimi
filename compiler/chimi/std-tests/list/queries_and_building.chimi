@@ -1,0 +1,27 @@
+// std/list queries and building functions, including the clamping rules for
+// slices and the bounds of get.
+import std/debug as Debug
+import std/list as List
+
+pub fn main() -> Text {
+  let xs = [4, 1, 3, 1]
+  let results = [
+    Debug.render([List.length([]), List.length(xs)]),
+    Debug.render([List.is_empty([]), List.is_empty(xs)]),
+    Debug.render([List.get(xs, 0), List.get(xs, 3), List.get(xs, 4), List.get(xs, -1)]),
+    Debug.render([List.first(xs), List.last(xs), List.first([]), List.last([])]),
+    Debug.render([List.contains(xs, 3), List.contains(xs, 7)]),
+    Debug.render([List.min(xs), List.max(xs), List.min([])]),
+    Debug.render([List.repeat("a", 3), List.repeat("a", 0)]),
+    Debug.render([List.push(xs, 9), List.append(xs, [5, 6]), List.concat([[1], [], [2, 3]])]),
+    Debug.render([List.set(xs, 1, 0), xs]),
+    Debug.render([List.slice(xs, 1..3), List.slice(xs, -2..2), List.slice(xs, 3..99), List.slice(xs, 3..1)]),
+    Debug.render([List.take(xs, 2), List.take(xs, 10), List.drop(xs, 3), List.drop(xs, 10)]),
+    Debug.render([List.reverse(xs), List.reverse([])]),
+    Debug.render(List.enumerate(["a", "b"])),
+    Debug.render([List.zip([1, 2, 3], ["x", "y"]), List.zip([], ["x"])]),
+    Debug.render([List.chunks([1, 2, 3, 4, 5], 2), List.chunks([], 3)]),
+    Debug.render(List.unique([3, 1, 3, 2, 1])),
+  ]
+  Debug.render(results)
+}

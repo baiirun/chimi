@@ -1,0 +1,18 @@
+// A callback's failure leaves Option.map unchanged: it joins the caller's
+// row instead of entering the returned Option.
+import std/option as Option
+
+enum Refusal {
+  Negative(value: Int)
+}
+
+fn checked(value: Int) -> Int {
+  case value < 0 {
+    True -> Failure(Refusal.Negative(value))
+    False -> value
+  }
+}
+
+pub fn main() -> Option<Int> {
+  Option.map(Some(-3), checked)
+}

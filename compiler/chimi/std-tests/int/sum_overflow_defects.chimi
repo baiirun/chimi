@@ -1,0 +1,6 @@
+// Int.sum adds with `+`, so an overflowing sum defects like the operator.
+import std/int as Int
+
+pub fn main() -> Int {
+  Int.sum([9223372036854775807, 1])
+}

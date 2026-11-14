@@ -1,0 +1,44 @@
+// Every std/option helper on both a present and an absent value, and the
+// prelude's derived order (None before every Some).
+import std/debug as Debug
+import std/option as Option
+
+enum Lookup {
+  Missing(id: Int)
+}
+
+fn half(value: Int) -> Option<Int> {
+  case value % 2 {
+    0 -> Some(value / 2)
+    _ -> None
+  }
+}
+
+fn found(id: Int) -> Int {
+  Some(id * 10) |> Option.unwrap_or_fail(Lookup.Missing(id))
+}
+
+fn lost(id: Int) -> Int {
+  None |> Option.unwrap_or_fail(Lookup.Missing(id))
+}
+
+fn recovered(id: Int) -> Int {
+  case lost(id) {
+    Success(value) -> value
+    Failure(Lookup.Missing(missing)) -> 0 - missing
+  }
+}
+
+pub fn main() -> Text {
+  let results = [
+    Debug.render([Option.is_some(Some(1)), Option.is_some(None), Option.is_none(None), Option.is_none(Some(1))]),
+    Debug.render([Option.map(Some(4), fn(value) { value + 1 }), Option.map(None, fn(value) { value + 1 })]),
+    Debug.render([Option.and_then(Some(8), half), Option.and_then(Some(3), half), Option.and_then(None, half)]),
+    Debug.render([Option.or(Some(1), Some(2)), Option.or(None, Some(2)), Option.or(None, None)]),
+    Debug.render([Option.unwrap_or(Some(5), 0), Option.unwrap_or(None, 7)]),
+    Debug.render([Option.unwrap_or_else(Some(5), fn() { 0 }), Option.unwrap_or_else(None, fn() { 9 })]),
+    Debug.render([found(4), recovered(6)]),
+    Debug.render([None < Some(0), Some(1) < Some(2), Some(0) == Some(0)]),
+  ]
+  Debug.render(results)
+}

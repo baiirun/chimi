@@ -1,0 +1,32 @@
+// std/int: checked arithmetic at the 64-bit edges, modulo signs, sum, and the
+// text round trip.
+import std/debug as Debug
+import std/int as Int
+
+const largest = 9223372036854775807
+const smallest = -9223372036854775807 - 1
+
+fn parsed(text: Text) -> Int {
+  case Int.parse(text) {
+    Success(value) -> value
+    Failure(Int.ParseError.Empty) -> -1
+    Failure(Int.ParseError.InvalidDigit) -> -2
+    Failure(Int.ParseError.OutOfRange) -> -3
+  }
+}
+
+pub fn main() -> Text {
+  let results = [
+    Debug.render([Int.add_checked(largest, 1), Int.add_checked(40, 2)]),
+    Debug.render([Int.subtract_checked(smallest, 1), Int.subtract_checked(5, 7)]),
+    Debug.render([Int.multiply_checked(largest, 2), Int.multiply_checked(-6, 7)]),
+    Debug.render([Int.divide_checked(7, 0), Int.divide_checked(smallest, -1), Int.divide_checked(-7, 2)]),
+    Debug.render([Int.remainder_checked(7, 0), Int.remainder_checked(-7, 2)]),
+    Debug.render([Int.modulo(-7, 3), Int.modulo(7, -3)]),
+    Debug.render([Int.sum([]), Int.sum([1, 2, 3, -4])]),
+    Debug.render([Int.to_text(smallest), Int.to_text(0)]),
+    Debug.render([parsed("-17"), parsed(""), parsed("+1"), parsed("12a"), parsed("9223372036854775808")]),
+    Debug.render(Int.parse(Int.to_text(largest)) == largest),
+  ]
+  Debug.render(results)
+}

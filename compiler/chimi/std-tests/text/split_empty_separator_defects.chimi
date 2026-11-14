@@ -1,0 +1,7 @@
+// An empty separator has no meaning for Text.split; it defects naming the
+// function.
+import std/text as Text
+
+pub fn main() -> List<Text> {
+  Text.split("abc", "")
+}

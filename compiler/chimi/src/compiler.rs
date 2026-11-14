@@ -618,6 +618,43 @@ impl Compiler {
         Ok(execute(&core, config))
     }
 
+    /// The ids of the standard registry operations (`std/list.push`) that the
+    /// program's reachable code references, sorted and without repeats. The
+    /// standard-library test suite uses it to show each operation is exercised.
+    #[doc(hidden)]
+    pub fn standard_operations_reached(
+        sources: Vec<ProjectSource>,
+    ) -> Result<Vec<String>, Vec<Diagnostic>> {
+        let root = seal_entry(check_project(resolve_project_sources(sources)))?;
+        let typed = Arc::clone(&root.typed);
+        let core = lower(root)?;
+        let mut reached = core
+            .nodes
+            .iter()
+            .filter_map(|node| match node.operation {
+                crate::executable::CoreOperation::Reference(symbol) => {
+                    typed.resolved.native_operation(symbol)?;
+                    let symbol = typed.resolved.symbol(symbol);
+                    let module = &typed.resolved.semantic.modules[symbol.module_id?.raw() as usize];
+                    Some(format!("{}.{}", module.path, symbol.name))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        reached.sort();
+        reached.dedup();
+        Ok(reached)
+    }
+
+    /// Every operation id in the standard registry.
+    #[doc(hidden)]
+    pub fn standard_operation_ids() -> Vec<&'static str> {
+        crate::operations::OPERATIONS
+            .iter()
+            .map(|operation| operation.id)
+            .collect()
+    }
+
     pub fn check(source: SourceSnapshot) -> CheckReport {
         let source = Arc::new(source);
         match seal(source.clone()) {

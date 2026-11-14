@@ -588,7 +588,9 @@ fn needs_space(previous: Option<TokenKind>, current: TokenKind, line: &str) -> b
     ) {
         return false;
     }
-    word_kind(previous) && word_kind(current)
+    // A type argument list's `>` is written tight, so the word after it, as in
+    // `fn(T) -> Option<U> errors E`, needs its own space.
+    (word_kind(previous) || previous == TokenKind::Greater) && word_kind(current)
         || matches!(previous, TokenKind::RightParen | TokenKind::RightBracket)
 }
 
@@ -760,6 +762,17 @@ mod tests {
         assert!(!second.is_blocked());
         assert!(!second.is_changed());
         assert_eq!(second.text(), first.text());
+    }
+
+    /// The embedded standard tree is kept in canonical format, which covers
+    /// `native fn` headers and `errors` rows after type arguments.
+    #[test]
+    fn embedded_standard_modules_are_canonically_formatted() {
+        for (path, text) in crate::standard_tree::EMBEDDED_MODULES {
+            let report = format(text);
+            assert!(!report.is_blocked(), "{path}: {}", report.render_diagnostics());
+            assert_eq!(report.text(), *text, "{path} is not in canonical format");
+        }
     }
 
     #[test]

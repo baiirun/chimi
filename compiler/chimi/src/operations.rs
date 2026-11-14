@@ -138,3 +138,53 @@ pub(crate) fn runtime_known(id: &str) -> Option<RuntimeIdentity> {
         .find(|declaration| declaration.id == id)
         .map(|declaration| declaration.identity)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{OPERATIONS, RUNTIME_KNOWN, RuntimeIdentity};
+    use crate::compiler::resolve_project_sources;
+    use crate::standard::StandardSymbol;
+    use crate::standard_tree::{embedded_module_paths, standard_source};
+    use crate::typing::check_project;
+
+    /// The whole-tree check: the embedded tree type-checks on its own, binds
+    /// every registered operation to exactly one `native fn` with no operation
+    /// left over, and declares every runtime-known item in source.
+    #[test]
+    fn the_embedded_tree_matches_the_registry() {
+        let sources = embedded_module_paths()
+            .map(|path| standard_source(path).expect("listed module is embedded"))
+            .collect();
+        let typed = check_project(resolve_project_sources(sources));
+        assert!(
+            typed.diagnostics.is_empty(),
+            "{:?}",
+            typed.diagnostics
+        );
+        let resolved = &typed.resolved;
+        let mut bound = resolved
+            .symbols
+            .iter()
+            .filter(|symbol| resolved.native_operation(symbol.id).is_some())
+            .map(|symbol| {
+                let module = &resolved.semantic.modules
+                    [symbol.module_id.expect("native fn is a declaration").raw() as usize];
+                format!("{}.{}", module.path, symbol.name)
+            })
+            .collect::<Vec<_>>();
+        bound.sort();
+        let mut registered = OPERATIONS.iter().map(|operation| operation.id).collect::<Vec<_>>();
+        registered.sort_unstable();
+        assert_eq!(bound, registered);
+        for entry in RUNTIME_KNOWN {
+            let identity = match entry.identity {
+                RuntimeIdentity::Type(kind) => StandardSymbol::Type(kind),
+                RuntimeIdentity::Constructor(constructor) => StandardSymbol::Constructor(constructor),
+            };
+            let declared = resolved.symbols.iter().any(|symbol| {
+                symbol.module_id.is_some() && resolved.standard_symbol(symbol.id) == Some(identity)
+            });
+            assert!(declared, "{} is not declared in source", entry.id);
+        }
+    }
+}

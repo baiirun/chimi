@@ -1,0 +1,11 @@
+// An absent value raised through Option.unwrap_or_fail is the program's
+// expected failure, with the caller's own payload.
+import std/option as Option
+
+enum Lookup {
+  Missing(id: Int)
+}
+
+pub fn main() -> Int {
+  Option.unwrap_or_fail(None, Lookup.Missing(42))
+}

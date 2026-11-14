@@ -1,0 +1,18 @@
+// std/text building and queries, with non-ASCII text so byte counts differ
+// from character counts.
+import std/debug as Debug
+import std/text as Text
+
+pub fn main() -> Text {
+  let results = [
+    Debug.render([Text.concat([]), Text.concat(["a", "é", "b"]), Text.append("x", "y")]),
+    Debug.render([Text.join([], ", "), Text.join(["one"], ", "), Text.join(["a", "b", "c"], ", ")]),
+    Debug.render([Text.repeat("ab", 3), Text.repeat("ab", 0), Text.repeat("ab", -1)]),
+    Debug.render([Text.is_empty(""), Text.is_empty(" ")]),
+    Debug.render([Text.byte_length(""), Text.byte_length("héllo"), Text.byte_length("日本")]),
+    Debug.render([Text.contains("haystack", "st"), Text.contains("haystack", "ts")]),
+    Debug.render([Text.starts_with("héllo", "hé"), Text.starts_with("héllo", ""), Text.starts_with("h", "hé")]),
+    Debug.render([Text.ends_with("héllo", "llo"), Text.ends_with("héllo", ""), Text.ends_with("o", "lo")]),
+  ]
+  Debug.render(results)
+}

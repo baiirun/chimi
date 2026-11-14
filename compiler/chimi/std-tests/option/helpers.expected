@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"success","value":"[\"[True, False, True, False]\", \"[Some(5), None]\", \"[Some(4), None, None]\", \"[Some(1), Some(2), None]\", \"[5, 7]\", \"[5, 9]\", \"[40, -6]\", \"[True, True, True]\"]"}

@@ -27,7 +27,7 @@ pub fn join(parts: List<Text>, separator: Text) -> Text {
     [first, ..rest] -> loop (remaining, pieces) = (rest, [first]) {
       case remaining {
         [] -> break concat(pieces)
-        [part, ..more] -> (more, pieces |> List.push(separator) |> List.push(part))
+        [part, ..more] -> (more, List.push(List.push(pieces, separator), part))
       }
     }
   }

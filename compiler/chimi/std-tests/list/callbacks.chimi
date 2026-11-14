@@ -1,0 +1,53 @@
+// std/list functions that take callbacks: results, and the order and number
+// of callback calls, which `count_calls` records through a reduce.
+import std/debug as Debug
+import std/list as List
+import std/order.{Ordering}
+
+struct Person {
+  name: Text,
+  age: Int,
+}
+
+fn by_age(left: Person, right: Person) -> Ordering {
+  case left.age < right.age {
+    True -> Ordering.Less
+    False -> case left.age > right.age {
+      True -> Ordering.Greater
+      False -> Ordering.Equal
+    }
+  }
+}
+
+pub fn main() -> Text {
+  let xs = [5, 2, 8, 2, 7]
+  let people = [Person("ada", 36), Person("bo", 25), Person("cy", 36), Person("di", 25)]
+  let results = [
+    Debug.render(List.map(xs, fn(x) { x * 10 })),
+    Debug.render(List.filter(xs, fn(x) { x > 4 })),
+    Debug.render(List.filter_map(xs, fn(x) {
+      case x % 2 {
+        0 -> Some(x / 2)
+        _ -> None
+      }
+    })),
+    Debug.render(List.flat_map([1, 2, 3], fn(x) { List.repeat(x, x) })),
+    Debug.render(List.reduce(xs, "", fn(text, x) { "${text}${x}," })),
+    Debug.render([List.find(xs, fn(x) { x > 5 }), List.find(xs, fn(x) { x > 9 })]),
+    Debug.render([List.find_index(xs, fn(x) { x == 2 }), List.find_index(xs, fn(x) { x == 3 })]),
+    Debug.render(List.find_map(xs, fn(x) {
+      case x > 6 {
+        True -> Some(x * 100)
+        False -> None
+      }
+    })),
+    Debug.render([List.any(xs, fn(x) { x == 8 }), List.any([], fn(x) { x == 8 }), List.all(xs, fn(x) { x > 1 }), List.all(xs, fn(x) { x > 2 }), List.all([], fn(x) { x > 2 })]),
+    Debug.render(List.count(xs, fn(x) { x == 2 })),
+    Debug.render(List.partition(xs, fn(x) { x < 6 })),
+    Debug.render(List.sort(xs)),
+    Debug.render(List.sort(["pear", "apple", "fig"])),
+    Debug.render(List.map(List.sort_by(people, by_age), fn(person) { person.name })),
+    Debug.render([List.min_by(people, by_age), List.max_by(people, by_age)]),
+  ]
+  Debug.render(results)
+}

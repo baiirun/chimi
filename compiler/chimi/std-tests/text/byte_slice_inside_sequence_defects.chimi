@@ -1,0 +1,7 @@
+// A byte_slice bound inside a UTF-8 sequence is a broken precondition: the
+// two bytes of "é" are 1..3, so bound 2 splits it.
+import std/text as Text
+
+pub fn main() -> Text {
+  Text.byte_slice("héllo", 0..2)
+}

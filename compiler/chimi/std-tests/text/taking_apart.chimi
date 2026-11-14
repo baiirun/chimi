@@ -1,0 +1,17 @@
+// std/text functions that take text apart and change it.
+import std/debug as Debug
+import std/text as Text
+
+pub fn main() -> Text {
+  let results = [
+    Debug.render([Text.split("a,b,,c,", ","), Text.split("", ","), Text.split("a--b", "--")]),
+    Debug.render([Text.split_once("key=value=more", "="), Text.split_once("plain", "=")]),
+    Debug.render([Text.lines("one\r\ntwo\n\nthree\n"), Text.lines(""), Text.lines("\n")]),
+    Debug.render([Text.strip_prefix("héllo", "hé"), Text.strip_prefix("héllo", "x")]),
+    Debug.render([Text.strip_suffix("file.txt", ".txt"), Text.strip_suffix("file", ".txt")]),
+    Debug.render([Text.byte_slice("héllo", 0..1), Text.byte_slice("héllo", 1..3), Text.byte_slice("héllo", 3..100), Text.byte_slice("héllo", -5..1), Text.byte_slice("héllo", 4..2)]),
+    Debug.render([Text.trim(" \t a b \n"), Text.trim_start("\u{3000}\u{a0}x "), Text.trim_end(" x\u{2029}\u{85}"), Text.trim("")]),
+    Debug.render([Text.replace("a-b-c", "-", "+"), Text.replace("aaa", "aa", "b"), Text.replace("abc", "x", "y")]),
+  ]
+  Debug.render(results)
+}
