@@ -103,9 +103,17 @@ docs/performance/supervised-process-conformance-baseline.md   written by ts-1765
 ## Harness entry points
 
 ```text
-chimi-process-lab <kind> [--through <stage>] [--scenario <ID>]
+chimi-process-lab <kind>... [--through <stage>] [--scenario <ID>]
                   [--backend <native|interpreter>] [--print-actual]
+                  [--baseline <report.json>]
 ```
+
+- Several kinds may be listed, and each runs in the order given; `all` is
+  every kind in the table's order. `tests/process_lab.rs` lists every kind
+  except `performance` in one run, because the gates measure wall time and
+  resident memory, which a loaded machine skews. The gates run only on
+  request: `chimi-process-lab performance`, `all`, or the ignored
+  `performance_gates_pass_on_an_idle_machine` test.
 
 - `--through` defaults to `CURRENT_STAGE` from `catalogue.rs`. Scenarios
   whose unlock stage is at or below it must pass. Later scenarios report
@@ -166,8 +174,9 @@ Each kind prints one JSON line:
   carries a `detail` note when its evidence is weaker than specified, for
   example a C harness that ran without AddressSanitizer because the
   sanitized build failed.
-- `gates` lists each performance gate as `metric`, `value`, `limit`, and
-  `status`.
+- `gates` lists each performance gate as `metric`, `value`, `limit`,
+  `rule` (`<` for a strict upper bound, `=` for an exact value), and
+  `status`. `metrics` holds figures recorded without a gate.
 - The process exits nonzero if any unlocked scenario or gate fails.
 
 ## Expected files

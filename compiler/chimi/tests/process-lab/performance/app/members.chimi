@@ -1,0 +1,73 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/duration as Duration
+import std/int as Int
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// PG04, PG05, PG08: N dynamic processes start under one root, each parking
+// on its first receive, and `stop` then ends them all. The last one started
+// registers `tail`; main asks it for a report and waits, and incarnations
+// run in start order, so every earlier one has parked by the time `tail`
+// replies. The outcome is N, or -1 if a start failed.
+
+pub enum Message {
+  Report(reply: Sender<Int>)
+}
+
+fn idle(inbox: Inbox<Message>) -> Void {
+  loop seen = 0 {
+    case Process.receive(inbox) {
+      Message.Report(reply) -> {
+        Channel.send(reply, seen)
+        seen + 1
+      }
+    }
+  }
+}
+
+pub process name tail: Message
+
+fn ask_tail() -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(tail, Message.Report(replies.sender))
+  let reply = Channel.receive(replies.receiver)
+  case reply {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+pub fn main(arguments: List<Text>) -> Int {
+  let count = case List.first(arguments) {
+    Some(text) -> Int.parse(text)
+    None -> 0
+  }
+  let root = Supervisor.start(Supervisor.policy([], count + 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let anonymous = Process.spec(idle, 1, Duration.seconds(1))
+  let started = loop left = count - 1 {
+    case left <= 0 {
+      True -> break count
+      False -> case Supervisor.start_process(root, anonymous, Supervisor.Restart.Never) {
+        Success(member) -> left - 1
+        Failure(error) -> break -1
+      }
+    }
+  }
+  let parked = case count > 0 {
+    True -> {
+      let named = Process.spec(idle, 1, Duration.seconds(1)) |> Process.register(tail)
+      case Supervisor.start_process(root, named, Supervisor.Restart.Never) {
+        Success(member) -> ask_tail()
+        Failure(error) -> -1
+      }
+    }
+    False -> 0
+  }
+  Supervisor.stop(root)
+  case parked {
+    0 -> started
+    _ -> -1
+  }
+}

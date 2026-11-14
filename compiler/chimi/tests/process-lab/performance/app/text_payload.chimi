@@ -1,0 +1,15 @@
+import std/clock.{Clock}
+import app/payload as Workload
+
+// PG06: a 4 KiB Text payload (8 bytes doubled 9 times). The outcome is N.
+
+pub fn main(arguments: List<Text>) -> Int needs { clock: Clock } {
+  let text = loop state = ("chimi-pg", 9) {
+    let (text, doublings) = state
+    case doublings {
+      0 -> break text
+      _ -> (Text.append(text, text), doublings - 1)
+    }
+  }
+  Workload.run(Workload.Payload.Blob(text), Workload.count(arguments))
+}

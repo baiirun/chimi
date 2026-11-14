@@ -1,0 +1,49 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/int as Int
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// PG03: N restart cycles. Each cycle sends `Crash`, and the settle lets the
+// worker defect, terminate, restart, and park its replacement on its first
+// receive. The limit is above N and the window longer than the run's N ms of
+// virtual time, so no cycle escalates. The outcome is N.
+
+pub enum Message {
+  Crash
+}
+
+fn crash_on_receive(inbox: Inbox<Message>) -> Void {
+  let divisor = case Process.receive(inbox) {
+    Message.Crash -> 0
+  }
+  let quotient = 1 / divisor
+  Void
+}
+
+pub process name worker: Message
+
+pub fn main(arguments: List<Text>) -> Int needs { clock: Clock } {
+  let cycles = case List.first(arguments) {
+    Some(text) -> Int.parse(text)
+    None -> 0
+  }
+  let member = Process.spec(crash_on_receive, 1, Duration.seconds(1))
+    |> Process.register(worker)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(cycles + 1, Duration.hours(1))))
+  let done = loop left = cycles {
+    case left {
+      0 -> break cycles
+      _ -> {
+        Process.send(worker, Message.Crash)
+        Clock.sleep(Duration.milliseconds(1))
+        left - 1
+      }
+    }
+  }
+  Supervisor.stop(root)
+  done
+}

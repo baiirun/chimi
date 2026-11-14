@@ -63,6 +63,9 @@ impl Stage {
 /// A Rust check that has no fixture of its own.
 pub type Check = fn() -> Result<(), String>;
 
+/// A performance gate's measurement (`performance.rs`).
+pub type Measure = fn() -> Result<super::Measurement, String>;
+
 /// How a scenario produces its evidence.
 #[derive(Clone, Copy, Debug)]
 pub enum Form {
@@ -75,7 +78,7 @@ pub enum Form {
     /// other fixtures (CO01-CO04, MF06, OB04, OB07).
     Check(Check),
     /// A measured performance gate.
-    Gate(Check),
+    Gate(Measure),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -128,12 +131,6 @@ impl Scenario {
     }
 }
 
-/// A check whose implementation lands with its stage. Locked scenarios never
-/// call it; unlocking one before its check exists fails the lab.
-fn not_landed() -> Result<(), String> {
-    Err("this check has not landed".into())
-}
-
 const fn fixture(id: &'static str, slug: &'static str, unlock: Stage) -> Scenario {
     Scenario::new(id, slug, unlock, Form::Fixture)
 }
@@ -147,8 +144,8 @@ const fn c_harness(
     Scenario::new(id, slug, unlock, Form::CHarness(file))
 }
 
-const fn gate(id: &'static str, slug: &'static str) -> Scenario {
-    Scenario::new(id, slug, Stage::U10, Form::Gate(not_landed))
+const fn gate(id: &'static str, slug: &'static str, measure: Measure) -> Scenario {
+    Scenario::new(id, slug, Stage::U10, Form::Gate(measure))
 }
 
 const HEAP_BOUNDARY: &str = "heap_boundary.c";
@@ -341,16 +338,16 @@ pub static SCENARIOS: [Scenario; 131] = [
     // Forcing program.
     fixture("FP01", "supervised-pool", U10),
     // Performance gates.
-    gate("PG01", "message-cost-trace-off"),
-    gate("PG02", "trace-overhead"),
-    gate("PG03", "restart-cycle-cost"),
-    gate("PG04", "start-and-stop-cost"),
-    gate("PG05", "start-and-stop-scaling"),
-    gate("PG06", "message-cost-by-payload"),
-    gate("PG07", "resident-memory-growth"),
-    gate("PG08", "parked-resident-memory"),
-    gate("PG09", "cold-start"),
-    gate("PG10", "trace-off-events"),
+    gate("PG01", "message-cost-trace-off", super::performance::pg01),
+    gate("PG02", "trace-overhead", super::performance::pg02),
+    gate("PG03", "restart-cycle-cost", super::performance::pg03),
+    gate("PG04", "start-and-stop-cost", super::performance::pg04),
+    gate("PG05", "start-and-stop-scaling", super::performance::pg05),
+    gate("PG06", "message-cost-by-payload", super::performance::pg06),
+    gate("PG07", "resident-memory-growth", super::performance::pg07),
+    gate("PG08", "parked-resident-memory", super::performance::pg08),
+    gate("PG09", "cold-start", super::performance::pg09),
+    gate("PG10", "trace-off-events", super::performance::pg10),
 ];
 
 pub fn find(id: &str) -> Option<&'static Scenario> {

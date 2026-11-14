@@ -1,10 +1,11 @@
-//! `chimi-process-lab <kind> [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual]`
+//! `chimi-process-lab <kind>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>]`
 
 use chimi::process_lab::catalogue::{self, Stage};
-use chimi::process_lab::{Backend, Kind, Options, run};
+use chimi::process_lab::{Backend, Kind, Options, baseline_warnings, run};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: chimi-process-lab <static|core|runtime|heap|observability|forcing|performance|all> [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual]";
+const USAGE: &str = "usage: chimi-process-lab <static|core|runtime|heap|observability|forcing|performance|all>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>]";
 
 fn main() -> ExitCode {
     match lab() {
@@ -18,20 +19,39 @@ fn main() -> ExitCode {
 }
 
 /// Prints one report line per kind; `Ok(false)` when an unlocked scenario
-/// failed.
+/// failed. With `--baseline`, a gate more than 1.5 times its saved value
+/// prints a warning to stderr, which does not fail the run.
 fn lab() -> Result<bool, String> {
-    let (kinds, options) = parse(std::env::args().skip(1))?;
+    let (kinds, options, baseline) = parse(std::env::args().skip(1))?;
+    let baseline = baseline
+        .map(|path| {
+            std::fs::read_to_string(&path)
+                .map_err(|error| format!("read baseline {}: {error}", path.display()))
+        })
+        .transpose()?;
     let mut passed = true;
     for kind in kinds {
         let report = run(kind, &options)?;
         passed &= !report.failed();
         print!("{}", report.render_json());
+        if let Some(baseline) = &baseline
+            && !report.gates.is_empty()
+        {
+            for warning in baseline_warnings(&report.gates, baseline)? {
+                eprintln!("{warning}");
+            }
+        }
     }
     Ok(passed)
 }
 
-fn parse(arguments: impl Iterator<Item = String>) -> Result<(Vec<Kind>, Options), String> {
-    let mut kinds = None;
+type Parsed = (Vec<Kind>, Options, Option<PathBuf>);
+
+/// Kinds may be listed several at once (`static core runtime`), each run in
+/// the order given; `all` is every kind in order.
+fn parse(arguments: impl Iterator<Item = String>) -> Result<Parsed, String> {
+    let mut kinds: Option<Vec<Kind>> = None;
+    let mut baseline = None;
     let mut options = Options::default();
     let mut arguments = arguments;
     while let Some(argument) = arguments.next() {
@@ -57,11 +77,18 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<(Vec<Kind>, Options)
                     .ok_or_else(|| format!("unknown backend `{backend}`"))?;
             }
             "--print-actual" => options.print_actual = true,
+            "--baseline" => baseline = Some(PathBuf::from(value("--baseline")?)),
             "all" if kinds.is_none() => kinds = Some(Kind::ALL.to_vec()),
-            kind if kinds.is_none() && !kind.starts_with('-') => {
-                kinds = Some(vec![
-                    Kind::parse(kind).ok_or_else(|| format!("unknown evidence kind `{kind}`"))?,
-                ]);
+            kind if !kind.starts_with('-') => {
+                let kind =
+                    Kind::parse(kind).ok_or_else(|| format!("unknown evidence kind `{kind}`"))?;
+                match &mut kinds {
+                    Some(listed) if !listed.contains(&kind) && listed.len() < Kind::ALL.len() => {
+                        listed.push(kind)
+                    }
+                    Some(_) => return Err(format!("evidence kind `{}` repeated", kind.name())),
+                    None => kinds = Some(vec![kind]),
+                }
             }
             other => return Err(format!("unexpected argument `{other}`")),
         }
@@ -73,5 +100,5 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<(Vec<Kind>, Options)
         (Some(kinds), None) => kinds,
         (None, None) => return Err("expected an evidence kind".into()),
     };
-    Ok((kinds, options))
+    Ok((kinds, options, baseline))
 }

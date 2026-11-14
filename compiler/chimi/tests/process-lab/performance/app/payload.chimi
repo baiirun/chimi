@@ -1,0 +1,83 @@
+import std/channel as Channel
+import std/channel.{Receive}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox}
+import std/int as Int
+import std/supervisor as Supervisor
+
+// The PG06 workload, shared by `text_payload`, `list_payload`, and
+// `dag_payload`: main sends one payload value N times to a process, in
+// batches of 64 that each fill its mailbox before a settle lets it drain.
+// Every send copies the payload into a message. The process replies once it
+// has received N messages, so the outcome is N.
+
+pub enum Tree {
+  Leaf
+  Node(left: Tree, right: Tree)
+}
+
+pub enum Payload {
+  Blob(text: Text)
+  Numbers(values: List<Int>)
+  Graph(tree: Tree)
+}
+
+fn fill(sink: Address<Payload>, message: Payload, count: Int) -> Int {
+  loop left = count {
+    case left {
+      0 -> break count
+      _ -> {
+        Process.send(sink, message)
+        left - 1
+      }
+    }
+  }
+}
+
+pub fn run(message: Payload, count: Int) -> Int needs { clock: Clock } {
+  let replies = Channel.bounded(1)
+  let reply = replies.sender
+  let sink = fn(inbox: Inbox<Payload>) -> Void {
+    loop received = 0 {
+      let payload = Process.receive(inbox)
+      let next = received + 1
+      case next == count {
+        True -> {
+          Channel.send(reply, next)
+          next
+        }
+        False -> next
+      }
+    }
+  }
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(sink, 64, Duration.seconds(1)), Supervisor.Restart.Never)
+  let address = Supervisor.address(managed)
+  let batches = loop left = count / 64 {
+    case left {
+      0 -> break count / 64
+      _ -> {
+        fill(address, message, 64)
+        Clock.sleep(Duration.milliseconds(1))
+        left - 1
+      }
+    }
+  }
+  let received = Channel.receive(replies.receiver)
+  let total = case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+  Supervisor.stop(root)
+  total
+}
+
+pub fn count(arguments: List<Text>) -> Int {
+  case List.first(arguments) {
+    Some(text) -> Int.parse(text)
+    None -> 0
+  }
+}

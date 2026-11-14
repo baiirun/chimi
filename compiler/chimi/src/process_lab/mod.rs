@@ -6,8 +6,11 @@ mod core_kind;
 mod fixture;
 mod heap_kind;
 mod observability_kind;
+mod performance;
 mod static_kind;
 pub mod transcript;
+
+pub use performance::baseline_warnings;
 
 use catalogue::{Form, Scenario, Stage};
 use std::fmt::Write as _;
@@ -126,11 +129,95 @@ pub enum Status {
     Unsupported,
 }
 
+/// One measured performance gate: `value` against `limit` under `rule`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GateResult {
+    pub metric: String,
+    pub value: f64,
+    pub limit: f64,
+    pub rule: Rule,
+    pub passed: bool,
+}
+
+/// How a gate compares its value with its limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Rule {
+    /// The value must be strictly below the limit.
+    Below,
+    /// The value must equal the limit.
+    Exactly,
+}
+
+impl GateResult {
+    pub fn below(metric: &str, value: f64, limit: f64) -> Self {
+        Self {
+            metric: metric.to_owned(),
+            value,
+            limit,
+            rule: Rule::Below,
+            passed: value < limit,
+        }
+    }
+
+    pub fn exactly(metric: &str, value: f64, limit: f64) -> Self {
+        Self {
+            metric: metric.to_owned(),
+            value,
+            limit,
+            rule: Rule::Exactly,
+            passed: value == limit,
+        }
+    }
+
+    fn failure(&self) -> String {
+        let claim = match self.rule {
+            Rule::Below => "is not below",
+            Rule::Exactly => "is not exactly",
+        };
+        format!(
+            "{} {} {claim} {}",
+            self.metric,
+            render_number(self.value),
+            render_number(self.limit)
+        )
+    }
+}
+
+/// What one gate scenario measured: its gates, and figures recorded beside
+/// them without a limit.
+#[derive(Clone, Debug, Default)]
+pub struct Measurement {
+    pub gates: Vec<GateResult>,
+    pub metrics: Vec<(String, f64)>,
+}
+
+impl Measurement {
+    pub fn gates(gates: Vec<GateResult>) -> Self {
+        Self {
+            gates,
+            metrics: Vec::new(),
+        }
+    }
+}
+
+/// A number for the report: at most three decimals, no trailing zeros, and
+/// `null` for a value JSON cannot hold.
+pub(crate) fn render_number(value: f64) -> String {
+    if !value.is_finite() {
+        return "null".into();
+    }
+    let rounded = (value * 1_000.0).round() / 1_000.0;
+    format!("{rounded}")
+}
+
 #[derive(Clone, Debug)]
 pub struct Report {
     pub kind: Kind,
     pub stage: Stage,
     pub scenarios: Vec<(&'static str, Status)>,
+    /// Every gate the run measured, passed or not.
+    pub gates: Vec<GateResult>,
+    pub metrics: Vec<(String, f64)>,
 }
 
 impl Report {
@@ -140,8 +227,8 @@ impl Report {
             .any(|(_, status)| matches!(status, Status::Fail { .. }))
     }
 
-    /// One JSON line. `metrics` and `gates` stay empty until the performance
-    /// harness lands (U10).
+    /// One JSON line. `metrics` and `gates` are empty except in a
+    /// performance report.
     pub fn render_json(&self) -> String {
         let mut output = format!(
             "{{\"schema\":\"chimi.process-conformance.v1\",\"kind\":\"{}\",\"stage\":\"{}\",\"scenarios\":[",
@@ -165,7 +252,35 @@ impl Report {
             }
             output.push('}');
         }
-        output.push_str("],\"metrics\":{},\"gates\":[]}\n");
+        output.push_str("],\"metrics\":{");
+        for (index, (name, value)) in self.metrics.iter().enumerate() {
+            if index > 0 {
+                output.push(',');
+            }
+            crate::json::write_json_string(&mut output, name);
+            write!(output, ":{}", render_number(*value)).expect("write to a string");
+        }
+        output.push_str("},\"gates\":[");
+        for (index, gate) in self.gates.iter().enumerate() {
+            if index > 0 {
+                output.push(',');
+            }
+            output.push_str("{\"metric\":");
+            crate::json::write_json_string(&mut output, &gate.metric);
+            write!(
+                output,
+                ",\"value\":{},\"limit\":{},\"rule\":\"{}\",\"status\":\"{}\"}}",
+                render_number(gate.value),
+                render_number(gate.limit),
+                match gate.rule {
+                    Rule::Below => "<",
+                    Rule::Exactly => "=",
+                },
+                if gate.passed { "pass" } else { "fail" }
+            )
+            .expect("write to a string");
+        }
+        output.push_str("]}\n");
         output
     }
 }
@@ -182,34 +297,54 @@ fn run_scenarios(
     kind: Kind,
     options: &Options,
 ) -> Result<Report, String> {
+    let mut measured = Measurement::default();
     let scenarios = catalogue
         .iter()
         .filter(|scenario| match options.scenario {
             Some(only) => scenario.id == only.id,
             None => scenario.kind() == kind,
         })
-        .map(|scenario| (scenario.id, status(scenario, options)))
+        .map(|scenario| (scenario.id, status(scenario, options, &mut measured)))
         .collect();
     Ok(Report {
         kind: options.scenario.map_or(kind, Scenario::kind),
         stage: options.through,
         scenarios,
+        gates: measured.gates,
+        metrics: measured.metrics,
     })
 }
 
-fn status(scenario: &Scenario, options: &Options) -> Status {
+/// A gate scenario passes when every gate it measured passed; its gates and
+/// metrics join `measured` either way.
+fn measure(gate: catalogue::Measure, measured: &mut Measurement) -> Result<(), String> {
+    let measurement = gate()?;
+    let failure = measurement
+        .gates
+        .iter()
+        .find(|gate| !gate.passed)
+        .map(GateResult::failure);
+    measured.gates.extend(measurement.gates);
+    measured.metrics.extend(measurement.metrics);
+    failure.map_or(Ok(()), Err)
+}
+
+fn status(scenario: &Scenario, options: &Options, measured: &mut Measurement) -> Status {
     if scenario.unlock > options.through {
         return Status::Locked;
     }
     // IP01 is the interpreter's own scenario: it runs on the interpreter always.
     let executed =
         !matches!(scenario.kind(), Kind::Static | Kind::Core) && !scenario.id.starts_with("IP");
-    if executed && matches!(scenario.form, Form::Fixture) && options.backend == Backend::Interpreter
+    if executed
+        && matches!(scenario.form, Form::Fixture | Form::Gate(_))
+        && options.backend == Backend::Interpreter
     {
         return Status::Unsupported;
     }
     let result = match (scenario.kind(), scenario.form) {
-        (_, Form::Check(check) | Form::Gate(check)) => check().map(|()| None),
+        (_, Form::Check(check)) => check().map(|()| None),
+        (_, Form::Gate(gate)) => measure(gate, measured).map(|()| None),
         (Kind::Static, Form::Fixture) => static_kind::check(scenario, options).map(|()| None),
         (Kind::Heap, Form::Fixture | Form::CHarness(_)) => heap_kind::check(scenario, options),
         (Kind::Runtime, Form::Fixture) => fixture::check(scenario, options).map(|_| None),
@@ -286,6 +421,8 @@ mod tests {
                     note: Some("ran without AddressSanitizer".into()),
                 },
             )],
+            gates: Vec::new(),
+            metrics: Vec::new(),
         };
         assert!(!report.failed());
         assert!(

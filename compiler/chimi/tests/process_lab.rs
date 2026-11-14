@@ -1,7 +1,9 @@
 //! Runs the supervised-process conformance lab through its binary. Every
 //! scenario at or below `CURRENT_STAGE` must pass; later ones report
-//! `locked`. Performance gates run only on request
-//! (`chimi-process-lab performance`), not here.
+//! `locked`. Performance gates measure wall time and resident memory, which a
+//! loaded machine skews, so they run only on request: the ignored
+//! `performance_gates_pass_on_an_idle_machine`, or
+//! `chimi-process-lab performance`.
 
 use chimi::process_lab::catalogue::{CURRENT_STAGE, SCENARIOS, Stage};
 use chimi::process_lab::{Kind, transcript};
@@ -26,17 +28,27 @@ fn statuses(report: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-// The lab's own gate: every unlocked scenario of every kind passes, and each
-// kind reports each of its scenarios once. One `all` run covers every kind, so
-// OB04 reuses the executables the earlier kinds built.
+/// Every kind except `performance`, in `all`'s order.
+fn conformance_kinds() -> Vec<Kind> {
+    Kind::ALL
+        .into_iter()
+        .filter(|kind| *kind != Kind::Performance)
+        .collect()
+}
+
+// The lab's own gate: every unlocked scenario of every kind but performance
+// passes, and each kind reports each of its scenarios once. One run lists
+// every kind, so OB04 reuses the executables the earlier kinds built.
 #[test]
 fn every_scenario_through_the_current_stage_passes() {
-    let output = lab(&["all"]);
+    let kinds = conformance_kinds();
+    let names: Vec<&str> = kinds.iter().map(|kind| kind.name()).collect();
+    let output = lab(&names);
     let reports = String::from_utf8(output.stdout).unwrap();
     assert!(output.status.success(), "{reports}");
     assert!(output.stderr.is_empty());
-    assert_eq!(reports.lines().count(), Kind::ALL.len());
-    for (kind, report) in Kind::ALL.into_iter().zip(reports.lines()) {
+    assert_eq!(reports.lines().count(), kinds.len());
+    for (kind, report) in kinds.into_iter().zip(reports.lines()) {
         assert!(report.starts_with(&format!(
             "{{\"schema\":\"chimi.process-conformance.v1\",\"kind\":\"{}\",\"stage\":\"{}\",\"scenarios\":[",
             kind.name(),
@@ -56,6 +68,38 @@ fn every_scenario_through_the_current_stage_passes() {
             .collect::<Vec<_>>();
         assert_eq!(statuses(report), expected, "{}", kind.name());
     }
+}
+
+// U10's executed scenarios pass while the stage stays locked on PG02's
+// full-trace gate (`prog show ts-8f201b`): the forcing program's exact outcome
+// and transcripts, and memory that stays flat over restarts and memberships.
+// Redundant once CURRENT_STAGE reaches U10.
+#[test]
+fn the_forcing_program_and_u10_memory_scenarios_pass() {
+    for id in ["FP01", "MF02", "MF03"] {
+        let output = lab(&["--scenario", id, "--through", Stage::U10.name()]);
+        let report = String::from_utf8(output.stdout).unwrap();
+        assert!(output.status.success(), "{report}");
+        assert_eq!(statuses(&report), [(id.to_owned(), "pass".to_owned())]);
+    }
+}
+
+// The explicit performance run: every gate passes and reports its value and
+// limit. Run it on an idle machine, in release, through `scripts/heavy.sh`:
+// `cargo test --release -p chimi --test process_lab -- --ignored performance`.
+#[test]
+#[ignore = "measures wall time and resident memory; run explicitly on an idle machine"]
+fn performance_gates_pass_on_an_idle_machine() {
+    let output = lab(&["performance", "--through", Stage::U10.name()]);
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{report}");
+    let gates = SCENARIOS
+        .iter()
+        .filter(|scenario| scenario.kind() == Kind::Performance)
+        .map(|scenario| (scenario.id.to_owned(), "pass".to_owned()))
+        .collect::<Vec<_>>();
+    assert_eq!(statuses(&report), gates);
+    assert!(!report.contains("\"gates\":[]"), "{report}");
 }
 
 #[test]
@@ -85,6 +129,7 @@ fn malformed_arguments_are_usage_errors() {
         &["static", "--through", "U11"],
         &["--scenario", "XX99"],
         &["heap", "--backend", "bytecode"],
+        &["static", "core", "static"],
     ] {
         let output = lab(arguments);
         assert_eq!(output.status.code(), Some(2), "{arguments:?}");

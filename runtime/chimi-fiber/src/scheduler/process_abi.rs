@@ -6,15 +6,15 @@ use super::process::{
     Restart, Restarts, StartError, SupervisorId, SupervisorState, Waiter,
 };
 use super::{
-    ClockMode, DEADLOCK_DEFECT_CODE, Idle, RESPONSE_CANCELLED, RESPONSE_CAPACITY_REACHED,
-    RESPONSE_DEFECTED, RESPONSE_ERROR, RESPONSE_FORCED, RESPONSE_FULL, RESPONSE_NAME_TAKEN,
-    RESPONSE_OK, RESPONSE_PENDING, RESPONSE_STOPPED, RESPONSE_SUCCEEDED, RESPONSE_UNAVAILABLE,
-    SCHEDULER_DEFECT_CODE, Scheduler, SchedulerOptions, SchedulerOutcome, SchedulerTraceSink,
-    ParkedTask, TaskId, TaskOutcome, TaskPhase, TaskResult, TraceMode,
-};
-use super::{
     CapabilityViolationReport, MessageRelease, SendFailure, SpecContextRelease, TaskContextRelease,
     ValueRelease,
+};
+use super::{
+    ClockMode, DEADLOCK_DEFECT_CODE, Idle, ParkedTask, RESPONSE_CANCELLED,
+    RESPONSE_CAPACITY_REACHED, RESPONSE_DEFECTED, RESPONSE_ERROR, RESPONSE_FORCED, RESPONSE_FULL,
+    RESPONSE_NAME_TAKEN, RESPONSE_OK, RESPONSE_PENDING, RESPONSE_STOPPED, RESPONSE_SUCCEEDED,
+    RESPONSE_UNAVAILABLE, SCHEDULER_DEFECT_CODE, Scheduler, SchedulerOptions, SchedulerOutcome,
+    SchedulerTraceSink, TaskId, TaskOutcome, TaskPhase, TaskResult, TraceMode,
 };
 use crate::{ChimiFiberCommand, ChimiFiberEntry, ChimiFiberState};
 use std::ffi::c_void;
@@ -232,7 +232,9 @@ unsafe fn visit_policy_contexts(
         match member.kind {
             MEMBER_PROCESS => visit(member.process.context),
             // SAFETY: nested policies satisfy the same contract.
-            MEMBER_SUPERVISOR => unsafe { visit_policy_contexts(member.supervisor, depth + 1, visit) },
+            MEMBER_SUPERVISOR => unsafe {
+                visit_policy_contexts(member.supervisor, depth + 1, visit)
+            },
             _ => {}
         }
     }
@@ -392,7 +394,8 @@ impl Scheduler {
                     }),
                 }
             }
-            super::REQUEST_SUPERVISOR_REMOVE_PROCESS | super::REQUEST_SUPERVISOR_REMOVE_SUPERVISOR => {
+            super::REQUEST_SUPERVISOR_REMOVE_PROCESS
+            | super::REQUEST_SUPERVISOR_REMOVE_SUPERVISOR => {
                 self.write(waiter, RESPONSE_PENDING, |_| {});
                 let kind = if input.kind == super::REQUEST_SUPERVISOR_REMOVE_PROCESS {
                     HandleKind::Process
@@ -441,7 +444,9 @@ impl Scheduler {
         if !self.still_waiting(waiter) {
             return;
         }
-        let request = self.tasks[&waiter.task].request.cast::<ChimiProcessRequest>();
+        let request = self.tasks[&waiter.task]
+            .request
+            .cast::<ChimiProcessRequest>();
         // SAFETY: the waiter is parked on this process request record.
         let request = unsafe { &mut *request };
         fill(request);
@@ -464,8 +469,10 @@ impl Scheduler {
     /// Replies with a cancellation the body must propagate.
     fn respond_cancel(&mut self, waiter: Waiter, status: u32) {
         if self.still_waiting(waiter) {
-            self.tasks.get_mut(&waiter.task).expect("waiting task").command =
-                ChimiFiberCommand::Cancel;
+            self.tasks
+                .get_mut(&waiter.task)
+                .expect("waiting task")
+                .command = ChimiFiberCommand::Cancel;
             self.respond(waiter, status, |_| {});
         }
     }

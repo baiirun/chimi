@@ -1,0 +1,20 @@
+import std/clock.{Clock}
+import app/payload as Workload
+import app/payload.{Tree}
+
+// PG06: CB02's DAG, a tree 20 levels deep whose two branches at every level
+// are the same value: 21 distinct values. The outcome is N.
+
+fn grow(depth: Int) -> Tree {
+  case depth {
+    0 -> Tree.Leaf
+    _ -> {
+      let child = grow(depth - 1)
+      Tree.Node(child, child)
+    }
+  }
+}
+
+pub fn main(arguments: List<Text>) -> Int needs { clock: Clock } {
+  Workload.run(Workload.Payload.Graph(grow(20)), Workload.count(arguments))
+}

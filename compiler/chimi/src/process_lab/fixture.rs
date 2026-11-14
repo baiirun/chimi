@@ -78,11 +78,13 @@ pub(super) struct Scratch(PathBuf);
 
 impl Scratch {
     pub(super) fn new(scenario: &Scenario) -> Result<Self, String> {
-        let path = std::env::temp_dir().join(format!(
-            "chimi-process-lab-{}-{}",
-            std::process::id(),
-            scenario.id
-        ));
+        Self::named(scenario.id)
+    }
+
+    /// A scratch directory for `name`, unique to this lab process.
+    pub(super) fn named(name: &str) -> Result<Self, String> {
+        let path =
+            std::env::temp_dir().join(format!("chimi-process-lab-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path)
             .map_err(|error| format!("create {}: {error}", path.display()))?;
@@ -607,8 +609,14 @@ fn check_memory(scenario: &Scenario, runs: &[Run], options: &Options) -> Result<
 
 /// The native executable of the fixture, built into `scratch`.
 fn build(scenario: &Scenario, scratch: &Path) -> Result<PathBuf, String> {
-    let project = LoadedProject::load(root(scenario), "app/main")
-        .map_err(|error| format!("load fixture: {error}"))?;
+    build_entry(&root(scenario), "app/main", scratch)
+}
+
+/// The native executable of the project at `root` with entry module `entry`,
+/// built into `scratch` as `program`.
+pub(super) fn build_entry(root: &Path, entry: &str, scratch: &Path) -> Result<PathBuf, String> {
+    let project =
+        LoadedProject::load(root, entry).map_err(|error| format!("load fixture: {error}"))?;
     let program = Compiler::prepare_backend(project.sources()).map_err(|diagnostics| {
         format!(
             "fixture does not compile: {}",
