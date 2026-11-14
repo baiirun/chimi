@@ -5427,9 +5427,11 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
   char holder[96];
   if (violation->owner == 0)
     snprintf(holder, sizeof(holder), "the task it was handed to has ended");
+  /* The task owns the capability, so the copy it used failed the token check:
+     another copy has replaced it. */
   else if (violation->owner == violation->task)
-    snprintf(holder, sizeof(holder), "this copy is stale, because task %" PRIu64
-             " handed it on and got it back", violation->task);
+    snprintf(holder, sizeof(holder), "this copy is stale, and task %" PRIu64
+             " holds the current one", violation->task);
   else
     snprintf(holder, sizeof(holder), "task %" PRIu64 " owns it", violation->owner);
   char text[320];

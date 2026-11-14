@@ -4431,6 +4431,60 @@ fn native_backstop_reading_one_receiver_field_into_two_tasks_defects_the_second_
     );
 }
 
+// task-and-channel-capabilities.md, "Checked at run time": a stale copy can reach
+// the task that owns the capability. `dup` through a function value gives main two
+// copies of one Receiver; the child captures `a`, so it owns the Receiver, and main
+// then sends the stale `b` to that same child over a side channel. The child's
+// receive on `b` must defect, and since the owner is the task using the copy, the
+// message must say this copy is stale and the task holds the current one, not that
+// it handed the Receiver on and got it back (task 2 never handed it on). Rejects a
+// runtime that accepts the stale copy because its user owns the channel (the child
+// would read 5 and main return it).
+#[test]
+fn native_backstop_a_stale_copy_sent_to_the_owner_defects() {
+    let message = native_capability_defect(
+        "stale-copy-to-owner",
+        concat!(
+            "fn dup<T>(x: T) -> (T, T) {\n",
+            "  (x, x)\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let c = Channel.bounded(1)\n",
+            "  let side = Channel.bounded(1)\n",
+            "  let f = dup\n",
+            "  let p = f(c.receiver)\n",
+            "  case p {\n",
+            "    (a, b) -> {\n",
+            "      let sr = side.receiver\n",
+            "      let child = Task.start(fn() -> Int {\n",
+            "        let held = a\n",
+            "        let got = Channel.receive(sr)\n",
+            "        case got {\n",
+            "          Receive.Received(r) -> {\n",
+            "            let x = Channel.receive(r)\n",
+            "            case x {\n",
+            "              Receive.Received(v) -> v\n",
+            "              Receive.Drained -> 0\n",
+            "            }\n",
+            "          }\n",
+            "          Receive.Drained -> 0\n",
+            "        }\n",
+            "      })\n",
+            "      Channel.send(c.sender, 5)\n",
+            "      Channel.send(side.sender, b)\n",
+            "      Task.result(child)\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        message,
+        "channel capability violation: task 2 cannot use the Receiver of channel 1 \
+         in Channel.receive: this copy is stale, and task 2 holds the current one"
+    );
+}
+
 /// A helper whose child reads one value from `r` and ends, returning its handle so
 /// the caller can wait for the end.
 const HAND_AND_JOIN: &str = concat!(

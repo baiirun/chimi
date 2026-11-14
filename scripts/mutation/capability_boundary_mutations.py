@@ -77,6 +77,12 @@ MUTATIONS = [
         targets=["cli"], filter=BACKSTOP,
     ),
     dict(
+        name="a stale copy at its owner names the owner as another task",
+        file=RUNTIME_C,
+        edits=[("  else if (violation->owner == violation->task)\n", "  else if (false)\n")],
+        targets=["cli"], filter=BACKSTOP,
+    ),
+    dict(
         name="a failed transfer is reported as a use",
         file=RUNTIME_C,
         edits=[("  bool transfer = violation->request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER ||\n",
