@@ -55,7 +55,8 @@ pub native fn multiply_checked(left: Int, right: Int) -> Option<Int>
 pub native fn divide_checked(left: Int, right: Int) -> Option<Int>
 
 /// Returns the remainder of `left / right`, with the sign of `left`, or
-/// `None` when `right` is `0` or the division overflows.
+/// `None` when `right` is `0`. `-2^63 % -1` is `Some(0)`; only the matching
+/// division overflows.
 ///
 /// Cost: O(1).
 pub native fn remainder_checked(left: Int, right: Int) -> Option<Int>
