@@ -345,12 +345,34 @@ pub(crate) enum StandardFunction {
     SupervisorRemoveSupervisor,
     SupervisorStop,
     SupervisorWait,
+    /// `std/debug.crash`: ends the unit of work with a defect carrying the message.
+    DebugCrash,
+    // Operations that only a `native fn` in the embedded standard tree binds
+    // (`operations.rs`); no built-in module exposes them. They follow every
+    // other function, because declaration order is the native runtime's
+    // `CHIMI_INTRINSIC_*` order.
+    OptionUnwrapOrFail,
+    TextConcat,
+    TextByteLength,
+    TextByteSlice,
+    TextContains,
+    TextStartsWith,
+    TextEndsWith,
+    TextSplit,
+    TextReplace,
+    TextTrimStart,
+    TextTrimEnd,
+    ListGet,
+    ListPush,
+    ListSlice,
+    ListSet,
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 83] = [
+    pub(crate) const ALL: [Self; 84] = [
         Self::DebugRender,
         Self::DebugRenderIndented,
+        Self::DebugCrash,
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -490,7 +512,9 @@ impl StandardFunction {
             | Self::FloatToInt
             | Self::FloatToText
             | Self::FloatParse => Some(StandardModule::Float),
-            Self::DebugRender | Self::DebugRenderIndented => Some(StandardModule::Debug),
+            Self::DebugRender | Self::DebugRenderIndented | Self::DebugCrash => {
+                Some(StandardModule::Debug)
+            }
             Self::OrderCompare | Self::OrderMin | Self::OrderMax => Some(StandardModule::Order),
             Self::RangeStart | Self::RangeEnd | Self::RangeLength | Self::RangeContains => {
                 Some(StandardModule::Range)
@@ -513,7 +537,25 @@ impl StandardFunction {
             | Self::DurationAbsolute
             | Self::DurationToText
             | Self::DurationParse => Some(StandardModule::Duration),
-            Self::ListFirst | Self::ListLength | Self::TextAppend | Self::TextEqual => None,
+            Self::ListFirst
+            | Self::ListLength
+            | Self::TextAppend
+            | Self::TextEqual
+            | Self::OptionUnwrapOrFail
+            | Self::TextConcat
+            | Self::TextByteLength
+            | Self::TextByteSlice
+            | Self::TextContains
+            | Self::TextStartsWith
+            | Self::TextEndsWith
+            | Self::TextSplit
+            | Self::TextReplace
+            | Self::TextTrimStart
+            | Self::TextTrimEnd
+            | Self::ListGet
+            | Self::ListPush
+            | Self::ListSlice
+            | Self::ListSet => None,
         }
     }
 
@@ -602,6 +644,22 @@ impl StandardFunction {
             Self::SupervisorStop => "stop",
             Self::SupervisorWait => "wait",
             Self::ClockSleep => "sleep",
+            Self::DebugCrash => "crash",
+            Self::OptionUnwrapOrFail => "unwrap_or_fail",
+            Self::TextConcat => "concat",
+            Self::TextByteLength => "byte_length",
+            Self::TextByteSlice => "byte_slice",
+            Self::TextContains => "contains",
+            Self::TextStartsWith => "starts_with",
+            Self::TextEndsWith => "ends_with",
+            Self::TextSplit => "split",
+            Self::TextReplace => "replace",
+            Self::TextTrimStart => "trim_start",
+            Self::TextTrimEnd => "trim_end",
+            Self::ListGet => "get",
+            Self::ListPush => "push",
+            Self::ListSlice => "slice",
+            Self::ListSet => "set",
         }
     }
 

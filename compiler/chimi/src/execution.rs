@@ -1,4 +1,5 @@
 mod constants;
+mod core_operations;
 mod debug;
 mod durations;
 mod persistent_list;
@@ -1540,6 +1541,24 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::SupervisorStop
             | StandardFunction::SupervisorWait
             | StandardFunction::ClockSleep => self.invoke_process(function, arguments, call_node),
+            StandardFunction::DebugCrash
+            | StandardFunction::OptionUnwrapOrFail
+            | StandardFunction::TextConcat
+            | StandardFunction::TextByteLength
+            | StandardFunction::TextByteSlice
+            | StandardFunction::TextContains
+            | StandardFunction::TextStartsWith
+            | StandardFunction::TextEndsWith
+            | StandardFunction::TextSplit
+            | StandardFunction::TextReplace
+            | StandardFunction::TextTrimStart
+            | StandardFunction::TextTrimEnd
+            | StandardFunction::ListGet
+            | StandardFunction::ListPush
+            | StandardFunction::ListSlice
+            | StandardFunction::ListSet => {
+                self.invoke_core_operation(function, arguments, call_node)
+            }
             StandardFunction::IoPath => {
                 let [RuntimeValue::Text(path)] = arguments.as_slice() else {
                     return self.intrinsic_shape_defect(function, call_node);

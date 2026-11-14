@@ -215,13 +215,9 @@ impl<T> PersistentList<T> {
         (0..self.length).map(|index| self.get(index).expect("index is inside the window"))
     }
 
-    // `push` is reached from Chimi once the standard-library mechanism (G1)
-    // exposes it; until then only tests call it.
-
     /// Returns a new list with `value` appended; `self` is unchanged. A window
     /// that ends before its vector does writes the next slot into a path copy,
     /// so the shared vector every other window sees is untouched.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn push(&self, value: T) -> Self {
         let end = self.start + self.length;
         let value = Arc::new(value);
@@ -231,6 +227,16 @@ impl<T> PersistentList<T> {
             self.vector.set(end, value)
         };
         Self::window(vector, self.start, self.length + 1)
+    }
+
+    /// Returns a new list with element `index` replaced by `value`, writing a path
+    /// copy so every other window keeps its element.
+    ///
+    /// Requires: `index < self.len()`.
+    pub(super) fn set(&self, index: usize, value: T) -> Self {
+        assert!(index < self.length, "set index is inside the window");
+        let vector = self.vector.set(self.start + index, Arc::new(value));
+        Self::window(vector, self.start, self.length)
     }
 
     /// Window `range` of this list. `None` when the range is reversed or extends

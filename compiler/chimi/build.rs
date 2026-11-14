@@ -29,6 +29,7 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
+    embed_standard_tree();
     let target = std::env::var("TARGET").expect("cargo sets TARGET");
     println!("cargo:rustc-env=CHIMI_RUNTIME_TARGET={target}");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
@@ -46,6 +47,57 @@ fn main() {
         std::fs::write(out.join(format!("{name}.a")), bytes)
             .expect("write prebuilt runtime archive");
         std::fs::write(out.join(format!("{name}.key")), key).expect("write prebuilt runtime key");
+    }
+}
+
+/// Writes `$OUT_DIR/standard_tree.rs`: every `.chimi` file under `std/`, as
+/// `(module path, text)` pairs in ascending module path, so the compiler embeds the
+/// whole tree and a new file needs no registration.
+fn embed_standard_tree() {
+    println!("cargo:rerun-if-changed=std");
+    let root = Path::new("std");
+    let mut files = Vec::new();
+    collect_standard_files(root, &mut files);
+    files.sort();
+    let mut generated =
+        String::from("pub(crate) const EMBEDDED_MODULES: &[(&str, &str)] = &[\n");
+    for file in &files {
+        let relative = file
+            .strip_prefix(root)
+            .expect("collected files are under std/")
+            .with_extension("");
+        let module = format!(
+            "std/{}",
+            relative
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        );
+        let absolute = std::fs::canonicalize(file).expect("canonicalize a std source file");
+        generated.push_str(&format!(
+            "    ({module:?}, include_str!({:?})),\n",
+            absolute.to_string_lossy()
+        ));
+    }
+    generated.push_str("];\n");
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    std::fs::write(out.join("standard_tree.rs"), generated).expect("write standard_tree.rs");
+}
+
+fn collect_standard_files(directory: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries {
+        let path = entry.expect("read a std directory entry").path();
+        if path.is_dir() {
+            println!("cargo:rerun-if-changed={}", path.display());
+            collect_standard_files(&path, files);
+        } else if path.extension().is_some_and(|extension| extension == "chimi") {
+            println!("cargo:rerun-if-changed={}", path.display());
+            files.push(path);
+        }
     }
 }
 

@@ -17,6 +17,7 @@ mod inspection;
 mod json;
 pub mod line_index;
 mod numeric;
+mod operations;
 #[cfg(feature = "native-backend")]
 #[doc(hidden)]
 pub mod process_lab;
@@ -25,6 +26,7 @@ mod resolution;
 mod semantic;
 pub mod source;
 mod standard;
+mod standard_tree;
 mod syntax;
 mod typing;
 

@@ -1,0 +1,101 @@
+/// A value that may be absent. `Option`, `Some`, and `None` are in every
+/// module's prelude; import this module as `Option` for its helpers, such as
+/// `Option.unwrap_or`.
+
+// 1. Public types.
+
+/// Either `Some(value)` or `None`. `None` is declared first, so derived
+/// ordering puts it before every `Some`.
+pub enum Option<T> {
+  None
+  Some(value: T)
+}
+
+// 5. Queries and predicates.
+
+/// Returns `True` when `option` holds a value.
+///
+/// Cost: O(1).
+pub fn is_some<T>(option: Option<T>) -> Bool {
+  case option {
+    Some(_) -> True
+    None -> False
+  }
+}
+
+/// Returns `True` when `option` is `None`.
+///
+/// Cost: O(1).
+pub fn is_none<T>(option: Option<T>) -> Bool {
+  case option {
+    Some(_) -> False
+    None -> True
+  }
+}
+
+// 6. Transformations, with callbacks last.
+
+/// Returns `Some` of `change` applied to the value, or `None` when `option` is
+/// `None`.
+///
+/// Calls: `change` once when `option` holds a value, never otherwise.
+/// Cost: O(1) plus `change`.
+pub fn map<T, U, E, R>(option: Option<T>, change: fn(T) -> U errors E needs R) -> Option<U> {
+  case option {
+    Some(value) -> Some(change(value))
+    None -> None
+  }
+}
+
+/// Returns what `next` returns for the value, or `None` when `option` is
+/// `None`, so lookups that may miss chain without nesting.
+///
+/// Calls: `next` once when `option` holds a value, never otherwise.
+/// Cost: O(1) plus `next`.
+pub fn and_then<T, U, E, R>(
+  option: Option<T>,
+  next: fn(T) -> Option<U> errors E needs R,
+) -> Option<U> {
+  case option {
+    Some(value) -> next(value)
+    None -> None
+  }
+}
+
+/// Returns `option` when it holds a value, and `other` otherwise.
+///
+/// Cost: O(1).
+pub fn or<T>(option: Option<T>, other: Option<T>) -> Option<T> {
+  case option {
+    Some(_) -> option
+    None -> other
+  }
+}
+
+/// Returns the value of `option`, or `fallback` when it is `None`.
+///
+/// Cost: O(1).
+pub fn unwrap_or<T>(option: Option<T>, fallback: T) -> T {
+  case option {
+    Some(value) -> value
+    None -> fallback
+  }
+}
+
+/// Returns the value of `option`, or what `fallback` returns when it is
+/// `None`.
+///
+/// Calls: `fallback` once when `option` is `None`, never otherwise.
+/// Cost: O(1) plus `fallback`.
+pub fn unwrap_or_else<T, E, R>(option: Option<T>, fallback: fn() -> T errors E needs R) -> T {
+  case option {
+    Some(value) -> value
+    None -> fallback()
+  }
+}
+
+/// Returns the value of `option`, or fails with `error` when it is `None`.
+///
+/// Fails with: `error` when `option` is `None`.
+/// Cost: O(1).
+pub native fn unwrap_or_fail<T, E>(option: Option<T>, error: E) -> T errors E
