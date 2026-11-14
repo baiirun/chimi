@@ -9496,16 +9496,10 @@ impl ProjectTypeChecker {
             exclusions: Vec::new(),
         })];
         for parameter in row.parameters {
-            // A failure set bound through a value argument, as `error: E` binds
-            // it in `Option.unwrap_or_fail`, raises that value's type.
             let replacement = substitution
                 .failures
                 .get(&parameter)
                 .copied()
-                .or_else(|| {
-                    let value = substitution.values.get(&parameter).copied()?;
-                    self.failure_row_for_type(value)
-                })
                 .unwrap_or_else(|| {
                     self.intern_failure_row(FailureRow {
                         variants: Vec::new(),

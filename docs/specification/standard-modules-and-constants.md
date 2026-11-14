@@ -12,7 +12,12 @@ is implemented on the existing intrinsics (migration step 2). Debug rendering
 (G10) is implemented as hand-built intrinsics ahead of step 4, as step 5
 allows; the runner's bounded rendering is not, and the one registry render override
 (`Duration`, as canonical text) is hand-built in both renderers. The standard tree (G1)
-and C bindings (G20) are not implemented. Source spelling is provisional, as
+is implemented for `std/option`, `std/int`, `std/text`, `std/list`, and
+`std/order` (migration steps 3 and 4, `ts-0ba63e`): the embedded tree, `native
+fn`, the registry in `operations.rs` with runtime-known declarations, and the
+`std-tests` harness. `native type`, `--std-dir`, `chimi std check`, the generated
+`operations.h`, and moving interpolation to `std/text.concat` are not, and C
+bindings (G20) are not implemented. Source spelling is provisional, as
 in the other specifications.
 
 The words MUST, MUST NOT, SHOULD, and MAY are normative. Examples use
