@@ -1179,12 +1179,10 @@ need closed by the runner, and the runner flag `--clock=real|virtual`
    and SD03 test that wording.
 
 5. **Should the root supervisor and nested supervisors emit a start event?**
-   The prototype emits none, because a supervisor has no incarnation. The
-   transcripts above therefore first show `S1` inside `process_started`, and
-   a supervisor with no members leaves no trace until it stops.
-   *Recommendation:* add `supervisor_started` with `supervisor` and `parent`
-   fields when nested supervisors land (U9). Until then, keep the prototype
-   set so that U5 to U8 match the reference transcript. As built (U9), a
-   nested supervisor's event also names its `membership`, so a transcript
-   ties `membership_removed` and `restart_attempted` for that membership to
-   the supervisor.
+   *Resolved at U9.* Through U8 the prototype emitted none, because a
+   supervisor has no incarnation, so transcripts first showed `S1` inside
+   `process_started`. From U9 every supervisor emits `supervisor_started` with
+   `supervisor` and `parent` fields, and the reference transcripts above begin
+   with it. A nested supervisor's event also names its `membership`, so a
+   transcript ties `membership_removed` and `restart_attempted` for that
+   membership to the supervisor.
