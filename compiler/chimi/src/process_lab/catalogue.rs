@@ -333,7 +333,7 @@ pub static SCENARIOS: [Scenario; 131] = [
     fixture("OB06", "virtual-time-costs-no-wall-time", U6),
     Scenario::new(
         "OB07",
-        "trace-abi-version-five",
+        "trace-abi-version-six",
         U5,
         Form::Check(super::observability_kind::trace_abi_version_six),
     ),
