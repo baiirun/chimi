@@ -41,7 +41,12 @@ compile error, or a native build failure the lab reports as a failed scenario) i
 KILLED-BUILD, and any other failure is KILLED-OTHER; neither proves the scenario
 guards the mutant. Each distinct command must pass at the baseline.
 
-Before any mutant, the unmutated tests must pass (BASELINE). Output is one line
+Before any mutant, the unmutated tests must pass (BASELINE). The baseline runs
+exactly the test selections (targets and filter) and commands the chosen mutants
+use, not the whole crate. A selection that passed at the same commit is
+recorded under the scratch directory and not run again, so splitting a list
+into several --only runs costs one baseline in total. --fresh-baseline ignores
+those records. Output is one line
 per mutant: KILLED (a test failed), KILLED-BUILD (the mutant did not compile,
 which proves nothing about the tests), KILLED-OTHER (a command mutant failed,
 but not with any `expect` text), SURVIVED, NO-TESTS (the targets and filter
@@ -51,6 +56,7 @@ TIMEOUT.
 """
 
 import argparse
+import hashlib
 import os
 import re
 import runpy
@@ -137,26 +143,53 @@ def command_status(output: str, expect) -> str:
     return "KILLED-OTHER"
 
 
-def run_list(path: Path, tree: Path, target_dir: Path, only, timeout) -> bool:
+def baseline_record(records: Path, commit: str, crate: str, args, selection) -> Path:
+    key = hashlib.sha256(repr((commit, crate, tuple(args), selection)).encode()).hexdigest()[:24]
+    return records / key
+
+
+def run_baseline(spec, crate: Path, args, mutations, target_dir: Path, records: Path,
+                 commit: str, timeout) -> bool:
+    """Requires: every selection a mutant uses. Ensures: each passed unmutated at
+    commit, either now or in an earlier run recorded under records."""
+    selections = dict.fromkeys(
+        ("command", tuple(m["command"])) if "command" in m
+        else ("tests", tuple(m.get("targets", [])), m.get("filter", ""))
+        for m in mutations
+    )
+    for selection in selections:
+        record = baseline_record(records, commit, spec["CRATE"], args, selection)
+        if record.exists():
+            continue
+        started = time.monotonic()
+        if selection[0] == "command":
+            result = run_command(crate, list(selection[1]), target_dir, timeout)
+            label = " ".join(selection[1])
+        else:
+            result = cargo_test(crate, args, list(selection[1]), selection[2], target_dir, timeout)
+            label = " ".join(selection[1]) or "all targets"
+            if selection[2]:
+                label += f" -- {selection[2]}"
+        if result.returncode != 0:
+            print(f"BASELINE FAILED [{label}] ({time.monotonic() - started:.0f}s)", flush=True)
+            print(result.stdout[-4000:] + result.stderr[-4000:])
+            return False
+        print(f"BASELINE ok  [{label}] ({time.monotonic() - started:.0f}s)", flush=True)
+        records.mkdir(parents=True, exist_ok=True)
+        record.write_text(label + "\n")
+    return True
+
+
+def run_list(path: Path, tree: Path, target_dir: Path, records: Path, commit: str, only,
+             timeout) -> bool:
     spec = runpy.run_path(str(path))
     crate = tree / spec["CRATE"]
     args = spec.get("CARGO_TEST_ARGS", [])
     mutations = [m for m in spec["MUTATIONS"] if not only or m["name"] in only]
     print(f"# {path.name}: {len(mutations)} mutants against {spec['CRATE']}", flush=True)
 
-    started = time.monotonic()
-    baseline = cargo_test(crate, args, [], "", target_dir, timeout)
-    if baseline.returncode != 0:
-        print(f"BASELINE FAILED ({time.monotonic() - started:.0f}s)", flush=True)
-        print(baseline.stdout[-4000:] + baseline.stderr[-4000:])
+    if not run_baseline(spec, crate, args, mutations, target_dir, records, commit, timeout):
         return False
-    for command in dict.fromkeys(tuple(m["command"]) for m in mutations if "command" in m):
-        result = run_command(crate, list(command), target_dir, timeout)
-        if result.returncode != 0:
-            print(f"BASELINE FAILED: {' '.join(command)}", flush=True)
-            print(result.stdout[-4000:] + result.stderr[-4000:])
-            return False
-    print(f"BASELINE ok ({time.monotonic() - started:.0f}s)", flush=True)
 
     ok = True
     for mutation in mutations:
@@ -231,16 +264,21 @@ def main() -> int:
                         default=Path(tempfile.gettempdir()) / "chimi-mutation")
     parser.add_argument("--only", action="append", default=[], help="run only this mutant name")
     parser.add_argument("--timeout", type=int, default=600, help="seconds per cargo test run")
+    parser.add_argument("--fresh-baseline", action="store_true",
+                        help="rerun baselines even if they passed at this commit before")
     options = parser.parse_args()
 
     root = repository_root()
     tree = options.scratch / "tree"
     commit = export_tree(root, options.revision, tree)
     print(f"# mutation run at {commit}", flush=True)
+    records = options.scratch / "baselines"
+    if options.fresh_baseline and records.exists():
+        shutil.rmtree(records)
     ok = True
     for path in options.lists:
-        ok &= run_list(path.resolve(), tree, options.scratch / "target", options.only,
-                       options.timeout)
+        ok &= run_list(path.resolve(), tree, options.scratch / "target", records, commit,
+                       options.only, options.timeout)
     print("# result:", "every mutant killed" if ok else "FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)")
     return 0 if ok else 1
 
