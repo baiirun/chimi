@@ -392,3 +392,28 @@ KILLED       ES02: a declared nested supervisor is marshalled as Never [cargo ru
 KILLED       ES03: a declared nested supervisor is marshalled as OnDefect [cargo run --quiet --bin chimi-process-lab -- --scenario ES03 --through U9] (4s)
 KILLED       ES04: a nested escalation ends its membership as a requested end [cargo run --quiet --bin chimi-process-lab -- --scenario ES04 --through U9] (4s)
 # result: every mutant killed
+
+# Command: scripts/heavy.sh python3 scripts/mutation/mutate.py --scratch <scratch>/mutation scripts/mutation/process_u10_mutations.py
+# U10: forcing program FP01, memory flatness MF02/MF03 and memberships_live, the PG03/PG10 gates and the
+# performance-harness helpers. At 61d2d06 the kept-capacity-slot mutant was KILLED-OTHER: MF03 failed through the
+# exit-code check (the run defects), not the outcome line; e48dfda accepts "exited with". 12 mutants, all KILLED.
+# mutation run at e48dfda0b586f77c2c45625195794b5410bfa748
+# process_u10_mutations.py: 12 mutants against compiler/chimi
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario FP01 --through U10] (5s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario MF02 --through U10] (1s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario PG10 --through U10] (4s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario PG03 --through U10] (3s)
+BASELINE ok  [lib -- process_lab::performance] (2s)
+KILLED       FP01: admission allows one member over capacity [cargo run --quiet --bin chimi-process-lab -- --scenario FP01 --through U10] (3s)
+KILLED       MF02: an ended incarnation keeps its heap [cargo run --quiet --bin chimi-process-lab -- --scenario MF02 --through U10] (5s)
+KILLED       MF03: removal keeps the membership record [cargo run --quiet --bin chimi-process-lab -- --scenario MF03 --through U10] (5s)
+KILLED       MF03: removal keeps the capacity slot [cargo run --quiet --bin chimi-process-lab -- --scenario MF03 --through U10] (3s)
+KILLED       MF03: memberships_live ignores the kernel [cargo run --quiet --bin chimi-process-lab -- --scenario MF03 --through U10] (3s)
+KILLED       PG10: trace-off runs give the scheduler a trace mode [cargo run --quiet --bin chimi-process-lab -- --scenario PG10 --through U10] (8s)
+KILLED       PG03: each restart waits 1 ms of real time [cargo run --quiet --bin chimi-process-lab -- --scenario PG03 --through U10] (133s)
+KILLED       harness: p95 takes the median [lib -- process_lab::performance] (2s)
+KILLED       harness: an overhead ratio may fall below 1 [lib -- process_lab::performance] (2s)
+KILLED       harness: the stop phase starts at the last termination [lib -- process_lab::performance] (2s)
+KILLED       harness: the baseline warns at exactly 1.5 times [lib -- process_lab::performance] (2s)
+KILLED       harness: a gate passes at its limit [lib -- process_lab::performance] (2s)
+# result: every mutant killed
