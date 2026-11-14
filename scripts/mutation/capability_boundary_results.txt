@@ -1,0 +1,33 @@
+# Command: scripts/mutation/mutate.py --scratch <scratch>/mutation [--only <name> ...] scripts/mutation/capability_boundary_mutations.py
+# Commit: 6e5b35d (ts-bb95dc). Run in three pieces of two or three mutants (--only),
+# each with its own baseline, to keep every run under ten minutes on the laptop.
+# Before 6e5b35d the baseline failed: 45 cli tests could not find the bundled
+# fiber runtime in Cargo 1.100's build-directory layout (fixed in that commit).
+# No mutant survived, so none is argued equivalent.
+
+# mutation run at 6e5b35d2445d0c5dc26cc2d80ed103da0eb449e5
+# capability_boundary_mutations.py: 2 mutants against compiler/chimi
+BASELINE ok (318s)
+KILLED       Receive<T> is shareable whatever T is [language -- a_received_value_has_the_capability_class_of_its_payload] (3s)
+KILLED       Receive<T> is exclusive whatever T is [language -- a_received_value_has_the_capability_class_of_its_payload] (3s)
+# result: every mutant killed
+
+# mutation run at 6e5b35d2445d0c5dc26cc2d80ed103da0eb449e5
+# capability_boundary_mutations.py: 3 mutants against compiler/chimi
+BASELINE ok (307s)
+KILLED       the wrong-owner receiver check is disabled [cli -- native_backstop_] (5s)
+KILLED       a capability violation is not reported to the host [cli -- native_backstop_] (5s)
+KILLED       the report names the violating task as the owner [cli -- native_backstop_] (6s)
+# result: every mutant killed
+
+# mutation run at 6e5b35d2445d0c5dc26cc2d80ed103da0eb449e5
+# capability_boundary_mutations.py: 3 mutants against compiler/chimi
+BASELINE ok (313s)
+KILLED       an ended owner keeps the Receiver it was handed [cli -- native_backstop_] (5s)
+KILLED       the report names task 0 instead of saying the owner ended [cli -- native_backstop_] (6s)
+KILLED       a failed transfer is reported as a use [cli -- native_backstop_] (6s)
+# result: every mutant killed
+
+# Also rerun at 6e5b35d, because this branch edits runtime/chimi-fiber/src/scheduler.rs:
+# scripts/mutation/fiber_mutations.py, 54 mutants in two pieces (18 + 36):
+# BASELINE ok; 54 KILLED, 0 SURVIVED.

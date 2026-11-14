@@ -285,7 +285,10 @@ Checked at run time (native, by the owner token):
   the second `Task.start` that captures it defects;
 - one capability read out of the same binding twice (two reads of
   `channel.receiver`, or a pattern binding beside the binding it matched) and
-  handed to two tasks: the second hand-off defects.
+  handed to two tasks: the second hand-off defects;
+- any of these after the task that was handed the capability has ended: its
+  cleanup aborted the channel and dropped the capability, so the stale copy
+  still defects, and the message says the owner ended instead of naming one.
 
 The defect names the capability, the task that broke the contract, and the task
 that owns the capability, for example
@@ -304,6 +307,10 @@ Not yet covered:
   the native runtime: the task that receives it defects on first use, even when
   the sender has not touched it since (a legitimate hand-off fails), and a
   sender that keeps using it after the send is not the one that defects;
+  a child that ends after sending it, or that returns it as its `Task.result`,
+  aborts the channel in its cleanup, so the task that receives it holds a
+  Receiver of an aborted channel (a later `Channel.send` on it fails with
+  `SendError.Aborted`);
 - `Channel.SendError<T>` is shareable whatever `T` is, so the payload handed
   back by `Closed(value)` or `Aborted(value)` is not exclusive to the checker;
 - a violation emits no dedicated trace event; the trace shows only the
