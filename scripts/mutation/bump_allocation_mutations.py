@@ -53,6 +53,9 @@ MUTATIONS = [
  m("a pass that bumped only into its first chunk moves nothing",
    [("  return scope->first_chunk && (scope->first_chunk->next || scope->bump != scope->first_chunk->data);\n",
      "  return scope->first_chunk && scope->first_chunk->next;\n")], LANGUAGE),
+ m("a control's cause is not rewritten",
+   [("      FORWARD(((ChimiControl *)pointer)->cause);\n", "")],
+   dict(targets=["cli", "language"], filter=None)),
  m("the counters of the pass are never added",
    [("  flush_young_counts(scope);\n  collecting_scope = scope;", "  collecting_scope = scope;")], HEAP),
 ]

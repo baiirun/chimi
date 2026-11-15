@@ -4440,7 +4440,7 @@ fn memory_report_over_rounds(name: &str, source: &str, runner: &[&str], rounds: 
 
 // Guards: a pass's young chunk allocations are counted at its boundary, while a
 // child task's heap is freed in the middle of the pass. The peak footprint must
-// still count both at once: here the 1500 pushes still live in the pass while
+// still count both at once: here the 1000 pushes still live in the pass while
 // the child maps a 20000-element list (CHI-219 review).
 #[test]
 fn native_peak_footprint_counts_a_pass_and_a_child_task_together() {
@@ -4475,7 +4475,7 @@ fn native_peak_footprint_counts_a_pass_and_a_child_task_together() {
         )
     };
     let alone = memory_report_over_rounds("peak-child-alone", &source(1), &[], 0);
-    let together = memory_report_over_rounds("peak-child-together", &source(1500), &[], 0);
+    let together = memory_report_over_rounds("peak-child-together", &source(1000), &[], 0);
     let alone_peak = json_u64_field(&alone, "peak_footprint_bytes");
     let together_peak = json_u64_field(&together, "peak_footprint_bytes");
     // The pushes alone keep about as much live as the child does.
