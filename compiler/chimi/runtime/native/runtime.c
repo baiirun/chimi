@@ -7616,8 +7616,10 @@ ChimiControl *chimi_rt_direct_loop(ChimiRuntime *runtime, uint32_t node_id,
   if (!runtime->silent) return chimi_rt_loop(runtime, node_id, incoming, parent);
   ChimiControl *initial = run_node(CHIMI_NODES[node_id].b, runtime, incoming, parent);
   if (initial->kind != CONTROL_SUCCESS) return initial;
+  /* A body that never reads its state (`loop s = "x" { break 5 }`) lowers whatever
+     the state's type, so a state that is not an Int runs on the runtime loop. */
   if (initial->value->kind != VALUE_INTEGER)
-    return defect("verified direct loop state is not an integer", node_id);
+    return run_loop_passes(runtime, node_id, incoming, parent, initial->value);
   int64_t state = initial->value->as.integer;
   for (;;) {
     if (runtime->cancel) return cancelled();

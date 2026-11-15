@@ -10749,4 +10749,43 @@ fn direct_integer_loop_defects_match_the_interpreter() {
         division.contains("integer division by zero in `/`: 6 / 0"),
         "{division}"
     );
+    let minimum = run_both(
+        "direct-loop-minimum",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  loop n = -9223372036854775807 - 1 {\n",
+            "    case n {\n",
+            "      0 -> break n\n",
+            "      _ -> n / -1\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert!(
+        minimum.contains("integer overflow in `/`: -9223372036854775808 / -1"),
+        "{minimum}"
+    );
+}
+
+// Guards: a loop body that never reads its state lowers directly whatever the state's
+// type, and a state that is not an Int still runs to the loop's value.
+#[test]
+fn direct_loops_over_other_states_agree_with_the_interpreter() {
+    let outcome = run_both(
+        "direct-loop-other-states",
+        concat!(
+            "fn text() -> Int { loop s = \"x\" { break 5 } }\n",
+            "fn flag() -> Int {\n",
+            "  loop s = False {\n",
+            "    case 3 > 2 {\n",
+            "      True -> break 7\n",
+            "      False -> break 0\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int { text() * 10 + flag() }\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":57");
 }

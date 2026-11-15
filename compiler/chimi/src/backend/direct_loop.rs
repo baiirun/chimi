@@ -337,13 +337,11 @@ fn emit_int(
                     builder.ins().sdiv(left, right)
                 }
                 BinaryOperator::Remainder => {
-                    // The runtime defines `x % -1` as 0 and defects on `x % 0`.
+                    // The runtime defects on `x % 0`. Cranelift's `srem` defines
+                    // `Int` minimum % -1 as 0 without trapping, as the runtime does.
                     let zero = builder.ins().icmp_imm(IntCC::Equal, right, 0);
                     continue_unless(builder, zero, fallback);
-                    let minus_one = builder.ins().icmp_imm(IntCC::Equal, right, -1);
-                    let one = builder.ins().iconst(types::I64, 1);
-                    let divisor = builder.ins().select(minus_one, one, right);
-                    builder.ins().srem(left, divisor)
+                    builder.ins().srem(left, right)
                 }
                 _ => unreachable!("only integer arithmetic is read as an Int expression"),
             }
