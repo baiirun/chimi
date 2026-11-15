@@ -25,7 +25,7 @@ impl Evaluator<'_> {
             (StandardFunction::JsonDecode, [RuntimeValue::Text(source)]) => {
                 match decode_json(source) {
                     Ok(value) => Control::Success(self.json_to_runtime(value)),
-                    Err(error) => Control::Failure(self.standard_value(
+                    Err(error) => Control::failure(self.standard_value(
                         StandardConstructor::DecodeInvalidJson,
                         vec![
                             RuntimeValue::Text(error.message),
@@ -56,14 +56,14 @@ impl Evaluator<'_> {
                             NumberConversionError::NotInteger => StandardConstructor::JsonNotInteger,
                             NumberConversionError::OutOfRange => StandardConstructor::JsonOutOfRange,
                         };
-                        Control::Failure(self.standard_value(variant, Vec::new()))
+                        Control::failure(self.standard_value(variant, Vec::new()))
                     }
                 }
             }
             (StandardFunction::JsonNumberToDecimal, [RuntimeValue::JsonNumber(number)]) => {
                 match number_to_decimal(number) {
                     Some(value) => Control::Success(RuntimeValue::Decimal(value)),
-                    None => Control::Failure(
+                    None => Control::failure(
                         self.standard_value(StandardConstructor::JsonOutOfRange, Vec::new()),
                     ),
                 }

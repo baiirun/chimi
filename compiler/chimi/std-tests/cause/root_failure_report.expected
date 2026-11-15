@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"expected_failure","error":{"type":"JobError","variant":"Transient","fields":{"code":503}},"cause":"expected failure JobError.Transient(503) (main.chimi:20)\n  context: charging job 42 (main.chimi:25)\n  caused by: expected failure HttpError.Status(503) (main.chimi:14)"}

@@ -181,6 +181,7 @@ fn defect(message: String, call_node: CoreNodeId) -> Control {
     Control::Defect {
         message,
         node: Some(call_node),
+        cause: None,
     }
 }
 
