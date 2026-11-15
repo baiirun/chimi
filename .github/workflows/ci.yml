@@ -2,9 +2,10 @@
 # the tests that cover their change locally; this is the full check that every
 # merge candidate (a wip/* branch) and main must pass. A pull request merges
 # on green CI, which replaces scripts/integrate-branch.sh:
-# - `test` builds and tests a fresh checkout of the exact commit, which is the
-#   clean-export check scripts/check-head.sh runs locally, with the same two
-#   cargo commands.
+# - `test` runs check-head.sh's two cargo commands on a fresh checkout of the
+#   exact commit, so local uncommitted work cannot leak in, which is what
+#   check-head.sh's `git archive` export guards against. Unlike that export,
+#   the checkout keeps `.git`; nothing in the build or tests reads it.
 # - `program-outputs` compares what the example programs print and trace on
 #   the pull request's merge result against its base branch.
 name: ci
