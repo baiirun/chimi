@@ -10,6 +10,10 @@ append-only.
 
 ## Setup
 
+This describes the setup when the AAR began (local sessions on Byron's
+laptop, tickets in `prog`). The current procedure is in
+[procedure.md](procedure.md).
+
 - One coordinator (the main session) owns delegation, alignment, triage, and
   integration. It does not implement features itself.
 - Background subagents own disjoint files on `main`. The compiler core is one
@@ -121,6 +125,7 @@ task notifications.
 | Lane 3 dev profile, cloud thread (same session) | build config | not measured | ~20 | `[profile.dev] opt-level = 1` in the root Cargo.toml. Sequential runs on a 4-core cloud box at fb19d63, default vs opt-level 1: cold workspace test build 53 s vs 130 s (mostly dependencies, which CI caches through rust-cache); rebuild after a chimi change 7 s vs 6 s; language.rs at 3 threads 96 s vs 47 s; cargo test --workspace 196 s vs 135 s | Kept as a net win: every run after the first cold build is faster, and the warm rebuild cost is unchanged. The cold build is 77 s slower, paid once per fresh cache |
 | Lane B bug backlog, cloud thread (one session plus two Sonnet reviews, no workflow) | fix | reviews 65k and 102k; session not measured | ~110 | 10 tickets. 7 were already fixed on main (CHI-174, 188, 192, 187, 173, 171, 172) and were closed with evidence; that took ~15 min of probing instead of fixes. 3 fixes: CHI-177 outcome maps as key/value pairs (PR #12, 6/6 mutants killed), CHI-158 contract at a function's declared name, CHI-176 per-body native environments (ABI 22; a 2,000-call loop beside a 400-local function went from 16.7 MB to under 2 MB; 4/4 mutants killed after removing 1 equivalent mutant). Each regression test was red before its fix | Both reviews found no defects. Lessons: check `git log --grep=<prog id>` and existing tests before reproducing; a ticket backlog drifts behind fixes that landed under other tickets. The single allowed push branch serialises PRs, so CHI-158 and CHI-176 share one PR to save a CI cycle. One language.rs run on the 4-core box was OOM-killed by three 100,000-level deep-value tests at once |
 | Lane D testing spec, cloud thread (one session plus a Sonnet review agent) | spec | review 119k; session not measured | ~25 | testing.md draft (T1, G16) with 4 questions for Byron batched on one card, which he answered within minutes (all four recommendations); CHI-109 finished (last 17 unannotated doc blocks annotated, manifest emptied); Phase 5 build ticket CHI-208 filed | Sonnet review found 10 items, checked inline against the cited lines: 9 real and fixed (wrong equatable code T4301 for T4300; an example that T4349 rejects; recorders handing out exclusive values twice; imports inside example bodies; codes inside another spec's block; a cancellation case that cannot occur; the program `random` plan unrecorded; mailbox type and rendering clashes; flag spelling). Refuted 1: `capture_defect` needs no escalation, because it is test-only and programs still cannot observe defects |
+| Procedure doc, cloud thread (one session plus a Sonnet review agent) | docs | not measured | ~15 | docs/process/procedure.md written from the wave rules, the handoff and current practice; handoff.md and the AAR setup marked historical and linked to it | — |
 
 ## Is parallel faster than one agent?
 
