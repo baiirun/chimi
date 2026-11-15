@@ -101,7 +101,9 @@ pub fn values<K, V>(map: Map<K, V>) -> List<V> {
 ///
 /// Cost: O(n).
 pub fn entries<K, V>(map: Map<K, V>) -> List<(K, V)> {
-  reduce(map, [], fn(done, key, value) { List.push(done, (key, value)) })
+  reduce(map, [], fn(done, key, value) {
+    List.push(done, (key, value))
+  })
 }
 
 // 6. Transformations, with callbacks last.
