@@ -74,7 +74,9 @@ cancellation point. A firing scope withdraws the task's current park and
 cancels the children started inside it, and emits `clock_scope_fired`.
 `chimi_fiber_cancel_is_terminal()` and `chimi_fiber_scope_cancel_pending()`
 tell the running fiber whether a cancel ends the whole task and whether a
-scope cancel is waiting.
+scope cancel is waiting; `chimi_fiber_scope_polls()` tells a loop to poll
+with `CHIMI_REQUEST_SCOPE_CHECK` now and then, because under the real clock
+every request first fires the task's own due scope deadlines.
 `chimi_scheduler_execute` keeps its earlier behavior.
 `chimi_scheduler_execute_with_config` is `chimi_scheduler_execute` with three
 release hooks: `release_task_value` for every value a task returned except

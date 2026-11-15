@@ -268,6 +268,7 @@ fn starting_at_pins_the_timestamp_and_leaves_now_alone() {
         "  let elapsed = Clock.between(before, Clock.now())\n",
         "  \"${Clock.timestamp_to_text(Clock.timestamp())} ${Duration.to_text(elapsed)}\"\n",
         "}\n",
+        "fn read() -> Instant { Clock.now() }\n",
         "pub fn main() -> Text needs { clock: Clock.Clock } {\n",
         "  let pinned = Clock.from_unix_nanoseconds(1762767000250000000)\n",
         "  let fixed = Clock.starting_at(clock, pinned)\n",
@@ -275,7 +276,9 @@ fn starting_at_pins_the_timestamp_and_leaves_now_alone() {
         "  let under = inner()\n",
         "  let outside = stamp()\n",
         "  let unix = Clock.unix_nanoseconds(Clock.timestamp())\n",
-        "  \"${under} | ${outside} | ${unix}\"\n",
+        "  let wrapped = read using { clock: fixed }\n",
+        "  let drift = Duration.to_text(Clock.between(Clock.now(), wrapped()))\n",
+        "  \"${under} | ${outside} | ${unix} | ${drift}\"\n",
         "}\n",
     );
     let scratch = scratch_directory("starting-at");
@@ -284,7 +287,7 @@ fn starting_at_pins_the_timestamp_and_leaves_now_alone() {
     assert_eq!(
         default.outcome,
         success(
-            "\"2025-11-10T09:30:01.25Z 1s | 1970-01-01T00:00:02Z 1s | 2000000000\""
+            "\"2025-11-10T09:30:01.25Z 1s | 1970-01-01T00:00:02Z 1s | 2000000000 | 0s\""
         )
     );
     let started = run(
@@ -297,19 +300,32 @@ fn starting_at_pins_the_timestamp_and_leaves_now_alone() {
     assert_eq!(
         started.outcome,
         success(
-            "\"2025-11-10T09:30:01.25Z 1s | 2026-11-10T08:30:02.25Z 1s | 1794299402250000000\""
+            "\"2025-11-10T09:30:01.25Z 1s | 2026-11-10T08:30:02.25Z 1s | 1794299402250000000 | 0s\""
         )
     );
-    for (name, runner) in [
-        ("real", &["--clock-start=2026-11-10T09:30:00Z"][..]),
-        ("hour", &["--clock=virtual", "--clock-start=2026-11-10T25:30:00Z"][..]),
-        ("leap", &["--clock=virtual", "--clock-start=2026-12-31T23:59:60Z"][..]),
-        ("range", &["--clock=virtual", "--clock-start=2263-01-01T00:00:00Z"][..]),
+    let real_only = "--clock-start requires --clock=virtual";
+    let malformed = "--clock-start requires an RFC 3339 timestamp";
+    for (name, runner, reason) in [
+        ("real", &["--clock-start=2026-11-10T09:30:00Z"][..], real_only),
+        ("hour", &["--clock=virtual", "--clock-start=2026-11-10T25:30:00Z"][..], malformed),
+        ("leap", &["--clock=virtual", "--clock-start=2026-12-31T23:59:60Z"][..], malformed),
+        ("late", &["--clock=virtual", "--clock-start=2263-01-01T00:00:00Z"][..], malformed),
+        ("early", &["--clock=virtual", "--clock-start=1677-12-31T00:00:00Z"][..], malformed),
     ] {
         let rejected = run(&executable, &scratch, name, "off", runner);
         assert_eq!(rejected.process.status.code(), Some(64), "{name}");
         assert!(rejected.outcome.is_empty(), "{name}: {}", rejected.outcome);
+        let stderr = String::from_utf8_lossy(&rejected.process.stderr);
+        assert!(stderr.contains(reason), "{name}: {stderr}");
     }
+    let earliest = run(
+        &executable,
+        &scratch,
+        "earliest",
+        "off",
+        &["--clock=virtual", "--clock-start=1678-01-01T00:00:00Z"],
+    );
+    assert_eq!(earliest.process.status.code(), Some(0), "{}", earliest.outcome);
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
@@ -356,7 +372,7 @@ fn a_timeout_fires_at_its_limit_and_drains_children_of_the_scope() {
 
 // Rejects a timeout that rewrites the operation's own success, failure, or
 // defect, or leaves its timer behind (a leftover timer would move the clock to
-// 2 s or 3 s before the final sleep).
+// 3 s or 4 s before the final sleep).
 #[test]
 fn an_operation_that_finishes_first_keeps_its_outcome() {
     let result = run_virtual(
@@ -369,7 +385,7 @@ fn an_operation_that_finishes_first_keeps_its_outcome() {
             "  Failure(WorkError.Broken(3))\n",
             "}\n",
             "pub fn main() -> Int {\n",
-            "  let kept = case quick |> Task.timeout(Duration.seconds(2)) {\n",
+            "  let kept = case quick |> Task.timeout(Duration.seconds(4)) {\n",
             "    Success(value) -> value\n",
             "    Failure(Timeout.TimedOut(limit)) -> 0\n",
             "  }\n",
@@ -747,5 +763,80 @@ fn the_interpreter_reports_the_clock_operations_as_native_only() {
             "{name}: {outcome}"
         );
     }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// ----- Real clock -----------------------------------------------------------
+
+// Every loop pass is a cancellation point. Under the real clock a loop that
+// never parks gives the scheduler no chance to fire timers, so it must poll.
+// Rejects a timeout that never fires around a busy loop, with or without
+// `Clock.now()` in it (the run would hang until the 60 s guard kills it), and
+// nested scopes that both fire at one poll delivering the inner one's
+// cancellation: the inner would then convert it (100) instead of the outer
+// (1000).
+#[test]
+fn a_real_clock_timeout_stops_a_loop_that_never_parks() {
+    let scratch = scratch_directory("busy-loop");
+    let executable = build_native(
+        &scratch,
+        "busy-loop",
+        concat!(
+            "fn spin() -> Int {\n",
+            "  loop n = 0 {\n    case n {\n      m if m < 0 -> break m\n      m -> m + 1\n    }\n  }\n",
+            "}\n",
+            "fn reading() -> Int {\n",
+            "  loop n = 0 {\n    let at = Clock.now()\n",
+            "    case n {\n      m if m < 0 -> break m\n      m -> m + 1\n    }\n  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let spun = case spin |> Task.timeout(Duration.milliseconds(20)) {\n",
+            "    Success(value) -> value\n",
+            "    Failure(Timeout.TimedOut(limit)) -> 1\n",
+            "  }\n",
+            "  let read = case reading |> Task.timeout(Duration.milliseconds(20)) {\n",
+            "    Success(value) -> value\n",
+            "    Failure(Timeout.TimedOut(limit)) -> 10\n",
+            "  }\n",
+            "  let at = Clock.add(Clock.now(), Duration.milliseconds(20))\n",
+            "  let inner = fn() -> Int {\n",
+            "    case spin |> Task.deadline(at) {\n",
+            "      Success(value) -> value\n",
+            "      Failure(Timeout.TimedOut(limit)) -> 100\n",
+            "    }\n",
+            "  }\n",
+            "  let nested = case inner |> Task.deadline(at) {\n",
+            "    Success(value) -> value\n",
+            "    Failure(Timeout.TimedOut(limit)) -> 1000\n",
+            "  }\n",
+            "  spun + read + nested\n",
+            "}\n",
+        ),
+    );
+    let outcome_path = scratch.join("busy-loop-outcome.jsonl");
+    let mut child = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--outcome-file={}", outcome_path.display()))
+        .arg("--")
+        .spawn()
+        .expect("start the busy-loop program");
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if started.elapsed() > std::time::Duration::from_secs(60) {
+            child.kill().unwrap();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert!(status.is_some(), "the timeout never stopped the loop");
+    assert_eq!(
+        std::fs::read_to_string(&outcome_path).unwrap(),
+        success("1011")
+    );
     std::fs::remove_dir_all(scratch).unwrap();
 }

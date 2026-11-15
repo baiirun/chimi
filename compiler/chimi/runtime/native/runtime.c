@@ -51,6 +51,7 @@ __attribute__((weak)) size_t chimi_scheduler_live_memberships(void) { return 0; 
 /* Without the fiber archive nothing is ever cancelled and no scope fires. */
 __attribute__((weak)) uint32_t chimi_fiber_cancel_is_terminal(void) { return 1; }
 __attribute__((weak)) uint32_t chimi_fiber_scope_cancel_pending(void) { return 0; }
+__attribute__((weak)) uint32_t chimi_fiber_scope_polls(void) { return 0; }
 
 typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
                VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER, VALUE_TASK,
@@ -773,7 +774,7 @@ static bool parse_timestamp(const char *text, int64_t *out) {
   if (*cursor != '\0') return false;
   static const int month_days[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
   bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-  if (month < 1 || month > 12 || day < 1 || day > month_days[month - 1] ||
+  if (year < 1678 || year > 2262 || month < 1 || month > 12 || day < 1 || day > month_days[month - 1] ||
       (month == 2 && day == 29 && !leap) || hour > 23 || minute > 59 || second > 59)
     return false;
   int64_t seconds = days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - offset;
@@ -7665,10 +7666,15 @@ NODE_WRAPPER(loop, "loop", {
   ChimiValue *state = initial->value;
   AllocationScope passes;
   allocation_scope_begin(&passes);
+  uint32_t polls = 0;
   for (;;) {
     if (runtime->cancel) { result = cancelled(); break; }
-    if (CHIMI_REQUIRES_SCHEDULER && chimi_fiber_scope_cancel_pending()) {
-      /* A fired timeout scope: a loop pass is a cancellation point. */
+    if (CHIMI_REQUIRES_SCHEDULER &&
+        (chimi_fiber_scope_cancel_pending() ||
+         (chimi_fiber_scope_polls() && (++polls & 1023u) == 0))) {
+      /* A fired timeout scope, or one whose real-clock deadline may have
+         passed while this loop never parked: a loop pass is a cancellation
+         point. */
       ChimiSchedulerRequest check = {.kind = CHIMI_REQUEST_SCOPE_CHECK};
       if (scheduler_request(&check) == CHIMI_FIBER_CANCEL) { result = cancelled(); break; }
     }

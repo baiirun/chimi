@@ -35,16 +35,27 @@ MUTATIONS = [
         "            self.disarm_wake_sources(task);\n            self.deliver_scope_cancel(task);\n",
         "")]),
     clock("a receive cannot be withdrawn", SCOPE, [(
-        "            | super::REQUEST_CHANNEL_RECEIVE\n            | super::REQUEST_PROCESS_RECEIVE",
-        "            | super::REQUEST_PROCESS_RECEIVE")]),
+        "        0 | super::REQUEST_TIMER_SLEEP_UNTIL\n            | super::REQUEST_TASK_RESULT\n"
+        "            | super::REQUEST_CHANNEL_SEND\n            | super::REQUEST_CHANNEL_RECEIVE\n",
+        "        0 | super::REQUEST_TIMER_SLEEP_UNTIL\n            | super::REQUEST_TASK_RESULT\n"
+        "            | super::REQUEST_CHANNEL_SEND\n")]),
     # Firing cancels the scope's children.
     clock("a firing scope leaves its children running", SCOPE, [(
         "                self.begin_terminal(child, TaskOutcome::Cancelled, false);\n",
         "")]),
     # A normal exit removes the scope's timer.
     clock("an exited scope keeps its timer", SCOPE, [(
-        "            if let Some(timer) = entry.timer {\n                self.cancel_timer(timer);\n            }\n",
-        "            let _ = entry.timer;\n")]),
+        "        for entry in removed {\n            if let Some(timer) = entry.timer {\n"
+        "                self.cancel_timer(timer);\n            }\n",
+        "        for entry in removed {\n            if let Some(timer) = entry.timer {\n"
+        "                let _ = timer;\n            }\n")]),
+    # Under the real clock a loop that never parks polls for its deadlines.
+    clock("a busy loop never polls for scope deadlines", RUNTIME, [(
+        "         (chimi_fiber_scope_polls() && (++polls & 1023u) == 0))) {",
+        "         (false && (++polls & 1023u) == 0))) {")]),
+    clock("requests do not fire the task's due scope deadlines", SCOPE, [(
+        "        if !self.polls_scope_deadlines(task) {\n            return;\n        }\n        let now",
+        "        if true {\n            return;\n        }\n        let now")]),
     # Non-positive limits never start the operation.
     clock("a deadline equal to now starts the operation", RUNTIME, [(
         "  if (deadline <= now) return timed_out(limit, call_node);",

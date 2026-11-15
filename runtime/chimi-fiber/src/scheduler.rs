@@ -398,14 +398,16 @@ impl OwnedFiber {
     }
 
     /// `terminal` marks a task-level cancellation; `scope_pending` says a
-    /// fired scope waits for the task's next cancellation point.
+    /// fired scope waits for the task's next cancellation point; `polls`
+    /// says loop passes must poll the scheduler for scope deadlines.
     fn resume(
         &mut self,
         command: ChimiFiberCommand,
         terminal: bool,
         scope_pending: bool,
+        polls: bool,
     ) -> ChimiFiberEvent {
-        scope::set_resume_context(terminal, scope_pending);
+        scope::set_resume_context(terminal, scope_pending, polls);
         unsafe { chimi_fiber_resume(self.0.as_ptr(), command as u32) }
     }
 }
@@ -794,7 +796,7 @@ impl Scheduler {
                 }
                 TimerTarget::ScopeDeadline(task, scope) => {
                     self.emit_timer(ClockEventKind::TimerFired, Some(task), deadline);
-                    self.fire_scope(task, scope);
+                    self.fire_scope(task, scope, true);
                 }
             }
         }
@@ -1320,6 +1322,7 @@ impl Scheduler {
         record.ran = true;
         record.entry_context = std::ptr::null_mut();
         let scope_pending = self.scope_cancel_pending(task);
+        let polls = self.polls_scope_deadlines(task);
         let event = self
             .tasks
             .get_mut(&task)
@@ -1327,7 +1330,7 @@ impl Scheduler {
             .fiber
             .as_mut()
             .expect("runnable task owns a fiber")
-            .resume(command, false, scope_pending);
+            .resume(command, false, scope_pending, polls);
         if event.state == ChimiFiberState::Parked as u32 {
             let record = self.tasks.get_mut(&task).expect("running task");
             record.phase = TaskPhase::Parked;
@@ -1381,6 +1384,7 @@ impl Scheduler {
         if process && self.park_lingers(owner, kind) {
             return;
         }
+        self.poll_scope_deadlines(owner);
         if self.refuse_for_scope(owner, kind) {
             return;
         }
@@ -1668,7 +1672,7 @@ impl Scheduler {
                 .get_mut(&task)
                 .and_then(|record| record.fiber.as_mut())
                 .expect("non-terminal task owns a fiber")
-                .resume(ChimiFiberCommand::Cancel, true, false);
+                .resume(ChimiFiberCommand::Cancel, true, false, false);
             self.keep_task_value(task, &cleanup);
             if !outcome.is_defect() {
                 outcome = match cleanup.state {

@@ -56,6 +56,7 @@ impl ScopeId {
 pub(super) struct Scope {
     pub(super) id: ScopeId,
     pub(super) timer: Option<super::TimerId>,
+    pub(super) deadline: Instant,
     pub(super) fired: bool,
     /// The task was resumed with this scope's cancellation.
     pub(super) delivered: bool,
@@ -76,14 +77,17 @@ pub enum ScopeExit {
 thread_local! {
     static RESUME_TERMINAL: Cell<bool> = const { Cell::new(false) };
     static RESUME_SCOPE_PENDING: Cell<bool> = const { Cell::new(false) };
+    static RESUME_POLLS: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Records, for the fiber about to resume, whether this resume is a terminal
-/// cancellation and whether a fired scope waits for its next cancellation
-/// point. Every resume sets both.
-pub(super) fn set_resume_context(terminal: bool, scope_pending: bool) {
+/// cancellation, whether a fired scope waits for its next cancellation point,
+/// and whether loop passes must poll for scope deadlines. Every resume sets
+/// all three.
+pub(super) fn set_resume_context(terminal: bool, scope_pending: bool, polls: bool) {
     RESUME_TERMINAL.with(|cell| cell.set(terminal));
     RESUME_SCOPE_PENDING.with(|cell| cell.set(scope_pending));
+    RESUME_POLLS.with(|cell| cell.set(polls));
 }
 
 #[unsafe(no_mangle)]
@@ -98,6 +102,16 @@ pub extern "C" fn chimi_fiber_cancel_is_terminal() -> u32 {
 /// point. Loop passes check it and then issue `CHIMI_REQUEST_SCOPE_CHECK`.
 pub extern "C" fn chimi_fiber_scope_cancel_pending() -> u32 {
     u32::from(RESUME_SCOPE_PENDING.with(Cell::get))
+}
+
+#[unsafe(no_mangle)]
+/// 1 when the running task is inside a timeout scope under the real clock.
+/// A fiber that never parks never lets the scheduler fire timers, so its loop
+/// passes issue `CHIMI_REQUEST_SCOPE_CHECK` now and then, and every request
+/// first fires the task's due scope deadlines. Under the virtual clock
+/// computation takes no time, so this is always 0.
+pub extern "C" fn chimi_fiber_scope_polls() -> u32 {
+    u32::from(RESUME_POLLS.with(Cell::get))
 }
 
 /// Requests a pending scope cancellation answers instead of serving.
@@ -145,6 +159,7 @@ impl Scheduler {
             .push(Scope {
                 id,
                 timer: Some(timer),
+                deadline,
                 fired: false,
                 delivered: false,
             });
@@ -180,7 +195,9 @@ impl Scheduler {
     }
 
     /// The scope deadline timer for `scope` of `task` fired.
-    pub(super) fn fire_scope(&mut self, task: TaskId, scope: ScopeId) {
+    /// `withdraw` is false when `task` is issuing a request right now: that
+    /// request has parked nothing yet and meets the gate instead.
+    pub(super) fn fire_scope(&mut self, task: TaskId, scope: ScopeId, withdraw: bool) {
         let Some(record) = self.tasks.get(&task) else {
             return;
         };
@@ -210,7 +227,8 @@ impl Scheduler {
         });
         // Withdraw the park first: a parent waiting on a child of this scope
         // must not be cancelled by that child's terminal below.
-        if self.tasks[&task].phase == TaskPhase::Parked
+        if withdraw
+            && self.tasks[&task].phase == TaskPhase::Parked
             && is_withdrawable(self.parked_kind(task))
             && self.deliverable_scope(task).is_some()
         {
@@ -222,6 +240,39 @@ impl Scheduler {
                 matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked)
             }) {
                 self.begin_terminal(child, TaskOutcome::Cancelled, false);
+            }
+        }
+    }
+
+    /// True when `task`'s loop passes must poll for scope deadlines: it is
+    /// inside a scope whose timer is armed, under the real clock.
+    pub(super) fn polls_scope_deadlines(&self, task: TaskId) -> bool {
+        self.clock.mode() == super::clock::ClockMode::Real
+            && self
+                .tasks
+                .get(&task)
+                .is_some_and(|record| record.scopes.iter().any(|entry| entry.timer.is_some()))
+    }
+
+    /// Fires `task`'s scopes whose deadline has passed, outermost first, while
+    /// it issues a request. Under the real clock a task that never parks
+    /// would otherwise run past its deadline: the scheduler fires timers only
+    /// when it regains control between tasks.
+    pub(super) fn poll_scope_deadlines(&mut self, task: TaskId) {
+        if !self.polls_scope_deadlines(task) {
+            return;
+        }
+        let now = self.clock.now();
+        let due: Vec<_> = self.tasks[&task]
+            .scopes
+            .iter()
+            .filter(|entry| entry.deadline <= now)
+            .filter_map(|entry| entry.timer.map(|timer| (entry.id, timer, entry.deadline)))
+            .collect();
+        for (scope, timer, deadline) in due {
+            if self.timers.cancel(timer).is_some() {
+                self.emit_timer(ClockEventKind::TimerFired, Some(task), deadline);
+                self.fire_scope(task, scope, false);
             }
         }
     }

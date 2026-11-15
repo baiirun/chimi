@@ -379,7 +379,7 @@ Every execution has one time source, chosen by the runner:
 - `virtual`: a deterministic source owned by the scheduler. This is the
   default for test runs (T1) and is available as the runner flag
   `--clock=virtual` (`--clock=real` selects the default).
-  The runner accepts `--clock-start <RFC 3339>` for the initial `Timestamp`
+  The runner accepts `--clock-start=<RFC 3339>` for the initial `Timestamp`
   and defaults to `1970-01-01T00:00:00Z`.
 
 The runner binds a root `clock: Clock` need to the execution clock provider,
@@ -1254,7 +1254,7 @@ program.
   read `now` and arm their timer on the execution time source, not on a
   bound provider. The scope timer is a scheduler timer, and a user `Clock`
   cannot cancel a task. `Select.after` is where a user timer will plug in.
-- **`--clock-start <RFC 3339>`** sets the virtual clock's starting
+- **`--clock-start=<RFC 3339>`** sets the virtual clock's starting
   `Timestamp` and is accepted only with `--clock=virtual`; under the real
   clock `timestamp` is the host's wall time, so the flag would be ignored.
   It takes `Z` or a `±HH:MM` offset, a fraction of at most nine digits, and
@@ -1280,6 +1280,11 @@ program.
   the runtime convert it to `TimedOut`; any other cancellation passes
   through. A scope exit waits until the cancelled children have drained.
   A task-level (terminal) cancellation skips scope exits altogether.
+  Under the real clock a task that never parks would never let the
+  scheduler fire its timers, so every request first fires the task's own
+  due scope deadlines, and while a task is inside a scope a loop issues
+  `REQUEST_SCOPE_CHECK` every 1,024 passes. A timeout over a busy loop is
+  therefore late by at most 1,024 passes.
   Exclusive capabilities owned by the scope are not yet released at the
   scope boundary: they are released at task exit as before (follow-up
   ticket). The scope module documents where masked cancellation will hook

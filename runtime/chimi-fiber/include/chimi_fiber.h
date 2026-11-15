@@ -499,6 +499,10 @@ uint32_t chimi_fiber_cancel_is_terminal(void);
 /* 1 when a fired cancellation scope of the running task waits for its next
    cancellation point; a loop pass then issues CHIMI_REQUEST_SCOPE_CHECK. */
 uint32_t chimi_fiber_scope_cancel_pending(void);
+/* 1 when the running task is inside a timeout scope under the real clock:
+   loop passes then issue CHIMI_REQUEST_SCOPE_CHECK every so often, because
+   every request first fires the task's due scope deadlines. */
+uint32_t chimi_fiber_scope_polls(void);
 ChimiSchedulerOutcome chimi_scheduler_execute(ChimiFiberEntry entry, void *context,
                                               size_t stack_bytes,
                                               uint32_t trace_mode,
