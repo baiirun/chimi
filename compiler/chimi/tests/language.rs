@@ -10404,6 +10404,46 @@ fn a_received_value_has_the_capability_class_of_its_payload() {
     assert_eq!(found, [("T4241", true)], "{found:?}");
 }
 
+// ts-f704d3: `Channel.SendError<T>` hands back the refused value, so it is what `T`
+// is, as `Receive<T>` is. Rejects a `SendError<T>` that is shareable whatever `T`
+// is (two children could capture one refused receiver), and one that is never
+// shareable (a refused `Int` captured twice is fine).
+#[test]
+fn a_refused_send_has_the_capability_class_of_its_payload() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "fn captured_twice(s: Sender<Receiver<Int>>, r: Receiver<Int>) -> Int {{\n",
+            "  case Channel.send(s, r) {{\n",
+            "    Success(_) -> 0\n",
+            "    Failure(error) -> {{\n",
+            "      let a = Task.start(fn() -> Int {{\n        error\n        1\n      }})\n",
+            "      let b = Task.start(fn() -> Int {{\n        error\n        2\n      }})\n",
+            "      1\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+            "fn ints_twice(s: Sender<Int>) -> Int {{\n",
+            "  case Channel.send(s, 1) {{\n",
+            "    Success(_) -> 0\n",
+            "    Failure(error) -> {{\n",
+            "      let a = Task.start(fn() -> Int {{\n        error\n        1\n      }})\n",
+            "      let b = Task.start(fn() -> Int {{\n        error\n        2\n      }})\n",
+            "      1\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let found = check_diagnostics(&source);
+    let found = found
+        .iter()
+        .map(|(code, _, message)| (code.as_str(), message.contains("`error` was transferred")))
+        .collect::<Vec<_>>();
+    assert_eq!(found, [("T4241", true)], "{found:?}");
+}
+
 // Removing a managed supervisor consumes its handle, as removing a process does.
 // Rejects a `remove_supervisor` that leaves the handle usable after removal or
 // across loop passes.

@@ -196,6 +196,14 @@ struct ChimiRuntime {
   bool virtual_clock;
   /* The parked tasks of a virtual-time deadlock, from the scheduler's report. */
   char *deadlock_waiters;
+  /* The latest process incarnation that defected, from the scheduler's
+     termination report under any trace mode, and how many have defected. A
+     root that cannot finish names it, so a process defect is never only in
+     the trace. */
+  uint64_t last_defect_incarnation;
+  uint64_t last_defect_membership;
+  char *last_defect_message;
+  uint64_t process_defect_count;
   /* The defect message of each task the scheduler defected for a channel
      capability violation, from its report. */
   struct CapabilityViolationNote *capability_violations;
@@ -5697,8 +5705,9 @@ typedef struct {
 /* The largest peak of live payload bytes of any incarnation's heap. */
 static size_t process_heap_peak_value_bytes;
 
-/* The defect messages of incarnations whose body defected, kept while tracing so
-   the `process_terminated` event that follows can carry them (`defect`). */
+/* The defect messages of incarnations whose body defected, kept until the
+   scheduler reports the incarnation's end (record_process_defect), which
+   follows before any other incarnation of the same body can run. */
 typedef struct { uint64_t incarnation; char *message; } ProcessDefect;
 static ProcessDefect *process_defects;
 static size_t process_defect_count;
@@ -5745,7 +5754,7 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
     case CONTROL_CANCEL: result = (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED}; break;
     case CONTROL_DEFECT:
     case CONTROL_BREAK:
-      if (!runtime->silent) remember_process_defect(control->message);
+      remember_process_defect(control->message);
       result = (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1};
       break;
   }
@@ -7450,7 +7459,8 @@ static const char *process_cause_word(const ChimiSchedulerTraceEvent *event) {
 /* The process family's fields (supervised-process-conformance.md, "Runner telemetry
    for process and clock events"): identities at the top level, the rest in
    `attributes`, a field the kind does not set as null. */
-static void emit_process_fields(FILE *output, const ChimiSchedulerTraceEvent *event, bool attributes) {
+static void emit_process_fields(const ChimiRuntime *runtime, FILE *output,
+                                const ChimiSchedulerTraceEvent *event, bool attributes) {
   if (!attributes) {
     json_identity(output, "supervisor_id", event->supervisor);
     json_identity(output, "membership_id", event->membership);
@@ -7470,17 +7480,13 @@ static void emit_process_fields(FILE *output, const ChimiSchedulerTraceEvent *ev
   fprintf(output, ",\"attempts_in_window\":%" PRIu64, event->attempts_in_window);
   /* `defect`: why a defected incarnation ended. A stack overflow ends the body
      without returning, so the scheduler reports it (CHIMI_PROCESS_DEFECT_*). */
-  char *defect = NULL;
   const char *named = NULL;
   if (event->kind == CHIMI_PROCESS_TRACE_TERMINATED && event->cause == CHIMI_PROCESS_CAUSE_DEFECTED) {
     if (event->outcome == CHIMI_PROCESS_DEFECT_STACK_OVERFLOW) named = "Process stack overflow";
-#if CHIMI_PROCESS_KERNEL
-    defect = take_process_defect(event->incarnation);
-    if (!named) named = defect;
-#endif
+    if (!named && runtime->last_defect_incarnation == event->incarnation)
+      named = runtime->last_defect_message;
   }
   json_word(output, "defect", named);
-  free(defect);
 }
 
 static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *event) {
@@ -7506,7 +7512,7 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
   else fprintf(output, "%" PRIu64, event->cause);
   fputs(",\"channel_id\":", output);
   if (event->channel == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->channel);
-  if (process) emit_process_fields(output, event, false);
+  if (process) emit_process_fields(runtime, output, event, false);
   fprintf(output,
           ",\"attributes\":{\"scheduler_sequence\":%" PRIu64
           ",\"capacity\":%" PRIu64 ",\"queue_depth\":%" PRIu64
@@ -7516,7 +7522,7 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
   if (clock)
     fprintf(output, ",\"time_ns\":%" PRId64 ",\"request_kind\":%" PRIu64,
             event->time, event->cause);
-  if (process) emit_process_fields(output, event, true);
+  if (process) emit_process_fields(runtime, output, event, true);
   fputs("}}\n", output);
 }
 
@@ -7646,6 +7652,44 @@ static void record_deadlock(void *context, const ChimiDeadlockWaiter *waiters, s
   runtime->deadlock_waiters = message;
 }
 
+#if CHIMI_PROCESS_KERNEL
+/* Keeps the latest defected incarnation and its message: the body's own defect,
+   remembered when it ended, or a stack overflow the scheduler saw. */
+static void record_process_defect(void *context, const ChimiProcessTermination *termination) {
+  ChimiRuntime *runtime = context;
+  char *message = take_process_defect(termination->incarnation);
+  if (termination->stack_overflow) {
+    free(message);
+    message = strdup("Process stack overflow");
+    if (!message) exhausted_memory();
+  }
+  free(runtime->last_defect_message);
+  runtime->last_defect_message = message;
+  runtime->last_defect_incarnation = termination->incarnation;
+  runtime->last_defect_membership = termination->membership;
+  ++runtime->process_defect_count;
+}
+#endif
+
+/* `message`, followed by the latest process defect when one happened: a root that
+   cannot finish is often waiting on a process that defected, and with tracing off
+   nothing else says so. The result belongs to the defect it is passed to. */
+static const char *with_process_defect(ChimiRuntime *runtime, const char *message) {
+  if (!runtime->process_defect_count) return message;
+  const char *defect = runtime->last_defect_message ? runtime->last_defect_message : "defect";
+  char count[64] = "";
+  if (runtime->process_defect_count > 1)
+    snprintf(count, sizeof(count), " (the last of %" PRIu64 " process defects)",
+             runtime->process_defect_count);
+  size_t capacity = strlen(message) + strlen(defect) + 160;
+  char *combined = malloc(capacity);
+  if (!combined) exhausted_memory();
+  snprintf(combined, capacity, "%s; process incarnation %" PRIu64 " of membership %" PRIu64
+           " defected%s: %s", message, runtime->last_defect_incarnation,
+           runtime->last_defect_membership, count, defect);
+  return combined;
+}
+
 static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn entry,
                                            ChimiEnvironment *environment) {
   if (!CHIMI_REQUIRES_SCHEDULER) return entry(runtime, environment, 1);
@@ -7670,6 +7714,10 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .deadlock_context = runtime,
     .capability_violation_report = record_capability_violation,
     .capability_violation_context = runtime,
+#if CHIMI_PROCESS_KERNEL
+    .process_defect_report = record_process_defect,
+    .process_defect_context = runtime,
+#endif
     .release_task_value = release_task_word,
     .release_channel_value = release_channel_word,
     .release_task_context = release_task_context,
@@ -7699,7 +7747,7 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     return task_reply(outcome.defect_code);
   if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code == CHIMI_SCHEDULER_DEFECT_DEADLOCK &&
       runtime->deadlock_waiters)
-    return defect(runtime->deadlock_waiters, -1);
+    return defect(with_process_defect(runtime, runtime->deadlock_waiters), -1);
   const char *violation = outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0
     ? capability_violation_of(runtime, outcome.origin) : NULL;
   if (violation) return defect(violation, -1);
@@ -7714,8 +7762,10 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
      deadlock as before, leaving the suspended tasks to process exit. */
   if (outcome.state == CHIMI_FIBER_PARKED ||
       (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0))
-    return defect("Task scheduler defected: the root task could not finish, "
-                  "because every task is parked (deadlock) or the scheduler failed", -1);
+    return defect(with_process_defect(runtime,
+                                      "Task scheduler defected: the root task could not finish, "
+                                      "because every task is parked (deadlock) or the scheduler failed"),
+                  -1);
   if (outcome.state == CHIMI_FIBER_STACK_OVERFLOW)
     return defect("Task stack overflow", -1);
   return defect("Task scheduler failed to produce a terminal root", -1);

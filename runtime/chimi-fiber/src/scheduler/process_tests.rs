@@ -2442,6 +2442,8 @@ fn run_c(entry: ChimiFiberEntry, trace_mode: u32) -> (SchedulerOutcome, Vec<Sche
         release_task_context: None,
         capability_violation_report: None,
         capability_violation_context: ptr::null_mut(),
+        process_defect_report: None,
+        process_defect_context: ptr::null_mut(),
     };
     let outcome = unsafe { chimi_scheduler_run(&config) };
     (outcome, events)
@@ -2601,6 +2603,12 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiSchedulerConfig, release_task_context),
         offset_of!(ChimiSchedulerConfig, capability_violation_report),
         offset_of!(ChimiSchedulerConfig, capability_violation_context),
+        offset_of!(ChimiSchedulerConfig, process_defect_report),
+        offset_of!(ChimiSchedulerConfig, process_defect_context),
+        size_of::<ChimiProcessTermination>(),
+        offset_of!(ChimiProcessTermination, incarnation),
+        offset_of!(ChimiProcessTermination, cause),
+        offset_of!(ChimiProcessTermination, stack_overflow),
         size_of::<ChimiDeadlockWaiter>(),
         offset_of!(ChimiDeadlockWaiter, request_kind),
         size_of::<ChimiCapabilityViolation>(),
@@ -2624,7 +2632,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         .trace_kind() as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 6);
+    assert_eq!(crate::chimi_fiber_abi_version(), 7);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------

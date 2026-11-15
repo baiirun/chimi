@@ -6,8 +6,8 @@ use super::process::{
     Restart, Restarts, StartError, SupervisorId, SupervisorState, Waiter,
 };
 use super::{
-    CapabilityViolationReport, MessageRelease, SendFailure, SpecContextRelease, TaskContextRelease,
-    ValueRelease,
+    CapabilityViolationReport, MessageRelease, ProcessDefectReport, SendFailure,
+    SpecContextRelease, TaskContextRelease, ValueRelease,
 };
 use super::{
     ClockMode, DEADLOCK_DEFECT_CODE, Idle, ParkedTask, RESPONSE_CANCELLED,
@@ -118,6 +118,8 @@ pub struct ChimiSchedulerConfig {
     pub release_task_context: Option<TaskContextRelease>,
     pub capability_violation_report: Option<CapabilityViolationReport>,
     pub capability_violation_context: *mut c_void,
+    pub process_defect_report: Option<ProcessDefectReport>,
+    pub process_defect_context: *mut c_void,
 }
 
 /// One task parked in a detected deadlock and the request kind it waits on
@@ -646,6 +648,7 @@ pub unsafe extern "C" fn chimi_scheduler_run(
         violation_context: config.capability_violation_context,
     });
     scheduler.set_trace_sink(config.trace_sink, config.trace_context);
+    scheduler.set_process_defect_report(config.process_defect_report, config.process_defect_context);
     let Ok(root) = scheduler.start_root_with_context(entry, config.context) else {
         return defect_outcome(SCHEDULER_DEFECT_CODE);
     };

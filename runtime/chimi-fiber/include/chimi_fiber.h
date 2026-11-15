@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 6u
+#define CHIMI_FIBER_ABI_VERSION 7u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -351,6 +351,24 @@ typedef struct {
 typedef void (*ChimiCapabilityViolationReport)(void *context,
                                                const ChimiCapabilityViolation *violation);
 
+/* How one incarnation ended (`cause` is the process_terminated event's cause
+   code). The kernel builds it for every end, under any trace mode. */
+typedef struct {
+  uint64_t membership;
+  uint64_t incarnation;
+  uint64_t cause;
+  /* 1 when the body overflowed its fiber stack, which the host cannot see:
+     the body never returns from its entry. */
+  uint32_t stack_overflow;
+} ChimiProcessTermination;
+
+/* Called with the record of every incarnation that defected, as it finishes
+   and before its process_terminated event, whatever the trace mode. It runs
+   on the scheduler's thread with no task running and must not call back
+   into the scheduler. The record lives for the call. */
+typedef void (*ChimiProcessDefectReport)(void *context,
+                                         const ChimiProcessTermination *termination);
+
 enum {
   CHIMI_SCHEDULER_CLOCK_REAL = 0,
   CHIMI_SCHEDULER_CLOCK_VIRTUAL = 1,
@@ -447,6 +465,9 @@ typedef struct {
   /* Called for each channel capability violation; may be null. */
   ChimiCapabilityViolationReport capability_violation_report;
   void *capability_violation_context;
+  /* Called for each process incarnation that defected; may be null. */
+  ChimiProcessDefectReport process_defect_report;
+  void *process_defect_context;
 } ChimiSchedulerConfig;
 
 /* The arguments of chimi_scheduler_execute_with_config. The release hooks
