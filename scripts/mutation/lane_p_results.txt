@@ -1,23 +1,23 @@
-# mutation run at dfa8a61b6b14ffb3821ca494a27aaa4629a72b7e
+# mutation run at c44cbe6427cf025f4618e1aa535e7297a1e91c0d
 # lane_p_mutations.py: 14 mutants against compiler/chimi
-BASELINE ok  [language -- a_refused_send_has_the_capability_class_of_its_payload] (12s)
-BASELINE ok  [cli -- native_a_receiver_] (2s)
+BASELINE ok  [language -- a_refused_send_has_the_capability_class_of_its_payload] (44s)
+BASELINE ok  [cli -- native_a_receiver_] (6s)
 BASELINE ok  [cli -- native_backstop_a_stale_copy] (1s)
 BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario OB08] (1s)
 BASELINE ok  [process_lab -- a_baseline_or_injection_without_performance_is_an_error] (1s)
 KILLED       SendError<T> is shareable whatever T is [language -- a_refused_send_has_the_capability_class_of_its_payload] (30s)
-KILLED       a sent message carries no capabilities [cli -- native_a_receiver_] (39s)
-KILLED       the message's copies keep the sender's token [cli -- native_a_receiver_] (14s)
+KILLED       a sent message carries no capabilities [cli -- native_a_receiver_] (36s)
+KILLED       the message's copies keep the sender's token [cli -- native_a_receiver_] (13s)
 KILLED       a delivered capability stays in flight [cli -- native_a_receiver_] (13s)
-KILLED       a refused send keeps the in-flight token [cli -- native_a_receiver_] (6s)
+KILLED       a refused send keeps the in-flight token [cli -- native_a_receiver_] (7s)
 KILLED       a discarded message leaves its capabilities' channels open [cli -- native_a_receiver_] (7s)
-KILLED       an in-flight capability validates as the sender's [cli -- native_a_receiver_] (6s)
-KILLED       a carried capability is not validated [cli -- native_backstop_a_stale_copy] (23s)
-KILLED       a child's result keeps its capabilities [cli -- native_a_receiver_] (28s)
-KILLED       the child hands its result to itself [cli -- native_a_receiver_] (11s)
-KILLED       the scheduler reports no process defect [cargo run --quiet --bin chimi-process-lab -- --scenario OB08] (5s)
+KILLED       an in-flight capability validates as the sender's [cli -- native_a_receiver_] (7s)
+KILLED       a carried capability is not validated [cli -- native_backstop_a_stale_copy] (24s)
+KILLED       a child's result keeps its capabilities [cli -- native_a_receiver_] (30s)
+KILLED       the child hands its result to itself [cli -- native_a_receiver_] (12s)
+KILLED       the scheduler reports no process defect [cargo run --quiet --bin chimi-process-lab -- --scenario OB08] (6s)
 KILLED       a stack overflow is reported as the body's own message [cargo run --quiet --bin chimi-process-lab -- --scenario OB08] (11s)
 KILLED       a body's defect is remembered only while tracing [cargo run --quiet --bin chimi-process-lab -- --scenario OB08] (10s)
-SURVIVED     --baseline without performance is ignored again [process_lab -- a_baseline_or_injection_without_performance_is_an_error] (11s)
-# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
-EXIT 1
+KILLED       --baseline without performance is ignored again [process_lab -- a_baseline_or_injection_without_performance_is_an_error] (10s)
+# result: every mutant killed
+EXIT 0
