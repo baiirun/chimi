@@ -494,6 +494,44 @@ fn a_user_clock_timer_works_through_its_sleep_until() {
     assert_eq!(clock_advances(&result.telemetry), [3 * SECOND]);
 }
 
+// A commit is atomic with a user-clock timer in the list too: the losing
+// timer child is cancelled only after the receive took its value, so the
+// task that cancels the rendezvous sender at the same instant runs too late.
+#[test]
+fn a_user_clock_timer_does_not_break_the_commit() {
+    let result = run_virtual(
+        "user-clock-commit",
+        concat!(
+            "fn middle(sender: Channel.Sender<Int>) -> Int needs { clock: Clock.Clock } {\n",
+            "  let offer = Task.start(fn() {\n    Channel.send(sender, 7)\n    0\n  })\n",
+            "  Clock.sleep(Duration.seconds(1))\n",
+            "  Task.cancel(offer)\n",
+            "  0\n",
+            "}\n",
+            "fn wait(receiver: Receiver<Int>) -> Int {\n",
+            "  Select.first([Select.receive(receiver, value), Select.after(Duration.seconds(10), 99)])\n",
+            "}\n",
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let channel = Channel.bounded(0)\n",
+            "  let sender = channel.sender\n",
+            "  let receiver = channel.receiver\n",
+            "  let base = clock\n",
+            "  let passing = {\n",
+            "    now: fn() -> Instant { base.now() },\n",
+            "    timestamp: fn() -> Timestamp { base.timestamp() },\n",
+            "    sleep_until: fn(at: Instant) -> Void { base.sleep_until(at) },\n",
+            "  }\n",
+            "  let canceller = Task.start(fn() { middle(sender) })\n",
+            "  Clock.sleep(Duration.seconds(1))\n",
+            "  let waited = wait using { clock: passing }\n",
+            "  waited(receiver)\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("7"), "{}", String::from_utf8_lossy(&result.process.stderr));
+}
+
 // ----- Mixed events ---------------------------------------------------------
 
 // Events of different failure sets join in one list: a receive (which may

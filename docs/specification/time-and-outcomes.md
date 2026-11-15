@@ -1406,7 +1406,17 @@ program.
   clock (the root clock or `Clock.starting_at` over it) is a scheduler
   deadline. A timer on a user `Clock` provider reads that provider's `now`,
   and runs `sleep_until(deadline)` in a child task that the select waits on
-  as a task source. Timer children that did not commit are cancelled.
+  as a task source. Timer children that did not commit are cancelled, but
+  only after the committed source's operation has taken its value: a cancel
+  reply lets other tasks run, which would break the commit. Cancelled timer
+  children are not yet observed, so each select with a user-clock timer
+  leaves one terminal task record behind (follow-up ticket).
+- **Abandoned selects.** Any request from a task first withdraws a select it
+  had parked in. A select woken by a source and then refused by a fired scope
+  therefore leaves no watcher or wake timer behind.
+- **Gap.** `T4241` is not yet reported for a receive event used after its
+  receiver was transferred; the run-time token check defects instead
+  (follow-up ticket).
 - **Errors.** `T4345` rejects an empty list literal at `Select.first`; an
   empty list built at run time defects with "`Select.first` needs at least
   one event". A receiver whose token is stale defects the task as a channel

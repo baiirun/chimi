@@ -176,13 +176,17 @@ fn succeeded(value: i64) -> ChimiFiberResult {
 }
 
 fn run(entry: ChimiFiberEntry) -> (SchedulerOutcome, Vec<i64>) {
+    run_on(entry, process_abi::CLOCK_VIRTUAL)
+}
+
+fn run_on(entry: ChimiFiberEntry, clock_mode: u32) -> (SchedulerOutcome, Vec<i64>) {
     SEEN.with(|seen| seen.borrow_mut().clear());
     let config = ChimiSchedulerConfig {
         entry: Some(entry),
         context: ptr::null_mut(),
         stack_bytes: 64 * 1024,
         trace_mode: 0,
-        clock_mode: process_abi::CLOCK_VIRTUAL,
+        clock_mode,
         trace_sink: None,
         trace_context: ptr::null_mut(),
         release_message: None,
@@ -330,4 +334,69 @@ fn a_receiver_that_is_not_the_callers_defects_it() {
     let (outcome, _) = run(select_with_a_stale_receiver);
     assert_eq!(outcome.state, ChimiFiberState::Defected as u32);
     assert_eq!(outcome.defect_code, CHANNEL_CAPABILITY_VIOLATION_DEFECT_CODE);
+}
+
+/// Sends on `a` after 5 ms.
+unsafe extern "C" fn wake_at_five(context: *mut c_void) -> ChimiFiberResult {
+    let a = unsafe { *context.cast::<Channel>() };
+    let mut sleep = blank(REQUEST_TIMER_SLEEP_UNTIL);
+    sleep.value = now() + 5_000_000;
+    call(&mut sleep);
+    send(a, 1);
+    succeeded(0)
+}
+
+/// Wakes after 5 ms too, behind the sender, and then holds the processor
+/// for 40 ms, so the select woken by the send reissues only after its
+/// scope's 20 ms deadline.
+unsafe extern "C" fn hog_after_five(_context: *mut c_void) -> ChimiFiberResult {
+    let mut sleep = blank(REQUEST_TIMER_SLEEP_UNTIL);
+    sleep.value = now() + 5_000_000;
+    call(&mut sleep);
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(40);
+    while std::time::Instant::now() < until {}
+    succeeded(0)
+}
+
+/// Sends on `b` (the select's stale watch, if it survived) and then on `c`.
+unsafe extern "C" fn send_b_then_c(context: *mut c_void) -> ChimiFiberResult {
+    let [b, c] = unsafe { *context.cast::<[Channel; 2]>() };
+    send(b, 2);
+    send(c, 3);
+    succeeded(0)
+}
+
+fn start(entry: ChimiFiberEntry, context: *mut c_void) {
+    let mut request = blank(REQUEST_TASK_START);
+    request.entry = Some(entry);
+    request.context = context;
+    call(&mut request);
+}
+
+unsafe extern "C" fn scope_refuses_a_woken_select(_context: *mut c_void) -> ChimiFiberResult {
+    let a = bounded(1);
+    let b = bounded(1);
+    let c = bounded(1);
+    let mut enter = blank(REQUEST_SCOPE_ENTER);
+    enter.value = now() + 20_000_000;
+    call(&mut enter);
+    start(wake_at_five, Box::into_raw(Box::new(a)).cast());
+    start(hog_after_five, ptr::null_mut());
+    // Woken by `a`, but the scope fires before the select is asked again.
+    note(select(&[on_channel(b), on_channel(a)]).unwrap_or(-1));
+    let mut exit = blank(REQUEST_SCOPE_EXIT);
+    exit.token = enter.token;
+    call(&mut exit);
+    note(exit.value);
+    start(send_b_then_c, Box::into_raw(Box::new([b, c])).cast());
+    // A select registration left on `b` would wake this receive early.
+    note(receive(c).1);
+    succeeded(0)
+}
+
+#[test]
+fn a_select_a_scope_refuses_leaves_no_registration_behind() {
+    let (outcome, seen) = run_on(scope_refuses_a_woken_select, process_abi::CLOCK_REAL);
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_eq!(seen, [-1, 1, 3]);
 }

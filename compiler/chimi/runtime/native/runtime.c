@@ -7147,11 +7147,13 @@ static void cancel_user_timers(ChimiRuntime *runtime, const ChimiSelectSource *s
   }
 }
 
-/* Runs the committed event: its source's own operation, which answers at once
-   because the scheduler reported it ready and nothing else can consume it, then
-   the mapping function with the providers it snapshotted when it was built. */
-static ChimiControl *select_commit(ChimiRuntime *runtime, ChimiValue *event, uint64_t user_timer_task,
-                                   uint64_t span, uint32_t call_node, ChimiEnvironment *environment) {
+/* Takes the committed event's value: its source's own operation, which answers
+   at once because the scheduler reported it ready, nothing else can consume it,
+   and no other task runs before this request (the select's reply woke this task
+   at the front of the run queue). Nothing may be issued between the select and
+   this. A timer's value is its event value. */
+static ChimiControl *select_take(ChimiRuntime *runtime, ChimiValue *event, uint64_t user_timer_task,
+                                 uint64_t span, uint32_t call_node, ChimiEnvironment *environment) {
   int64_t kind = select_value(event, "kind")->as.integer;
   ChimiValue *map = select_value(event, "map");
   ChimiValue *source = select_value(event, "source");
@@ -7171,10 +7173,19 @@ static ChimiControl *select_commit(ChimiRuntime *runtime, ChimiValue *event, uin
     }
   }
   ChimiValue *arguments[] = {source};
-  ChimiControl *ready = invoke_intrinsic(runtime, operation, arguments, 1, span, call_node, environment);
-  if (ready->kind != CONTROL_SUCCESS) return ready;
-  ChimiValue *mapped[] = {ready->value};
-  return invoke(runtime, map->as.callable, mapped, 1, span, call_node, new_environment(0));
+  return invoke_intrinsic(runtime, operation, arguments, 1, span, call_node, environment);
+}
+
+/* Maps a taken value with the providers the mapping function snapshotted when
+   the event was built. A timer has no mapping function. */
+static ChimiControl *select_map(ChimiRuntime *runtime, ChimiValue *event, ChimiControl *taken,
+                                uint64_t span, uint32_t call_node) {
+  int64_t kind = select_value(event, "kind")->as.integer;
+  if (taken->kind != CONTROL_SUCCESS || kind == SELECT_EVENT_AFTER || kind == SELECT_EVENT_AT)
+    return taken;
+  ChimiValue *mapped[] = {taken->value};
+  return invoke(runtime, select_value(event, "map")->as.callable, mapped, 1, span, call_node,
+                new_environment(0));
 }
 
 /* Select.first (time-and-outcomes.md, "Semantics of `Select.first`"): one
@@ -7233,14 +7244,19 @@ static ChimiControl *select_first(ChimiRuntime *runtime, ChimiValue *events, uin
     committed = request.value;
     break;
   }
+  ChimiValue *event = committed >= 0 ? list_get(events, (uint32_t)committed) : NULL;
+  ChimiControl *taken = NULL;
+  if (!stopped) {
+    uint64_t timer_task = user_timer[committed] ? sources[committed].task : 0;
+    taken = select_take(runtime, event, timer_task, span, call_node, environment);
+  }
+  /* Only after the take: a cancel reply lets other tasks run first. */
   if (!stopped || stopped->kind != CONTROL_CANCEL || !chimi_fiber_cancel_is_terminal())
     cancel_user_timers(runtime, sources, user_timer, count, committed, span, call_node, environment);
-  uint64_t timer_task = committed >= 0 && user_timer[committed] ? sources[committed].task : 0;
   free(sources);
   free(user_timer);
   if (stopped) return stopped;
-  return select_commit(runtime, list_get(events, (uint32_t)committed), timer_task, span, call_node,
-                       environment);
+  return select_map(runtime, event, taken, span, call_node);
 }
 
 static ChimiControl *invoke_select(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,

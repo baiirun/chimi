@@ -1424,6 +1424,10 @@ impl Scheduler {
         let kind = unsafe { (*request.cast::<RequestHeader>()).kind };
         let park = self.tasks[&owner].park;
         let process = self.tasks[&owner].process.is_some();
+        // A running task is no longer parked in a select, whatever it asks
+        // now (a reissued select registers afresh), so a scope refusal or a
+        // lingering park cannot leave its watchers and wake timer behind.
+        self.clear_select(owner);
         if process && self.park_lingers(owner, kind) {
             return;
         }

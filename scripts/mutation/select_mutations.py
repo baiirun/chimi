@@ -75,6 +75,9 @@ MUTATIONS = [
     select("a firing scope cannot withdraw a select", SCOPE, [(
         "            | super::REQUEST_PROCESS_RECEIVE\n            | super::REQUEST_SELECT\n    )\n}\n\nimpl",
         "            | super::REQUEST_PROCESS_RECEIVE\n    )\n}\n\nimpl")]),
+    select("a request leaves an abandoned select registered", SCHEDULER, [(
+        "        self.clear_select(owner);\n        if process && self.park_lingers(owner, kind) {",
+        "        if process && self.park_lingers(owner, kind) {")]),
     select("disarming keeps the select registrations", PROCESS, [(
         "        self.clear_select(task);\n        let transition = self.channels.cancel_pending(task);",
         "        let transition = self.channels.cancel_pending(task);")]),
@@ -89,8 +92,12 @@ MUTATIONS = [
         "        if (on_execution_clock(provider)) {\n          *entry",
         "        if (true) {\n          *entry")]),
     select("a committed receive skips the mapping function", RUNTIME, [(
-        "  return invoke(runtime, map->as.callable, mapped, 1, span, call_node, new_environment(0));",
-        "  return success(mapped[0]);")]),
+        "  ChimiValue *mapped[] = {taken->value};\n  return invoke(",
+        "  ChimiValue *mapped[] = {taken->value};\n  return taken;\n  return invoke(")]),
+    select("losing user timers are cancelled before the take", RUNTIME, [(
+        "    taken = select_take(runtime, event, timer_task, span, call_node, environment);\n  }\n",
+        "    cancel_user_timers(runtime, sources, user_timer, count, committed, span, call_node, environment);\n"
+        "    taken = select_take(runtime, event, timer_task, span, call_node, environment);\n  }\n")]),
     select("Select.first accepts an empty list at run time", RUNTIME, [(
         "  if (count == 0) return defect(\"`Select.first` needs at least one event\", call_node);",
         "  if (count == 0) return success(void_value());")]),
