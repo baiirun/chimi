@@ -135,6 +135,20 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/decimal.multiply_checked", 2, StandardFunction::DecimalMultiplyChecked),
     pure("std/decimal.divide_rounded", 4, StandardFunction::DecimalDivideRounded),
     pure("std/decimal.to_float", 1, StandardFunction::DecimalToFloat),
+
+    // std/bytes: the Chimi wrappers pass an `IntLayout` as its private code.
+    pure("std/bytes.from", 1, StandardFunction::BytesFrom),
+    pure("std/bytes.length", 1, StandardFunction::BytesLength),
+    pure("std/bytes.get", 2, StandardFunction::BytesGet),
+    pure("std/bytes.index_of", 2, StandardFunction::BytesIndexOf),
+    pure("std/bytes.concat", 1, StandardFunction::BytesConcat),
+    pure("std/bytes.slice", 2, StandardFunction::BytesSlice),
+    pure("std/bytes.to_list", 1, StandardFunction::BytesToList),
+    pure("std/bytes.from_text", 1, StandardFunction::BytesFromText),
+    pure("std/bytes.to_text_lossy", 1, StandardFunction::BytesToTextLossy),
+    pure("std/bytes.valid_utf8_length", 1, StandardFunction::BytesValidUtf8Length),
+    pure("std/bytes.read_int_code", 3, StandardFunction::BytesReadIntCode),
+    pure("std/bytes.int_bytes", 2, StandardFunction::BytesIntBytes),
 ];
 
 pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
@@ -158,6 +172,7 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     native_type("std/map.Map", StandardType::Map),
     native_type("std/set.Set", StandardType::Set),
     native_type("std/decimal.Decimal", StandardType::Decimal),
+    native_type("std/bytes.Bytes", StandardType::Bytes),
     native_type("std/json.Number", StandardType::JsonNumber),
     known_type("std/json.Value", StandardType::JsonValue),
     known_constructor("std/json.Value.Null", StandardConstructor::JsonNull),

@@ -1,0 +1,7 @@
+// Bytes.from defects on a negative element.
+import std/bytes as Bytes
+import std/bytes.{Bytes}
+
+pub fn main() -> Bytes {
+  Bytes.from([-1])
+}

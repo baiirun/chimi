@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"success","value":"[\"[Bytes(01), Bytes(01 02), Bytes(ff)]\", \"Some(2)\", \"Set { Bytes(), Bytes(01), Bytes(02) }\"]"}

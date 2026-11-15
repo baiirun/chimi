@@ -44,6 +44,8 @@ pub(super) fn structural_order(
             (RuntimeValue::Text(left), RuntimeValue::Text(right)) => {
                 left.as_bytes().cmp(right.as_bytes())
             }
+            // Lexicographic by unsigned byte, like `Text`.
+            (RuntimeValue::Bytes(left), RuntimeValue::Bytes(right)) => left.cmp(right),
             (RuntimeValue::JsonNumber(left), RuntimeValue::JsonNumber(right)) => {
                 crate::json::compare_numbers(left, right)
             }
@@ -177,6 +179,7 @@ const fn rank(value: &RuntimeValue) -> u8 {
         RuntimeValue::ProcessAddress(_) => 14,
         RuntimeValue::Decimal(_) => 15,
         RuntimeValue::Set(_) => 16,
+        RuntimeValue::Bytes(_) => 17,
     }
 }
 

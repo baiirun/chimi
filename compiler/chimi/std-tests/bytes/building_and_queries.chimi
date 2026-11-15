@@ -1,0 +1,28 @@
+// Bytes: building from lists, text, and parts; length, get, slice (clamped),
+// search, prefixes and suffixes, split_once, equality and order, and rendering.
+import std/bytes as Bytes
+import std/bytes.{Bytes}
+import std/debug as Debug
+
+pub fn main() -> Text {
+  let hi = Bytes.from([0x68, 0x69])
+  let data = Bytes.from([0, 1, 2, 255, 13, 10, 7])
+  let crlf = Bytes.from([13, 10])
+  let results = [
+    Debug.render([hi, Bytes.empty(), Bytes.from_text("hi"), Bytes.from_text("é")]),
+    Debug.render([hi == Bytes.from_text("hi"), hi == Bytes.from([0x68]), Bytes.empty() == Bytes.from([])]),
+    Debug.render([Bytes.from([1]) < Bytes.from([1, 0]), Bytes.from([2]) > Bytes.from([1, 255]), Bytes.from([255]) > Bytes.from([127]), Bytes.empty() < Bytes.from([0])]),
+    Debug.render([Bytes.length(data), Bytes.length(Bytes.empty()), Bytes.length(Bytes.from_text("é"))]),
+    Debug.render([Bytes.is_empty(Bytes.empty()), Bytes.is_empty(hi)]),
+    Debug.render([Bytes.get(data, 0), Bytes.get(data, 3), Bytes.get(data, 6), Bytes.get(data, 7), Bytes.get(data, -1)]),
+    Debug.render([Bytes.slice(data, 1..4), Bytes.slice(data, 5..100), Bytes.slice(data, -3..2), Bytes.slice(data, 4..2), Bytes.slice(data, 3..=3)]),
+    Debug.render([Bytes.index_of(data, crlf), Bytes.index_of(data, Bytes.from([10, 13])), Bytes.index_of(data, data), Bytes.index_of(crlf, data)]),
+    Debug.render([Bytes.contains(data, Bytes.from([255])), Bytes.contains(data, Bytes.from([3]))]),
+    Debug.render([Bytes.starts_with(data, Bytes.from([0, 1])), Bytes.starts_with(data, Bytes.from([1])), Bytes.starts_with(hi, data), Bytes.starts_with(hi, Bytes.empty())]),
+    Debug.render([Bytes.ends_with(data, Bytes.from([10, 7])), Bytes.ends_with(data, Bytes.from([7, 10])), Bytes.ends_with(hi, data), Bytes.ends_with(hi, Bytes.empty())]),
+    Debug.render([Bytes.split_once(data, crlf), Bytes.split_once(data, Bytes.from([9])), Bytes.split_once(crlf, crlf)]),
+    Debug.render([Bytes.append(hi, crlf), Bytes.concat([hi, Bytes.empty(), crlf, hi]), Bytes.concat([])]),
+    Debug.render([Bytes.to_list(data), Bytes.to_list(Bytes.empty())]),
+  ]
+  Debug.render(results)
+}

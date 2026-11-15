@@ -1,3 +1,4 @@
+mod bytes_operations;
 mod constants;
 mod core_operations;
 mod debug;
@@ -215,6 +216,8 @@ pub enum ExecutionValue {
     /// A `std/decimal.Decimal` in its normalized text, as `Debug.render` writes
     /// it, so equal values are equal outcomes.
     Decimal(String),
+    /// A `std/bytes.Bytes`.
+    Bytes(Vec<u8>),
     Record(Vec<ValueField>),
     /// A map whose keys are not Text, as its entries in key order. A Text-keyed
     /// map is a `Record` of its entries, and an empty map is an empty `Record`.
@@ -375,6 +378,8 @@ enum RuntimeValue {
     Duration(i64),
     /// A `std/decimal.Decimal`.
     Decimal(crate::decimal::Decimal),
+    /// A `std/bytes.Bytes`, shared because values are copied on every reference.
+    Bytes(Arc<[u8]>),
     /// A named `std/process.Address`: the `process name` declaration's symbol.
     ProcessAddress(SymbolId),
     /// Fields of records and constructed values are shared like list nodes and
@@ -1688,6 +1693,20 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::DecimalToFloat => {
                 self.invoke_decimal_operation(function, arguments, span, call_node, environment)
             }
+            StandardFunction::BytesFrom
+            | StandardFunction::BytesLength
+            | StandardFunction::BytesGet
+            | StandardFunction::BytesIndexOf
+            | StandardFunction::BytesConcat
+            | StandardFunction::BytesSlice
+            | StandardFunction::BytesToList
+            | StandardFunction::BytesFromText
+            | StandardFunction::BytesToTextLossy
+            | StandardFunction::BytesValidUtf8Length
+            | StandardFunction::BytesReadIntCode
+            | StandardFunction::BytesIntBytes => {
+                self.invoke_bytes_operation(function, arguments, call_node)
+            }
             StandardFunction::IoPath => {
                 let [RuntimeValue::Text(path)] = arguments.as_slice() else {
                     return self.intrinsic_shape_defect(function, call_node);
@@ -2421,6 +2440,7 @@ fn public_value(value: &RuntimeValue) -> ExecutionValue {
         },
         RuntimeValue::Duration(value) => ExecutionValue::Duration(*value),
         RuntimeValue::Decimal(value) => ExecutionValue::Decimal(value.normalized_text()),
+        RuntimeValue::Bytes(value) => ExecutionValue::Bytes(value.to_vec()),
         RuntimeValue::Record(fields) => ExecutionValue::Record(public_fields(fields)),
         RuntimeValue::Constructed {
             type_name,
@@ -2605,6 +2625,12 @@ fn write_json_value(output: &mut String, value: &ExecutionValue) {
                 output.push_str("{\"decimal\":");
                 write_json_string(output, text);
                 output.push('}');
+            }
+            // Lowercase hex, two digits per byte.
+            ExecutionValue::Bytes(bytes) => {
+                output.push_str("{\"bytes\":\"");
+                output.push_str(&bytes_operations::hex(bytes));
+                output.push_str("\"}");
             }
             ExecutionValue::Record(fields) => {
                 output.push('{');

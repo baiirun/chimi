@@ -26,7 +26,7 @@ pub(crate) fn is_white_space(character: char) -> bool {
 }
 
 /// Clamps `start..end` to `0..length`; a reversed range clamps to empty.
-fn clamp_range(start: i64, end: i64, length: usize) -> std::ops::Range<usize> {
+pub(super) fn clamp_range(start: i64, end: i64, length: usize) -> std::ops::Range<usize> {
     let clamp = |bound: i64| usize::try_from(bound.max(0)).unwrap_or(usize::MAX).min(length);
     let start = clamp(start);
     start..clamp(end).max(start)

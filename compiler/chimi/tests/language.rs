@@ -1637,6 +1637,25 @@ fn a_decimal_task_result_crosses_heaps_intact() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+#[test]
+fn a_bytes_task_result_crosses_heaps_intact() {
+    let scratch = scratch_directory("bytes-task-result");
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        "import std/task as Task\nimport std/bytes as Bytes\nimport std/bytes.{Bytes}\n\
+         fn work() -> Bytes { Bytes.concat([Bytes.from([0xca, 0x00, 0xfe]), Bytes.from_text(\"task\")]) }\n\
+         pub fn main() -> Bytes { Task.result(Task.start(work)) }\n",
+    )
+    .unwrap();
+    let outcome = native_outcome(&scratch, &path);
+    assert!(
+        outcome.ends_with("\"outcome\":\"success\",\"value\":{\"bytes\":\"ca00fe7461736b\"}}"),
+        "{outcome}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // N23
 #[test]
 fn float_literal_patterns_are_rejected() {
