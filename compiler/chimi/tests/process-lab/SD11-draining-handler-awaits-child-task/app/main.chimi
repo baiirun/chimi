@@ -20,12 +20,16 @@ pub enum Message {
   Compute(report: Sender<Int>)
 }
 
-fn slow_answer() -> Int needs { clock: Clock } {
+fn slow_answer() -> Int needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.seconds(1))
   7
 }
 
-fn computing(inbox: Inbox<Message>) -> Void needs { clock: Clock } {
+fn computing(inbox: Inbox<Message>) -> Void needs {
+  clock: Clock
+} {
   loop answered = 0 {
     case Process.receive(inbox) {
       Message.Compute(report) -> {
@@ -37,7 +41,9 @@ fn computing(inbox: Inbox<Message>) -> Void needs { clock: Clock } {
   }
 }
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
@@ -48,7 +54,9 @@ fn received(value: Receive<Int>) -> Int {
   }
 }
 
-pub fn main() -> Int needs { clock: Clock } {
+pub fn main() -> Int needs {
+  clock: Clock
+} {
   let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
   let managed = Supervisor.start_process(root, Process.spec(computing, 1, Duration.seconds(5)), Supervisor.Restart.Never)
   let reports = Channel.bounded(2)

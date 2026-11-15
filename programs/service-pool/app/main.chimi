@@ -57,7 +57,9 @@ fn dispatch(inbox: Inbox<Dispatch>) -> Void {
   }
 }
 
-fn work(inbox: Inbox<Job>) -> Void needs { clock: Clock } {
+fn work(inbox: Inbox<Job>) -> Void needs {
+  clock: Clock
+} {
   loop finished = 0 {
     case Process.receive(inbox) {
       Job.Work(id, milliseconds) -> {
@@ -80,7 +82,9 @@ fn record(inbox: Inbox<Entry>) -> Void {
   }
 }
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
@@ -88,17 +92,25 @@ fn submit(id: Int, milliseconds: Int) -> Void {
   Process.send(dispatcher, Dispatch.Submit(Job.Work(id, milliseconds)))
 }
 
-pub fn main() -> Void needs { clock: Clock } {
+pub fn main() -> Void needs {
+  clock: Clock
+} {
   let recording = Process.spec(record, 16, Duration.seconds(5))
-    |> Process.register(ledger)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(ledger)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let dispatching = Process.spec(dispatch, 16, Duration.seconds(5))
-    |> Process.register(dispatcher)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(dispatcher)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let root = Supervisor.start(Supervisor.policy([recording, dispatching], 5, Supervisor.restarts(3, Duration.seconds(30))))
-  let first = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5)) |> Process.register(worker_1), Supervisor.Restart.OnDefect)
-  let second = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5)) |> Process.register(worker_2), Supervisor.Restart.OnDefect)
-  let third = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5)) |> Process.register(worker_3), Supervisor.Restart.OnDefect)
+  let first = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5))
+    |> Process.register(worker_1), Supervisor.Restart.OnDefect
+  )
+  let second = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5))
+    |> Process.register(worker_2), Supervisor.Restart.OnDefect
+  )
+  let third = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5))
+    |> Process.register(worker_3), Supervisor.Restart.OnDefect
+  )
   Process.send(worker_1, Job.Poison)
   settle()
   submit(1, 1000)

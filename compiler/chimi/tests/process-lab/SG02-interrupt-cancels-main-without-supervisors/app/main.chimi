@@ -7,7 +7,9 @@ import std/duration as Duration
 // the cancellation outcome at 2s and exits 130 (128 + SIGINT). A signal that
 // waited for main would end at 1h with success.
 
-pub fn main() -> Int needs { clock: Clock } {
+pub fn main() -> Int needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.hours(1))
   1
 }

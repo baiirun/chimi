@@ -11,15 +11,17 @@ import std/supervisor as Supervisor
 // removes it while it sleeps. The drain lets the sleep run, but it outlasts
 // `shutdown_within = 5s` from the removal at 1ms, so the body is forced at
 // its deadline, 5.001s, and never reports. This is the forced path reached
-// from Chimi source rather than a C harness. Main then puts 9 on the report channel and reads it back
-// first (outcome 9): a handler that ran on after forcing would have put its
-// 1 there before.
+// from Chimi source rather than a C harness. Main then puts 9 on the report
+// channel and reads it back first (outcome 9): a handler that ran on after
+// forcing would have put its 1 there before.
 
 pub enum Message {
   Nap(report: Sender<Int>)
 }
 
-fn napping(inbox: Inbox<Message>) -> Void needs { clock: Clock } {
+fn napping(inbox: Inbox<Message>) -> Void needs {
+  clock: Clock
+} {
   loop naps = 0 {
     case Process.receive(inbox) {
       Message.Nap(report) -> {
@@ -31,7 +33,9 @@ fn napping(inbox: Inbox<Message>) -> Void needs { clock: Clock } {
   }
 }
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
@@ -42,7 +46,9 @@ fn received(value: Receive<Int>) -> Int {
   }
 }
 
-pub fn main() -> Int needs { clock: Clock } {
+pub fn main() -> Int needs {
+  clock: Clock
+} {
   let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
   let managed = Supervisor.start_process(root, Process.spec(napping, 1, Duration.seconds(5)), Supervisor.Restart.Never)
   let reports = Channel.bounded(2)

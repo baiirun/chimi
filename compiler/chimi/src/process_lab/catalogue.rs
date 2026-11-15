@@ -173,7 +173,7 @@ const TASK_TERMINAL: &[&str] = &["task_terminal"];
 
 use Stage::*;
 
-pub static SCENARIOS: [Scenario; 148] = [
+pub static SCENARIOS: [Scenario; 149] = [
     // Static: compile-pass.
     fixture("SP01", "static-contract-example", U1),
     fixture("SP02", "spec-inside-using-shareable-provider", U2),
@@ -321,6 +321,7 @@ pub static SCENARIOS: [Scenario; 148] = [
     fixture("SD09", "second-stop-is-silent", U5),
     fixture("SD10", "deadline-forces-in-flight-handler", U12),
     fixture("SD11", "draining-handler-awaits-child-task", U12),
+    fixture("SD12", "draining-handler-times-out", U12),
     fixture("SG01", "terminate-drains-then-exits", U12)
         .signalled(&["--signal=TERM@1500ms"], 143)
         .with_events(&["clock_signal_received"]),

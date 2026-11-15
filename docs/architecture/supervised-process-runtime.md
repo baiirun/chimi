@@ -327,6 +327,7 @@ the drain makes the end `defected`, inside the shutdown protocol.
 | A handler still parked at its deadline is forced there | `sd04_a_handler_still_sleeping_at_its_deadline_is_forced_there` | None |
 | A draining body keeps its child task | `a_draining_body_keeps_its_child_task_and_collects_its_result` | children cancelled at shutdown |
 | A draining body keeps its channel operations | `a_draining_body_receives_a_channel_value_sent_during_its_drain` | None |
+| A timeout scope still fires during the drain | lab SD12 | drain silences timeout scopes |
 | A running body is not cancelled at its next park | `an_incarnation_running_when_shutdown_begins_is_not_cancelled_at_its_next_park` | None |
 | A self-stop is answered with cancellation | `sv05_sd08_a_member_that_stops_its_own_root_is_cancelled_and_wait_returns` | self-wait not interrupted |
 | A removal reply never reaches a later park | `a_removal_reply_for_an_interrupted_park_never_reaches_a_later_park` | None |

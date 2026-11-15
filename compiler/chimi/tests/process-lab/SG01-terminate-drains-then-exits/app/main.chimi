@@ -26,7 +26,9 @@ pub enum Entry {
 pub process name worker: Job
 pub process name ledger: Entry
 
-fn work(inbox: Inbox<Job>) -> Void needs { clock: Clock } {
+fn work(inbox: Inbox<Job>) -> Void needs {
+  clock: Clock
+} {
   loop done = 0 {
     case Process.receive(inbox) {
       Job.Work(id) -> {
@@ -46,13 +48,15 @@ fn record(inbox: Inbox<Entry>) -> Void {
   }
 }
 
-pub fn main() -> Void needs { clock: Clock } {
+pub fn main() -> Void needs {
+  clock: Clock
+} {
   let recording = Process.spec(record, 4, Duration.seconds(5))
-    |> Process.register(ledger)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(ledger)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let working = Process.spec(work, 4, Duration.seconds(5))
-    |> Process.register(worker)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(worker)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let root = Supervisor.start(Supervisor.policy([recording, working], 2, Supervisor.restarts(0, Duration.seconds(30))))
   Process.send(worker, Job.Work(1))
   Process.send(worker, Job.Work(2))

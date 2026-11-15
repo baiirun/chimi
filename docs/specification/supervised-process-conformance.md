@@ -705,6 +705,7 @@ consumed budget.
 | SD09 | U5 | A second `stop` returns `Void` and emits nothing | Duplicate stop events |
 | SD10 | U12 | Removal while the handler sleeps 60 s under `shutdown_within = 5s`. The drain lets the sleep run until the deadline, where the body is forced at 5.001s and never reports. The forced path reached from Chimi source | A deadline that waits for the handler, or a handler that runs after forcing |
 | SD11 | U12 | Removal while the handler waits on `Task.result` of a child task that sleeps 1 s. The child keeps running, the handler reports its 7 at 1s, and the body ends `cancelled` | Child tasks cancelled when shutdown begins rather than at the deadline |
+| SD12 | U12 | Removal while the handler sleeps 60 s inside a 1 s `Task.timeout`. The timeout still fires during the drain: the handler reports its timeout at 1s and the body ends `cancelled` | A drain that silences timeout scopes |
 
 ### Runtime: signals
 
@@ -1169,7 +1170,7 @@ scenarios pass and `CURRENT_STAGE` names it.
 | U9 | Declared and dynamic nested supervisors | SV09, SV10, ES02–ES04 |
 | U10 | `programs/supervised-pool` and the performance harness | FP01, MF02, MF03, PG01–PG10 |
 | U11 | G27: `Process.address`, `queued`, `capacity`, `monitor`, and `unmonitor` ([process monitors and metrics](process-monitors-and-metrics.md), CHI-220), fiber ABI 9 | SF27, SF28, MB12–MB18 |
-| U12 | G22: drain before cancel, ordered shutdown, SIGINT and SIGTERM, the exit status after a signal, and `--signal` ([application lifecycle](application-lifecycle.md)), fiber ABI 10, runtime ABI 26. RR05 and SD06 move here because their rule changed | MB19, RR05, SD06, SD10, SD11, SG01–SG03, FP02 |
+| U12 | G22: drain before cancel, ordered shutdown, SIGINT and SIGTERM, the exit status after a signal, and `--signal` ([application lifecycle](application-lifecycle.md)), fiber ABI 10, runtime ABI 27. RR05 and SD06 move here because their rule changed | MB19, RR05, SD06, SD10–SD12, SG01–SG03, FP02 |
 
 Two scenarios moved stage (coordinator decisions on `ts-6ccbc9`). MF06
 moved from U3 to U5, because a process program cannot be built natively
@@ -1199,14 +1200,14 @@ changing a contract.
 | Restart accounting (RA) | 8 |
 | Escalation (ES) | 5 |
 | Removal races (RR) | 6 |
-| Shutdown and forced termination (SD) | 11 |
+| Shutdown and forced termination (SD) | 12 |
 | Signals (SG) | 3 |
 | Copy-boundary safety (CB) | 8 |
 | Memory flatness (MF) | 6 |
 | Observability (OB) and backend support (IP) | 9 |
 | Forcing program (FP) | 2 |
 | Performance gates (PG) | 10 |
-| **Total** | **148** |
+| **Total** | **149** |
 
 Four scenarios use C harnesses: RA06, SD04, CB06, and CB07.
 

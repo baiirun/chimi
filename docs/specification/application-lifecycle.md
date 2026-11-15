@@ -9,7 +9,7 @@ changes the shutdown rules of
 [process execution and mailboxes](process-execution-and-mailboxes.md), and
 the exit status of [runtime output channels](runtime-output-channels.md).
 Decided from the vision docs and recorded in [decisions.md](../decisions.md).
-The lab scenarios are RR05, SD06, SD10, SD11, MB19, SG01 to SG03, and the
+The lab scenarios are RR05, SD06, SD10 to SD12, MB19, SG01 to SG03, and the
 Phase 4 forcing program FP02 (`programs/service-pool`), in the
 [conformance lab](supervised-process-conformance.md) at stage U12.
 

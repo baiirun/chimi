@@ -23,8 +23,11 @@ fn idle(inbox: Inbox<Message>) -> Void {
   }
 }
 
-pub fn main() -> Int needs { clock: Clock } {
-  let member = Process.spec(idle, 1, Duration.seconds(5)) |> Supervisor.process(Supervisor.Restart.Never)
+pub fn main() -> Int needs {
+  clock: Clock
+} {
+  let member = Process.spec(idle, 1, Duration.seconds(5))
+  |> Supervisor.process(Supervisor.Restart.Never)
   let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))
   Clock.sleep(Duration.seconds(1))
   3

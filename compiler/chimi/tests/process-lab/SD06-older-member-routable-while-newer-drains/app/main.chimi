@@ -53,7 +53,9 @@ fn forwarding(inbox: Inbox<ForwarderMessage>) -> Void {
   }
 }
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
@@ -64,10 +66,12 @@ fn received(value: Receive<Int>) -> Int {
   }
 }
 
-pub fn main() -> Int needs { clock: Clock } {
+pub fn main() -> Int needs {
+  clock: Clock
+} {
   let member = Process.spec(counting, 1, Duration.seconds(1))
-    |> Process.register(counter)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(counter)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let root = Supervisor.start(Supervisor.policy([member], 2, Supervisor.restarts(0, Duration.seconds(30))))
   let newest = Supervisor.start_process(root, Process.spec(forwarding, 1, Duration.seconds(1)), Supervisor.Restart.Never)
   let reports = Channel.bounded(1)
