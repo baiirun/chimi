@@ -1,7 +1,8 @@
 // Schedule.delay gives the wait before the try after `attempt`, and None once
 // the attempts are used up. Exponential waits double up to the limit and stay
 // there; a first wait above the limit waits the limit; a huge attempt number
-// at the largest limit stops doubling instead of overflowing.
+// at the largest limit stops doubling instead of overflowing, and a zero first
+// wait answers at once.
 import std/debug as Debug
 import std/duration as Duration
 import std/schedule as Schedule
@@ -17,6 +18,7 @@ pub fn main() -> Text {
     Duration.nanoseconds(3),
     Duration.nanoseconds(9223372036854775807),
   )
+  let zero = Schedule.exponential(9000000000000000000, Duration.zero, Duration.seconds(1))
   Debug.render([
     [Schedule.delay(immediate, 1), Schedule.delay(immediate, 2)],
     [Schedule.delay(fixed, 1), Schedule.delay(fixed, 2), Schedule.delay(fixed, 3)],
@@ -30,5 +32,6 @@ pub fn main() -> Text {
     ],
     [Schedule.delay(capped, 1), Schedule.delay(capped, 2), Schedule.delay(capped, 3)],
     [Schedule.delay(huge, 62), Schedule.delay(huge, 63), Schedule.delay(huge, 8999999999999999999)],
+    [Schedule.delay(zero, 8999999999999999999)],
   ])
 }

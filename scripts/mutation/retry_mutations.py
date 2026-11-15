@@ -37,6 +37,8 @@ MUTATIONS = [
         ("  loop state = (min(first, limit), attempt) {", "  loop state = (first, attempt) {")]),
     programs("a negative wait is accepted", SCHEDULE, [
         ("  case wait < Duration.zero {", "  case False {")]),
+    programs("a zero first wait doubles forever", SCHEDULE, [
+        ("    case left == 1 or wait == limit or wait == Duration.zero {", "    case left == 1 or wait == limit {")]),
     programs("an immediate schedule waits", SCHEDULE, [
         ("      Immediate(_) -> Duration.zero", "      Immediate(_) -> Duration.seconds(1)")]),
     retry("every failure is retried", RETRY, [

@@ -949,7 +949,7 @@ Schedule.delay:       fn(Schedule, Int) -> Option<Duration>
 
 - The first argument is the total number of attempts, including the first
   one. A value below 1 MUST defect at the call that receives it. The compiler
-  rejects a literal below 1 (`T4347`).
+  rejects a literal or module constant below 1 (`T4347`).
 - `Schedule.fixed(n, delay)` waits `delay` between attempts.
 - `Schedule.exponential(n, first, limit)` waits `first` before the second
   attempt and doubles each time, never exceeding `limit`. The computation MUST

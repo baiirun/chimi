@@ -86,11 +86,12 @@ fn attempts(schedule: Schedule) -> Int {
 }
 
 /// `first` doubled `attempt - 1` times, stopping at `limit`. A wait at least
-/// half of `limit` jumps straight to `limit`, so no doubling can overflow.
+/// half of `limit` jumps straight to `limit`, so no doubling can overflow, and
+/// a zero wait stays zero, so the loop ends after at most 63 doublings.
 fn doubled(first: Duration, limit: Duration, attempt: Int) -> Duration {
   loop state = (min(first, limit), attempt) {
     let (wait, left) = state
-    case left == 1 or wait == limit {
+    case left == 1 or wait == limit or wait == Duration.zero {
       True -> break wait
       False -> case wait > Duration.subtract(limit, wait) {
         True -> (limit, left - 1)
