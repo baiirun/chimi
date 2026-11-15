@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 21
+#define CHIMI_RUNTIME_ABI_VERSION 22
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -357,6 +357,8 @@ typedef struct {
   uint32_t body;
   uint32_t parameters_offset;
   uint32_t parameters_length;
+  /* One environment slot per local of the body, closures included. */
+  uint32_t local_count;
 } ChimiFunction;
 
 typedef struct {
@@ -406,7 +408,6 @@ extern const ChimiNode CHIMI_NODES[];
 extern const uint32_t CHIMI_NODE_COUNT;
 extern const ChimiSymbol CHIMI_SYMBOLS[];
 extern const uint32_t CHIMI_SYMBOL_COUNT;
-extern const uint32_t CHIMI_LOCAL_SLOT_COUNT;
 extern const uint32_t CHIMI_REQUIREMENT_SLOT_COUNT;
 extern const ChimiFunction CHIMI_FUNCTIONS[];
 extern const uint32_t CHIMI_FUNCTION_COUNT;
