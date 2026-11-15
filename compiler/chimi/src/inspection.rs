@@ -4,8 +4,8 @@ use crate::ids::{ModuleId, SemanticId, SymbolId, TextRange};
 use crate::json::write_json_string_escaping_controls;
 use crate::resolution::{ProjectReference, ProjectSymbolKind, ReferenceResolution};
 use crate::semantic::{
-    CaseOrigin, ModuleBlockItem, ModuleDeclaration, ModuleExpression, Pattern, SemanticModule,
-    is_generated_name,
+    CaseOrigin, ModuleBlockItem, ModuleDeclaration, ModuleDeclarationKind, ModuleExpression,
+    Pattern, SemanticModule, is_generated_name,
 };
 use crate::syntax::ParseResult;
 use crate::typing::{CallableContract, PropertyDerivation, TypedProject, ValueProperty};
@@ -438,9 +438,12 @@ pub(crate) fn inspect(
             expression_fact.and_then(|fact| typed.callable_contract_for_type(fact.success))
         });
     // A clause head names the whole group: report its contract and the position.
+    // An ordinary function's declared name names it the same way.
     let clause = clause_at(module, offset);
     let callable_contract = callable_contract.or_else(|| {
-        let (declaration, _) = clause?;
+        let declaration = clause
+            .map(|(declaration, _)| declaration)
+            .or_else(|| function_named_at(module, offset))?;
         let symbol = typed.resolved.source_symbol(
             module.id,
             declaration.semantic_id,
@@ -675,6 +678,14 @@ fn clause_at(
                 count: arms.len(),
             },
         ))
+    })
+}
+
+/// The function declaration whose name is at `offset`.
+fn function_named_at(module: &SemanticModule, offset: usize) -> Option<&ModuleDeclaration> {
+    module.declarations.iter().find(|declaration| {
+        declaration.kind == ModuleDeclarationKind::Function
+            && range_contains(declaration.name.range, offset)
     })
 }
 

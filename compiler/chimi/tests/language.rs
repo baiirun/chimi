@@ -6434,6 +6434,29 @@ fn inspecting_any_clause_reports_the_group_and_the_clause_position() {
     }
 }
 
+// ts-061593 (CHI-158): the name in an ordinary function's declaration reports
+// the function's contract, as a call site does; it is no clause, so there is no
+// clause position. Before, only call sites and clause groups reported it.
+#[test]
+fn inspecting_a_single_clause_function_name_reports_its_contract() {
+    let source = concat!(
+        "enum Shortfall {\n  Short\n}\n",
+        "fn total(a: Int, b: Int) -> Int errors Shortfall {\n",
+        "  case a + b < 0 {\n    True -> Failure(Shortfall.Short)\n    False -> a + b\n  }\n",
+        "}\n",
+        "pub fn main() -> Int errors Shortfall { total(1, 2) }\n",
+    );
+    for occurrence in [0, 1] {
+        let report = inspect_at(source, "total", occurrence);
+        assert_eq!(
+            report.callable().map(chimi::CallableInspection::display),
+            Some("fn(Int, Int) -> Int errors Shortfall"),
+            "occurrence {occurrence}"
+        );
+        assert!(report.clause().is_none(), "occurrence {occurrence}");
+    }
+}
+
 // Struct, alias, and literal patterns (patterns-and-function-clauses.md, "Patterns").
 
 #[test]

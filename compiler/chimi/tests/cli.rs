@@ -4064,6 +4064,54 @@ fn native_marking_work_is_linear_in_the_nesting_depth_a_loop_builds() {
     );
 }
 
+// ts-51bbf7 (CHI-176): a native environment holds the locals of one body, so a
+// call's environment costs the same however many locals other functions declare.
+// Before, every environment had one slot per local in the whole program, so
+// adding a reachable function with 400 locals made each of the loop's 2,000 calls
+// allocate 3.2 KB more.
+#[test]
+fn native_call_environments_do_not_grow_with_other_functions_locals() {
+    let program = |wide_locals: usize| {
+        let mut wide = String::from("fn wide(x: Int) -> Int {\n  let a0 = x\n");
+        for index in 1..wide_locals {
+            wide.push_str(&format!("  let a{index} = a{} + 1\n", index - 1));
+        }
+        wide.push_str(&format!("  a{}\n}}\n", wide_locals - 1));
+        format!(
+            concat!(
+                "{}",
+                "fn step(i: Int) -> Int {{ i + 1 }}\n",
+                "pub fn main() -> Int {{\n",
+                "  let start = wide(0)\n",
+                "  loop i = start {{\n",
+                "    case i > 2000 {{\n",
+                "      True -> break i\n",
+                "      False -> step(i)\n",
+                "    }}\n",
+                "  }}\n",
+                "}}\n",
+            ),
+            wide
+        )
+    };
+    let measure = |wide_locals: usize| {
+        let scratch = scratch_directory(&format!("native-environment-size-{wide_locals}"));
+        let executable = build_native(&scratch, "environments", &program(wide_locals));
+        let (outcome, report) = execute_with_memory_report(&executable, &scratch);
+        assert!(outcome.contains("\"value\":2001"), "{outcome}");
+        std::fs::remove_dir_all(scratch).unwrap();
+        json_u64_field(&report, "scoped_total_allocated_bytes")
+    };
+    let narrow = measure(2);
+    let wide = measure(400);
+    // The wide function runs once; its own 400 locals cost a few KB, not 2,000
+    // calls' worth.
+    assert!(
+        wide < narrow + 64 * 1024,
+        "2 locals: {narrow} bytes; 400 locals: {wide} bytes"
+    );
+}
+
 // ts-6ccbc9 / ts-df67fb: with per-owner heaps, loops reclaim under the scheduler, so
 // the pipeline's memory does not grow with the number of jobs. Before, every pass's
 // allocations stayed live until exit once a program used tasks or channels.

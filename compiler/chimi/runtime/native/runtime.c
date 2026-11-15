@@ -1,4 +1,4 @@
-/* Chimi native runtime ABI version 20. */
+/* Chimi native runtime ABI version 22. */
 /* glibc hides strdup and clock_gettime under -std=c11; macOS
    exposes them by default, and a POSIX feature macro there would hide others. */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
@@ -107,6 +107,8 @@ typedef struct ChimiCallable {
   uint32_t body;
   uint32_t parameters_offset;
   uint32_t parameters_length;
+  /* A declared function's local count, which sizes each call's environment. */
+  uint32_t local_count;
   ChimiEnvironment *environment;
   struct ChimiCallable *inner;
   uint32_t requirement;
@@ -151,9 +153,12 @@ struct ChimiValue {
   } as;
 };
 
+/* `locals` has one slot per local of the body this environment runs: a
+   function's, or a constant initializer's, with the closures written in it. */
 struct ChimiEnvironment {
   ChimiValue **locals;
   ChimiValue **requirements;
+  uint32_t local_count;
 };
 
 struct ChimiControl {
@@ -690,17 +695,19 @@ static ChimiValue **clone_value_slots(ChimiValue **source, uint32_t count) {
   if (count != 0) memcpy(slots, source, count * sizeof(*slots));
   return slots;
 }
-static ChimiEnvironment *new_environment(void) {
+static ChimiEnvironment *new_environment(uint32_t local_count) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
   allocation_kind(environment, ALLOCATION_FRAME_ENVIRONMENT);
-  environment->locals = new_value_slots(CHIMI_LOCAL_SLOT_COUNT);
+  environment->local_count = local_count;
+  environment->locals = new_value_slots(local_count);
   environment->requirements = new_value_slots(CHIMI_REQUIREMENT_SLOT_COUNT);
   return environment;
 }
 static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
   allocation_kind(environment, ALLOCATION_FRAME_ENVIRONMENT);
-  environment->locals = clone_value_slots(source->locals, CHIMI_LOCAL_SLOT_COUNT);
+  environment->local_count = source->local_count;
+  environment->locals = clone_value_slots(source->locals, source->local_count);
   environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
   return environment;
 }
@@ -710,13 +717,15 @@ static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
 static ChimiEnvironment *clone_local_environment(const ChimiEnvironment *source) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
   allocation_kind(environment, ALLOCATION_FRAME_ENVIRONMENT);
-  environment->locals = clone_value_slots(source->locals, CHIMI_LOCAL_SLOT_COUNT);
+  environment->local_count = source->local_count;
+  environment->locals = clone_value_slots(source->locals, source->local_count);
   environment->requirements = source->requirements;
   return environment;
 }
 static ChimiEnvironment *clone_requirement_environment(const ChimiEnvironment *source) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
   allocation_kind(environment, ALLOCATION_FRAME_ENVIRONMENT);
+  environment->local_count = source->local_count;
   environment->locals = source->locals;
   environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
   return environment;
@@ -724,6 +733,7 @@ static ChimiEnvironment *clone_requirement_environment(const ChimiEnvironment *s
 static ChimiEnvironment *capture_requirements(const ChimiEnvironment *source) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
   allocation_kind(environment, ALLOCATION_ENVIRONMENT);
+  environment->local_count = 0;
   environment->locals = NULL;
   environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
   return environment;
@@ -732,7 +742,8 @@ static ChimiEnvironment *capture_closure_environment(const ChimiEnvironment *sou
                                                      const ChimiNode *node) {
   ChimiEnvironment *environment = allocate(1, sizeof(*environment));
   allocation_kind(environment, ALLOCATION_ENVIRONMENT);
-  environment->locals = new_value_slots(CHIMI_LOCAL_SLOT_COUNT);
+  environment->local_count = node->d;
+  environment->locals = new_value_slots(node->d);
   environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
   for (uint32_t index = 0; index < node->c; ++index) {
     uint32_t symbol = CHIMI_IDS[node->b + index];
@@ -2214,7 +2225,7 @@ static void transfer_captured_part(CapabilityTransfer *transfer, TransferPart pa
         for (uint32_t slot = CHIMI_REQUIREMENT_SLOT_COUNT; slot-- > 0;)
           transfer_push(transfer, TRANSFER_VALUE, environment->requirements[slot]);
       if (environment->locals)
-        for (uint32_t slot = CHIMI_LOCAL_SLOT_COUNT; slot-- > 0;)
+        for (uint32_t slot = environment->local_count; slot-- > 0;)
           transfer_push(transfer, TRANSFER_VALUE, environment->locals[slot]);
       return;
     }
@@ -4872,7 +4883,7 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
     // Declared functions capture provisioned requirements, but never local
     // bindings. Build a clean local table for parameters while retaining the
     // requirement snapshot taken when the function became a value.
-    environment = new_environment();
+    environment = new_environment(callable->local_count);
     if (CHIMI_REQUIREMENT_SLOT_COUNT != 0)
       memcpy(environment->requirements, callable->environment->requirements,
              CHIMI_REQUIREMENT_SLOT_COUNT * sizeof(*environment->requirements));
@@ -5720,7 +5731,7 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
   ChimiValue *arguments[] = {new_value(VALUE_PROCESS_INBOX)};
   uint64_t span = runtime->next_span++;
   ChimiControl *control = invoke(runtime, body->as.callable, arguments, 1, span, UINT32_MAX,
-                                 new_environment());
+                                 new_environment(0));
   ChimiFiberResult result = {.state = CHIMI_FIBER_SUCCEEDED, .value = CHIMI_PROCESS_END_RETURNED};
   switch (control->kind) {
     case CONTROL_SUCCESS: break;
@@ -6807,7 +6818,8 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
       callable->kind = CALL_DECLARED; callable->symbol = raw->a; callable->body = function->body;
       callable->parameters_offset = function->parameters_offset;
       callable->parameters_length = function->parameters_length;
-      callable->environment = capture_requirements(new_environment()); callable->name = "function";
+      callable->local_count = function->local_count;
+      callable->environment = capture_requirements(new_environment(0)); callable->name = "function";
       bind_constant_requirements(callable->environment, ids, raw->integer);
       break;
     }
@@ -6820,7 +6832,7 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
       break;
     case CHIMI_CONSTANT_CLOSURE: {
       const ChimiNode *node = &CHIMI_NODES[raw->a];
-      ChimiEnvironment *environment = new_environment();
+      ChimiEnvironment *environment = new_environment(node->d);
       allocation_kind(environment, ALLOCATION_ENVIRONMENT);
       for (uint32_t i = 0; i < raw->length; ++i)
         environment->locals[environment_slot(ids[2 * i])] = constant_values[ids[2 * i + 1]];
@@ -6854,6 +6866,7 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
       allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_DECLARED;
       callable->symbol = symbol; callable->body = function->body;
       callable->parameters_offset = function->parameters_offset; callable->parameters_length = function->parameters_length;
+      callable->local_count = function->local_count;
       callable->environment = capture_requirements(environment); callable->name = "function";
       return success(callable_value(callable));
     }
@@ -7810,7 +7823,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       runtime.next_sequence = 0;
       runtime.next_span = 2;
       if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
-      ChimiEnvironment *environment = new_environment();
+      ChimiEnvironment *environment = new_environment(entry_function->local_count);
       if (entry_function->parameters_length == 1) {
         ChimiValue *arguments = application_arguments(argc - index, argv + index);
         environment->locals[environment_slot(CHIMI_IDS[entry_function->parameters_offset])] = arguments;
@@ -7833,7 +7846,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     return write_failed ? 74 : 0;
   }
   if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
-  ChimiEnvironment *environment = new_environment();
+  ChimiEnvironment *environment = new_environment(entry_function->local_count);
   if (entry_function->parameters_length == 1) {
     ChimiValue *arguments = application_arguments(argc - index, argv + index);
     environment->locals[environment_slot(CHIMI_IDS[entry_function->parameters_offset])] = arguments;
