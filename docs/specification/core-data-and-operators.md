@@ -136,6 +136,7 @@ Rules:
 A generic function MAY use `==` or `<` on a value of a generic parameter. The
 use infers a requirement on that parameter:
 
+<!-- chimi: check -->
 ```chimi
 fn same_pair<T>(pair: (T, T)) -> Bool {
   let (left, right) = pair
@@ -178,6 +179,7 @@ them for a type, or override the derived behavior. See
 `a == b` and `a != b` take two operands of the same equatable type and produce
 `Bool`.
 
+<!-- chimi: check -->
 ```chimi
 struct Money {
   cents: Int
@@ -283,6 +285,7 @@ Structural order is defined per type:
 | `Range` | lexicographic by normalized start, then end |
 | `Decimal`, `Json.Number` | numeric |
 
+<!-- chimi: check -->
 ```chimi
 struct Version {
   major: Int,
@@ -310,6 +313,7 @@ Rules:
 
 `std/order` declares:
 
+<!-- chimi: check -->
 ```chimi
 pub enum Ordering {
   Less
@@ -329,6 +333,7 @@ A **comparator** for `A` is any function value of type
 structural one: descending order, ordering by one field, case-insensitive text,
 or an order over a type that is not ordered.
 
+<!-- chimi: fragment -->
 ```chimi
 import std/order as Order
 import std/order.{Equal, Ordering}
@@ -378,6 +383,7 @@ overloading.
 
 The boolean operators are the keywords `and`, `or`, and `not`:
 
+<!-- chimi: fragment -->
 ```chimi
 fn is_success(status: Int) -> Bool {
   status >= 200 and status < 300
@@ -401,6 +407,7 @@ Rules:
 
 `a and b` means exactly:
 
+<!-- chimi: fragment -->
 ```chimi
 case a {
   True -> b
@@ -410,6 +417,7 @@ case a {
 
 `a or b` means exactly:
 
+<!-- chimi: fragment -->
 ```chimi
 case a {
   True -> True
@@ -444,6 +452,7 @@ Consequences, which an implementation MUST preserve:
 `not (a == b)`. `and` binds more tightly than `or`. Boolean operators bind more
 loosely than `|>`, so a pipeline result can be combined directly:
 
+<!-- chimi: fragment -->
 ```chimi
 let ready = items |> List.is_empty and not draining
 // parsed as: (items |> List.is_empty) and (not draining)
@@ -464,6 +473,7 @@ The full table is in [operator precedence](#operator-precedence).
 | `a / b` | the quotient truncated toward zero; a defect if `b == 0` or for `-2^63 / -1` |
 | `a % b` | `a - (a / b) * b`; the sign follows `a`; a defect if `b == 0` |
 
+<!-- chimi: fragment -->
 ```chimi
 let quotient = -7 / 2       // -3
 let remainder = -7 % 2      // -1
@@ -700,6 +710,7 @@ same order.
 
 A tuple is an anonymous, ordered product of two or more values.
 
+<!-- chimi: fragment -->
 ```chimi
 fn min_and_max(values: List<Int>) -> (Int, Int) {
   // ...
@@ -747,6 +758,7 @@ suggest a struct for tuples with more than three elements.
 
 `Void` is both the type and its only value. The value expression is `Void`:
 
+<!-- chimi: fragment -->
 ```chimi
 let console = {
   write_line: fn(_line) { Void },
@@ -772,6 +784,7 @@ Rules:
 `Never` is the type of an expression that never produces a success value. It
 has no values.
 
+<!-- chimi: fragment -->
 ```chimi
 fn reject(reason: Text) -> Never {
   Failure(RequestError.Invalid(reason))
@@ -821,6 +834,7 @@ The repetition spec calls the type of a loop with no `break` "unconstrained".
 
 `Range` is a built-in type for a run of consecutive integers.
 
+<!-- chimi: fragment -->
 ```chimi
 let indexes = 0..List.length(items)      // 0, 1, ..., length - 1
 let dice = 1..=6                         // 1, 2, 3, 4, 5, 6

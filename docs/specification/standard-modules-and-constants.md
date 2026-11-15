@@ -319,7 +319,8 @@ expected-output programs:
   without per-type printing code.
 
 When G16 lands, each program converts to `test` declarations in the same
-directory, and the coverage rule carries over.
+directory, and the coverage rule carries over, as
+[testing](testing.md#migrating-the-std-tests-programs) describes.
 
 ## Native bindings for std and vendored modules (G20)
 
