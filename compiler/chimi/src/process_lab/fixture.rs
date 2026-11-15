@@ -8,7 +8,7 @@ use crate::backend::native::build_application;
 use crate::json::{JsonData, decode_json};
 use crate::project::LoadedProject;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 const OUTCOME: &str = "expected.outcome";
@@ -18,7 +18,8 @@ const EVENTS: &str = "expected.events";
 /// The fields that split an event kind into the classes `expected.events`
 /// counts.
 const CLASS_FIELDS: [&str; 4] = ["cause", "reason", "outcome", "attempts_in_window"];
-/// The longest one fixture run may take (see `run_once`).
+/// The longest one fixture or C harness run may take (see
+/// `wait_within_run_limit`).
 const RUN_LIMIT: Duration = Duration::from_secs(60);
 
 /// The project root of a fixture scenario.
@@ -99,6 +100,33 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Waits for a lab child process. Fixtures and C harnesses run under virtual
+/// time, so none needs long: a run past `RUN_LIMIT` is a runtime that lost a
+/// fast path or deadlocked, killed and reported as a failure instead of a hang.
+pub(super) fn wait_within_run_limit(
+    child: &mut Child,
+    run_name: &str,
+) -> Result<ExitStatus, String> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("run `{run_name}`: {error}"))?
+        {
+            return Ok(status);
+        }
+        if started.elapsed() > RUN_LIMIT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "run `{run_name}` exceeded the {} s run limit",
+                RUN_LIMIT.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -275,27 +303,7 @@ fn run_once(
         )
         .spawn()
         .map_err(|error| format!("run {}: {error}", executable.display()))?;
-    // Fixtures run under virtual time, so none needs long: a run past the limit is
-    // a runtime that lost a fast path, reported as a failure instead of a hang.
-    let started = Instant::now();
-    while child
-        .try_wait()
-        .map_err(|error| format!("run `{run_name}`: {error}"))?
-        .is_none()
-    {
-        if started.elapsed() > RUN_LIMIT {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "run `{run_name}` exceeded the {} s run limit",
-                RUN_LIMIT.as_secs()
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let status = child
-        .wait()
-        .map_err(|error| format!("run `{run_name}`: {error}"))?;
+    let status = wait_within_run_limit(&mut child, &run_name)?;
     if status.code() != Some(scenario.exit_code) {
         return Err(format!(
             "run `{run_name}` exited with {}, expected {}: {}",

@@ -53,6 +53,8 @@ fn compile(executable: &Path, extra_flags: &[&str]) -> std::process::Output {
         ))
         .arg("-o")
         .arg(executable)
+        // glibc keeps floor, fmod, and the rest of libm out of libc.
+        .arg("-lm")
         .output()
         .expect("invoke cc for the native list fuzz harness")
 }
