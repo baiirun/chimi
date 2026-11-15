@@ -98,6 +98,9 @@ from the philosophy and earlier decisions; any of these can be overruled.
 | 2026-11-11 | `const` / `pub const` replace module `let`; evaluated at build time. | Coordinator (spec) | `standard-modules-and-constants.md`; `ts-f47931` |
 | 2026-11-11 | Interpolation `"${expr}"` for `Text` and `Int`; `Debug.render` for other values; `Secret<T>` renders as `<redacted>`. | Coordinator (spec) | `standard-modules-and-constants.md` |
 | 2026-11-11 | `Duration` is nanoseconds with function arithmetic; `Clock` is a `needs` capability with virtual time in tests; `Select.first` is a library function; `Result<T, E>` with `Ok`/`Err`; failure sets are `A \| B`; causes live outside values. | Coordinator (spec) | `time-and-outcomes.md`; `ts-f31a20` |
+| 2026-11-15 | An arm that matched a stored `Err(...)` follows the cause-chain rule of a `Failure(...)` arm: converting the error links to the cause the `Err` keeps, and re-raising the bound error keeps it. This is how `Result.get` keeps a captured cause. Only constructions written directly in the arm body count, not ones in a guard or a function literal. | Implementer (CHI-204) | `time-and-outcomes.md` Cause chains |
+| 2026-11-15 | A root's outcome record gains a `cause` field (the `Cause.to_text` text) only when the cause has a context frame, a `caused_by` link, or a suppressed cause, so a plain failure keeps the record it had before causes and existing expected outputs stay unchanged. | Implementer (CHI-204) | `time-and-outcomes.md` Defects, cancellation, and traces |
+| 2026-11-15 | `Cause` is neither equatable nor ordered (`T4300` names it as diagnostic data) and renders as `<Cause>` in `Debug`; a chain past 64 links keeps its newest 32 and oldest 32 links. Suppressed-cause producers wait for `Task.all` (CHI-205) and the file-close rule; trace events do not carry cause ids yet. | Implementer (CHI-204) | `time-and-outcomes.md` Failure context as implemented |
 
 ## Processes and runtime
 

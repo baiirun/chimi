@@ -1,0 +1,18 @@
+// A defect raised inside a loop keeps its message after the loop's memory is
+// reclaimed, both in the outcome record and in the cause that context builds.
+import std/cause as Cause
+import std/debug as Debug
+import std/text as Text
+
+fn crash_after(count: Int, width: Int) -> Int {
+  loop index = 0 {
+    case index {
+      done if done >= count -> Debug.crash(Text.repeat("m", width))
+      next -> next + 1
+    }
+  }
+}
+
+pub fn main() -> Int {
+  fn() { crash_after(3, 40) } |> Cause.context("in the loop")
+}

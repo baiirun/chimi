@@ -94,6 +94,7 @@ impl Renderer<'_> {
                 type_name,
                 variant_name,
                 fields,
+                ..
             } => {
                 let prelude = matches!(
                     self.core.symbol(*constructor).standard,
@@ -174,6 +175,8 @@ impl Renderer<'_> {
                     None => self.output.push_str("<fn>"),
                 }
             }
+            // Diagnostic data, read through `Cause.to_text`, like a function's body.
+            RuntimeValue::Cause(_) => self.output.push_str("<Cause>"),
         }
     }
 
