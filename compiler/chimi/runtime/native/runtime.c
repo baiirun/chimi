@@ -6335,13 +6335,21 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
                                       ", outside the sender's heap (owner %" PRIu64 ")",
                                       fragment_copy_foreign_owner, current_heap->owner),
                       call_node);
+      /* Receivers and Completions in the message travel with it, as through a
+         channel: an accepted message puts them in flight, and the process that
+         receives it owns them. A refused one leaves them with the sender. */
+      CapabilityTransfer carried = {.collect = true};
+      transfer_captures(&carried, message->roots[0]);
+      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
       ChimiProcessRequest request = {
         .kind = CHIMI_REQUEST_PROCESS_SEND,
         .address_kind = arguments[0]->as.address.kind,
         .address = arguments[0]->as.address.target,
         .message = (uint64_t)(uintptr_t)message,
+        .carried = capabilities.count ? &capabilities : NULL,
       };
       ChimiFiberCommand command = scheduler_request(&request);
+      free(carried.carried);
       /* Only an accepted message is the scheduler's; any other reply leaves it here. */
       if (request.status != CHIMI_RESPONSE_OK) fragment_free(message);
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
@@ -8302,6 +8310,7 @@ static const char *channel_operation(uint32_t request_kind) {
     case CHIMI_REQUEST_CHANNEL_CLOSE: return "Channel.close";
     case CHIMI_REQUEST_CHANNEL_ABORT: return "aborting the channel";
     case CHIMI_REQUEST_CHANNEL_RELEASE: return "releasing the channel";
+    case CHIMI_REQUEST_PROCESS_SEND: return "Process.send";
     default: return "a channel request";
   }
 }

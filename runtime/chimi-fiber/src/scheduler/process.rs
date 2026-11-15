@@ -29,6 +29,7 @@ use super::clock::{Instant, TimerTarget};
 use super::{
     RequestHeader, Scheduler, SchedulerTraceEvent, TaskId, TaskOutcome, TaskPhase, TraceMode,
 };
+use crate::channel::Carried;
 use crate::{ChimiFiberCommand, ChimiFiberEntry};
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::c_void;
@@ -754,6 +755,20 @@ impl Scheduler {
     /// Never parks. Accepted messages belong to the mailbox; a rejected
     /// message is handed back.
     pub fn process_send(&mut self, address: Address, message: u64) -> Result<(), SendRejected> {
+        self.process_send_carrying(address, message, None)
+    }
+
+    /// `process_send` of a message that holds `carried`, the sender's
+    /// exclusive capabilities, already checked with `check_carried`. An
+    /// accepted message puts them in flight until a receive hands them to
+    /// the incarnation or termination discards the message; a rejected one
+    /// leaves them with the sender.
+    pub(super) fn process_send_carrying(
+        &mut self,
+        address: Address,
+        message: u64,
+        carried: Option<(TaskId, &[Carried])>,
+    ) -> Result<(), SendRejected> {
         let target = self
             .resolve(address)
             .filter(|id| self.kernel.incarnations[id].accepting);
@@ -767,6 +782,10 @@ impl Scheduler {
                     incarnation.mailbox.push_back(message);
                     let wake = std::mem::take(&mut incarnation.receiving);
                     let task = incarnation.task;
+                    if let Some((sender, carried)) = carried {
+                        self.channels
+                            .dispatch_carried(sender, message as usize, carried);
+                    }
                     if wake {
                         let _ = self.wake(task);
                     }
@@ -1027,7 +1046,8 @@ impl Scheduler {
             .incarnations
             .get_mut(&incarnation)
             .expect("live incarnation");
-        match record.stopping.as_mut() {
+        let task = record.task;
+        let receipt = match record.stopping.as_mut() {
             Some(stopping) if stopping.forced || now >= stopping.deadline => {
                 stopping.forced = true;
                 Receipt::Forced
@@ -1049,7 +1069,11 @@ impl Scheduler {
                     Receipt::Pending
                 }
             },
+        };
+        if let Receipt::Message(message) = receipt {
+            self.channels.deliver_parcel(message as usize, task);
         }
+        receipt
     }
 
     /// True when a request from this task must not be answered: its
@@ -1403,7 +1427,7 @@ impl Scheduler {
             self.cancel_timer(timer);
         }
         for message in record.mailbox {
-            self.release_message(message);
+            self.discard_message(message);
         }
         let membership = record.membership;
         if let Some(entry) = self.kernel.memberships.get_mut(&membership) {
@@ -1450,6 +1474,14 @@ impl Scheduler {
             // scheduler's lifetime; an unadopted context is released once.
             unsafe { release(hook_context, context) };
         }
+    }
+
+    /// Releases an accepted message that no receive will read, ending the
+    /// capabilities it carries as their owner's exit would.
+    fn discard_message(&mut self, message: u64) {
+        let transition = self.channels.discard_parcel(message as usize);
+        self.apply_channel_transition(transition);
+        self.release_message(message);
     }
 
     pub(super) fn release_message(&mut self, message: u64) {

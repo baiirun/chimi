@@ -307,6 +307,7 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       LAYOUT(ChimiProcessRequest, owner),
       LAYOUT(ChimiProcessRequest, policy),
       LAYOUT(ChimiProcessRequest, spec),
+      LAYOUT(ChimiProcessRequest, carried),
       sizeof(ChimiProcessSpec),
       LAYOUT(ChimiProcessSpec, context),
       LAYOUT(ChimiProcessSpec, mailbox_capacity),

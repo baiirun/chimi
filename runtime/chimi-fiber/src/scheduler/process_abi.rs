@@ -49,6 +49,9 @@ pub struct ChimiProcessRequest {
     pub owner: u64,
     pub policy: *const ChimiSupervisorPolicy,
     pub spec: *const ChimiProcessSpec,
+    /// SEND's and START_PROCESS's: null, or the exclusive capabilities the
+    /// message or start argument holds.
+    pub carried: *const super::ChimiMessageCapabilities,
 }
 
 impl ChimiProcessRequest {
@@ -66,6 +69,7 @@ impl ChimiProcessRequest {
             owner: 0,
             policy: std::ptr::null(),
             spec: std::ptr::null(),
+            carried: std::ptr::null(),
         }
     }
 }
@@ -279,7 +283,23 @@ impl Scheduler {
                 let Some(target) = address(input.address_kind, input.address) else {
                     return self.respond(waiter, RESPONSE_ERROR, |_| {});
                 };
-                let status = match self.process_send(target, input.message) {
+                // SAFETY: the host's record names capabilities that stay
+                // valid while it is suspended on the request.
+                let carried = unsafe { super::carried_capabilities(input.carried.cast_mut().cast()) };
+                if let Err(error) = self.channels.check_carried(owner, &carried) {
+                    let _ = self.channel_violation::<()>(
+                        owner,
+                        error,
+                        super::REQUEST_PROCESS_SEND,
+                        None,
+                    );
+                    return;
+                }
+                let status = match self.process_send_carrying(
+                    target,
+                    input.message,
+                    Some((owner, &carried)),
+                ) {
                     Ok(()) => RESPONSE_OK,
                     Err(rejected) => match rejected.failure {
                         SendFailure::Full => RESPONSE_FULL,

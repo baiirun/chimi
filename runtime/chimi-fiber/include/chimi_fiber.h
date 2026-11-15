@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 8u
+#define CHIMI_FIBER_ABI_VERSION 10u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -224,6 +224,9 @@ typedef struct {
   uint64_t owner;
   const ChimiSupervisorPolicy *policy;
   const ChimiProcessSpec *spec;
+  /* SEND and START_PROCESS: null, or the exclusive capabilities `message`
+     holds (see ChimiMessageCapabilities). */
+  const struct ChimiMessageCapabilities *carried;
 } ChimiProcessRequest;
 
 enum {
@@ -382,7 +385,7 @@ typedef struct {
   uint32_t capability;
 } ChimiCarriedCapability;
 
-typedef struct {
+typedef struct ChimiMessageCapabilities {
   const ChimiCarriedCapability *items;
   size_t count;
 } ChimiMessageCapabilities;

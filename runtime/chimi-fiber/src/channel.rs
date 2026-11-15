@@ -364,6 +364,53 @@ impl ChannelRegistry {
         Ok(transition)
     }
 
+    /// Checks that every capability in `carried` is `task`'s current copy,
+    /// before a message that holds them leaves `task` outside a channel (a
+    /// process mailbox, or a process start's argument). Changes nothing.
+    pub fn check_carried(&self, task: TaskId, carried: &[Carried]) -> Result<(), ChannelError> {
+        self.validate_carried(task, carried).map(|_| ())
+    }
+
+    /// Puts `carried`, already checked by `check_carried`, in flight in
+    /// `value`'s parcel once something other than a channel has accepted
+    /// `value` from `task`. `deliver_parcel`, `return_parcel`, or
+    /// `discard_parcel` settles it.
+    pub fn dispatch_carried(&mut self, task: TaskId, value: usize, carried: &[Carried]) {
+        let carried = self
+            .validate_carried(task, carried)
+            .expect("check_carried accepted these capabilities");
+        if !carried.is_empty() {
+            self.dispatch_parcel(task, value, carried);
+        }
+    }
+
+    /// Gives the capabilities `value` carries to `receiver`.
+    pub fn deliver_parcel(&mut self, value: usize, receiver: TaskId) {
+        let mut transition = Transition::default();
+        transition.delivered.push((value, receiver));
+        self.settle_parcels(&mut transition);
+    }
+
+    /// Hands the capabilities `value` carries back to its sender, with the
+    /// sender's tokens.
+    pub fn return_parcel(&mut self, value: usize) {
+        let mut transition = Transition::default();
+        transition.returned.push(value);
+        self.settle_parcels(&mut transition);
+    }
+
+    /// Ends the capabilities `value` carries, which was dropped unread, as
+    /// their owner's exit would: open channels abort.
+    pub fn discard_parcel(&mut self, value: usize) -> Transition {
+        let mut transition = Transition::default();
+        transition.discarded.push(value);
+        self.settle_parcels(&mut transition);
+        // `value` is not a channel's, so its owner releases it; values the
+        // aborts discarded follow it and are the channels' to release.
+        transition.discarded.remove(0);
+        transition
+    }
+
     fn send_value(
         &mut self,
         task: TaskId,
