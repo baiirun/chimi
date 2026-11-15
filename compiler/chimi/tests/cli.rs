@@ -439,6 +439,165 @@ fn std_check_verifies_a_standard_tree_against_the_registry() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// A copy of the embedded standard tree in `scratch/<name>` with `change`
+/// applied to `file`'s text.
+fn changed_standard_tree(
+    scratch: &Path,
+    name: &str,
+    file: &str,
+    change: impl FnOnce(String) -> String,
+) -> PathBuf {
+    let directory = scratch.join(name);
+    copy_standard_tree(&directory);
+    let path = directory.join(file);
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, change(text)).unwrap();
+    directory
+}
+
+/// The `chimi:` lines of std check's stderr, without the diagnostics, whose
+/// `error[E...]` text the mutation runner reads as a build failure.
+fn registry_lines(stderr: &str) -> String {
+    stderr
+        .lines()
+        .filter(|line| line.starts_with("chimi:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// A `native fn` header the registry cannot check is T4320 and binds no
+// operation: a parameter count that differs from the operation's arity, or a
+// parameter without a type.
+#[test]
+fn std_check_rejects_a_native_fn_header_that_disagrees_with_the_registry() {
+    let scratch = scratch_directory("std-check-headers");
+    let declaration = "pub native fn render<T>(value: T) -> Text\n";
+    for (name, header, message) in [
+        (
+            "arity",
+            "pub native fn render<T>(value: T, extra: Int) -> Text\n",
+            "`native fn render` takes 2 parameters, but operation std/debug.render takes 1",
+        ),
+        (
+            "unannotated",
+            "pub native fn render(value) -> Text\n",
+            "`native fn render` must annotate every parameter and its success type",
+        ),
+    ] {
+        let tree = changed_standard_tree(&scratch, name, "debug.chimi", |text| {
+            assert!(text.contains(declaration));
+            text.replace(declaration, header)
+        });
+        let output = std_check(Some(&tree));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{name}: {stderr}");
+        assert!(stderr.contains("T4320") && stderr.contains(message), "{name}: {stderr}");
+        assert!(
+            stderr.contains("registered operation std/debug.render has no `native fn` declaration"),
+            "{name}: the header must not bind the operation: {stderr}"
+        );
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Every runtime-known declaration of a module the tree holds must be in its
+// source. A module the tree does not hold at all, such as std/json, which is
+// still built in, keeps its synthesized declarations: the faithful copy in
+// `std_check_verifies_a_standard_tree_against_the_registry` has no json.chimi
+// and passes.
+#[test]
+fn std_check_names_a_runtime_known_declaration_missing_from_source() {
+    let scratch = scratch_directory("std-check-runtime-known");
+    let enum_declaration = "pub enum Ordering {\n  Less\n  Equal\n  Greater\n}\n";
+    let tree = changed_standard_tree(&scratch, "no-ordering", "order.chimi", |text| {
+        assert!(text.contains(enum_declaration));
+        text.replace(enum_declaration, "")
+    });
+    let output = std_check(Some(&tree));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("chimi: runtime-known std/order.Ordering is not declared in source"),
+        "missing the registry line; got {}",
+        registry_lines(&stderr)
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// `--std-dir` applies to a `--root` project as to a single file: check and
+// build read the override, and the build report records it.
+#[test]
+fn std_dir_override_applies_to_a_root_project() {
+    let scratch = scratch_directory("std-dir-root");
+    let standard = changed_standard_tree(&scratch, "std", "list.chimi", |mut text| {
+        text.push_str("\npub fn answer() -> Int {\n  42\n}\n");
+        text
+    });
+    let project = scratch.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("main.chimi"),
+        "import std/list as List\n\npub fn main() -> Int {\n  List.answer()\n}\n",
+    )
+    .unwrap();
+    let chimi = |arguments: &[&OsStr]| {
+        Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .args(arguments)
+            .output()
+            .unwrap()
+    };
+    let root = project.as_os_str();
+    let override_dir = standard.as_os_str();
+
+    let embedded = chimi(&["check".as_ref(), "--root".as_ref(), root, "main".as_ref()]);
+    assert!(!embedded.status.success(), "the embedded std/list has no answer");
+    let checked = chimi(&[
+        "--std-dir".as_ref(),
+        override_dir,
+        "check".as_ref(),
+        "--root".as_ref(),
+        root,
+        "main".as_ref(),
+    ]);
+    assert!(
+        checked.status.success(),
+        "the override's List.answer did not resolve ({} diagnostics)",
+        String::from_utf8_lossy(&checked.stderr).lines().count()
+    );
+
+    let executable = scratch.join("answer");
+    let built = chimi(&[
+        "--std-dir".as_ref(),
+        override_dir,
+        "build".as_ref(),
+        "--root".as_ref(),
+        root,
+        "main".as_ref(),
+        "-o".as_ref(),
+        executable.as_os_str(),
+    ]);
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let report = String::from_utf8(built.stdout).unwrap();
+    assert!(
+        report.contains(&format!(
+            "\"standard_library\":{{\"source\":\"override\",\"directory\":\"{}\"}}",
+            standard.canonicalize().unwrap().display()
+        )),
+        "{report}"
+    );
+    let execution = execute_native(&executable, &scratch, "std-dir-root", "off");
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn native_source_executes_task_start_and_result() {
     let scratch = scratch_directory("native-task-start-result");
