@@ -8446,7 +8446,9 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
           ",\"waiter_depth\":%" PRIu64 ",\"discard_count\":%" PRIu64,
           event->sequence, event->capacity, event->queue_depth,
           event->waiter_depth, event->discard_count);
-  if (clock)
+  if (clock && event->kind == CHIMI_CLOCK_TRACE_SELECT_COMMITTED)
+    fprintf(output, ",\"time_ns\":%" PRId64 ",\"index\":%" PRIu64, event->time, event->cause);
+  else if (clock)
     fprintf(output, ",\"time_ns\":%" PRId64 ",\"request_kind\":%" PRIu64,
             event->time, event->cause);
   if (process) emit_process_fields(runtime, output, event, true);
@@ -8459,6 +8461,7 @@ static const char *waited_operation(uint32_t request_kind) {
     case CHIMI_REQUEST_TASK_RESULT: return "Task.result";
     case CHIMI_REQUEST_CHANNEL_SEND: return "Channel.send";
     case CHIMI_REQUEST_CHANNEL_RECEIVE: return "Channel.receive";
+    case CHIMI_REQUEST_SELECT: return "Select.first";
     default: return "a scheduler request";
   }
 }

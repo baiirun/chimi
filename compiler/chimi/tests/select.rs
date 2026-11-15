@@ -1,0 +1,564 @@
+//! Conformance for `std/select` (time-and-outcomes.md, "Choosing among
+//! events", and the conformance rows Select commit, Select cancellation, and
+//! Select timer, plus the Tracing row's select park and commit).
+//!
+//! Every native run uses the virtual clock, so a select that would wait on
+//! the wall clock times the suite out instead of passing slowly.
+
+use chimi::source::SourceSnapshot;
+use chimi::{Compiler, ProjectSource};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+const IMPORTS: &str = concat!(
+    "import std/channel as Channel\n",
+    "import std/channel.{ChannelError, Receive, Receiver}\n",
+    "import std/clock as Clock\n",
+    "import std/clock.{Instant, Timestamp}\n",
+    "import std/duration as Duration\n",
+    "import std/select as Select\n",
+    "import std/task as Task\n",
+    "import std/task.{Timeout}\n",
+);
+
+/// Maps a receive to its value, or 0 once the channel drains.
+const VALUE: &str = concat!(
+    "fn value(next: Receive<Int>) -> Int {\n",
+    "  case next {\n",
+    "    Receive.Received(value) -> value\n",
+    "    Receive.Drained -> 0\n",
+    "  }\n",
+    "}\n",
+);
+
+fn scratch_directory(name: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "chimi-select-{name}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    if path.exists() {
+        std::fs::remove_dir_all(&path).unwrap();
+    }
+    std::fs::create_dir_all(&path).unwrap();
+    path
+}
+
+fn build_native(scratch: &Path, name: &str, body: &str) -> PathBuf {
+    let source = scratch.join(format!("{name}.chimi"));
+    let executable = scratch.join(name);
+    std::fs::write(&source, format!("{IMPORTS}{VALUE}{body}")).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(scratch)
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("build native select program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    executable
+}
+
+struct Run {
+    process: Output,
+    telemetry: String,
+    outcome: String,
+}
+
+/// Builds `body` and runs it once under the virtual clock.
+fn run_virtual(name: &str, body: &str, trace: &str) -> Run {
+    let scratch = scratch_directory(name);
+    let executable = build_native(&scratch, name, body);
+    let telemetry_path = scratch.join("telemetry.jsonl");
+    let outcome_path = scratch.join("outcome.jsonl");
+    let process = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--clock=virtual")
+        .arg(format!("--trace={trace}"))
+        .arg(format!("--telemetry-file={}", telemetry_path.display()))
+        .arg(format!("--outcome-file={}", outcome_path.display()))
+        .arg(format!("--execution-id={name}"))
+        .arg("--")
+        .output()
+        .expect("execute native select program");
+    let result = Run {
+        process,
+        telemetry: std::fs::read_to_string(telemetry_path).unwrap_or_default(),
+        outcome: std::fs::read_to_string(outcome_path).unwrap_or_default(),
+    };
+    std::fs::remove_dir_all(scratch).unwrap();
+    result
+}
+
+fn success(value: &str) -> String {
+    format!("{{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":{value}}}\n")
+}
+
+/// The virtual times, in nanoseconds, that `clock_advanced` moves to.
+fn clock_advances(telemetry: &str) -> Vec<i64> {
+    telemetry
+        .lines()
+        .filter(|line| line.contains("\"event\":\"clock_advanced\""))
+        .map(|line| {
+            let start = line.find("\"time_ns\":").expect("an advance has time_ns") + 10;
+            line[start..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .expect("time_ns is a count")
+        })
+        .collect()
+}
+
+fn type_codes(source: &str) -> Vec<String> {
+    let module = ProjectSource::new(
+        "main",
+        SourceSnapshot::from_text("main.chimi", format!("{IMPORTS}{VALUE}{source}")),
+    )
+    .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    report
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code().to_owned())
+        .collect()
+}
+
+const SECOND: i64 = 1_000_000_000;
+
+// ----- Select commit ----------------------------------------------------------
+
+// With two ready channels only the first in list order delivers; the other
+// keeps its value for the next select. Rejects random or last-wins choice,
+// and a select that consumes a losing channel's value.
+#[test]
+fn among_ready_channels_the_first_in_list_order_delivers() {
+    let result = run_virtual(
+        "commit",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  let first = Channel.bounded(1)\n",
+            "  let second = Channel.bounded(1)\n",
+            "  Channel.send(first.sender, 1)\n",
+            "  Channel.send(second.sender, 2)\n",
+            "  let a = Select.first([Select.receive(second.receiver, value), Select.receive(first.receiver, value)])\n",
+            "  let b = Select.first([Select.receive(second.receiver, value), Select.receive(first.receiver, value)])\n",
+            "  Channel.close(second.completion)\n",
+            "  let c = Select.first([Select.receive(second.receiver, value), Select.receive(first.receiver, value)])\n",
+            "  a * 100 + b * 10 + c\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("210"));
+}
+
+// A parked select commits to whichever source turns ready first, and the
+// mapping function runs in the selecting task. Rejects a select that only
+// polls once, and one that wakes on the wrong channel.
+#[test]
+fn a_parked_select_takes_the_first_value_to_arrive() {
+    let result = run_virtual(
+        "parked",
+        concat!(
+            "fn later(sender: Channel.Sender<Int>, seconds: Int, value: Int) -> Int needs { clock: Clock.Clock } {\n",
+            "  Clock.sleep(Duration.seconds(seconds))\n",
+            "  Channel.send(sender, value)\n",
+            "  0\n",
+            "}\n",
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let slow = Channel.bounded(0)\n",
+            "  let fast = Channel.bounded(0)\n",
+            "  let start = Clock.now()\n",
+            "  let slow_sender = slow.sender\n",
+            "  let fast_sender = fast.sender\n",
+            "  let s = Task.start(fn() { later(slow_sender, 9, 5) })\n",
+            "  let f = Task.start(fn() { later(fast_sender, 3, 7) })\n",
+            "  let got = Select.first([Select.receive(slow.receiver, value), Select.receive(fast.receiver, value)])\n",
+            "  let waited = Duration.to_seconds(Clock.since(start))\n",
+            "  let rest = value(Channel.receive(slow.receiver))\n",
+            "  got * 1000 + waited * 10 + rest\n",
+            "}\n",
+        ),
+        "boundaries",
+    );
+    assert_eq!(result.outcome, success("7035"));
+    assert_eq!(clock_advances(&result.telemetry), [3 * SECOND, 9 * SECOND]);
+}
+
+// A committed receive on an aborted channel fails with `Channel.Aborted`
+// and never calls the mapping function. Rejects a mapping call with no
+// value, and an abort swallowed as `Drained`.
+#[test]
+fn an_aborted_channel_fails_the_select_without_mapping() {
+    let result = run_virtual(
+        "aborted",
+        concat!(
+            "fn mapped(next: Receive<Int>) -> Int { 99 }\n",
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  Channel.abort(channel.receiver)\n",
+            "  case Select.first([Select.receive(channel.receiver, mapped)]) {\n",
+            "    Success(value) -> value\n",
+            "    Failure(ChannelError.Aborted) -> 42\n",
+            "  }\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("42"));
+}
+
+// A mapping function's failure is the select's failure.
+#[test]
+fn a_mapping_failure_is_the_select_failure() {
+    let result = run_virtual(
+        "mapping-failure",
+        concat!(
+            "enum Odd { Found(value: Int) }\n",
+            "fn even(next: Receive<Int>) -> Int {\n",
+            "  let got = value(next)\n",
+            "  case got % 2 == 1 {\n    True -> Failure(Odd.Found(got))\n    False -> got\n  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  Channel.send(channel.sender, 3)\n",
+            "  case Select.first([Select.receive(channel.receiver, even)]) {\n",
+            "    Success(value) -> value\n",
+            "    Failure(Odd.Found(value)) -> value * 10\n",
+            "    Failure(ChannelError.Aborted) -> 0\n",
+            "  }\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("30"));
+}
+
+// ----- Tasks ------------------------------------------------------------------
+
+// A task event is ready once the task ends; its value goes through the
+// mapping and its failure is the select's failure.
+#[test]
+fn a_task_event_waits_for_the_task_and_bubbles_its_failure() {
+    let result = run_virtual(
+        "task",
+        concat!(
+            "enum Broke { Down }\n",
+            "fn slow(seconds: Int, fails: Bool) -> Int needs { clock: Clock.Clock } {\n",
+            "  Clock.sleep(Duration.seconds(seconds))\n",
+            "  case fails {\n    True -> Failure(Broke.Down)\n    False -> seconds\n  }\n",
+            "}\n",
+            "fn tenfold(value: Int) -> Int { value * 10 }\n",
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let a = Task.start(fn() { slow(4, False) })\n",
+            "  let b = Task.start(fn() { slow(6, True) })\n",
+            "  let first = Select.first([Select.task(b, tenfold), Select.task(a, tenfold)])\n",
+            "  let second = case Select.first([Select.task(b, tenfold)]) {\n",
+            "    Success(value) -> value\n",
+            "    Failure(Broke.Down) -> 7\n",
+            "  }\n",
+            "  first * 10 + second\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("407"));
+}
+
+// ----- Inbox ------------------------------------------------------------------
+
+// A process body waits on its inbox and a timer at once: each message
+// arrives through the inbox event, and the timer commits once the inbox
+// stays empty. Rejects an inbox event that never wakes, and one that drops
+// or reorders messages.
+#[test]
+fn a_process_waits_on_its_inbox_or_a_timer() {
+    let result = run_virtual(
+        "inbox",
+        concat!(
+            "import std/channel.{Sender}\n",
+            "import std/process as Process\n",
+            "import std/process.{Inbox}\n",
+            "import std/supervisor as Supervisor\n",
+            "pub enum Message {\n  Add(amount: Int, report: Sender<Int>)\n}\n",
+            "enum Wake {\n  Got(message: Message)\n  Idle\n}\n",
+            "fn body(inbox: Inbox<Message>) -> Void needs { clock: Clock.Clock } {\n",
+            "  let total = loop total = 0 {\n",
+            "    let wake = Select.first([\n",
+            "      Select.inbox(inbox, fn(message: Message) -> Wake { Wake.Got(message) }),\n",
+            "      Select.after(Duration.seconds(10), Wake.Idle),\n",
+            "    ])\n",
+            "    case wake {\n",
+            "      Wake.Got(Message.Add(amount, report)) -> {\n",
+            "        Channel.send(report, total * 10 + amount)\n",
+            "        total * 10 + amount\n",
+            "      }\n",
+            "      Wake.Idle -> break total\n",
+            "    }\n",
+            "  }\n",
+            "  Void\n",
+            "}\n",
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(1, Duration.seconds(30))))\n",
+            "  let managed = Supervisor.start_process(root, Process.spec(body, 3, Duration.seconds(1)), Supervisor.Restart.Never)\n",
+            "  let address = Supervisor.address(managed)\n",
+            "  let reports = Channel.bounded(4)\n",
+            "  Process.send(address, Message.Add(1, reports.sender))\n",
+            "  Clock.sleep(Duration.seconds(4))\n",
+            "  Process.send(address, Message.Add(2, reports.sender))\n",
+            "  let first = value(Channel.receive(reports.receiver))\n",
+            "  let second = value(Channel.receive(reports.receiver))\n",
+            "  Clock.sleep(Duration.seconds(30))\n",
+            "  Supervisor.stop(root)\n",
+            "  first * 100 + second\n",
+            "}\n",
+        ),
+        "boundaries",
+    );
+    assert_eq!(result.outcome, success("112"));
+    // The second message wakes the body at 4 s; its idle timer then commits
+    // at 14 s, before main's sleep ends at 34 s.
+    assert_eq!(
+        clock_advances(&result.telemetry),
+        [4 * SECOND, 14 * SECOND, 34 * SECOND]
+    );
+}
+
+// ----- Select timer -----------------------------------------------------------
+
+// `Select.after` measures from the start of the `Select.first` call, not
+// from when the event was built, and the earliest timer commits. Rejects a
+// deadline fixed at construction (that run would end at 10 s) and a timer
+// list that commits the last one.
+#[test]
+fn after_measures_from_the_select_call() {
+    let result = run_virtual(
+        "after",
+        concat!(
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let start = Clock.now()\n",
+            "  let events = [Select.after(Duration.seconds(10), 1), Select.after(Duration.seconds(4), 2)]\n",
+            "  Clock.sleep(Duration.seconds(5))\n",
+            "  let got = Select.first(events)\n",
+            "  got * 100 + Duration.to_seconds(Clock.since(start))\n",
+            "}\n",
+        ),
+        "boundaries",
+    );
+    assert_eq!(result.outcome, success("209"));
+    assert_eq!(clock_advances(&result.telemetry), [5 * SECOND, 9 * SECOND]);
+}
+
+// `Select.at` with a passed deadline is ready at once; ties keep list order.
+#[test]
+fn a_passed_deadline_is_ready_and_ties_keep_list_order() {
+    let result = run_virtual(
+        "at",
+        concat!(
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let now = Clock.now()\n",
+            "  let past = Select.first([Select.at(Clock.add(now, Duration.seconds(1)), 1), Select.at(now, 2), Select.at(now, 3)])\n",
+            "  let later = Clock.add(now, Duration.seconds(2))\n",
+            "  let tie = Select.first([Select.at(later, 4), Select.at(later, 5)])\n",
+            "  past * 10 + tie\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("24"));
+}
+
+// A timer on a user `Clock` goes through that clock's `sleep_until`.
+// Rejects a timer that reads the execution clock instead: the shifted
+// clock's deadline is an hour ahead of the execution clock's, so that run
+// would wait an hour.
+#[test]
+fn a_user_clock_timer_works_through_its_sleep_until() {
+    let result = run_virtual(
+        "user-clock",
+        concat!(
+            "fn wait() -> Int { Select.first([Select.after(Duration.seconds(3), 8)]) }\n",
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let base = clock\n",
+            "  let shift = Duration.hours(1)\n",
+            "  let shifted = {\n",
+            "    now: fn() -> Instant { Clock.add(base.now(), shift) },\n",
+            "    timestamp: fn() -> Timestamp { base.timestamp() },\n",
+            "    sleep_until: fn(at: Instant) -> Void {\n",
+            "      base.sleep_until(Clock.add(at, Duration.negate(shift)))\n",
+            "    },\n",
+            "  }\n",
+            "  let start = Clock.now()\n",
+            "  let waited = wait using { clock: shifted }\n",
+            "  let got = waited()\n",
+            "  got * 100 + Duration.to_seconds(Clock.since(start))\n",
+            "}\n",
+        ),
+        "boundaries",
+    );
+    assert_eq!(result.outcome, success("803"));
+    assert_eq!(clock_advances(&result.telemetry), [3 * SECOND]);
+}
+
+// ----- Select cancellation ----------------------------------------------------
+
+// A timeout that cancels a parked select delivers nothing and leaves the
+// channel as it was: a sender that arrives afterwards is never received, so
+// closing hands its value back. Rejects a withdrawn select that left a
+// registration behind and took the late value.
+#[test]
+fn cancelling_a_parked_select_leaves_the_channel_unchanged() {
+    let result = run_virtual(
+        "cancel",
+        concat!(
+            "import std/channel.{SendError}\n",
+            "fn wait(receiver: Receiver<Int>) -> Int {\n",
+            "  Select.first([Select.receive(receiver, value)])\n",
+            "}\n",
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let late = Channel.bounded(0)\n",
+            "  let receiver = late.receiver\n",
+            "  let sender = late.sender\n",
+            "  let slow = Task.start(fn() -> Int {\n",
+            "    Clock.sleep(Duration.seconds(3))\n",
+            "    case Channel.send(sender, 8) {\n",
+            "      Success(_) -> 1\n",
+            "      Failure(error) -> case error {\n",
+            "        SendError.Closed(value) -> value\n",
+            "        SendError.Aborted(value) -> value\n",
+            "      }\n",
+            "    }\n",
+            "  })\n",
+            "  let timed = case (fn() -> Int { wait(receiver) }) |> Task.timeout(Duration.seconds(1)) {\n",
+            "    Success(got) -> got\n",
+            "    Failure(ChannelError.Aborted) -> 50\n",
+            "    Failure(Timeout.TimedOut(limit)) -> 100\n",
+            "  }\n",
+            "  Clock.sleep(Duration.seconds(5))\n",
+            "  Channel.close(late.completion)\n",
+            "  timed + Task.result(slow)\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("108"));
+}
+
+// ----- Empty lists ------------------------------------------------------------
+
+// An empty list literal is `T4345`; an empty list built at run time defects.
+#[test]
+fn an_empty_event_list_is_rejected_or_defects() {
+    assert_eq!(
+        type_codes("pub fn main() -> Int { Select.first([]) }\n"),
+        ["T4345"]
+    );
+    let result = run_virtual(
+        "empty",
+        concat!(
+            "import std/list as List\n",
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let events = [Select.after(Duration.seconds(1), 1)]\n",
+            "  Select.first(List.slice(events, 1..1))\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert!(
+        result.outcome.contains("\"outcome\":\"defect\"")
+            && result.outcome.contains("needs at least one event"),
+        "{}",
+        result.outcome
+    );
+}
+
+// ----- Task-local events ------------------------------------------------------
+
+// An event cannot leave its task: not through a started task's capture, and
+// not through a channel. Rejects an event treated as plain data.
+#[test]
+fn an_event_is_task_local() {
+    let captured = type_codes(concat!(
+        "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+        "  let event = Select.after(Duration.seconds(1), 1)\n",
+        "  let task = Task.start(fn() { Select.first([event]) })\n",
+        "  Task.result(task)\n",
+        "}\n",
+    ));
+    assert!(!captured.is_empty(), "a captured event is rejected");
+    let sent = type_codes(concat!(
+        "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+        "  let channel = Channel.bounded(1)\n",
+        "  Channel.send(channel.sender, Select.after(Duration.seconds(1), 1))\n",
+        "  1\n",
+        "}\n",
+    ));
+    assert!(!sent.is_empty(), "a sent event is rejected");
+}
+
+// ----- Tracing ----------------------------------------------------------------
+
+// Select park and commit are boundary events, the commit carrying the
+// event's index; `off` constructs none.
+#[test]
+fn select_park_and_commit_are_boundary_events() {
+    let body = concat!(
+        "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+        "  Select.first([Select.after(Duration.seconds(5), 1), Select.after(Duration.seconds(2), 2)])\n",
+        "}\n",
+    );
+    let traced = run_virtual("trace", body, "boundaries");
+    assert_eq!(traced.outcome, success("2"));
+    let select_lines: Vec<_> = traced
+        .telemetry
+        .lines()
+        .filter(|line| line.contains("clock_select"))
+        .collect();
+    assert_eq!(select_lines.len(), 2, "{}", traced.telemetry);
+    assert!(select_lines[0].contains("\"event\":\"clock_select_parked\""));
+    assert!(select_lines[1].contains("\"event\":\"clock_select_committed\""));
+    assert!(
+        select_lines[1].contains("\"index\":1"),
+        "{}",
+        select_lines[1]
+    );
+    let quiet = run_virtual("trace-off", body, "off");
+    assert_eq!(quiet.outcome, success("2"));
+    assert!(!quiet.telemetry.contains("clock_select"));
+}
+
+// ----- Interpreter --------------------------------------------------------------
+
+#[test]
+fn the_interpreter_reports_select_as_native_only() {
+    let scratch = scratch_directory("interpreter");
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        format!(
+            "{IMPORTS}{VALUE}pub fn main() -> Int needs {{ clock: Clock.Clock }} {{\n  \
+             Select.first([Select.after(Duration.seconds(1), 1)])\n}}\n"
+        ),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .expect("run the reference interpreter");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let outcome = stdout.lines().last().unwrap_or_default();
+    assert!(
+        outcome.contains("\"outcome\":\"defect\"")
+            && outcome.contains("Select.after requires the native runtime"),
+        "{outcome}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
