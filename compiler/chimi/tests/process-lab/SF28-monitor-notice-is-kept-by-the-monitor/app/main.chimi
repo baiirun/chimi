@@ -1,0 +1,20 @@
+import std/channel as Channel
+import std/channel.{Receiver}
+import std/process as Process
+import std/process.{Address, Down, Inbox}
+
+// SF28: the monitor keeps its notice and runs it when the notice is received,
+// so passing a notice moves it, and everything it captures, into the monitor.
+// Reusing the notice would hand out a second copy of the receiver it holds.
+pub enum Watch {
+  Got(receiver: Receiver<Int>)
+}
+
+fn watch(inbox: Inbox<Watch>, target: Address<Int>) -> Void {
+  let pair = Channel.bounded(1)
+  let receiver = pair.receiver
+  let notice = fn(down) { Watch.Got(receiver) }
+  Process.monitor(inbox, target, notice)
+  Process.monitor(inbox, target, notice)
+  Void
+}

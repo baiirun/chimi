@@ -1747,6 +1747,11 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::ProcessRegister
             | StandardFunction::ProcessReceive
             | StandardFunction::ProcessSend
+            | StandardFunction::ProcessOwnAddress
+            | StandardFunction::ProcessQueued
+            | StandardFunction::ProcessCapacity
+            | StandardFunction::ProcessMonitor
+            | StandardFunction::ProcessUnmonitor
             | StandardFunction::SupervisorProcess
             | StandardFunction::SupervisorSupervisor
             | StandardFunction::SupervisorPolicy

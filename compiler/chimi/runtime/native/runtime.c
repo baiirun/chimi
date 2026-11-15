@@ -68,6 +68,8 @@ typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN
                   copies as-is: identities the scheduler resolves, never pointers. */
                VALUE_PROCESS_ADDRESS, VALUE_PROCESS_INBOX, VALUE_SUPERVISOR_RUNNING,
                VALUE_MANAGED_PROCESS, VALUE_MANAGED_SUPERVISOR,
+               /* A `Process.Monitor`: its id in `as.address.target`. */
+               VALUE_PROCESS_MONITOR,
                /* A `std/set.Set` in `as.map`: each item is a key bound to Void. */
                VALUE_SET,
                /* A `std/bytes.Bytes` in `as.text`, which holds any bytes. */
@@ -342,6 +344,10 @@ struct AllocationScope {
 
 struct RuntimeHeap {
   uint64_t owner;
+  /* Under --profile-file, the id of the node this heap's owner is evaluating, plus 1,
+     or 0 before its first node. Each heap keeps its own, so a task's allocations are
+     charged to its own nodes. */
+  uint32_t profiled_node_plus_one;
   /* Payload bytes of the allocations this heap owns now, and their peak: the memory
      report's `process_heap_peak_value_bytes` is the largest peak of an incarnation. */
   size_t live_bytes;
@@ -383,6 +389,18 @@ static HeapTotals heap_totals;
    them before exit. */
 static size_t unscoped_allocated_bytes;
 static uint64_t next_mark_epoch = 1;
+
+/* The operation profile (--profile-file): per Core node, how often it was evaluated
+   and what it allocated itself, not counting the nodes it ran. NULL unless profiling,
+   so an unprofiled run pays a branch at each node's entry and exit and one per
+   allocation. */
+typedef struct {
+  const char *operation;
+  uint64_t evaluations;
+  uint64_t allocations;
+  uint64_t allocated_bytes;
+} ProfileRow;
+static ProfileRow *profile_rows;
 
 static void exhausted_memory(void) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
 
@@ -497,6 +515,11 @@ static void *allocate(size_t count, size_t size) {
     scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
   } else if (area->role != AREA_FRAGMENT) {
     unscoped_allocated_bytes += bytes;
+  }
+  if (profile_rows && current_heap->profiled_node_plus_one) {
+    ProfileRow *row = &profile_rows[current_heap->profiled_node_plus_one - 1];
+    ++row->allocations;
+    row->allocated_bytes += bytes;
   }
   if (area->role != AREA_STATIC) {
     ++heap_totals.live_allocations;
@@ -1148,7 +1171,8 @@ static void mark_children(void *pointer) {
         case VALUE_PROCESS_INBOX:
         case VALUE_SUPERVISOR_RUNNING:
         case VALUE_MANAGED_PROCESS:
-        case VALUE_MANAGED_SUPERVISOR: break;
+        case VALUE_MANAGED_SUPERVISOR:
+        case VALUE_PROCESS_MONITOR: break;
       }
       break;
     }
@@ -1502,7 +1526,8 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
         case VALUE_PROCESS_INBOX:
         case VALUE_SUPERVISOR_RUNNING:
         case VALUE_MANAGED_PROCESS:
-        case VALUE_MANAGED_SUPERVISOR: break;
+        case VALUE_MANAGED_SUPERVISOR:
+        case VALUE_PROCESS_MONITOR: break;
       }
       break;
     }
@@ -1739,6 +1764,20 @@ static void emit_dependency(ChimiRuntime *runtime, uint32_t node_id, uint64_t sp
   fprintf(output, ",\"requirement_symbol_id\":%u,\"interface_symbol_id\":%u,\"method\":",
           callable->requirement, callable->interface_symbol); json_string(output, callable->name);
   fprintf(output, ",\"method_semantic_id\":%u}}\n", callable->method);
+}
+
+/* Charges the current heap's allocations to `node` until profile_leave. */
+static uint32_t profile_enter(uint32_t node, const char *operation) {
+  if (!profile_rows) return 0;
+  ProfileRow *row = &profile_rows[node];
+  row->operation = operation;
+  ++row->evaluations;
+  uint32_t outer = current_heap->profiled_node_plus_one;
+  current_heap->profiled_node_plus_one = node + 1;
+  return outer;
+}
+static void profile_leave(uint32_t outer) {
+  if (profile_rows) current_heap->profiled_node_plus_one = outer;
 }
 
 static uint64_t begin_node(ChimiRuntime *runtime, uint32_t node, uint64_t parent, const char *operation) {
@@ -2400,7 +2439,8 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
     case VALUE_PROCESS_INBOX:
     case VALUE_SUPERVISOR_RUNNING:
     case VALUE_MANAGED_PROCESS:
-    case VALUE_MANAGED_SUPERVISOR: return true;
+    case VALUE_MANAGED_SUPERVISOR:
+    case VALUE_PROCESS_MONITOR: return true;
   }
   return false;
 }
@@ -2456,7 +2496,9 @@ static ChimiValue *application_arguments(int32_t count, const char **argv) {
   return list_from_values(items, (uint32_t)count);
 }
 
-int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace; }
+/* Whether a direct integer root must run node by node: full tracing and profiling
+   both observe every node. */
+int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace || profile_rows; }
 ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t node_count,
                                                int64_t raw) {
   if (!runtime->silent) runtime->next_span += node_count;
@@ -2557,15 +2599,23 @@ static ChimiValue *map_get_node(MapNode *node, const ChimiValue *key) {
    keys. For ordered types it is the source-level order; for types that are only
    equatable (records, maps, Json.Value) it is an internal total order consistent
    with equality. It mirrors execution/structural.rs. The walk keeps its own work
-   stack on the heap, so nesting depth never costs host stack. */
+   stack, so nesting depth never costs host stack: the first COMPARE_INLINE_STEPS
+   steps live in the caller's frame, which covers comparing scalars and small
+   values without a heap allocation, and deeper walks move to the heap. */
+enum { COMPARE_INLINE_STEPS = 32 };
 typedef struct { const ChimiValue *left; const ChimiValue *right; int decided; } CompareStep;
-typedef struct { CompareStep *steps; size_t length; size_t capacity; } CompareStack;
+typedef struct {
+  CompareStep *steps; size_t length; size_t capacity;
+  CompareStep inline_steps[COMPARE_INLINE_STEPS];
+} CompareStack;
 
 static void compare_push(CompareStack *stack, const ChimiValue *left, const ChimiValue *right, int decided) {
   if (stack->length == stack->capacity) {
-    size_t capacity = stack->capacity ? stack->capacity * 2 : 64;
-    CompareStep *steps = realloc(stack->steps, capacity * sizeof(*steps));
+    size_t capacity = stack->capacity * 2;
+    bool on_heap = stack->steps != stack->inline_steps;
+    CompareStep *steps = realloc(on_heap ? stack->steps : NULL, capacity * sizeof(*steps));
     if (steps == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+    if (!on_heap) memcpy(steps, stack->inline_steps, stack->length * sizeof(*steps));
     stack->steps = steps; stack->capacity = capacity;
   }
   stack->steps[stack->length++] = (CompareStep){left, right, decided};
@@ -2852,6 +2902,7 @@ static void json_value(FILE *output, const ChimiValue *root) {
       case VALUE_MANAGED_PROCESS: fputs("{\"type\":\"ManagedProcess\",\"fields\":{}}", output); break;
       case VALUE_MANAGED_SUPERVISOR:
         fputs("{\"type\":\"ManagedSupervisor\",\"fields\":{}}", output); break;
+      case VALUE_PROCESS_MONITOR: fputs("{\"type\":\"Monitor\",\"fields\":{}}", output); break;
       case VALUE_CAUSE: fputs("{\"type\":\"Cause\",\"fields\":{}}", output); break;
     }
   }
@@ -2864,7 +2915,8 @@ static uint32_t constructor_ordinal(uint32_t symbol) {
 
 /* Requires: both values have the same equatable type. Returns -1, 0, or 1. */
 static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *right_root) {
-  CompareStack stack = {0}; int order = 0;
+  CompareStack stack; int order = 0;
+  stack.steps = stack.inline_steps; stack.length = 0; stack.capacity = COMPARE_INLINE_STEPS;
   compare_push(&stack, left_root, right_root, 0);
   while (order == 0 && stack.length != 0) {
     CompareStep step = stack.steps[--stack.length];
@@ -2947,6 +2999,8 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
       case VALUE_MANAGED_SUPERVISOR: case VALUE_CAUSE:
         order = order_of((int64_t)(uintptr_t)left, (int64_t)(uintptr_t)right); break;
       /* Routing kind, then the name or incarnation it routes to. */
+      case VALUE_PROCESS_MONITOR:
+        order = order_of((int64_t)left->as.address.target, (int64_t)right->as.address.target); break;
       case VALUE_PROCESS_ADDRESS:
         order = order_of(left->as.address.kind, right->as.address.kind);
         if (order == 0)
@@ -2954,7 +3008,7 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
         break;
     }
   }
-  free(stack.steps);
+  if (stack.steps != stack.inline_steps) free(stack.steps);
   return order;
 }
 
@@ -5922,6 +5976,7 @@ static void debug_expand(DebugRenderer *renderer, DebugSteps *steps, const Chimi
     case VALUE_SUPERVISOR_RUNNING: debug_text(buffer, "<Running>"); return;
     case VALUE_MANAGED_PROCESS: debug_text(buffer, "<ManagedProcess>"); return;
     case VALUE_MANAGED_SUPERVISOR: debug_text(buffer, "<ManagedSupervisor>"); return;
+    case VALUE_PROCESS_MONITOR: debug_text(buffer, "<Monitor>"); return;
   }
 }
 
@@ -6654,8 +6709,65 @@ static bool is_kind(ChimiValue **arguments, uint32_t index, ValueKind kind) {
 
 /* The process and supervisor operations that run on the scheduler. */
 static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
-                                           uint32_t argument_count, uint32_t call_node) {
+                                           uint32_t argument_count, uint64_t span, uint32_t call_node,
+                                           ChimiEnvironment *environment) {
   switch (intrinsic) {
+    case CHIMI_INTRINSIC_PROCESS_OWN_ADDRESS: {
+      if (argument_count != 1 || !is_kind(arguments, 0, VALUE_PROCESS_INBOX))
+        return intrinsic_shape_defect(call_node);
+      ChimiProcessRequest request = {.kind = CHIMI_REQUEST_PROCESS_SELF};
+      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (request.status != CHIMI_RESPONSE_OK) return defect("Process.address scheduler request failed", call_node);
+      return success(process_address_value(CHIMI_ADDRESS_DIRECT, request.address));
+    }
+    case CHIMI_INTRINSIC_PROCESS_QUEUED:
+    case CHIMI_INTRINSIC_PROCESS_CAPACITY: {
+      if (argument_count != 1 || !is_kind(arguments, 0, VALUE_PROCESS_INBOX))
+        return intrinsic_shape_defect(call_node);
+      ChimiProcessRequest request = {.kind = CHIMI_REQUEST_PROCESS_MAILBOX};
+      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (request.status != CHIMI_RESPONSE_OK) return defect("Process mailbox scheduler request failed", call_node);
+      return success(integer_value(intrinsic == CHIMI_INTRINSIC_PROCESS_QUEUED ? (int64_t)request.queued
+                                                                              : (int64_t)request.capacity));
+    }
+    case CHIMI_INTRINSIC_PROCESS_MONITOR: {
+      if (argument_count != 3 || !is_kind(arguments, 0, VALUE_PROCESS_INBOX) ||
+          !is_kind(arguments, 1, VALUE_PROCESS_ADDRESS) || !is_kind(arguments, 2, VALUE_CALLABLE))
+        return intrinsic_shape_defect(call_node);
+      /* The notice outlives this call in the scheduler, like an accepted message,
+         until the receive that runs it adopts it back into this heap. */
+      void *roots[] = {arguments[2]};
+      AllocationKind kinds[] = {ALLOCATION_VALUE};
+      RuntimeFragment *notice = NULL;
+      if (fragment_copy(roots, kinds, 1, &notice) != HEAP_OK)
+        return defect(numeric_message("Process.monitor: the notice points into owner %" PRIu64
+                                      ", outside the watcher's heap (owner %" PRIu64 ")",
+                                      fragment_copy_foreign_owner, current_heap->owner),
+                      call_node);
+      ChimiProcessRequest request = {
+        .kind = CHIMI_REQUEST_PROCESS_MONITOR,
+        .address_kind = arguments[1]->as.address.kind,
+        .address = arguments[1]->as.address.target,
+        .message = (uint64_t)(uintptr_t)notice,
+      };
+      ChimiFiberCommand command = scheduler_request(&request);
+      if (request.status != CHIMI_RESPONSE_OK) fragment_free(notice);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      if (request.status != CHIMI_RESPONSE_OK) return defect("Process.monitor scheduler request failed", call_node);
+      ChimiValue *monitor = new_value(VALUE_PROCESS_MONITOR);
+      monitor->as.address.target = request.monitor;
+      return success(monitor);
+    }
+    case CHIMI_INTRINSIC_PROCESS_UNMONITOR: {
+      if (argument_count != 2 || !is_kind(arguments, 0, VALUE_PROCESS_INBOX) ||
+          !is_kind(arguments, 1, VALUE_PROCESS_MONITOR))
+        return intrinsic_shape_defect(call_node);
+      ChimiProcessRequest request = {.kind = CHIMI_REQUEST_PROCESS_UNMONITOR,
+                                     .monitor = arguments[1]->as.address.target};
+      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (request.status != CHIMI_RESPONSE_OK) return defect("Process.unmonitor scheduler request failed", call_node);
+      return success(void_value());
+    }
     case CHIMI_INTRINSIC_PROCESS_SEND: {
       if (argument_count != 2 || !is_kind(arguments, 0, VALUE_PROCESS_ADDRESS))
         return intrinsic_shape_defect(call_node);
@@ -6702,7 +6814,13 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
       if (request.status == CHIMI_RESPONSE_SUCCEEDED) {
         void *roots[FRAGMENT_ROOTS];
         fragment_adopt((RuntimeFragment *)(uintptr_t)request.message, roots);
-        return success(roots[0]);
+        if (request.down == 0) return success(roots[0]);
+        /* A monitor notice: the watcher's own fn(Down) -> M makes the message. */
+        if (request.down > CHIMI_DOWN_UNAVAILABLE || ((ChimiValue *)roots[0])->kind != VALUE_CALLABLE)
+          return defect("Process.receive scheduler request failed", call_node);
+        ChimiValue *down[] = {
+          standard_value(CHIMI_CONSTRUCTOR_DOWN_RETURNED + (request.down - CHIMI_DOWN_RETURNED), NULL, 0)};
+        return invoke(runtime, ((ChimiValue *)roots[0])->as.callable, down, 1, span, call_node, environment);
       }
       if (request.status == CHIMI_RESPONSE_CANCELLED || request.status == CHIMI_RESPONSE_FORCED)
         return cancelled();
@@ -6819,7 +6937,8 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
 #endif
 
 static ChimiControl *invoke_process(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
-                                    uint32_t argument_count, uint32_t call_node) {
+                                    uint32_t argument_count, uint64_t span, uint32_t call_node,
+                                    ChimiEnvironment *environment) {
   switch (intrinsic) {
     case CHIMI_INTRINSIC_PROCESS_SPEC:
     case CHIMI_INTRINSIC_PROCESS_REGISTER:
@@ -6830,9 +6949,11 @@ static ChimiControl *invoke_process(ChimiRuntime *runtime, uint32_t intrinsic, C
       return invoke_process_data(intrinsic, arguments, argument_count, call_node);
   }
 #if CHIMI_PROCESS_KERNEL
-  return invoke_process_kernel(runtime, intrinsic, arguments, argument_count, call_node);
+  return invoke_process_kernel(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
 #else
   (void)runtime;
+  (void)span;
+  (void)environment;
   /* The compiler links the process runtime into every program that reaches one. */
   return defect("this runtime was built without the supervised process runtime", call_node);
 #endif
@@ -7367,7 +7488,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
-    return invoke_process(runtime, intrinsic, arguments, argument_count, call_node);
+    return invoke_process(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_CLOCK_NOW && intrinsic <= CHIMI_INTRINSIC_TASK_DEADLINE)
     return invoke_clock(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DEBUG_CRASH && intrinsic <= CHIMI_INTRINSIC_LIST_SET)
@@ -7937,9 +8058,12 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
    isolation boundary instead of writing through this shared pointer. */
 #define NODE_WRAPPER(NAME, OPERATION, ...) \
   ChimiControl *chimi_rt_##NAME(ChimiRuntime *runtime, uint32_t node_id, ChimiEnvironment *incoming, uint64_t parent) { \
+    uint32_t profile_outer = profile_enter(node_id, OPERATION); \
     uint64_t span = begin_node(runtime, node_id, parent, OPERATION); ChimiEnvironment *environment = incoming; \
     (void)environment; \
-    ChimiControl *result = NULL; do { __VA_ARGS__ } while (0); return finish_node(runtime, node_id, parent, span, OPERATION, result); \
+    ChimiControl *result = NULL; do { __VA_ARGS__ } while (0); \
+    result = finish_node(runtime, node_id, parent, span, OPERATION, result); \
+    profile_leave(profile_outer); return result; \
   }
 #define RUN(CHILD) run_node((CHILD), runtime, environment, span)
 #define REQUIRE_SUCCESS(CONTROL, TARGET) do { ChimiControl *_control = (CONTROL); \
@@ -8379,12 +8503,13 @@ NODE_WRAPPER(loop, "loop", {
    division by zero, no matching arm). A pass that falls back is rerun from the same
    state by the runtime loop, which reports the defect exactly as it would have. The
    passes allocate nothing, and cancellation is checked before each one, as the
-   runtime loop does. Only trace-off runs take this path: any tracing keeps every
-   node's span, so it runs the runtime loop from the start. */
+   runtime loop does. Only trace-off, unprofiled runs take this path: tracing keeps
+   every node's span and profiling counts every node, so both run the runtime loop
+   from the start. */
 ChimiControl *chimi_rt_direct_loop(ChimiRuntime *runtime, uint32_t node_id,
                                    ChimiEnvironment *incoming, uint64_t parent,
                                    ChimiDirectPass pass) {
-  if (!runtime->silent) return chimi_rt_loop(runtime, node_id, incoming, parent);
+  if (!runtime->silent || profile_rows) return chimi_rt_loop(runtime, node_id, incoming, parent);
   ChimiControl *initial = run_node(CHIMI_NODES[node_id].b, runtime, incoming, parent);
   if (initial->kind != CONTROL_SUCCESS) return initial;
   /* A body that never reads its state (`loop s = "x" { break 5 }`) lowers whatever
@@ -8443,6 +8568,47 @@ static bool close_output(FILE *output) {
   bool failed = fflush(output) != 0;
   if (fclose(output) != 0) failed = true;
   return failed;
+}
+
+static int compare_profile_rows(const void *left, const void *right) {
+  uint32_t a = *(const uint32_t *)left, b = *(const uint32_t *)right;
+  const ProfileRow *x = &profile_rows[a], *y = &profile_rows[b];
+  if (x->allocated_bytes != y->allocated_bytes) return x->allocated_bytes > y->allocated_bytes ? -1 : 1;
+  if (x->evaluations != y->evaluations) return x->evaluations > y->evaluations ? -1 : 1;
+  return a < b ? -1 : a > b;
+}
+
+/* One JSON object: every evaluated node, most allocated bytes first, then most
+   evaluations, then node id, so the same program always writes the same profile. */
+static bool write_profile(const char *path) {
+  if (!path) return false;
+  FILE *output = fopen(path, "wx");
+  if (!output) {
+    fprintf(stderr, "cannot open profile file %s: %s\n", path, strerror(errno));
+    return true;
+  }
+  uint32_t *order = calloc(CHIMI_NODE_COUNT ? CHIMI_NODE_COUNT : 1, sizeof(*order));
+  if (!order) exhausted_memory();
+  uint32_t count = 0;
+  for (uint32_t node = 0; node < CHIMI_NODE_COUNT; ++node)
+    if (profile_rows[node].evaluations) order[count++] = node;
+  qsort(order, count, sizeof(*order), compare_profile_rows);
+  fputs("{\"schema\":\"chimi.runtime-profile.v1\",\"operations\":[", output);
+  for (uint32_t index = 0; index < count; ++index) {
+    uint32_t node = order[index];
+    const ProfileRow *row = &profile_rows[node];
+    const ChimiOrigin *origin = &CHIMI_ORIGINS[CHIMI_NODES[node].origin];
+    fprintf(output,
+            "%s{\"core_node_id\":%u,\"origin_id\":%u,\"file_id\":%u,\"source_start\":%u,"
+            "\"source_end\":%u,\"operation\":",
+            index ? "," : "", node, CHIMI_NODES[node].origin, origin->file_id, origin->start, origin->end);
+    json_string(output, row->operation);
+    fprintf(output, ",\"evaluations\":%" PRIu64 ",\"allocations\":%" PRIu64
+            ",\"allocated_bytes\":%" PRIu64 "}", row->evaluations, row->allocations, row->allocated_bytes);
+  }
+  fputs("]}\n", output);
+  free(order);
+  return close_output(output);
 }
 
 static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
@@ -8906,6 +9072,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   const char *telemetry_path = NULL;
   const char *outcome_path = NULL;
   const char *memory_report_path = NULL;
+  const char *profile_path = NULL;
   decode_constants();
   int32_t index = 1;
   if (index < argc && strcmp(argv[index], "--chimi-runner") == 0) {
@@ -8923,6 +9090,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     else if (strncmp(argv[index], "--telemetry-file=", 17) == 0) telemetry_path = argv[index] + 17;
     else if (strncmp(argv[index], "--outcome-file=", 15) == 0) outcome_path = argv[index] + 15;
     else if (strncmp(argv[index], "--memory-report-file=", 21) == 0) memory_report_path = argv[index] + 21;
+    else if (strncmp(argv[index], "--profile-file=", 15) == 0) profile_path = argv[index] + 15;
     else if (strncmp(argv[index], "--execution-id=", 15) == 0) runtime.execution_id = argv[index] + 15;
     else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = true;
     else if (strcmp(argv[index], "--clock=real") == 0) runtime.virtual_clock = false;
@@ -8972,6 +9140,20 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     fputs("memory report, telemetry, and runner outcome require distinct files\n", stderr);
     return 64;
   }
+  if (profile_path && ((telemetry_path && strcmp(profile_path, telemetry_path) == 0) ||
+                       (outcome_path && strcmp(profile_path, outcome_path) == 0) ||
+                       (memory_report_path && strcmp(profile_path, memory_report_path) == 0))) {
+    fputs("profile, memory report, telemetry, and runner outcome require distinct files\n", stderr);
+    return 64;
+  }
+  if (profile_path && benchmark_repeats) {
+    fputs("--profile-file cannot be combined with --benchmark-repeats\n", stderr);
+    return 64;
+  }
+  if (profile_path) {
+    profile_rows = calloc(CHIMI_NODE_COUNT ? CHIMI_NODE_COUNT : 1, sizeof(*profile_rows));
+    if (!profile_rows) exhausted_memory();
+  }
   if (telemetry_path) {
     runtime.telemetry = fopen(telemetry_path, strcmp(telemetry_path, "/dev/null") == 0 ? "w" : "wx");
     if (!runtime.telemetry) {
@@ -9019,6 +9201,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
     }
     bool write_failed = write_memory_report(memory_report_path, &runtime);
+    write_failed = write_profile(profile_path) || write_failed;
     write_failed = close_output(runtime.telemetry) || write_failed;
     runtime.telemetry = NULL;
     write_failed = close_output(runtime.outcome) || write_failed;
@@ -9041,6 +9224,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
   if (runtime.outcome) print_outcome(runtime.outcome, control);
   bool write_failed = write_memory_report(memory_report_path, &runtime);
+  write_failed = write_profile(profile_path) || write_failed;
   write_failed = close_output(runtime.telemetry) || write_failed;
   write_failed = close_output(runtime.outcome) || write_failed;
   if (write_failed) return 74;

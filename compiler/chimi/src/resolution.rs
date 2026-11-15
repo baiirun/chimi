@@ -613,6 +613,8 @@ impl ProjectResolver {
             (StandardType::ProcessInbox, StandardModule::Process),
             (StandardType::ProcessSpec, StandardModule::Process),
             (StandardType::ProcessSendError, StandardModule::Process),
+            (StandardType::ProcessMonitor, StandardModule::Process),
+            (StandardType::ProcessDown, StandardModule::Process),
             (StandardType::SupervisorMember, StandardModule::Supervisor),
             (StandardType::SupervisorPolicy, StandardModule::Supervisor),
             (StandardType::SupervisorRestarts, StandardModule::Supervisor),
@@ -885,6 +887,26 @@ impl ProjectResolver {
             (
                 constructor(StandardConstructor::ProcessSendUnavailable),
                 vec![G::ProcessSendMessage],
+            ),
+            (
+                function(StandardFunction::ProcessOwnAddress),
+                vec![G::ProcessOwnAddressMessage],
+            ),
+            (
+                function(StandardFunction::ProcessQueued),
+                vec![G::ProcessQueuedMessage],
+            ),
+            (
+                function(StandardFunction::ProcessCapacity),
+                vec![G::ProcessCapacityMessage],
+            ),
+            (
+                function(StandardFunction::ProcessMonitor),
+                vec![G::ProcessMonitorMessage, G::ProcessMonitorTarget],
+            ),
+            (
+                function(StandardFunction::ProcessUnmonitor),
+                vec![G::ProcessUnmonitorMessage],
             ),
             (
                 function(StandardFunction::SupervisorProcess),
