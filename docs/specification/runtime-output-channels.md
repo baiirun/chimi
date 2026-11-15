@@ -57,6 +57,7 @@ program --chimi-runner \
   --telemetry-file=/path/to/trace.jsonl \
   --outcome-file=/path/to/outcome.jsonl \
   --memory-report-file=/path/to/memory.json \
+  --profile-file=/path/to/profile.json \
   --execution-id=example \
   --max-line-bytes=1048576 \
   -- \
@@ -99,6 +100,30 @@ pointer tables, fields, callables, and persistent map nodes; its values sum to
 the reported scoped total. `unscoped_allocated_bytes` separately reports the
 bytes allocated outside every reclaiming scope, which nothing frees before the
 process exits.
+
+`--profile-file` is an optional runner-owned diagnostic sink for the native
+runner (T6). It writes one `chimi.runtime-profile.v1` object after execution and
+MUST be distinct from the telemetry, outcome and memory report paths; an
+existing file exits 74. Its `operations` array has one row per Core node that
+ran:
+
+```json
+{"core_node_id":5,"origin_id":8,"file_id":0,"source_start":98,"source_end":107,
+ "operation":"binary","evaluations":200000,"allocations":400000,"allocated_bytes":16000000}
+```
+
+`evaluations` counts every time the node ran. `allocations` and
+`allocated_bytes` count what the node allocated itself, not what the nodes it
+ran allocated; a task's allocations are charged to that task's nodes. Rows are
+ordered by `allocated_bytes`, then `evaluations` (both descending), then
+`core_node_id`, so one program always writes the same profile. The ids and
+source range are the ones telemetry events carry. Profiling is independent of
+the trace mode, and it turns off the direct integer paths (direct roots and
+direct loops), so every node is counted. It cannot be combined with
+`--benchmark-repeats`, which would add up the counts of every repeat; that
+combination exits 64. It holds no timings, which would make
+it nondeterministic and add overhead to every node; wall time per operation
+belongs to tracing.
 
 Telemetry contains event records only:
 
