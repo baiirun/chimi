@@ -15,24 +15,29 @@ const modes = [
   Rounding.HalfEven,
 ]
 
-// The quotient `numerator / denominator` at scale 0 under each mode.
-fn by_mode(numerator: Int, denominator: Int) -> Text {
+// The quotient `numerator / denominator` at `scale` under each mode.
+fn by_mode(numerator: Int, denominator: Int, scale: Int) -> Text {
   let quotients = List.map(modes, fn(mode) {
-    Decimal.to_text(Decimal.divide(Decimal.of(numerator, 0), Decimal.of(denominator, 0), 0, mode))
+    Decimal.to_text(Decimal.divide(Decimal.of(numerator, 0), Decimal.of(denominator, 0), scale, mode))
   })
   Debug.render(quotients)
 }
 
 pub fn main() -> Text {
   let results = [
-    by_mode(5, 2),
-    by_mode(7, 2),
-    by_mode(13, 5),
-    by_mode(12, 5),
-    by_mode(-5, 2),
-    by_mode(-7, 2),
-    by_mode(-13, 5),
-    by_mode(5, -2),
+    by_mode(5, 2, 0),
+    by_mode(7, 2, 0),
+    by_mode(13, 5, 0),
+    by_mode(12, 5, 0),
+    by_mode(-5, 2, 0),
+    by_mode(-7, 2, 0),
+    by_mode(-13, 5, 0),
+    by_mode(5, -2, 0),
+    // Below half for a negative quotient: -2.4.
+    by_mode(-12, 5, 0),
+    // An exact quotient stays exact under every mode, for both signs.
+    by_mode(3, 4, 2),
+    by_mode(-3, 4, 2),
     // A result scale that the quotient fills exactly.
     Decimal.to_text(Decimal.divide(Decimal.of(1, 0), Decimal.of(4, 0), 2, Rounding.TowardZero)),
     Decimal.to_text(Decimal.divide(Decimal.of(1, 0), Decimal.of(3, 0), 4, Rounding.HalfEven)),
