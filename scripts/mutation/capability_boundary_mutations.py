@@ -24,29 +24,31 @@ MUTATIONS = [
     dict(
         name="Receive<T> is shareable whatever T is",
         file=TYPING,
-        edits=[("                StandardType::ProcessSendError | StandardType::ChannelReceive,\n",
-                "                StandardType::ProcessSendError,\n")],
+        edits=[("                | StandardType::ChannelSendError\n"
+                "                | StandardType::ChannelReceive,\n",
+                "                | StandardType::ChannelSendError,\n")],
         targets=["language"], filter=RECEIVED,
     ),
     dict(
         name="Receive<T> is exclusive whatever T is",
         file=TYPING,
         edits=[("            Some(StandardSymbol::Type(\n"
-                "                StandardType::ProcessSendError | StandardType::ChannelReceive,\n"
+                "                StandardType::ProcessSendError\n"
+                "                | StandardType::ChannelSendError\n"
+                "                | StandardType::ChannelReceive,\n"
                 "            )) => {\n",
                 "            Some(StandardSymbol::Type(StandardType::ChannelReceive)) => {\n"
                 "                return ValueProperties::EXCLUSIVE;\n"
                 "            }\n"
-                "            Some(StandardSymbol::Type(StandardType::ProcessSendError)) => {\n")],
+                "            Some(StandardSymbol::Type(\n"
+                "                StandardType::ProcessSendError | StandardType::ChannelSendError,\n"
+                "            )) => {\n")],
         targets=["language"], filter=RECEIVED,
     ),
     dict(
         name="the wrong-owner receiver check is disabled",
         file=CHANNELS,
-        edits=[("    if channel.receiver_owner != Some(task)\n"
-                "        || receiver.owner != task\n"
-                "        || receiver.token != channel.receiver_token\n"
-                "    {\n",
+        edits=[("    if channel.receiver_owner != Some(task) || receiver.token != channel.receiver_token {\n",
                 "    if false {\n")],
         targets=["cli"], filter=BACKSTOP,
     ),

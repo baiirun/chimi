@@ -1,0 +1,49 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// OB08: the process defects before it replies, so main parks on a reply that
+// never comes and the run ends in a virtual-time deadlock. The outcome is
+// written by the `--trace=off` run, and it still names the process defect:
+// a stack overflow for `overflow`, the body's own defect message for `divide`.
+pub enum Message {
+  Ask(reply: Sender<Int>)
+}
+
+fn deep(n: Int) -> Int {
+  case n == 0 {
+    True -> 0
+    False -> 1 + deep(n - 1)
+  }
+}
+
+fn overflow(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.Ask(reply) -> Channel.send(reply, deep(100000000))
+  }
+}
+
+fn divide(inbox: Inbox<Message>) -> Void {
+  case Process.receive(inbox) {
+    Message.Ask(reply) -> Channel.send(reply, 1 / (deep(3) - 3))
+  }
+}
+
+pub fn main(arguments: List<Text>) -> Int {
+  let body = case arguments == ["overflow"] {
+    True -> overflow
+    False -> divide
+  }
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(body, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  let replies = Channel.bounded(1)
+  Process.send(Supervisor.address(managed), Message.Ask(replies.sender))
+  let got = Channel.receive(replies.receiver)
+  case got {
+    Receive.Received(value) -> value
+    Receive.Drained -> 0
+  }
+}

@@ -1,11 +1,11 @@
-//! `chimi-process-lab <kind>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>]`
+//! `chimi-process-lab <kind>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>] [--inject-pg05-regression <factor>]`
 
 use chimi::process_lab::catalogue::{self, Stage};
 use chimi::process_lab::{Backend, Kind, Options, baseline_warnings, run};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: chimi-process-lab <static|core|runtime|heap|observability|forcing|performance|all>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>]";
+const USAGE: &str = "usage: chimi-process-lab <static|core|runtime|heap|observability|forcing|performance|all>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>] [--inject-pg05-regression <factor>]";
 
 fn main() -> ExitCode {
     match lab() {
@@ -77,6 +77,14 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Parsed, String> {
                     .ok_or_else(|| format!("unknown backend `{backend}`"))?;
             }
             "--print-actual" => options.print_actual = true,
+            "--inject-pg05-regression" => {
+                let factor = value("--inject-pg05-regression")?;
+                options.injected_pg05_regression = Some(
+                    factor
+                        .parse::<f64>()
+                        .map_err(|_| format!("`{factor}` is not a regression factor"))?,
+                );
+            }
             "--baseline" => baseline = Some(PathBuf::from(value("--baseline")?)),
             "all" if kinds.is_none() => kinds = Some(Kind::ALL.to_vec()),
             kind if !kind.starts_with('-') => {
@@ -100,5 +108,23 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Parsed, String> {
         (Some(kinds), None) => kinds,
         (None, None) => return Err("expected an evidence kind".into()),
     };
+    // Only gates are compared with a baseline, and only PG05 takes an
+    // injected regression: either flag on a run without them would be
+    // ignored, so it is an error instead.
+    let measures_gates = kinds.contains(&Kind::Performance);
+    if baseline.is_some() && !measures_gates {
+        return Err("--baseline compares performance gates; add the `performance` kind".into());
+    }
+    if options.injected_pg05_regression.is_some()
+        && (!measures_gates
+            || options
+                .scenario
+                .is_some_and(|scenario| scenario.id != "PG05"))
+    {
+        return Err(
+            "--inject-pg05-regression applies to PG05; run `performance` or `--scenario PG05`"
+                .into(),
+        );
+    }
     Ok((kinds, options, baseline))
 }
