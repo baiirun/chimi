@@ -526,6 +526,63 @@ fn canonical_number(text: &str) -> CanonicalNumber {
     }
 }
 
+/// The canonical text of a JSON number, so equal numbers render alike (`1.0`,
+/// `1`, and `10e-1` are all `1`): the exact value, never rounded through `f64`.
+/// Positional when the decimal exponent of the first significant digit is from
+/// -6 to 20, as JavaScript writes numbers, otherwise `d.ddde<exponent>`, as in
+/// `1e21`, `-2.5e-7`, and `1e400`.
+///
+/// Requires: `text` matches the JSON number grammar.
+pub(crate) fn canonical_number_text(text: &str) -> String {
+    let number = canonical_number(text);
+    let digits = number
+        .digits
+        .iter()
+        .map(|digit| char::from(*digit))
+        .collect::<String>();
+    if digits.is_empty() {
+        return "0".to_owned();
+    }
+    let mut output = String::from(if number.sign < 0 { "-" } else { "" });
+    // `0.digits × 10^exponent`: `exponent` digits come before the point.
+    let positional = number.exponent.compare(&Exponent::from_offset(-5)).is_ge()
+        && number.exponent.compare(&Exponent::from_offset(21)).is_le();
+    if positional {
+        let before = number
+            .exponent
+            .magnitude
+            .iter()
+            .fold(0_i64, |value, digit| value * 10 + i64::from(*digit));
+        let before = if number.exponent.negative { -before } else { before };
+        let length = digits.len() as i64;
+        if before >= length {
+            output.push_str(&digits);
+            output.extend(std::iter::repeat_n('0', (before - length) as usize));
+        } else if before > 0 {
+            output.push_str(&digits[..before as usize]);
+            output.push('.');
+            output.push_str(&digits[before as usize..]);
+        } else {
+            output.push_str("0.");
+            output.extend(std::iter::repeat_n('0', (-before) as usize));
+            output.push_str(&digits);
+        }
+        return output;
+    }
+    output.push_str(&digits[..1]);
+    if digits.len() > 1 {
+        output.push('.');
+        output.push_str(&digits[1..]);
+    }
+    let scientific = number.exponent.plus(&Exponent::from_offset(-1));
+    output.push('e');
+    if scientific.negative {
+        output.push('-');
+    }
+    output.extend(scientific.magnitude.iter().map(|digit| char::from(b'0' + digit)));
+    output
+}
+
 /// Orders two JSON number texts by the exact numbers they denote, never through
 /// `f64`: `1`, `1.0`, and `10e-1` are equal, and `-0` equals `0`.
 ///
@@ -664,8 +721,9 @@ pub(crate) fn number_to_decimal(text: &str) -> Option<Decimal> {
 #[cfg(test)]
 mod tests {
     use super::{
-        JsonData, NumberConversionError, compare_numbers, decode_json, number_to_decimal,
-        number_to_int, write_json_data, write_json_string, write_json_string_escaping_controls,
+        JsonData, NumberConversionError, canonical_number_text, compare_numbers, decode_json,
+        number_to_decimal, number_to_int, write_json_data, write_json_string,
+        write_json_string_escaping_controls,
     };
     use crate::decimal::Decimal;
 
@@ -809,6 +867,35 @@ mod tests {
         let mut inspected = String::new();
         write_json_string_escaping_controls(&mut inspected, "del\u{7f} nel\u{85} \u{1f}");
         assert_eq!(inspected, "\"del\\u007f nel\\u0085 \\u001f\"");
+    }
+
+    #[test]
+    fn numbers_render_canonically_from_their_exact_value() {
+        let cases = [
+            ("0", "0"),
+            ("-0.0e7", "0"),
+            ("1", "1"),
+            ("1.0", "1"),
+            ("10e-1", "1"),
+            ("-12.50", "-12.5"),
+            ("0.000001", "0.000001"),
+            ("1e-7", "1e-7"),
+            ("-2.5e-7", "-2.5e-7"),
+            ("100000000000000000000", "100000000000000000000"),
+            ("1e21", "1e21"),
+            ("9007199254740993.0", "9007199254740993"),
+            ("12345678901234567890123", "1.2345678901234567890123e22"),
+            ("1e400", "1e400"),
+            ("10e399", "1e400"),
+            ("0.1e401", "1e400"),
+            ("1e-400", "1e-400"),
+            ("2e-400", "2e-400"),
+            ("1e99999999999999999999", "1e99999999999999999999"),
+            ("-1.5e-99999999999999999999", "-1.5e-99999999999999999999"),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(canonical_number_text(text), expected, "{text}");
+        }
     }
 
     #[test]

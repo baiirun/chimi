@@ -5201,20 +5201,48 @@ static void debug_quote(TextBuffer *buffer, const char *text) {
   buffer_char(buffer, '"');
 }
 
-/* An integral JSON number within 2^53 as an integer, any other as the shortest Float. */
+/* json.rs `canonical_number_text`: the exact value, so equal numbers render alike.
+   Positional when the decimal exponent of the first significant digit is from -6
+   to 20, otherwise d.ddde<exponent>, as in 1e21 and 1e400. */
 static void debug_json_number(TextBuffer *buffer, const char *text) {
-  char *end = NULL; errno = 0;
-  long long integer = strtoll(text, &end, 10);
-  char output[48];
-  if (errno == 0 && end != text && *end == '\0') {
-    snprintf(output, sizeof(output), "%lld", integer); debug_text(buffer, output); return;
+  CanonicalNumber number = canonical_number(text);
+  if (number.sign == 0) {
+    debug_text(buffer, "0");
+  } else {
+    if (number.sign < 0) buffer_char(buffer, '-');
+    /* 0.digits x 10^exponent: `exponent` digits come before the point. */
+    DecimalExponent low = decimal_exponent_of(-5), high = decimal_exponent_of(21);
+    bool positional = decimal_exponent_order(&number.exponent, &low) >= 0 &&
+                      decimal_exponent_order(&number.exponent, &high) <= 0;
+    free(low.digits); free(high.digits);
+    int64_t length = (int64_t)number.length;
+    if (positional) {
+      int64_t before = 0;
+      for (size_t index = 0; index < number.exponent.length; ++index) before = before * 10 + number.exponent.digits[index];
+      if (number.exponent.negative) before = -before;
+      if (before >= length) {
+        buffer_bytes(buffer, number.digits, number.length);
+        for (int64_t zero = length; zero < before; ++zero) buffer_char(buffer, '0');
+      } else if (before > 0) {
+        buffer_bytes(buffer, number.digits, (size_t)before); buffer_char(buffer, '.');
+        buffer_bytes(buffer, number.digits + before, (size_t)(length - before));
+      } else {
+        buffer_bytes(buffer, "0.", 2);
+        for (int64_t zero = 0; zero < -before; ++zero) buffer_char(buffer, '0');
+        buffer_bytes(buffer, number.digits, number.length);
+      }
+    } else {
+      buffer_char(buffer, number.digits[0]);
+      if (length > 1) { buffer_char(buffer, '.'); buffer_bytes(buffer, number.digits + 1, number.length - 1); }
+      DecimalExponent one_less = decimal_exponent_of(-1);
+      DecimalExponent scientific = decimal_exponent_sum(&number.exponent, &one_less);
+      buffer_char(buffer, 'e');
+      if (scientific.negative) buffer_char(buffer, '-');
+      for (size_t index = 0; index < scientific.length; ++index) buffer_char(buffer, (char)('0' + scientific.digits[index]));
+      free(one_less.digits); free(scientific.digits);
+    }
   }
-  errno = 0; double value = strtod(text, &end);
-  if (end == text || *end != '\0' || !isfinite(value)) { debug_text(buffer, text); return; }
-  if (value == trunc(value) && fabs(value) < 9007199254740992.0) {
-    snprintf(output, sizeof(output), "%lld", (long long)value); debug_text(buffer, output); return;
-  }
-  float_text(value == 0.0 ? 0.0 : value, output); debug_text(buffer, output);
+  free(number.owned); free(number.exponent.digits);
 }
 
 /* The renderer keeps its own stack of steps, so a value of any nesting depth costs

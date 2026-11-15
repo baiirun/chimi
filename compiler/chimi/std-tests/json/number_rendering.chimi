@@ -1,0 +1,25 @@
+// Debug.render of a Json.Number is the exact value in one canonical text, never
+// rounded through Float: equal numbers spelled differently render identically,
+// tiny and huge exponents keep their digits, and integers past 2^53 stay exact.
+import std/debug as Debug
+import std/json as Json
+import std/json.{Value}
+
+fn rendered(text: Text) -> Text {
+  let value = Json.decode(text)
+  case value {
+    Value.Number(number) -> Debug.render(number)
+    _ -> Debug.crash("not a number")
+  }
+}
+
+pub fn main() -> List<List<Text>> {
+  [
+    [rendered("1"), rendered("1.0"), rendered("10e-1"), rendered("0.1e1")],
+    [rendered("1e400"), rendered("10e399"), rendered("0.1e401")],
+    [rendered("1e-400"), rendered("2e-400"), rendered("-1.5e-99999999999999999999")],
+    [rendered("9007199254740993.0"), rendered("12345678901234567890123")],
+    [rendered("0"), rendered("-0.0e7"), rendered("-12.50"), rendered("0.000001"), rendered("1e-7")],
+    [rendered("100000000000000000000"), rendered("1e21"), rendered("-2.5E-7")],
+  ]
+}
