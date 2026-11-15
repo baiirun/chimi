@@ -34,9 +34,10 @@ that the vision docs cannot predict.
 - Work runs in waves of parallel lanes. Each lane has a brief with its
   tickets, goal, spec sections, files, done condition, dependencies, and what
   later work needs from it ("builds toward").
-- **File ownership** prevents collisions. Each wave's plan names which lane
-  owns which files or sections; other lanes stay out or only append where the
-  plan allows [W3].
+- **No file ownership.** Each lane works on its own branch, so a lane may
+  edit any file its work needs. When `main` moves, the lane updates its branch
+  and resolves any merge conflicts itself. Revisit this only if conflicts
+  become a real problem (Byron, 2026-11-15).
 - The briefs and the ordered queue live in
   `/mnt/project-files/plans/next-waves.md` (the project's shared folder). Its
   "Rules every lane follows" block is pasted into each brief.
