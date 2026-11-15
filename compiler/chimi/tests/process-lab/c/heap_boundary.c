@@ -186,7 +186,7 @@ static void cb07_foreign_pointer_send_defects_in_the_sender(void) {
   ChimiValue *arguments[] = {process_address_value(CHIMI_ADDRESS_DIRECT, 1),
                              triple(integer_value(1), foreign, integer_value(2))};
   size_t fragments = heap_totals.live_fragments;
-  ChimiControl *sent = invoke_process(&runtime, CHIMI_INTRINSIC_PROCESS_SEND, arguments, 2, 0);
+  ChimiControl *sent = invoke_process(&runtime, CHIMI_INTRINSIC_PROCESS_SEND, arguments, 2, 0, 0, NULL);
   CHECK(sent->kind == CONTROL_DEFECT, "a send with a foreign pointer did not defect (control %d)",
         (int)sent->kind);
   char owner_a[32], owner_b[32];
@@ -198,7 +198,7 @@ static void cb07_foreign_pointer_send_defects_in_the_sender(void) {
         scheduler_request_count);
   CHECK(heap_totals.live_fragments == fragments, "the refused send left a fragment");
   ChimiValue *own[] = {arguments[0], triple(integer_value(1), integer_value(2), integer_value(3))};
-  ChimiControl *accepted = invoke_process(&runtime, CHIMI_INTRINSIC_PROCESS_SEND, own, 2, 0);
+  ChimiControl *accepted = invoke_process(&runtime, CHIMI_INTRINSIC_PROCESS_SEND, own, 2, 0, 0, NULL);
   CHECK(accepted->kind == CONTROL_SUCCESS, "a send of an owned message failed");
   CHECK(scheduler_request_count == 1 && scheduler_requests[0] == CHIMI_REQUEST_PROCESS_SEND,
         "an owned message did not reach the scheduler as one send");

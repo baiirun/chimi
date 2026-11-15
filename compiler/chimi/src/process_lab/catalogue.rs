@@ -6,7 +6,7 @@ use super::Kind;
 
 /// The last stage whose scenarios must pass. Each ts-6ccbc9 commit that
 /// completes a stage bumps this in the same commit.
-pub const CURRENT_STAGE: Stage = Stage::U10;
+pub const CURRENT_STAGE: Stage = Stage::U11;
 
 /// An implementation stage from the lab's unlock order.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -22,10 +22,11 @@ pub enum Stage {
     U8,
     U9,
     U10,
+    U11,
 }
 
 impl Stage {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::U0,
         Self::U1,
         Self::U2,
@@ -37,6 +38,7 @@ impl Stage {
         Self::U8,
         Self::U9,
         Self::U10,
+        Self::U11,
     ];
 
     pub fn name(self) -> &'static str {
@@ -52,6 +54,7 @@ impl Stage {
             Self::U8 => "U8",
             Self::U9 => "U9",
             Self::U10 => "U10",
+            Self::U11 => "U11",
         }
     }
 
@@ -154,7 +157,7 @@ const TASK_TERMINAL: &[&str] = &["task_terminal"];
 
 use Stage::*;
 
-pub static SCENARIOS: [Scenario; 132] = [
+pub static SCENARIOS: [Scenario; 140] = [
     // Static: compile-pass.
     fixture("SP01", "static-contract-example", U1),
     fixture("SP02", "spec-inside-using-shareable-provider", U2),
@@ -192,6 +195,7 @@ pub static SCENARIOS: [Scenario; 132] = [
     fixture("SF24", "managed-handle-removed-in-loop", U2),
     fixture("SF25", "start-process-case-omits-stopped", U1),
     fixture("SF26", "start-case-has-capacity-reached-arm", U1),
+    fixture("SF27", "monitor-notice-must-not-fail", U11),
     // Verified Core.
     Scenario::new(
         "CO01",
@@ -229,6 +233,13 @@ pub static SCENARIOS: [Scenario; 132] = [
     fixture("MB09", "no-routing-during-drain", U7),
     fixture("MB10", "computed-zero-capacity-defects-at-spec", U6).defects(),
     fixture("MB11", "terminal-ends-are-lifecycle-only", U5),
+    fixture("MB12", "own-address-is-direct", U11),
+    fixture("MB13", "queued-and-capacity", U11),
+    fixture("MB14", "monitor-reports-each-end", U11),
+    fixture("MB15", "notice-passes-full-mailbox", U11),
+    fixture("MB16", "unmonitor-removes-queued-notice", U11),
+    fixture("MB17", "watcher-end-releases-notices", U11),
+    fixture("MB18", "named-monitor-watches-one-incarnation", U11),
     // Runtime: routing.
     fixture("RT01", "named-follows-replacement-direct-goes-stale", U6),
     fixture("RT02", "never-member-name-released", U6),

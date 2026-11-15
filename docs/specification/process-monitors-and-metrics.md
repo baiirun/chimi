@@ -27,6 +27,45 @@ receive, sends that never park, and no message a process can skip.
 
 ## Example
 
+A process that hands its own address to a peer and sheds load when it falls
+behind:
+
+<!-- chimi: check -->
+```chimi
+import std/process as Process
+import std/process.{Address, Inbox}
+
+pub enum Request {
+  Ping(reply: Address<Reply>)
+  Work(amount: Int)
+}
+
+pub enum Reply {
+  Pong(from: Address<Request>)
+}
+
+fn server(inbox: Inbox<Request>) -> Void {
+  loop handled = 0 {
+    case Process.receive(inbox) {
+      Request.Ping(reply) -> {
+        Process.send(reply, Reply.Pong(Process.address(inbox)))
+        handled
+      }
+      Request.Work(amount) -> case falling_behind(inbox) {
+        True -> handled
+        False -> handled + amount
+      }
+    }
+  }
+}
+
+fn falling_behind(inbox: Inbox<Request>) -> Bool {
+  Process.queued(inbox) * 2 > Process.capacity(inbox)
+}
+```
+
+A process that watches workers and stops at the first defect:
+
 <!-- chimi: check -->
 ```chimi
 import std/process as Process
@@ -38,7 +77,6 @@ pub enum Message {
 }
 
 fn watcher(inbox: Inbox<Message>) -> Void {
-  let me: Address<Message> = Process.address(inbox)
   loop downs = 0 {
     case Process.receive(inbox) {
       Message.Watch(worker) -> {
@@ -54,10 +92,6 @@ fn watcher(inbox: Inbox<Message>) -> Void {
       }
     }
   }
-}
-
-fn backlog(inbox: Inbox<Message>) -> Bool {
-  Process.queued(inbox) * 2 > Process.capacity(inbox)
 }
 ```
 
@@ -119,8 +153,10 @@ watcher's own message type, so the notice arrives through the same exhaustive
 - If there is no incarnation to watch (the direct incarnation has ended, or
   the name has none right now), the notice `Down.Unavailable` is queued
   immediately.
-- An incarnation that is shutting down still exists: the monitor waits for its
-  end and reports `Down.Stopped` (or `Down.Defected` if cleanup defects).
+- A direct address to an incarnation that is shutting down still names it: the
+  monitor waits for its end and reports `Down.Stopped` (or `Down.Defected` if
+  cleanup defects). A name stops routing when shutdown begins, so a monitor
+  set through the name from then on gets `Down.Unavailable`.
 - `Down` carries no failure value or defect text. The target's error type is
   not part of `Address<Message>`, and the defect text belongs in the trace and
   the supervisor's reports. The watcher learns how, not why.
@@ -153,8 +189,8 @@ watcher's own message type, so the notice arrives through the same exhaustive
 - A monitor that has already delivered its notice, was already removed, or was
   created by another incarnation is ignored: this inbox will not receive its
   notice in any case.
-- A `Monitor` is plain data that compares by identity; it may be stored or
-  sent, but it has an effect only in the incarnation that created it.
+- A `Monitor` is opaque, like an `Address`: it may be stored or sent, but it
+  has an effect only in the incarnation that created it.
 
 ### Bound
 
@@ -166,11 +202,12 @@ long-lived peer without `unmonitor` grows its monitor table, as on the BEAM.
 
 ## Observability
 
-- Under `--trace=full`, every notice emits `process_notice` with the watcher,
-  the watched incarnation (or `-` for `Unavailable`), the `down` kind, and the
-  outcome: `queued`, or `dropped` when the watcher was already shutting down.
-  `--trace=boundaries` and `--trace=off` do not record notices, like sends.
-- `monitor`, `unmonitor`, `address`, `queued`, and `capacity` emit no events.
+- The watched incarnation's end is already a `process_terminated` event in
+  every traced mode. Under `--trace=full`, the receive that returns a notice
+  and the notice function's call are traced like any other Core operations.
+- `monitor`, `unmonitor`, `address`, `queued`, and `capacity` emit no process
+  events of their own. A dedicated `process_notice` event can follow if a
+  program needs to see dropped notices.
 
 ## Links
 

@@ -65,6 +65,9 @@ pub const REQUEST_SUPERVISOR_WAIT: u32 = 21;
 pub const REQUEST_SUPERVISOR_START_SUPERVISOR: u32 = 22;
 pub const REQUEST_SUPERVISOR_REMOVE_SUPERVISOR: u32 = 23;
 pub const REQUEST_CHANNEL_RELEASE: u32 = 24;
+pub const REQUEST_PROCESS_MONITOR: u32 = 25;
+pub const REQUEST_PROCESS_UNMONITOR: u32 = 26;
+pub const REQUEST_PROCESS_MAILBOX: u32 = 27;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -1363,7 +1366,9 @@ impl Scheduler {
         if process && self.park_lingers(owner, kind) {
             return;
         }
-        if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_REMOVE_SUPERVISOR).contains(&kind) {
+        if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_REMOVE_SUPERVISOR).contains(&kind)
+            || (REQUEST_PROCESS_MONITOR..=REQUEST_PROCESS_MAILBOX).contains(&kind)
+        {
             self.handle_process_request(owner, request.cast());
         } else {
             self.handle_task_request(owner, park, request);

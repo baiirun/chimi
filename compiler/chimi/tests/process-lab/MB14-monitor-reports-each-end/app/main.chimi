@@ -1,0 +1,116 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/debug as Debug
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Down, Inbox}
+import std/supervisor as Supervisor
+
+// MB14: `watcher` monitors four workers, each of which ends a different way,
+// and then a name with no incarnation. It records each notice as a digit, in
+// the order it receives them: Returned 1, Failed 2, Defected 3, Stopped 4,
+// Unavailable 5. Outcome 12345.
+pub enum Job {
+  Return
+  Fail
+  Crash
+}
+
+pub enum Problem {
+  Broken
+}
+
+pub enum Watch {
+  Target(worker: Address<Job>)
+  Gone(down: Down)
+  Report(reply: Sender<Int>)
+}
+
+pub process name returner: Job
+pub process name failer: Job
+pub process name crasher: Job
+pub process name stopper: Job
+pub process name watcher: Watch
+
+fn work(inbox: Inbox<Job>) -> Void {
+  case Process.receive(inbox) {
+    Job.Return -> Void
+    Job.Fail -> Failure(Problem.Broken)
+    Job.Crash -> Debug.crash("crash")
+  }
+}
+
+fn digit(down: Down) -> Int {
+  case down {
+    Down.Returned -> 1
+    Down.Failed -> 2
+    Down.Defected -> 3
+    Down.Stopped -> 4
+    Down.Unavailable -> 5
+  }
+}
+
+fn watch(inbox: Inbox<Watch>) -> Void {
+  loop order = 0 {
+    case Process.receive(inbox) {
+      Watch.Target(worker) -> {
+        Process.monitor(inbox, worker, fn(down) { Watch.Gone(down) })
+        order
+      }
+      Watch.Gone(down) -> order * 10 + digit(down)
+      Watch.Report(reply) -> {
+        Channel.send(reply, order)
+        order
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let watching = Process.spec(watch, 8, Duration.seconds(1))
+    |> Process.register(watcher)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let returning = Process.spec(work, 1, Duration.seconds(1))
+    |> Process.register(returner)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let failing = Process.spec(work, 1, Duration.seconds(1))
+    |> Process.register(failer)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let crashing = Process.spec(work, 1, Duration.seconds(1))
+    |> Process.register(crasher)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let stopped = Process.spec(work, 1, Duration.seconds(1))
+    |> Process.register(stopper)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let workers = Supervisor.start(Supervisor.policy([watching, returning, failing, crashing], 4, Supervisor.restarts(0, Duration.seconds(30))))
+  let stopping = Supervisor.start(Supervisor.policy([stopped], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(watcher, Watch.Target(returner))
+  Process.send(watcher, Watch.Target(failer))
+  Process.send(watcher, Watch.Target(crasher))
+  Process.send(watcher, Watch.Target(stopper))
+  settle()
+  Process.send(returner, Job.Return)
+  settle()
+  Process.send(failer, Job.Fail)
+  settle()
+  Process.send(crasher, Job.Crash)
+  settle()
+  Supervisor.stop(stopping)
+  Process.send(watcher, Watch.Target(returner))
+  settle()
+  let replies = Channel.bounded(1)
+  Process.send(watcher, Watch.Report(replies.sender))
+  let received = Channel.receive(replies.receiver)
+  let order = case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+  Supervisor.stop(workers)
+  order
+}

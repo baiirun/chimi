@@ -1212,6 +1212,8 @@ impl TypedProject {
             Some(StandardSymbol::Type(
                 StandardType::ProcessAddress
                 | StandardType::ProcessSpec
+                | StandardType::ProcessMonitor
+                | StandardType::ProcessDown
                 | StandardType::SupervisorMember
                 | StandardType::SupervisorPolicy
                 | StandardType::SupervisorRestarts
@@ -2238,7 +2240,12 @@ impl ProjectTypeChecker {
             | StandardConstructor::RestartOnDefect
             | StandardConstructor::StartCapacityReached
             | StandardConstructor::StartNameTaken
-            | StandardConstructor::StartStopped => self.process_constructor_shape(constructor),
+            | StandardConstructor::StartStopped
+            | StandardConstructor::DownReturned
+            | StandardConstructor::DownFailed
+            | StandardConstructor::DownDefected
+            | StandardConstructor::DownStopped
+            | StandardConstructor::DownUnavailable => self.process_constructor_shape(constructor),
             StandardConstructor::DurationParseEmpty
             | StandardConstructor::DurationParseInvalid
             | StandardConstructor::DurationParseOutOfRange => (
@@ -6340,6 +6347,7 @@ impl ProjectTypeChecker {
                     | StandardType::JsonConversionError
                     | StandardType::ChannelSendError
                     | StandardType::ProcessSendError
+                    | StandardType::ProcessDown
                     | StandardType::SupervisorRestart
                     | StandardType::SupervisorStartError
                     | StandardType::ChannelReceive

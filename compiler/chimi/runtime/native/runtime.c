@@ -61,6 +61,8 @@ typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN
                   copies as-is: identities the scheduler resolves, never pointers. */
                VALUE_PROCESS_ADDRESS, VALUE_PROCESS_INBOX, VALUE_SUPERVISOR_RUNNING,
                VALUE_MANAGED_PROCESS, VALUE_MANAGED_SUPERVISOR,
+               /* A `Process.Monitor`: its id in `as.address.target`. */
+               VALUE_PROCESS_MONITOR,
                /* A `std/set.Set` in `as.map`: each item is a key bound to Void. */
                VALUE_SET,
                /* A `std/bytes.Bytes` in `as.text`, which holds any bytes. */
@@ -1031,7 +1033,8 @@ static void mark_children(void *pointer) {
         case VALUE_PROCESS_INBOX:
         case VALUE_SUPERVISOR_RUNNING:
         case VALUE_MANAGED_PROCESS:
-        case VALUE_MANAGED_SUPERVISOR: break;
+        case VALUE_MANAGED_SUPERVISOR:
+        case VALUE_PROCESS_MONITOR: break;
       }
       break;
     }
@@ -1379,7 +1382,8 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
         case VALUE_PROCESS_INBOX:
         case VALUE_SUPERVISOR_RUNNING:
         case VALUE_MANAGED_PROCESS:
-        case VALUE_MANAGED_SUPERVISOR: break;
+        case VALUE_MANAGED_SUPERVISOR:
+        case VALUE_PROCESS_MONITOR: break;
       }
       break;
     }
@@ -2258,7 +2262,8 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
     case VALUE_PROCESS_INBOX:
     case VALUE_SUPERVISOR_RUNNING:
     case VALUE_MANAGED_PROCESS:
-    case VALUE_MANAGED_SUPERVISOR: return true;
+    case VALUE_MANAGED_SUPERVISOR:
+    case VALUE_PROCESS_MONITOR: return true;
   }
   return false;
 }
@@ -2708,6 +2713,7 @@ static void json_value(FILE *output, const ChimiValue *root) {
       case VALUE_MANAGED_PROCESS: fputs("{\"type\":\"ManagedProcess\",\"fields\":{}}", output); break;
       case VALUE_MANAGED_SUPERVISOR:
         fputs("{\"type\":\"ManagedSupervisor\",\"fields\":{}}", output); break;
+      case VALUE_PROCESS_MONITOR: fputs("{\"type\":\"Monitor\",\"fields\":{}}", output); break;
     }
   }
   free(steps.items);
@@ -2800,6 +2806,8 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
       case VALUE_MANAGED_SUPERVISOR:
         order = order_of((int64_t)(uintptr_t)left, (int64_t)(uintptr_t)right); break;
       /* Routing kind, then the name or incarnation it routes to. */
+      case VALUE_PROCESS_MONITOR:
+        order = order_of((int64_t)left->as.address.target, (int64_t)right->as.address.target); break;
       case VALUE_PROCESS_ADDRESS:
         order = order_of(left->as.address.kind, right->as.address.kind);
         if (order == 0)
@@ -5757,6 +5765,7 @@ static void debug_expand(DebugRenderer *renderer, DebugSteps *steps, const Chimi
     case VALUE_SUPERVISOR_RUNNING: debug_text(buffer, "<Running>"); return;
     case VALUE_MANAGED_PROCESS: debug_text(buffer, "<ManagedProcess>"); return;
     case VALUE_MANAGED_SUPERVISOR: debug_text(buffer, "<ManagedSupervisor>"); return;
+    case VALUE_PROCESS_MONITOR: debug_text(buffer, "<Monitor>"); return;
   }
 }
 
@@ -6171,8 +6180,65 @@ static bool is_kind(ChimiValue **arguments, uint32_t index, ValueKind kind) {
 
 /* The process and supervisor operations that run on the scheduler. */
 static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
-                                           uint32_t argument_count, uint32_t call_node) {
+                                           uint32_t argument_count, uint64_t span, uint32_t call_node,
+                                           ChimiEnvironment *environment) {
   switch (intrinsic) {
+    case CHIMI_INTRINSIC_PROCESS_OWN_ADDRESS: {
+      if (argument_count != 1 || !is_kind(arguments, 0, VALUE_PROCESS_INBOX))
+        return intrinsic_shape_defect(call_node);
+      ChimiProcessRequest request = {.kind = CHIMI_REQUEST_PROCESS_SELF};
+      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (request.status != CHIMI_RESPONSE_OK) return defect("Process.address scheduler request failed", call_node);
+      return success(process_address_value(CHIMI_ADDRESS_DIRECT, request.address));
+    }
+    case CHIMI_INTRINSIC_PROCESS_QUEUED:
+    case CHIMI_INTRINSIC_PROCESS_CAPACITY: {
+      if (argument_count != 1 || !is_kind(arguments, 0, VALUE_PROCESS_INBOX))
+        return intrinsic_shape_defect(call_node);
+      ChimiProcessRequest request = {.kind = CHIMI_REQUEST_PROCESS_MAILBOX};
+      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (request.status != CHIMI_RESPONSE_OK) return defect("Process mailbox scheduler request failed", call_node);
+      return success(integer_value(intrinsic == CHIMI_INTRINSIC_PROCESS_QUEUED ? (int64_t)request.queued
+                                                                              : (int64_t)request.capacity));
+    }
+    case CHIMI_INTRINSIC_PROCESS_MONITOR: {
+      if (argument_count != 3 || !is_kind(arguments, 0, VALUE_PROCESS_INBOX) ||
+          !is_kind(arguments, 1, VALUE_PROCESS_ADDRESS) || !is_kind(arguments, 2, VALUE_CALLABLE))
+        return intrinsic_shape_defect(call_node);
+      /* The notice outlives this call in the scheduler, like an accepted message,
+         until the receive that runs it adopts it back into this heap. */
+      void *roots[] = {arguments[2]};
+      AllocationKind kinds[] = {ALLOCATION_VALUE};
+      RuntimeFragment *notice = NULL;
+      if (fragment_copy(roots, kinds, 1, &notice) != HEAP_OK)
+        return defect(numeric_message("Process.monitor: the notice points into owner %" PRIu64
+                                      ", outside the watcher's heap (owner %" PRIu64 ")",
+                                      fragment_copy_foreign_owner, current_heap->owner),
+                      call_node);
+      ChimiProcessRequest request = {
+        .kind = CHIMI_REQUEST_PROCESS_MONITOR,
+        .address_kind = arguments[1]->as.address.kind,
+        .address = arguments[1]->as.address.target,
+        .message = (uint64_t)(uintptr_t)notice,
+      };
+      ChimiFiberCommand command = scheduler_request(&request);
+      if (request.status != CHIMI_RESPONSE_OK) fragment_free(notice);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      if (request.status != CHIMI_RESPONSE_OK) return defect("Process.monitor scheduler request failed", call_node);
+      ChimiValue *monitor = new_value(VALUE_PROCESS_MONITOR);
+      monitor->as.address.target = request.monitor;
+      return success(monitor);
+    }
+    case CHIMI_INTRINSIC_PROCESS_UNMONITOR: {
+      if (argument_count != 2 || !is_kind(arguments, 0, VALUE_PROCESS_INBOX) ||
+          !is_kind(arguments, 1, VALUE_PROCESS_MONITOR))
+        return intrinsic_shape_defect(call_node);
+      ChimiProcessRequest request = {.kind = CHIMI_REQUEST_PROCESS_UNMONITOR,
+                                     .monitor = arguments[1]->as.address.target};
+      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (request.status != CHIMI_RESPONSE_OK) return defect("Process.unmonitor scheduler request failed", call_node);
+      return success(void_value());
+    }
     case CHIMI_INTRINSIC_PROCESS_SEND: {
       if (argument_count != 2 || !is_kind(arguments, 0, VALUE_PROCESS_ADDRESS))
         return intrinsic_shape_defect(call_node);
@@ -6219,7 +6285,13 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
       if (request.status == CHIMI_RESPONSE_SUCCEEDED) {
         void *roots[FRAGMENT_ROOTS];
         fragment_adopt((RuntimeFragment *)(uintptr_t)request.message, roots);
-        return success(roots[0]);
+        if (request.down == 0) return success(roots[0]);
+        /* A monitor notice: the watcher's own fn(Down) -> M makes the message. */
+        if (request.down > CHIMI_DOWN_UNAVAILABLE || ((ChimiValue *)roots[0])->kind != VALUE_CALLABLE)
+          return defect("Process.receive scheduler request failed", call_node);
+        ChimiValue *down[] = {
+          standard_value(CHIMI_CONSTRUCTOR_DOWN_RETURNED + (request.down - CHIMI_DOWN_RETURNED), NULL, 0)};
+        return invoke(runtime, ((ChimiValue *)roots[0])->as.callable, down, 1, span, call_node, environment);
       }
       if (request.status == CHIMI_RESPONSE_CANCELLED || request.status == CHIMI_RESPONSE_FORCED)
         return cancelled();
@@ -6336,7 +6408,8 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
 #endif
 
 static ChimiControl *invoke_process(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
-                                    uint32_t argument_count, uint32_t call_node) {
+                                    uint32_t argument_count, uint64_t span, uint32_t call_node,
+                                    ChimiEnvironment *environment) {
   switch (intrinsic) {
     case CHIMI_INTRINSIC_PROCESS_SPEC:
     case CHIMI_INTRINSIC_PROCESS_REGISTER:
@@ -6347,9 +6420,11 @@ static ChimiControl *invoke_process(ChimiRuntime *runtime, uint32_t intrinsic, C
       return invoke_process_data(intrinsic, arguments, argument_count, call_node);
   }
 #if CHIMI_PROCESS_KERNEL
-  return invoke_process_kernel(runtime, intrinsic, arguments, argument_count, call_node);
+  return invoke_process_kernel(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
 #else
   (void)runtime;
+  (void)span;
+  (void)environment;
   /* The compiler links the process runtime into every program that reaches one. */
   return defect("this runtime was built without the supervised process runtime", call_node);
 #endif
@@ -6639,7 +6714,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
-    return invoke_process(runtime, intrinsic, arguments, argument_count, call_node);
+    return invoke_process(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DEBUG_CRASH && intrinsic <= CHIMI_INTRINSIC_LIST_SET)
     return invoke_core_operation(intrinsic, arguments, argument_count, call_node);
   switch (intrinsic) {
