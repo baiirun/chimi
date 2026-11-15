@@ -3632,6 +3632,47 @@ fn native_list_is_a_persistent_vector() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// runtime.c's Map tree, which Set shares, keeps the AVL height bound when
+// removals empty most of it (the interpreter's twin is execution::tests).
+#[test]
+fn native_map_removal_keeps_the_tree_balanced() {
+    let scratch = scratch_directory("native-map-runtime");
+    let executable = scratch.join("native-map-runtime");
+    let compilation = Command::new("cc")
+        .arg("-std=c11")
+        .arg("-O2")
+        .arg("-I")
+        .arg(repository_path("compiler/chimi/runtime/native"))
+        .arg("-I")
+        .arg(repository_path("runtime/chimi-fiber/include"))
+        .arg(format!(
+            "{}/tests/fixtures/native-map-runtime.c",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .arg("-o")
+        .arg(&executable)
+        // glibc keeps floor, fmod, and the rest of libm out of libc.
+        .arg("-lm")
+        .output()
+        .expect("compile native map runtime test");
+    assert!(
+        compilation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compilation.stderr)
+    );
+    let run = Command::new(&executable)
+        .output()
+        .expect("run native map runtime test");
+    let stdout = String::from_utf8(run.stdout).unwrap();
+    assert!(
+        run.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(stdout.ends_with("ok\n"), "{stdout}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // The prototype's heap scenarios against runtime.c: pass cost independent of old
 // survivors, flat memory over a million passes with bounded full passes, regions
 // and adoption composing, sharing-preserving and window-compacting copies,

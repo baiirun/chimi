@@ -3005,6 +3005,56 @@ mod tests {
         assert_eq!(map.entries().len(), 10_000);
     }
 
+    /// The AVL bound: a tree of `n` nodes is at most `1.45 log2(n + 2)` high.
+    /// Keeping only the keys on the leftmost (or rightmost) path and removing
+    /// every other key leaves a path as long as the old height unless removal
+    /// rebalances. Each order of removal reaches the rebalancing on one side of
+    /// the descent. `tests/fixtures/native-map-runtime.c` is the same check of
+    /// `runtime.c`.
+    #[test]
+    fn removals_that_keep_one_path_keep_map_height_logarithmic() {
+        const COUNT: i64 = 4_096;
+        for (leftmost, ascending) in [(true, true), (false, true), (true, false), (false, false)] {
+            let mut map = RuntimeMap::default();
+            for value in 0..COUNT {
+                map = map.put(RuntimeValue::Integer(value), RuntimeValue::Void, &order);
+            }
+            let mut path = Vec::new();
+            let mut node = map.root.as_deref();
+            while let Some(current) = node {
+                let RuntimeValue::Integer(key) = current.key else {
+                    unreachable!("every key is an Int")
+                };
+                path.push(key);
+                node = if leftmost { current.left.as_deref() } else { current.right.as_deref() };
+            }
+            let removals = (0..COUNT).map(|step| if ascending { step } else { COUNT - 1 - step });
+            for value in removals.filter(|value| !path.contains(value)) {
+                map = map
+                    .remove(&RuntimeValue::Integer(value), &order)
+                    .expect("the key is held");
+            }
+
+            let height = f64::from(map.root.as_ref().unwrap().height);
+            let bound = 1.45 * ((path.len() + 2) as f64).log2();
+            assert!(
+                height <= bound,
+                "leftmost {leftmost}, ascending {ascending}: height {height} for {} keys",
+                path.len()
+            );
+            path.sort_unstable();
+            let keys = map
+                .entries()
+                .into_iter()
+                .map(|(key, _)| match key {
+                    RuntimeValue::Integer(key) => key,
+                    _ => unreachable!("every key is an Int"),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(keys, path);
+        }
+    }
+
     /// Nesting depth for the teardown tests: far more levels than `SMALL_STACK` holds
     /// frames, so freeing or writing that recurses once per level overflows it.
     const DEPTH: usize = 100_000;
