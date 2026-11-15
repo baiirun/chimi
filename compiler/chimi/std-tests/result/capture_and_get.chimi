@@ -1,0 +1,53 @@
+// Result.capture stores a call's expected failure as Err and its value as Ok;
+// Result.get turns them back into a value or a live failure. Captures with
+// different failure sets join in one list as their union.
+import std/debug as Debug
+import std/result as Result
+import std/result.{Result, Ok, Err}
+
+enum UserError {
+  Missing(id: Int)
+}
+
+enum OrderError {
+  Lost
+}
+
+fn load_user(id: Int) -> Text {
+  case id {
+    1 -> "ada"
+    _ -> Failure(UserError.Missing(id))
+  }
+}
+
+fn load_order() -> Text {
+  Failure(OrderError.Lost)
+}
+
+fn describe(result: Result<Text, UserError | OrderError>) -> Text {
+  case result {
+    Ok(name) -> name
+    Err(UserError.Missing(id)) -> "no user ${id}"
+    Err(OrderError.Lost) -> "order lost"
+  }
+}
+
+fn total(results: List<Result<Text, UserError | OrderError>>) -> Text {
+  case results {
+    [] -> ""
+    [first, ..rest] -> "${describe(first)}; ${total(rest)}"
+  }
+}
+
+pub fn main() -> Text {
+  let results = [
+    Result.capture(fn() { load_user(1) }),
+    Result.capture(fn() { load_user(2) }),
+    Result.capture(load_order),
+  ]
+  let kept = case results {
+    [first, ..] -> Result.get(first)
+    [] -> "none"
+  }
+  "${total(results)}${kept} ${Debug.render(results)}"
+}

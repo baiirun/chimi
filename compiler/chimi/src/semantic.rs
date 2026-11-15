@@ -477,6 +477,11 @@ pub(crate) enum TypeUse {
         semantic_id: SemanticId,
         fields: Vec<TypedField>,
     },
+    /// `A | B | ...`: a failure-set type, members in source order.
+    Union {
+        semantic_id: SemanticId,
+        members: Vec<TypeUse>,
+    },
 }
 
 impl TypeUse {
@@ -485,7 +490,8 @@ impl TypeUse {
             Self::Named { semantic_id, .. }
             | Self::Function { semantic_id, .. }
             | Self::Tuple { semantic_id, .. }
-            | Self::Record { semantic_id, .. } => *semantic_id,
+            | Self::Record { semantic_id, .. }
+            | Self::Union { semantic_id, .. } => *semantic_id,
         }
     }
 }
@@ -1546,6 +1552,17 @@ impl ProjectLowerer {
 
     fn lower_type(&mut self, node: &SyntaxNode<'_>) -> TypeUse {
         let semantic_id = self.allocate_semantic_id();
+        if let Some(union) = direct_child(node, NodeKind::UnionType) {
+            return TypeUse::Union {
+                semantic_id,
+                members: union
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|child| child.kind() == NodeKind::Type)
+                    .map(|child| self.lower_type(&child))
+                    .collect(),
+            };
+        }
         if let Some(tuple) = direct_child(node, NodeKind::TupleType) {
             return TypeUse::Tuple {
                 semantic_id,

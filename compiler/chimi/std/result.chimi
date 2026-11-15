@@ -1,0 +1,44 @@
+/// A stored outcome. `Result.capture` turns a call's expected failure into an
+/// `Err` value, which can sit in a list, cross a channel, or reach a predicate
+/// while its failure set stays in the type; `Result.get` turns it back into a
+/// live failure. Defects and cancellation are never stored.
+///
+/// `Ok` and `Err` are ordinary constructors, distinct from the live outcome
+/// constructors `Success` and `Failure`.
+
+// 1. Public types.
+
+/// Either `Ok(value)` or `Err(error)`. `Ok` is declared first, so derived
+/// ordering puts every `Ok` before every `Err`.
+pub enum Result<T, E> {
+  Ok(value: T)
+  Err(error: E)
+}
+
+// 2. Constructors.
+
+/// Calls `operation` and stores its outcome: `Ok` of its value, or `Err` of
+/// its expected failure. A defect or cancellation inside `operation` is not
+/// stored; it passes through.
+///
+/// Calls: `operation` once.
+/// Cost: O(1) plus `operation`.
+pub fn capture<T, E, R>(operation: fn() -> T errors E needs R) -> Result<T, E> needs R {
+  case operation() {
+    Success(value) -> Ok(value)
+    Failure(error) -> Err(error)
+  }
+}
+
+// 4. Conversions.
+
+/// Returns the value of an `Ok`, or fails with the error of an `Err`.
+///
+/// Fails with: the stored error when `result` is `Err`.
+/// Cost: O(1).
+pub fn get<T, E>(result: Result<T, E>) -> T {
+  case result {
+    Ok(value) -> value
+    Err(error) -> Failure(error)
+  }
+}

@@ -81,6 +81,8 @@ pub(crate) enum TokenKind {
     AmpersandAmpersand,
     /// `||`, recognized only to report `S1004`; the parser treats it as `or`.
     BarBar,
+    /// `|`, the failure-set union in a type.
+    Bar,
     /// A `!` not followed by `=`, recognized only to report `S1004`; the parser treats it as `not`.
     Bang,
     Invalid,
@@ -152,6 +154,7 @@ impl TokenKind {
             Self::Pipe => "pipe",
             Self::AmpersandAmpersand => "ampersand_ampersand",
             Self::BarBar => "bar_bar",
+            Self::Bar => "bar",
             Self::Bang => "bang",
             Self::Invalid => "invalid",
             Self::InvalidText => "invalid_text",
@@ -221,6 +224,7 @@ impl TokenKind {
             Self::Pipe => "`|>`",
             Self::AmpersandAmpersand => "`&&`",
             Self::BarBar => "`||`",
+            Self::Bar => "`|`",
             Self::Bang => "`!`",
             Self::Whitespace
             | Self::Newline
@@ -258,6 +262,8 @@ pub(crate) enum NodeKind {
     /// `(T1, T2, ...)` inside a `Type`.
     TupleType,
     RecordType,
+    /// `A | B | ...` inside a `Type`: a failure-set type, one `Type` per member.
+    UnionType,
     TypeArguments,
     RequirementClause,
     RequirementRecord,
@@ -334,6 +340,7 @@ impl NodeKind {
             Self::FunctionType => "function_type",
             Self::TupleType => "tuple_type",
             Self::RecordType => "record_type",
+            Self::UnionType => "union_type",
             Self::TypeArguments => "type_arguments",
             Self::RequirementClause => "requirement_clause",
             Self::RequirementRecord => "requirement_record",
@@ -931,7 +938,7 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                 );
             }
             b'{' | b'}' | b'(' | b')' | b'[' | b']' | b':' | b',' | b'.' | b'/' | b'<' | b'>'
-            | b'+' | b'-' | b'*' | b'%' | b'=' => {
+            | b'+' | b'-' | b'*' | b'%' | b'=' | b'|' => {
                 if let Some(depth) = interpolations.last_mut() {
                     match bytes[offset] {
                         b'{' => *depth += 1,
@@ -957,6 +964,7 @@ fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
                     b'*' => TokenKind::Star,
                     b'%' => TokenKind::Percent,
                     b'=' => TokenKind::Equal,
+                    b'|' => TokenKind::Bar,
                     _ => unreachable!(),
                 };
                 offset += 1;
@@ -1682,7 +1690,7 @@ impl<'source> Parser<'source> {
         }
         if self.accept_after_newlines(TokenKind::Errors) {
             self.skip_newlines();
-            self.parse_type();
+            self.parse_failure_row_type();
         }
         if self.at_after_newlines(TokenKind::Needs) {
             self.skip_newlines();
@@ -1851,6 +1859,39 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_type(&mut self) {
+        self.parse_type_union(false);
+    }
+
+    /// Parses the failure row after `errors`, where `+` is accepted as the old
+    /// spelling of `|`; the formatter rewrites it.
+    fn parse_failure_row_type(&mut self) {
+        self.parse_type_union(true);
+    }
+
+    /// Parses one type, or `A | B | ...` as a `Type` holding a `UnionType` of
+    /// member `Type`s. Ensures: a type with no `|` keeps its single `Type` node.
+    fn parse_type_union(&mut self, accepts_plus: bool) {
+        let outer = self.placeholder();
+        let union = self.placeholder();
+        self.parse_single_type();
+        let mut wrapped = false;
+        while self.at(TokenKind::Bar) || (accepts_plus && self.at(TokenKind::Plus)) {
+            if !wrapped {
+                self.complete(outer, NodeKind::Type);
+                self.complete(union, NodeKind::UnionType);
+                wrapped = true;
+            }
+            self.bump();
+            self.skip_newlines();
+            self.parse_single_type();
+        }
+        if wrapped {
+            self.finish();
+            self.finish();
+        }
+    }
+
+    fn parse_single_type(&mut self) {
         self.start(NodeKind::Type);
         self.skip_newlines();
         if self.at(TokenKind::Fn) {
@@ -1945,7 +1986,7 @@ impl<'source> Parser<'source> {
         // separate fields and parameters.
         if self.accept_after_newlines(TokenKind::Errors) {
             self.skip_newlines();
-            self.parse_type();
+            self.parse_failure_row_type();
         }
         if self.at_after_newlines(TokenKind::Needs) {
             self.skip_newlines();
