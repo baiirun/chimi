@@ -9,7 +9,7 @@ Run: scripts/mutation/mutate.py scripts/mutation/process_u10_mutations.py
 Results: compiler/chimi/tests/process-lab/MUTATION-RESULTS.txt.
 
 Scenario mutants run one scenario through the lab binary with `--through
-U10`, because CURRENT_STAGE stays at U9 until ts-8f201b decides PG02. Gate
+U10`, written out so they keep naming U10 if CURRENT_STAGE ever changes. Gate
 mutants run a debug lab, whose time limits are 10 times the release ones; the
 PG03 mutant adds 1 ms of real waiting per restart, far above even the debug
 limit of 400 µs, so a loaded machine cannot hide it.

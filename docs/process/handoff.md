@@ -15,7 +15,8 @@ not working" table (N1 to N32) before changing the process.
 - **Phase 4 processes (`ep-f29d47`):** stages U0 to U10 are built. All but one
   of the 131 lab scenarios pass. `CURRENT_STAGE` stays at U9 because the PG02
   full-trace gate fails (122x against < 5x, `ts-8f201b`). `ts-1765ba` stays
-  open until that is decided.
+  open until that is decided. *Update 2026-11-15: Byron decided PG02 (full
+  tracing is an ungated debugging mode), so `CURRENT_STAGE` is U10.*
 - **Phase 2 (std in Chimi, `ts-0ba63e`):** `std/option`, `int`, `text`,
   `list`, and `order` are Chimi source bound through `native fn` and run on
   both backends. Still to do: `native type`, then `std/map`, `std/set`,
@@ -44,6 +45,8 @@ saved outside the repo with the review rules and the bug repro programs, at
 `~/.claude/projects/-Users-byronguina-code-chimi/handoff/`.
 
 ### Decisions waiting on Byron
+
+Both were decided on 2026-11-15 as recommended; see `docs/decisions.md`.
 
 - **PG02 (`ts-8f201b`).** Recommended: put the 5x gate on `--trace=boundaries`
   (it passes at 1.05x) and document `--trace=full` as an ungated debugging mode.
