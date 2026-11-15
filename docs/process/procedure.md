@@ -112,7 +112,11 @@ be merged, and don't wait when nothing is gained by waiting (Byron,
   while a PR waits on CI without a way back: the subscription sends an event
   when the checks finish, but a delivery can be lost, so also schedule a
   wake-up (`send_later`) for about when CI should finish.
-- Merge or rebase, never force-push to a shared branch.
+- Land a PR with a squash merge, with an explicit subject and a short clean
+  summary as the body. The default squash body copies every commit's
+  trailers, so write the body yourself and keep attribution out of it
+  (Byron, 2026-11-15). To bring main into a branch, merge it; never
+  force-push to a shared branch.
 - If auto mode blocks the merge, ask Byron in the lane's thread to write the
   go-ahead, naming the PR.
 
