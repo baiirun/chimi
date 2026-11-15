@@ -26,6 +26,27 @@ about 90%. The fastest "after" build in run 3 took 119 ms, and the fastest
 663 ms compile) was not confirmed at low load; re-run the command below when
 the machine is quiet and add a row.
 
+### Quiet-machine check on Linux (2026-11-15)
+
+The macOS rows above were taken under heavy load, so the cold build was
+re-measured on an idle Linux machine (1-minute load 1.0) at `1efc595`. The
+commits from the Phase 1 baseline do not build a native program on Linux, so
+both rows use the same compiler. The "per-project" row forces the old path
+with a `cc` wrapper that reports a different `cc --version`; the build report's
+`cache.prebuilt` list confirms which path each build took.
+
+| Build (two-module fixture, 11 runs each, interleaved) | p50 | min | max |
+| --- | ---: | ---: | ---: |
+| Cold, prebuilt runtime archive (the default) | 51 ms | 44 ms | 79 ms |
+| Cold, runtime compiled per project (the old path) | 2,121 ms | 1,952 ms | 2,228 ms |
+| Warm, every artifact cached | 37 ms | 34 ms | 43 ms |
+| `runtime.c` alone at `-O2`, 3 runs | 2,004 to 2,059 ms | | |
+
+A cold build now costs about 14 ms more than a warm one, against 2 s for the
+runtime compile it skips. That is well inside the ticket's target (within 20% of
+the 294 ms Phase 1 cold build), even allowing for the different machine. Host:
+Intel Xeon at 2.30 GHz, 4 cores, Ubuntu 24.04, gcc 13.3 as `cc`, Rust 1.97.0.
+
 Warm builds are unchanged by design: a warm build already hit the cached
 runtime archive, and now copies the embedded one instead.
 
