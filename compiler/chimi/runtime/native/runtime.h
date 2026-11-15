@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 19
+#define CHIMI_RUNTIME_ABI_VERSION 20
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -375,6 +375,8 @@ typedef struct {
 extern const char *CHIMI_COMPUTATION;
 extern const uint32_t CHIMI_REQUIRES_SCHEDULER;
 extern const char *CHIMI_STRINGS[];
+/* The byte length of each string, which a Text string may need: it can hold U+0000. */
+extern const uint32_t CHIMI_STRING_LENGTHS[];
 extern const uint32_t CHIMI_IDS[];
 extern const ChimiOrigin CHIMI_ORIGINS[];
 extern const ChimiNode CHIMI_NODES[];

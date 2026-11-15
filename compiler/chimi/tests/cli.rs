@@ -2553,6 +2553,9 @@ fn run_executes_the_checkout_forcing_program_with_dependency_traces() {
 fn invalid_programs_stop_at_the_owning_stage() {
     let cases = [
         ("missing_closing_brace", "error[S1001] syntax"),
+        // ts-1bba2b: the recovered `[out, 1]` asks for `T = List<T>`, which used
+        // to overflow the stack while formatting the mismatch.
+        ("list_spread_in_loop", "error[S1001] syntax"),
         ("missing_main", "error[E5001] execution-setup"),
         ("unresolved_constructor", "error[E_UNRESOLVED_VALUE] name"),
         ("invalid_field_type", "error[T4203] type"),
@@ -5344,5 +5347,43 @@ fn native_process_stack_depth_and_named_defects() {
             }
         }
     }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// ts-ce73fb: Console writes every byte of a Text holding U+0000, and a path holding
+// it names no file on either backend, with the interpreter's message.
+#[test]
+fn native_host_io_keeps_text_bytes_after_nul() {
+    let scratch = scratch_directory("native-text-nul");
+    let source = concat!(
+        "import std/io as IO\n",
+        "import std/io.{Console}\n",
+        "import std/io.{FileSystem}\n",
+        "pub fn main() -> Int\n",
+        "  needs {\n",
+        "    files: FileSystem,\n",
+        "    console: Console,\n",
+        "  }\n",
+        "{\n",
+        "  console.write_line(\"a\\u{0}b\")\n",
+        "  files.process_utf8_lines(IO.path(\"missing\\u{0}name\"), 0, fn(count: Int, line: Text) { count + 1 })\n",
+        "}\n",
+    );
+    let executable = build_native(&scratch, "text-nul", source);
+    let native = execute_native(&executable, &scratch, "text-nul", "off");
+    assert_eq!(native.process.stdout, b"a\0b\n");
+    let expected = concat!(
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"expected_failure\",\"error\":",
+        "{\"type\":\"FileError\",\"variant\":\"Open\",\"fields\":{\"path\":\"missing\\u0000name\",",
+        "\"message\":\"file name contained an unexpected NUL byte\"}}}"
+    );
+    assert_eq!(native.outcome.trim_end(), expected);
+    let interpreted = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("run")
+        .arg(scratch.join("text-nul.chimi"))
+        .output()
+        .expect("run the reference interpreter");
+    let stdout = String::from_utf8_lossy(&interpreted.stdout);
+    assert_eq!(stdout.lines().last(), Some(expected));
     std::fs::remove_dir_all(scratch).unwrap();
 }
