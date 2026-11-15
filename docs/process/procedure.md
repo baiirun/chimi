@@ -79,28 +79,27 @@ file [N7].
 
 ## Merging
 
-Byron's standing approval: a lane merges its own PR into `main` once review and
-the verifier are done and every CI check passes.
+Use judgement, the way a human maintainer would: merge whatever can reasonably
+be merged, and don't wait when nothing is gained by waiting (Byron,
+2026-11-15).
 
-- Subscribe to your PR's activity right after opening it, and watch its CI,
-  passes as well as failures.
-- Never end a turn while a PR waits on CI without a way back. The PR
-  subscription sends an event when every check suite finishes, but a delivery
-  can be lost. So before ending the turn, also schedule a wake-up
-  (`send_later`) for about when CI should finish, roughly 15 minutes. When you
-  wake, read the checks and merge, fix, or schedule the next check.
-- If `main` moved since the last CI run, update the branch and wait for CI to
-  rerun. There is no branch protection, so this is on the lane.
-- **Docs-only PRs** (no code, tests or CI config changed) don't wait on CI.
-  Merge them once they're written and checked, and don't rerun CI when `main`
-  moves, as long as merging `main` in is clean (Byron, 2026-11-15).
-- Merge or rebase, never force-push.
-- The checks that must pass are `test (macos-latest)` and `test (ubuntu-latest)`.
-  `program outputs (*)` compares 12 program outputs with the base branch. A red
-  `program outputs` check may be merged only when the difference is expected
-  and the program outputs are identical, with the reason noted on the PR
-  (Byron, 2026-11-15; the check itself is in decisions.md).
-- Never call CI green while any check is red.
+- **Code PRs** merge once review and the verifier are done and CI is green.
+  Never merge failing tests, and never call CI green while any check is red.
+- **When `main` moves**, merge it into the branch. If the merge is clean and
+  `main`'s changes are in an unrelated area, merge the PR without rerunning
+  CI. If they touch the same code or the merge needed conflict resolution,
+  wait for CI on the updated branch.
+- **Docs-only PRs** (no code, tests or CI config changed) merge right away,
+  without waiting on CI.
+- The test checks are `test (macos-latest)` and `test (ubuntu-latest)`.
+  `program outputs (*)` compares 12 program outputs with the base branch; a
+  red one is fine when the difference is the intended one, with the reason
+  noted on the PR.
+- Subscribe to your PR's activity right after opening it. Never end a turn
+  while a PR waits on CI without a way back: the subscription sends an event
+  when the checks finish, but a delivery can be lost, so also schedule a
+  wake-up (`send_later`) for about when CI should finish.
+- Merge or rebase, never force-push to a shared branch.
 - If auto mode blocks the merge, ask Byron in the lane's thread to write the
   go-ahead, naming the PR.
 
@@ -108,6 +107,8 @@ the verifier are done and every CI check passes.
 
 - Decide from the vision docs, and record every decision in
   [decisions.md](../decisions.md), the only decision ledger [N8].
+- Process questions (how we build, review, merge and track) are decided by
+  agents and recorded, never escalated.
 - Escalate only important choices whose answer the vision docs cannot predict.
   The open questions are listed in the wave plan's rules block. Until they
   are decided, add no `try` or `?` sugar.
