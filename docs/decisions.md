@@ -128,6 +128,7 @@ from the philosophy and earlier decisions; any of these can be overruled.
 
 | Date | Decision | By | Detail |
 | --- | --- | --- | --- |
+| 2026-11-15 | A pull request merges on green CI, which replaces `scripts/integrate-branch.sh`: the `test` job on a fresh checkout is the clean-export check, and the `program-outputs` job compares the 12 recorded program outputs on the merge result against its base, on macOS and Linux. An intended output change shows as a red `program-outputs` job that the merger reads and accepts. | User (process), coordinator (shape) | `.github/workflows/ci.yml`; CHI-193 |
 | 2026-11-11 | Build the whole language without stopping for minor questions; escalate only vision-level choices. | User | `language-completion-plan.md` |
 | 2026-11-11 | Tests assert behaviour and contracts, never implementation details or tautologies. | User | — |
 | 2026-11-11 | Fix only review findings that are reachable, break a contract, or carry into kept code. | User | — |
