@@ -1457,8 +1457,8 @@ impl CoreLowerer {
             ),
             ModuleExpression::Function {
                 signature, body, ..
-            } => CoreOperation::Closure {
-                parameters: signature
+            } => {
+                let parameters = signature
                     .parameters
                     .iter()
                     .map(|parameter| {
@@ -1469,10 +1469,16 @@ impl CoreLowerer {
                         )
                         .expect("verified closure parameter has a symbol")
                     })
-                    .collect(),
-                captures: self.closure_captures(module_id, body),
-                body: self.expression(module_id, body),
-            },
+                    .collect();
+                // Lowering the body registers its clause parameter aliases, which
+                // decide the symbols that its names capture.
+                let lowered_body = self.expression(module_id, body);
+                CoreOperation::Closure {
+                    parameters,
+                    captures: self.closure_captures(module_id, body),
+                    body: lowered_body,
+                }
+            }
             ModuleExpression::Case {
                 subjects,
                 arms,

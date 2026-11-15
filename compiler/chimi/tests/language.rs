@@ -5487,6 +5487,24 @@ fn clauses_dispatch_on_the_argument_shape() {
     );
 }
 
+// ts-270757: a literal whose patterns include a plain name parameter used to
+// capture that name before it became an alias of the generated parameter, and
+// the native closure then read a local slot that does not exist.
+#[test]
+fn a_function_literal_with_pattern_parameters_runs_and_captures_on_both_backends() {
+    let outcome = run_both(
+        "literal-tuple-parameter",
+        concat!(
+            "fn apply(f: fn((Int, Int), Int) -> Int) -> Int { f((1, 2), 30) }\n",
+            "pub fn main() -> Int {\n",
+            "  let offset = 400\n",
+            "  apply(fn((a, b), c) { a + b * 10 + c + offset })\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":451");
+}
+
 // PC-02
 #[test]
 fn a_clause_gap_names_the_missing_argument_shape() {
