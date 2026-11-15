@@ -180,6 +180,7 @@ const fn rank(value: &RuntimeValue) -> u8 {
         RuntimeValue::Decimal(_) => 15,
         RuntimeValue::Set(_) => 16,
         RuntimeValue::Bytes(_) => 17,
+        RuntimeValue::Cause(_) => 18,
     }
 }
 

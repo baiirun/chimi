@@ -56,7 +56,7 @@ impl Evaluator<'_> {
             (None, StandardFunction::DurationParse, [RuntimeValue::Text(text)]) => {
                 return match duration::parse(text) {
                     Ok(value) => Control::Success(RuntimeValue::Duration(value)),
-                    Err(failure) => Control::Failure(self.standard_value(
+                    Err(failure) => Control::failure(self.standard_value(
                         match failure {
                             ParseFailure::Empty => StandardConstructor::DurationParseEmpty,
                             ParseFailure::Invalid => StandardConstructor::DurationParseInvalid,
@@ -75,6 +75,7 @@ impl Evaluator<'_> {
             Err(message) => Control::Defect {
                 message,
                 node: Some(call_node),
+                cause: None,
             },
         }
     }

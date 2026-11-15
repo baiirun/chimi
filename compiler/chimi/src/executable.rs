@@ -48,6 +48,8 @@ pub(crate) struct CoreProgram {
     pub(crate) constants: Vec<CoreConstant>,
     pub(crate) nodes: Vec<CoreNode>,
     pub(crate) origins: Vec<Origin>,
+    /// Where each origin starts, as `module/path.chimi:line`, which causes show.
+    pub(crate) origin_locations: Vec<String>,
 }
 
 impl CoreProgram {
@@ -177,8 +179,12 @@ impl CoreProgram {
             CoreOperation::Construct {
                 constructor,
                 arguments,
+                cause,
             } => {
                 debug_assert!((constructor.raw() as usize) < self.symbols.len());
+                debug_assert!(cause.is_none_or(|cause| {
+                    (cause.local.raw() as usize) < self.symbols.len()
+                }));
                 debug_assert!(arguments.iter().all(|argument| node_exists(*argument)));
             }
             CoreOperation::Call { callee, arguments } => {
@@ -292,6 +298,7 @@ fn boolean_match(
         patterns: vec![CorePattern::Literal(CoreLiteral::Boolean(value))],
         guard: None,
         body,
+        cause: None,
     };
     CoreOperation::Match {
         subjects: vec![subject],
@@ -498,9 +505,13 @@ pub(crate) enum CoreOperation {
         method: SemanticId,
         name: String,
     },
+    /// `cause` is set only for a `Failure(...)` or `Result.Err(...)` written in
+    /// the body of an arm that matched a live failure or a stored `Err`
+    /// (time-and-outcomes.md, "Cause chains").
     Construct {
         constructor: SymbolId,
         arguments: Vec<CoreNodeId>,
+        cause: Option<ConstructCause>,
     },
     Call {
         callee: CoreNodeId,
@@ -578,6 +589,27 @@ pub(crate) struct CoreArm {
     pub(crate) patterns: Vec<CorePattern>,
     pub(crate) guard: Option<CoreNodeId>,
     pub(crate) body: CoreNodeId,
+    /// Binds the cause of one matched subject for the constructions in `body`.
+    pub(crate) cause: Option<ArmCause>,
+}
+
+/// When an arm matches, the cause of subject `subject` is bound to the
+/// compiler-generated local `local`: the cause of a live failure, or the cause a
+/// stored `Err` carries, or `Void` when that `Err` carries none.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ArmCause {
+    pub(crate) subject: usize,
+    pub(crate) local: SymbolId,
+}
+
+/// How a construction in a cause arm uses the matched cause in `local`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ConstructCause {
+    pub(crate) local: SymbolId,
+    /// The argument is the variable the arm bound to the matched failure itself,
+    /// so the construction keeps that cause. Otherwise it gets a new cause whose
+    /// `caused_by` is the matched one.
+    pub(crate) keep: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1157,6 +1189,9 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
         at_build_time: false,
         embed_callee: false,
         diagnostics: Vec::new(),
+        cause_scopes: Vec::new(),
+        symbol_count: symbols.len(),
+        synthetic_locals: Vec::new(),
     };
     let mut functions = Vec::new();
     let mut constant_initializers = Vec::new();
@@ -1227,6 +1262,13 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
     // A name aliased to its clause parameter, an update temporary left unbound,
     // or a local of an unreachable function binds nothing, so it takes no
     // environment slot: a frame holds only the locals reachable code binds.
+    symbols.extend(lowerer.synthetic_locals.iter().map(|&id| CoreSymbol {
+        id,
+        name: "cause".to_owned(),
+        kind: CoreSymbolKind::Local,
+        constructor: None,
+        standard: None,
+    }));
     let bound = bound_locals(&functions, &lowerer.nodes);
     for symbol in &mut symbols {
         if lowerer.clause_parameter_aliases.contains_key(&symbol.id)
@@ -1246,6 +1288,7 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
         constant_initializers,
         constants: Vec::new(),
         nodes: lowerer.nodes,
+        origin_locations: origin_locations(&root.typed, &root.origins),
         origins: root.origins,
     };
     if !lowerer_diagnostics.is_empty() {
@@ -1279,6 +1322,21 @@ struct CoreLowerer {
     embed_callee: bool,
     /// `std/embed` misuse and unreadable files (`E5206`–`E5209`).
     diagnostics: Vec<Diagnostic>,
+    /// One entry per enclosing case arm: its cause scope when it matched a live
+    /// failure or a stored `Err`, `None` otherwise and at each function value,
+    /// whose body is not in the arm's body.
+    cause_scopes: Vec<Option<CauseScope>>,
+    /// The typed project's symbol count; generated locals are numbered after it.
+    symbol_count: usize,
+    /// The locals generated for cause arms, in numbering order.
+    synthetic_locals: Vec<SymbolId>,
+}
+
+struct CauseScope {
+    /// Generated on the first construction that reads the cause.
+    local: Option<SymbolId>,
+    /// The variables the arm binds to the matched failure value itself.
+    carriers: Vec<SymbolId>,
 }
 
 impl CoreLowerer {
@@ -1344,9 +1402,11 @@ impl CoreLowerer {
                 if let Some(constructor) =
                     callee_symbol.filter(|symbol| is_core_constructor(&self.typed, *symbol))
                 {
+                    let cause = self.construct_cause(constructor, &arguments);
                     CoreOperation::Construct {
                         constructor,
                         arguments,
+                        cause,
                     }
                 } else {
                     self.embed_callee = embedded.is_some();
@@ -1510,7 +1570,9 @@ impl CoreLowerer {
                 // Lowering the body registers its clause parameter aliases, which
                 // decide the symbols that its names capture.
                 let at_build_time = std::mem::replace(&mut self.at_build_time, false);
+                self.cause_scopes.push(None);
                 let lowered_body = self.expression(module_id, body);
+                self.cause_scopes.pop();
                 self.at_build_time = at_build_time;
                 CoreOperation::Closure {
                     parameters,
@@ -1681,11 +1743,21 @@ impl CoreLowerer {
                 .guard
                 .as_ref()
                 .map(|guard| self.expression(module_id, guard));
+            let source = self.cause_source(&alternatives);
+            self.cause_scopes.push(source.as_ref().map(|(_, carriers)| CauseScope {
+                local: None,
+                carriers: carriers.clone(),
+            }));
             let body = self.expression(module_id, &arm.body);
+            let scope = self.cause_scopes.pop().flatten();
+            let cause = source
+                .zip(scope.and_then(|scope| scope.local))
+                .map(|((subject, _), local)| ArmCause { subject, local });
             lowered.extend(alternatives.into_iter().map(|patterns| CoreArm {
                 patterns,
                 guard,
                 body,
+                cause,
             }));
         }
         let mut kept = (0..subjects.len())
@@ -1708,6 +1780,10 @@ impl CoreLowerer {
                 column += 1;
                 kept[column - 1]
             });
+            if let Some(cause) = &mut arm.cause {
+                debug_assert!(kept[cause.subject], "a cause subject is never a wildcard");
+                cause.subject = kept[..cause.subject].iter().filter(|kept| **kept).count();
+            }
         }
         CoreOperation::Match {
             subjects: subjects
@@ -1718,6 +1794,85 @@ impl CoreLowerer {
                 .collect(),
             arms: lowered,
         }
+    }
+
+    /// The subject whose cause an arm's constructions read, and the variables
+    /// bound to that subject's failure value itself: the first subject that every
+    /// row matches with a live `Failure(...)` pattern or a `Result.Err(...)` pattern.
+    fn cause_source(&self, rows: &[Vec<CorePattern>]) -> Option<(usize, Vec<SymbolId>)> {
+        let first = rows.first()?;
+        (0..first.len()).find_map(|column| {
+            let mut carriers = Vec::new();
+            for row in rows {
+                let value: &CorePattern = match &row[column] {
+                    CorePattern::Outcome {
+                        success: false,
+                        value,
+                    } => value,
+                    CorePattern::Constructor { symbol, fields }
+                        if fields.len() == 1 && self.is_result_err(*symbol) =>
+                    {
+                        &fields[0]
+                    }
+                    _ => return None,
+                };
+                match value {
+                    CorePattern::Binding(binding) | CorePattern::Alias { binding, .. } => {
+                        carriers.push(*binding);
+                    }
+                    _ => {}
+                }
+            }
+            Some((column, carriers))
+        })
+    }
+
+    fn is_result_err(&self, symbol: SymbolId) -> bool {
+        let resolved = self.typed.resolved.symbol(symbol);
+        resolved.name == "Err"
+            && resolved.kind == ProjectSymbolKind::EnumConstructor
+            && resolved.module_id.is_some_and(|module_id| {
+                self.typed.resolved.semantic.modules[module_id.raw() as usize].path == "std/result"
+            })
+    }
+
+    /// The cause a `Failure(argument)` or `Result.Err(argument)` construction
+    /// takes in the innermost enclosing cause arm, if it is lexically inside one
+    /// and not inside a function value written there.
+    fn construct_cause(
+        &mut self,
+        constructor: SymbolId,
+        arguments: &[CoreNodeId],
+    ) -> Option<ConstructCause> {
+        let resolved = self.typed.resolved.symbol(constructor);
+        let is_failure = resolved.module_id.is_none()
+            && resolved.kind == ProjectSymbolKind::BuiltinValue
+            && resolved.name == "Failure";
+        let [argument] = arguments else {
+            return None;
+        };
+        if !(is_failure || self.is_result_err(constructor)) {
+            return None;
+        }
+        let argument = match &self.nodes[argument.raw() as usize].operation {
+            CoreOperation::Reference(symbol) => Some(*symbol),
+            _ => None,
+        };
+        let next = SymbolId::new(
+            u32::try_from(self.symbol_count + self.synthetic_locals.len())
+                .expect("symbol count fits u32"),
+        );
+        let scope = self.cause_scopes.last_mut()?.as_mut()?;
+        let keep = argument.is_some_and(|symbol| scope.carriers.contains(&symbol));
+        let local = match scope.local {
+            Some(local) => local,
+            None => {
+                scope.local = Some(next);
+                self.synthetic_locals.push(next);
+                next
+            }
+        };
+        Some(ConstructCause { local, keep })
     }
 
     fn arm_alternatives(&self, module_id: ModuleId, patterns: &[Pattern]) -> Vec<Vec<CorePattern>> {
@@ -1923,6 +2078,7 @@ impl CoreLowerer {
             Some(constructor) => CoreOperation::Construct {
                 constructor,
                 arguments: arguments.into_iter().map(|(_, value)| value).collect(),
+                cause: None,
             },
             None => CoreOperation::Record(
                 arguments
@@ -2414,6 +2570,7 @@ impl CoreLowerer {
                 return CoreOperation::Construct {
                     constructor: symbol,
                     arguments: Vec::new(),
+                    cause: None,
                 };
             }
         }
@@ -2543,6 +2700,30 @@ fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
     symbols.into_iter().map(|(symbol, _)| symbol).collect()
 }
 
+/// `module/path.chimi:line` for each origin, with the one-based line of its start.
+fn origin_locations(typed: &TypedProject, origins: &[Origin]) -> Vec<String> {
+    let mut indexes = HashMap::new();
+    origins
+        .iter()
+        .map(|origin| {
+            let module = &typed.resolved.semantic.modules[origin.module_id.raw() as usize];
+            let index = indexes.entry(origin.module_id).or_insert_with(|| {
+                crate::line_index::LineIndex::new(Arc::from(module.source.text()))
+            });
+            let start = origin.range.start();
+            let line = if index.text().is_char_boundary(start as usize) {
+                index
+                    .position(start, crate::line_index::PositionEncoding::Utf8)
+                    .line
+                    + 1
+            } else {
+                0
+            };
+            format!("{}.chimi:{line}", module.path)
+        })
+        .collect()
+}
+
 /// Every local symbol that lowered code binds: function and closure parameters,
 /// closure captures, block bindings, loop states, and pattern bindings.
 fn bound_locals(functions: &[CoreFunction], nodes: &[CoreNode]) -> HashSet<SymbolId> {
@@ -2596,6 +2777,7 @@ fn bound_locals(functions: &[CoreFunction], nodes: &[CoreNode]) -> HashSet<Symbo
             }
             CoreOperation::Match { arms, .. } => {
                 for arm in arms {
+                    bound.extend(arm.cause.map(|cause| cause.local));
                     arm.patterns
                         .iter()
                         .for_each(|pattern| pattern_bindings(pattern, &mut bound));

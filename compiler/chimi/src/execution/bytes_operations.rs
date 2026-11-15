@@ -109,6 +109,7 @@ impl Evaluator<'_> {
         let defect = |message: String| Control::Defect {
             message,
             node: Some(call_node),
+            cause: None,
         };
         let bytes = |value: Vec<u8>| RuntimeValue::Bytes(Arc::from(value));
         let integer =
