@@ -3751,6 +3751,13 @@ fn native_profile_counts_evaluations_and_allocations_per_operation() {
     // 1,001 passes of the first loop and 501 of the second, which profiling keeps
     // off the direct path.
     assert_eq!(profile_total(&profile, "match", "evaluations"), 1001 + 501, "{profile}");
+    // `1000` and `1` once a pass, the two initial `0`s, and `1` in 500 direct passes:
+    // integer constants are direct roots, which profiling also turns off.
+    assert_eq!(
+        profile_total(&profile, "constant", "evaluations"),
+        1001 + 1000 + 2 + 500,
+        "{profile}"
+    );
     assert!(profile_total(&profile, "call", "allocated_bytes") > 0, "{profile}");
     // An integer constant allocates its value and its result, and nothing its parent
     // allocates after it returns is charged to it.
