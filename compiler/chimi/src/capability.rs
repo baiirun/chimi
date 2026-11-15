@@ -793,7 +793,8 @@ impl CapabilityChecker<'_> {
         self.transfer_carried(payload, argument.range(), boundary, environment);
     }
 
-    /// `T4260` for a `Process.spec` body: every incarnation runs it again, so its
+    /// `T4260` for a `Process.spec` or `Process.handoff_spec` body: every
+    /// incarnation, or every handoff start, runs it again, so its
     /// captures and the providers bound to it must be shareable. Records the needs that
     /// flow out of the call, for an enclosing `using` to check.
     fn check_spec_body(
@@ -814,9 +815,13 @@ impl CapabilityChecker<'_> {
                 self.file_id(module_id),
                 argument.range(),
                 format!(
-                    "a Process.{} body must be shareable, because every incarnation runs it \
-                     again, but {unshared_by} is not shareable",
-                    function.name()
+                    "a Process.{} body must be shareable, because {}, but {unshared_by} is \
+                     not shareable",
+                    function.name(),
+                    match function {
+                        StandardFunction::ProcessHandoffSpec => "every start of the spec runs it",
+                        _ => "every incarnation runs it again",
+                    }
                 ),
             ));
         }

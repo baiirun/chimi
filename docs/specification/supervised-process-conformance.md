@@ -731,6 +731,7 @@ The scheduler's own C fixture covers the same rule through `stop`.
 | CB09 | U12 | A child task sends a `Receiver` to a process in a `Process.send` message and ends; the process then reads 5 from it and replies (CHI-213) | A message's capability left with its sender, whose exit aborts the channel |
 | CB10 | U12 | A process that never receives is removed with a message holding a `Receiver` queued; main's next send on that channel fails `Aborted` | A capability in a discarded message left open with no owner |
 | CB11 | U12 | A handoff connection is removed before its body runs; main's send on the argument's channel fails `Aborted`, and no fragment outlives the run | A start argument that nobody took left in flight, or leaked |
+| CB12 | U12 | A second `Process.send` to a process whose one-message mailbox is full fails `Full`; main writes 7 to the returned message's Receiver and reads it back | A refused send that leaves the carried Receiver in flight or with the receiver |
 
 ### Heap: memory flatness
 
@@ -1135,7 +1136,7 @@ scenarios pass and `CURRENT_STAGE` names it.
 | U9 | Declared and dynamic nested supervisors | SV09, SV10, ES02–ES04 |
 | U10 | `programs/supervised-pool` and the performance harness | FP01, MF02, MF03, PG01–PG10 |
 | U11 | G27: `Process.address`, `queued`, `capacity`, `monitor`, and `unmonitor` ([process monitors and metrics](process-monitors-and-metrics.md), CHI-220), fiber ABI 9 | SF27, SF28, MB12–MB18 |
-| U12 | G28 and CHI-213: capabilities in a `Process.send` message move to the receiving incarnation, and `Process.handoff_spec` and `Supervisor.start_handoff` start a one-shot process that owns its argument, fiber ABI 10 | SP10, SF29–SF31, MB19–MB21, CB09–CB11 |
+| U12 | G28 and CHI-213: capabilities in a `Process.send` message move to the receiving incarnation, and `Process.handoff_spec` and `Supervisor.start_handoff` start a one-shot process that owns its argument, fiber ABI 10 | SP10, SF29–SF31, MB19–MB21, CB09–CB12 |
 
 Two scenarios moved stage (coordinator decisions on `ts-6ccbc9`). MF06
 moved from U3 to U5, because a process program cannot be built natively
@@ -1166,12 +1167,12 @@ changing a contract.
 | Escalation (ES) | 5 |
 | Removal races (RR) | 6 |
 | Shutdown and forced termination (SD) | 9 |
-| Copy-boundary safety (CB) | 11 |
+| Copy-boundary safety (CB) | 12 |
 | Memory flatness (MF) | 6 |
 | Observability (OB) and backend support (IP) | 9 |
 | Forcing program (FP) | 1 |
 | Performance gates (PG) | 10 |
-| **Total** | **151** |
+| **Total** | **152** |
 
 Four scenarios use C harnesses: RA06, SD04, CB06, and CB07.
 

@@ -757,14 +757,15 @@ impl Scheduler {
         let membership = self.start_process(supervisor, spec, Restart::Never)?;
         self.channels
             .dispatch_carried(sender, argument as usize, carried);
-        let started = match self.kernel.memberships[&membership].current {
-            Some(Instance::Process(incarnation)) => self.kernel.incarnations.get_mut(&incarnation),
-            _ => None,
+        let Some(Instance::Process(incarnation)) = self.kernel.memberships[&membership].current
+        else {
+            unreachable!("start_process gives a new member its first incarnation");
         };
-        match started {
-            Some(incarnation) => incarnation.argument = Some(argument),
-            None => self.discard_message(argument),
-        }
+        self.kernel
+            .incarnations
+            .get_mut(&incarnation)
+            .expect("a member's current incarnation is live")
+            .argument = Some(argument);
         Ok(membership)
     }
 
