@@ -1,0 +1,20 @@
+// Embed.text and Embed.bytes read files beside the module at build time: text
+// with a non-ASCII character, binary data with a zero byte and invalid UTF-8,
+// and an empty file.
+import std/bytes as Bytes
+import std/debug as Debug
+import std/embed as Embed
+
+const greeting = Embed.text("assets/greeting.txt")
+const logo = Embed.bytes("assets/logo.bin")
+const nothing = Embed.text("assets/empty.txt")
+const same = Embed.bytes("assets/greeting.txt")
+
+pub fn main() -> Text {
+  Debug.render([
+    Debug.render(greeting),
+    Debug.render(logo),
+    Debug.render(nothing),
+    Debug.render(Bytes.to_text_lossy(same) == greeting),
+  ])
+}

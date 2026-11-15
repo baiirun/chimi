@@ -4871,6 +4871,12 @@ static ChimiControl *invoke_bytes_operation(uint32_t intrinsic, ChimiValue **arg
       }
       return optional_value(bytes_from(raw, width));
     }
+    case CHIMI_INTRINSIC_EMBED_TEXT:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
+      return success(arguments[0]);
+    case CHIMI_INTRINSIC_EMBED_BYTES:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
+      return success(bytes_from_hex(arguments[0]->as.text.bytes, arguments[0]->as.text.length));
   }
   return intrinsic_shape_defect(call_node);
 }
@@ -6581,7 +6587,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_json_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DECIMAL_SCALED && intrinsic <= CHIMI_INTRINSIC_DECIMAL_TO_FLOAT)
     return invoke_decimal_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_BYTES_INT_BYTES)
+  if (intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_EMBED_BYTES)
     return invoke_bytes_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);

@@ -149,6 +149,10 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/bytes.valid_utf8_length", 1, StandardFunction::BytesValidUtf8Length),
     pure("std/bytes.read_int_code", 3, StandardFunction::BytesReadIntCode),
     pure("std/bytes.int_bytes", 2, StandardFunction::BytesIntBytes),
+
+    // std/embed: build-time only; see `CoreLowerer::embed`.
+    pure("std/embed.text", 1, StandardFunction::EmbedText),
+    pure("std/embed.bytes", 1, StandardFunction::EmbedBytes),
 ];
 
 pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
