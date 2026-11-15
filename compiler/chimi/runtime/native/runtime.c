@@ -4316,10 +4316,88 @@ static ChimiControl *invoke_process(ChimiRuntime *runtime, uint32_t intrinsic, C
 #endif
 }
 
+/* An operation registered ahead of its module's port (operations.rs): the
+   interpreter defects with the same message. */
+static ChimiControl *not_implemented_yet(const char *operation_id, uint32_t call_node) {
+  return defect(numeric_message("%s is not implemented yet", operation_id), call_node);
+}
+
+/* The native core of std/map; owned by its port. */
+static ChimiControl *invoke_map_operation(ChimiRuntime *runtime, uint32_t intrinsic,
+                                      ChimiValue **arguments, uint32_t argument_count,
+                                      uint64_t span, uint32_t call_node,
+                                      ChimiEnvironment *environment) {
+  (void)runtime; (void)arguments; (void)argument_count; (void)span; (void)environment;
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_MAP_REMOVE: return not_implemented_yet("std/map.remove", call_node);
+    case CHIMI_INTRINSIC_MAP_SIZE: return not_implemented_yet("std/map.size", call_node);
+    case CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES: return not_implemented_yet("std/map.reduce_entries", call_node);
+  }
+  return intrinsic_shape_defect(call_node);
+}
+
+/* The native core of std/set; owned by its port. */
+static ChimiControl *invoke_set_operation(ChimiRuntime *runtime, uint32_t intrinsic,
+                                      ChimiValue **arguments, uint32_t argument_count,
+                                      uint64_t span, uint32_t call_node,
+                                      ChimiEnvironment *environment) {
+  (void)runtime; (void)arguments; (void)argument_count; (void)span; (void)environment;
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_SET_EMPTY: return not_implemented_yet("std/set.empty", call_node);
+    case CHIMI_INTRINSIC_SET_CONTAINS: return not_implemented_yet("std/set.contains", call_node);
+    case CHIMI_INTRINSIC_SET_ADD: return not_implemented_yet("std/set.add", call_node);
+    case CHIMI_INTRINSIC_SET_REMOVE: return not_implemented_yet("std/set.remove", call_node);
+    case CHIMI_INTRINSIC_SET_SIZE: return not_implemented_yet("std/set.size", call_node);
+    case CHIMI_INTRINSIC_SET_REDUCE_ITEMS: return not_implemented_yet("std/set.reduce_items", call_node);
+  }
+  return intrinsic_shape_defect(call_node);
+}
+
+/* The native core of std/json; owned by its port. */
+static ChimiControl *invoke_json_operation(ChimiRuntime *runtime, uint32_t intrinsic,
+                                      ChimiValue **arguments, uint32_t argument_count,
+                                      uint64_t span, uint32_t call_node,
+                                      ChimiEnvironment *environment) {
+  (void)runtime; (void)arguments; (void)argument_count; (void)span; (void)environment;
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL: return not_implemented_yet("std/json.number_to_decimal", call_node);
+  }
+  return intrinsic_shape_defect(call_node);
+}
+
+/* The native core of std/decimal; owned by its port. */
+static ChimiControl *invoke_decimal_operation(ChimiRuntime *runtime, uint32_t intrinsic,
+                                      ChimiValue **arguments, uint32_t argument_count,
+                                      uint64_t span, uint32_t call_node,
+                                      ChimiEnvironment *environment) {
+  (void)runtime; (void)arguments; (void)argument_count; (void)span; (void)environment;
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_DECIMAL_OF: return not_implemented_yet("std/decimal.of", call_node);
+    case CHIMI_INTRINSIC_DECIMAL_PARSE_CHECKED: return not_implemented_yet("std/decimal.parse_checked", call_node);
+    case CHIMI_INTRINSIC_DECIMAL_TO_TEXT: return not_implemented_yet("std/decimal.to_text", call_node);
+    case CHIMI_INTRINSIC_DECIMAL_ADD: return not_implemented_yet("std/decimal.add", call_node);
+    case CHIMI_INTRINSIC_DECIMAL_SUBTRACT: return not_implemented_yet("std/decimal.subtract", call_node);
+    case CHIMI_INTRINSIC_DECIMAL_MULTIPLY: return not_implemented_yet("std/decimal.multiply", call_node);
+    case CHIMI_INTRINSIC_DECIMAL_NEGATE: return not_implemented_yet("std/decimal.negate", call_node);
+    case CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED: return not_implemented_yet("std/decimal.divide_rounded", call_node);
+    case CHIMI_INTRINSIC_DECIMAL_COMPARE: return not_implemented_yet("std/decimal.compare", call_node);
+    case CHIMI_INTRINSIC_DECIMAL_TO_FLOAT: return not_implemented_yet("std/decimal.to_float", call_node);
+  }
+  return intrinsic_shape_defect(call_node);
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment) {
+  if (intrinsic >= CHIMI_INTRINSIC_MAP_REMOVE && intrinsic <= CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES)
+    return invoke_map_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+  if (intrinsic >= CHIMI_INTRINSIC_SET_EMPTY && intrinsic <= CHIMI_INTRINSIC_SET_REDUCE_ITEMS)
+    return invoke_set_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+  if (intrinsic == CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL)
+    return invoke_json_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+  if (intrinsic >= CHIMI_INTRINSIC_DECIMAL_OF && intrinsic <= CHIMI_INTRINSIC_DECIMAL_TO_FLOAT)
+    return invoke_decimal_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)

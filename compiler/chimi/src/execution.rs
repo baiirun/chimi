@@ -1,9 +1,13 @@
 mod constants;
 mod core_operations;
 mod debug;
+mod decimal_operations;
 mod durations;
+mod json_operations;
+mod map_operations;
 mod persistent_list;
 mod processes;
+mod set_operations;
 mod structural;
 mod teardown;
 
@@ -1559,6 +1563,34 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::ListSet => {
                 self.invoke_core_operation(function, arguments, call_node)
             }
+            StandardFunction::MapRemove
+            | StandardFunction::MapSize
+            | StandardFunction::MapReduceEntries => {
+                self.invoke_map_operation(function, arguments, span, call_node, environment)
+            }
+            StandardFunction::SetEmpty
+            | StandardFunction::SetContains
+            | StandardFunction::SetAdd
+            | StandardFunction::SetRemove
+            | StandardFunction::SetSize
+            | StandardFunction::SetReduceItems => {
+                self.invoke_set_operation(function, arguments, span, call_node, environment)
+            }
+            StandardFunction::JsonNumberToDecimal => {
+                self.invoke_json_operation(function, arguments, span, call_node, environment)
+            }
+            StandardFunction::DecimalOf
+            | StandardFunction::DecimalParseChecked
+            | StandardFunction::DecimalToText
+            | StandardFunction::DecimalAdd
+            | StandardFunction::DecimalSubtract
+            | StandardFunction::DecimalMultiply
+            | StandardFunction::DecimalNegate
+            | StandardFunction::DecimalDivideRounded
+            | StandardFunction::DecimalCompare
+            | StandardFunction::DecimalToFloat => {
+                self.invoke_decimal_operation(function, arguments, span, call_node, environment)
+            }
             StandardFunction::IoPath => {
                 let [RuntimeValue::Text(path)] = arguments.as_slice() else {
                     return self.intrinsic_shape_defect(function, call_node);
@@ -1988,6 +2020,16 @@ impl<'core> Evaluator<'core> {
                 ),
                 node: Some(call_node),
             },
+        }
+    }
+
+    /// The defect of an operation registered ahead of its module's port;
+    /// `runtime.c`'s `not_implemented_yet` gives the same message.
+    fn not_implemented_yet(function: StandardFunction, call_node: CoreNodeId) -> Control {
+        let id = crate::operations::operation_id(function).unwrap_or(function.name());
+        Control::Defect {
+            message: format!("{id} is not implemented yet"),
+            node: Some(call_node),
         }
     }
 

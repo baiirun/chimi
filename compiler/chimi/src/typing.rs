@@ -2846,7 +2846,8 @@ impl ProjectTypeChecker {
         match declaration.kind {
             ModuleDeclarationKind::Struct
             | ModuleDeclarationKind::Enum
-            | ModuleDeclarationKind::Interface => {
+            | ModuleDeclarationKind::Interface
+            | ModuleDeclarationKind::NativeType => {
                 let arguments = declaration
                     .generic_parameters
                     .iter()
@@ -3052,6 +3053,7 @@ impl ProjectTypeChecker {
             ModuleDeclarationKind::Struct
             | ModuleDeclarationKind::Enum
             | ModuleDeclarationKind::Interface
+            | ModuleDeclarationKind::NativeType
             | ModuleDeclarationKind::ProcessName => false,
         }
     }
@@ -10278,6 +10280,7 @@ impl ProjectTypeChecker {
             ModuleDeclarationKind::Function => ProjectSymbolKind::Function,
             ModuleDeclarationKind::Constant => ProjectSymbolKind::Constant,
             ModuleDeclarationKind::ProcessName => ProjectSymbolKind::ProcessName,
+            ModuleDeclarationKind::NativeType => ProjectSymbolKind::NativeType,
         };
         self.find_symbol(
             module_id,

@@ -429,6 +429,9 @@ pub(crate) enum ModuleDeclarationKind {
     Function,
     /// A module constant, `[pub] const name [: Type] = initializer`, evaluated at build time.
     Constant,
+    /// `[pub] native type Name<...>`: an opaque type with no fields or
+    /// constructors, bound to a runtime type of the operation registry.
+    NativeType,
     /// `[pub] process name <identifier>: <Message>`: a module-level
     /// `Process.Address<Message>` with named routing. `annotation` holds the message
     /// type; there is no initializer.
@@ -1123,7 +1126,8 @@ impl ProjectLowerer {
                 NodeKind::ImportDeclaration => imports.push(lowerer.lower_import(&node)),
                 NodeKind::StructDeclaration
                 | NodeKind::EnumDeclaration
-                | NodeKind::InterfaceDeclaration => {
+                | NodeKind::InterfaceDeclaration
+                | NodeKind::NativeTypeDeclaration => {
                     if let Some(declaration) = lowerer.lower_module_declaration(&node) {
                         declarations.push(declaration);
                     }
@@ -1221,10 +1225,21 @@ impl ProjectLowerer {
                 (ModuleDeclarationKind::Interface, TokenKind::Interface)
             }
             NodeKind::FunctionDeclaration => (ModuleDeclarationKind::Function, TokenKind::Fn),
+            NodeKind::NativeTypeDeclaration => {
+                (ModuleDeclarationKind::NativeType, TokenKind::Identifier)
+            }
             _ => return None,
         };
-        let name = direct_token_after(node, keyword, TokenKind::Identifier)
-            .map(|token| name_from(&token))?;
+        let name = if kind == ModuleDeclarationKind::NativeType {
+            // `native` and `type` are identifiers; the name is the third.
+            node.child_tokens()
+                .into_iter()
+                .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+                .nth(2)
+        } else {
+            direct_token_after(node, keyword, TokenKind::Identifier)
+        }
+        .map(|token| name_from(&token))?;
         let generic_parameters = self.lower_generic_parameters(node);
         let fields = node
             .child_nodes()

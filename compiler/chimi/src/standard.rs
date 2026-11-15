@@ -109,6 +109,12 @@ pub(crate) enum StandardType {
     SupervisorStartError,
     /// `std/clock.Clock`: the time provider the runner binds to a root `clock` need.
     Clock,
+    // `native type`s that only the embedded standard tree declares
+    // (`operations.rs`); no built-in module synthesizes them.
+    /// `std/set.Set<T>`.
+    Set,
+    /// `std/decimal.Decimal`: an exact base-10 number.
+    Decimal,
 }
 
 impl StandardType {
@@ -171,6 +177,8 @@ impl StandardType {
             Self::SupervisorManagedSupervisor => "ManagedSupervisor",
             Self::SupervisorStartError => "StartError",
             Self::Clock => "Clock",
+            Self::Set => "Set",
+            Self::Decimal => "Decimal",
         }
     }
 
@@ -196,7 +204,7 @@ impl StandardType {
             Self::ChannelSender | Self::ChannelReceiver | Self::ChannelCompletion => {
                 StandardProperties::Opaque("a channel capability")
             }
-            Self::Map => StandardProperties::Unordered,
+            Self::Map | Self::Set => StandardProperties::Unordered,
             Self::JsonValue => StandardProperties::EquatableOnly(
                 "`Value`, which is not ordered because an `Object` holds a `Map`",
             ),
@@ -219,7 +227,8 @@ impl StandardType {
             | Self::DurationParseError
             | Self::ProcessSendError
             | Self::SupervisorRestart
-            | Self::SupervisorStartError => StandardProperties::Structural,
+            | Self::SupervisorStartError
+            | Self::Decimal => StandardProperties::Structural,
         }
     }
 
@@ -366,6 +375,30 @@ pub(crate) enum StandardFunction {
     ListPush,
     ListSlice,
     ListSet,
+    // Registered ahead of the `std/map`, `std/set`, `std/json`, and
+    // `std/decimal` ports (phase 2 steps 5 and 6). Until a port implements one,
+    // both backends defect with "<operation id> is not implemented yet". Each
+    // module's variants stay contiguous: the native runtime dispatches by range.
+    MapRemove,
+    MapSize,
+    MapReduceEntries,
+    SetEmpty,
+    SetContains,
+    SetAdd,
+    SetRemove,
+    SetSize,
+    SetReduceItems,
+    JsonNumberToDecimal,
+    DecimalOf,
+    DecimalParseChecked,
+    DecimalToText,
+    DecimalAdd,
+    DecimalSubtract,
+    DecimalMultiply,
+    DecimalNegate,
+    DecimalDivideRounded,
+    DecimalCompare,
+    DecimalToFloat,
 }
 
 impl StandardFunction {
@@ -555,7 +588,27 @@ impl StandardFunction {
             | Self::ListGet
             | Self::ListPush
             | Self::ListSlice
-            | Self::ListSet => None,
+            | Self::ListSet
+            | Self::MapRemove
+            | Self::MapSize
+            | Self::MapReduceEntries
+            | Self::SetEmpty
+            | Self::SetContains
+            | Self::SetAdd
+            | Self::SetRemove
+            | Self::SetSize
+            | Self::SetReduceItems
+            | Self::JsonNumberToDecimal
+            | Self::DecimalOf
+            | Self::DecimalParseChecked
+            | Self::DecimalToText
+            | Self::DecimalAdd
+            | Self::DecimalSubtract
+            | Self::DecimalMultiply
+            | Self::DecimalNegate
+            | Self::DecimalDivideRounded
+            | Self::DecimalCompare
+            | Self::DecimalToFloat => None,
         }
     }
 
@@ -660,6 +713,24 @@ impl StandardFunction {
             Self::ListPush => "push",
             Self::ListSlice => "slice",
             Self::ListSet => "set",
+            Self::MapRemove | Self::SetRemove => "remove",
+            Self::MapSize | Self::SetSize => "size",
+            Self::MapReduceEntries => "reduce_entries",
+            Self::SetEmpty => "empty",
+            Self::SetContains => "contains",
+            Self::SetAdd => "add",
+            Self::SetReduceItems => "reduce_items",
+            Self::JsonNumberToDecimal => "number_to_decimal",
+            Self::DecimalOf => "of",
+            Self::DecimalParseChecked => "parse_checked",
+            Self::DecimalToText => "to_text",
+            Self::DecimalAdd => "add",
+            Self::DecimalSubtract => "subtract",
+            Self::DecimalMultiply => "multiply",
+            Self::DecimalNegate => "negate",
+            Self::DecimalDivideRounded => "divide_rounded",
+            Self::DecimalCompare => "compare",
+            Self::DecimalToFloat => "to_float",
         }
     }
 

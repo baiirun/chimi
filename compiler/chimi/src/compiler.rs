@@ -646,11 +646,13 @@ impl Compiler {
         Ok(reached)
     }
 
-    /// Every operation id in the standard registry.
+    /// Every operation id in the standard registry that a std-tests program must
+    /// reach: all but those registered ahead of their module's port.
     #[doc(hidden)]
     pub fn standard_operation_ids() -> Vec<&'static str> {
         crate::operations::OPERATIONS
             .iter()
+            .filter(|operation| !operation.porting)
             .map(|operation| operation.id)
             .collect()
     }

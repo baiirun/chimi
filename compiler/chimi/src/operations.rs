@@ -36,6 +36,11 @@ pub(crate) struct Operation {
     pub(crate) arity: usize,
     pub(crate) class: OperationClass,
     pub(crate) implementation: StandardFunction,
+    /// Registered ahead of its module's port: the module is not importable yet
+    /// (`std/map`, `std/json`, `std/debug`) or the operation defects with
+    /// "<id> is not implemented yet". The std-tests coverage check skips it; a
+    /// port flips it with [`pure`] once a program reaches the operation.
+    pub(crate) porting: bool,
 }
 
 /// A source declaration whose identity the runtime knows.
@@ -52,6 +57,8 @@ pub(crate) enum RuntimeIdentity {
     /// The declaration's payload arity must equal the constructor's field count
     /// (`N3105`).
     Constructor(StandardConstructor),
+    /// A `native type`: opaque in source, represented by the runtime.
+    NativeType(StandardType),
 }
 
 const fn pure(id: &'static str, arity: usize, implementation: StandardFunction) -> Operation {
@@ -60,6 +67,16 @@ const fn pure(id: &'static str, arity: usize, implementation: StandardFunction) 
         arity,
         class: OperationClass::Pure,
         implementation,
+        porting: false,
+    }
+}
+
+/// A pure operation registered ahead of its module's port (see
+/// [`Operation::porting`]).
+const fn porting(id: &'static str, arity: usize, implementation: StandardFunction) -> Operation {
+    Operation {
+        porting: true,
+        ..pure(id, arity, implementation)
     }
 }
 
@@ -91,6 +108,45 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/list.push", 2, StandardFunction::ListPush),
     pure("std/list.slice", 2, StandardFunction::ListSlice),
     pure("std/list.set", 3, StandardFunction::ListSet),
+    // std/map: the first three are the built-in intrinsics the old path runs.
+    porting("std/map.empty", 0, StandardFunction::MapEmpty),
+    porting("std/map.get", 2, StandardFunction::MapGet),
+    porting("std/map.put", 3, StandardFunction::MapPut),
+    porting("std/map.remove", 2, StandardFunction::MapRemove),
+    porting("std/map.size", 1, StandardFunction::MapSize),
+    porting("std/map.reduce_entries", 3, StandardFunction::MapReduceEntries),
+
+    // std/set
+    porting("std/set.empty", 0, StandardFunction::SetEmpty),
+    porting("std/set.contains", 2, StandardFunction::SetContains),
+    porting("std/set.add", 2, StandardFunction::SetAdd),
+    porting("std/set.remove", 2, StandardFunction::SetRemove),
+    porting("std/set.size", 1, StandardFunction::SetSize),
+    porting("std/set.reduce_items", 3, StandardFunction::SetReduceItems),
+
+    // std/json: all but number_to_decimal are the built-in intrinsics.
+    porting("std/json.decode", 1, StandardFunction::JsonDecode),
+    porting("std/json.encode", 1, StandardFunction::JsonEncode),
+    porting("std/json.int", 1, StandardFunction::JsonInt),
+    porting("std/json.number_to_int", 1, StandardFunction::JsonNumberToInt),
+    porting("std/json.number_to_decimal", 1, StandardFunction::JsonNumberToDecimal),
+
+    // std/debug: the built-in intrinsics.
+    porting("std/debug.render", 1, StandardFunction::DebugRender),
+    porting("std/debug.render_indented", 1, StandardFunction::DebugRenderIndented),
+    porting("std/debug.crash", 1, StandardFunction::DebugCrash),
+
+    // std/decimal
+    porting("std/decimal.of", 2, StandardFunction::DecimalOf),
+    porting("std/decimal.parse_checked", 1, StandardFunction::DecimalParseChecked),
+    porting("std/decimal.to_text", 1, StandardFunction::DecimalToText),
+    porting("std/decimal.add", 2, StandardFunction::DecimalAdd),
+    porting("std/decimal.subtract", 2, StandardFunction::DecimalSubtract),
+    porting("std/decimal.multiply", 2, StandardFunction::DecimalMultiply),
+    porting("std/decimal.negate", 1, StandardFunction::DecimalNegate),
+    porting("std/decimal.divide_rounded", 4, StandardFunction::DecimalDivideRounded),
+    porting("std/decimal.compare", 2, StandardFunction::DecimalCompare),
+    porting("std/decimal.to_float", 1, StandardFunction::DecimalToFloat),
 ];
 
 pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
@@ -111,7 +167,39 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
         "std/int.ParseError.OutOfRange",
         StandardConstructor::IntParseOutOfRange,
     ),
+    native_type("std/map.Map", StandardType::Map),
+    native_type("std/set.Set", StandardType::Set),
+    native_type("std/decimal.Decimal", StandardType::Decimal),
+    native_type("std/json.Number", StandardType::JsonNumber),
+    known_type("std/json.Value", StandardType::JsonValue),
+    known_constructor("std/json.Value.Null", StandardConstructor::JsonNull),
+    known_constructor("std/json.Value.Boolean", StandardConstructor::JsonBoolean),
+    known_constructor("std/json.Value.Number", StandardConstructor::JsonNumber),
+    known_constructor("std/json.Value.Text", StandardConstructor::JsonText),
+    known_constructor("std/json.Value.Array", StandardConstructor::JsonArray),
+    known_constructor("std/json.Value.Object", StandardConstructor::JsonObject),
+    known_type("std/json.DecodeError", StandardType::DecodeError),
+    known_constructor(
+        "std/json.DecodeError.InvalidJson",
+        StandardConstructor::DecodeInvalidJson,
+    ),
+    known_type("std/json.NumberError", StandardType::NumberError),
+    known_constructor(
+        "std/json.NumberError.NotInteger",
+        StandardConstructor::NumberNotInteger,
+    ),
+    known_constructor(
+        "std/json.NumberError.OutOfRange",
+        StandardConstructor::NumberOutOfRange,
+    ),
 ];
+
+const fn native_type(id: &'static str, kind: StandardType) -> RuntimeKnownDeclaration {
+    RuntimeKnownDeclaration {
+        id,
+        identity: RuntimeIdentity::NativeType(kind),
+    }
+}
 
 const fn known_type(id: &'static str, kind: StandardType) -> RuntimeKnownDeclaration {
     RuntimeKnownDeclaration {
@@ -133,6 +221,14 @@ const fn known_constructor(
 /// The operation a `native fn` with this qualified name binds.
 pub(crate) fn operation(id: &str) -> Option<&'static Operation> {
     OPERATIONS.iter().find(|operation| operation.id == id)
+}
+
+/// The id of the operation that runs `function`, for its defect messages.
+pub(crate) fn operation_id(function: StandardFunction) -> Option<&'static str> {
+    OPERATIONS
+        .iter()
+        .find(|operation| operation.implementation == function)
+        .map(|operation| operation.id)
 }
 
 /// The runtime identity of the source declaration with this qualified name.
@@ -182,7 +278,9 @@ mod tests {
         assert_eq!(bound, registered);
         for entry in RUNTIME_KNOWN {
             let identity = match entry.identity {
-                RuntimeIdentity::Type(kind) => StandardSymbol::Type(kind),
+                RuntimeIdentity::Type(kind) | RuntimeIdentity::NativeType(kind) => {
+                    StandardSymbol::Type(kind)
+                }
                 RuntimeIdentity::Constructor(constructor) => StandardSymbol::Constructor(constructor),
             };
             let declared = resolved.symbols.iter().any(|symbol| {

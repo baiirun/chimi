@@ -153,6 +153,8 @@ pub(crate) enum ProjectSymbolKind {
     Enum,
     EnumConstructor,
     Interface,
+    /// A `native type`: opaque, with the runtime identity of a registry type.
+    NativeType,
     Function,
     Constant,
     /// A `process name` declaration: a module-level `Process.Address<M>`.
@@ -176,6 +178,7 @@ impl ProjectSymbolKind {
             Self::Enum => "enum",
             Self::EnumConstructor => "enum constructor",
             Self::Interface => "interface",
+            Self::NativeType => "native type",
             Self::Function => "function",
             Self::Constant => "constant",
             Self::ProcessName => "process name",
@@ -1057,6 +1060,7 @@ impl ProjectResolver {
             ModuleDeclarationKind::Struct => (Namespace::Type, ProjectSymbolKind::Struct),
             ModuleDeclarationKind::Enum => (Namespace::Type, ProjectSymbolKind::Enum),
             ModuleDeclarationKind::Interface => (Namespace::Type, ProjectSymbolKind::Interface),
+            ModuleDeclarationKind::NativeType => (Namespace::Type, ProjectSymbolKind::NativeType),
             ModuleDeclarationKind::Function => (Namespace::Value, ProjectSymbolKind::Function),
             ModuleDeclarationKind::Constant => (Namespace::Value, ProjectSymbolKind::Constant),
             ModuleDeclarationKind::ProcessName => {
@@ -1075,6 +1079,9 @@ impl ProjectResolver {
         self.bind_source_identity(module_id, declaration.semantic_id, id);
         if let Some(signature) = declaration.function.as_ref().filter(|function| function.native) {
             self.bind_native_function(module_index, declaration, signature, id);
+        }
+        if declaration.kind == ModuleDeclarationKind::NativeType {
+            self.check_native_type(module_index, declaration);
         }
 
         if declaration.kind == ModuleDeclarationKind::Struct {
