@@ -76,7 +76,9 @@ fn run_virtual(name: &str, body: &str, trace: &str) -> Run {
     let executable = build_native(&scratch, name, body);
     let telemetry_path = scratch.join("telemetry.jsonl");
     let outcome_path = scratch.join("outcome.jsonl");
-    let process = Command::new(&executable)
+    let child = Command::new(&executable)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .arg("--chimi-runner")
         .arg("--clock=virtual")
         .arg(format!("--trace={trace}"))
@@ -84,8 +86,9 @@ fn run_virtual(name: &str, body: &str, trace: &str) -> Run {
         .arg(format!("--outcome-file={}", outcome_path.display()))
         .arg(format!("--execution-id={name}"))
         .arg("--")
-        .output()
+        .spawn()
         .expect("execute native select program");
+    let process = wait_bounded(child, &scratch);
     let result = Run {
         process,
         telemetry: std::fs::read_to_string(telemetry_path).unwrap_or_default(),
@@ -93,6 +96,23 @@ fn run_virtual(name: &str, body: &str, trace: &str) -> Run {
     };
     std::fs::remove_dir_all(scratch).unwrap();
     result
+}
+
+/// Waits for `child`, killing it after 15 s. A select that livelocks under
+/// `--trace=boundaries` writes telemetry without end, so it must fail rather
+/// than fill the disk.
+fn wait_bounded(mut child: std::process::Child, scratch: &Path) -> Output {
+    let started = std::time::Instant::now();
+    while child.try_wait().expect("poll select program").is_none() {
+        if started.elapsed() > std::time::Duration::from_secs(15) {
+            child.kill().expect("kill a select program that never ends");
+            let _ = child.wait();
+            std::fs::remove_dir_all(scratch).unwrap();
+            panic!("the select program ran for more than 15 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    child.wait_with_output().expect("collect select program output")
 }
 
 fn success(value: &str) -> String {
@@ -213,6 +233,73 @@ fn an_aborted_channel_fails_the_select_without_mapping() {
         "off",
     );
     assert_eq!(result.outcome, success("42"));
+}
+
+// A receive on a closed channel is ready and delivers `Drained`.
+#[test]
+fn a_closed_channel_is_ready_and_drained() {
+    let result = run_virtual(
+        "closed",
+        concat!(
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  Channel.close(channel.completion)\n",
+            "  Select.first([\n",
+            "    Select.after(Duration.seconds(1), 7),\n",
+            "    Select.receive(channel.receiver, fn(next) { value(next) + 40 }),\n",
+            "  ])\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("40"));
+}
+
+// The same receiver in two events: the earlier one commits, and the value is
+// received once.
+#[test]
+fn the_same_receiver_twice_commits_the_earlier_event() {
+    let result = run_virtual(
+        "same-receiver",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(2)\n",
+            "  Channel.send(channel.sender, 5)\n",
+            "  Channel.send(channel.sender, 6)\n",
+            "  let first = Select.first([\n",
+            "    Select.receive(channel.receiver, fn(next) { value(next) + 100 }),\n",
+            "    Select.receive(channel.receiver, value),\n",
+            "  ])\n",
+            "  first * 10 + value(Channel.receive(channel.receiver))\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("1056"));
+}
+
+// A select nothing can wake is a virtual deadlock that names `Select.first`.
+#[test]
+fn a_select_nothing_can_wake_is_a_deadlock_naming_select() {
+    let result = run_virtual(
+        "deadlock",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  let got = Select.first([Select.receive(channel.receiver, value)])\n",
+            "  Channel.send(channel.sender, 1)\n",
+            "  got\n",
+            "}\n",
+        ),
+        "off",
+    );
+    let report = format!(
+        "{}{}",
+        result.outcome,
+        String::from_utf8_lossy(&result.process.stderr)
+    );
+    assert!(report.contains("deadlock"), "{report}");
+    assert!(report.contains("Select.first"), "{report}");
 }
 
 // A mapping function's failure is the select's failure.
@@ -550,7 +637,7 @@ fn an_event_is_task_local() {
         "  Task.result(task)\n",
         "}\n",
     ));
-    assert!(!captured.is_empty(), "a captured event is rejected");
+    assert_eq!(captured, ["T4240"], "a started task cannot capture an event");
     let sent = type_codes(concat!(
         "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
         "  let channel = Channel.bounded(1)\n",
@@ -558,7 +645,7 @@ fn an_event_is_task_local() {
         "  1\n",
         "}\n",
     ));
-    assert!(!sent.is_empty(), "a sent event is rejected");
+    assert_eq!(sent, ["T4243"], "an event cannot be sent");
 }
 
 // ----- Tracing ----------------------------------------------------------------
