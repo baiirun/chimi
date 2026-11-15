@@ -224,7 +224,14 @@ A generic used in both an ordinary type position and an `errors` position is a
 failure set: the ordinary position denotes its error-value union and the
 `errors` position denotes the same set as a failure row. This is one generic
 identity with two compile-time projections, not two independently inferred
-parameters.
+parameters. The value projection is valid wherever an ordinary type is, type
+arguments of other generic types included, so `fn capture<T, E, R>(operation:
+fn() -> T errors E needs R) -> Result<T, E>` binds `Failure(error)` to `E` and
+returns `Err(error)` as a `Result<T, E>`. A generic that the body raises with
+`Failure(error)` is a failure set too, as `E` of `Result.get` is. A failure set
+is instantiated only with a failure-set value: an enum, a variant, or a set of
+them. The full rules are in
+[time and outcomes](time-and-outcomes.md#projection-into-type-arguments).
 
 A call instantiates each generic parameter of its callee. When no argument,
 result context, or later use ever constrains an instantiation, as in
