@@ -62,7 +62,19 @@ pub(crate) fn write_json_data(output: &mut String, value: &JsonData) {
     }
 }
 
+/// Writes `value` as a JSON string as RFC 8259 asks, for `Json.encode` and runtime
+/// records: only U+0000 to U+001F are escaped, as the native runtime does.
 pub(crate) fn write_json_string(output: &mut String, value: &str) {
+    write_escaped(output, value, |character| character < '\u{20}');
+}
+
+/// Writes `value` as a JSON string with every Unicode control character escaped,
+/// DEL and C1 included, for tool output such as inspection.
+pub(crate) fn write_json_string_escaping_controls(output: &mut String, value: &str) {
+    write_escaped(output, value, char::is_control);
+}
+
+fn write_escaped(output: &mut String, value: &str, escaped: impl Fn(char) -> bool) {
     output.push('"');
     for character in value.chars() {
         match character {
@@ -73,7 +85,7 @@ pub(crate) fn write_json_string(output: &mut String, value: &str) {
             '\n' => output.push_str("\\n"),
             '\r' => output.push_str("\\r"),
             '\t' => output.push_str("\\t"),
-            character if character < '\u{20}' => {
+            character if escaped(character) => {
                 write!(output, "\\u{:04x}", character as u32)
                     .expect("writing JSON to a string cannot fail");
             }
@@ -653,7 +665,7 @@ pub(crate) fn number_to_decimal(text: &str) -> Option<Decimal> {
 mod tests {
     use super::{
         JsonData, NumberConversionError, compare_numbers, decode_json, number_to_decimal,
-        number_to_int, write_json_data, write_json_string,
+        number_to_int, write_json_data, write_json_string, write_json_string_escaping_controls,
     };
     use crate::decimal::Decimal;
 
@@ -786,6 +798,17 @@ mod tests {
         write_json_string(&mut output, "quote\" slash\\ line\n\t\u{1}");
 
         assert_eq!(output, "\"quote\\\" slash\\\\ line\\n\\t\\u0001\"");
+    }
+
+    #[test]
+    fn encode_escapes_only_c0_controls_and_inspection_escapes_every_control() {
+        let mut encoded = String::new();
+        write_json_data(&mut encoded, &JsonData::Text("del\u{7f} nel\u{85} \u{1f}".to_owned()));
+        assert_eq!(encoded, "\"del\u{7f} nel\u{85} \\u001f\"");
+
+        let mut inspected = String::new();
+        write_json_string_escaping_controls(&mut inspected, "del\u{7f} nel\u{85} \u{1f}");
+        assert_eq!(inspected, "\"del\\u007f nel\\u0085 \\u001f\"");
     }
 
     #[test]
