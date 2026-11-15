@@ -216,6 +216,9 @@ pub enum ExecutionValue {
     /// it, so equal values are equal outcomes.
     Decimal(String),
     Record(Vec<ValueField>),
+    /// A map whose keys are not Text, as its entries in key order. A Text-keyed
+    /// map is a `Record` of its entries, and an empty map is an empty `Record`.
+    Map(Vec<(ExecutionValue, ExecutionValue)>),
     Constructed {
         type_name: String,
         variant_name: Option<String>,
@@ -2429,22 +2432,28 @@ fn public_value(value: &RuntimeValue) -> ExecutionValue {
             variant_name: variant_name.clone(),
             fields: public_fields(fields),
         },
-        RuntimeValue::Map(map) => ExecutionValue::Record(
-            map.entry_refs()
-                .into_iter()
-                .map(|(key, value)| ValueField {
-                    name: match key {
-                        RuntimeValue::Text(name) => name.clone(),
-                        key => {
-                            let mut name = String::new();
-                            write_json_value(&mut name, &public_value(key));
-                            name
-                        }
-                    },
-                    value: public_value(value),
+        RuntimeValue::Map(map) => {
+            let entries = map.entry_refs();
+            let text_keyed = entries
+                .iter()
+                .map(|(key, value)| match key {
+                    RuntimeValue::Text(name) => Some(ValueField {
+                        name: name.clone(),
+                        value: public_value(value),
+                    }),
+                    _ => None,
                 })
-                .collect(),
-        ),
+                .collect::<Option<Vec<_>>>();
+            match text_keyed {
+                Some(fields) => ExecutionValue::Record(fields),
+                None => ExecutionValue::Map(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| (public_value(key), public_value(value)))
+                        .collect(),
+                ),
+            }
+        }
         RuntimeValue::Set(set) => ExecutionValue::List(
             set.entry_refs()
                 .into_iter()
@@ -2600,6 +2609,17 @@ fn write_json_value(output: &mut String, value: &ExecutionValue) {
             ExecutionValue::Record(fields) => {
                 output.push('{');
                 push_json_fields(&mut steps, fields, "}");
+            }
+            ExecutionValue::Map(entries) => {
+                output.push_str("{\"map\":[");
+                steps.push(JsonStep::Punctuation("]}"));
+                for (index, (key, value)) in entries.iter().enumerate().rev() {
+                    steps.push(JsonStep::Punctuation("]"));
+                    steps.push(JsonStep::Value(value));
+                    steps.push(JsonStep::Punctuation(","));
+                    steps.push(JsonStep::Value(key));
+                    steps.push(JsonStep::Punctuation(if index > 0 { ",[" } else { "[" }));
+                }
             }
             ExecutionValue::Constructed {
                 type_name,
