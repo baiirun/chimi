@@ -1818,6 +1818,68 @@ fn a_bytes_task_result_crosses_heaps_intact() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// Channels and task results cross heaps, which the interpreter has no
+/// runtime for, so this native-only test checks that a cause survives them.
+#[test]
+fn a_cause_crosses_heaps_with_its_failure_and_its_stored_err() {
+    let scratch = scratch_directory("cause-across-tasks");
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        r#"import std/cause as Cause
+import std/channel as Channel
+import std/channel.{Receive}
+import std/result as Result
+import std/result.{Result}
+import std/task as Task
+import std/text as Text
+
+enum LoadError {
+  Missing(id: Int)
+}
+
+fn load(id: Int) -> Int {
+  Failure(LoadError.Missing(id))
+}
+
+fn frames(result: Result<Int, LoadError>) -> Text {
+  case Cause.of(result) {
+    Some(cause) -> Text.join(Cause.frames(cause), ", ")
+    None -> "none"
+  }
+}
+
+pub fn main() -> Text {
+  let channel = Channel.bounded(1)
+  let sender = channel.sender
+  let receiver = channel.receiver
+  let producer = Task.start(fn() {
+    let stored = Result.capture(fn() { fn() { load(1) } |> Cause.context("in the producer") })
+    Channel.send(sender, stored)
+  })
+  let next = Channel.receive(receiver)
+  let sent = case next {
+    Receive.Received(result) -> frames(result)
+    Receive.Drained -> "drained"
+  }
+  Task.result(producer)
+  let child = Task.start(fn() { fn() { load(2) } |> Cause.context("in the child") })
+  let joined = Result.capture(fn() { fn() { Task.result(child) } |> Cause.context("joining") })
+  [sent, frames(joined)] |> Text.join("\n")
+}
+"#,
+    )
+    .unwrap();
+    let outcome = native_outcome(&scratch, &path);
+    assert!(
+        outcome.ends_with(
+            "\"outcome\":\"success\",\"value\":\"in the producer\\nin the child, joining\"}"
+        ),
+        "{outcome}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // N23
 #[test]
 fn float_literal_patterns_are_rejected() {

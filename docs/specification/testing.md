@@ -442,8 +442,9 @@ let offline = {
 a function that is not a need. Code that should be faked takes the dependency
 as a need; that is the existing rule for every effect.
 
-Interfaces with generic methods (G11) are needed before every std interface
-can be faked; until then a fake can only stand in for interfaces without them.
+A fake for an interface with a generic member (G11), such as `FileSystem`,
+is a generic function declared with explicit parameters, because a lambda
+cannot promise to work for every type.
 
 ### Recorders and scripted fakes
 

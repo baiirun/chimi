@@ -613,6 +613,8 @@ impl ProjectResolver {
             (StandardType::ProcessInbox, StandardModule::Process),
             (StandardType::ProcessSpec, StandardModule::Process),
             (StandardType::ProcessSendError, StandardModule::Process),
+            (StandardType::ProcessMonitor, StandardModule::Process),
+            (StandardType::ProcessDown, StandardModule::Process),
             (StandardType::SupervisorMember, StandardModule::Supervisor),
             (StandardType::SupervisorPolicy, StandardModule::Supervisor),
             (StandardType::SupervisorRestarts, StandardModule::Supervisor),
@@ -885,6 +887,26 @@ impl ProjectResolver {
             (
                 constructor(StandardConstructor::ProcessSendUnavailable),
                 vec![G::ProcessSendMessage],
+            ),
+            (
+                function(StandardFunction::ProcessOwnAddress),
+                vec![G::ProcessOwnAddressMessage],
+            ),
+            (
+                function(StandardFunction::ProcessQueued),
+                vec![G::ProcessQueuedMessage],
+            ),
+            (
+                function(StandardFunction::ProcessCapacity),
+                vec![G::ProcessCapacityMessage],
+            ),
+            (
+                function(StandardFunction::ProcessMonitor),
+                vec![G::ProcessMonitorMessage, G::ProcessMonitorTarget],
+            ),
+            (
+                function(StandardFunction::ProcessUnmonitor),
+                vec![G::ProcessUnmonitorMessage],
             ),
             (
                 function(StandardFunction::SupervisorProcess),
@@ -1512,14 +1534,27 @@ impl ProjectResolver {
         } = type_use
         else {
             let TypeUse::Function {
+                semantic_id,
+                generic_parameters,
                 inputs,
                 success,
                 failures,
                 requirements,
-                ..
             } = type_use
             else {
                 unreachable!()
+            };
+            let scoped;
+            let generics = if generic_parameters.is_empty() {
+                generics
+            } else {
+                scoped = self.function_type_generics(
+                    module_index,
+                    *semantic_id,
+                    generic_parameters,
+                    generics,
+                );
+                &scoped
             };
             for input in inputs {
                 self.resolve_type(module_index, input, generics);
@@ -2748,6 +2783,53 @@ impl ProjectResolver {
             range: name.range,
             resolution,
         });
+    }
+
+    /// Declares the generic parameters of a function type such as `fn<A>(A)
+    /// -> A`, owned by the type's semantic id, and returns the generics in
+    /// scope inside it. A parameter that repeats one of the type's own or an
+    /// enclosing generic is `E_DUPLICATE_GENERIC_PARAMETER`, because shadowing
+    /// `T` inside `interface Store<T>` would make the member's `T` ambiguous.
+    fn function_type_generics(
+        &mut self,
+        module_index: usize,
+        semantic_id: SemanticId,
+        parameters: &[Name],
+        enclosing: &HashMap<String, SymbolId>,
+    ) -> HashMap<String, SymbolId> {
+        let module_id = self.semantic.modules[module_index].id;
+        let mut generics = enclosing.clone();
+        for name in parameters {
+            if generics.contains_key(&name.text) {
+                let module = &self.semantic.modules[module_index];
+                self.diagnostics.push(name_error(
+                    module,
+                    "E_DUPLICATE_GENERIC_PARAMETER",
+                    name.range,
+                    format!("generic parameter {} is declared more than once", name.text),
+                ));
+                continue;
+            }
+            let existing = self.symbols.iter().find(|symbol| {
+                symbol.module_id == Some(module_id)
+                    && symbol.semantic_id == Some(semantic_id)
+                    && symbol.kind == ProjectSymbolKind::GenericParameter
+                    && symbol.name == name.text
+            });
+            let id = match existing {
+                Some(symbol) => symbol.id,
+                None => self.add_symbol(
+                    Some(module_id),
+                    Some(semantic_id),
+                    Namespace::Type,
+                    ProjectSymbolKind::GenericParameter,
+                    &name.text,
+                    false,
+                ),
+            };
+            generics.insert(name.text.clone(), id);
+        }
+        generics
     }
 
     fn add_symbol(

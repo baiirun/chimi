@@ -462,6 +462,9 @@ pub(crate) enum TypeUse {
     },
     Function {
         semantic_id: SemanticId,
+        /// `A` and `B` in `fn<A, B>(A) -> B`: only an interface member's whole
+        /// type may declare them (`T4360` elsewhere).
+        generic_parameters: Vec<Name>,
         inputs: Vec<TypeUse>,
         success: Box<TypeUse>,
         failures: Option<Box<TypeUse>>,
@@ -822,7 +825,7 @@ pub(crate) enum ModuleExpression {
 #[derive(Clone, Debug)]
 pub(crate) enum InterpolationPart {
     Text(String),
-    Expression(ModuleExpression),
+    Expression(Box<ModuleExpression>),
 }
 
 /// The interpolated expressions of `parts`, left to right, which is their evaluation order.
@@ -830,7 +833,7 @@ pub(crate) fn interpolated_expressions(
     parts: &[InterpolationPart],
 ) -> impl Iterator<Item = &ModuleExpression> {
     parts.iter().filter_map(|part| match part {
-        InterpolationPart::Expression(expression) => Some(expression),
+        InterpolationPart::Expression(expression) => Some(expression.as_ref()),
         InterpolationPart::Text(_) => None,
     })
 }
@@ -1625,6 +1628,7 @@ impl ProjectLowerer {
                 .unwrap_or_default();
             return TypeUse::Function {
                 semantic_id,
+                generic_parameters: self.lower_generic_parameters(&function),
                 inputs,
                 success: Box::new(success),
                 failures,
@@ -2351,7 +2355,7 @@ impl ProjectLowerer {
         let parts = pieces
             .into_iter()
             .map(|(_, piece)| match piece {
-                Ok(child) => InterpolationPart::Expression(self.lower_expression(&child)),
+                Ok(child) => InterpolationPart::Expression(Box::new(self.lower_expression(&child))),
                 Err(text) => InterpolationPart::Text(text),
             })
             .collect::<Vec<_>>();

@@ -1,0 +1,63 @@
+// A stored Err keeps its cause outside the value: Cause.of reads it, equality
+// ignores it, and Result.get re-raises the failure with the same cause.
+import std/cause as Cause
+import std/cause.{Cause}
+import std/result as Result
+import std/result.{Result, Ok, Err}
+import std/list as List
+import std/text as Text
+
+enum LoadError {
+  Missing(id: Int)
+}
+
+fn load(id: Int) -> Int {
+  Failure(LoadError.Missing(id))
+}
+
+fn frames(result: Result<Int, LoadError>) -> Text {
+  case Cause.of(result) {
+    Some(cause) -> "[${Text.join(Cause.frames(cause), ", ")}]"
+    None -> "none"
+  }
+}
+
+fn yes(value: Bool) -> Text {
+  case value {
+    True -> "yes"
+    False -> "no"
+  }
+}
+
+pub fn main() -> Text {
+  let first = Result.capture(fn() { fn() { load(7) } |> Cause.context("first caller") })
+  let second = Result.capture(fn() { fn() { load(7) } |> Cause.context("second caller") })
+  let built: Result<Int, LoadError> = Err(LoadError.Missing(7))
+  let ok: Result<Int, LoadError> = Ok(1)
+  let regot = Result.capture(fn() { fn() { Result.get(first) } |> Cause.context("again") })
+  let kind = case Cause.of(first) {
+    Some(cause) -> case Cause.kind(cause) {
+      Cause.Kind.ExpectedFailure -> "expected failure"
+      Cause.Kind.Defect -> "defect"
+      Cause.Kind.Cancellation -> "cancellation"
+    }
+    None -> "none"
+  }
+  let quiet = case Cause.of(first) {
+    Some(cause) -> case Cause.reason(cause) {
+      Some(_) -> "suppressed"
+      None -> "primary, ${Cause.suppressed(cause) |> List.length} suppressed"
+    }
+    None -> "none"
+  }
+  [
+    frames(first),
+    frames(second),
+    "equal: ${yes(first == second)}, ${yes(first == built)}",
+    frames(built),
+    frames(ok),
+    frames(regot),
+    kind,
+    quiet,
+  ] |> Text.join("\n")
+}

@@ -533,6 +533,29 @@ nominal type and does not alter name lookup. A provider method MAY expose fewer
 failures or needs than its interface permits, but MUST NOT expose more or change
 the required data inputs or success type.
 
+A member MAY be generic. Its generic parameters follow `fn` and are scoped to
+that member; the interface's own parameters stay fixed by the need's type:
+
+<!-- chimi: check -->
+```chimi
+interface Store<K> {
+  get: fn<A>(K, A) -> A
+}
+```
+
+Each call of `store.get` instantiates `A` afresh, as a call of a generic
+function does. A generic function type MUST appear only as the whole type of
+an interface member (`T4360` elsewhere); the kernel still has no higher-rank
+function types. A member generic MUST NOT reuse a name of the interface's own
+generics.
+
+A provider for a generic member MUST be generic over each of the member's
+parameters, so its provider is a generic function declared with explicit
+parameters, such as `fn keep<K, A>(key: K, fallback: A) -> A`. A function fixed
+to one type, a lambda, a provider that compares or orders a value of a member
+parameter, or a record update that puts such a function in a generic member is
+a conformance error (`T4213` for a provider, `T4203` for an update).
+
 ## Provision with `using`
 
 Postfix `using` supplies named providers at any expression boundary:

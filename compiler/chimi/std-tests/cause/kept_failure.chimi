@@ -1,0 +1,23 @@
+// Re-raising the matched error itself keeps its cause instead of linking a
+// new one, and a failure that says nothing beyond its value has a quiet
+// root report.
+import std/cause as Cause
+
+enum LoadError {
+  Missing(id: Int)
+}
+
+fn load(id: Int) -> Int {
+  Failure(LoadError.Missing(id))
+}
+
+fn reload(id: Int) -> Int {
+  case load(id) {
+    Success(value) -> value
+    Failure(error) -> Failure(error)
+  }
+}
+
+pub fn main() -> Int {
+  reload(3)
+}
