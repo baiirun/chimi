@@ -3,6 +3,11 @@ environment holds one slot per local of the body it runs, numbered per body.
 
 Run: scripts/mutation/mutate.py scripts/mutation/environment_slots_mutations.py
 Each mutant must turn the named test red.
+
+Not listed: skipping a closure body in `body_locals`. Its locals then fall in
+the shared range below every body's own slots, which is still collision-free
+and costs only memory, so no behaviour test can tell (it survived, as an
+equivalent mutant, in the first run).
 """
 
 CRATE = "compiler/chimi"
@@ -32,10 +37,6 @@ MUTATIONS = [
         "      callable->local_count = function->local_count;\n"
         "      callable->environment = capture_requirements(environment);",
         "      callable->environment = capture_requirements(environment);")]),
-    language("closure locals are numbered apart from their body", DATA, [(
-        "                closures.push(node);\n"
-        "                pending.push(*body);",
-        "                closures.push(node);")]),
     dict(name="a task capture skips the environment's locals", file=RUNTIME, edits=[(
         "        for (uint32_t slot = environment->local_count; slot-- > 0;)",
         "        for (uint32_t slot = 0; slot-- > 0;)")],
