@@ -250,6 +250,11 @@ fn is_process_operation(function: StandardFunction) -> bool {
             | ProcessRegister
             | ProcessReceive
             | ProcessSend
+            | ProcessOwnAddress
+            | ProcessQueued
+            | ProcessCapacity
+            | ProcessMonitor
+            | ProcessUnmonitor
             | SupervisorProcess
             | SupervisorSupervisor
             | SupervisorPolicy

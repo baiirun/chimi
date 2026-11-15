@@ -4,6 +4,7 @@
 //! (docs/specification/supervised-process-conformance.md) or, for the
 //! prototype's kernel decisions, the prototype test name.
 
+use super::process::Down;
 use super::process_abi::{
     ADDRESS_DIRECT, ADDRESS_NAMED, CLOCK_VIRTUAL, MEMBER_PROCESS, MEMBER_SUPERVISOR, RESTART_NEVER,
     RESTART_ON_DEFECT, chimi_scheduler_run,
@@ -2677,9 +2678,16 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         size_of::<ChimiMessageCapabilities>(),
         offset_of!(ChimiMessageCapabilities, count),
         VIOLATION_IN_FLIGHT as usize,
+        offset_of!(ChimiProcessRequest, monitor),
+        offset_of!(ChimiProcessRequest, queued),
+        offset_of!(ChimiProcessRequest, capacity),
+        offset_of!(ChimiProcessRequest, down),
+        REQUEST_PROCESS_MONITOR as usize,
+        REQUEST_PROCESS_MAILBOX as usize,
+        Down::Unavailable.code() as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 8);
+    assert_eq!(crate::chimi_fiber_abi_version(), 9);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------

@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 8u
+#define CHIMI_FIBER_ABI_VERSION 9u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -111,6 +111,25 @@ enum {
   /* ChimiSchedulerRequest: a loop pass's cancellation point. OK, or the
      task resumes with CHIMI_FIBER_CANCEL for a fired scope. */
   CHIMI_REQUEST_SCOPE_CHECK = 27,
+  /* Kinds 28 to 30 take a ChimiProcessRequest and come only from a process
+     body. MONITOR: `address_kind` and `address` name the target and
+     `message` is the notice handle, which the scheduler owns from then on;
+     the OK reply carries the monitor's id in `monitor`. */
+  CHIMI_REQUEST_PROCESS_MONITOR = 28,
+  /* `monitor` is an id from MONITOR. Replies OK; a queued notice of that
+     monitor is released. */
+  CHIMI_REQUEST_PROCESS_UNMONITOR = 29,
+  /* The OK reply carries `queued` and `capacity`. */
+  CHIMI_REQUEST_PROCESS_MAILBOX = 30,
+};
+
+/* `down` of a RECEIVE reply whose `message` is a notice handle. */
+enum {
+  CHIMI_DOWN_RETURNED = 1,
+  CHIMI_DOWN_FAILED = 2,
+  CHIMI_DOWN_DEFECTED = 3,
+  CHIMI_DOWN_STOPPED = 4,
+  CHIMI_DOWN_UNAVAILABLE = 5,
 };
 
 enum {
@@ -224,6 +243,11 @@ typedef struct {
   uint64_t owner;
   const ChimiSupervisorPolicy *policy;
   const ChimiProcessSpec *spec;
+  uint64_t monitor;
+  uint64_t queued;
+  uint32_t capacity;
+  /* RECEIVE: 0 for a message, else a CHIMI_DOWN_* code. */
+  uint32_t down;
 } ChimiProcessRequest;
 
 enum {
