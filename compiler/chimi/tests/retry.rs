@@ -6,7 +6,7 @@
 
 use chimi::source::SourceSnapshot;
 use chimi::{Compiler, ProjectSource};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 const IMPORTS: &str = concat!(
