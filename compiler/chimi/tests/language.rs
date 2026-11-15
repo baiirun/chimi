@@ -11220,6 +11220,18 @@ fn a_type_argument_used_only_as_an_input_takes_a_wider_set() {
 }
 
 #[test]
+fn a_type_argument_used_as_input_and_output_takes_only_its_own_set() {
+    // `Codec<E>` takes `E` in and hands one back, so a codec of `A | B` must
+    // not pass for a codec of `A`: its result may be a `B`.
+    let program = "enum A { XA }\nenum B { XB }\nstruct Codec<E> { run: fn(E) -> E }\n\
+        fn widen(value: A | B) -> A | B { B.XB }\n\
+        fn run_a(codec: Codec<A>) -> Int {\n  case (codec.run)(A.XA) {\n    A.XA -> 1\n  }\n}\n\
+        fn run_generic<T>(codec: Codec<A>, x: T) -> Int {\n  case (codec.run)(A.XA) {\n    A.XA -> 1\n  }\n}\n\
+        pub fn main() -> Int {\n  let codec: Codec<A | B> = Codec(widen)\n  run_a(codec) + run_generic(codec, 1)\n}\n";
+    assert_eq!(check_codes(program), ["T4203", "T4203"]);
+}
+
+#[test]
 fn a_set_already_checked_against_a_narrower_one_does_not_widen_later() {
     // The lambda's `v` is first checked to fit `A | C` inside `score(v)`; a
     // later call with `B | C` must not widen `v` past that check.
