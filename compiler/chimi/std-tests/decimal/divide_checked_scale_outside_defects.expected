@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"defect","message":"Decimal.divide_checked: scale must be in 0..=38, got -1"}

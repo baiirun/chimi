@@ -11,7 +11,7 @@ use crate::executable::{
     CoreOperation, CoreProgram, CoreSymbolKind, CoreViolation, lower, seal_entry, verify_core,
 };
 use crate::ids::{CoreNodeId, SymbolId};
-use crate::project::LoadedProject;
+use crate::project::{LoadedProject, StandardTree};
 use crate::resolution::ProjectSymbolKind;
 use crate::source::SourceSnapshot;
 use crate::standard::{StandardFunction, StandardSymbol};
@@ -45,7 +45,7 @@ fn lower_fixture(directory: &str) -> Result<Lowered, String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/process-lab")
         .join(directory);
-    let project = LoadedProject::load(&root, "app/main")
+    let project = LoadedProject::load(&root, "app/main", &StandardTree::embedded())
         .map_err(|error| format!("load {}: {error}", root.display()))?;
     lower_sources(project.sources())
 }

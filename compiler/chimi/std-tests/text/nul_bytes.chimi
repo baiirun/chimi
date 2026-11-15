@@ -1,0 +1,36 @@
+// Text holding U+0000 keeps every byte through the std step 2 functions on both
+// backends: case mapping, graphemes, Json.decode, and Decimal.parse. A native
+// path that stops at the first NUL drops the bytes after it.
+import std/debug as Debug
+import std/decimal as Decimal
+import std/json as Json
+import std/json.{DecodeError}
+import std/text as Text
+
+fn decoded(text: Text) -> Text {
+  case Json.decode(text) {
+    Success(value) -> Debug.render(value)
+    Failure(DecodeError.InvalidJson(message, offset)) -> "${message} at ${Debug.render(offset)}"
+  }
+}
+
+fn parsed(text: Text) -> Text {
+  case Decimal.parse(text) {
+    Success(value) -> Decimal.to_text(value)
+    Failure(error) -> Debug.render(error)
+  }
+}
+
+pub fn main() -> Text {
+  let results = [
+    Debug.render([Text.uppercase("a\u{0}b"), Text.lowercase("ΑΣ\u{0}Σ")]),
+    Debug.render(Text.graphemes("a\u{0}b")),
+    Debug.render(Text.grapheme_count("é\u{0}é")),
+    decoded("\"a\\u0000b\""),
+    decoded("[1]\u{0}"),
+    decoded("[1,\u{0}2]"),
+    parsed("1\u{0}5"),
+    parsed("1.5"),
+  ]
+  Debug.render(results)
+}

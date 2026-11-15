@@ -9,14 +9,15 @@ constants (G7) are implemented, except result caching, the build report beyond
 the evaluation budgets (which `chimi.build.v1` records as `constant_limits`),
 and `process name` (which the language does not have yet). Text interpolation (G9)
 is implemented on the existing intrinsics (migration step 2). Debug rendering
-(G10) is implemented as hand-built intrinsics ahead of step 4, as step 5
-allows; the runner's bounded rendering is not, and the one registry render override
+(G10) is implemented: `std/debug` declares `render`, `render_indented`, and
+`crash` in source (step 5) over the existing intrinsics; the runner's
+bounded rendering is not, and the one registry render override
 (`Duration`, as canonical text) is hand-built in both renderers. The standard tree (G1)
 is implemented for `std/option`, `std/int`, `std/text`, `std/list`, and
 `std/order` (migration steps 3 and 4, `ts-0ba63e`): the embedded tree, `native
 fn`, the registry in `operations.rs` with runtime-known declarations, and the
-`std-tests` harness. `native type`, `--std-dir`, `chimi std check`, the generated
-`operations.h`, and moving interpolation to `std/text.concat` are not, and C
+`std-tests` harness, `--std-dir`, and `chimi std check`. `native type`, the
+generated `operations.h`, and moving interpolation to `std/text.concat` are not, and C
 bindings (G20) are not implemented. Source spelling is provisional, as
 in the other specifications.
 
@@ -628,16 +629,20 @@ equally clear but less widespread.
 
 ### Surface
 
-`std/debug` declares two pure native operations:
+`std/debug` declares three pure native operations:
 
 <!-- chimi: pending ep-a6f138 -->
 ```chimi
 pub native fn render<T>(value: T) -> Text
 pub native fn render_indented<T>(value: T) -> Text
+pub native fn crash(message: Text) -> Never
 ```
 
-Both accept any value, never fail, and need nothing. `render` produces one
-line. `render_indented` puts each field, element, and entry on its own line
+`crash` ends the unit of work with a defect carrying `message`, for a broken
+precondition that Chimi source checks ([conventions](standard-library-conventions.md#absence-failure-and-defect)).
+
+`render` and `render_indented` accept any value, never fail, and need
+nothing. `render` produces one line. `render_indented` puts each field, element, and entry on its own line
 with two-space indentation, for assertion diffs. Each part ends with `,`, as
 the formatter writes multi-line literals:
 
@@ -676,7 +681,8 @@ Each kind of value renders like the declaration or literal that describes it:
 | List | `[1, 2, 3]` |
 | Tuple | `(1, "a")` |
 | `Range` | `0..3`, by its normalized bounds, so `0..=2` renders the same |
-| Map | `Map { "a": 1, "b": 2 }`, entries in an internal canonical order that is not stable across releases |
+| Map | `Map { "a": 1, "b": 2 }`, entries in ascending structural order of the key, the order `Map.keys` returns |
+| Set | `Set { 1, 2 }`, items in ascending structural order, the order `Set.to_list` returns |
 | `Json.Number` | `Json.Number(1)`; the canonical normalized number, so `1.0` and `1` both render as `1` |
 | Declared function | `<fn checkout>` |
 | Anonymous function | `<fn>` |
@@ -864,8 +870,8 @@ Each step leaves the full test suite and both backends passing.
    bounded rendering in the runner. Switch `std-tests` expected files to
    rendered output.
 6. **`std/map` and `std/json`.** `Map` and `Json.Number` become native types.
-   `Json.Value`, `DecodeError`, and `NumberError` become source enums listed
-   as runtime-known declarations.
+   `Json.Value`, `DecodeError`, and `ConversionError` (formerly
+   `NumberError`) become source enums listed as runtime-known declarations.
 7. **`std/io`.** `Path`, `FileError`, `ConsoleError`, `Utf8Error`, and
    `Console` move to source, with host operations behind private provider
    constants and the runner's provider plan naming them. `FileSystem` keeps

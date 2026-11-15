@@ -8,7 +8,7 @@
 //! removed. Every registered native operation must be reached by some program,
 //! so each primitive has differential coverage.
 
-use chimi::project::LoadedProject;
+use chimi::project::{LoadedProject, StandardTree};
 use chimi::{Compiler, ProjectSource};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -158,9 +158,10 @@ fn standard_programs_match_their_expected_outcomes_on_both_backends() {
 fn every_registered_operation_is_reached_by_a_standard_program() {
     let mut reached = BTreeSet::new();
     for program in programs() {
-        let sources: Vec<ProjectSource> = LoadedProject::single_file(&program)
-            .expect("load program")
-            .sources();
+        let sources: Vec<ProjectSource> =
+            LoadedProject::single_file(&program, &StandardTree::embedded())
+                .expect("load program")
+                .sources();
         let operations = Compiler::standard_operations_reached(sources)
             .unwrap_or_else(|diagnostics| panic!("{}: {diagnostics:?}", program.display()));
         reached.extend(operations);
@@ -237,6 +238,38 @@ fn a_native_fn_outside_the_standard_tree_is_rejected() {
     );
 }
 
+// Conformance: a `native type` is declared only in the embedded standard tree,
+// and has no fields or constructors anywhere.
+#[test]
+fn a_native_type_outside_the_standard_tree_is_rejected() {
+    assert_eq!(
+        diagnostic_codes(vec![module(
+            "app/handle",
+            "pub native type Handle<T>\npub fn main() -> Int { 0 }\n"
+        )]),
+        ["N3101"]
+    );
+    assert_eq!(
+        diagnostic_codes(vec![module(
+            "app/handle",
+            "native type Handle { raw: Int }\npub fn main() -> Int { 0 }\n"
+        )]),
+        ["N3101", "S1102"]
+    );
+}
+
+// `type` after `native` is read as a keyword only there.
+#[test]
+fn type_is_an_ordinary_name_elsewhere() {
+    assert_eq!(
+        diagnostic_codes(vec![module(
+            "main",
+            "fn native(type: Int) -> Int { type }\npub fn main() -> Int { native(1) }\n"
+        )]),
+        Vec::<String>::new()
+    );
+}
+
 // A module may still name a value `native`: the word is read only before `fn`.
 #[test]
 fn native_is_an_ordinary_name_elsewhere() {
@@ -282,5 +315,82 @@ fn transitive_standard_imports_are_loaded() {
             Vec::<String>::new(),
             "{source}"
         );
+    }
+}
+
+// Conformance: `Map` keys and `Set` items must be equatable, and enumerating
+// either needs them ordered, because enumeration shows the ascending order
+// (standard library conventions, open question 2). Building and querying a map
+// keyed by a record, which is equatable but not ordered, is accepted; listing
+// its keys is not. Each lack is reported at the caller's call.
+#[test]
+fn map_and_set_state_their_key_requirements_at_the_call() {
+    let ordered = |function: &str, generic: &str| {
+        Some(("T4301", format!("`{function}` needs `{generic}` to be ordered")))
+    };
+    let equatable = |function: &str, generic: &str| {
+        Some(("T4300", format!("`{function}` needs `{generic}` to be equatable")))
+    };
+    let cases = [
+        ("Map.keys(Map.put(Map.empty(), { a: 1 }, 2))", ordered("Map.keys", "K")),
+        (
+            "Map.reduce(Map.put(Map.empty(), { a: 1 }, 2), 0, fn(total, _key, value) { total + value })",
+            ordered("Map.reduce", "K"),
+        ),
+        (
+            "Map.size(Map.merge(Map.put(Map.empty(), { a: 1 }, 2), Map.from([({ a: 2 }, 3)])))",
+            None,
+        ),
+        (
+            "Map.has_key(Map.remove(Map.put(Map.empty(), { a: 1 }, 2), { a: 1 }), { a: 1 })",
+            None,
+        ),
+        ("Map.from([(fn() { 1 }, 2)])", equatable("Map.from", "K")),
+        ("Map.values(Map.put(Map.empty(), { a: 1 }, 2))", ordered("Map.values", "K")),
+        ("Map.entries(Map.put(Map.empty(), { a: 1 }, 2))", ordered("Map.entries", "K")),
+        (
+            "Map.map_values(Map.put(Map.empty(), { a: 1 }, 2), fn(value) { value + 1 })",
+            ordered("Map.map_values", "K"),
+        ),
+        (
+            "Map.filter(Map.put(Map.empty(), { a: 1 }, 2), fn(_key, value) { value > 1 })",
+            ordered("Map.filter", "K"),
+        ),
+        (
+            "Map.each(Map.put(Map.empty(), { a: 1 }, 2), fn(_key, _value) { Void })",
+            ordered("Map.each", "K"),
+        ),
+        ("Set.to_list(Set.add(Set.empty(), { a: 1 }))", ordered("Set.to_list", "T")),
+        (
+            "Set.filter(Set.add(Set.empty(), { a: 1 }), fn(_item) { True })",
+            ordered("Set.filter", "T"),
+        ),
+        (
+            "Set.reduce(Set.add(Set.empty(), { a: 1 }), 0, fn(total, _item) { total + 1 })",
+            ordered("Set.reduce", "T"),
+        ),
+        (
+            "Set.each(Set.add(Set.empty(), { a: 1 }), fn(_item) { Void })",
+            ordered("Set.each", "T"),
+        ),
+        ("Set.contains(Set.from([{ a: 1 }]), { a: 1 })", None),
+        ("Set.from([fn() { 1 }])", equatable("Set.from", "T")),
+    ];
+    for (call, expected) in cases {
+        let source =
+            format!("import std/map as Map\nimport std/set as Set\npub fn main() {{ {call} }}\n");
+        let report = Compiler::type_project(vec![module("main", &source)]);
+        let found = report
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| (diagnostic.code().to_owned(), diagnostic.message().to_owned()))
+            .collect::<Vec<_>>();
+        match expected {
+            None => assert!(found.is_empty(), "{call}: {found:?}"),
+            Some((code, message)) => assert!(
+                found.len() == 1 && found[0].0 == code && found[0].1.starts_with(&message),
+                "{call}: {found:?}"
+            ),
+        }
     }
 }

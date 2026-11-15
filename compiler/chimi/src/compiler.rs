@@ -646,7 +646,16 @@ impl Compiler {
         Ok(reached)
     }
 
-    /// Every operation id in the standard registry.
+    /// The whole-tree registry check behind `chimi std check`, over every module
+    /// of one standard tree ([`crate::project::LoadedProject::standard_tree`]).
+    pub fn verify_standard_tree(
+        sources: Vec<ProjectSource>,
+    ) -> crate::operations::StandardTreeVerification {
+        crate::operations::verify_tree(sources)
+    }
+
+    /// Every operation id in the standard registry, each of which a std-tests
+    /// program must reach.
     #[doc(hidden)]
     pub fn standard_operation_ids() -> Vec<&'static str> {
         crate::operations::OPERATIONS

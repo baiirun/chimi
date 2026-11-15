@@ -1,7 +1,7 @@
 use chimi::Compiler;
 use chimi::backend::native::build_application;
 use chimi::execution::{ExecutionConfig, ExecutionOutcome};
-use chimi::project::LoadedProject;
+use chimi::project::{LoadedProject, StandardTree};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -15,7 +15,8 @@ const USAGE: &str = concat!(
     "chimi build <path> [-o <executable>] | ",
     "chimi check [--json] --root <project-dir> <entry-module> | chimi run --root ",
     "<project-dir> <entry-module> [-- <argument>...] | chimi build --root <project-dir> <entry-module> ",
-    "[-o <executable>]"
+    "[-o <executable>] | chimi std check; a compiler developer may put ",
+    "--std-dir <directory> before inspect, check, run, build, or std check"
 );
 
 #[derive(Debug, Eq, PartialEq)]
@@ -48,6 +49,8 @@ enum Command {
         input: Input,
         output: Option<PathBuf>,
     },
+    /// Checks the whole standard tree against the operation registry.
+    StdCheck,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,6 +62,41 @@ enum DiagnosticOutput {
 #[derive(Debug, Eq, PartialEq)]
 struct UsageError {
     message: &'static str,
+}
+
+/// A command and the standard tree directory that replaces the embedded one.
+#[derive(Debug, Eq, PartialEq)]
+struct Invocation {
+    std_dir: Option<PathBuf>,
+    command: Command,
+}
+
+/// Reads a leading `--std-dir <path>`, then the command. Only commands that
+/// load a program accept it.
+fn parse_invocation(
+    arguments: impl IntoIterator<Item = OsString>,
+) -> Result<Invocation, UsageError> {
+    let mut arguments = arguments.into_iter().peekable();
+    let std_dir = if arguments
+        .next_if(|argument| argument == "--std-dir")
+        .is_some()
+    {
+        let Some(path) = arguments.next() else {
+            return Err(UsageError {
+                message: "--std-dir requires a directory",
+            });
+        };
+        Some(PathBuf::from(path))
+    } else {
+        None
+    };
+    let command = parse_command(arguments)?;
+    if std_dir.is_some() && matches!(command, Command::Version | Command::Format { .. }) {
+        return Err(UsageError {
+            message: "--std-dir applies only to commands that load a program",
+        });
+    }
+    Ok(Invocation { std_dir, command })
 }
 
 fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, UsageError> {
@@ -93,6 +131,15 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
             Err(UsageError {
                 message: "format received unexpected arguments",
             })
+        };
+    }
+
+    if command == "std" {
+        return match (arguments.next(), arguments.next()) {
+            (Some(subcommand), None) if subcommand == "check" => Ok(Command::StdCheck),
+            _ => Err(UsageError {
+                message: "std takes one subcommand: check",
+            }),
         };
     }
 
@@ -269,7 +316,14 @@ fn parse_offset(value: OsString) -> Option<usize> {
     value.into_string().ok()?.parse().ok()
 }
 
-fn execute(command: Command) -> ExitCode {
+fn execute(Invocation { std_dir, command }: Invocation) -> ExitCode {
+    let standard = match std_dir.map(StandardTree::directory).transpose() {
+        Ok(standard) => standard.unwrap_or_default(),
+        Err(error) => {
+            eprintln!("chimi: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     match command {
         Command::Version => {
             println!("{VERSION}");
@@ -280,15 +334,43 @@ fn execute(command: Command) -> ExitCode {
             input,
             module_path,
             offset,
-        } => inspect(input, &module_path, offset),
-        Command::Check { input, output } => check(input, output),
-        Command::Run { input, arguments } => run(input, arguments),
-        Command::Build { input, output } => build(input, output),
+        } => inspect(input, &standard, &module_path, offset),
+        Command::Check { input, output } => check(input, &standard, output),
+        Command::Run { input, arguments } => run(input, &standard, arguments),
+        Command::Build { input, output } => build(input, &standard, output),
+        Command::StdCheck => std_check(&standard),
     }
 }
 
-fn inspect(input: Input, module_path: &str, offset: usize) -> ExitCode {
-    let Some(project) = load_project(input) else {
+fn std_check(standard: &StandardTree) -> ExitCode {
+    let tree = match LoadedProject::standard_tree(standard) {
+        Ok(tree) => tree,
+        Err(error) => {
+            eprintln!("chimi: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let verification = Compiler::verify_standard_tree(tree.sources());
+    eprint!("{}", tree.render_diagnostics(&verification.diagnostics));
+    for mismatch in &verification.mismatches {
+        eprintln!("chimi: {mismatch}");
+    }
+    if !verification.matches() {
+        return ExitCode::FAILURE;
+    }
+    let location = standard.override_directory().map_or_else(
+        || "embedded standard tree".to_owned(),
+        |directory| format!("standard tree in {}", directory.display()),
+    );
+    println!(
+        "chimi: the {location} matches the operation registry ({} modules)",
+        tree.sources().len()
+    );
+    ExitCode::SUCCESS
+}
+
+fn inspect(input: Input, standard: &StandardTree, module_path: &str, offset: usize) -> ExitCode {
+    let Some(project) = load_project(input, standard) else {
         return ExitCode::FAILURE;
     };
     match Compiler::inspect_project(project.sources(), module_path, offset) {
@@ -321,8 +403,8 @@ fn format(path: PathBuf) -> ExitCode {
     }
 }
 
-fn check(input: Input, output: DiagnosticOutput) -> ExitCode {
-    let Some(project) = load_project(input) else {
+fn check(input: Input, standard: &StandardTree, output: DiagnosticOutput) -> ExitCode {
+    let Some(project) = load_project(input, standard) else {
         return ExitCode::FAILURE;
     };
     match Compiler::verify_project(project.sources()) {
@@ -354,8 +436,8 @@ fn check(input: Input, output: DiagnosticOutput) -> ExitCode {
     }
 }
 
-fn run(input: Input, arguments: Vec<String>) -> ExitCode {
-    let Some(project) = load_project(input) else {
+fn run(input: Input, standard: &StandardTree, arguments: Vec<String>) -> ExitCode {
+    let Some(project) = load_project(input, standard) else {
         return ExitCode::FAILURE;
     };
     let program = match Compiler::prepare_backend(project.sources()) {
@@ -388,10 +470,10 @@ fn outcome_exit_code(outcome: &ExecutionOutcome) -> ExitCode {
     }
 }
 
-fn build(input: Input, output: Option<PathBuf>) -> ExitCode {
+fn build(input: Input, standard: &StandardTree, output: Option<PathBuf>) -> ExitCode {
     let output = output.unwrap_or_else(|| default_executable_path(&input));
     let artifact_directory = artifact_directory(&output);
-    let Some(project) = load_project(input) else {
+    let Some(project) = load_project(input, standard) else {
         return ExitCode::FAILURE;
     };
     let program = match Compiler::prepare_backend(project.sources()) {
@@ -401,7 +483,7 @@ fn build(input: Input, output: Option<PathBuf>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match build_application(&program, &output, &artifact_directory) {
+    match build_application(&program, standard, &output, &artifact_directory) {
         Ok(report) => {
             print!("{}", report.render_json());
             ExitCode::SUCCESS
@@ -431,10 +513,10 @@ fn artifact_directory(output: &std::path::Path) -> PathBuf {
     PathBuf::from("target/chimi").join(name)
 }
 
-fn load_project(input: Input) -> Option<LoadedProject> {
+fn load_project(input: Input, standard: &StandardTree) -> Option<LoadedProject> {
     let loaded = match input {
-        Input::File { path } => LoadedProject::single_file(path),
-        Input::Project { root, entry } => LoadedProject::load(root, entry),
+        Input::File { path } => LoadedProject::single_file(path, standard),
+        Input::Project { root, entry } => LoadedProject::load(root, entry, standard),
     };
     match loaded {
         Ok(project) => Some(project),
@@ -446,8 +528,8 @@ fn load_project(input: Input) -> Option<LoadedProject> {
 }
 
 fn main() -> ExitCode {
-    match parse_command(env::args_os().skip(1)) {
-        Ok(command) => execute(command),
+    match parse_invocation(env::args_os().skip(1)) {
+        Ok(invocation) => execute(invocation),
         Err(error) => {
             eprintln!("chimi: {}\n{USAGE}", error.message);
             ExitCode::from(2)

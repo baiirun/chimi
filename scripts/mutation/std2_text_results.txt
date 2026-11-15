@@ -1,0 +1,13 @@
+KILLED       native uppercase uses only the first (simple) mapping [std_modules -- standard_programs] (23s)
+KILLED       interpreter lowercase never yields final sigma [std_modules -- standard_programs] (23s)
+KILLED       native Final_Sigma ignores a following cased letter [std_modules -- standard_programs] (24s)
+KILLED       native GB9 drops Extend [std_modules -- standard_programs] (28s)
+KILLED       interpreter GB11 drops ZWJ emoji sequences [lib std_modules unicode_tables -- graphemes] (14s)
+KILLED       native GB12/GB13 breaks every regional indicator pair [std_modules -- standard_programs] (26s)
+KILLED       interpreter GB9c drops InCB conjuncts [lib std_modules unicode_tables -- graphemes] (8s)
+KILLED       native splits CR LF [std_modules -- standard_programs] (24s)
+KILLED       pads text that is already wide enough [std_modules -- standard_programs] (26s)
+KILLED       pad fill is not cut by graphemes [std_modules -- standard_programs] (24s)
+KILLED       compare_ignoring_case only lowercases [std_modules -- standard_programs] (23s)
+KILLED       grapheme_count of empty text is 1 [std_modules -- standard_programs] (25s)
+# result: every mutant killed

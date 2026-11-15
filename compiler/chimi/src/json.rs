@@ -1,3 +1,4 @@
+use crate::decimal::{self, Decimal};
 use std::collections::HashSet;
 use std::fmt::Write;
 
@@ -61,7 +62,19 @@ pub(crate) fn write_json_data(output: &mut String, value: &JsonData) {
     }
 }
 
+/// Writes `value` as a JSON string as RFC 8259 asks, for `Json.encode` and runtime
+/// records: only U+0000 to U+001F are escaped, as the native runtime does.
 pub(crate) fn write_json_string(output: &mut String, value: &str) {
+    write_escaped(output, value, |character| character < '\u{20}');
+}
+
+/// Writes `value` as a JSON string with every Unicode control character escaped,
+/// DEL and C1 included, for tool output such as inspection.
+pub(crate) fn write_json_string_escaping_controls(output: &mut String, value: &str) {
+    write_escaped(output, value, char::is_control);
+}
+
+fn write_escaped(output: &mut String, value: &str, escaped: impl Fn(char) -> bool) {
     output.push('"');
     for character in value.chars() {
         match character {
@@ -72,7 +85,7 @@ pub(crate) fn write_json_string(output: &mut String, value: &str) {
             '\n' => output.push_str("\\n"),
             '\r' => output.push_str("\\r"),
             '\t' => output.push_str("\\t"),
-            character if character.is_control() => {
+            character if escaped(character) => {
                 write!(output, "\\u{:04x}", character as u32)
                     .expect("writing JSON to a string cannot fail");
             }
@@ -513,6 +526,63 @@ fn canonical_number(text: &str) -> CanonicalNumber {
     }
 }
 
+/// The canonical text of a JSON number, so equal numbers render alike (`1.0`,
+/// `1`, and `10e-1` are all `1`): the exact value, never rounded through `f64`.
+/// Positional when the decimal exponent of the first significant digit is from
+/// -6 to 20, as JavaScript writes numbers, otherwise `d.ddde<exponent>`, as in
+/// `1e21`, `-2.5e-7`, and `1e400`.
+///
+/// Requires: `text` matches the JSON number grammar.
+pub(crate) fn canonical_number_text(text: &str) -> String {
+    let number = canonical_number(text);
+    let digits = number
+        .digits
+        .iter()
+        .map(|digit| char::from(*digit))
+        .collect::<String>();
+    if digits.is_empty() {
+        return "0".to_owned();
+    }
+    let mut output = String::from(if number.sign < 0 { "-" } else { "" });
+    // `0.digits × 10^exponent`: `exponent` digits come before the point.
+    let positional = number.exponent.compare(&Exponent::from_offset(-5)).is_ge()
+        && number.exponent.compare(&Exponent::from_offset(21)).is_le();
+    if positional {
+        let before = number
+            .exponent
+            .magnitude
+            .iter()
+            .fold(0_i64, |value, digit| value * 10 + i64::from(*digit));
+        let before = if number.exponent.negative { -before } else { before };
+        let length = digits.len() as i64;
+        if before >= length {
+            output.push_str(&digits);
+            output.extend(std::iter::repeat_n('0', (before - length) as usize));
+        } else if before > 0 {
+            output.push_str(&digits[..before as usize]);
+            output.push('.');
+            output.push_str(&digits[before as usize..]);
+        } else {
+            output.push_str("0.");
+            output.extend(std::iter::repeat_n('0', (-before) as usize));
+            output.push_str(&digits);
+        }
+        return output;
+    }
+    output.push_str(&digits[..1]);
+    if digits.len() > 1 {
+        output.push('.');
+        output.push_str(&digits[1..]);
+    }
+    let scientific = number.exponent.plus(&Exponent::from_offset(-1));
+    output.push('e');
+    if scientific.negative {
+        output.push('-');
+    }
+    output.extend(scientific.magnitude.iter().map(|digit| char::from(b'0' + digit)));
+    output
+}
+
 /// Orders two JSON number texts by the exact numbers they denote, never through
 /// `f64`: `1`, `1.0`, and `10e-1` are equal, and `-0` equals `0`.
 ///
@@ -532,9 +602,197 @@ pub(crate) fn compare_numbers(left: &str, right: &str) -> std::cmp::Ordering {
     })
 }
 
+/// Why a JSON number has no value of the target type (`std/json.ConversionError`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NumberConversionError {
+    NotInteger,
+    OutOfRange,
+}
+
+/// Written exponents are clamped to this magnitude. Every number whose exponent
+/// reaches it is far outside `Int` and `Decimal`, and any spelling the decoder
+/// can hold has fewer digits than this, so the clamp never changes a result
+/// while keeping the arithmetic below in `i64`.
+const EXPONENT_CLAMP: i64 = 1_000_000_000_000_000;
+
+/// The exact value of a JSON number as `± significant × 10^exponent`, where
+/// `significant` has no leading or trailing zeros (empty for zero), and the
+/// scale its spelling writes: fraction digits minus the written exponent.
+struct ExactNumber {
+    negative: bool,
+    significant: Vec<u8>,
+    exponent: i64,
+    written_scale: i64,
+}
+
+/// Requires: `text` matches the JSON number grammar.
+fn exact_number(text: &str) -> ExactNumber {
+    let (negative, rest) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let (mantissa, written) = rest.split_once(['e', 'E']).unwrap_or((rest, ""));
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let written = written.strip_prefix('+').unwrap_or(written);
+    let (exponent_negative, exponent_digits) = match written.strip_prefix('-') {
+        Some(digits) => (true, digits),
+        None => (false, written),
+    };
+    let magnitude = exponent_digits.bytes().fold(0_i64, |magnitude, digit| {
+        (magnitude * 10 + i64::from(digit - b'0')).min(EXPONENT_CLAMP)
+    });
+    let written_exponent = if exponent_negative { -magnitude } else { magnitude };
+    let fraction_digits = i64::try_from(fraction.len()).expect("a spelling fits in memory");
+    let digits = whole.bytes().chain(fraction.bytes()).map(|digit| digit - b'0');
+    let mut significant = digits.skip_while(|digit| *digit == 0).collect::<Vec<_>>();
+    let mut trailing = 0;
+    while significant.last() == Some(&0) {
+        significant.pop();
+        trailing += 1;
+    }
+    ExactNumber {
+        negative,
+        significant,
+        exponent: written_exponent - fraction_digits + trailing,
+        written_scale: fraction_digits - written_exponent,
+    }
+}
+
+/// `Json.number_to_int`: the `Int` a JSON number denotes, whatever its spelling.
+///
+/// Requires: `text` matches the JSON number grammar.
+pub(crate) fn number_to_int(text: &str) -> Result<i64, NumberConversionError> {
+    let number = exact_number(text);
+    if number.significant.is_empty() {
+        return Ok(0);
+    }
+    if number.exponent < 0 {
+        return Err(NumberConversionError::NotInteger);
+    }
+    let length = i64::try_from(number.significant.len()).expect("a spelling fits in memory");
+    if length + number.exponent > 19 {
+        return Err(NumberConversionError::OutOfRange);
+    }
+    let zeros = std::iter::repeat_n(0, number.exponent as usize);
+    let magnitude = number
+        .significant
+        .iter()
+        .copied()
+        .chain(zeros)
+        .fold(0_i128, |value, digit| value * 10 + i128::from(digit));
+    let value = if number.negative { -magnitude } else { magnitude };
+    i64::try_from(value).map_err(|_| NumberConversionError::OutOfRange)
+}
+
+/// `Json.number_to_decimal`: the exact `Decimal` at the spelling's own scale,
+/// or the largest smaller scale that fits when it does not; `None` when the
+/// value needs more than 38 significant or fraction digits.
+///
+/// Requires: `text` matches the JSON number grammar.
+pub(crate) fn number_to_decimal(text: &str) -> Option<Decimal> {
+    let number = exact_number(text);
+    let max_scale = i64::from(decimal::MAX_SCALE);
+    if number.significant.is_empty() {
+        let scale = number.written_scale.clamp(0, max_scale);
+        return Decimal::new(false, 0, scale as u32);
+    }
+    let length = i64::try_from(number.significant.len()).expect("a spelling fits in memory");
+    if length + number.exponent.max(0) > max_scale || -number.exponent > max_scale {
+        return None;
+    }
+    // At least the smallest scale, `max(0, -exponent)`: the written scale is
+    // `-exponent` plus the trailing zeros, and the checks above keep both upper
+    // bounds above it. A negative written scale, as in `1.5e3`, is scale 0.
+    let scale = number
+        .written_scale
+        .max(0)
+        .min(max_scale)
+        .min(max_scale - length - number.exponent);
+    let zeros = std::iter::repeat_n(0, (number.exponent + scale) as usize);
+    let magnitude = number
+        .significant
+        .iter()
+        .copied()
+        .chain(zeros)
+        .fold(0_u128, |value, digit| value * 10 + u128::from(digit));
+    Decimal::new(number.negative, magnitude, scale as u32)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{JsonData, compare_numbers, decode_json, write_json_data, write_json_string};
+    use super::{
+        JsonData, NumberConversionError, canonical_number_text, compare_numbers, decode_json,
+        number_to_decimal, number_to_int, write_json_data, write_json_string,
+        write_json_string_escaping_controls,
+    };
+    use crate::decimal::Decimal;
+
+    #[test]
+    fn numbers_convert_to_int_by_the_value_they_denote() {
+        use NumberConversionError::{NotInteger, OutOfRange};
+        let cases = [
+            ("0", Ok(0)),
+            ("-0", Ok(0)),
+            ("0.000e-99999999999999999999", Ok(0)),
+            ("1.0", Ok(1)),
+            ("1e2", Ok(100)),
+            ("1500e-2", Ok(15)),
+            ("-12.5e1", Ok(-125)),
+            ("9223372036854775807", Ok(i64::MAX)),
+            ("-9223372036854775808", Ok(i64::MIN)),
+            ("922337203685477580.7e1", Ok(i64::MAX)),
+            ("9223372036854775808", Err(OutOfRange)),
+            ("-9223372036854775809", Err(OutOfRange)),
+            ("1e19", Err(OutOfRange)),
+            ("1.5e400", Err(OutOfRange)),
+            ("1e99999999999999999999", Err(OutOfRange)),
+            ("1.5", Err(NotInteger)),
+            ("1e-1", Err(NotInteger)),
+            ("12345678901234567890.5", Err(NotInteger)),
+            ("1e-99999999999999999999", Err(NotInteger)),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(number_to_int(text), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn numbers_convert_to_decimal_exactly_at_their_written_scale() {
+        let cases = [
+            ("1.50", Some("1.50")),
+            ("-0.0", Some("0.0")),
+            ("0e-50", Some("0.00000000000000000000000000000000000000")),
+            ("0e50", Some("0")),
+            ("1.5e3", Some("1500")),
+            ("1500e-2", Some("15.00")),
+            ("123456789012345678901234567890", Some("123456789012345678901234567890")),
+            (
+                "0.12345678901234567890123456789012345678",
+                Some("0.12345678901234567890123456789012345678"),
+            ),
+            (
+                "-9.9999999999999999999999999999999999999e37",
+                Some("-99999999999999999999999999999999999999"),
+            ),
+            // The written scale is 40; dropping trailing zeros keeps it exact.
+            (
+                "1.0000000000000000000000000000000000000000",
+                Some("1.0000000000000000000000000000000000000"),
+            ),
+            ("1e38", None),
+            ("0.123456789012345678901234567890123456789", None),
+            ("1e-39", None),
+            ("1e99999999999999999999", None),
+            ("1e-99999999999999999999", None),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(
+                number_to_decimal(text).map(Decimal::to_text).as_deref(),
+                expected,
+                "{text}"
+            );
+        }
+    }
 
     #[test]
     fn numbers_compare_by_the_exact_value_they_denote() {
@@ -598,6 +856,46 @@ mod tests {
         write_json_string(&mut output, "quote\" slash\\ line\n\t\u{1}");
 
         assert_eq!(output, "\"quote\\\" slash\\\\ line\\n\\t\\u0001\"");
+    }
+
+    #[test]
+    fn encode_escapes_only_c0_controls_and_inspection_escapes_every_control() {
+        let mut encoded = String::new();
+        write_json_data(&mut encoded, &JsonData::Text("del\u{7f} nel\u{85} \u{1f}".to_owned()));
+        assert_eq!(encoded, "\"del\u{7f} nel\u{85} \\u001f\"");
+
+        let mut inspected = String::new();
+        write_json_string_escaping_controls(&mut inspected, "del\u{7f} nel\u{85} \u{1f}");
+        assert_eq!(inspected, "\"del\\u007f nel\\u0085 \\u001f\"");
+    }
+
+    #[test]
+    fn numbers_render_canonically_from_their_exact_value() {
+        let cases = [
+            ("0", "0"),
+            ("-0.0e7", "0"),
+            ("1", "1"),
+            ("1.0", "1"),
+            ("10e-1", "1"),
+            ("-12.50", "-12.5"),
+            ("0.000001", "0.000001"),
+            ("1e-7", "1e-7"),
+            ("-2.5e-7", "-2.5e-7"),
+            ("100000000000000000000", "100000000000000000000"),
+            ("1e21", "1e21"),
+            ("9007199254740993.0", "9007199254740993"),
+            ("12345678901234567890123", "1.2345678901234567890123e22"),
+            ("1e400", "1e400"),
+            ("10e399", "1e400"),
+            ("0.1e401", "1e400"),
+            ("1e-400", "1e-400"),
+            ("2e-400", "2e-400"),
+            ("1e99999999999999999999", "1e99999999999999999999"),
+            ("-1.5e-99999999999999999999", "-1.5e-99999999999999999999"),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(canonical_number_text(text), expected, "{text}");
+        }
     }
 
     #[test]

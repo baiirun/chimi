@@ -1,0 +1,186 @@
+/// Operations on `Map<K, V>`, an immutable map from equatable keys to values.
+/// Every function returns a new map. Functions that enumerate a map (`keys`,
+/// `values`, `entries`, `reduce`, `each`, `filter`, `map_values`) visit its
+/// entries in ascending structural order of the key, so they need `K` to be
+/// ordered; callbacks run in that order, in the calling task, and stop at
+/// their first failure.
+
+import std/list as List
+
+// 1. Public types.
+
+/// An immutable map from keys to values. Equatable when `K` and `V` are, never
+/// ordered, and shareable when `K` and `V` are.
+pub native type Map<K, V>
+
+// 4. Constructors.
+
+/// Returns a map with no entries.
+///
+/// Cost: O(1).
+pub native fn empty<K, V>() -> Map<K, V>
+
+/// Returns a map of the `(key, value)` pairs; a later pair wins over an
+/// earlier one with an equal key.
+///
+/// Cost: O(n log n).
+pub fn from<K, V>(pairs: List<(K, V)>) -> Map<K, V> {
+  List.reduce(pairs, empty(), fn(map, pair) {
+    case pair {
+      (key, value) -> put(map, key, value)
+    }
+  })
+}
+
+// 5. Queries and predicates.
+
+/// Returns the value for `key`, or `None` when `map` has no such key.
+///
+/// Cost: O(log n).
+pub native fn get<K, V>(map: Map<K, V>, key: K) -> Option<V>
+
+/// Returns `True` when `map` has an entry for `key`.
+///
+/// Cost: O(log n).
+pub fn has_key<K, V>(map: Map<K, V>, key: K) -> Bool {
+  case get(map, key) {
+    Some(_) -> True
+    None -> False
+  }
+}
+
+/// Returns the number of entries in `map`.
+///
+/// Cost: O(n).
+pub native fn size<K, V>(map: Map<K, V>) -> Int
+
+/// Returns `True` when `map` has no entries.
+///
+/// Cost: O(n).
+pub fn is_empty<K, V>(map: Map<K, V>) -> Bool {
+  size(map) == 0
+}
+
+// 5. Changing.
+
+/// Returns `map` with `key` bound to `value`, replacing any earlier value.
+///
+/// Cost: O(log n).
+pub native fn put<K, V>(map: Map<K, V>, key: K, value: V) -> Map<K, V>
+
+/// Returns `map` without an entry for `key`; `map` itself when it has none.
+///
+/// Cost: O(log n).
+pub native fn remove<K, V>(map: Map<K, V>, key: K) -> Map<K, V>
+
+/// Returns the entries of `map` and `overrides`; for a key in both, the value
+/// in `overrides` wins.
+///
+/// Cost: O(m log (n + m)) in the size `m` of `overrides`.
+pub fn merge<K, V>(map: Map<K, V>, overrides: Map<K, V>) -> Map<K, V> {
+  reduce_entries(overrides, map, put)
+}
+
+// Enumerating, in ascending key order.
+
+/// Returns the keys of `map` in ascending order.
+///
+/// Cost: O(n).
+pub fn keys<K, V>(map: Map<K, V>) -> List<K> {
+  reduce(map, [], fn(done, key, _value) { List.push(done, key) })
+}
+
+/// Returns the values of `map`, in ascending order of their keys.
+///
+/// Cost: O(n).
+pub fn values<K, V>(map: Map<K, V>) -> List<V> {
+  reduce(map, [], fn(done, _key, value) { List.push(done, value) })
+}
+
+/// Returns the `(key, value)` entries of `map` in ascending key order.
+///
+/// Cost: O(n).
+pub fn entries<K, V>(map: Map<K, V>) -> List<(K, V)> {
+  reduce(map, [], fn(done, key, value) {
+    List.push(done, (key, value))
+  })
+}
+
+// 6. Transformations, with callbacks last.
+
+/// Returns `map` with `key` bound to what `change` returns for the current
+/// value: `Some(value)`, or `None` when `map` has no such key.
+///
+/// Calls: `change` exactly once.
+/// Cost: O(log n) plus `change`.
+pub fn update<K, V, E, R>(
+  map: Map<K, V>,
+  key: K,
+  change: fn(Option<V>) -> V errors E needs R,
+) -> Map<K, V> {
+  let changed = change(get(map, key))
+  put(map, key, changed)
+}
+
+/// Returns a map with the same keys, each bound to `change` applied to its
+/// value.
+///
+/// Calls: `change` once per entry, in ascending key order; stops at its first
+/// failure.
+/// Cost: O(n log n).
+pub fn map_values<K, V, W, E, R>(map: Map<K, V>, change: fn(V) -> W errors E needs R) -> Map<K, W> {
+  reduce(map, empty(), fn(done, key, value) {
+    let changed = change(value)
+    put(done, key, changed)
+  })
+}
+
+/// Returns the entries of `map` for which `keep` returns `True`.
+///
+/// Calls: `keep` once per entry, in ascending key order; stops at its first
+/// failure.
+/// Cost: O(n log n).
+pub fn filter<K, V, E, R>(map: Map<K, V>, keep: fn(K, V) -> Bool errors E needs R) -> Map<K, V> {
+  reduce(map, empty(), fn(done, key, value) {
+    let kept = keep(key, value)
+    case kept {
+      True -> put(done, key, value)
+      False -> done
+    }
+  })
+}
+
+/// Combines the entries of `map` into one value: `step` receives the state so
+/// far, starting at `initial`, and each key and value, and returns the next
+/// state.
+///
+/// Calls: `step` once per entry, in ascending key order; stops at its first
+/// failure.
+/// Cost: O(n).
+pub fn reduce<K, V, S, E, R>(
+  map: Map<K, V>,
+  initial: S,
+  step: fn(S, K, V) -> S errors E needs R,
+) -> S {
+  reduce_entries(map, initial, step)
+}
+
+/// Calls `action` with each key and value of `map`, for its effect.
+///
+/// Calls: `action` once per entry, in ascending key order; stops at its first
+/// failure.
+/// Cost: O(n).
+pub fn each<K, V, E, R>(map: Map<K, V>, action: fn(K, V) -> Void errors E needs R) -> Void {
+  reduce(map, Void, fn(_done, key, value) { action(key, value) })
+}
+
+// 8. Private native core.
+
+/// Combines the entries of `map` in ascending key order. Unlike `reduce`, it
+/// does not need `K` to be ordered, for functions whose result does not show
+/// the order, such as `merge`.
+native fn reduce_entries<K, V, S, E, R>(
+  map: Map<K, V>,
+  initial: S,
+  step: fn(S, K, V) -> S errors E needs R,
+) -> S errors E needs R

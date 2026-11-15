@@ -1,0 +1,39 @@
+// std/decimal: conformance rows N24 and N25, built in constants as well as at
+// run time, with numeric equality and order across scales and signs.
+import std/debug as Debug
+import std/decimal as Decimal
+import std/decimal.{Decimal}
+
+const price = Decimal.of(1999, 2)
+const total = price * Decimal.of(3, 0)
+// A stored constant keeps its scale, so its text keeps the trailing zero.
+const one_fifty_constant = Decimal.of(150, 2)
+const one_fifty_text = Decimal.to_text(Decimal.of(150, 2))
+
+pub fn main() -> Text {
+  let one_fifty = Decimal.of(150, 2)
+  let one_five = Decimal.of(15, 1)
+  let results = [
+    // N24: numeric equality, and `to_text` keeps the scale.
+    Debug.render(one_fifty == one_five),
+    Decimal.to_text(one_fifty),
+    Decimal.to_text(one_fifty_constant),
+    one_fifty_text,
+    // N25, from constants and from run-time values.
+    Decimal.to_text(total),
+    Decimal.to_text(Decimal.of(1999, 2) * Decimal.of(3, 0)),
+    // `+` and `-` keep the larger scale; `*` adds the scales.
+    Decimal.to_text(one_fifty + Decimal.of(1, 0)),
+    Decimal.to_text(Decimal.of(1, 0) - one_fifty),
+    Decimal.to_text(Decimal.of(-25, 1) * Decimal.of(-4, 1)),
+    Decimal.to_text(-price),
+    Decimal.to_text(Decimal.of(-5, 3)),
+    // Order is numeric, not by coefficient or scale.
+    Debug.render([one_fifty < Decimal.of(151, 2), Decimal.of(2, 0) > Decimal.of(19, 1), Decimal.of(-2, 0) < Decimal.of(-15, 1)]),
+    Debug.render([Decimal.of(0, 3) == -Decimal.of(0, 0), one_fifty != one_five, one_fifty <= one_five, one_fifty >= one_five]),
+    // Debug renders the normalized form, so equal values render the same.
+    Debug.render([one_fifty, one_five, Decimal.of(100, 0), Decimal.of(-500, 3), Decimal.of(0, 2)]),
+    Debug.render(Decimal.to_float(Decimal.of(-1999, 2))),
+  ]
+  Debug.render(results)
+}

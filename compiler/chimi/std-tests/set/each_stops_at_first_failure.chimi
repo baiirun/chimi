@@ -1,0 +1,19 @@
+// A failing action stops Set.each at the first item it rejects in ascending
+// order: 4 is rejected before 9, though 9 went in first, and the failure
+// escapes unchanged.
+import std/set as Set
+
+enum Rejected {
+  TooLarge(value: Int)
+}
+
+fn accept_small(value: Int) -> Void {
+  case value < 4 {
+    True -> Void
+    False -> Failure(Rejected.TooLarge(value))
+  }
+}
+
+pub fn main() -> Void {
+  Set.each(Set.from([9, 1, 4, 2]), accept_small)
+}

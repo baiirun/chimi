@@ -1,0 +1,28 @@
+// A key or item equal to a held one, but written differently, does not replace
+// it: `1.50` equals `1.5`, so `Map.put`, `Map.from`, `Map.merge`, and `Set.add`
+// keep the held `1.5` and change only the value.
+import std/decimal as Decimal
+import std/decimal.{Decimal}
+import std/list as List
+import std/map as Map
+import std/map.{Map}
+import std/set as Set
+import std/text as Text
+
+fn keys<V>(map: Map<Decimal, V>) -> Text {
+  Text.join(List.map(Map.keys(map), Decimal.to_text), ",")
+}
+
+pub fn main() -> List<Text> {
+  let short = Decimal.of(15, 1)
+  let long = Decimal.of(150, 2)
+  let held = Map.put(Map.empty(), short, "first")
+  let replaced = Map.put(held, long, "second")
+  let items = Set.to_list(Set.add(Set.from([short]), long))
+  [
+    "put: ${keys(replaced)} = ${Text.join(Map.values(replaced), ",")}",
+    "from: ${keys(Map.from([(short, 1), (long, 2)]))}",
+    "merge: ${keys(Map.merge(held, Map.put(Map.empty(), long, "second")))}",
+    "set add: ${Text.join(List.map(items, Decimal.to_text), ",")}",
+  ]
+}

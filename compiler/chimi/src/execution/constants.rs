@@ -597,6 +597,7 @@ impl Measure<'_> {
             RuntimeValue::Void
             | RuntimeValue::Integer(_)
             | RuntimeValue::Duration(_)
+            | RuntimeValue::Decimal(_)
             | RuntimeValue::ProcessAddress(_)
             | RuntimeValue::Float(_)
             | RuntimeValue::Boolean(_) => Some(ROW_BYTES),
@@ -635,7 +636,7 @@ impl Measure<'_> {
                 Some(size)
             }
             RuntimeValue::Constructed { fields, .. } => self.fields(fields, ID_BYTES),
-            RuntimeValue::Map(map) => {
+            RuntimeValue::Map(map) | RuntimeValue::Set(map) => {
                 let entries = self.map_node(map.root.as_ref())?;
                 self.sum(ROW_BYTES, entries)
             }
@@ -747,6 +748,7 @@ fn constant_value(
         RuntimeValue::Void => ConstantValue::Void,
         RuntimeValue::Integer(value) => ConstantValue::Integer(*value),
         RuntimeValue::Duration(value) => ConstantValue::Duration(*value),
+        RuntimeValue::Decimal(value) => ConstantValue::Decimal(*value),
         RuntimeValue::ProcessAddress(symbol) => ConstantValue::ProcessAddress(*symbol),
         RuntimeValue::Float(value) => ConstantValue::Float(*value),
         RuntimeValue::Text(value) => ConstantValue::Text(value.clone()),
@@ -782,6 +784,12 @@ fn constant_value(
             map.entries()
                 .into_iter()
                 .map(|(key, value)| Ok((convert(&key)?, convert(&value)?)))
+                .collect::<Result<_, String>>()?,
+        ),
+        RuntimeValue::Set(set) => ConstantValue::Set(
+            set.entries()
+                .into_iter()
+                .map(|(item, _)| convert(&item))
                 .collect::<Result<_, String>>()?,
         ),
         RuntimeValue::JsonNumber(text) => ConstantValue::JsonNumber(text.clone()),
@@ -849,6 +857,7 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
         ConstantValue::Void => RuntimeValue::Void,
         ConstantValue::Integer(value) => RuntimeValue::Integer(*value),
         ConstantValue::Duration(value) => RuntimeValue::Duration(*value),
+        ConstantValue::Decimal(value) => RuntimeValue::Decimal(*value),
         ConstantValue::ProcessAddress(symbol) => RuntimeValue::ProcessAddress(*symbol),
         ConstantValue::Float(value) => RuntimeValue::Float(*value),
         ConstantValue::Text(value) => RuntimeValue::Text(value.clone()),
@@ -904,22 +913,17 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
                 ),
             }
         }
-        ConstantValue::Map(entries) => RuntimeValue::Map(entries.iter().fold(
-            RuntimeMap::default(),
-            |map, (key, value)| {
-                map.put(
-                    runtime_value(core, key),
-                    runtime_value(core, value),
-                    &|left, right| {
-                        super::structural::structural_order(left, right, &|constructor| {
-                            core.symbol(constructor)
-                                .constructor
-                                .as_ref()
-                                .map_or(0, |shape| shape.ordinal)
-                        })
-                    },
-                )
-            },
+        ConstantValue::Map(entries) => RuntimeValue::Map(runtime_map(
+            core,
+            entries
+                .iter()
+                .map(|(key, value)| (runtime_value(core, key), runtime_value(core, value))),
+        )),
+        ConstantValue::Set(items) => RuntimeValue::Set(runtime_map(
+            core,
+            items
+                .iter()
+                .map(|item| (runtime_value(core, item), RuntimeValue::Void)),
         )),
         ConstantValue::JsonNumber(text) => RuntimeValue::JsonNumber(text.clone()),
         ConstantValue::Function(function) => RuntimeValue::Callable(match function {
@@ -964,6 +968,24 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
             }
         }),
     }
+}
+
+/// A map of `entries` in the structural key order every map uses.
+fn runtime_map(
+    core: &CoreProgram,
+    entries: impl Iterator<Item = (RuntimeValue, RuntimeValue)>,
+) -> RuntimeMap {
+    let order = |left: &RuntimeValue, right: &RuntimeValue| {
+        super::structural::structural_order(left, right, &|constructor| {
+            core.symbol(constructor)
+                .constructor
+                .as_ref()
+                .map_or(0, |shape| shape.ordinal)
+        })
+    };
+    entries.fold(RuntimeMap::default(), |map, (key, value)| {
+        map.put(key, value, &order)
+    })
 }
 
 fn runtime_requirements(

@@ -1,0 +1,19 @@
+// A failing predicate stops Set.filter at the first item it rejects in
+// ascending order: 5 and 8 would both fail, and 5 escapes.
+import std/set as Set
+import std/set.{Set}
+
+enum Rejected {
+  TooLarge(value: Int)
+}
+
+fn keep_small(value: Int) -> Bool {
+  case value < 5 {
+    True -> True
+    False -> Failure(Rejected.TooLarge(value))
+  }
+}
+
+pub fn main() -> Set<Int> {
+  Set.filter(Set.from([8, 1, 5, 2]), keep_small)
+}

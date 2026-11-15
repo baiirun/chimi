@@ -33,7 +33,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: the interpreter's case mapping is Rust's own, and the native
+      # runtime's generated tables must match that Unicode version (17.0.0
+      # in 1.97). Bump it together with compiler/chimi/unicode/.
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -59,7 +62,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
       # Each tree records with its own copy of the script, as
       # integrate-branch.sh did, so a pull request that changes the script or

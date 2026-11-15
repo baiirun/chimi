@@ -1,0 +1,57 @@
+// Json.decode rejects malformed text, trailing input, a duplicate member name
+// (never choosing one), invalid numbers and escapes, and nesting past 128
+// levels, each with the same message and byte offset on both backends.
+import std/debug as Debug
+import std/json as Json
+import std/json.{DecodeError}
+import std/text as Text
+
+fn decoded(text: Text) -> Text {
+  case Json.decode(text) {
+    Success(value) -> Text.append("ok ", Json.encode(value))
+    Failure(DecodeError.InvalidJson(message, offset)) -> "${message} at ${Debug.render(offset)}"
+  }
+}
+
+fn nested(depth: Int) -> Text {
+  let opening = loop (count, text) = (0, "") {
+    case count == depth {
+      True -> break text
+      False -> (count + 1, Text.append(text, "["))
+    }
+  }
+  let closing = loop (count, text) = (0, "") {
+    case count == depth {
+      True -> break text
+      False -> (count + 1, Text.append(text, "]"))
+    }
+  }
+  "${opening}0${closing}"
+}
+
+pub fn main() -> List<Text> {
+  [
+    decoded(""),
+    decoded("   "),
+    decoded("{"),
+    decoded("[1,]"),
+    decoded("{\"a\" 1}"),
+    decoded("{\"a\": 1, \"a\": 1}"),
+    decoded("{\"b\": {\"a\": 1, \"a\": 2}}"),
+    decoded("1 2"),
+    decoded("01"),
+    decoded("1."),
+    decoded("-"),
+    decoded("1e+"),
+    decoded("+1"),
+    decoded("NaN"),
+    decoded("tru"),
+    decoded("\"\\x\""),
+    decoded("\"\\ud83d\""),
+    decoded("\"open"),
+    decoded("\"a\u{1}b\""),
+    decoded("{1: 2}"),
+    Debug.render(Text.starts_with(decoded(nested(128)), "ok [[[")),
+    decoded(nested(129)),
+  ]
+}

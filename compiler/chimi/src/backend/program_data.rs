@@ -58,6 +58,19 @@ impl ProgramData {
             ConstantValue::Void => (0, 0, 0, 0, 0),
             ConstantValue::Integer(value) => (1, 0, 0, 0, *value),
             ConstantValue::Duration(value) => (16, 0, 0, 0, *value),
+            // The scale with the sign in bit 8, then the magnitude's high 64
+            // bits as two halves and its low 64 bits.
+            ConstantValue::Decimal(value) => {
+                let (negative, magnitude, scale) = value.parts();
+                let high = (magnitude >> 64) as u64;
+                (
+                    18,
+                    scale | (u32::from(negative) << 8),
+                    (high >> 32) as u32,
+                    high as u32,
+                    magnitude as u64 as i64,
+                )
+            }
             // A named address: the runtime's name id is the symbol index plus 1.
             ConstantValue::ProcessAddress(symbol) => (17, symbol.raw(), 0, 0, 0),
             // The runtime reads the IEEE 754 bits back with `memcpy`.
@@ -110,6 +123,14 @@ impl ProgramData {
                     .collect::<Vec<_>>();
                 let (offset, _) = self.ids(ids);
                 (8, 0, offset, entries.len() as u32, 0)
+            }
+            ConstantValue::Set(items) => {
+                let ids = items
+                    .iter()
+                    .map(|item| self.constant_value(item))
+                    .collect::<Vec<_>>();
+                let (offset, length) = self.ids(ids);
+                (19, 0, offset, length, 0)
             }
             ConstantValue::JsonNumber(text) => (9, self.string(text), 0, 0, 0),
             ConstantValue::Function(ConstantFunction::Declared {

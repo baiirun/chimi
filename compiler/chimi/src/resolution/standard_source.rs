@@ -13,7 +13,7 @@ use crate::standard_tree;
 impl ProjectResolver {
     pub(super) fn is_standard_module(&self, module_index: usize) -> bool {
         let module = &self.semantic.modules[module_index];
-        standard_tree::is_embedded(&module.path, &module.source)
+        standard_tree::is_standard(&module.path, &module.source)
     }
 
     /// `N3102`: the `std/` prefix belongs to the compiler's embedded tree.
@@ -35,9 +35,10 @@ impl ProjectResolver {
     /// Finds the runtime-known declarations that loaded standard modules declare,
     /// before built-ins are synthesized for the rest.
     ///
-    /// Ensures: a type is taken from source only with every registered variant
-    /// present at its registered payload arity and no other variant; otherwise
-    /// `N3105` names the mismatch and the built-in identity stays synthesized.
+    /// Ensures: an enum type is taken from source only with every registered
+    /// variant present at its registered payload arity and no other variant, and
+    /// a native type only from a `native type` declaration; otherwise `N3105`
+    /// names the mismatch and the built-in identity stays synthesized.
     pub(super) fn find_source_identities(&mut self) {
         for module_index in 0..self.semantic.modules.len() {
             if !self.is_standard_module(module_index) {
@@ -45,8 +46,12 @@ impl ProjectResolver {
             }
             let module = self.semantic.modules[module_index].clone();
             for entry in RUNTIME_KNOWN {
-                let RuntimeIdentity::Type(kind) = entry.identity else {
-                    continue;
+                let (kind, declaration_kind) = match entry.identity {
+                    RuntimeIdentity::Type(kind) => (kind, ModuleDeclarationKind::Enum),
+                    RuntimeIdentity::NativeType(kind) => {
+                        (kind, ModuleDeclarationKind::NativeType)
+                    }
+                    RuntimeIdentity::Constructor(_) => continue,
                 };
                 let Some(type_name) = entry
                     .id
@@ -56,18 +61,28 @@ impl ProjectResolver {
                     continue;
                 };
                 let declaration = module.declarations.iter().find(|declaration| {
-                    declaration.kind == ModuleDeclarationKind::Enum
-                        && declaration.name.text == type_name
+                    declaration.kind == declaration_kind && declaration.name.text == type_name
                 });
                 let Some(declaration) = declaration else {
+                    let form = match declaration_kind {
+                        ModuleDeclarationKind::NativeType => "native type",
+                        _ => "enum",
+                    };
                     self.diagnostics.push(name_error(
                         &module,
                         "N3105",
                         crate::ids::TextRange::empty(0),
-                        format!("runtime-known enum {} is not declared", entry.id),
+                        format!("runtime-known {form} {} is not declared", entry.id),
                     ));
                     continue;
                 };
+                if declaration_kind == ModuleDeclarationKind::NativeType {
+                    self.source_identities.insert(
+                        (module.id, declaration.semantic_id),
+                        StandardSymbol::Type(kind),
+                    );
+                    continue;
+                }
                 match source_variants(entry.id, declaration) {
                     Ok(variants) => {
                         self.source_identities.insert(
@@ -123,6 +138,41 @@ impl ProjectResolver {
             }
             _ => {}
         }
+    }
+
+    /// Reports a `native type` that cannot take a registry identity: outside the
+    /// standard tree (`N3101`) or with no registered native type of its
+    /// qualified name (`N3104`). A registered one took its identity in
+    /// [`Self::find_source_identities`].
+    pub(super) fn check_native_type(&mut self, module_index: usize, declaration: &ModuleDeclaration) {
+        let module = &self.semantic.modules[module_index];
+        let name = &declaration.name;
+        let diagnostic = if !self.is_standard_module(module_index) {
+            name_error(
+                module,
+                "N3101",
+                name.range,
+                format!(
+                    "`native type {}`: only modules of the embedded standard tree declare native items",
+                    name.text
+                ),
+            )
+        } else {
+            let id = format!("{}.{}", module.path, name.text);
+            if matches!(
+                operations::runtime_known(&id),
+                Some(RuntimeIdentity::NativeType(_))
+            ) {
+                return;
+            }
+            name_error(
+                module,
+                "N3104",
+                name.range,
+                format!("no registered native type is named {id}"),
+            )
+        };
+        self.diagnostics.push(diagnostic);
     }
 
     /// Binds a `native fn` to its registry operation, or reports why it cannot be

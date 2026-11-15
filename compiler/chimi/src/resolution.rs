@@ -153,6 +153,8 @@ pub(crate) enum ProjectSymbolKind {
     Enum,
     EnumConstructor,
     Interface,
+    /// A `native type`: opaque, with the runtime identity of a registry type.
+    NativeType,
     Function,
     Constant,
     /// A `process name` declaration: a module-level `Process.Address<M>`.
@@ -176,6 +178,7 @@ impl ProjectSymbolKind {
             Self::Enum => "enum",
             Self::EnumConstructor => "enum constructor",
             Self::Interface => "interface",
+            Self::NativeType => "native type",
             Self::Function => "function",
             Self::Constant => "constant",
             Self::ProcessName => "process name",
@@ -324,6 +327,12 @@ impl ResolvedProject {
 
     pub(crate) fn standard_type(&self, kind: StandardType) -> SymbolId {
         self.standard_types[&kind]
+    }
+
+    /// The symbol of a standard type that only a loaded standard module declares,
+    /// such as `std/decimal.Decimal`, or `None` when the program does not load it.
+    pub(crate) fn loaded_standard_type(&self, kind: StandardType) -> Option<SymbolId> {
+        self.standard_types.get(&kind).copied()
     }
 
     pub(crate) fn standard_generic(&self, generic: StandardGeneric) -> SymbolId {
@@ -585,11 +594,6 @@ impl ProjectResolver {
             (StandardType::FileSystem, StandardModule::Io),
             (StandardType::Path, StandardModule::Io),
             (StandardType::Utf8Error, StandardModule::Io),
-            (StandardType::Map, StandardModule::Map),
-            (StandardType::JsonValue, StandardModule::Json),
-            (StandardType::JsonNumber, StandardModule::Json),
-            (StandardType::DecodeError, StandardModule::Json),
-            (StandardType::NumberError, StandardModule::Json),
             (StandardType::ChannelSender, StandardModule::Channel),
             (StandardType::ChannelReceiver, StandardModule::Channel),
             (StandardType::ChannelCompletion, StandardModule::Channel),
@@ -684,10 +688,13 @@ impl ProjectResolver {
         }
 
         for constructor in StandardConstructor::ALL {
+            // A constructor of a type only a standard module declares, such as
+            // `std/json.Value`, exists only when that module is loaded.
             if matches!(
                 constructor,
                 StandardConstructor::OptionSome | StandardConstructor::OptionNone
             ) || self.declared_in_source(StandardSymbol::Constructor(constructor))
+                || !self.standard_types.contains_key(&constructor.type_kind())
             {
                 continue;
             }
@@ -740,49 +747,6 @@ impl ProjectResolver {
             (
                 self.standard_function_symbol(StandardFunction::ListLength),
                 vec![StandardGeneric::ListLengthValue],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::DebugRender),
-                vec![StandardGeneric::DebugRenderValue],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::DebugRenderIndented),
-                vec![StandardGeneric::DebugRenderIndentedValue],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::MapEmpty),
-                vec![StandardGeneric::MapEmptyKey, StandardGeneric::MapEmptyValue],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::MapGet),
-                vec![StandardGeneric::MapGetKey, StandardGeneric::MapGetValue],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::MapPut),
-                vec![StandardGeneric::MapPutKey, StandardGeneric::MapPutValue],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::MapFrom),
-                vec![StandardGeneric::MapFromKey, StandardGeneric::MapFromValue],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::MapUpdate),
-                vec![
-                    StandardGeneric::MapUpdateKey,
-                    StandardGeneric::MapUpdateValue,
-                    StandardGeneric::MapUpdateFailures,
-                    StandardGeneric::MapUpdateNeeds,
-                ],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::MapMapValues),
-                vec![
-                    StandardGeneric::MapValuesKey,
-                    StandardGeneric::MapValuesInput,
-                    StandardGeneric::MapValuesOutput,
-                    StandardGeneric::MapValuesFailures,
-                    StandardGeneric::MapValuesNeeds,
-                ],
             ),
             (
                 self.standard_function_symbol(StandardFunction::OrderCompare),
@@ -1057,6 +1021,7 @@ impl ProjectResolver {
             ModuleDeclarationKind::Struct => (Namespace::Type, ProjectSymbolKind::Struct),
             ModuleDeclarationKind::Enum => (Namespace::Type, ProjectSymbolKind::Enum),
             ModuleDeclarationKind::Interface => (Namespace::Type, ProjectSymbolKind::Interface),
+            ModuleDeclarationKind::NativeType => (Namespace::Type, ProjectSymbolKind::NativeType),
             ModuleDeclarationKind::Function => (Namespace::Value, ProjectSymbolKind::Function),
             ModuleDeclarationKind::Constant => (Namespace::Value, ProjectSymbolKind::Constant),
             ModuleDeclarationKind::ProcessName => {
@@ -1075,6 +1040,9 @@ impl ProjectResolver {
         self.bind_source_identity(module_id, declaration.semantic_id, id);
         if let Some(signature) = declaration.function.as_ref().filter(|function| function.native) {
             self.bind_native_function(module_index, declaration, signature, id);
+        }
+        if declaration.kind == ModuleDeclarationKind::NativeType {
+            self.check_native_type(module_index, declaration);
         }
 
         if declaration.kind == ModuleDeclarationKind::Struct {

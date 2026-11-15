@@ -242,6 +242,8 @@ pub(crate) enum NodeKind {
     StructDeclaration,
     EnumDeclaration,
     InterfaceDeclaration,
+    /// `[pub] native type Name<...>`: an opaque type the runtime represents.
+    NativeTypeDeclaration,
     Field,
     Variant,
     NamedTypeField,
@@ -318,6 +320,7 @@ impl NodeKind {
             Self::StructDeclaration => "struct_declaration",
             Self::EnumDeclaration => "enum_declaration",
             Self::InterfaceDeclaration => "interface_declaration",
+            Self::NativeTypeDeclaration => "native_type_declaration",
             Self::Field => "field",
             Self::Variant => "variant",
             Self::NamedTypeField => "named_type_field",
@@ -1405,7 +1408,7 @@ impl<'source> Parser<'source> {
                     self.parse_process_name_declaration()
                 }
                 TokenKind::Fn if self.fn_starts_declaration() => self.parse_declaration(),
-                TokenKind::Identifier if self.native_starts_at(self.position) => {
+                TokenKind::Identifier if self.native_declaration_starts_at(self.position) => {
                     self.parse_declaration()
                 }
                 TokenKind::Const => self.parse_const_declaration(),
@@ -1492,6 +1495,7 @@ impl<'source> Parser<'source> {
             Some((NodeKind::FunctionDeclaration, TokenKind::Fn)) => self.parse_function(),
             Some((NodeKind::ConstDeclaration, TokenKind::Const)) => self.parse_const_declaration(),
             Some((NodeKind::ProcessNameDeclaration, _)) => self.parse_process_name_declaration(),
+            Some((NodeKind::NativeTypeDeclaration, _)) => self.parse_native_type(),
             _ => self.error_and_bump(
                 "expected `struct`, `enum`, `interface`, `fn`, `const`, or `process name` after \
                  `pub`",
@@ -1515,6 +1519,9 @@ impl<'source> Parser<'source> {
             TokenKind::Const => Some((NodeKind::ConstDeclaration, TokenKind::Const)),
             TokenKind::Identifier if self.native_starts_at(index) => {
                 Some((NodeKind::FunctionDeclaration, TokenKind::Fn))
+            }
+            TokenKind::Identifier if self.native_type_starts_at(index) => {
+                Some((NodeKind::NativeTypeDeclaration, TokenKind::Identifier))
             }
             TokenKind::Identifier if self.process_name_starts_at(index) => {
                 Some((NodeKind::ProcessNameDeclaration, TokenKind::Identifier))
@@ -1692,6 +1699,58 @@ impl<'source> Parser<'source> {
                 "a `native fn` has no body; its runtime registers the implementation",
             );
         }
+    }
+
+    /// Parses `[pub] native type Name<...>`. Ensures: a `{ ... }` after the header
+    /// is consumed as one unit and is `S1102`, because a native type has no fields
+    /// or constructors.
+    fn parse_native_type(&mut self) {
+        self.start(NodeKind::NativeTypeDeclaration);
+        self.parse_visibility();
+        self.bump();
+        self.bump();
+        self.expect(TokenKind::Identifier);
+        self.parse_optional_generic_parameters();
+        if self.at(TokenKind::LeftBrace) {
+            let start = self.current().range.start() as usize;
+            let mut depth = 0usize;
+            while !self.at(TokenKind::End) {
+                match self.kind() {
+                    TokenKind::LeftBrace => depth += 1,
+                    TokenKind::RightBrace => depth -= 1,
+                    _ => {}
+                }
+                self.bump();
+                if depth == 0 {
+                    break;
+                }
+            }
+            let end = self.tokens[self.significant[self.position - 1]].range.end() as usize;
+            self.syntax_error(
+                "S1102",
+                TextRange::new(start, end),
+                "a `native type` has no fields or constructors; its values come from native operations",
+            );
+        }
+        self.finish();
+    }
+
+    /// Whether `native type` starts at significant token `index`; like
+    /// `native fn`, `type` is read as a keyword only there.
+    fn native_type_starts_at(&self, index: usize) -> bool {
+        let text_at = |index: usize| {
+            self.significant
+                .get(index)
+                .map(|raw| &*self.tokens[*raw].text)
+        };
+        self.kind_at(index) == TokenKind::Identifier
+            && text_at(index) == Some("native")
+            && self.kind_at(index + 1) == TokenKind::Identifier
+            && text_at(index + 1) == Some("type")
+    }
+
+    fn native_declaration_starts_at(&self, index: usize) -> bool {
+        self.native_starts_at(index) || self.native_type_starts_at(index)
     }
 
     /// Whether `native fn` starts at significant token `index`. `native` is read
@@ -2122,7 +2181,7 @@ impl<'source> Parser<'source> {
                 | TokenKind::Fn
                 | TokenKind::Let
                 | TokenKind::Const
-        ) || self.native_starts_at(self.position)
+        ) || self.native_declaration_starts_at(self.position)
     }
 
     /// Equality and ordering operators are non-associative: one operator per

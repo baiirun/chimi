@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"defect","message":"decimal overflow in `+`: 85070591730234615847396907784232501249 + 85070591730234615847396907784232501249 needs more than 38 digits or scale 38"}

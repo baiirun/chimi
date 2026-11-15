@@ -1,0 +1,13 @@
+// Constants hold Decimal values of every size and sign, including a division
+// evaluated at build time, and an outcome record writes each in normalized form.
+import std/decimal as Decimal
+import std/decimal.{Decimal, Rounding}
+
+const price = Decimal.of(1999, 2)
+const share = Decimal.divide(price * Decimal.of(3, 0), Decimal.of(4, 0), 2, Rounding.HalfEven)
+// 38 digits at scale 38: the magnitude needs more than 64 bits.
+const deepest = Decimal.of(9223372036854775807, 19) * Decimal.of(-9223372036854775807, 19)
+
+pub fn main() -> List<Decimal> {
+  [price, share, deepest, Decimal.of(1500, 3), -Decimal.of(0, 4)]
+}

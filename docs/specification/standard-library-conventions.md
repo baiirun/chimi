@@ -412,7 +412,7 @@ fn port(value: Option<Text>) -> Int {
 | `Duration.ParseError` (`Empty`, `Invalid`, `OutOfRange`) | conforms |
 | `Process.SendError` (`Full(message)`, `Unavailable(message)`) | conforms; `message` hands the transferred input back |
 | `Supervisor.StartError` (`CapacityReached`, `NameTaken(name)`, `Stopped`) | conforms; `name` is an identifier (the `process name` label) |
-| `Json.NumberError` (`NotInteger`, `OutOfRange`) | does not conform: rename to `Json.ConversionError` to match `Float.ConversionError` when `std/json` moves to source (migration step 6) |
+| `Json.ConversionError` (`NotInteger`, `OutOfRange`) | conforms; renamed from `Json.NumberError` to match `Float.ConversionError` at migration step 6, and its variants dropped the copied `Number` |
 
 ## `Option` and `Result` helpers
 
@@ -1174,5 +1174,6 @@ already follows it, so module work does not wait on them.
    *Recommendation:* add `Debug.crash(message: Text) -> Never` to
    `std/debug`, a `pure` native operation. "Crash" is the word the design
    philosophy and Erlang already use for a bounded failure. `panic` suggests
-   a whole-process abort, and `fail` collides with expected failures. Until
-   it exists, std wrappers keep preconditions in their native operations.
+   a whole-process abort, and `fail` collides with expected failures.
+   *Resolved:* `std/debug` declares `crash` as recommended, and std wrappers
+   written in Chimi call it to check their preconditions.

@@ -6,7 +6,7 @@ use super::catalogue::Scenario;
 use crate::Compiler;
 use crate::backend::native::build_application;
 use crate::json::{JsonData, decode_json};
-use crate::project::LoadedProject;
+use crate::project::{LoadedProject, StandardTree};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -488,7 +488,7 @@ fn defect_fields(line: &str) -> Option<String> {
 /// native runner would use for the outcome must be `scenario.exit_code`.
 pub(super) fn interpret(scenario: &Scenario, options: &Options) -> Result<(), String> {
     let expected = expected_lines(scenario, OUTCOME)?;
-    let project = LoadedProject::load(root(scenario), "app/main")
+    let project = LoadedProject::load(root(scenario), "app/main", &StandardTree::embedded())
         .map_err(|error| format!("load fixture: {error}"))?;
     let program = Compiler::prepare_backend(project.sources()).map_err(|diagnostics| {
         format!(
@@ -623,8 +623,8 @@ fn build(scenario: &Scenario, scratch: &Path) -> Result<PathBuf, String> {
 /// The native executable of the project at `root` with entry module `entry`,
 /// built into `scratch` as `program`.
 pub(super) fn build_entry(root: &Path, entry: &str, scratch: &Path) -> Result<PathBuf, String> {
-    let project =
-        LoadedProject::load(root, entry).map_err(|error| format!("load fixture: {error}"))?;
+    let project = LoadedProject::load(root, entry, &StandardTree::embedded())
+        .map_err(|error| format!("load fixture: {error}"))?;
     let program = Compiler::prepare_backend(project.sources()).map_err(|diagnostics| {
         format!(
             "fixture does not compile: {}",
@@ -632,8 +632,13 @@ pub(super) fn build_entry(root: &Path, entry: &str, scratch: &Path) -> Result<Pa
         )
     })?;
     let executable = scratch.join("program");
-    build_application(&program, &executable, &scratch.join("artifacts"))
-        .map_err(|error| format!("native build failed: {error}"))?;
+    build_application(
+        &program,
+        &StandardTree::embedded(),
+        &executable,
+        &scratch.join("artifacts"),
+    )
+    .map_err(|error| format!("native build failed: {error}"))?;
     Ok(executable)
 }
 

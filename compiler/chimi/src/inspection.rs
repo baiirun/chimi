@@ -1,7 +1,7 @@
 use crate::compiler::ValuePropertyStatus;
 use crate::diagnostic::Diagnostic;
 use crate::ids::{ModuleId, SemanticId, SymbolId, TextRange};
-use crate::json::write_json_string;
+use crate::json::write_json_string_escaping_controls;
 use crate::resolution::{ProjectReference, ProjectSymbolKind, ReferenceResolution};
 use crate::semantic::{
     CaseOrigin, ModuleBlockItem, ModuleDeclaration, ModuleExpression, Pattern, SemanticModule,
@@ -279,9 +279,9 @@ impl InspectionReport {
 
     pub fn render_json(&self) -> String {
         let mut output = String::from("{\"schema\":\"chimi.inspection.v1\",\"module\":");
-        write_json_string(&mut output, &self.module_path);
+        write_json_string_escaping_controls(&mut output, &self.module_path);
         output.push_str(",\"path\":");
-        write_json_string(&mut output, &self.source_path.to_string_lossy());
+        write_json_string_escaping_controls(&mut output, &self.source_path.to_string_lossy());
         write!(
             output,
             ",\"offset\":{},\"line\":{},\"byte_column\":{},\"syntax_path\":[",
@@ -293,7 +293,7 @@ impl InspectionReport {
                 output.push(',');
             }
             output.push_str("{\"kind\":");
-            write_json_string(&mut output, frame.kind);
+            write_json_string_escaping_controls(&mut output, frame.kind);
             output.push_str(",\"range\":");
             write_json_range(&mut output, frame.range);
             output.push('}');
@@ -301,9 +301,9 @@ impl InspectionReport {
         output.push_str("],\"token\":");
         if let Some(token) = &self.token {
             output.push_str("{\"kind\":");
-            write_json_string(&mut output, token.kind);
+            write_json_string_escaping_controls(&mut output, token.kind);
             output.push_str(",\"text\":");
-            write_json_string(&mut output, &token.text);
+            write_json_string_escaping_controls(&mut output, &token.text);
             output.push_str(",\"range\":");
             write_json_range(&mut output, token.range);
             output.push('}');
@@ -809,21 +809,21 @@ fn write_json_reference(output: &mut String, reference: Option<&ReferenceInspect
         return;
     };
     output.push_str("{\"text\":");
-    write_json_string(output, &reference.text);
+    write_json_string_escaping_controls(output, &reference.text);
     output.push_str(",\"namespace\":");
-    write_json_string(output, reference.namespace);
+    write_json_string_escaping_controls(output, reference.namespace);
     output.push_str(",\"status\":");
-    write_json_string(output, reference.status);
+    write_json_string_escaping_controls(output, reference.status);
     output.push_str(",\"range\":");
     write_json_range(output, reference.range);
     output.push_str(",\"target\":");
     if let Some(target) = &reference.target {
         output.push_str("{\"name\":");
-        write_json_string(output, &target.name);
+        write_json_string_escaping_controls(output, &target.name);
         output.push_str(",\"namespace\":");
-        write_json_string(output, target.namespace);
+        write_json_string_escaping_controls(output, target.namespace);
         output.push_str(",\"kind\":");
-        write_json_string(output, target.kind);
+        write_json_string_escaping_controls(output, target.kind);
         output.push_str(",\"module\":");
         write_json_optional_string(output, target.module_path.as_deref());
         output.push_str(",\"path\":");
@@ -851,11 +851,11 @@ fn write_json_callable(output: &mut String, callable: Option<&CallableInspection
         return;
     };
     output.push_str("{\"display\":");
-    write_json_string(output, &callable.display);
+    write_json_string_escaping_controls(output, &callable.display);
     output.push_str(",\"inputs\":");
     write_json_strings(output, &callable.inputs);
     output.push_str(",\"success\":");
-    write_json_string(output, &callable.success);
+    write_json_string_escaping_controls(output, &callable.success);
     output.push_str(",\"failures\":");
     write_json_strings(output, &callable.failures);
     output.push_str(",\"failure_parameters\":");
@@ -866,9 +866,9 @@ fn write_json_callable(output: &mut String, callable: Option<&CallableInspection
             output.push(',');
         }
         output.push_str("{\"name\":");
-        write_json_string(output, &need.name);
+        write_json_string_escaping_controls(output, &need.name);
         output.push_str(",\"interface\":");
-        write_json_string(output, &need.interface);
+        write_json_string_escaping_controls(output, &need.interface);
         output.push('}');
     }
     output.push_str("],\"needs_parameters\":");
@@ -882,14 +882,14 @@ fn write_json_strings(output: &mut String, values: &[String]) {
         if index > 0 {
             output.push(',');
         }
-        write_json_string(output, value);
+        write_json_string_escaping_controls(output, value);
     }
     output.push(']');
 }
 
 fn write_json_optional_string(output: &mut String, value: Option<&str>) {
     if let Some(value) = value {
-        write_json_string(output, value);
+        write_json_string_escaping_controls(output, value);
     } else {
         output.push_str("null");
     }

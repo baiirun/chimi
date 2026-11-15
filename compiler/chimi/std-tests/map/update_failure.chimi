@@ -1,0 +1,16 @@
+// A failing change passes through Map.update unchanged, with the current value
+// it was given.
+import std/map as Map
+import std/map.{Map}
+
+enum Rejected {
+  Current(value: Option<Int>)
+}
+
+fn reject(current: Option<Int>) -> Int {
+  Failure(Rejected.Current(current))
+}
+
+pub fn main() -> Map<Text, Int> {
+  Map.update(Map.from([("a", 1), ("b", 2)]), "b", reject)
+}

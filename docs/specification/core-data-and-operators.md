@@ -603,8 +603,9 @@ integer text such as `"7"`. It rejects whitespace, a leading `+`, `nan`, and
 failure is an expected failure, because parsing reads external input.
 
 `Float.to_int` takes a value that the caller has already rounded. Rounding is a
-separate, visible step. The same `NotInteger` and `OutOfRange` variants exist
-for `Json.number_to_int` today.
+separate, visible step. `Json.ConversionError` has the same `NotInteger` and
+`OutOfRange` variants for `Json.number_to_int`, which converts by value, so
+`1.0` and `1e2` convert and `1.5` is `NotInteger`.
 
 The failure types are `ParseError` in `std/int` (`Empty`, `InvalidDigit`,
 `OutOfRange`), and `ParseError` (`Empty`, `Invalid`, `OutOfRange`) and
@@ -624,6 +625,7 @@ JSON renders a `Float` with the same text.
 such as money. It is a standard primitive, not a user struct, so its equality
 is numeric rather than representational.
 
+<!-- chimi: check -->
 ```chimi
 import std/decimal as Decimal
 import std/decimal.{Decimal, Rounding}

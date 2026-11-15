@@ -1,0 +1,25 @@
+/// Diagnostic aids: `Debug.render` writes any value in the debug format, and
+/// `Debug.crash` ends the unit of work with a defect. The format is for people
+/// reading output, not a stable contract; code compares values with `==`.
+
+/// Returns `value` in the debug format, on one line: `Money { cents: 2500 }`,
+/// `[1, 2]`, `Some("a")`. Equal values render the same, and a function or a
+/// runtime handle never shows its contents.
+///
+/// Cost: O(n) in the size of `value`.
+pub native fn render<T>(value: T) -> Text
+
+/// Returns `value` in the debug format with each field, element, and entry on
+/// its own line, indented by two spaces and ended with `,`, for comparing
+/// values in assertion messages.
+///
+/// Cost: O(n) in the size of `value`.
+pub native fn render_indented<T>(value: T) -> Text
+
+/// Ends the current unit of work with a defect carrying `message`, for a
+/// broken precondition that the caller could have checked. It never returns.
+/// Name the function and the precondition, as in
+/// `List.chunks: size must be positive, got 0`.
+///
+/// Cost: O(1).
+pub native fn crash(message: Text) -> Never

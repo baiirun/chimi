@@ -1,18 +1,22 @@
 mod constants;
 mod core_operations;
 mod debug;
+mod decimal_operations;
 mod durations;
+mod json_operations;
+mod map_operations;
 mod persistent_list;
 mod processes;
 mod structural;
 mod teardown;
 
+use crate::decimal::decimal_binary;
 use crate::executable::{
     CoreArm, CoreLiteral, CoreOperation, CorePattern, CoreProgram, CoreStep, CoreSymbolKind,
     LegacyCoreProgram,
 };
 use crate::ids::{CoreNodeId, FileId, OriginId, SemanticId, SymbolId, TextRange};
-use crate::json::{JsonData, decode_json, write_json_data, write_json_string};
+use crate::json::write_json_string;
 use crate::numeric::{
     ArithmeticOperator, FloatParseError, FloatToIntError, IntParseError, float_binary,
     float_to_int, integer_binary, integer_modulo, integer_negate, parse_float, parse_int,
@@ -208,6 +212,9 @@ pub enum ExecutionValue {
     },
     /// Nanoseconds.
     Duration(i64),
+    /// A `std/decimal.Decimal` in its normalized text, as `Debug.render` writes
+    /// it, so equal values are equal outcomes.
+    Decimal(String),
     Record(Vec<ValueField>),
     Constructed {
         type_name: String,
@@ -363,6 +370,8 @@ enum RuntimeValue {
     },
     /// A `std/duration.Duration`: a signed count of nanoseconds.
     Duration(i64),
+    /// A `std/decimal.Decimal`.
+    Decimal(crate::decimal::Decimal),
     /// A named `std/process.Address`: the `process name` declaration's symbol.
     ProcessAddress(SymbolId),
     /// Fields of records and constructed values are shared like list nodes and
@@ -376,6 +385,9 @@ enum RuntimeValue {
         fields: Arc<Vec<RuntimeField>>,
     },
     Map(RuntimeMap),
+    /// A `std/set.Set`: a map from each item to `Void`, kept a separate kind so
+    /// rendering and outcomes show a set.
+    Set(RuntimeMap),
     JsonNumber(String),
     Callable(RuntimeCallable),
 }
@@ -397,6 +409,7 @@ impl RuntimeValue {
                 | Self::Record(_)
                 | Self::Constructed { .. }
                 | Self::Map(_)
+                | Self::Set(_)
                 | Self::Callable(_)
         )
     }
@@ -442,9 +455,9 @@ struct RuntimeMapNode {
     right: Option<Arc<Self>>,
 }
 
-/// The internal total order over keys: structural order, which is consistent
-/// with equality for every equatable type. It is never observable through
-/// enumeration, which `Map` does not promise.
+/// The order over keys: structural order, which is consistent with equality
+/// for every equatable type. Enumeration visits keys in this order, which
+/// `std/map` exposes only for an ordered key type.
 type KeyOrder<'order> = dyn Fn(&RuntimeValue, &RuntimeValue) -> Comparison + 'order;
 
 impl RuntimeMap {
@@ -464,6 +477,15 @@ impl RuntimeMap {
         Self {
             root: Some(map_insert(self.root.clone(), key, value, order)),
         }
+    }
+
+    /// The map without `key`, or `None` when it has no such key.
+    fn remove(&self, key: &RuntimeValue, order: &KeyOrder<'_>) -> Option<Self> {
+        map_remove(self.root.clone(), key, order).map(|root| Self { root })
+    }
+
+    fn size(&self) -> usize {
+        self.entry_refs().len()
     }
 
     /// Entries in key order, borrowed. The walk keeps its own stack; the tree is
@@ -509,7 +531,13 @@ fn map_insert(
             Some(map_insert(node.left.clone(), key, value, order)),
             node.right.clone(),
         ),
-        Comparison::Equal => map_node(key, value, node.left.clone(), node.right.clone()),
+        // An equal key already held stays; only the value changes.
+        Comparison::Equal => map_node(
+            node.key.clone(),
+            value,
+            node.left.clone(),
+            node.right.clone(),
+        ),
         Comparison::Greater => map_node(
             node.key.clone(),
             node.value.clone(),
@@ -518,6 +546,65 @@ fn map_insert(
         ),
     };
     map_balance(updated)
+}
+
+/// `node` without `key`, rebalanced; `None` when `key` is absent. The recursion
+/// is bounded by the tree height.
+fn map_remove(
+    node: Option<Arc<RuntimeMapNode>>,
+    key: &RuntimeValue,
+    order: &KeyOrder<'_>,
+) -> Option<Option<Arc<RuntimeMapNode>>> {
+    let node = node?;
+    let rebuilt = |left, right| {
+        Some(Some(map_balance(map_node(
+            node.key.clone(),
+            node.value.clone(),
+            left,
+            right,
+        ))))
+    };
+    match order(key, &node.key) {
+        Comparison::Less => {
+            let left = map_remove(node.left.clone(), key, order)?;
+            rebuilt(left, node.right.clone())
+        }
+        Comparison::Greater => {
+            let right = map_remove(node.right.clone(), key, order)?;
+            rebuilt(node.left.clone(), right)
+        }
+        Comparison::Equal => Some(match (&node.left, &node.right) {
+            (None, right) => right.clone(),
+            (left, None) => left.clone(),
+            (left, Some(right)) => {
+                let (least, rest) = map_remove_least(right.clone());
+                Some(map_balance(map_node(
+                    least.key.clone(),
+                    least.value.clone(),
+                    left.clone(),
+                    rest,
+                )))
+            }
+        }),
+    }
+}
+
+/// The least node of `node` and the rest of the tree without it.
+fn map_remove_least(
+    node: Arc<RuntimeMapNode>,
+) -> (Arc<RuntimeMapNode>, Option<Arc<RuntimeMapNode>>) {
+    let Some(left) = node.left.clone() else {
+        let rest = node.right.clone();
+        return (node, rest);
+    };
+    let (least, rest) = map_remove_least(left);
+    let rebuilt = map_balance(map_node(
+        node.key.clone(),
+        node.value.clone(),
+        rest,
+        node.right.clone(),
+    ));
+    (least, Some(rebuilt))
 }
 
 fn map_height(node: &Option<Arc<RuntimeMapNode>>) -> u16 {
@@ -999,6 +1086,9 @@ impl<'core> Evaluator<'core> {
                     },
                 },
                 RuntimeValue::Float(value) => Control::Success(RuntimeValue::Float(-value)),
+                RuntimeValue::Decimal(value) => {
+                    Control::Success(RuntimeValue::Decimal(value.negate()))
+                }
                 _ => Control::Defect {
                     message: "verified unary operand is not an integer".to_owned(),
                     node: Some(node_id),
@@ -1553,11 +1643,47 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::TextReplace
             | StandardFunction::TextTrimStart
             | StandardFunction::TextTrimEnd
+            | StandardFunction::TextLowercase
+            | StandardFunction::TextUppercase
+            | StandardFunction::TextGraphemes
             | StandardFunction::ListGet
             | StandardFunction::ListPush
             | StandardFunction::ListSlice
             | StandardFunction::ListSet => {
                 self.invoke_core_operation(function, arguments, call_node)
+            }
+            StandardFunction::MapEmpty
+            | StandardFunction::MapGet
+            | StandardFunction::MapPut
+            | StandardFunction::MapRemove
+            | StandardFunction::MapSize
+            | StandardFunction::MapReduceEntries => {
+                self.invoke_map_operation(function, arguments, span, call_node, environment)
+            }
+            StandardFunction::SetEmpty
+            | StandardFunction::SetContains
+            | StandardFunction::SetAdd
+            | StandardFunction::SetRemove
+            | StandardFunction::SetSize
+            | StandardFunction::SetReduceItems => {
+                self.invoke_set_operation(function, arguments, span, call_node, environment)
+            }
+            StandardFunction::JsonDecode
+            | StandardFunction::JsonEncode
+            | StandardFunction::JsonInt
+            | StandardFunction::JsonNumberToInt
+            | StandardFunction::JsonNumberToDecimal => {
+                self.invoke_json_operation(function, arguments, span, call_node, environment)
+            }
+            StandardFunction::DecimalScaled
+            | StandardFunction::DecimalRead
+            | StandardFunction::DecimalToText
+            | StandardFunction::DecimalAddChecked
+            | StandardFunction::DecimalSubtractChecked
+            | StandardFunction::DecimalMultiplyChecked
+            | StandardFunction::DecimalDivideRounded
+            | StandardFunction::DecimalToFloat => {
+                self.invoke_decimal_operation(function, arguments, span, call_node, environment)
             }
             StandardFunction::IoPath => {
                 let [RuntimeValue::Text(path)] = arguments.as_slice() else {
@@ -1583,190 +1709,6 @@ impl<'core> Evaluator<'core> {
                 Control::Success(RuntimeValue::Integer(
                     i64::try_from(values.len()).unwrap_or(i64::MAX),
                 ))
-            }
-            StandardFunction::MapEmpty => {
-                Control::Success(RuntimeValue::Map(RuntimeMap::default()))
-            }
-            StandardFunction::MapGet => {
-                let [RuntimeValue::Map(map), key] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                let value = map.get(key, &self.key_order());
-                Control::Success(match value {
-                    Some(value) => {
-                        self.standard_value(StandardConstructor::OptionSome, vec![value])
-                    }
-                    None => self.standard_value(StandardConstructor::OptionNone, Vec::new()),
-                })
-            }
-            StandardFunction::MapPut => {
-                let [RuntimeValue::Map(map), key, value] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                Control::Success(RuntimeValue::Map(map.put(
-                    key.clone(),
-                    value.clone(),
-                    &self.key_order(),
-                )))
-            }
-            StandardFunction::MapFrom => {
-                let [RuntimeValue::List(pairs)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                let order = self.key_order();
-                let mut map = RuntimeMap::default();
-                for pair in pairs.iter() {
-                    let RuntimeValue::Tuple(pair) = pair else {
-                        return self.intrinsic_shape_defect(function, call_node);
-                    };
-                    let [key, value] = pair.as_slice() else {
-                        return self.intrinsic_shape_defect(function, call_node);
-                    };
-                    map = map.put(key.clone(), value.clone(), &order);
-                }
-                Control::Success(RuntimeValue::Map(map))
-            }
-            StandardFunction::MapUpdate => {
-                let [
-                    RuntimeValue::Map(map),
-                    key,
-                    RuntimeValue::Callable(callback),
-                ] = arguments.as_slice()
-                else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                let current = match map.get(key, &self.key_order()) {
-                    Some(value) => {
-                        self.standard_value(StandardConstructor::OptionSome, vec![value])
-                    }
-                    None => self.standard_value(StandardConstructor::OptionNone, Vec::new()),
-                };
-                let value = success_or_return!(self.invoke(
-                    callback.clone(),
-                    vec![current],
-                    span,
-                    call_node,
-                    environment,
-                ));
-                Control::Success(RuntimeValue::Map(map.put(
-                    key.clone(),
-                    value,
-                    &self.key_order(),
-                )))
-            }
-            StandardFunction::MapMapValues => {
-                let [RuntimeValue::Map(map), RuntimeValue::Callable(callback)] =
-                    arguments.as_slice()
-                else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                let mut output = RuntimeMap::default();
-                for (key, value) in map.entries() {
-                    let value = success_or_return!(self.invoke(
-                        callback.clone(),
-                        vec![value],
-                        span,
-                        call_node,
-                        environment.clone(),
-                    ));
-                    output = output.put(key, value, &self.key_order());
-                }
-                Control::Success(RuntimeValue::Map(output))
-            }
-            StandardFunction::JsonDecode => {
-                let [RuntimeValue::Text(source)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                match decode_json(source) {
-                    Ok(value) => Control::Success(self.json_to_runtime(value)),
-                    Err(error) => Control::Failure(self.standard_value(
-                        StandardConstructor::DecodeInvalidJson,
-                        vec![
-                            RuntimeValue::Text(error.message),
-                            RuntimeValue::Integer(i64::try_from(error.offset).unwrap_or(i64::MAX)),
-                        ],
-                    )),
-                }
-            }
-            StandardFunction::JsonEncode => {
-                let [value] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                let Ok(value) = self.runtime_to_json(value) else {
-                    return Control::Defect {
-                        message: "verified JSON value has an invalid runtime shape".to_owned(),
-                        node: Some(call_node),
-                    };
-                };
-                let mut output = String::new();
-                write_json_data(&mut output, &value);
-                Control::Success(RuntimeValue::Text(output))
-            }
-            StandardFunction::JsonBoolean => {
-                let [RuntimeValue::Boolean(value)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                Control::Success(self.standard_value(
-                    StandardConstructor::JsonBoolean,
-                    vec![RuntimeValue::Boolean(*value)],
-                ))
-            }
-            StandardFunction::JsonInt => {
-                let [RuntimeValue::Integer(value)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                Control::Success(self.standard_value(
-                    StandardConstructor::JsonNumber,
-                    vec![RuntimeValue::JsonNumber(value.to_string())],
-                ))
-            }
-            StandardFunction::JsonText => {
-                let [RuntimeValue::Text(value)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                Control::Success(self.standard_value(
-                    StandardConstructor::JsonText,
-                    vec![RuntimeValue::Text(value.clone())],
-                ))
-            }
-            StandardFunction::JsonArray => {
-                let [RuntimeValue::List(values)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                Control::Success(self.standard_value(
-                    StandardConstructor::JsonArray,
-                    vec![RuntimeValue::List(values.clone())],
-                ))
-            }
-            StandardFunction::JsonObject => {
-                let [RuntimeValue::Map(fields)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                Control::Success(self.standard_value(
-                    StandardConstructor::JsonObject,
-                    vec![RuntimeValue::Map(fields.clone())],
-                ))
-            }
-            StandardFunction::JsonNumberToInt => {
-                let [RuntimeValue::JsonNumber(number)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                if number
-                    .bytes()
-                    .any(|byte| matches!(byte, b'.' | b'e' | b'E'))
-                {
-                    return Control::Failure(self.standard_value(
-                        StandardConstructor::NumberNotInteger,
-                        vec![RuntimeValue::JsonNumber(number.clone())],
-                    ));
-                }
-                match number.parse::<i64>() {
-                    Ok(value) => Control::Success(RuntimeValue::Integer(value)),
-                    Err(_) => Control::Failure(self.standard_value(
-                        StandardConstructor::NumberOutOfRange,
-                        vec![RuntimeValue::JsonNumber(number.clone())],
-                    )),
-                }
             }
             StandardFunction::TextAppend => {
                 let [RuntimeValue::Text(left), RuntimeValue::Text(right)] = arguments.as_slice()
@@ -2040,102 +1982,6 @@ impl<'core> Evaluator<'core> {
             .expect("core retains every standard constructor")
     }
 
-    fn json_to_runtime(&self, value: JsonData) -> RuntimeValue {
-        match value {
-            JsonData::Null => self.standard_value(StandardConstructor::JsonNull, Vec::new()),
-            JsonData::Boolean(value) => self.standard_value(
-                StandardConstructor::JsonBoolean,
-                vec![RuntimeValue::Boolean(value)],
-            ),
-            JsonData::Number(value) => self.standard_value(
-                StandardConstructor::JsonNumber,
-                vec![RuntimeValue::JsonNumber(value)],
-            ),
-            JsonData::Text(value) => self.standard_value(
-                StandardConstructor::JsonText,
-                vec![RuntimeValue::Text(value)],
-            ),
-            JsonData::Array(values) => self.standard_value(
-                StandardConstructor::JsonArray,
-                vec![RuntimeValue::List(
-                    values
-                        .into_iter()
-                        .map(|value| self.json_to_runtime(value))
-                        .collect(),
-                )],
-            ),
-            JsonData::Object(fields) => {
-                let mut map = RuntimeMap::default();
-                for (name, value) in fields {
-                    map = map.put(
-                        RuntimeValue::Text(name),
-                        self.json_to_runtime(value),
-                        &self.key_order(),
-                    );
-                }
-                self.standard_value(
-                    StandardConstructor::JsonObject,
-                    vec![RuntimeValue::Map(map)],
-                )
-            }
-        }
-    }
-
-    fn runtime_to_json(&self, value: &RuntimeValue) -> Result<JsonData, ()> {
-        let RuntimeValue::Constructed {
-            constructor,
-            fields,
-            ..
-        } = value
-        else {
-            return Err(());
-        };
-        let Some(StandardSymbol::Constructor(constructor)) =
-            self.core.symbol(*constructor).standard
-        else {
-            return Err(());
-        };
-        let field = |index: usize| fields.get(index).map(|field| &field.value).ok_or(());
-        match constructor {
-            StandardConstructor::JsonNull => Ok(JsonData::Null),
-            StandardConstructor::JsonBoolean => match field(0)? {
-                RuntimeValue::Boolean(value) => Ok(JsonData::Boolean(*value)),
-                _ => Err(()),
-            },
-            StandardConstructor::JsonNumber => match field(0)? {
-                RuntimeValue::JsonNumber(value) => Ok(JsonData::Number(value.clone())),
-                _ => Err(()),
-            },
-            StandardConstructor::JsonText => match field(0)? {
-                RuntimeValue::Text(value) => Ok(JsonData::Text(value.clone())),
-                _ => Err(()),
-            },
-            StandardConstructor::JsonArray => match field(0)? {
-                RuntimeValue::List(values) => values
-                    .iter()
-                    .map(|value| self.runtime_to_json(value))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(JsonData::Array),
-                _ => Err(()),
-            },
-            StandardConstructor::JsonObject => match field(0)? {
-                RuntimeValue::Map(fields) => fields
-                    .entries()
-                    .into_iter()
-                    .map(|(name, value)| match &name {
-                        RuntimeValue::Text(name) => self
-                            .runtime_to_json(&value)
-                            .map(|value| (name.clone(), value)),
-                        _ => Err(()),
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(JsonData::Object),
-                _ => Err(()),
-            },
-            _ => Err(()),
-        }
-    }
-
     fn key_order(&self) -> impl Fn(&RuntimeValue, &RuntimeValue) -> Comparison + '_ {
         |left, right| self.structural_order(left, right)
     }
@@ -2172,6 +2018,12 @@ impl<'core> Evaluator<'core> {
                 (RuntimeValue::Float(left), RuntimeValue::Float(right)) => {
                     match float_binary(arithmetic, left, right) {
                         Ok(value) => Control::Success(RuntimeValue::Float(value)),
+                        Err(message) => defect(message),
+                    }
+                }
+                (RuntimeValue::Decimal(left), RuntimeValue::Decimal(right)) => {
+                    match decimal_binary(arithmetic, left, right) {
+                        Ok(value) => Control::Success(RuntimeValue::Decimal(value)),
                         Err(message) => defect(message),
                     }
                 }
@@ -2565,6 +2417,7 @@ fn public_value(value: &RuntimeValue) -> ExecutionValue {
             end: *end,
         },
         RuntimeValue::Duration(value) => ExecutionValue::Duration(*value),
+        RuntimeValue::Decimal(value) => ExecutionValue::Decimal(value.normalized_text()),
         RuntimeValue::Record(fields) => ExecutionValue::Record(public_fields(fields)),
         RuntimeValue::Constructed {
             type_name,
@@ -2590,6 +2443,12 @@ fn public_value(value: &RuntimeValue) -> ExecutionValue {
                     },
                     value: public_value(value),
                 })
+                .collect(),
+        ),
+        RuntimeValue::Set(set) => ExecutionValue::List(
+            set.entry_refs()
+                .into_iter()
+                .map(|(item, _)| public_value(item))
                 .collect(),
         ),
         RuntimeValue::Callable(callable) => ExecutionValue::Callable {
@@ -2732,6 +2591,11 @@ fn write_json_value(output: &mut String, value: &ExecutionValue) {
             ExecutionValue::Duration(nanoseconds) => {
                 write!(output, "{{\"duration\":{nanoseconds}}}")
                     .expect("writing JSON to a string cannot fail")
+            }
+            ExecutionValue::Decimal(text) => {
+                output.push_str("{\"decimal\":");
+                write_json_string(output, text);
+                output.push('}');
             }
             ExecutionValue::Record(fields) => {
                 output.push('{');
@@ -2942,6 +2806,56 @@ mod tests {
 
         assert!(map.root.as_ref().unwrap().height <= 20);
         assert_eq!(map.entries().len(), 10_000);
+    }
+
+    /// The AVL bound: a tree of `n` nodes is at most `1.45 log2(n + 2)` high.
+    /// Keeping only the keys on the leftmost (or rightmost) path and removing
+    /// every other key leaves a path as long as the old height unless removal
+    /// rebalances. Each order of removal reaches the rebalancing on one side of
+    /// the descent. `tests/fixtures/native-map-runtime.c` is the same check of
+    /// `runtime.c`.
+    #[test]
+    fn removals_that_keep_one_path_keep_map_height_logarithmic() {
+        const COUNT: i64 = 4_096;
+        for (leftmost, ascending) in [(true, true), (false, true), (true, false), (false, false)] {
+            let mut map = RuntimeMap::default();
+            for value in 0..COUNT {
+                map = map.put(RuntimeValue::Integer(value), RuntimeValue::Void, &order);
+            }
+            let mut path = Vec::new();
+            let mut node = map.root.as_deref();
+            while let Some(current) = node {
+                let RuntimeValue::Integer(key) = current.key else {
+                    unreachable!("every key is an Int")
+                };
+                path.push(key);
+                node = if leftmost { current.left.as_deref() } else { current.right.as_deref() };
+            }
+            let removals = (0..COUNT).map(|step| if ascending { step } else { COUNT - 1 - step });
+            for value in removals.filter(|value| !path.contains(value)) {
+                map = map
+                    .remove(&RuntimeValue::Integer(value), &order)
+                    .expect("the key is held");
+            }
+
+            let height = f64::from(map.root.as_ref().unwrap().height);
+            let bound = 1.45 * ((path.len() + 2) as f64).log2();
+            assert!(
+                height <= bound,
+                "leftmost {leftmost}, ascending {ascending}: height {height} for {} keys",
+                path.len()
+            );
+            path.sort_unstable();
+            let keys = map
+                .entries()
+                .into_iter()
+                .map(|(key, _)| match key {
+                    RuntimeValue::Integer(key) => key,
+                    _ => unreachable!("every key is an Int"),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(keys, path);
+        }
     }
 
     /// Nesting depth for the teardown tests: far more levels than `SMALL_STACK` holds

@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"expected_failure","error":{"type":"Rejected","variant":"Negative","fields":{"value":-5}}}

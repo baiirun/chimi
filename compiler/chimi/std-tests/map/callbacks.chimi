@@ -1,0 +1,25 @@
+// std/map functions that take callbacks. Keys go in out of order, so `reduce`
+// shows the ascending key order of its calls. `each` is covered by
+// each_stops_at_first_failure.
+import std/debug as Debug
+import std/map as Map
+
+fn restock(current: Option<Int>) -> Int {
+  case current {
+    Some(count) -> count + 1
+    None -> -1
+  }
+}
+
+pub fn main() -> List<Text> {
+  let stock = Map.from([("pear", 3), ("apple", 0), ("fig", 7)])
+  let in_stock = Map.map_values(stock, fn(count) { count > 0 })
+  let kept = Map.filter(stock, fn(name, count) { count > 0 and name != "pear" })
+  [
+    "update, present: ${Debug.render(Map.update(stock, "fig", restock))}",
+    "update, absent: ${Debug.render(Map.update(stock, "kiwi", restock))}",
+    "map_values: ${Debug.render(in_stock)}",
+    "filter: ${Debug.render(kept)}",
+    "reduce, in key order: ${Map.reduce(stock, "", fn(text, name, count) { "${text}${name}=${count};" })}",
+  ]
+}

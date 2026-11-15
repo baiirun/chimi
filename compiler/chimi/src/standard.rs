@@ -2,12 +2,9 @@
 pub(crate) enum StandardModule {
     Channel,
     Io,
-    Json,
-    Map,
     Task,
     Int,
     Float,
-    Debug,
     Order,
     Range,
     Duration,
@@ -17,15 +14,12 @@ pub(crate) enum StandardModule {
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Channel,
         Self::Io,
-        Self::Json,
-        Self::Map,
         Self::Task,
         Self::Int,
         Self::Float,
-        Self::Debug,
         Self::Order,
         Self::Range,
         Self::Duration,
@@ -38,12 +32,9 @@ impl StandardModule {
         match self {
             Self::Channel => "std/channel",
             Self::Io => "std/io",
-            Self::Json => "std/json",
-            Self::Map => "std/map",
             Self::Task => "std/task",
             Self::Int => "std/int",
             Self::Float => "std/float",
-            Self::Debug => "std/debug",
             Self::Order => "std/order",
             Self::Range => "std/range",
             Self::Duration => "std/duration",
@@ -75,7 +66,7 @@ pub(crate) enum StandardType {
     JsonValue,
     JsonNumber,
     DecodeError,
-    NumberError,
+    JsonConversionError,
     Option,
     ChannelSender,
     ChannelReceiver,
@@ -109,6 +100,12 @@ pub(crate) enum StandardType {
     SupervisorStartError,
     /// `std/clock.Clock`: the time provider the runner binds to a root `clock` need.
     Clock,
+    // `native type`s that only the embedded standard tree declares
+    // (`operations.rs`); no built-in module synthesizes them.
+    /// `std/set.Set<T>`.
+    Set,
+    /// `std/decimal.Decimal`: an exact base-10 number.
+    Decimal,
 }
 
 impl StandardType {
@@ -121,7 +118,7 @@ impl StandardType {
                 | Self::FileError
                 | Self::Utf8Error
                 | Self::DecodeError
-                | Self::NumberError
+                | Self::JsonConversionError
                 | Self::ChannelSendError
                 | Self::ChannelError
                 | Self::IntParseError
@@ -145,7 +142,7 @@ impl StandardType {
             Self::JsonValue => "Value",
             Self::JsonNumber => "Number",
             Self::DecodeError => "DecodeError",
-            Self::NumberError => "NumberError",
+            Self::JsonConversionError => "ConversionError",
             Self::Option => "Option",
             Self::ChannelSender => "Sender",
             Self::ChannelReceiver => "Receiver",
@@ -171,6 +168,8 @@ impl StandardType {
             Self::SupervisorManagedSupervisor => "ManagedSupervisor",
             Self::SupervisorStartError => "StartError",
             Self::Clock => "Clock",
+            Self::Set => "Set",
+            Self::Decimal => "Decimal",
         }
     }
 
@@ -196,7 +195,7 @@ impl StandardType {
             Self::ChannelSender | Self::ChannelReceiver | Self::ChannelCompletion => {
                 StandardProperties::Opaque("a channel capability")
             }
-            Self::Map => StandardProperties::Unordered,
+            Self::Map | Self::Set => StandardProperties::Unordered,
             Self::JsonValue => StandardProperties::EquatableOnly(
                 "`Value`, which is not ordered because an `Object` holds a `Map`",
             ),
@@ -207,7 +206,7 @@ impl StandardType {
             | Self::FileError
             | Self::Utf8Error
             | Self::DecodeError
-            | Self::NumberError
+            | Self::JsonConversionError
             | Self::ChannelSendError
             | Self::ChannelReceive
             | Self::ChannelError
@@ -219,7 +218,8 @@ impl StandardType {
             | Self::DurationParseError
             | Self::ProcessSendError
             | Self::SupervisorRestart
-            | Self::SupervisorStartError => StandardProperties::Structural,
+            | Self::SupervisorStartError
+            | Self::Decimal => StandardProperties::Structural,
         }
     }
 
@@ -254,16 +254,6 @@ pub(crate) enum StandardFunction {
     MapEmpty,
     MapGet,
     MapPut,
-    MapUpdate,
-    MapMapValues,
-    JsonDecode,
-    JsonEncode,
-    JsonBoolean,
-    JsonInt,
-    JsonText,
-    JsonArray,
-    JsonObject,
-    JsonNumberToInt,
     TextAppend,
     TextEqual,
     TaskStart,
@@ -297,8 +287,6 @@ pub(crate) enum StandardFunction {
     OrderCompare,
     OrderMin,
     OrderMax,
-    /// `std/map.from`: a map of the `(key, value)` pairs; a later pair wins.
-    MapFrom,
     RangeStart,
     /// The exclusive end.
     RangeEnd,
@@ -362,17 +350,42 @@ pub(crate) enum StandardFunction {
     TextReplace,
     TextTrimStart,
     TextTrimEnd,
+    TextLowercase,
+    TextUppercase,
+    TextGraphemes,
     ListGet,
     ListPush,
     ListSlice,
     ListSet,
+    // The native cores of the phase 2 ports (steps 5 and 6): `std/map`,
+    // `std/set`, `std/json`, and `std/decimal`. Each module's variants stay
+    // contiguous: the native runtime dispatches by range.
+    MapRemove,
+    MapSize,
+    MapReduceEntries,
+    SetEmpty,
+    SetContains,
+    SetAdd,
+    SetRemove,
+    SetSize,
+    SetReduceItems,
+    JsonDecode,
+    JsonEncode,
+    JsonInt,
+    JsonNumberToInt,
+    JsonNumberToDecimal,
+    DecimalScaled,
+    DecimalRead,
+    DecimalToText,
+    DecimalAddChecked,
+    DecimalSubtractChecked,
+    DecimalMultiplyChecked,
+    DecimalDivideRounded,
+    DecimalToFloat,
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 84] = [
-        Self::DebugRender,
-        Self::DebugRenderIndented,
-        Self::DebugCrash,
+    pub(crate) const ALL: [Self; 67] = [
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -415,20 +428,6 @@ impl StandardFunction {
         Self::DurationToText,
         Self::DurationParse,
         Self::IoPath,
-        Self::MapEmpty,
-        Self::MapGet,
-        Self::MapPut,
-        Self::MapUpdate,
-        Self::MapMapValues,
-        Self::MapFrom,
-        Self::JsonDecode,
-        Self::JsonEncode,
-        Self::JsonBoolean,
-        Self::JsonInt,
-        Self::JsonText,
-        Self::JsonArray,
-        Self::JsonObject,
-        Self::JsonNumberToInt,
         Self::TaskStart,
         Self::TaskResult,
         Self::TaskCancel,
@@ -476,20 +475,6 @@ impl StandardFunction {
             | Self::SupervisorWait => Some(StandardModule::Supervisor),
             Self::ClockSleep => Some(StandardModule::Clock),
             Self::IoPath => Some(StandardModule::Io),
-            Self::MapEmpty
-            | Self::MapGet
-            | Self::MapPut
-            | Self::MapUpdate
-            | Self::MapMapValues
-            | Self::MapFrom => Some(StandardModule::Map),
-            Self::JsonDecode
-            | Self::JsonEncode
-            | Self::JsonBoolean
-            | Self::JsonInt
-            | Self::JsonText
-            | Self::JsonArray
-            | Self::JsonObject
-            | Self::JsonNumberToInt => Some(StandardModule::Json),
             Self::TaskStart | Self::TaskResult | Self::TaskCancel => Some(StandardModule::Task),
             Self::ChannelSend
             | Self::ChannelReceive
@@ -512,9 +497,6 @@ impl StandardFunction {
             | Self::FloatToInt
             | Self::FloatToText
             | Self::FloatParse => Some(StandardModule::Float),
-            Self::DebugRender | Self::DebugRenderIndented | Self::DebugCrash => {
-                Some(StandardModule::Debug)
-            }
             Self::OrderCompare | Self::OrderMin | Self::OrderMax => Some(StandardModule::Order),
             Self::RangeStart | Self::RangeEnd | Self::RangeLength | Self::RangeContains => {
                 Some(StandardModule::Range)
@@ -537,7 +519,10 @@ impl StandardFunction {
             | Self::DurationAbsolute
             | Self::DurationToText
             | Self::DurationParse => Some(StandardModule::Duration),
-            Self::ListFirst
+            Self::DebugRender
+            | Self::DebugRenderIndented
+            | Self::DebugCrash
+            | Self::ListFirst
             | Self::ListLength
             | Self::TextAppend
             | Self::TextEqual
@@ -552,10 +537,38 @@ impl StandardFunction {
             | Self::TextReplace
             | Self::TextTrimStart
             | Self::TextTrimEnd
+            | Self::TextLowercase
+            | Self::TextUppercase
+            | Self::TextGraphemes
             | Self::ListGet
             | Self::ListPush
             | Self::ListSlice
-            | Self::ListSet => None,
+            | Self::ListSet
+            | Self::MapEmpty
+            | Self::MapGet
+            | Self::MapPut
+            | Self::MapRemove
+            | Self::MapSize
+            | Self::MapReduceEntries
+            | Self::SetEmpty
+            | Self::SetContains
+            | Self::SetAdd
+            | Self::SetRemove
+            | Self::SetSize
+            | Self::SetReduceItems
+            | Self::JsonDecode
+            | Self::JsonEncode
+            | Self::JsonInt
+            | Self::JsonNumberToInt
+            | Self::JsonNumberToDecimal
+            | Self::DecimalScaled
+            | Self::DecimalRead
+            | Self::DecimalToText
+            | Self::DecimalAddChecked
+            | Self::DecimalSubtractChecked
+            | Self::DecimalMultiplyChecked
+            | Self::DecimalDivideRounded
+            | Self::DecimalToFloat => None,
         }
     }
 
@@ -567,20 +580,13 @@ impl StandardFunction {
             Self::MapEmpty => "empty",
             Self::MapGet => "get",
             Self::MapPut => "put",
-            Self::MapUpdate => "update",
-            Self::MapMapValues => "map_values",
-            Self::MapFrom => "from",
             Self::RangeStart => "start",
             Self::RangeEnd => "end",
             Self::RangeLength => "length",
             Self::RangeContains => "contains",
             Self::JsonDecode => "decode",
             Self::JsonEncode => "encode",
-            Self::JsonBoolean => "boolean",
             Self::JsonInt => "int",
-            Self::JsonText => "text",
-            Self::JsonArray => "array",
-            Self::JsonObject => "object",
             Self::JsonNumberToInt => "number_to_int",
             Self::TextAppend => "append",
             Self::TextEqual => "equal",
@@ -656,10 +662,29 @@ impl StandardFunction {
             Self::TextReplace => "replace",
             Self::TextTrimStart => "trim_start",
             Self::TextTrimEnd => "trim_end",
+            Self::TextLowercase => "lowercase",
+            Self::TextUppercase => "uppercase",
+            Self::TextGraphemes => "graphemes",
             Self::ListGet => "get",
             Self::ListPush => "push",
             Self::ListSlice => "slice",
             Self::ListSet => "set",
+            Self::MapRemove | Self::SetRemove => "remove",
+            Self::MapSize | Self::SetSize => "size",
+            Self::MapReduceEntries => "reduce_entries",
+            Self::SetEmpty => "empty",
+            Self::SetContains => "contains",
+            Self::SetAdd => "add",
+            Self::SetReduceItems => "reduce_items",
+            Self::JsonNumberToDecimal => "number_to_decimal",
+            Self::DecimalScaled => "scaled",
+            Self::DecimalRead => "read",
+            Self::DecimalToText => "to_text",
+            Self::DecimalAddChecked => "add_checked",
+            Self::DecimalSubtractChecked => "subtract_checked",
+            Self::DecimalMultiplyChecked => "multiply_checked",
+            Self::DecimalDivideRounded => "divide_rounded",
+            Self::DecimalToFloat => "to_float",
         }
     }
 
@@ -784,8 +809,8 @@ pub(crate) enum StandardConstructor {
     JsonArray,
     JsonObject,
     DecodeInvalidJson,
-    NumberNotInteger,
-    NumberOutOfRange,
+    JsonNotInteger,
+    JsonOutOfRange,
     ChannelSendClosed,
     ChannelSendAborted,
     ChannelReceived,
@@ -845,8 +870,8 @@ impl StandardConstructor {
         Self::JsonArray,
         Self::JsonObject,
         Self::DecodeInvalidJson,
-        Self::NumberNotInteger,
-        Self::NumberOutOfRange,
+        Self::JsonNotInteger,
+        Self::JsonOutOfRange,
         Self::ChannelSendClosed,
         Self::ChannelSendAborted,
         Self::ChannelReceived,
@@ -876,7 +901,7 @@ impl StandardConstructor {
             | Self::JsonArray
             | Self::JsonObject => StandardType::JsonValue,
             Self::DecodeInvalidJson => StandardType::DecodeError,
-            Self::NumberNotInteger | Self::NumberOutOfRange => StandardType::NumberError,
+            Self::JsonNotInteger | Self::JsonOutOfRange => StandardType::JsonConversionError,
             Self::ChannelSendClosed | Self::ChannelSendAborted => StandardType::ChannelSendError,
             Self::ChannelReceived | Self::ChannelDrained => StandardType::ChannelReceive,
             Self::ChannelAborted => StandardType::ChannelError,
@@ -917,10 +942,6 @@ impl StandardConstructor {
             StandardType::ConsoleError | StandardType::FileError | StandardType::Utf8Error => {
                 Some(StandardModule::Io)
             }
-            StandardType::JsonValue
-            | StandardType::JsonNumber
-            | StandardType::DecodeError
-            | StandardType::NumberError => Some(StandardModule::Json),
             StandardType::Option => None,
             StandardType::ChannelSender
             | StandardType::ChannelReceiver
@@ -951,7 +972,13 @@ impl StandardConstructor {
             | StandardType::FileSystem
             | StandardType::Map
             | StandardType::Path
-            | StandardType::Duration => None,
+            | StandardType::Duration
+            | StandardType::Set
+            | StandardType::Decimal
+            | StandardType::JsonValue
+            | StandardType::JsonNumber
+            | StandardType::DecodeError
+            | StandardType::JsonConversionError => None,
         }
     }
 
@@ -972,8 +999,8 @@ impl StandardConstructor {
             Self::JsonArray => "Array",
             Self::JsonObject => "Object",
             Self::DecodeInvalidJson => "InvalidJson",
-            Self::NumberNotInteger => "NotInteger",
-            Self::NumberOutOfRange => "OutOfRange",
+            Self::JsonNotInteger => "NotInteger",
+            Self::JsonOutOfRange => "OutOfRange",
             Self::ChannelSendClosed => "Closed",
             Self::ChannelSendAborted | Self::ChannelAborted => "Aborted",
             Self::ChannelReceived => "Received",
@@ -1027,12 +1054,13 @@ impl StandardConstructor {
             Self::JsonArray => &["values"],
             Self::JsonObject => &["fields"],
             Self::DecodeInvalidJson => &["message", "offset"],
-            Self::NumberNotInteger | Self::NumberOutOfRange => &["value"],
             Self::ChannelSendClosed | Self::ChannelSendAborted | Self::ChannelReceived => {
                 &["value"]
             }
             Self::ChannelDrained | Self::ChannelAborted => &[],
-            Self::IntParseEmpty
+            Self::JsonNotInteger
+            | Self::JsonOutOfRange
+            | Self::IntParseEmpty
             | Self::IntParseInvalidDigit
             | Self::IntParseOutOfRange
             | Self::FloatParseEmpty
@@ -1091,32 +1119,13 @@ pub(crate) enum StandardGeneric {
     ListFirstValue,
     ListLengthValue,
     OptionValue,
-    MapEmptyKey,
-    MapEmptyValue,
-    MapGetKey,
-    MapGetValue,
-    MapPutKey,
-    MapPutValue,
-    MapUpdateKey,
-    MapUpdateValue,
-    MapUpdateFailures,
-    MapUpdateNeeds,
-    MapValuesKey,
-    MapValuesInput,
-    MapValuesOutput,
-    MapValuesFailures,
-    MapValuesNeeds,
     TaskValue,
     TaskFailures,
     TaskNeeds,
     ChannelValue,
-    DebugRenderValue,
-    DebugRenderIndentedValue,
     OrderCompareValue,
     OrderMinValue,
     OrderMaxValue,
-    MapFromKey,
-    MapFromValue,
     ProcessSpecMessage,
     ProcessSpecFailures,
     ProcessSpecNeeds,
@@ -1133,30 +1142,13 @@ pub(crate) enum StandardGeneric {
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 45] = [
-        Self::DebugRenderValue,
-        Self::DebugRenderIndentedValue,
+    pub(crate) const ALL: [Self; 26] = [
         Self::FileState,
         Self::FileFailures,
         Self::FileNeeds,
         Self::ListFirstValue,
         Self::ListLengthValue,
         Self::OptionValue,
-        Self::MapEmptyKey,
-        Self::MapEmptyValue,
-        Self::MapGetKey,
-        Self::MapGetValue,
-        Self::MapPutKey,
-        Self::MapPutValue,
-        Self::MapUpdateKey,
-        Self::MapUpdateValue,
-        Self::MapUpdateFailures,
-        Self::MapUpdateNeeds,
-        Self::MapValuesKey,
-        Self::MapValuesInput,
-        Self::MapValuesOutput,
-        Self::MapValuesFailures,
-        Self::MapValuesNeeds,
         Self::TaskValue,
         Self::TaskFailures,
         Self::TaskNeeds,
@@ -1164,8 +1156,6 @@ impl StandardGeneric {
         Self::OrderCompareValue,
         Self::OrderMinValue,
         Self::OrderMaxValue,
-        Self::MapFromKey,
-        Self::MapFromValue,
         Self::ProcessSpecMessage,
         Self::ProcessSpecFailures,
         Self::ProcessSpecNeeds,
@@ -1191,26 +1181,10 @@ impl StandardGeneric {
             Self::ListFirstValue => "T",
             Self::ListLengthValue => "T",
             Self::OptionValue => "T",
-            Self::MapEmptyKey => "K",
-            Self::MapEmptyValue => "V",
-            Self::MapGetKey => "K",
-            Self::MapGetValue | Self::MapFromValue => "V",
-            Self::MapPutKey => "K",
-            Self::MapPutValue => "V",
-            Self::MapUpdateKey => "K",
-            Self::MapUpdateValue => "V",
-            Self::MapUpdateFailures => "E",
-            Self::MapUpdateNeeds => "R",
-            Self::MapValuesKey | Self::MapFromKey => "K",
-            Self::MapValuesInput => "A",
-            Self::MapValuesOutput => "B",
-            Self::MapValuesFailures => "E",
-            Self::MapValuesNeeds => "R",
             Self::TaskValue => "T",
             Self::TaskFailures => "E",
             Self::TaskNeeds => "R",
             Self::ChannelValue => "T",
-            Self::DebugRenderValue | Self::DebugRenderIndentedValue => "T",
             Self::OrderCompareValue | Self::OrderMinValue | Self::OrderMaxValue => "A",
             Self::ProcessSpecMessage
             | Self::ProcessRegisterMessage
@@ -1230,17 +1204,13 @@ impl StandardGeneric {
 
     pub(crate) const fn kind(self) -> StandardGenericKind {
         match self {
-            Self::FileFailures | Self::MapUpdateFailures | Self::MapValuesFailures => {
-                StandardGenericKind::FailureRow
-            }
+            Self::FileFailures => StandardGenericKind::FailureRow,
             Self::TaskFailures
             | Self::ProcessSpecFailures
             | Self::ProcessRegisterFailures
             | Self::SupervisorProcessFailures
             | Self::SupervisorStartProcessFailures => StandardGenericKind::FailureSet,
             Self::FileNeeds
-            | Self::MapUpdateNeeds
-            | Self::MapValuesNeeds
             | Self::ProcessSpecNeeds => StandardGenericKind::NeedsRow,
             _ => StandardGenericKind::Value,
         }

@@ -14,8 +14,155 @@ pub struct LoadedProject {
     modules: Vec<ProjectSource>,
 }
 
+/// Where a build reads `std/` modules from: the tree embedded in the compiler,
+/// or a directory that a compiler developer passes with `--std-dir`.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StandardTree {
+    /// Canonical; `None` for the embedded tree.
+    directory: Option<PathBuf>,
+}
+
+impl StandardTree {
+    pub const fn embedded() -> Self {
+        Self { directory: None }
+    }
+
+    /// The tree in `directory`, which holds `list.chimi` for `std/list` as
+    /// `compiler/chimi/std/` does. Its modules are standard source, so they may
+    /// declare `native` items.
+    pub fn directory(directory: impl AsRef<Path>) -> Result<Self, ProjectLoadError> {
+        let requested = directory.as_ref();
+        let read_error = |source| ProjectLoadError::ReadStandardDirectory {
+            path: requested.to_owned(),
+            source,
+        };
+        let directory = requested.canonicalize().map_err(read_error)?;
+        if !directory.is_dir() {
+            return Err(read_error(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "not a directory",
+            )));
+        }
+        Ok(Self {
+            directory: Some(directory),
+        })
+    }
+
+    /// The directory that replaces the embedded tree, if any.
+    pub fn override_directory(&self) -> Option<&Path> {
+        self.directory.as_deref()
+    }
+
+    /// Adds the standard modules `modules` import, directly or transitively.
+    /// An override directory replaces the whole embedded tree, so it must hold
+    /// every embedded module that the build imports.
+    fn add_imported_modules(
+        &self,
+        modules: &mut Vec<ProjectSource>,
+    ) -> Result<(), ProjectLoadError> {
+        let Some(directory) = &self.directory else {
+            crate::standard_tree::add_imported_modules(modules);
+            return Ok(());
+        };
+        crate::standard_tree::add_imported_modules_from(modules, |module_path| {
+            read_standard_module(directory, module_path)
+        })
+    }
+}
+
+/// Standard module `module_path` from the tree in `directory`, or `None` when
+/// neither the directory nor the embedded tree has it (a built-in module such
+/// as `std/map`, or none at all). A module that only the embedded tree has is
+/// an error: falling back to it would mix two trees in one build.
+fn read_standard_module(
+    directory: &Path,
+    module_path: &str,
+) -> Result<Option<ProjectSource>, ProjectLoadError> {
+    let Some(relative) = module_path
+        .strip_prefix("std/")
+        .filter(|_| ProjectSource::is_valid_path(module_path))
+    else {
+        return Ok(None);
+    };
+    let path = directory.join(format!("{relative}.chimi"));
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(crate::standard_tree::standard_module(
+            module_path,
+            text,
+        ))),
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                && crate::standard_tree::embedded_module(module_path).is_none() =>
+        {
+            Ok(None)
+        }
+        Err(source) => Err(ProjectLoadError::ReadSource {
+            module: module_path.to_owned(),
+            path,
+            source,
+        }),
+    }
+}
+
+/// The module path of each `.chimi` file under `directory`, as `std/list` for
+/// `list.chimi`, in ascending order.
+fn standard_module_paths(directory: &Path) -> Result<Vec<String>, ProjectLoadError> {
+    let read_error = |path: &Path, source| ProjectLoadError::ReadStandardDirectory {
+        path: path.to_owned(),
+        source,
+    };
+    let mut paths = Vec::new();
+    let mut pending = vec![directory.to_owned()];
+    while let Some(current) = pending.pop() {
+        for entry in std::fs::read_dir(&current).map_err(|source| read_error(&current, source))? {
+            let path = entry.map_err(|source| read_error(&current, source))?.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "chimi") {
+                let relative = path
+                    .strip_prefix(directory)
+                    .expect("walked paths are inside the directory")
+                    .with_extension("");
+                let module_path = relative
+                    .components()
+                    .map(|component| component.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                paths.push(format!("std/{module_path}"));
+            }
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
 impl LoadedProject {
-    pub fn single_file(path: impl AsRef<Path>) -> Result<Self, ProjectLoadError> {
+    /// Every module of `standard`, for checking the whole tree against the
+    /// operation registry (`chimi std check`).
+    pub fn standard_tree(standard: &StandardTree) -> Result<Self, ProjectLoadError> {
+        let Some(directory) = &standard.directory else {
+            let modules = crate::standard_tree::embedded_module_paths()
+                .map(|path| {
+                    crate::standard_tree::standard_source(path).expect("listed module is embedded")
+                })
+                .collect();
+            return Ok(Self { modules });
+        };
+        let mut modules = Vec::new();
+        for module_path in standard_module_paths(directory)? {
+            let module = read_standard_module(directory, &module_path)?.ok_or_else(|| {
+                ProjectLoadError::InvalidModule(ProjectPathError::new(module_path.clone()))
+            })?;
+            modules.push(module);
+        }
+        standard.add_imported_modules(&mut modules)?;
+        Ok(Self { modules })
+    }
+
+    pub fn single_file(
+        path: impl AsRef<Path>,
+        standard: &StandardTree,
+    ) -> Result<Self, ProjectLoadError> {
         let path = path.as_ref();
         let source = SourceSnapshot::read(path).map_err(|source| ProjectLoadError::ReadSource {
             module: "main".to_owned(),
@@ -25,15 +172,16 @@ impl LoadedProject {
         let module = ProjectSource::parsed("main", source)
             .expect("the reserved single-file module path is valid");
         let mut modules = vec![module];
-        crate::standard_tree::add_imported_modules(&mut modules);
+        standard.add_imported_modules(&mut modules)?;
         Ok(Self { modules })
     }
 
     pub fn load(
         root: impl AsRef<Path>,
         entry_module: impl Into<String>,
+        standard: &StandardTree,
     ) -> Result<Self, ProjectLoadError> {
-        Self::load_with(root, entry_module, &FileSystemReader)
+        Self::load_with(root, entry_module, &FileSystemReader, standard)
     }
 
     /// Loads a project like [`LoadedProject::load`], taking module text from `reader`.
@@ -44,6 +192,7 @@ impl LoadedProject {
         root: impl AsRef<Path>,
         entry_module: impl Into<String>,
         reader: &dyn SourceReader,
+        standard: &StandardTree,
     ) -> Result<Self, ProjectLoadError> {
         let requested_root = root.as_ref();
         let root = requested_root
@@ -68,7 +217,7 @@ impl LoadedProject {
         };
         loader.load_module(&entry_module)?;
         let mut modules = loader.modules;
-        crate::standard_tree::add_imported_modules(&mut modules);
+        standard.add_imported_modules(&mut modules)?;
         Ok(Self { modules })
     }
 
@@ -237,6 +386,10 @@ pub enum ProjectLoadError {
     RootNotDirectory {
         path: PathBuf,
     },
+    ReadStandardDirectory {
+        path: PathBuf,
+        source: io::Error,
+    },
     ReadSource {
         module: String,
         path: PathBuf,
@@ -275,6 +428,11 @@ impl fmt::Display for ProjectLoadError {
                     path.display()
                 )
             }
+            Self::ReadStandardDirectory { path, source } => write!(
+                formatter,
+                "cannot read standard tree directory {}: {source}",
+                path.display()
+            ),
             Self::ReadSource {
                 module,
                 path,
@@ -426,7 +584,7 @@ fn validate_module_path(module_path: String) -> Result<(), ProjectLoadError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LoadedProject, ProjectLoadError, SourceReader};
+    use super::{LoadedProject, ProjectLoadError, SourceReader, StandardTree};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -476,7 +634,8 @@ mod tests {
         fixture.write("lib/answer.chimi", "pub fn value() -> Int { 42 }");
         fixture.write("unused.chimi", "pub fn main() -> Int { 0 }");
 
-        let project = LoadedProject::load(fixture.path(), "app/main").expect("load project");
+        let project = LoadedProject::load(fixture.path(), "app/main", &StandardTree::embedded())
+            .expect("load project");
         let mut paths = project
             .sources()
             .iter()
@@ -494,7 +653,8 @@ mod tests {
             "import missing/module as Missing\npub fn main() -> Int { 0 }",
         );
 
-        let error = LoadedProject::load(fixture.path(), "app").expect_err("missing import fails");
+        let error = LoadedProject::load(fixture.path(), "app", &StandardTree::embedded())
+            .expect_err("missing import fails");
         let message = error.to_string();
         assert!(message.contains("cannot read module missing/module"));
         assert!(message.contains("missing/module.chimi"));
@@ -505,7 +665,7 @@ mod tests {
         let fixture = TestDirectory::new();
         fixture.write("app.chimi", "import absent\npub fn main() -> Int { 0 }");
 
-        let project = LoadedProject::load(fixture.path(), "app")
+        let project = LoadedProject::load(fixture.path(), "app", &StandardTree::embedded())
             .expect("loader does not mask an incomplete import diagnostic");
         assert_eq!(project.sources().len(), 1);
     }
@@ -516,7 +676,8 @@ mod tests {
         fixture.write("a.chimi", "import b as B\npub fn main() -> Int { 0 }");
         fixture.write("b.chimi", "import a as A\npub fn value() -> Int { 1 }");
 
-        let error = LoadedProject::load(fixture.path(), "a").expect_err("cycle fails");
+        let error = LoadedProject::load(fixture.path(), "a", &StandardTree::embedded())
+            .expect_err("cycle fails");
         assert!(matches!(error, ProjectLoadError::ImportCycle { .. }));
         assert_eq!(error.to_string(), "import cycle: a -> b -> a");
     }
@@ -538,8 +699,12 @@ mod tests {
         )
         .expect("create escaping module symlink");
 
-        let error = LoadedProject::load(fixture.path().join("project"), "app")
-            .expect_err("escaping symlink fails");
+        let error = LoadedProject::load(
+            fixture.path().join("project"),
+            "app",
+            &StandardTree::embedded(),
+        )
+        .expect_err("escaping symlink fails");
         assert!(matches!(error, ProjectLoadError::PathEscapesRoot { .. }));
     }
 
@@ -564,7 +729,7 @@ mod tests {
         )
         .expect("create duplicate module symlink");
 
-        let error = LoadedProject::load(fixture.path(), "app")
+        let error = LoadedProject::load(fixture.path(), "app", &StandardTree::embedded())
             .expect_err("duplicate physical module fails");
         assert!(matches!(error, ProjectLoadError::DuplicateFile { .. }));
         assert!(error.to_string().contains("real and alias"));
@@ -597,7 +762,9 @@ mod tests {
             text: "import lib/answer as Answer\npub fn main() -> Int { Answer.value() }",
         };
 
-        let project = LoadedProject::load_with(fixture.path(), "app", &overlay).unwrap();
+        let project =
+            LoadedProject::load_with(fixture.path(), "app", &overlay, &StandardTree::embedded())
+                .unwrap();
 
         let modules = project
             .sources()

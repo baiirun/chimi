@@ -1,0 +1,19 @@
+// A failing step stops Set.reduce at the first item it rejects in ascending
+// order, with the state reached so far: 30 and 40 would both fail, and 30
+// escapes after 10 and 20 were added.
+import std/set as Set
+
+enum Rejected {
+  TooLarge(value: Int, total: Int)
+}
+
+fn add_small(total: Int, value: Int) -> Int {
+  case value < 30 {
+    True -> total + value
+    False -> Failure(Rejected.TooLarge(value, total))
+  }
+}
+
+pub fn main() -> Int {
+  Set.reduce(Set.from([40, 20, 30, 10]), 0, add_small)
+}

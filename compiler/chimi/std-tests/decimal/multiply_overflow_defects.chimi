@@ -1,0 +1,9 @@
+// `*` adds the scales, so a product past scale 38 defects like Int overflow,
+// even though its coefficient is small.
+import std/decimal as Decimal
+import std/decimal.{Decimal}
+
+pub fn main() -> Decimal {
+  let small = Decimal.of(1, 20)
+  small * small
+}

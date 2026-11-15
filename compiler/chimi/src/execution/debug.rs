@@ -7,6 +7,7 @@
 
 use super::{RuntimeCallable, RuntimeValue};
 use crate::executable::CoreProgram;
+use crate::json::canonical_number_text;
 use crate::numeric::render_float;
 use crate::standard::{StandardConstructor, StandardSymbol};
 
@@ -61,6 +62,9 @@ impl Renderer<'_> {
             RuntimeValue::Duration(value) => {
                 self.output.push_str(&crate::duration::to_text(*value));
             }
+            // Not the `Decimal.to_text` form, which keeps the scale: equal
+            // values render the same.
+            RuntimeValue::Decimal(value) => self.output.push_str(&value.normalized_text()),
             RuntimeValue::Tuple(values) => {
                 let parts = values.iter().map(|value| Part { label: None, value });
                 self.composite("", "(", ")", false, parts.collect());
@@ -124,9 +128,20 @@ impl Renderer<'_> {
                     });
                 self.composite("Map ", "{", "}", true, parts.collect());
             }
+            RuntimeValue::Set(set) => {
+                let parts = set
+                    .entry_refs()
+                    .into_iter()
+                    .map(|(item, _)| Part {
+                        label: None,
+                        value: item,
+                    })
+                    .collect();
+                self.composite("Set ", "{", "}", true, parts);
+            }
             RuntimeValue::JsonNumber(text) => {
                 self.output.push_str("Json.Number(");
-                self.output.push_str(&normalize_json_number(text));
+                self.output.push_str(&canonical_number_text(text));
                 self.output.push(')');
             }
             RuntimeValue::ProcessAddress(symbol) => {
@@ -213,24 +228,4 @@ fn quote(text: &str) -> String {
     }
     quoted.push('"');
     quoted
-}
-
-/// The canonical text of a JSON number, so equal numbers such as `1.0` and `1` render
-/// alike: an integral value within 2^53 as an integer, any other as the shortest
-/// `Float` text.
-fn normalize_json_number(text: &str) -> String {
-    if let Ok(integer) = text.parse::<i64>() {
-        return integer.to_string();
-    }
-    match text.parse::<f64>() {
-        Ok(value)
-            if value.is_finite()
-                && value.fract() == 0.0
-                && value.abs() < 9_007_199_254_740_992.0 =>
-        {
-            format!("{}", value as i64)
-        }
-        Ok(value) if value.is_finite() => render_float(if value == 0.0 { 0.0 } else { value }),
-        _ => text.to_owned(),
-    }
 }

@@ -432,6 +432,7 @@ pub(crate) enum ConstantValue {
     },
     /// A `Duration` in nanoseconds.
     Duration(i64),
+    Decimal(crate::decimal::Decimal),
     /// A named `Process.Address`: the `process name` declaration's symbol.
     ProcessAddress(SymbolId),
     Record(Vec<(String, ConstantValue)>),
@@ -443,6 +444,8 @@ pub(crate) enum ConstantValue {
     /// Entries in ascending byte order of their keys.
     /// Key and value pairs; keys are any equatable value.
     Map(Vec<(ConstantValue, ConstantValue)>),
+    /// Items in ascending structural order.
+    Set(Vec<ConstantValue>),
     JsonNumber(String),
     Function(ConstantFunction),
 }
@@ -1207,6 +1210,7 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
             ModuleDeclarationKind::Struct
             | ModuleDeclarationKind::Enum
             | ModuleDeclarationKind::Interface
+            | ModuleDeclarationKind::NativeType
             | ModuleDeclarationKind::ProcessName => {
                 unreachable!("only executable declarations enter reachability")
             }

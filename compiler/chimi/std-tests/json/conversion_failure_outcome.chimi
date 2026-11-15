@@ -1,0 +1,15 @@
+// A failed number conversion reaches the outcome as the source enum
+// `ConversionError.OutOfRange`, with no payload: the failure does not copy the
+// number the caller already holds.
+import std/debug as Debug
+import std/decimal.{Decimal}
+import std/json as Json
+import std/json.{Value}
+
+pub fn main() -> Decimal {
+  let value = Json.decode("[1e-39]")
+  case value {
+    Value.Array([Value.Number(number)]) -> Json.number_to_decimal(number)
+    _ -> Debug.crash("not one number")
+  }
+}

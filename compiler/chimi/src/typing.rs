@@ -1344,9 +1344,10 @@ struct ProjectTypeChecker {
     /// The innermost expression being inferred, where a generic function value
     /// that meets a function type is instantiated.
     expression_site: Option<(ModuleId, TextRange)>,
-    /// Written `Map` key types seen while declarations are lowered, checked
-    /// once every field is known; `None` once they have been checked.
-    written_map_keys: Option<Vec<(ModuleId, TextRange, TypeId)>>,
+    /// Written `Map` key and `Set` item types seen while declarations are
+    /// lowered, checked once every field is known; `None` once they have been
+    /// checked.
+    written_map_keys: Option<Vec<(ModuleId, TextRange, TypeId, &'static str)>>,
     /// The callable each generic function value's parameter list comes from,
     /// to name it in a diagnostic about that instantiation.
     polymorphic_owners: HashMap<Vec<SymbolId>, SymbolId>,
@@ -1703,59 +1704,7 @@ impl ProjectTypeChecker {
         let channel_receive_failures =
             self.standard_failure_row(&[StandardConstructor::ChannelAborted]);
         let path = self.standard_named_type(StandardType::Path, Vec::new());
-        let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
-        let number = self.standard_named_type(StandardType::JsonNumber, Vec::new());
-        let decode_failure = self.standard_failure_row(&[StandardConstructor::DecodeInvalidJson]);
-        let number_failure = self.standard_failure_row(&[
-            StandardConstructor::NumberNotInteger,
-            StandardConstructor::NumberOutOfRange,
-        ]);
         let console_failure = self.standard_failure_row(&[StandardConstructor::ConsoleWriteFailed]);
-        let map_contracts = [
-            (
-                StandardFunction::MapEmpty,
-                CallableContract {
-                    inputs: Vec::new(),
-                    success: self.standard_map_type(
-                        StandardGeneric::MapEmptyKey,
-                        StandardGeneric::MapEmptyValue,
-                    ),
-                    failures: FailureRowId::new(0),
-                    needs: NeedsRowId::new(0),
-                },
-            ),
-            (StandardFunction::MapGet, self.standard_map_get_contract()),
-            (StandardFunction::MapPut, self.standard_map_put_contract()),
-            (StandardFunction::MapFrom, self.standard_map_from_contract()),
-            (
-                StandardFunction::MapUpdate,
-                self.standard_map_transform_contract(false),
-            ),
-            (
-                StandardFunction::MapMapValues,
-                self.standard_map_transform_contract(true),
-            ),
-        ];
-        for (function, contract) in map_contracts {
-            let symbol = self.standard_function_symbol(function);
-            self.contracts.insert(symbol, contract);
-        }
-        for key in [
-            StandardGeneric::MapEmptyKey,
-            StandardGeneric::MapGetKey,
-            StandardGeneric::MapPutKey,
-            StandardGeneric::MapFromKey,
-            StandardGeneric::MapUpdateKey,
-            StandardGeneric::MapValuesKey,
-        ] {
-            self.generic_requirements.insert(
-                self.resolved.standard_generic(key),
-                GenericRequirement {
-                    property: ValueProperty::Equatable,
-                    origin: None,
-                },
-            );
-        }
         for (function, contract) in [
             (
                 StandardFunction::TaskStart,
@@ -1835,53 +1784,6 @@ impl ProjectTypeChecker {
         }
 
         let pure = (FailureRowId::new(0), NeedsRowId::new(0));
-        let json_contracts = [
-            (
-                StandardFunction::JsonDecode,
-                vec![text],
-                value,
-                decode_failure,
-            ),
-            (StandardFunction::JsonEncode, vec![value], text, pure.0),
-            (
-                StandardFunction::JsonBoolean,
-                vec![bool_type],
-                value,
-                pure.0,
-            ),
-            (StandardFunction::JsonInt, vec![int], value, pure.0),
-            (StandardFunction::JsonText, vec![text], value, pure.0),
-            (
-                StandardFunction::JsonArray,
-                vec![self.builtin_type_with_arguments("List", vec![value])],
-                value,
-                pure.0,
-            ),
-            (
-                StandardFunction::JsonObject,
-                vec![self.standard_named_type(StandardType::Map, vec![text, value])],
-                value,
-                pure.0,
-            ),
-            (
-                StandardFunction::JsonNumberToInt,
-                vec![number],
-                int,
-                number_failure,
-            ),
-        ];
-        for (function, inputs, success, failures) in json_contracts {
-            let symbol = self.standard_function_symbol(function);
-            self.contracts.insert(
-                symbol,
-                CallableContract {
-                    inputs,
-                    success,
-                    failures,
-                    needs: pure.1,
-                },
-            );
-        }
         let float = self.builtin_type("Float");
         let range = self.builtin_type("Range");
         let int_option = self.standard_named_type(StandardType::Option, vec![int]);
@@ -2127,39 +2029,6 @@ impl ProjectTypeChecker {
                 needs: pure.1,
             },
         );
-        for (function, generic) in [
-            (
-                StandardFunction::DebugRender,
-                StandardGeneric::DebugRenderValue,
-            ),
-            (
-                StandardFunction::DebugRenderIndented,
-                StandardGeneric::DebugRenderIndentedValue,
-            ),
-        ] {
-            let value = self.standard_generic_type(generic);
-            let symbol = self.standard_function_symbol(function);
-            self.contracts.insert(
-                symbol,
-                CallableContract {
-                    inputs: vec![value],
-                    success: text,
-                    failures: pure.0,
-                    needs: pure.1,
-                },
-            );
-        }
-        let never = self.builtin_type("Never");
-        let crash = self.standard_function_symbol(StandardFunction::DebugCrash);
-        self.contracts.insert(
-            crash,
-            CallableContract {
-                inputs: vec![text],
-                success: never,
-                failures: pure.0,
-                needs: pure.1,
-            },
-        );
         let list_length = self.standard_function_symbol(StandardFunction::ListLength);
         let any_list_value = self.standard_generic_type(StandardGeneric::ListLengthValue);
         let any_list = self.builtin_type_with_arguments("List", vec![any_list_value]);
@@ -2256,6 +2125,13 @@ impl ProjectTypeChecker {
         );
 
         for constructor in StandardConstructor::ALL {
+            if self
+                .resolved
+                .loaded_standard_type(constructor.type_kind())
+                .is_none()
+            {
+                continue;
+            }
             let symbol = self.standard_constructor_symbol(constructor);
             let (inputs, success) = self.standard_constructor_shape(constructor);
             self.fields.insert(
@@ -2297,106 +2173,14 @@ impl ProjectTypeChecker {
         })
     }
 
-    fn standard_map_type(&mut self, key: StandardGeneric, value: StandardGeneric) -> TypeId {
-        let key = self.standard_generic_type(key);
-        let value = self.standard_generic_type(value);
-        self.standard_named_type(StandardType::Map, vec![key, value])
-    }
-
-    fn standard_map_get_contract(&mut self) -> CallableContract {
-        let key = self.standard_generic_type(StandardGeneric::MapGetKey);
-        let value = self.standard_generic_type(StandardGeneric::MapGetValue);
-        let map = self.standard_named_type(StandardType::Map, vec![key, value]);
-        let option = self.standard_named_type(StandardType::Option, vec![value]);
-        CallableContract {
-            inputs: vec![map, key],
-            success: option,
-            failures: FailureRowId::new(0),
-            needs: NeedsRowId::new(0),
-        }
-    }
-
-    fn standard_map_put_contract(&mut self) -> CallableContract {
-        let key = self.standard_generic_type(StandardGeneric::MapPutKey);
-        let value = self.standard_generic_type(StandardGeneric::MapPutValue);
-        let map = self.standard_named_type(StandardType::Map, vec![key, value]);
-        CallableContract {
-            inputs: vec![map, key, value],
-            success: map,
-            failures: FailureRowId::new(0),
-            needs: NeedsRowId::new(0),
-        }
-    }
-
-    /// `fn<K, V>(List<(K, V)>) -> Map<K, V>`.
-    fn standard_map_from_contract(&mut self) -> CallableContract {
-        let key = self.standard_generic_type(StandardGeneric::MapFromKey);
-        let value = self.standard_generic_type(StandardGeneric::MapFromValue);
-        let pair = self.intern_type(CanonicalType::Tuple(vec![key, value]));
-        let pairs = self.builtin_type_with_arguments("List", vec![pair]);
-        CallableContract {
-            inputs: vec![pairs],
-            success: self.standard_named_type(StandardType::Map, vec![key, value]),
-            failures: FailureRowId::new(0),
-            needs: NeedsRowId::new(0),
-        }
-    }
-
-    fn standard_map_transform_contract(&mut self, changes_value_type: bool) -> CallableContract {
-        let (key_generic, input_generic, output_generic, failures, needs) = if changes_value_type {
-            (
-                StandardGeneric::MapValuesKey,
-                StandardGeneric::MapValuesInput,
-                StandardGeneric::MapValuesOutput,
-                StandardGeneric::MapValuesFailures,
-                StandardGeneric::MapValuesNeeds,
-            )
-        } else {
-            (
-                StandardGeneric::MapUpdateKey,
-                StandardGeneric::MapUpdateValue,
-                StandardGeneric::MapUpdateValue,
-                StandardGeneric::MapUpdateFailures,
-                StandardGeneric::MapUpdateNeeds,
-            )
-        };
-        let key = self.standard_generic_type(key_generic);
-        let input = self.standard_generic_type(input_generic);
-        let output = self.standard_generic_type(output_generic);
-        let failures = self.intern_failure_row(FailureRow {
-            variants: Vec::new(),
-            variant_arguments: Vec::new(),
-            parameters: vec![self.resolved.standard_generic(failures)],
-            exclusions: Vec::new(),
-        });
-        let needs = self.intern_needs_row(NeedsRow {
-            entries: Vec::new(),
-            parameters: vec![self.resolved.standard_generic(needs)],
-        });
-        let callback_input = if changes_value_type {
-            input
-        } else {
-            self.standard_named_type(StandardType::Option, vec![input])
-        };
-        let callback = self.intern_type(CanonicalType::Function(CallableContract {
-            inputs: vec![callback_input],
-            success: output,
-            failures,
-            needs,
-        }));
-        let input_map = self.standard_named_type(StandardType::Map, vec![key, input]);
-        let output_map = self.standard_named_type(StandardType::Map, vec![key, output]);
-        let inputs = if changes_value_type {
-            vec![input_map, callback]
-        } else {
-            vec![input_map, key, callback]
-        };
-        CallableContract {
-            inputs,
-            success: output_map,
-            failures,
-            needs,
-        }
+    /// `std/decimal.Decimal`, the one library type the operator rules name, when
+    /// the program loads `std/decimal`; no value has the type otherwise.
+    fn decimal_type(&mut self) -> Option<TypeId> {
+        let symbol = self.resolved.loaded_standard_type(StandardType::Decimal)?;
+        Some(self.intern_type(CanonicalType::Named {
+            symbol,
+            arguments: Vec::new(),
+        }))
     }
 
     fn standard_failure_row(&mut self, constructors: &[StandardConstructor]) -> FailureRowId {
@@ -2413,15 +2197,37 @@ impl ProjectTypeChecker {
         })
     }
 
+    /// Requires: `std/json` is loaded, so `Value`, `Number`, and `Map` resolve.
+    fn json_value_constructor_shape(
+        &mut self,
+        constructor: StandardConstructor,
+    ) -> (Vec<TypeId>, TypeId) {
+        let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
+        let inputs = match constructor {
+            StandardConstructor::JsonBoolean => vec![self.builtin_type("Bool")],
+            StandardConstructor::JsonNumber => {
+                vec![self.standard_named_type(StandardType::JsonNumber, Vec::new())]
+            }
+            StandardConstructor::JsonText => vec![self.builtin_type("Text")],
+            StandardConstructor::JsonArray => {
+                vec![self.builtin_type_with_arguments("List", vec![value])]
+            }
+            StandardConstructor::JsonObject => {
+                let text = self.builtin_type("Text");
+                vec![self.standard_named_type(StandardType::Map, vec![text, value])]
+            }
+            StandardConstructor::JsonNull => Vec::new(),
+            other => unreachable!("{other:?} is not a `Json.Value` constructor"),
+        };
+        (inputs, value)
+    }
+
     fn standard_constructor_shape(
         &mut self,
         constructor: StandardConstructor,
     ) -> (Vec<TypeId>, TypeId) {
         let text = self.builtin_type("Text");
         let int = self.builtin_type("Int");
-        let bool_type = self.builtin_type("Bool");
-        let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
-        let number = self.standard_named_type(StandardType::JsonNumber, Vec::new());
         match constructor {
             StandardConstructor::ProcessSendFull
             | StandardConstructor::ProcessSendUnavailable
@@ -2468,25 +2274,15 @@ impl ProjectTypeChecker {
                     self.standard_named_type(StandardType::Option, vec![value]),
                 )
             }
-            StandardConstructor::JsonNull => (Vec::new(), value),
-            StandardConstructor::JsonBoolean => (vec![bool_type], value),
-            StandardConstructor::JsonNumber => (vec![number], value),
-            StandardConstructor::JsonText => (vec![text], value),
-            StandardConstructor::JsonArray => (
-                vec![self.builtin_type_with_arguments("List", vec![value])],
-                value,
-            ),
-            StandardConstructor::JsonObject => (
-                vec![self.standard_named_type(StandardType::Map, vec![text, value])],
-                value,
-            ),
+            StandardConstructor::JsonNull
+            | StandardConstructor::JsonBoolean
+            | StandardConstructor::JsonNumber
+            | StandardConstructor::JsonText
+            | StandardConstructor::JsonArray
+            | StandardConstructor::JsonObject => self.json_value_constructor_shape(constructor),
             StandardConstructor::DecodeInvalidJson => (
                 vec![text, int],
                 self.standard_named_type(StandardType::DecodeError, Vec::new()),
-            ),
-            StandardConstructor::NumberNotInteger | StandardConstructor::NumberOutOfRange => (
-                vec![number],
-                self.standard_named_type(StandardType::NumberError, Vec::new()),
             ),
             StandardConstructor::ChannelSendClosed | StandardConstructor::ChannelSendAborted => {
                 let value = self.standard_generic_type(StandardGeneric::ChannelValue);
@@ -2513,7 +2309,9 @@ impl ProjectTypeChecker {
                 Vec::new(),
                 self.standard_named_type(StandardType::ChannelError, Vec::new()),
             ),
-            StandardConstructor::IntParseEmpty
+            StandardConstructor::JsonNotInteger
+            | StandardConstructor::JsonOutOfRange
+            | StandardConstructor::IntParseEmpty
             | StandardConstructor::IntParseInvalidDigit
             | StandardConstructor::IntParseOutOfRange
             | StandardConstructor::FloatParseEmpty
@@ -2739,8 +2537,8 @@ impl ProjectTypeChecker {
                 self.check_declaration(*module_id, &declaration);
             }
         }
-        for (module_id, range, key) in self.written_map_keys.take().unwrap_or_default() {
-            self.check_written_map_key(module_id, range, key);
+        for (module_id, range, key, role) in self.written_map_keys.take().unwrap_or_default() {
+            self.check_written_map_key(module_id, range, key, role);
         }
         let declaration_count = body_modules
             .iter()
@@ -2846,7 +2644,8 @@ impl ProjectTypeChecker {
         match declaration.kind {
             ModuleDeclarationKind::Struct
             | ModuleDeclarationKind::Enum
-            | ModuleDeclarationKind::Interface => {
+            | ModuleDeclarationKind::Interface
+            | ModuleDeclarationKind::NativeType => {
                 let arguments = declaration
                     .generic_parameters
                     .iter()
@@ -2942,6 +2741,7 @@ impl ProjectTypeChecker {
                 let function_type = self.intern_type(CanonicalType::Function(contract));
                 self.declaration_types
                     .insert((module_id, declaration.semantic_id), function_type);
+                self.add_stated_requirements(module_id, declaration, &generic_symbols);
             }
             ModuleDeclarationKind::Constant => {
                 if let Some(annotation) = &declaration.annotation {
@@ -2958,6 +2758,35 @@ impl ProjectTypeChecker {
                         .insert((module_id, declaration.semantic_id), address);
                 }
             }
+        }
+    }
+
+    /// Gives a standard function the generic requirements the registry states
+    /// for it (`operations::STATED_REQUIREMENTS`), as an intrinsic's are: with
+    /// no origin, so a lack is reported at the caller's call.
+    fn add_stated_requirements(
+        &mut self,
+        module_id: ModuleId,
+        declaration: &ModuleDeclaration,
+        generic_symbols: &HashMap<String, SymbolId>,
+    ) {
+        if !self.resolved.is_standard_module(module_id) {
+            return;
+        }
+        let module_path = &self.resolved.semantic.modules[module_id.raw() as usize].path;
+        let id = format!("{module_path}.{}", declaration.name.text);
+        for stated in crate::operations::stated_requirements(&id) {
+            let generic = generic_symbols
+                .get(stated.generic)
+                .copied()
+                .unwrap_or_else(|| panic!("{id} declares no generic {}", stated.generic));
+            self.generic_requirements.insert(
+                generic,
+                GenericRequirement {
+                    property: stated.property,
+                    origin: None,
+                },
+            );
         }
     }
 
@@ -3052,6 +2881,7 @@ impl ProjectTypeChecker {
             ModuleDeclarationKind::Struct
             | ModuleDeclarationKind::Enum
             | ModuleDeclarationKind::Interface
+            | ModuleDeclarationKind::NativeType
             | ModuleDeclarationKind::ProcessName => false,
         }
     }
@@ -3649,15 +3479,17 @@ impl ProjectTypeChecker {
                 let float = self.builtin_type("Float");
                 let int = self.builtin_type("Int");
                 let operand_type = self.resolve_inference_type(fact.success);
+                let decimal = self.decimal_type();
                 let known_other = operand_type != int
                     && operand_type != float
+                    && Some(operand_type) != decimal
                     && operand_type != TypeId::new(0)
                     && !matches!(
                         self.types[operand_type.raw() as usize],
                         CanonicalType::InferenceVariable(_)
                     );
-                let success = if operand_type == float {
-                    float
+                let success = if operand_type == float || Some(operand_type) == decimal {
+                    operand_type
                 } else if known_other {
                     let duration = self.standard_named_type(StandardType::Duration, Vec::new());
                     let help = if operand_type == duration {
@@ -3671,7 +3503,7 @@ impl ProjectTypeChecker {
                         "T4303",
                         *range,
                         format!(
-                            "unary `-` needs an `Int` or `Float` operand, found `{found}`{help}"
+                            "unary `-` needs an `Int`, `Float`, or `Decimal` operand, found `{found}`{help}"
                         ),
                     );
                     TypeId::new(0)
@@ -5127,9 +4959,10 @@ impl ProjectTypeChecker {
             )
         };
         let symbol = binary_operator_symbol(operator);
+        let decimal = self.decimal_type();
         if let Some(found) = [left_type, right_type]
             .into_iter()
-            .find(|id| known(self, *id) && *id != int && *id != float)
+            .find(|id| known(self, *id) && *id != int && *id != float && Some(*id) != decimal)
         {
             let duration = self.standard_named_type(StandardType::Duration, Vec::new());
             let is_duration = found == duration;
@@ -5145,7 +4978,23 @@ impl ProjectTypeChecker {
                 module_id,
                 "T4303",
                 range,
-                format!("`{symbol}` needs `Int` or `Float` operands, found `{found}`{help}"),
+                format!(
+                    "`{symbol}` needs `Int`, `Float`, or `Decimal` operands, found `{found}`{help}"
+                ),
+            );
+            return poison;
+        }
+        if matches!(operator, BinaryOperator::Divide | BinaryOperator::Remainder)
+            && decimal.is_some_and(|decimal| left_type == decimal || right_type == decimal)
+        {
+            self.type_error_range(
+                module_id,
+                "T4306",
+                range,
+                format!(
+                    "`{symbol}` is not defined on `Decimal`: division needs a result scale and a \
+                     rounding mode; use `Decimal.divide(dividend, divisor, scale, rounding)`"
+                ),
             );
             return poison;
         }
@@ -5154,13 +5003,25 @@ impl ProjectTypeChecker {
                 self.type_display_name(left_type),
                 self.type_display_name(right_type),
             );
+            let help = if [left_type, right_type]
+                .iter()
+                .all(|id| *id == int || *id == float)
+            {
+                "; convert one side with `Float.from_int` or `Float.to_int`"
+            } else if left_type == int || right_type == int {
+                "; build an exact `Decimal` from an `Int` with `Decimal.of(value, 0)`"
+            } else if left_type == float || right_type == float {
+                "; `Decimal` has no conversion from `Float`, which is not exact: build the \
+                 `Decimal` from its digits with `Decimal.of` or `Decimal.parse`"
+            } else {
+                ""
+            };
             self.type_error_range(
                 module_id,
                 "T4302",
                 range,
                 format!(
-                    "`{symbol}` needs operands of one type, found `{left_name}` and `{right_name}`; \
-                     convert one side with `Float.from_int` or `Float.to_int`"
+                    "`{symbol}` needs operands of one type, found `{left_name}` and `{right_name}`{help}"
                 ),
             );
             return poison;
@@ -6473,7 +6334,7 @@ impl ProjectTypeChecker {
                     | StandardType::Ordering
                     | StandardType::JsonValue
                     | StandardType::DecodeError
-                    | StandardType::NumberError
+                    | StandardType::JsonConversionError
                     | StandardType::ChannelSendError
                     | StandardType::ProcessSendError
                     | StandardType::SupervisorRestart
@@ -7837,15 +7698,16 @@ impl ProjectTypeChecker {
                                     name,
                                 );
                             }
-                            if matches!(
-                                self.resolved.standard_symbol(symbol),
-                                Some(StandardSymbol::Type(StandardType::Map))
-                            ) && let Some(key) = lowered.first()
-                            {
+                            let role = match self.resolved.standard_symbol(symbol) {
+                                Some(StandardSymbol::Type(StandardType::Map)) => Some("`Map` keys"),
+                                Some(StandardSymbol::Type(StandardType::Set)) => Some("`Set` items"),
+                                _ => None,
+                            };
+                            if let (Some(role), Some(key)) = (role, lowered.first()) {
                                 if let Some(pending) = &mut self.written_map_keys {
-                                    pending.push((module_id, name.range, *key));
+                                    pending.push((module_id, name.range, *key, role));
                                 } else {
-                                    self.check_written_map_key(module_id, name.range, *key);
+                                    self.check_written_map_key(module_id, name.range, *key, role);
                                 }
                             }
                             self.intern_type(CanonicalType::Named {
@@ -7919,7 +7781,14 @@ impl ProjectTypeChecker {
 
     /// Rejects a written `Map<K, V>` whose `K` is not equatable, at the `Map`
     /// name. A generic `K` is left to the code that builds the map.
-    fn check_written_map_key(&mut self, module_id: ModuleId, range: TextRange, key: TypeId) {
+    /// `role` names what `key` is, as "`Map` keys".
+    fn check_written_map_key(
+        &mut self,
+        module_id: ModuleId,
+        range: TextRange,
+        key: TypeId,
+        role: &str,
+    ) {
         let Some(lack) = self.type_view().derive(key, ValueProperty::Equatable).lack else {
             return;
         };
@@ -7929,7 +7798,7 @@ impl ProjectTypeChecker {
             "T4300",
             range,
             format!(
-                "`Map` keys must be equatable, but `{found}` is not equatable: {}",
+                "{role} must be equatable, but `{found}` is not equatable: {}",
                 lack.describe()
             ),
         );
@@ -10302,6 +10171,7 @@ impl ProjectTypeChecker {
             ModuleDeclarationKind::Function => ProjectSymbolKind::Function,
             ModuleDeclarationKind::Constant => ProjectSymbolKind::Constant,
             ModuleDeclarationKind::ProcessName => ProjectSymbolKind::ProcessName,
+            ModuleDeclarationKind::NativeType => ProjectSymbolKind::NativeType,
         };
         self.find_symbol(
             module_id,
