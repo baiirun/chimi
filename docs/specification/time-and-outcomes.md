@@ -1416,7 +1416,7 @@ program.
   boundary events. A task parked in a select reports `Select.first` as its
   waited operation in a deadlock report.
 - **ABI.** `CHIMI_FIBER_ABI_VERSION` is 9 (`CHIMI_REQUEST_SELECT` and
-  `ChimiSelectSource`) and the native runtime ABI is 24.
+  `ChimiSelectSource`) and the native runtime ABI is 25 (24 was the operation profile).
 
 ### Runner
 
