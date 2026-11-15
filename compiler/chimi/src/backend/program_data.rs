@@ -2,7 +2,7 @@
 
 use crate::executable::{
     ConstantFunction, ConstantValue, CoreLiteral, CoreOperation, CorePattern, CoreProgram,
-    CoreStep, CoreSymbol, CoreSymbolKind,
+    CoreStep, CoreSymbolKind,
 };
 use crate::ids::{CoreNodeId, SymbolId};
 use crate::semantic::{BinaryOperator, UnaryOperator};
@@ -974,24 +974,59 @@ const fn binary_operator(operator: BinaryOperator) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{CoreSymbolKind, environment_slot};
+    use super::{body_locals, local_slots};
+    use crate::compiler::{ProjectSource, resolve_project_sources};
+    use crate::executable::{CoreOperation, lower, seal_entry};
+    use crate::source::SourceSnapshot;
+    use crate::typing::check_project;
+    use std::collections::HashSet;
 
+    // An environment holds one body's locals, so each local's slot must be below
+    // its body's count and the locals of one body must never share a slot; a body
+    // with few locals must get a small environment whatever other bodies declare.
     #[test]
-    fn environment_slots_are_dense_and_independent_by_symbol_kind() {
-        let mut locals = 0;
-        let mut requirements = 0;
-        let slots = [
-            CoreSymbolKind::Function,
-            CoreSymbolKind::Local,
-            CoreSymbolKind::Requirement,
-            CoreSymbolKind::Local,
-            CoreSymbolKind::Constructor,
-            CoreSymbolKind::Requirement,
-        ]
-        .map(|kind| environment_slot(kind, &mut locals, &mut requirements));
-
-        assert_eq!(slots, [u32::MAX, 0, 0, 1, u32::MAX, 1]);
-        assert_eq!(locals, 2);
-        assert_eq!(requirements, 2);
+    fn each_body_gets_distinct_slots_and_its_own_count() {
+        let source = concat!(
+            "fn wide(x: Int) -> Int {\n",
+            "  let a = x\n  let b = a + 1\n  let c = b + 1\n  let d = c + 1\n",
+            "  let add = fn(y: Int) { y + d }\n",
+            "  case add(a) {\n    0 -> b\n    n -> n + c\n  }\n",
+            "}\n",
+            "fn step(i: Int) -> Int { i + 1 }\n",
+            "pub fn main() -> Int { step(wide(1)) }\n",
+        );
+        let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+            .expect("valid module path");
+        let root = seal_entry(check_project(resolve_project_sources(vec![module])))
+            .unwrap_or_else(|_| panic!("the program compiles"));
+        let core = lower(root).unwrap_or_else(|_| panic!("the program lowers"));
+        let slots = local_slots(&core);
+        let mut counts = Vec::new();
+        for (function, count) in core.functions.iter().zip(&slots.function_counts) {
+            let body = body_locals(&core, &function.parameters, function.body);
+            let taken = body
+                .locals
+                .iter()
+                .map(|symbol| slots.slots[symbol.raw() as usize])
+                .collect::<Vec<_>>();
+            assert!(taken.iter().all(|slot| slot < count), "{taken:?} within {count}");
+            assert_eq!(taken.iter().collect::<HashSet<_>>().len(), taken.len());
+            for closure in &body.closures {
+                assert_eq!(slots.closure_count(*closure), *count);
+                assert!(matches!(
+                    core.nodes[closure.raw() as usize].operation,
+                    CoreOperation::Closure { .. }
+                ));
+            }
+            counts.push((core.symbol(function.symbol).name.clone(), *count));
+        }
+        let count_of = |name: &str| {
+            counts
+                .iter()
+                .find(|(function, _)| function == name)
+                .map(|(_, count)| *count)
+                .expect("the function is lowered")
+        };
+        assert!(count_of("step") < count_of("wide"), "{counts:?}");
     }
 }
