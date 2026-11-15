@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 6u
+#define CHIMI_FIBER_ABI_VERSION 7u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -94,6 +94,19 @@ enum {
      The id is invalid afterwards: any channel request naming it, a second
      release included, is a contract violation that defects the caller. */
   CHIMI_REQUEST_CHANNEL_RELEASE = 24,
+  /* ChimiSchedulerRequest: enters a cancellation scope of the calling task
+     whose deadline Instant is `value`; the reply's `token` is the scope id.
+     A cancellation point (see chimi_fiber_scope_cancel_pending). */
+  CHIMI_REQUEST_SCOPE_ENTER = 25,
+  /* ChimiSchedulerRequest: leaves the scope whose id is `token`, and any
+     scope nested in it. PENDING while child tasks the scope cancelled still
+     drain; then OK with `value` 1 when this scope's own cancellation is the
+     one the task is unwinding, else 0. ERROR when the task is not inside it.
+     Never a cancellation point; never issue it after a terminal cancel. */
+  CHIMI_REQUEST_SCOPE_EXIT = 26,
+  /* ChimiSchedulerRequest: a loop pass's cancellation point. OK, or the
+     task resumes with CHIMI_FIBER_CANCEL for a fired scope. */
+  CHIMI_REQUEST_SCOPE_CHECK = 27,
 };
 
 enum {
@@ -267,6 +280,8 @@ enum {
   CHIMI_CLOCK_TRACE_TIMER_FIRED = 3,
   CHIMI_CLOCK_TRACE_TIMER_CANCELLED = 4,
   CHIMI_CLOCK_TRACE_DEADLOCK_WAITER = 5,
+  /* A cancellation scope's deadline passed (boundaries). */
+  CHIMI_CLOCK_TRACE_SCOPE_FIRED = 6,
 };
 
 typedef struct {
@@ -476,6 +491,14 @@ void chimi_fiber_destroy(ChimiFiber *fiber);
 
 ChimiFiberCommand chimi_fiber_park(const ChimiRootFrame *roots);
 ChimiFiberCommand chimi_fiber_request(void *request, const ChimiRootFrame *roots);
+/* Read by the running fiber after a resume. 1 when that resume was a
+   task-level cancellation: the fiber must unwind without any request that can
+   park, CHIMI_REQUEST_SCOPE_EXIT included. A scope's cancellation, or a
+   process body told to stop, is not terminal. */
+uint32_t chimi_fiber_cancel_is_terminal(void);
+/* 1 when a fired cancellation scope of the running task waits for its next
+   cancellation point; a loop pass then issues CHIMI_REQUEST_SCOPE_CHECK. */
+uint32_t chimi_fiber_scope_cancel_pending(void);
 ChimiSchedulerOutcome chimi_scheduler_execute(ChimiFiberEntry entry, void *context,
                                               size_t stack_bytes,
                                               uint32_t trace_mode,

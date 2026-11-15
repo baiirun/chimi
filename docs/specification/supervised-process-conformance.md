@@ -372,8 +372,9 @@ from U5, the process family:
 
   A field the kind does not set is `null`, and `attempts_in_window` is 0.
 - Clock family (4): `clock_advanced`, `clock_timer_started`,
-  `clock_timer_fired`, `clock_timer_cancelled`, and
-  `clock_deadlock_waiter`. `task_id` is the timer's or waiter's task, or
+  `clock_timer_fired`, `clock_timer_cancelled`, `clock_deadlock_waiter`,
+  and `clock_scope_fired` (a timeout scope's deadline fired; a boundary
+  event). `task_id` is the timer's or waiter's task, or
   `null`. The scheduler stores a waiter's request kind in the event's
   `cause` field, so `cause_task_id` is `null` and `attributes` adds
   `request_kind`, read from `cause` (0 except on `clock_deadlock_waiter`),

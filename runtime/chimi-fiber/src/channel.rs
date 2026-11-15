@@ -683,6 +683,12 @@ impl ChannelRegistry {
         Ok((transferred, transition))
     }
 
+    /// True while the task has a send or receive registered, pending or with
+    /// a ready result it has not collected.
+    pub fn has_operation(&self, task: TaskId) -> bool {
+        self.operations.contains_key(&task)
+    }
+
     pub fn take_send_result(&mut self, task: TaskId) -> Option<SendResult> {
         match self.operations.get(&task).copied() {
             Some(Operation::SendReady(result)) => {

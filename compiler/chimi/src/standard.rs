@@ -106,6 +106,13 @@ pub(crate) enum StandardType {
     Set,
     /// `std/decimal.Decimal`: an exact base-10 number.
     Decimal,
+    /// `std/clock.Instant`: signed nanoseconds on the execution's monotonic
+    /// time source, meaningful only within the execution that read it.
+    Instant,
+    /// `std/clock.Timestamp`: signed nanoseconds since the Unix epoch, wall time.
+    Timestamp,
+    /// `std/task.Timeout`: the expected failure of `Task.timeout` and `Task.deadline`.
+    Timeout,
 }
 
 impl StandardType {
@@ -127,6 +134,7 @@ impl StandardType {
                 | Self::DurationParseError
                 | Self::ProcessSendError
                 | Self::SupervisorStartError
+                | Self::Timeout
         )
     }
 
@@ -170,6 +178,9 @@ impl StandardType {
             Self::Clock => "Clock",
             Self::Set => "Set",
             Self::Decimal => "Decimal",
+            Self::Instant => "Instant",
+            Self::Timestamp => "Timestamp",
+            Self::Timeout => "Timeout",
         }
     }
 
@@ -219,7 +230,10 @@ impl StandardType {
             | Self::ProcessSendError
             | Self::SupervisorRestart
             | Self::SupervisorStartError
-            | Self::Decimal => StandardProperties::Structural,
+            | Self::Decimal
+            | Self::Instant
+            | Self::Timestamp
+            | Self::Timeout => StandardProperties::Structural,
         }
     }
 
@@ -317,6 +331,33 @@ pub(crate) enum StandardFunction {
     /// native runtime's `CHIMI_INTRINSIC_*` order (`runtime_id`), and the
     /// process intrinsics follow `CHIMI_INTRINSIC_CLOCK_SLEEP` there.
     ClockSleep,
+    // The rest of `std/clock`, then `Task.timeout` and `Task.deadline`, which
+    // run on the same scheduler clock; they precede the process functions for
+    // the same reason.
+    /// `Clock.now`: the current `Instant` of the clock provider.
+    ClockNow,
+    /// `Clock.timestamp`: the current wall time of the clock provider.
+    ClockTimestamp,
+    /// `Clock.since(start)`: `Clock.between(start, Clock.now())`.
+    ClockSince,
+    ClockSleepUntil,
+    /// Defects on overflow of the `Instant` range.
+    ClockAdd,
+    /// `end - start`; defects on overflow of the `Duration` range.
+    ClockBetween,
+    /// RFC 3339 in UTC with the fraction trimmed of trailing zeros.
+    ClockTimestampToText,
+    ClockUnixNanoseconds,
+    ClockFromUnixNanoseconds,
+    ClockTimestampBetween,
+    /// A `Clock` whose `timestamp` starts at the given value and advances with
+    /// the wrapped clock's `now`.
+    ClockStartingAt,
+    /// `Task.timeout(operation, limit)`: runs the operation in a cancellation
+    /// scope of the calling task.
+    TaskTimeout,
+    /// `Task.deadline(operation, at)`.
+    TaskDeadline,
     ProcessSpec,
     ProcessRegister,
     ProcessReceive,
@@ -385,7 +426,7 @@ pub(crate) enum StandardFunction {
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 67] = [
+    pub(crate) const ALL: [Self; 80] = [
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -453,6 +494,19 @@ impl StandardFunction {
         Self::SupervisorStop,
         Self::SupervisorWait,
         Self::ClockSleep,
+        Self::ClockNow,
+        Self::ClockTimestamp,
+        Self::ClockSince,
+        Self::ClockSleepUntil,
+        Self::ClockAdd,
+        Self::ClockBetween,
+        Self::ClockTimestampToText,
+        Self::ClockUnixNanoseconds,
+        Self::ClockFromUnixNanoseconds,
+        Self::ClockTimestampBetween,
+        Self::ClockStartingAt,
+        Self::TaskTimeout,
+        Self::TaskDeadline,
     ];
 
     pub(crate) const fn module(self) -> Option<StandardModule> {
@@ -473,9 +527,24 @@ impl StandardFunction {
             | Self::SupervisorRemoveSupervisor
             | Self::SupervisorStop
             | Self::SupervisorWait => Some(StandardModule::Supervisor),
-            Self::ClockSleep => Some(StandardModule::Clock),
+            Self::ClockSleep
+            | Self::ClockNow
+            | Self::ClockTimestamp
+            | Self::ClockSince
+            | Self::ClockSleepUntil
+            | Self::ClockAdd
+            | Self::ClockBetween
+            | Self::ClockTimestampToText
+            | Self::ClockUnixNanoseconds
+            | Self::ClockFromUnixNanoseconds
+            | Self::ClockTimestampBetween
+            | Self::ClockStartingAt => Some(StandardModule::Clock),
             Self::IoPath => Some(StandardModule::Io),
-            Self::TaskStart | Self::TaskResult | Self::TaskCancel => Some(StandardModule::Task),
+            Self::TaskStart
+            | Self::TaskResult
+            | Self::TaskCancel
+            | Self::TaskTimeout
+            | Self::TaskDeadline => Some(StandardModule::Task),
             Self::ChannelSend
             | Self::ChannelReceive
             | Self::ChannelClose
@@ -650,6 +719,19 @@ impl StandardFunction {
             Self::SupervisorStop => "stop",
             Self::SupervisorWait => "wait",
             Self::ClockSleep => "sleep",
+            Self::ClockNow => "now",
+            Self::ClockTimestamp => "timestamp",
+            Self::ClockSince => "since",
+            Self::ClockSleepUntil => "sleep_until",
+            Self::ClockAdd => "add",
+            Self::ClockBetween => "between",
+            Self::ClockTimestampToText => "timestamp_to_text",
+            Self::ClockUnixNanoseconds => "unix_nanoseconds",
+            Self::ClockFromUnixNanoseconds => "from_unix_nanoseconds",
+            Self::ClockTimestampBetween => "timestamp_between",
+            Self::ClockStartingAt => "starting_at",
+            Self::TaskTimeout => "timeout",
+            Self::TaskDeadline => "deadline",
             Self::DebugCrash => "crash",
             Self::OptionUnwrapOrFail => "unwrap_or_fail",
             Self::TextConcat => "concat",
@@ -706,6 +788,29 @@ impl StandardFunction {
                 | Self::SupervisorStop
                 | Self::SupervisorWait
                 | Self::ClockSleep
+        ) || self.is_native_clock_operation()
+    }
+
+    /// The `std/clock` and timeout operations beyond `Clock.sleep`. They run only
+    /// on the native backend, on the scheduler's clock, like `Clock.sleep`; the
+    /// interpreter defects at each of them. The pure ones are among them because
+    /// the interpreter has no `Instant` or `Timestamp` value yet.
+    pub(crate) const fn is_native_clock_operation(self) -> bool {
+        matches!(
+            self,
+            Self::ClockNow
+                | Self::ClockTimestamp
+                | Self::ClockSince
+                | Self::ClockSleepUntil
+                | Self::ClockAdd
+                | Self::ClockBetween
+                | Self::ClockTimestampToText
+                | Self::ClockUnixNanoseconds
+                | Self::ClockFromUnixNanoseconds
+                | Self::ClockTimestampBetween
+                | Self::ClockStartingAt
+                | Self::TaskTimeout
+                | Self::TaskDeadline
         )
     }
 
@@ -837,10 +942,12 @@ pub(crate) enum StandardConstructor {
     StartCapacityReached,
     StartNameTaken,
     StartStopped,
+    /// `Timeout.TimedOut(limit: Duration)`.
+    TimeoutTimedOut,
 }
 
 impl StandardConstructor {
-    pub(crate) const ALL: [Self; 43] = [
+    pub(crate) const ALL: [Self; 44] = [
         Self::IntParseEmpty,
         Self::IntParseInvalidDigit,
         Self::IntParseOutOfRange,
@@ -884,6 +991,7 @@ impl StandardConstructor {
         Self::StartCapacityReached,
         Self::StartNameTaken,
         Self::StartStopped,
+        Self::TimeoutTimedOut,
     ];
 
     pub(crate) const fn type_kind(self) -> StandardType {
@@ -923,6 +1031,7 @@ impl StandardConstructor {
             Self::StartCapacityReached | Self::StartNameTaken | Self::StartStopped => {
                 StandardType::SupervisorStartError
             }
+            Self::TimeoutTimedOut => StandardType::Timeout,
         }
     }
 
@@ -967,7 +1076,11 @@ impl StandardConstructor {
             | StandardType::SupervisorRunning
             | StandardType::SupervisorManagedProcess
             | StandardType::SupervisorManagedSupervisor
-            | StandardType::Clock => None,
+            | StandardType::Clock
+            | StandardType::Instant
+            | StandardType::Timestamp => None,
+            // Written type-qualified, `Timeout.TimedOut`, as the spec does.
+            StandardType::Timeout => None,
             StandardType::Console
             | StandardType::FileSystem
             | StandardType::Map
@@ -1023,6 +1136,7 @@ impl StandardConstructor {
             Self::StartCapacityReached => "CapacityReached",
             Self::StartNameTaken => "NameTaken",
             Self::StartStopped => "Stopped",
+            Self::TimeoutTimedOut => "TimedOut",
         }
     }
 
@@ -1076,6 +1190,7 @@ impl StandardConstructor {
             | Self::DurationParseOutOfRange => &[],
             Self::ProcessSendFull | Self::ProcessSendUnavailable => &["message"],
             Self::StartNameTaken => &["name"],
+            Self::TimeoutTimedOut => &["limit"],
             Self::RestartNever
             | Self::RestartOnDefect
             | Self::StartCapacityReached
@@ -1139,10 +1254,15 @@ pub(crate) enum StandardGeneric {
     SupervisorStartProcessFailures,
     SupervisorAddressMessage,
     SupervisorRemoveMessage,
+    /// `Task.timeout` and `Task.deadline` share these: each call instantiates
+    /// them afresh.
+    TimeoutValue,
+    TimeoutFailures,
+    TimeoutNeeds,
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 26] = [
+    pub(crate) const ALL: [Self; 29] = [
         Self::FileState,
         Self::FileFailures,
         Self::FileNeeds,
@@ -1169,6 +1289,9 @@ impl StandardGeneric {
         Self::SupervisorStartProcessFailures,
         Self::SupervisorAddressMessage,
         Self::SupervisorRemoveMessage,
+        Self::TimeoutValue,
+        Self::TimeoutFailures,
+        Self::TimeoutNeeds,
     ];
 
     /// The name shown in contracts and diagnostics. Names repeat across
@@ -1199,19 +1322,23 @@ impl StandardGeneric {
             | Self::SupervisorProcessFailures
             | Self::SupervisorStartProcessFailures => "E",
             Self::ProcessSpecNeeds => "R",
+            Self::TimeoutValue => "T",
+            Self::TimeoutFailures => "E",
+            Self::TimeoutNeeds => "R",
         }
     }
 
     pub(crate) const fn kind(self) -> StandardGenericKind {
         match self {
-            Self::FileFailures => StandardGenericKind::FailureRow,
+            Self::FileFailures | Self::TimeoutFailures => StandardGenericKind::FailureRow,
             Self::TaskFailures
             | Self::ProcessSpecFailures
             | Self::ProcessRegisterFailures
             | Self::SupervisorProcessFailures
             | Self::SupervisorStartProcessFailures => StandardGenericKind::FailureSet,
-            Self::FileNeeds
-            | Self::ProcessSpecNeeds => StandardGenericKind::NeedsRow,
+            Self::FileNeeds | Self::ProcessSpecNeeds | Self::TimeoutNeeds => {
+                StandardGenericKind::NeedsRow
+            }
             _ => StandardGenericKind::Value,
         }
     }

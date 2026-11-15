@@ -27,6 +27,19 @@ impl Evaluator<'_> {
         if function == StandardFunction::ClockSleep {
             return defect(CLOCK_SLEEP_DEFECT.to_owned(), call_node);
         }
+        if function.is_native_clock_operation() {
+            return defect(
+                format!(
+                    "{}.{} requires the native runtime; build the program with `chimi build`",
+                    function
+                        .module()
+                        .expect("a clock operation has a module")
+                        .qualifier(),
+                    function.name()
+                ),
+                call_node,
+            );
+        }
         if function.requires_process_runtime() {
             return defect(
                 format!(

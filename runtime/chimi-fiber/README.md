@@ -64,6 +64,17 @@ through the config's `deadlock_report`. The real clock never reports deadlock:
 the host. `CHIMI_REQUEST_TIMER_NOW` and `CHIMI_REQUEST_TIMER_SLEEP_UNTIL`
 expose the clock, and `chimi_scheduler_run` takes a `ChimiSchedulerConfig`
 with the clock mode and release hooks.
+
+Cancellation scopes (`scheduler/scope.rs`) back `Task.timeout` and
+`Task.deadline`. `CHIMI_REQUEST_SCOPE_ENTER` pushes a scope with a deadline
+timer onto the calling task, `CHIMI_REQUEST_SCOPE_EXIT` pops it (replying
+whether that scope's own cancellation reached the task, and pending while its
+cancelled children drain), and `CHIMI_REQUEST_SCOPE_CHECK` is the loop-pass
+cancellation point. A firing scope withdraws the task's current park and
+cancels the children started inside it, and emits `clock_scope_fired`.
+`chimi_fiber_cancel_is_terminal()` and `chimi_fiber_scope_cancel_pending()`
+tell the running fiber whether a cancel ends the whole task and whether a
+scope cancel is waiting.
 `chimi_scheduler_execute` keeps its earlier behavior.
 `chimi_scheduler_execute_with_config` is `chimi_scheduler_execute` with three
 release hooks: `release_task_value` for every value a task returned except

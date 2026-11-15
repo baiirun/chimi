@@ -2624,7 +2624,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         .trace_kind() as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 6);
+    assert_eq!(crate::chimi_fiber_abi_version(), 7);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------
