@@ -370,7 +370,8 @@ static uint64_t next_mark_epoch = 1;
 
 /* The operation profile (--profile-file): per Core node, how often it was evaluated
    and what it allocated itself, not counting the nodes it ran. NULL unless profiling,
-   so an unprofiled run pays one branch per node and per allocation. */
+   so an unprofiled run pays a branch at each node's entry and exit and one per
+   allocation. */
 typedef struct {
   const char *operation;
   uint64_t evaluations;
@@ -8269,6 +8270,10 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
                        (outcome_path && strcmp(profile_path, outcome_path) == 0) ||
                        (memory_report_path && strcmp(profile_path, memory_report_path) == 0))) {
     fputs("profile, memory report, telemetry, and runner outcome require distinct files\n", stderr);
+    return 64;
+  }
+  if (profile_path && benchmark_repeats) {
+    fputs("--profile-file cannot be combined with --benchmark-repeats\n", stderr);
     return 64;
   }
   if (profile_path) {

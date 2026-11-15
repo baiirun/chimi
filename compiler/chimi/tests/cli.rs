@@ -3775,6 +3775,47 @@ fn native_profile_counts_evaluations_and_allocations_per_operation() {
         .map(|row| json_u64_field(row, "allocated_bytes"))
         .collect::<Vec<_>>();
     assert!(allocated.windows(2).all(|pair| pair[0] >= pair[1]), "{profile}");
+    // Ties on allocated bytes are ordered by evaluations, then by node id.
+    let keys = profile_rows(&profile)
+        .into_iter()
+        .map(|row| {
+            (
+                std::cmp::Reverse(json_u64_field(row, "allocated_bytes")),
+                std::cmp::Reverse(json_u64_field(row, "evaluations")),
+                row.split(',').next().unwrap().parse::<u64>().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(keys.windows(2).all(|pair| pair[0] < pair[1]), "{profile}");
+
+    // Profiling is independent of the trace mode: a traced run counts the same nodes.
+    let traced_path = scratch.join("traced-profile.json");
+    let traced = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=boundaries")
+        .arg(format!("--telemetry-file={}", scratch.join("trace.jsonl").display()))
+        .arg(format!("--profile-file={}", traced_path.display()))
+        .arg("--")
+        .output()
+        .expect("run traced native program with a profile");
+    assert!(traced.status.success(), "{}", String::from_utf8_lossy(&traced.stderr));
+    let traced_profile = std::fs::read_to_string(&traced_path).unwrap();
+    for operation in ["loop", "call", "match", "constant"] {
+        assert_eq!(
+            profile_total(&traced_profile, operation, "evaluations"),
+            profile_total(&profile, operation, "evaluations"),
+            "{traced_profile}"
+        );
+    }
+
+    let repeated = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--benchmark-repeats=2")
+        .arg(format!("--profile-file={}", scratch.join("repeated.json").display()))
+        .arg("--")
+        .output()
+        .expect("run native program with a profile and repeats");
+    assert_eq!(repeated.status.code(), Some(64));
 
     let rerun = Command::new(&executable)
         .arg("--chimi-runner")

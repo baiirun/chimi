@@ -23,6 +23,10 @@ MUTATIONS = [
    [("{ return runtime->full_trace || profile_rows; }", "{ return runtime->full_trace; }")]),
  m("rows are written lightest first",
    [("return x->allocated_bytes > y->allocated_bytes ? -1 : 1;", "return x->allocated_bytes > y->allocated_bytes ? 1 : -1;")]),
+ m("ties are written fewest evaluations first",
+   [("return x->evaluations > y->evaluations ? -1 : 1;", "return x->evaluations > y->evaluations ? 1 : -1;")]),
+ m("a profile adds up benchmark repeats",
+   [("  if (profile_path && benchmark_repeats) {", "  if (false) {")]),
  m("allocations are not counted",
    [("    ++row->allocations;\n", "")]),
 ]

@@ -119,7 +119,9 @@ ordered by `allocated_bytes`, then `evaluations` (both descending), then
 `core_node_id`, so one program always writes the same profile. The ids and
 source range are the ones telemetry events carry. Profiling is independent of
 the trace mode, and it turns off the direct integer paths (direct roots and
-direct loops), so every node is counted. It holds no timings, which would make
+direct loops), so every node is counted. It cannot be combined with
+`--benchmark-repeats`, which would add up the counts of every repeat; that
+combination exits 64. It holds no timings, which would make
 it nondeterministic and add overhead to every node; wall time per operation
 belongs to tracing.
 
