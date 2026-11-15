@@ -1382,6 +1382,10 @@ struct ProjectTypeChecker {
     /// is inside. A function input is contravariant, so there `Never` matches
     /// only `Never`: a `fn(Never)` must not pass for a `fn(Int)`.
     function_input_depth: u32,
+    /// Set just before lowering an interface member's declared type, the one
+    /// place a generic function type `fn<A>(..)` may appear; any nested type
+    /// lowers with it cleared.
+    generic_function_type_allowed: bool,
     /// Inference variables some check has already used as the narrower side.
     /// Such a variable is bounded above, so widening its failure set by union
     /// would leave that check stale; it may only stay as wide as it is.
@@ -1620,6 +1624,7 @@ impl ProjectTypeChecker {
             arm_types: HashMap::new(),
             undetermined_constants: HashSet::new(),
             function_input_depth: 0,
+            generic_function_type_allowed: false,
             bounded_inference_variables: HashSet::new(),
         };
         checker.intern_type(CanonicalType::Poison);
@@ -2534,6 +2539,7 @@ impl ProjectTypeChecker {
             arm_types: HashMap::new(),
             undetermined_constants: HashSet::new(),
             function_input_depth: 0,
+            generic_function_type_allowed: false,
             bounded_inference_variables: HashSet::new(),
         }
     }
@@ -2685,14 +2691,18 @@ impl ProjectTypeChecker {
                 let declaration_fields = declaration
                     .fields
                     .iter()
-                    .map(|field| FieldShape {
-                        semantic_id: field.semantic_id,
-                        name: field.name.text.clone(),
-                        type_id: self.lower_value_type(
-                            module_id,
-                            &field.type_use,
-                            &generic_symbols,
-                        ),
+                    .map(|field| {
+                        self.generic_function_type_allowed =
+                            declaration.kind == ModuleDeclarationKind::Interface;
+                        FieldShape {
+                            semantic_id: field.semantic_id,
+                            name: field.name.text.clone(),
+                            type_id: self.lower_value_type(
+                                module_id,
+                                &field.type_use,
+                                &generic_symbols,
+                            ),
+                        }
                     })
                     .collect();
                 self.fields.insert(declaration_symbol, declaration_fields);
@@ -7616,10 +7626,22 @@ impl ProjectTypeChecker {
     ) -> Option<&'static str> {
         let actual = self.resolve_inference_type(actual);
         let expected = self.resolve_inference_type(expected);
+        if actual == expected {
+            return None;
+        }
         match (
             self.types[actual.raw() as usize].clone(),
             self.types[expected.raw() as usize].clone(),
         ) {
+            // A generic slot, such as a generic interface member, is used at
+            // any instantiation, so whatever fills it must be as generic.
+            (
+                _,
+                CanonicalType::PolymorphicFunction {
+                    parameters,
+                    contract,
+                },
+            ) => self.generic_member_conformance_error(actual, &parameters, contract),
             (CanonicalType::Function(actual), CanonicalType::Function(expected)) => {
                 if actual.inputs.len() != expected.inputs.len() {
                     return Some("input count differs");
@@ -7651,6 +7673,119 @@ impl ProjectTypeChecker {
             _ if self.unify(actual, expected) => None,
             _ => Some("value type differs"),
         }
+    }
+
+    /// Whether provider member `actual` fits a generic interface member
+    /// `fn<parameters>(contract)`. The member's parameters stay rigid: the
+    /// provider must work for every choice of them, so a generic provider is
+    /// instantiated afresh and matched against the member's contract. The check
+    /// leaves no trace when it fails, and it fails when it would bind a type
+    /// that existed before it (such as an unannotated lambda's parameter) to
+    /// one of the member's parameters, since that parameter would then escape
+    /// the member's scope.
+    fn generic_member_conformance_error(
+        &mut self,
+        actual: TypeId,
+        parameters: &[SymbolId],
+        contract: CallableContract,
+    ) -> Option<&'static str> {
+        let bindings = self.inference_bindings.clone();
+        let bounded = self.bounded_inference_variables.clone();
+        let property_checks = self.property_checks.len();
+        let existing_variables = self.next_inference_variable;
+        let reason = self.generic_member_mismatch(actual, parameters, contract);
+        let reason = reason.or_else(|| {
+            let escapes = (0..existing_variables).any(|variable| {
+                let bound = self.inference_bindings.get(&variable).copied();
+                bound != bindings.get(&variable).copied()
+                    && bound.is_some_and(|bound| self.type_mentions_generics(bound, parameters))
+            });
+            escapes.then_some(
+                "it is not generic; supply a generic function such as one declared `fn name<A>(..)`",
+            )
+        });
+        if reason.is_some() {
+            self.inference_bindings = bindings;
+            self.bounded_inference_variables = bounded;
+            self.property_checks.truncate(property_checks);
+        }
+        reason
+    }
+
+    fn generic_member_mismatch(
+        &mut self,
+        actual: TypeId,
+        parameters: &[SymbolId],
+        contract: CallableContract,
+    ) -> Option<&'static str> {
+        let expected = self.intern_type(CanonicalType::Function(contract));
+        let actual = self.resolve_inference_type(actual);
+        let CanonicalType::PolymorphicFunction {
+            parameters: own,
+            contract: own_contract,
+        } = self.types[actual.raw() as usize].clone()
+        else {
+            return self.provider_member_conformance_error(actual, expected);
+        };
+        let (instance, substitution) =
+            self.instantiate_function_value_with(&own, own_contract, Some(expected));
+        if let Some(reason) = self.provider_member_conformance_error(instance, expected) {
+            return Some(reason);
+        }
+        // The member promises nothing about its parameters, so a provider that
+        // compares or orders a value of one of them does not fit.
+        let constrains_member_parameter = own.iter().any(|parameter| {
+            self.generic_requirements.contains_key(parameter)
+                && substitution
+                    .values
+                    .get(parameter)
+                    .is_some_and(|argument| self.type_mentions_generics(*argument, parameters))
+        });
+        constrains_member_parameter.then_some(
+            "it compares or orders a value of a member type parameter, which the interface does not promise",
+        )
+    }
+
+    /// Whether `type_id`, its rows included, mentions any of `generics`.
+    fn type_mentions_generics(&self, type_id: TypeId, generics: &[SymbolId]) -> bool {
+        let mentions = |type_id: TypeId| self.type_mentions_generics(type_id, generics);
+        let contract_mentions = |contract: &CallableContract| {
+            contract.inputs.iter().copied().any(mentions)
+                || mentions(contract.success)
+                || self.failure_row_mentions_generics(contract.failures, generics)
+                || self.needs_row_mentions_generics(contract.needs, generics)
+        };
+        match &self.types[self.resolve_inference_type(type_id).raw() as usize] {
+            CanonicalType::Generic(symbol) => generics.contains(symbol),
+            CanonicalType::Named { arguments, .. } => arguments.iter().copied().any(mentions),
+            CanonicalType::FailureSetValue(row) => self.failure_row_mentions_generics(*row, generics),
+            CanonicalType::Function(contract)
+            | CanonicalType::PolymorphicFunction { contract, .. } => contract_mentions(contract),
+            CanonicalType::Record(fields) => fields.iter().any(|field| mentions(field.type_id)),
+            CanonicalType::Tuple(elements) => elements.iter().copied().any(mentions),
+            CanonicalType::InferenceVariable(_) | CanonicalType::Poison => false,
+        }
+    }
+
+    fn failure_row_mentions_generics(&self, row: FailureRowId, generics: &[SymbolId]) -> bool {
+        let row = &self.failure_rows[row.raw() as usize];
+        row.parameters.iter().any(|parameter| generics.contains(parameter))
+            || row.exclusions.iter().any(|exclusion| generics.contains(&exclusion.parameter))
+            || row.variant_arguments.iter().any(|arguments| {
+                arguments
+                    .arguments
+                    .iter()
+                    .any(|argument| self.type_mentions_generics(*argument, generics))
+            })
+    }
+
+    fn needs_row_mentions_generics(&self, row: NeedsRowId, generics: &[SymbolId]) -> bool {
+        let row = &self.needs_rows[row.raw() as usize];
+        row.parameters.iter().any(|parameter| generics.contains(parameter))
+            || row
+                .entries
+                .iter()
+                .any(|need| self.type_mentions_generics(need.interface, generics))
     }
 
     fn failure_row_is_subset(&self, actual: FailureRowId, expected: FailureRowId) -> bool {
@@ -7700,6 +7835,7 @@ impl ProjectTypeChecker {
         type_use: &TypeUse,
         generics: &HashMap<String, SymbolId>,
     ) -> TypeId {
+        let generic_function_type_allowed = std::mem::take(&mut self.generic_function_type_allowed);
         let result = match type_use {
             TypeUse::Named {
                 semantic_id,
@@ -7777,12 +7913,52 @@ impl ProjectTypeChecker {
                 }
             }
             TypeUse::Function {
+                semantic_id,
+                generic_parameters,
                 inputs,
                 success,
                 failures,
                 requirements,
-                ..
             } => {
+                if let Some(first) = generic_parameters.first()
+                    && !generic_function_type_allowed
+                {
+                    self.type_error(
+                        module_id,
+                        "T4360",
+                        first,
+                        "a generic function type is allowed only as the whole type of an \
+                         interface member; declare a generic function or interface instead",
+                    );
+                }
+                let parameters = generic_parameters
+                    .iter()
+                    .filter_map(|name| {
+                        self.find_symbol(
+                            module_id,
+                            Some(*semantic_id),
+                            ProjectSymbolKind::GenericParameter,
+                            &name.text,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                for parameter in &parameters {
+                    self.generic_kinds
+                        .entry(*parameter)
+                        .or_insert(GenericKind::Unconstrained);
+                }
+                // Rows look their parameters up by name, so the member's own
+                // generics join the ones in scope.
+                let mut scoped;
+                let generics = if parameters.is_empty() {
+                    generics
+                } else {
+                    scoped = generics.clone();
+                    for parameter in &parameters {
+                        scoped.insert(self.resolved.symbol(*parameter).name.clone(), *parameter);
+                    }
+                    &scoped
+                };
                 let inputs = inputs
                     .iter()
                     .map(|input| self.lower_value_type(module_id, input, generics))
@@ -7792,12 +7968,20 @@ impl ProjectTypeChecker {
                     self.lower_failure_row(module_id, failures, generics)
                 });
                 let needs = self.lower_needs_row(module_id, requirements, generics);
-                self.intern_type(CanonicalType::Function(CallableContract {
+                let contract = CallableContract {
                     inputs,
                     success,
                     failures,
                     needs,
-                }))
+                };
+                if parameters.is_empty() || !generic_function_type_allowed {
+                    self.intern_type(CanonicalType::Function(contract))
+                } else {
+                    self.intern_type(CanonicalType::PolymorphicFunction {
+                        parameters,
+                        contract,
+                    })
+                }
             }
             TypeUse::Union { members, .. } => self.lower_failure_set_type(module_id, members),
             TypeUse::Tuple { elements, .. } => {
@@ -8880,7 +9064,17 @@ impl ProjectTypeChecker {
                     return true;
                 }
                 if let Some(bound) = substitution.values.get(&parameter).copied() {
-                    self.unify(actual, bound)
+                    let unified = self.unify(actual, bound);
+                    // A generic function bound first and a fixed one second
+                    // share the fixed type: keeping the generic one would let
+                    // the call use the fixed function at any type.
+                    if unified
+                        && self.is_polymorphic_function(bound)
+                        && !self.is_polymorphic_function(actual)
+                    {
+                        substitution.values.insert(parameter, actual);
+                    }
+                    unified
                 } else {
                     substitution.values.insert(parameter, actual);
                     true
@@ -8971,6 +9165,13 @@ impl ProjectTypeChecker {
             }
             _ => self.unify(actual, expected),
         }
+    }
+
+    fn is_polymorphic_function(&self, type_id: TypeId) -> bool {
+        matches!(
+            self.types[self.resolve_inference_type(type_id).raw() as usize],
+            CanonicalType::PolymorphicFunction { .. }
+        )
     }
 
     fn both_functions(&mut self, actual: TypeId, expected: TypeId) -> bool {
@@ -9259,13 +9460,43 @@ impl ProjectTypeChecker {
                     self.substitute_call_contract_preserving(contract, substitution, preserved);
                 self.intern_type(CanonicalType::Function(contract))
             }
+            // Under the value's own binder only the generics this substitution
+            // already binds are replaced, such as `K` in a member `get: fn<A>(K,
+            // A) -> A` of `Store<Text>`. Its own parameters, and generics the
+            // substitution leaves open, stay as they are.
             CanonicalType::PolymorphicFunction {
                 parameters,
                 contract,
-            } => self.intern_type(CanonicalType::PolymorphicFunction {
-                parameters,
-                contract,
-            }),
+            } => {
+                let mut inner = substitution.clone();
+                for parameter in &parameters {
+                    inner.values.remove(parameter);
+                    inner.failures.remove(parameter);
+                    inner.needs.remove(parameter);
+                }
+                let mut mentioned = Vec::new();
+                let formatter = self.formatter();
+                for type_id in contract.inputs.iter().chain([&contract.success]) {
+                    formatter.collect_generics(*type_id, &mut mentioned);
+                }
+                // Every generic the contract mentions that `inner` leaves open
+                // is kept, the value's own parameters among them.
+                let mut inner_preserved = preserved.to_vec();
+                inner_preserved.extend(
+                    mentioned
+                        .into_iter()
+                        .filter(|generic| {
+                            !inner.values.contains_key(generic)
+                                && !inner.failures.contains_key(generic)
+                        }),
+                );
+                let contract =
+                    self.substitute_call_contract_preserving(contract, &mut inner, &inner_preserved);
+                self.intern_type(CanonicalType::PolymorphicFunction {
+                    parameters,
+                    contract,
+                })
+            }
             CanonicalType::Record(fields) => {
                 let fields = fields
                     .into_iter()
@@ -9788,6 +10019,17 @@ impl ProjectTypeChecker {
         contract: CallableContract,
         slot: Option<TypeId>,
     ) -> TypeId {
+        self.instantiate_function_value_with(parameters, contract, slot)
+            .0
+    }
+
+    /// `instantiate_function_value`, also returning what each parameter became.
+    fn instantiate_function_value_with(
+        &mut self,
+        parameters: &[SymbolId],
+        contract: CallableContract,
+        slot: Option<TypeId>,
+    ) -> (TypeId, CallSubstitution) {
         let mut substitution = CallSubstitution::default();
         if let Some(slot) = slot {
             let value = self.intern_type(CanonicalType::Function(contract.clone()));
@@ -9819,7 +10061,10 @@ impl ProjectTypeChecker {
         }
         let contract = self.substitute_call_contract_preserving(contract, &mut substitution, &[]);
         self.check_value_instantiation(parameters, &substitution);
-        self.intern_type(CanonicalType::Function(contract))
+        (
+            self.intern_type(CanonicalType::Function(contract)),
+            substitution,
+        )
     }
 
     /// Queues the requirement checks for a generic function value instantiated

@@ -177,8 +177,10 @@ be derived the same way as G2.
 
 ### G11. Generic methods on interfaces
 
-User interfaces cannot declare generic method types (*verified*: `fn<A>` in an
-interface field is a syntax error). The kernel excludes higher-rank types, but
+Done (CHI-104): an interface member may be generic (`get: fn<A>(K, A) -> A`),
+and a generic function declared with explicit parameters can provide it, so a
+user fake can stand in for `FileSystem`. Before this, user interfaces could not
+declare generic method types (`fn<A>` in an interface field was a syntax error). The kernel excludes higher-rank types, but
 `FileSystem.process_utf8_lines` is already `fn<A, F, R>` as an intrinsic. As a
 result, users cannot write a fake `FileSystem`, and no library can define its
 own scope-owning interface such as `Database.transaction` or

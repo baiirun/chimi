@@ -224,6 +224,15 @@ impl ProjectTypeChecker {
     /// instances of one data type join argument by argument where the argument
     /// is covariant and the two arguments are failure sets. `None` when they do
     /// not join, including two different enums at the top, which is `T4341`.
+    /// `preferred`, unless it is a generic function and `other` is not.
+    fn fixed_function_side(&self, preferred: TypeId, other: TypeId) -> TypeId {
+        if self.is_polymorphic_function(preferred) && !self.is_polymorphic_function(other) {
+            other
+        } else {
+            preferred
+        }
+    }
+
     pub(crate) fn join_alternative_types(&mut self, left: TypeId, right: TypeId) -> Option<TypeId> {
         self.join_types_within(left, right, false, 0)
     }
@@ -241,11 +250,14 @@ impl ProjectTypeChecker {
         if depth > DEPTH_LIMIT {
             return None;
         }
+        // A generic function joined with a fixed one unifies by instantiating
+        // the generic side, so the join is the fixed type: an alternative that
+        // may hold the fixed function must not keep the generic type.
         if self.unify(left, right) {
-            return Some(right);
+            return Some(self.fixed_function_side(right, left));
         }
         if self.unify(right, left) {
-            return Some(left);
+            return Some(self.fixed_function_side(left, right));
         }
         if let (Some(left_set), Some(right_set)) =
             (self.failure_set_of(left), self.failure_set_of(right))
