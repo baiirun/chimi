@@ -524,14 +524,17 @@ fn a_user_clock_timer_does_not_break_the_commit() {
             "  let canceller = Task.start(fn() { middle(sender) })\n",
             "  Clock.sleep(Duration.seconds(1))\n",
             "  let waited = wait using { clock: passing }\n",
-            "  waited(receiver)\n",
+            "  let got = waited(receiver)\n",
+            "  Clock.sleep(Duration.seconds(20))\n",
+            "  got\n",
             "}\n",
         ),
         "boundaries",
     );
     assert_eq!(result.outcome, success("7"), "{}", String::from_utf8_lossy(&result.process.stderr));
-    // The losing 10 s timer child was cancelled: time never reaches it.
-    assert_eq!(clock_advances(&result.telemetry), [SECOND]);
+    // The losing 10 s timer child was cancelled: time steps from 1 s
+    // straight to the 21 s sleep, never stopping at 11 s.
+    assert_eq!(clock_advances(&result.telemetry), [SECOND, 21 * SECOND]);
 }
 
 // A user-clock timer that is already due is ready at once, so list order
