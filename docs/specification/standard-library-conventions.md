@@ -375,7 +375,7 @@ Callbacks receive a tuple only where a function produces tuples, such as
 - Callers handle a whole family with one failure-type pattern, and combine
   families with `|`:
 
-<!-- chimi: pending ts-0ba63e ts-80cbfb -->
+<!-- chimi: check -->
 ```chimi
 import std/int as Int
 import std/int.{ParseError}
@@ -387,7 +387,7 @@ enum PortError {
   OutOfRange(port: Int)
 }
 
-fn port(value: Option<Text>) -> Int errors PortError {
+fn port(value: Option<Text>) -> Int {
   case value {
     None -> Failure(PortError.Missing)
     Some(text) -> case Int.parse(Text.trim(text)) {
@@ -441,7 +441,7 @@ Helpers stay a small, fixed set. Anything with more than one decision is a
 the standard library. `unwrap_or_fail` turns absence into a failure in the
 row, which is how most service code meets a missing record:
 
-<!-- chimi: pending ts-0ba63e ts-80cbfb -->
+<!-- chimi: check -->
 ```chimi
 import std/map as Map
 import std/map.{Map}
@@ -451,7 +451,7 @@ enum LookupError {
   UnknownUser(id: Int)
 }
 
-fn display_name(names: Map<Int, Text>, id: Int) -> Text errors LookupError {
+fn display_name(names: Map<Int, Text>, id: Int) -> Text {
   Map.get(names, id) |> Option.unwrap_or_fail(LookupError.UnknownUser(id))
 }
 ```

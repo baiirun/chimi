@@ -70,27 +70,13 @@ fn every_scenario_through_the_current_stage_passes() {
     }
 }
 
-// U10's executed scenarios pass while the stage stays locked on PG02's
-// full-trace gate (`prog show ts-8f201b`): the forcing program's exact outcome
-// and transcripts, and memory that stays flat over restarts and memberships.
-// Redundant once CURRENT_STAGE reaches U10.
-#[test]
-fn the_forcing_program_and_u10_memory_scenarios_pass() {
-    for id in ["FP01", "MF02", "MF03"] {
-        let output = lab(&["--scenario", id, "--through", Stage::U10.name()]);
-        let report = String::from_utf8(output.stdout).unwrap();
-        assert!(output.status.success(), "{report}");
-        assert_eq!(statuses(&report), [(id.to_owned(), "pass".to_owned())]);
-    }
-}
-
 // The explicit performance run: every gate passes and reports its value and
 // limit. Run it on an idle machine, in release, through `scripts/heavy.sh`:
 // `cargo test --release -p chimi --test process_lab -- --ignored performance`.
 #[test]
 #[ignore = "measures wall time and resident memory; run explicitly on an idle machine"]
 fn performance_gates_pass_on_an_idle_machine() {
-    let output = lab(&["performance", "--through", Stage::U10.name()]);
+    let output = lab(&["performance"]);
     let report = String::from_utf8(output.stdout).unwrap();
     assert!(output.status.success(), "{report}");
     let gates = SCENARIOS

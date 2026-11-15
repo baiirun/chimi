@@ -12,6 +12,7 @@ from the philosophy and earlier decisions; any of these can be overruled.
 
 | Date | Decision | By | Detail |
 | --- | --- | --- | --- |
+| 2026-11-15 | Only a `native fn` header writes an `errors` row; every other function header leaves its failure row to inference, so the conventions' `port` and `display_name` examples drop theirs. Writing one in an ordinary header is not part of the language: the kernel infers rows for implemented headers, the parser accepts `errors` only after `native` and in function types, and the 2026-11-11 ruling below already moved failure-set examples off headers. | User | `standard-modules-and-constants.md` Rules for `native fn`; `standard-library-conventions.md`; `ts-936427` |
 | 2026-11-14 | Phase 2 registry: a `native fn` binds the operation named by its qualified name, implemented for now by a `StandardFunction` intrinsic both backends already dispatch; runtime-known declarations (`Option`, `Int.ParseError`, `Ordering`) are source enums that take the standard identity. `operations.h` and `chimi_op_` symbols wait for the rest of `standard.rs`. | Implementer | `compiler/chimi/src/operations.rs`; `ts-0ba63e` |
 | 2026-11-14 | A build loads only the std modules it imports; without `import std/option` the prelude's `Option` is the synthesized built-in with the same runtime identity. | Implementer | `standard_tree.rs`; `ts-0ba63e` |
 | 2026-11-14 | `Option.unwrap_or_fail` and `Text.append` are native: a Chimi body cannot fail with a generic payload, and `concat([a, b])` allocated a list per append. `std/order` (`compare`, `min`, `max`, `by`, `reverse`, `then`) is all Chimi. | Implementer | `compiler/chimi/std/`; `ts-0ba63e` |
@@ -62,6 +63,7 @@ from the philosophy and earlier decisions; any of these can be overruled.
 
 | Date | Decision | By | Detail |
 | --- | --- | --- | --- |
+| 2026-11-15 | PG02 gates only `--trace=boundaries` (< 1.25x, measured 1.05x). `--trace=full` is a debugging mode: it records every Core operation, so PG02 reports its ratio over `off` as the metric `pg02_full_over_off` with no gate. The < 5x limit came from the prototype, whose full mode recorded process events only. With PG02 passing, `CURRENT_STAGE` is U10. | User | `supervised-process-conformance.md` Performance gates; `ts-8f201b`; `ts-1765ba` |
 | 2026-11-11 | Per-owner heaps with loop regions, copy-on-transfer fragments, owner-tagged chunks; supervisors are kernel data, not fibers. | User (approach); Coordinator (details) | `architecture/supervised-process-runtime.md`; `ts-a6b43b` |
 | 2026-11-11 | Small in-transit messages share slabs instead of a 64 KiB chunk each. | User | `ts-df67fb` |
 | 2026-11-11 | `receive` after cancellation returns already-accepted messages, then `Cancelled` without parking. | Coordinator | `process-execution-and-mailboxes.md` |

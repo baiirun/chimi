@@ -43,12 +43,11 @@ chimi-process-lab performance --through U10 \
 ## Conformance result
 
 `chimi-process-lab all --through U10` (release) ran all 131 scenarios: 130
-pass and PG02 fails. Every static, Core, runtime, heap, observability, and
-forcing scenario passes, including FP01, MF02, and MF03.
+pass and PG02 failed its full-trace gate. Every static, Core, runtime, heap,
+observability, and forcing scenario passes, including FP01, MF02, and MF03.
 
-`CURRENT_STAGE` stays at U9 because PG02 fails (see
-[Open failure](#open-failure)). The default suite runs FP01, MF02, and MF03
-on their own with `--scenario <ID> --through U10` until the stage unlocks.
+That gate was later removed (see [Full tracing](#full-tracing)), so PG02
+passes on these numbers and `CURRENT_STAGE` is U10.
 
 ## Release gates
 
@@ -56,7 +55,7 @@ on their own with `--scenario <ID> --through U10` until the stage unlocks.
 | --- | --- | ---: | ---: | --- |
 | PG01 | ns per message, trace off | 877 | < 2,000 | pass |
 | PG02 | `boundaries` over `off` | 1.05x | < 1.25x | pass |
-| PG02 | `full` over `off` | 122.4x | < 5x | **fail** |
+| PG02 | `full` over `off` | 122.4x | none (was < 5x) | reported |
 | PG03 | µs per restart cycle | 6.5 | < 40 | pass |
 | PG04 | µs per process to start and first park | 9.4 | < 50 | pass |
 | PG04 | µs per process to stop | 8.2 | < 30 | pass |
@@ -93,7 +92,7 @@ limits are unchanged.
 | --- | --- | ---: | ---: | --- |
 | PG01 | ns per message, trace off | 3,242 | < 20,000 | pass |
 | PG02 | `boundaries` over `off` | 1.18x | < 1.25x | pass |
-| PG02 | `full` over `off` | 34.7x | < 5x | **fail** |
+| PG02 | `full` over `off` | 34.7x | none (was < 5x) | reported |
 | PG03 | µs per restart cycle | 16.7 | < 400 | pass |
 | PG04 | µs per start; per stop | 20.3; 27.1 | < 500; < 300 | pass |
 | PG05 | per-process cost at 1,000 over 100 | 0.44 | < 2.0 | pass |
@@ -148,12 +147,14 @@ harness (`compiler/chimi/src/process_lab/performance.rs`, and
 - PG09 runs the FP01 executable under `--trace=off`. It also gates OB06's
   2 s wall bound, which the decision ledger assigns to this run.
 
-## Open failure
+## Full tracing
 
-PG02 full fails at about 120 times trace-off, against a gate of 5. The
+PG02 full measured about 120 times trace-off, against the old gate of 5. The
 native runner's full mode records `operation_started` and
 `operation_completed` for every Core operation. A 20,000-message run wrote
 877,867 telemetry lines (815,128 operation events and 19,969 `process_send`
 events), which is 301 MB. The 5x gate came from the prototype, whose full
-mode recorded process events only. The decision is `prog show ts-8f201b`.
-The gate and the runner are unchanged until it is decided.
+mode recorded process events only. Byron decided on 2026-11-15
+(`ts-8f201b`) that `--trace=full` is a debugging mode with no overhead gate.
+PG02 still reports its ratio as the metric `pg02_full_over_off`. The saved
+release report predates that change and still lists the old gate as failed.
