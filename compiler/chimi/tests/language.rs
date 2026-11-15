@@ -11172,7 +11172,8 @@ fn a_callback_for_a_narrower_failure_set_does_not_fit_a_wider_one() {
         fn run_ab(f: fn(A | B) -> Text) -> Text { f(B.XB) }\n\
         fn run_handler(h: Handler<A | B>) -> Text { (h.run)(B.XB) }\n\
         pub fn main() -> Text { \"${run_ab(takes_a)} ${run_handler(Handler(takes_a))}\" }\n";
-    assert_eq!(check_codes(rejected), ["T4203", "T4203"]);
+    // Both name the variant the callback cannot take (`T4346`).
+    assert_eq!(check_codes(rejected), ["T4346", "T4346"]);
 
     let accepted = "enum A { XA }\nenum B { XB }\n\
         fn takes_either(value: A | B) -> Text {\n  case value {\n    A.XA -> \"a\"\n    B.XB -> \"b\"\n  }\n}\n\
@@ -11180,6 +11181,41 @@ fn a_callback_for_a_narrower_failure_set_does_not_fit_a_wider_one() {
         pub fn main() -> Text { run_a(takes_either) }\n";
     assert_eq!(run_both("callback_wider_input", accepted),
         "\"outcome\":\"success\",\"value\":\"a\""
+    );
+}
+
+#[test]
+fn a_generic_function_does_not_take_a_callback_for_a_narrower_failure_set() {
+    // The same rule through a generic callee, whose arguments are matched
+    // against its instantiated parameters: `run_ab` hands its callback a `B`,
+    // so neither a `fn(A)` nor a `Handler<A>` may stand in. Before the fix both
+    // type-checked and then hit a no-matching-arm defect.
+    let prelude = "enum A { XA }\nenum B { XB }\nstruct Handler<E> { run: fn(E) -> Text }\n\
+        fn takes_a(a: A) -> Text {\n  case a {\n    A.XA -> \"a\"\n  }\n}\n";
+    let callback = format!(
+        "{prelude}fn run_ab<T>(f: fn(A | B) -> T) -> T {{ f(B.XB) }}\n\
+         pub fn main() -> Text {{ run_ab(takes_a) }}\n"
+    );
+    assert_eq!(check_codes(&callback), ["T4346"]);
+    let handler = format!(
+        "{prelude}fn run_h<T>(h: Handler<A | B>, x: T) -> Text {{ (h.run)(B.XB) }}\n\
+         pub fn main() -> Text {{ run_h(Handler(takes_a), 1) }}\n"
+    );
+    assert_eq!(check_codes(&handler), ["T4346"]);
+}
+
+#[test]
+fn a_type_argument_used_only_as_an_input_takes_a_wider_set() {
+    // `Handler<E>` only takes `E` in, so a handler of `A | B` serves where a
+    // handler of `A` is expected, through a plain call and a generic one.
+    let program = "enum A { XA }\nenum B { XB }\nstruct Handler<E> { run: fn(E) -> Text }\n\
+        fn either(value: A | B) -> Text {\n  case value {\n    A.XA -> \"a\"\n    B.XB -> \"b\"\n  }\n}\n\
+        fn run_a(h: Handler<A>) -> Text { (h.run)(A.XA) }\n\
+        fn run_generic<T>(h: Handler<A>, x: T) -> Text { (h.run)(A.XA) }\n\
+        pub fn main() -> Text {\n  let h: Handler<A | B> = Handler(either)\n  \"${run_a(h)}${run_generic(h, 1)}\"\n}\n";
+    assert_eq!(
+        run_both("contravariant_handler", program),
+        "\"outcome\":\"success\",\"value\":\"aa\""
     );
 }
 

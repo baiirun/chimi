@@ -1,0 +1,9 @@
+// An attempt count below 1 that the compiler cannot see defects at the
+// constructor that receives it.
+import std/list as List
+import std/schedule as Schedule
+
+pub fn main() -> Bool {
+  let count = List.length([])
+  Schedule.immediate(count) == Schedule.immediate(1)
+}

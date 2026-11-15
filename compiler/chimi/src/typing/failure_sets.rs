@@ -175,6 +175,107 @@ impl ProjectTypeChecker {
             .all(|field| !self.occurs_contravariantly(field.type_id, parameter, false, depth))
     }
 
+    /// Whether the type parameter at `index` of the data type `owner` occurs
+    /// only in function inputs, as `E` of `Retry.Policy<E>` holding a
+    /// `fn(E) -> Bool` does. Such an argument fits the other way round: a
+    /// `Policy<A | B>` stands in for a `Policy<A>`, since its predicate takes
+    /// every `A`. `false` for a parameter that also occurs covariantly, for one
+    /// that does not occur at all, and for built-in types.
+    pub(crate) fn type_parameter_is_contravariant(&self, owner: SymbolId, index: usize) -> bool {
+        self.parameter_is_contravariant_within(owner, index, 0)
+    }
+
+    fn parameter_is_contravariant_within(
+        &self,
+        owner: SymbolId,
+        index: usize,
+        depth: usize,
+    ) -> bool {
+        const DEPTH_LIMIT: usize = 8;
+        if depth > DEPTH_LIMIT {
+            return false;
+        }
+        let Some(parameter) = self
+            .named_type_generic_parameters(owner)
+            .get(index)
+            .copied()
+        else {
+            return false;
+        };
+        let mut shapes = vec![owner];
+        if self.resolved.symbol(owner).kind == ProjectSymbolKind::Enum {
+            shapes.extend(self.enum_variant_symbols(owner));
+        }
+        let fields = shapes
+            .iter()
+            .filter_map(|shape| self.fields.get(shape))
+            .flatten()
+            .collect::<Vec<_>>();
+        fields
+            .iter()
+            .any(|field| self.occurs_contravariantly(field.type_id, parameter, false, depth))
+            && fields
+                .iter()
+                .all(|field| !self.occurs_covariantly(field.type_id, parameter, false, depth))
+    }
+
+    /// Whether `parameter` may occur in `type_id` at an output position, counting
+    /// `inside_input` for the position `type_id` itself is in. Unlike
+    /// `occurs_contravariantly`, an input of an input flips back to an output,
+    /// and every uncertain case, such as a failure or needs row that names the
+    /// parameter, counts as an output, so a `false` is safe to rely on.
+    fn occurs_covariantly(
+        &self,
+        type_id: TypeId,
+        parameter: SymbolId,
+        inside_input: bool,
+        depth: usize,
+    ) -> bool {
+        let recurse =
+            |id: TypeId, input: bool| self.occurs_covariantly(id, parameter, input, depth);
+        match &self.types[self.resolve_inference_type(type_id).raw() as usize] {
+            CanonicalType::Generic(symbol) => !inside_input && *symbol == parameter,
+            CanonicalType::FailureSetValue(row) => {
+                !inside_input
+                    && self.failure_rows[row.raw() as usize]
+                        .parameters
+                        .contains(&parameter)
+            }
+            CanonicalType::Named { symbol, arguments } => {
+                arguments.iter().enumerate().any(|(index, argument)| {
+                    if self.parameter_is_covariant_within(*symbol, index, depth + 1) {
+                        recurse(*argument, inside_input)
+                    } else if self.parameter_is_contravariant_within(*symbol, index, depth + 1) {
+                        recurse(*argument, !inside_input)
+                    } else {
+                        recurse(*argument, false) || recurse(*argument, true)
+                    }
+                })
+            }
+            CanonicalType::Function(contract)
+            | CanonicalType::PolymorphicFunction { contract, .. } => {
+                self.failure_rows[contract.failures.raw() as usize]
+                    .parameters
+                    .contains(&parameter)
+                    || self.needs_rows[contract.needs.raw() as usize]
+                        .parameters
+                        .contains(&parameter)
+                    || contract
+                        .inputs
+                        .iter()
+                        .any(|input| recurse(*input, !inside_input))
+                    || recurse(contract.success, inside_input)
+            }
+            CanonicalType::Record(fields) => fields
+                .iter()
+                .any(|field| recurse(field.type_id, inside_input)),
+            CanonicalType::Tuple(elements) => elements
+                .iter()
+                .any(|element| recurse(*element, inside_input)),
+            CanonicalType::InferenceVariable(_) | CanonicalType::Poison => false,
+        }
+    }
+
     /// Whether `parameter` occurs in `type_id` at an input position, counting
     /// `inside_input` for the position `type_id` itself is in.
     fn occurs_contravariantly(
@@ -400,25 +501,18 @@ impl ProjectTypeChecker {
 
     /// The `T4346` message when `actual` and `expected` are failure sets, one of
     /// them written or inferred as a set, and `expected` lacks some of
-    /// `actual`'s variants: it names them. `None` for any other mismatch.
+    /// `actual`'s variants: it names them. The sets may also sit inside the two
+    /// types, as the inputs of two functions or the arguments of two `Policy`
+    /// instances do; under an input the narrower side must be `actual`, so a
+    /// predicate over `HttpError` for an operation that also times out is named
+    /// as lacking `Timeout.TimedOut`. `None` for any other mismatch.
     pub(super) fn failure_set_shortfall(
         &mut self,
         subject: &str,
         actual: TypeId,
         expected: TypeId,
     ) -> Option<String> {
-        if !self.is_failure_set_type(actual) && !self.is_failure_set_type(expected) {
-            return None;
-        }
-        let (Some(actual_set), Some(expected_set)) =
-            (self.failure_set_of(actual), self.failure_set_of(expected))
-        else {
-            return None;
-        };
-        let missing = self.failure_set_missing_variants(actual_set, expected_set);
-        if missing.is_empty() {
-            return None;
-        }
+        let (wider, missing) = self.failure_set_shortfall_within(actual, expected, false, 0)?;
         let formatter = self.formatter();
         let names = missing
             .iter()
@@ -434,8 +528,95 @@ impl ProjectTypeChecker {
         Some(format!(
             "{subject} has type `{}`, but `{}` lacks {names}",
             formatter.format_type(actual),
-            formatter.format_type(expected),
+            formatter.format_type(wider),
         ))
+    }
+
+    /// The set that must hold more, and the variants it lacks, for the first
+    /// pair of failure sets in `actual` and `expected` that do not fit.
+    /// `flipped`: the pair is under an odd number of function inputs, where
+    /// `expected` must fit within `actual`.
+    fn failure_set_shortfall_within(
+        &mut self,
+        actual: TypeId,
+        expected: TypeId,
+        flipped: bool,
+        depth: usize,
+    ) -> Option<(TypeId, Vec<SymbolId>)> {
+        const DEPTH_LIMIT: usize = 8;
+        if depth > DEPTH_LIMIT {
+            return None;
+        }
+        let (narrower, wider) = if flipped {
+            (expected, actual)
+        } else {
+            (actual, expected)
+        };
+        if self.is_failure_set_type(actual) || self.is_failure_set_type(expected) {
+            let (Some(narrower_set), Some(wider_set)) =
+                (self.failure_set_of(narrower), self.failure_set_of(wider))
+            else {
+                return None;
+            };
+            let missing = self.failure_set_missing_variants(narrower_set, wider_set);
+            return (!missing.is_empty()).then_some((wider, missing));
+        }
+        let actual = self.resolve_inference_type(actual);
+        let expected = self.resolve_inference_type(expected);
+        match (
+            self.types[actual.raw() as usize].clone(),
+            self.types[expected.raw() as usize].clone(),
+        ) {
+            (
+                CanonicalType::Named {
+                    symbol,
+                    arguments: actual_arguments,
+                },
+                CanonicalType::Named {
+                    symbol: expected_symbol,
+                    arguments: expected_arguments,
+                },
+            ) if symbol == expected_symbol && actual_arguments.len() == expected_arguments.len() => {
+                actual_arguments
+                    .into_iter()
+                    .zip(expected_arguments)
+                    .enumerate()
+                    .find_map(|(index, (actual, expected))| {
+                        let covariant = self.type_parameter_is_covariant(symbol, index);
+                        let contravariant = self.type_parameter_is_contravariant(symbol, index);
+                        let within = |checker: &mut Self, flipped| {
+                            checker.failure_set_shortfall_within(actual, expected, flipped, depth + 1)
+                        };
+                        match (covariant, contravariant) {
+                            (true, _) => within(self, flipped),
+                            (false, true) => within(self, !flipped),
+                            // An invariant argument, as of `Sender<E>`, has no
+                            // narrower side to name; it stays a plain mismatch.
+                            (false, false) => None,
+                        }
+                    })
+            }
+            (CanonicalType::Function(actual), CanonicalType::Function(expected))
+                if actual.inputs.len() == expected.inputs.len() =>
+            {
+                actual
+                    .inputs
+                    .iter()
+                    .zip(&expected.inputs)
+                    .find_map(|(actual, expected)| {
+                        self.failure_set_shortfall_within(*actual, *expected, !flipped, depth + 1)
+                    })
+                    .or_else(|| {
+                        self.failure_set_shortfall_within(
+                            actual.success,
+                            expected.success,
+                            flipped,
+                            depth + 1,
+                        )
+                    })
+            }
+            _ => None,
+        }
     }
 
     fn lower_failure_members(

@@ -1,0 +1,122 @@
+/// When to try an operation again: how many attempts in total, and how long to
+/// wait before each one after the first. A `Schedule` is plain data with
+/// derived equality, so tests can compare schedules. `std/retry` reads it, and
+/// later polling and repeat helpers will too.
+///
+/// Every constructor takes the total number of attempts first, counting the
+/// first one, so `Schedule.fixed(3, wait)` runs an operation at most three
+/// times.
+
+import std/debug as Debug
+import std/duration as Duration
+import std/duration.{Duration}
+
+// 1. Public types.
+
+/// The shape of a schedule. Build one with `immediate`, `fixed`, or
+/// `exponential`, which check their arguments.
+pub enum Schedule {
+  /// `attempts` tries with no wait between them.
+  Immediate(attempts: Int)
+  /// `attempts` tries with `wait` between each pair.
+  Fixed(attempts: Int, wait: Duration)
+  /// `attempts` tries; the first wait is `first`, and each later wait doubles
+  /// the one before it, never exceeding `limit`.
+  Exponential(attempts: Int, first: Duration, limit: Duration)
+}
+
+// 2. Constructors.
+
+/// A schedule of `attempts` tries with no wait between them.
+///
+/// Defects when `attempts` is below 1.
+/// Cost: O(1).
+pub fn immediate(attempts: Int) -> Schedule {
+  Immediate(checked_attempts(attempts))
+}
+
+/// A schedule of `attempts` tries that waits `wait` before each try after the
+/// first.
+///
+/// Defects when `attempts` is below 1 or `wait` is negative.
+/// Cost: O(1).
+pub fn fixed(attempts: Int, wait: Duration) -> Schedule {
+  Fixed(checked_attempts(attempts), checked_wait(wait))
+}
+
+/// A schedule of `attempts` tries that waits `first` before the second try and
+/// doubles the wait each time after, never exceeding `limit`. A `first` above
+/// `limit` waits `limit` every time.
+///
+/// Defects when `attempts` is below 1 or either duration is negative.
+/// Cost: O(1).
+pub fn exponential(attempts: Int, first: Duration, limit: Duration) -> Schedule {
+  Exponential(checked_attempts(attempts), checked_wait(first), checked_wait(limit))
+}
+
+// 5. Queries.
+
+/// The wait before the try after `attempt`, or `None` once `attempt` tries
+/// have used up the schedule. Attempts count from 1, so
+/// `Schedule.delay(schedule, 1)` is the wait before the second try.
+///
+/// Defects when `attempt` is below 1.
+/// Cost: O(1) for `immediate` and `fixed`; for `exponential`, O(log(limit /
+/// first)) doublings at most, since doubling stops at `limit`.
+pub fn delay(schedule: Schedule, attempt: Int) -> Option<Duration> {
+  let used = checked_attempts(attempt)
+  case used < attempts(schedule) {
+    False -> None
+    True -> Some(case schedule {
+      Immediate(_) -> Duration.zero
+      Fixed(_, wait) -> wait
+      Exponential(_, first, limit) -> doubled(first, limit, used)
+    })
+  }
+}
+
+// 7. Private helpers.
+
+fn attempts(schedule: Schedule) -> Int {
+  case schedule {
+    Immediate(count) -> count
+    Fixed(count, _) -> count
+    Exponential(count, _, _) -> count
+  }
+}
+
+/// `first` doubled `attempt - 1` times, stopping at `limit`. A wait at least
+/// half of `limit` jumps straight to `limit`, so no doubling can overflow.
+fn doubled(first: Duration, limit: Duration, attempt: Int) -> Duration {
+  loop state = (min(first, limit), attempt) {
+    let (wait, left) = state
+    case left == 1 or wait == limit {
+      True -> break wait
+      False -> case wait > Duration.subtract(limit, wait) {
+        True -> (limit, left - 1)
+        False -> (Duration.add(wait, wait), left - 1)
+      }
+    }
+  }
+}
+
+fn min(left: Duration, right: Duration) -> Duration {
+  case left > right {
+    True -> right
+    False -> left
+  }
+}
+
+fn checked_attempts(attempts: Int) -> Int {
+  case attempts < 1 {
+    True -> Debug.crash("Schedule attempts must be at least 1, got ${attempts}")
+    False -> attempts
+  }
+}
+
+fn checked_wait(wait: Duration) -> Duration {
+  case wait < Duration.zero {
+    True -> Debug.crash("Schedule waits must not be negative, got ${Duration.to_text(wait)}")
+    False -> wait
+  }
+}
