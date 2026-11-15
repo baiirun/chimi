@@ -363,6 +363,82 @@ fn build_reads_the_standard_tree_from_a_std_dir_override() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+fn std_check(std_dir: Option<&Path>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_chimi"));
+    if let Some(directory) = std_dir {
+        command.arg("--std-dir").arg(directory);
+    }
+    command.args(["std", "check"]).output().unwrap()
+}
+
+// `chimi std check` verifies a whole standard tree against the operation
+// registry without building a program: the embedded tree and a faithful copy
+// pass; a copy that drops a registered `native fn` or adds an unregistered one
+// fails and names the operation.
+#[test]
+fn std_check_verifies_a_standard_tree_against_the_registry() {
+    let embedded = std_check(None);
+    assert!(
+        embedded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&embedded.stderr)
+    );
+
+    let scratch = scratch_directory("std-check");
+    let copy = scratch.join("copy");
+    copy_standard_tree(&copy);
+    let faithful = std_check(Some(&copy));
+    assert!(
+        faithful.status.success(),
+        "{}",
+        String::from_utf8_lossy(&faithful.stderr)
+    );
+
+    let removed = scratch.join("removed");
+    copy_standard_tree(&removed);
+    let debug = removed.join("debug.chimi");
+    let text = std::fs::read_to_string(&debug).unwrap();
+    let declaration = "pub native fn render_indented<T>(value: T) -> Text\n";
+    assert!(text.contains(declaration));
+    std::fs::write(&debug, text.replace(declaration, "")).unwrap();
+    let output = std_check(Some(&removed));
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(
+            "registered operation std/debug.render_indented has no `native fn` declaration"
+        ),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let added = scratch.join("added");
+    copy_standard_tree(&added);
+    let debug = added.join("debug.chimi");
+    let mut text = std::fs::read_to_string(&debug).unwrap();
+    text.push_str("\npub native fn inspect<T>(value: T) -> Text\n");
+    std::fs::write(&debug, text).unwrap();
+    let output = std_check(Some(&added));
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("N3104")
+            && stderr.contains("no registered operation is named std/debug.inspect"),
+        "{stderr}"
+    );
+
+    // A copy is the whole tree: a module it lacks is not taken from the
+    // embedded one.
+    let partial = scratch.join("partial");
+    copy_standard_tree(&partial);
+    std::fs::remove_file(partial.join("order.chimi")).unwrap();
+    let output = std_check(Some(&partial));
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot read module std/order"), "{stderr}");
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn native_source_executes_task_start_and_result() {
     let scratch = scratch_directory("native-task-start-result");
@@ -2806,8 +2882,8 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi check [--json] --root <project-dir> <entry-module> | ",
             "chimi run --root <project-dir> <entry-module> [-- <argument>...] | ",
             "chimi build --root <project-dir> <entry-module> ",
-            "[-o <executable>]; a compiler developer may put --std-dir <directory> before ",
-            "inspect, check, run, or build\n"
+            "[-o <executable>] | chimi std check; a compiler developer may put ",
+            "--std-dir <directory> before inspect, check, run, build, or std check\n"
         )
     );
 }

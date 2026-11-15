@@ -15,8 +15,8 @@ const USAGE: &str = concat!(
     "chimi build <path> [-o <executable>] | ",
     "chimi check [--json] --root <project-dir> <entry-module> | chimi run --root ",
     "<project-dir> <entry-module> [-- <argument>...] | chimi build --root <project-dir> <entry-module> ",
-    "[-o <executable>]; a compiler developer may put --std-dir <directory> before ",
-    "inspect, check, run, or build"
+    "[-o <executable>] | chimi std check; a compiler developer may put ",
+    "--std-dir <directory> before inspect, check, run, build, or std check"
 );
 
 #[derive(Debug, Eq, PartialEq)]
@@ -49,6 +49,8 @@ enum Command {
         input: Input,
         output: Option<PathBuf>,
     },
+    /// Checks the whole standard tree against the operation registry.
+    StdCheck,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +131,15 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
             Err(UsageError {
                 message: "format received unexpected arguments",
             })
+        };
+    }
+
+    if command == "std" {
+        return match (arguments.next(), arguments.next()) {
+            (Some(subcommand), None) if subcommand == "check" => Ok(Command::StdCheck),
+            _ => Err(UsageError {
+                message: "std takes one subcommand: check",
+            }),
         };
     }
 
@@ -327,7 +338,35 @@ fn execute(Invocation { std_dir, command }: Invocation) -> ExitCode {
         Command::Check { input, output } => check(input, &standard, output),
         Command::Run { input, arguments } => run(input, &standard, arguments),
         Command::Build { input, output } => build(input, &standard, output),
+        Command::StdCheck => std_check(&standard),
     }
+}
+
+fn std_check(standard: &StandardTree) -> ExitCode {
+    let tree = match LoadedProject::standard_tree(standard) {
+        Ok(tree) => tree,
+        Err(error) => {
+            eprintln!("chimi: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let verification = Compiler::verify_standard_tree(tree.sources());
+    eprint!("{}", tree.render_diagnostics(&verification.diagnostics));
+    for mismatch in &verification.mismatches {
+        eprintln!("chimi: {mismatch}");
+    }
+    if !verification.matches() {
+        return ExitCode::FAILURE;
+    }
+    let location = standard.override_directory().map_or_else(
+        || "embedded standard tree".to_owned(),
+        |directory| format!("standard tree in {}", directory.display()),
+    );
+    println!(
+        "chimi: the {location} matches the operation registry ({} modules)",
+        tree.sources().len()
+    );
+    ExitCode::SUCCESS
 }
 
 fn inspect(input: Input, standard: &StandardTree, module_path: &str, offset: usize) -> ExitCode {

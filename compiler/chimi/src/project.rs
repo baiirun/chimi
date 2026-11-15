@@ -54,8 +54,8 @@ impl StandardTree {
     }
 
     /// Adds the standard modules `modules` import, directly or transitively.
-    /// An override directory replaces the whole embedded tree: a module it
-    /// lacks is not found.
+    /// An override directory replaces the whole embedded tree, so it must hold
+    /// every embedded module that the build imports.
     fn add_imported_modules(
         &self,
         modules: &mut Vec<ProjectSource>,
@@ -71,7 +71,9 @@ impl StandardTree {
 }
 
 /// Standard module `module_path` from the tree in `directory`, or `None` when
-/// the directory has no file for it.
+/// neither the directory nor the embedded tree has it (a built-in module such
+/// as `std/map`, or none at all). A module that only the embedded tree has is
+/// an error: falling back to it would mix two trees in one build.
 fn read_standard_module(
     directory: &Path,
     module_path: &str,
@@ -88,7 +90,12 @@ fn read_standard_module(
             module_path,
             text,
         ))),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                && crate::standard_tree::embedded_module(module_path).is_none() =>
+        {
+            Ok(None)
+        }
         Err(source) => Err(ProjectLoadError::ReadSource {
             module: module_path.to_owned(),
             path,
@@ -97,7 +104,61 @@ fn read_standard_module(
     }
 }
 
+/// The module path of each `.chimi` file under `directory`, as `std/list` for
+/// `list.chimi`, in ascending order.
+fn standard_module_paths(directory: &Path) -> Result<Vec<String>, ProjectLoadError> {
+    let read_error = |path: &Path, source| ProjectLoadError::ReadStandardDirectory {
+        path: path.to_owned(),
+        source,
+    };
+    let mut paths = Vec::new();
+    let mut pending = vec![directory.to_owned()];
+    while let Some(current) = pending.pop() {
+        for entry in std::fs::read_dir(&current).map_err(|source| read_error(&current, source))? {
+            let path = entry.map_err(|source| read_error(&current, source))?.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "chimi") {
+                let relative = path
+                    .strip_prefix(directory)
+                    .expect("walked paths are inside the directory")
+                    .with_extension("");
+                let module_path = relative
+                    .components()
+                    .map(|component| component.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                paths.push(format!("std/{module_path}"));
+            }
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
 impl LoadedProject {
+    /// Every module of `standard`, for checking the whole tree against the
+    /// operation registry (`chimi std check`).
+    pub fn standard_tree(standard: &StandardTree) -> Result<Self, ProjectLoadError> {
+        let Some(directory) = &standard.directory else {
+            let modules = crate::standard_tree::embedded_module_paths()
+                .map(|path| {
+                    crate::standard_tree::standard_source(path).expect("listed module is embedded")
+                })
+                .collect();
+            return Ok(Self { modules });
+        };
+        let mut modules = Vec::new();
+        for module_path in standard_module_paths(directory)? {
+            let module = read_standard_module(directory, &module_path)?.ok_or_else(|| {
+                ProjectLoadError::InvalidModule(ProjectPathError::new(module_path.clone()))
+            })?;
+            modules.push(module);
+        }
+        standard.add_imported_modules(&mut modules)?;
+        Ok(Self { modules })
+    }
+
     pub fn single_file(
         path: impl AsRef<Path>,
         standard: &StandardTree,

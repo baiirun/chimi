@@ -13,7 +13,11 @@
 //! [`StandardConstructor`]. The generated `operations.h` table replaces both
 //! when the remaining `standard.rs` modules move to source.
 
-use crate::standard::{StandardConstructor, StandardFunction, StandardType};
+use crate::compiler::{ProjectSource, resolve_project_sources};
+use crate::diagnostic::Diagnostic;
+use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol, StandardType};
+use crate::typing::check_project;
+use std::collections::{HashMap, HashSet};
 
 /// What an operation may touch, which decides where it may run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -239,65 +243,108 @@ pub(crate) fn runtime_known(id: &str) -> Option<RuntimeIdentity> {
         .map(|declaration| declaration.identity)
 }
 
+/// How a whole standard tree disagrees with the registry.
+#[derive(Debug, Default)]
+pub struct StandardTreeVerification {
+    /// What checking the tree on its own reports, which includes a `native fn`
+    /// that names no operation (`N3104`), a wrong arity (`T4320`), and a
+    /// runtime-known declaration of the wrong shape (`N3105`).
+    pub diagnostics: Vec<Diagnostic>,
+    /// The registry's side: each registered operation with no `native fn` or
+    /// several, and each runtime-known declaration missing from its module.
+    pub mismatches: Vec<String>,
+}
+
+impl StandardTreeVerification {
+    pub fn matches(&self) -> bool {
+        self.diagnostics.is_empty() && self.mismatches.is_empty()
+    }
+}
+
+/// The whole-tree check (`chimi std check`): `sources` are every module of one
+/// standard tree, which must type-check on its own, bind every registered
+/// operation to exactly one `native fn`, and declare every runtime-known item
+/// of the modules it holds.
+///
+/// An operation registered ahead of its module's port (`porting`) has no
+/// declaration yet, and a runtime-known declaration of a module the tree does
+/// not hold keeps its synthesized built-in, so neither is required.
+pub(crate) fn verify_tree(sources: Vec<ProjectSource>) -> StandardTreeVerification {
+    let modules = sources
+        .iter()
+        .map(|source| source.module_path().to_owned())
+        .collect::<HashSet<_>>();
+    let typed = check_project(resolve_project_sources(sources));
+    let resolved = &typed.resolved;
+    let mut declarations = HashMap::<String, usize>::new();
+    for symbol in &resolved.symbols {
+        if resolved.native_operation(symbol.id).is_none() {
+            continue;
+        }
+        let module = &resolved.semantic.modules
+            [symbol.module_id.expect("native fn is a declaration").raw() as usize];
+        *declarations
+            .entry(format!("{}.{}", module.path, symbol.name))
+            .or_default() += 1;
+    }
+    let mut mismatches = Vec::new();
+    for operation in OPERATIONS.iter().filter(|operation| !operation.porting) {
+        match declarations.get(operation.id).copied().unwrap_or(0) {
+            0 => mismatches.push(format!(
+                "registered operation {} has no `native fn` declaration",
+                operation.id
+            )),
+            1 => {}
+            count => mismatches.push(format!(
+                "registered operation {} has {count} `native fn` declarations",
+                operation.id
+            )),
+        }
+    }
+    for entry in RUNTIME_KNOWN {
+        let module = entry.id.split_once('.').map_or(entry.id, |(module, _)| module);
+        if !modules.contains(module) {
+            continue;
+        }
+        let identity = match entry.identity {
+            RuntimeIdentity::Type(kind) | RuntimeIdentity::NativeType(kind) => {
+                StandardSymbol::Type(kind)
+            }
+            RuntimeIdentity::Constructor(constructor) => StandardSymbol::Constructor(constructor),
+        };
+        let declared = resolved.symbols.iter().any(|symbol| {
+            symbol.module_id.is_some() && resolved.standard_symbol(symbol.id) == Some(identity)
+        });
+        if !declared {
+            mismatches.push(format!("runtime-known {} is not declared in source", entry.id));
+        }
+    }
+    StandardTreeVerification {
+        diagnostics: typed.diagnostics,
+        mismatches,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OPERATIONS, RUNTIME_KNOWN, RuntimeIdentity};
-    use crate::compiler::resolve_project_sources;
-    use crate::standard::StandardSymbol;
+    use super::verify_tree;
     use crate::standard_tree::{embedded_module_paths, standard_source};
-    use crate::typing::check_project;
 
-    /// The whole-tree check: the embedded tree type-checks on its own, binds
-    /// every registered operation to exactly one `native fn` with no operation
-    /// left over, and declares every runtime-known item in source.
     #[test]
     fn the_embedded_tree_matches_the_registry() {
         let sources = embedded_module_paths()
             .map(|path| standard_source(path).expect("listed module is embedded"))
             .collect();
-        let typed = check_project(resolve_project_sources(sources));
+        let verification = verify_tree(sources);
         assert!(
-            typed.diagnostics.is_empty(),
+            verification.diagnostics.is_empty(),
             "{:?}",
-            typed.diagnostics
+            verification.diagnostics
         );
-        let resolved = &typed.resolved;
-        let mut bound = resolved
-            .symbols
-            .iter()
-            .filter(|symbol| resolved.native_operation(symbol.id).is_some())
-            .map(|symbol| {
-                let module = &resolved.semantic.modules
-                    [symbol.module_id.expect("native fn is a declaration").raw() as usize];
-                format!("{}.{}", module.path, symbol.name)
-            })
-            .collect::<Vec<_>>();
-        bound.sort();
-        // An operation registered ahead of its module's port has no declaration yet.
-        let mut registered = OPERATIONS
-            .iter()
-            .filter(|operation| !operation.porting)
-            .map(|operation| operation.id)
-            .collect::<Vec<_>>();
-        registered.sort_unstable();
-        assert_eq!(bound, registered);
-        // A runtime-known declaration of a module not yet in the tree keeps its
-        // synthesized built-in until that module's port.
-        let ported = |id: &str| {
-            let module = id.split_once('.').map_or(id, |(module, _)| module);
-            crate::standard_tree::embedded_module(module).is_some()
-        };
-        for entry in RUNTIME_KNOWN.iter().filter(|entry| ported(entry.id)) {
-            let identity = match entry.identity {
-                RuntimeIdentity::Type(kind) | RuntimeIdentity::NativeType(kind) => {
-                    StandardSymbol::Type(kind)
-                }
-                RuntimeIdentity::Constructor(constructor) => StandardSymbol::Constructor(constructor),
-            };
-            let declared = resolved.symbols.iter().any(|symbol| {
-                symbol.module_id.is_some() && resolved.standard_symbol(symbol.id) == Some(identity)
-            });
-            assert!(declared, "{} is not declared in source", entry.id);
-        }
+        assert!(
+            verification.mismatches.is_empty(),
+            "{:?}",
+            verification.mismatches
+        );
     }
 }

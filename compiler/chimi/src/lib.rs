@@ -37,6 +37,7 @@ pub use compiler::{
     ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport, ValuePropertyStatus,
 };
 pub use formatter::FormatReport;
+pub use operations::StandardTreeVerification;
 pub use inspection::{
     CallableInspection, ClausePosition, InspectedToken, InspectionError, InspectionReport,
     NeedInspection, ReferenceInspection, SymbolInspection, SyntaxFrame, ValuePropertyInspection,
