@@ -1,0 +1,11 @@
+// multiply_checked reports a product past 128 bits as None: 2^64 squared
+// would wrap to 0, which is in range.
+import std/decimal as Decimal
+import std/decimal.{Decimal}
+
+pub fn main() -> Option<Decimal> {
+  case Decimal.parse("18446744073709551616") {
+    Success(x) -> Decimal.multiply_checked(x, x)
+    Failure(_) -> Some(Decimal.of(-1, 0))
+  }
+}

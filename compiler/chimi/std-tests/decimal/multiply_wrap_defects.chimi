@@ -1,0 +1,10 @@
+// A product past 128 bits defects too: 2^64 squared would wrap to 0.
+import std/decimal as Decimal
+import std/decimal.{Decimal}
+
+pub fn main() -> Decimal {
+  case Decimal.parse("18446744073709551616") {
+    Success(x) -> x * x
+    Failure(_) -> Decimal.of(0, 0)
+  }
+}
