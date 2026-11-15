@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 22
+#define CHIMI_RUNTIME_ABI_VERSION 23
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -459,5 +459,12 @@ ChimiControl *chimi_rt_match(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint6
 ChimiControl *chimi_rt_loop(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
 /* Node layout: a = target loop state symbol, b = value node or UINT32_MAX for Void. */
 ChimiControl *chimi_rt_break(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t);
+
+/* One pass of a direct loop: the state in, the next state or the loop's value out. */
+enum { CHIMI_DIRECT_PASS_CONTINUE = 0, CHIMI_DIRECT_PASS_BREAK = 1, CHIMI_DIRECT_PASS_FALLBACK = 2 };
+typedef int32_t (*ChimiDirectPass)(int64_t, int64_t *);
+/* A loop node whose passes the compiler lowered to `pass` (see runtime.c). */
+ChimiControl *chimi_rt_direct_loop(ChimiRuntime *, uint32_t, ChimiEnvironment *, uint64_t,
+                                   ChimiDirectPass);
 
 #endif

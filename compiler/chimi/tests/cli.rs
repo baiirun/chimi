@@ -3562,10 +3562,13 @@ fn native_scheduler_free_loop_reclaims_each_pass() {
         &format!(
             concat!(
                 "pub fn main() -> Int {{\n",
+                // The binding keeps this loop on the runtime path: an integer loop
+                // with no binding runs as direct machine passes, which allocate nothing.
                 "  loop count = 0 {{\n",
+                "    let next = count + 1\n",
                 "    case count {{\n",
                 "      {passes} -> break count\n",
-                "      _ -> count + 1\n",
+                "      _ -> next\n",
                 "    }}\n",
                 "  }}\n",
                 "}}\n",
@@ -3593,6 +3596,50 @@ fn native_scheduler_free_loop_reclaims_each_pass() {
         peak_live < 16_384,
         "loop kept {peak_live} live bytes across {passes} passes"
     );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Guards: an integer loop with no binding runs as direct machine passes (CHI-90): it
+// opens no allocation region, so its passes leave no collections in the memory report,
+// and it still returns the runtime loop's value.
+#[test]
+fn native_integer_loop_runs_as_direct_passes() {
+    let scratch = scratch_directory("native-direct-loop");
+    let executable = build_native(
+        &scratch,
+        "direct-loop",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  loop count = 0 {\n",
+            "    case count >= 100000 {\n",
+            "      True -> break count\n",
+            "      False -> count + 1\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let memory_report = scratch.join("direct-loop-memory.json");
+    let outcome = scratch.join("direct-loop-outcome.json");
+    let execution = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--memory-report-file={}", memory_report.display()))
+        .arg(format!("--outcome-file={}", outcome.display()))
+        .arg("--")
+        .output()
+        .expect("run native direct loop");
+    assert!(
+        execution.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(outcome).unwrap(),
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":100000}\n"
+    );
+    let memory_report = std::fs::read_to_string(memory_report).unwrap();
+    assert_eq!(json_u64_field(&memory_report, "scoped_collections"), 0);
     std::fs::remove_dir_all(scratch).unwrap();
 }
 

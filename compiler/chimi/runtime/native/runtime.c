@@ -7565,13 +7565,12 @@ NODE_WRAPPER(match, "match", {
    so the state is the only path from one pass to the next. Under the scheduler each
    task has its own heap, and values cross between tasks only as fragment copies, so a
    pass never frees what another task can reach. */
-NODE_WRAPPER(loop, "loop", {
+static ChimiControl *run_loop_passes(ChimiRuntime *runtime, uint32_t node_id,
+                                     ChimiEnvironment *incoming, uint64_t span, ChimiValue *state) {
   const ChimiNode *node = &CHIMI_NODES[node_id];
-  ChimiControl *initial = RUN(node->b);
-  if (initial->kind != CONTROL_SUCCESS) { result = initial; break; }
-  environment = clone_local_environment(incoming);
+  ChimiEnvironment *environment = clone_local_environment(incoming);
   uint32_t state_slot = environment_slot(node->a);
-  ChimiValue *state = initial->value;
+  ChimiControl *result = NULL;
   AllocationScope passes;
   allocation_scope_begin(&passes);
   for (;;) {
@@ -7593,8 +7592,43 @@ NODE_WRAPPER(loop, "loop", {
     }
     break;
   }
-  result = end_measured_allocation_scope(runtime, &passes, result);
+  return end_measured_allocation_scope(runtime, &passes, result);
+}
+
+NODE_WRAPPER(loop, "loop", {
+  ChimiControl *initial = RUN(CHIMI_NODES[node_id].b);
+  if (initial->kind != CONTROL_SUCCESS) { result = initial; break; }
+  result = run_loop_passes(runtime, node_id, incoming, span, initial->value);
 })
+
+/* A loop whose state is an Int and whose body is integer arithmetic and matches over
+   literals (CHI-90). The compiler emits one pass as `pass`, which returns
+   CHIMI_DIRECT_PASS_CONTINUE with the next state, CHIMI_DIRECT_PASS_BREAK with the
+   loop's value, or CHIMI_DIRECT_PASS_FALLBACK when the pass would defect (overflow,
+   division by zero, no matching arm). A pass that falls back is rerun from the same
+   state by the runtime loop, which reports the defect exactly as it would have. The
+   passes allocate nothing, and cancellation is checked before each one, as the
+   runtime loop does. Only trace-off runs take this path: any tracing keeps every
+   node's span, so it runs the runtime loop from the start. */
+ChimiControl *chimi_rt_direct_loop(ChimiRuntime *runtime, uint32_t node_id,
+                                   ChimiEnvironment *incoming, uint64_t parent,
+                                   ChimiDirectPass pass) {
+  if (!runtime->silent) return chimi_rt_loop(runtime, node_id, incoming, parent);
+  ChimiControl *initial = run_node(CHIMI_NODES[node_id].b, runtime, incoming, parent);
+  if (initial->kind != CONTROL_SUCCESS) return initial;
+  if (initial->value->kind != VALUE_INTEGER)
+    return defect("verified direct loop state is not an integer", node_id);
+  int64_t state = initial->value->as.integer;
+  for (;;) {
+    if (runtime->cancel) return cancelled();
+    int64_t next = 0;
+    switch (pass(state, &next)) {
+      case CHIMI_DIRECT_PASS_CONTINUE: state = next; continue;
+      case CHIMI_DIRECT_PASS_BREAK: return success(integer_value(next));
+      default: return run_loop_passes(runtime, node_id, incoming, parent, integer_value(state));
+    }
+  }
+}
 NODE_WRAPPER(break, "break", {
   const ChimiNode *node = &CHIMI_NODES[node_id];
   ChimiValue *value = void_value();
