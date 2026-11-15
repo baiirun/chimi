@@ -1,0 +1,5 @@
+interface:
+  display_name: "Code Quality"
+  short_description: "Route work to the matching quality skills and principles"
+policy:
+  allow_implicit_invocation: false
