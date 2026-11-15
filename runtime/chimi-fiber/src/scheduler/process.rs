@@ -1136,7 +1136,7 @@ impl Scheduler {
     /// its sleep timer, the child it awaits, its pending channel operation,
     /// and its receive. Replies to its supervisor requests are already
     /// matched to the park number.
-    fn disarm_wake_sources(&mut self, task: TaskId) {
+    pub(super) fn disarm_wake_sources(&mut self, task: TaskId) {
         let record = self.tasks.get_mut(&task).expect("parked task");
         record.waiting_on = None;
         if let Some(timer) = record.timer.take() {
@@ -1176,6 +1176,12 @@ impl Scheduler {
     /// True when the task is a forced incarnation, which must not park again.
     pub(super) fn is_forced(&self, task: TaskId) -> bool {
         self.stopping(task).is_some_and(|stopping| stopping.forced)
+    }
+
+    /// True when the task is an incarnation under shutdown. A cancellation
+    /// scope never fires into it: shutdown's own cancellation wins.
+    pub(super) fn is_stopping(&self, task: TaskId) -> bool {
+        self.stopping(task).is_some()
     }
 
     fn stopping(&self, task: TaskId) -> Option<Stopping> {

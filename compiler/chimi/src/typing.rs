@@ -17,6 +17,7 @@ use crate::standard::{
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+mod clock;
 mod constants;
 pub(crate) mod durations;
 pub(crate) mod process;
@@ -1640,6 +1641,7 @@ impl ProjectTypeChecker {
         }
 
         self.index_process_contracts();
+        self.index_clock_contracts();
         let text = self.builtin_type("Text");
         let int = self.builtin_type("Int");
         let bool_type = self.builtin_type("Bool");
@@ -2246,6 +2248,7 @@ impl ProjectTypeChecker {
             | StandardConstructor::DownDefected
             | StandardConstructor::DownStopped
             | StandardConstructor::DownUnavailable => self.process_constructor_shape(constructor),
+            StandardConstructor::TimeoutTimedOut => self.timeout_constructor_shape(),
             StandardConstructor::DurationParseEmpty
             | StandardConstructor::DurationParseInvalid
             | StandardConstructor::DurationParseOutOfRange => (

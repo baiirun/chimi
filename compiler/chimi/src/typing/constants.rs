@@ -342,6 +342,7 @@ fn unrepresentable_part(
                 | StandardType::Console
                 | StandardType::FileSystem
                 | StandardType::Clock
+                | StandardType::Instant
                 | StandardType::ProcessInbox
                 | StandardType::SupervisorRunning
                 | StandardType::SupervisorManagedProcess

@@ -372,8 +372,9 @@ from U5, the process family:
 
   A field the kind does not set is `null`, and `attempts_in_window` is 0.
 - Clock family (4): `clock_advanced`, `clock_timer_started`,
-  `clock_timer_fired`, `clock_timer_cancelled`, and
-  `clock_deadlock_waiter`. `task_id` is the timer's or waiter's task, or
+  `clock_timer_fired`, `clock_timer_cancelled`, `clock_deadlock_waiter`,
+  and `clock_scope_fired` (a timeout scope's deadline fired; a boundary
+  event). `task_id` is the timer's or waiter's task, or
   `null`. The scheduler stores a waiter's request kind in the event's
   `cause` field, so `cause_task_id` is `null` and `attributes` adds
   `request_kind`, read from `cause` (0 except on `clock_deadlock_waiter`),
@@ -536,7 +537,7 @@ did for each of its tests.
 | MB12 | U11 | A process hands main `Process.address(inbox)`. A send reaches it; after its restart the same address returns `Unavailable(message)` while the name reaches the fresh replacement | An own address that routes by name or reaches another incarnation |
 | MB13 | U11 | Capacity 3, filled before the body runs. On its first message the body reads `queued` 2 and `capacity` 3; a fourth send was `Full` | A backlog that counts the taken message, or a wrong capacity |
 | MB14 | U11 | Four monitored workers return, fail, defect, and are stopped; a fifth monitor names an unregistered name. Notices arrive as `Returned`, `Failed`, `Defected`, `Stopped`, `Unavailable` | A wrong mapping from terminal cause to `Down` |
-| MB15 | U11 | Capacity 1, full, while a monitored worker defects. The notice is queued past the capacity (`queued` 2) and arrives after the message accepted before it | A notice lost or refused at a full mailbox, or one that jumps the queue |
+| MB15 | U11 | Capacity 1. One monitored worker defects, then `Note(7)` is accepted and fills the mailbox, `Note(8)` is refused `Full`, and a second monitored worker defects. Both notices are queued past the capacity (`queued` 3) and arrive in acceptance order around the message | A notice lost or refused at a full mailbox, or one that jumps the queue |
 | MB16 | U11 | A notice is queued, then `unmonitor` removes it (`queued` 1, then 0); a second `unmonitor` is ignored and the next receive is the next message | A queued notice left behind by `unmonitor` |
 | MB17 | U11 | The watcher returns with a queued `Unavailable` notice and a live monitor; its target ends later. No fragment outlives the run | Notice handles leaked when the watcher ends first |
 | MB18 | U11 | A monitor set through a name sees the first incarnation's defect and nothing from its replacement | A monitor that follows the name across restarts |
@@ -772,7 +773,7 @@ outcome, a dynamic member, a stop); FP01 adds the same check at U10.
 | OB04 | U6 | Every transcript fixture runs twice. Telemetry is byte-identical once `execution_id` is removed | Nondeterministic scheduling or identities |
 | OB05 | U5 | Process, task, and channel events share one strictly increasing `sequence` | A separate sequence for process events |
 | OB06 | U6 | A fixture with 30 s windows and 5 s deadlines finishes in less than 2 s of wall time | Real waiting under virtual time |
-| OB07 | U5 | The trace ABI reports `CHIMI_FIBER_ABI_VERSION` 8 (5 until the capability-violation hook joined the scheduler config, 6 until the process-defect hook did, 7 until the monitor and mailbox requests of G27 did). Process events carry dedicated `supervisor`, `membership`, and `incarnation` fields, separate from `task_id` | Identities carried in task fields |
+| OB07 | U5 | The trace ABI reports `CHIMI_FIBER_ABI_VERSION` 9 (5 until the capability-violation hook joined the scheduler config, 6 until the process-defect hook did, 7 until cancellation scopes did, 8 until the monitor and mailbox requests of G27 did). Process events carry dedicated `supervisor`, `membership`, and `incarnation` fields, separate from `task_id` | Identities carried in task fields |
 | OB08 | U5 | A process defects before replying, so main parks and the run ends in a virtual-time deadlock. The `--trace=off` outcome still names the incarnation and its defect: a stack overflow, or the body's own defect message | A process defect that only the trace names |
 | IP01 | U5 | `chimi run` on a process fixture defects with "requires the supervised process runtime" | Silent divergence between backends |
 
@@ -1116,13 +1117,13 @@ scenarios pass and `CURRENT_STAGE` names it.
 | U2 | Capability checking for specs, inboxes, and managed handles, and lowering to verified Core | SP02, SP04–SP06, SF01–SF03, SF19–SF24, CO01–CO04 |
 | U3 | Per-owner heaps, regions, and fragments in `runtime.c`, with loop reclamation on in every tier. The concurrency lab stays green | CB06, MF05 |
 | U4 | Copy on transfer for `Task.start`, `Task.result`, and `Channel.send` | none |
-| U5 | The process kernel: `Process.spec`, `send`, `receive`, `Supervisor.start`, `start_process`, `stop`, the trace family, ABI version 5 (now 8), and the memory-report fields | MB01–MB04, MB06, MB07, MB11, RT08, SV01, SD01, SD09, CB01–CB03, CB07, MF01, MF04, MF06, OB01–OB03, OB05, OB07, OB08, IP01 |
+| U5 | The process kernel: `Process.spec`, `send`, `receive`, `Supervisor.start`, `start_process`, `stop`, the trace family, ABI version 5 (now 9), and the memory-report fields | MB01–MB04, MB06, MB07, MB11, RT08, SV01, SD01, SD09, CB01–CB03, CB07, MF01, MF04, MF06, OB01–OB03, OB05, OB07, OB08, IP01 |
 | U6 | Restart accounting and escalation at the root. Needs `Duration` and `--clock=virtual` from ts-f31a20 | MB05, MB10, RT01, RT02, SV03, SV04, SV11, RA01–RA05, RA08, ES01, ES05, CB08, OB04, OB06 |
 | U7 | Admission, names, removal, `Supervisor.wait`, drain on cancellation | MB08, MB09, RT03–RT07, SV02, SV05–SV08, SV12, RA06, RR01–RR04, SD08, CB04 |
 | U8 | `shutdown_within` deadlines, forced termination, and structured child tasks inside processes | RA07, RR05, RR06, SD02–SD07, CB05 |
 | U9 | Declared and dynamic nested supervisors | SV09, SV10, ES02–ES04 |
 | U10 | `programs/supervised-pool` and the performance harness | FP01, MF02, MF03, PG01–PG10 |
-| U11 | G27: `Process.address`, `queued`, `capacity`, `monitor`, and `unmonitor` ([process monitors and metrics](process-monitors-and-metrics.md), CHI-220), fiber ABI 8 | SF27, MB12–MB18 |
+| U11 | G27: `Process.address`, `queued`, `capacity`, `monitor`, and `unmonitor` ([process monitors and metrics](process-monitors-and-metrics.md), CHI-220), fiber ABI 9 | SF27, MB12–MB18 |
 
 Two scenarios moved stage (coordinator decisions on `ts-6ccbc9`). MF06
 moved from U3 to U5, because a process program cannot be built natively

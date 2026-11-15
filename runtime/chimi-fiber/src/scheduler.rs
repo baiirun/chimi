@@ -8,8 +8,10 @@ mod process_abi;
 mod process_tests;
 #[cfg(test)]
 mod release_tests;
+mod scope;
 
 pub use self::clock::{ClockMode, Instant, TimerId};
+pub use self::scope::{ScopeExit, ScopeId, chimi_fiber_cancel_is_terminal, chimi_fiber_scope_cancel_pending};
 pub use self::process::{
     Address, ChimiProcessTermination, IncarnationId, Member, MembershipId, MessageRelease, NameId,
     Policy, PolicyError, ProcessDefectReport, ProcessError, ProcessEvent, ProcessEventKind,
@@ -65,9 +67,19 @@ pub const REQUEST_SUPERVISOR_WAIT: u32 = 21;
 pub const REQUEST_SUPERVISOR_START_SUPERVISOR: u32 = 22;
 pub const REQUEST_SUPERVISOR_REMOVE_SUPERVISOR: u32 = 23;
 pub const REQUEST_CHANNEL_RELEASE: u32 = 24;
-pub const REQUEST_PROCESS_MONITOR: u32 = 25;
-pub const REQUEST_PROCESS_UNMONITOR: u32 = 26;
-pub const REQUEST_PROCESS_MAILBOX: u32 = 27;
+/// Enters a cancellation scope: `value` is its deadline; the reply's `token`
+/// is the scope id. A cancellation point.
+pub const REQUEST_SCOPE_ENTER: u32 = 25;
+/// Leaves the scope whose id is `token`; the reply's `value` is 1 when that
+/// scope's cancellation is the one unwinding the task. PENDING while children
+/// it cancelled drain. Never a cancellation point.
+pub const REQUEST_SCOPE_EXIT: u32 = 26;
+/// A loop pass's cancellation point: answered OK, or with a pending scope
+/// cancellation.
+pub const REQUEST_SCOPE_CHECK: u32 = 27;
+pub const REQUEST_PROCESS_MONITOR: u32 = 28;
+pub const REQUEST_PROCESS_UNMONITOR: u32 = 29;
+pub const REQUEST_PROCESS_MAILBOX: u32 = 30;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -398,7 +410,12 @@ impl OwnedFiber {
         Ok(Self(pointer))
     }
 
-    fn resume(&mut self, command: ChimiFiberCommand) -> ChimiFiberEvent {
+    fn resume(
+        &mut self,
+        command: ChimiFiberCommand,
+        context: scope::ResumeContext,
+    ) -> ChimiFiberEvent {
+        scope::set_resume_context(context);
         unsafe { chimi_fiber_resume(self.0.as_ptr(), command as u32) }
     }
 }
@@ -433,6 +450,10 @@ struct Task {
     entry_context: *mut c_void,
     /// The sleep timer this task is parked on.
     timer: Option<TimerId>,
+    /// The cancellation scopes the task is inside, innermost last.
+    scopes: Vec<scope::Scope>,
+    /// The parent's innermost scope when this task was started.
+    started_in_scope: Option<ScopeId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -444,6 +465,8 @@ pub enum ClockEventKind {
     TimerCancelled,
     /// One parked task in a detected deadlock. A boundary event.
     DeadlockWaiter,
+    /// A cancellation scope's deadline passed. A boundary event.
+    ScopeFired,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -564,6 +587,7 @@ pub struct Scheduler {
     /// `release_task_value` is set. `Task.result` copies a value without
     /// consuming it, so every one stays until the scheduler is dropped.
     task_values: BTreeMap<TaskId, TaskValue>,
+    next_scope: u64,
 }
 
 impl Drop for Scheduler {
@@ -629,6 +653,7 @@ impl Scheduler {
             capability_violation_report: capability_violation_report
                 .map(|report| (report, violation_context)),
             task_values: BTreeMap::new(),
+            next_scope: 0,
         }
     }
 
@@ -683,7 +708,7 @@ impl Scheduler {
             return false;
         };
         let task = match target {
-            TimerTarget::Wake(task) => Some(task),
+            TimerTarget::Wake(task) | TimerTarget::ScopeDeadline(task, _) => Some(task),
             TimerTarget::ShutdownDeadline(_) => None,
         };
         let now = self.clock.now();
@@ -776,6 +801,10 @@ impl Scheduler {
                 TimerTarget::ShutdownDeadline(incarnation) => {
                     self.emit_timer(ClockEventKind::TimerFired, None, deadline);
                     self.force(incarnation);
+                }
+                TimerTarget::ScopeDeadline(task, scope) => {
+                    self.emit_timer(ClockEventKind::TimerFired, Some(task), deadline);
+                    self.fire_scope(task, scope, true);
                 }
             }
         }
@@ -1282,6 +1311,10 @@ impl Scheduler {
                 ran: false,
                 entry_context: std::ptr::null_mut(),
                 timer: None,
+                scopes: Vec::new(),
+                started_in_scope: parent.and_then(|parent| {
+                    self.tasks[&parent].scopes.last().map(|entry| entry.id)
+                }),
             },
         );
         if let Some(parent) = parent {
@@ -1308,11 +1341,23 @@ impl Scheduler {
         record.request = std::ptr::null_mut();
         record.ran = true;
         record.entry_context = std::ptr::null_mut();
-        let event = record
+        let context = scope::ResumeContext {
+            // A forced incarnation is abandoned at its next park, so its
+            // unwind must issue no request either, scope exits included.
+            terminal: command == ChimiFiberCommand::Cancel
+                && self.tasks[&task].process.is_some()
+                && self.is_forced(task),
+            scope_pending: self.scope_cancel_pending(task),
+            polls: self.polls_scope_deadlines(task),
+        };
+        let event = self
+            .tasks
+            .get_mut(&task)
+            .expect("running task")
             .fiber
             .as_mut()
             .expect("runnable task owns a fiber")
-            .resume(command);
+            .resume(command, context);
         if event.state == ChimiFiberState::Parked as u32 {
             let record = self.tasks.get_mut(&task).expect("running task");
             record.phase = TaskPhase::Parked;
@@ -1366,6 +1411,10 @@ impl Scheduler {
         if process && self.park_lingers(owner, kind) {
             return;
         }
+        self.poll_scope_deadlines(owner);
+        if self.refuse_for_scope(owner, kind) {
+            return;
+        }
         if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_REMOVE_SUPERVISOR).contains(&kind)
             || (REQUEST_PROCESS_MONITOR..=REQUEST_PROCESS_MAILBOX).contains(&kind)
         {
@@ -1410,6 +1459,28 @@ impl Scheduler {
                     request.status = RESPONSE_PENDING;
                     let _ = self.start_wake_timer(owner, deadline);
                 }
+            }
+            REQUEST_SCOPE_ENTER => {
+                let scope = self.enter_scope(owner, Instant::from_nanos(request.value));
+                request.token = scope.get();
+                request.status = RESPONSE_OK;
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_SCOPE_EXIT => match self.exit_scope(owner, ScopeId::from_raw(request.token)) {
+                ScopeExit::Pending => request.status = RESPONSE_PENDING,
+                ScopeExit::Exited { delivered } => {
+                    request.value = i64::from(delivered);
+                    request.status = RESPONSE_OK;
+                    let _ = self.wake_front(owner);
+                }
+                ScopeExit::Unknown => {
+                    request.status = RESPONSE_ERROR;
+                    let _ = self.wake_front(owner);
+                }
+            },
+            REQUEST_SCOPE_CHECK => {
+                request.status = RESPONSE_OK;
+                let _ = self.wake_front(owner);
             }
             REQUEST_TASK_START => {
                 let Some(entry) = request.entry else {
@@ -1619,6 +1690,7 @@ impl Scheduler {
         if let Some(timer) = record.timer.take() {
             self.cancel_timer(timer);
         }
+        self.clear_scopes(task);
         self.unroute_task(task);
 
         let channel_cleanup = self.channels.cleanup_task(task);
@@ -1636,7 +1708,7 @@ impl Scheduler {
                 .get_mut(&task)
                 .and_then(|record| record.fiber.as_mut())
                 .expect("non-terminal task owns a fiber")
-                .resume(ChimiFiberCommand::Cancel);
+                .resume(ChimiFiberCommand::Cancel, scope::ResumeContext::TERMINAL);
             self.keep_task_value(task, &cleanup);
             if !outcome.is_defect() {
                 outcome = match cleanup.state {
@@ -1712,6 +1784,7 @@ impl Scheduler {
         self.emit(task, TaskEventKind::Terminal, cause(outcome), false);
         if let Some(parent) = parent {
             self.finish_draining(parent);
+            self.wake_scope_exit(parent);
         }
 
         let waiting_parent = parent.filter(|parent| {

@@ -49,9 +49,9 @@ pub(super) fn transcripts_are_deterministic() -> Result<(), String> {
 const FIBER_HEADER: &str = include_str!("../../../../runtime/chimi-fiber/include/chimi_fiber.h");
 
 /// OB07: the scheduler the compiler links and the header the runtime is built
-/// against both state ABI version 8 (5, plus the capability-violation hook in
-/// 6, the process-defect hook in 7, and the monitor and mailbox requests in
-/// 8), and the runner writes process events with
+/// against both state ABI version 9 (5, plus the capability-violation hook in
+/// 6, the process-defect hook in 7, cancellation scopes in 8, and the
+/// monitor and mailbox requests in 9), and the runner writes process events with
 /// their own identity fields: SV01's three `process_started` events each name
 /// an incarnation and that incarnation's task, which differ (the root is task
 /// 1, so the first incarnation runs as task 2).
@@ -61,9 +61,9 @@ pub(super) fn trace_abi_version() -> Result<(), String> {
         .find_map(|line| line.strip_prefix("#define CHIMI_FIBER_ABI_VERSION "))
         .map(|value| value.trim().trim_end_matches('u'))
         .ok_or("chimi_fiber.h does not define CHIMI_FIBER_ABI_VERSION")?;
-    if header != "8" || chimi_fiber::ABI_VERSION != 8 {
+    if header != "9" || chimi_fiber::ABI_VERSION != 9 {
         return Err(format!(
-            "the trace ABI is {} in chimi_fiber.h and {} in chimi-fiber, expected 8",
+            "the trace ABI is {} in chimi_fiber.h and {} in chimi-fiber, expected 9",
             header,
             chimi_fiber::ABI_VERSION
         ));
