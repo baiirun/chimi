@@ -1,5 +1,5 @@
 /* Chimi native runtime ABI version 20. */
-/* glibc hides open_memstream, strdup, and clock_gettime under -std=c11; macOS
+/* glibc hides strdup and clock_gettime under -std=c11; macOS
    exposes them by default, and a POSIX feature macro there would hide others. */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
@@ -2512,7 +2512,7 @@ static MapEntries map_entries(const MapNode *root) {
 /* Writing an outcome value as JSON. The writer keeps its own stack of steps, so a
    value of any nesting depth costs heap, not C stack; a step pushed last runs first. */
 typedef enum {
-  JSON_STEP_VALUE, JSON_STEP_TEXT, JSON_STEP_NAME, JSON_STEP_KEY, JSON_STEP_KEY_END, JSON_STEP_FREE
+  JSON_STEP_VALUE, JSON_STEP_TEXT, JSON_STEP_NAME, JSON_STEP_KEY, JSON_STEP_FREE
 } JsonStepKind;
 typedef struct { JsonStepKind kind; const void *pointer; } JsonStep;
 typedef struct { JsonStep *items; size_t length; size_t capacity; } JsonSteps;
@@ -2539,23 +2539,29 @@ static void json_push_fields(JsonSteps *steps, const RuntimeField *fields, uint3
   }
 }
 
-/* A map value in an outcome record is an object of its entries in key order, as the
-   interpreter writes it: a Text key is the member name, and any other key's member
-   name is that key's own JSON encoding. */
-static void json_push_map(JsonSteps *steps, const MapNode *map) {
+/* A map value in an outcome record, as the interpreter writes it: a Text-keyed or
+   empty map is an object of its entries in key order, and any other map is
+   `{"map":[[key,value],...]}` in key order, so each key is written once. */
+static void json_push_map(FILE *output, JsonSteps *steps, const MapNode *map) {
   MapEntries entries = map_entries(map);
+  bool text_keyed = !entries.length || entries.nodes[0]->key->kind == VALUE_TEXT;
+  fputs(text_keyed ? "{" : "{\"map\":[", output);
   json_step(steps, JSON_STEP_FREE, entries.nodes);
-  json_step(steps, JSON_STEP_TEXT, "}");
+  json_step(steps, JSON_STEP_TEXT, text_keyed ? "}" : "]}");
   for (size_t index = entries.length; index-- > 0;) {
-    json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);
-    json_step(steps, JSON_STEP_KEY, entries.nodes[index]);
-    if (index) json_step(steps, JSON_STEP_TEXT, ",");
+    if (text_keyed) {
+      json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);
+      json_step(steps, JSON_STEP_KEY, entries.nodes[index]);
+      if (index) json_step(steps, JSON_STEP_TEXT, ",");
+    } else {
+      json_step(steps, JSON_STEP_TEXT, "]");
+      json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);
+      json_step(steps, JSON_STEP_TEXT, ",");
+      json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->key);
+      json_step(steps, JSON_STEP_TEXT, index ? ",[" : "[");
+    }
   }
 }
-
-/* A non-Text map key's member name is its own JSON encoding, written into a buffer
-   of its own and then quoted into the output it interrupted. */
-typedef struct { FILE *outer; FILE *buffer; char *name; size_t name_length; } JsonKey;
 
 static void json_value(FILE *output, const ChimiValue *root) {
   JsonSteps steps = {0};
@@ -2565,29 +2571,10 @@ static void json_value(FILE *output, const ChimiValue *root) {
     switch (step.kind) {
       case JSON_STEP_TEXT: fputs(step.pointer, output); continue;
       case JSON_STEP_NAME: json_string(output, step.pointer); fputc(':', output); continue;
-      /* A key's steps go on the same stack, so maps nested through keys of maps
-         cost heap, not C stack. */
+      /* A Text key's member name and `:`; json_push_map queues no other key. */
       case JSON_STEP_KEY: {
         const MapNode *entry = step.pointer;
-        if (entry->key->kind == VALUE_TEXT) {
-          json_bytes(output, entry->key->as.text.bytes, entry->key->as.text.length); fputc(':', output); continue;
-        }
-        JsonKey *key = malloc(sizeof(*key));
-        if (!key) exhausted_memory();
-        *key = (JsonKey){.outer = output};
-        key->buffer = open_memstream(&key->name, &key->name_length);
-        if (!key->buffer) exhausted_memory();
-        json_step(&steps, JSON_STEP_KEY_END, key);
-        json_step(&steps, JSON_STEP_VALUE, entry->key);
-        output = key->buffer;
-        continue;
-      }
-      case JSON_STEP_KEY_END: {
-        JsonKey *key = (JsonKey *)step.pointer;
-        fclose(key->buffer);
-        output = key->outer;
-        json_bytes(output, key->name, key->name_length); fputc(':', output);
-        free(key->name); free(key);
+        json_bytes(output, entry->key->as.text.bytes, entry->key->as.text.length); fputc(':', output);
         continue;
       }
       case JSON_STEP_FREE: free((void *)step.pointer); continue;
@@ -2635,10 +2622,7 @@ static void json_value(FILE *output, const ChimiValue *root) {
       case VALUE_CALLABLE:
         fputs("{\"callable\":", output); json_string(output, value->as.callable->name);
         fputc('}', output); break;
-      case VALUE_MAP:
-        fputc('{', output);
-        json_push_map(&steps, value->as.map);
-        break;
+      case VALUE_MAP: json_push_map(output, &steps, value->as.map); break;
       /* A set is a list of its items in ascending order, as the interpreter writes it. */
       case VALUE_SET: {
         MapEntries entries = map_entries(value->as.map);
@@ -2901,9 +2885,8 @@ static bool encode_json_value(TextBuffer *buffer, const ChimiValue *root) {
       }
       case JSON_STEP_FREE: free((void *)step.pointer); break;
       case JSON_STEP_VALUE: encoded = encode_json_step(buffer, &steps, step.pointer); break;
-      /* The outcome writer's steps; never queued here. */
-      case JSON_STEP_NAME:
-      case JSON_STEP_KEY_END: encoded = false; break;
+      /* The outcome writer's step; never queued here. */
+      case JSON_STEP_NAME: encoded = false; break;
     }
   }
   free(steps.items);
