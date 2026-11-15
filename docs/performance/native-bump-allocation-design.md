@@ -64,7 +64,8 @@ Why copying is sound here, although the collector never moves values today:
   only the copied values and the state need their pointers updated.
 - **Address order is not observable.** `chimi_value_compare` orders
   callables, tasks, channel endpoints, inboxes and managed processes by
-  address, but none of those types is equatable (`typing/properties.rs`), so
+  address, but none of those types is equatable (functions in
+  `typing/properties.rs`, the capability types as `Opaque` in `standard.rs`), so
   no `==`, ordering or Map key sees that order. The pointer-keyed hash tables
   (fragment copies, capture transfers) live only within one copy.
 - **Channel endpoint counts.** Moving a value is neither a copy nor a free,
@@ -88,11 +89,26 @@ the survivors compact and the young area empty after every pass.
   today's per-allocation path, linked in a young large-object list.
 - **Headers stay.** Each allocation keeps its header (area, bytes, kind,
   mark), because marking, `allocation_kind` and the collector read them. A
-  young header needs no `next` link, because a chunk walk finds every
-  allocation. On a copy, the old header's link field holds the forwarding
-  address.
+  chunk allocation needs no `next` link, because a chunk walk finds it, so
+  on a copy that field holds the forwarding address. A separate field (or a
+  side table) holds the forwarding address of the linked blocks below.
+- **The young area keeps a linked list too.** Several paths put individual
+  blocks into the young area, and they stay on today's path:
+  `fragment_copy_into_current` (`Task.result`, receiving a message), list
+  compaction of a young list, a nested region's survivors merged into the
+  parent at its end, and adopted fragments. The pass end copies the marked
+  allocations of both the chunks and that list, and releases the rest of
+  the list as today.
+- **Roots are updated.** `allocation_scope_collect` and
+  `allocation_scope_end` take the roots by address (`ChimiValue **`,
+  `ChimiControl **`) and write back the copies. Every caller reloads them:
+  `run_loop_passes` keeps using `state` on the next pass, and
+  `process_utf8_lines` and `end_measured_allocation_scope` use or return the
+  control after collecting it.
 - **The copy.** A Cheney-style scan copies marked young allocations into
-  survivor blocks. It then updates each copied allocation's child pointers
+  survivor blocks, through a raw allocator that neither counts the bytes as
+  newly allocated nor charges the profile, and never through `copy_forward`,
+  which would count a channel endpoint a second time. It then updates each copied allocation's child pointers
   through a pointer-slot visitor. That visitor is today's `mark_children`,
   changed to hand back each slot instead of only marking it, so marking and
   copying cannot disagree on what a kind points to.
@@ -104,6 +120,19 @@ the survivors compact and the young area empty after every pass.
   keep their meaning. Footprint counts chunk bytes when chunks are taken and
   returned.
 - **Profile.** `--profile-file` still charges each allocation to its node.
+- **Comments.** The allocator's invariant comment ("Collection does not
+  move anything, so pointers held in C frames stay valid") and the comment
+  on `run_loop_passes` are rewritten to say which pointers may be kept
+  across a pass boundary: only the roots, by address.
+
+## Review of this note
+
+An Opus check of the note against `runtime.c` found no counterexample to the
+five soundness claims above. No C local, global, cache or scheduler structure
+keeps a young pointer across a pass boundary, and no two fibers share a heap.
+It found the gaps now covered in "Shape of the change": roots taken by
+address, the young linked list, the raw allocator for copies, and the stale
+comments.
 
 ## Verification plan
 
@@ -114,12 +143,15 @@ the survivors compact and the young area empty after every pass.
   a reset chunk fails as a wrong value or a crash, not silently.
 - New tests: a state that is a deep list, a map and a record, kept across
   passes, with values that share structure (to prove forwarding keeps
-  sharing). Also a loop that sends and drops channel endpoints, a nested
-  loop whose result survives into the outer pass, and an allocation larger
-  than a quarter chunk.
+  sharing). Also a loop that sends and drops channel endpoints, a pass that
+  calls `Task.result` or receives a message, a pass that compacts a young
+  list, a nested loop whose survivors are merged and then cross the outer
+  loop's next boundary, a `process_utf8_lines` body that keeps values, and an
+  allocation larger than a quarter chunk.
 - Mutants: skip a slot update, forget the forwarding address (duplicating a
-  shared value), drop no dead endpoints, reset chunks before the copy, and
-  treat a large allocation as a chunk allocation.
+  shared value), drop no dead endpoints, reset chunks before the copy, treat
+  a large allocation as a chunk allocation, skip the young linked list, and
+  return the old root instead of the copy.
 - Measure `loop-bind`, `collatz` and the allocation workloads in
   [native allocation part 1](native-allocation-r2.md), and check peak RSS.
 
