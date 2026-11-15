@@ -1,4 +1,4 @@
-/* Chimi native runtime ABI version 18. */
+/* Chimi native runtime ABI version 20. */
 /* glibc hides open_memstream, strdup, and clock_gettime under -std=c11; macOS
    exposes them by default, and a POSIX feature macro there would hide others. */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
