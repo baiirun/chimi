@@ -1,0 +1,89 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/debug as Debug
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// MB12: `counter` hands main its own address. A send to it reaches this
+// incarnation (the report reads 5). After a defect and restart, the same
+// address returns `Unavailable` with the original message (100), and the
+// replacement, reached by name, reports 0. Outcome 5 * 1000 + 100 + 0 = 5100.
+// An own address that routed by name would reach the replacement: 5000 + 0 + 100.
+pub enum Message {
+  Hello(reply: Sender<Address<Message>>)
+  Add(amount: Int)
+  Report(reply: Sender<Int>)
+  Crash
+}
+
+pub process name counter: Message
+
+fn count(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Hello(reply) -> {
+        Channel.send(reply, Process.address(inbox))
+        total
+      }
+      Message.Add(amount) -> total + amount
+      Message.Report(reply) -> {
+        Channel.send(reply, total)
+        total
+      }
+      Message.Crash -> Debug.crash("crash")
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn report() -> Int {
+  let replies = Channel.bounded(1)
+  Process.send(counter, Message.Report(replies.sender))
+  let received = Channel.receive(replies.receiver)
+  case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+}
+
+fn own_address() -> Address<Message> {
+  let replies = Channel.bounded(1)
+  Process.send(counter, Message.Hello(replies.sender))
+  let received = Channel.receive(replies.receiver)
+  case received {
+    Receive.Received(address) -> address
+    Receive.Drained -> counter
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let member = Process.spec(count, 4, Duration.seconds(1))
+    |> Process.register(counter)
+    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  let own = own_address()
+  Process.send(own, Message.Add(5))
+  let first = report()
+  Process.send(own, Message.Crash)
+  settle()
+  let returned = case Process.send(own, Message.Add(100)) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      SendError.Unavailable(message) -> case message {
+        Message.Add(amount) -> amount
+        _ -> -2
+      }
+      SendError.Full(_) -> -1
+    }
+  }
+  let second = report()
+  Supervisor.stop(root)
+  first * 1000 + returned + second
+}

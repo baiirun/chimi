@@ -156,6 +156,9 @@ from the philosophy and earlier decisions; any of these can be overruled.
 | 2026-11-10 | Bounded FIFO mailboxes; `Process.send` never parks and returns the message on `Full`/`Unavailable`; no selective receive. | User | `process-execution-and-mailboxes.md` |
 | 2026-11-10 | Names are `process name` declarations; one `Process.Address<M>` with named or direct routing. | User | `process-identity-and-routing.md` |
 | 2026-11-10 | `loop state = initial { body }` with `break value` is the canonical repetition; no `continue`. | User | `repetition.md` |
+| 2026-11-15 | No process links for now. Monitors (`Process.monitor`/`unmonitor`) deliver one `Down` notice through the watcher's own inbox via a `fn(Down) -> Message` the watcher supplies; links were rejected because they act at a distance and stay invisible in the supervision tree, while child tasks, monitors and shared supervisors cover their cases. Revisit as a supervisor restart-together policy when a forcing program needs one. | Coordinator (from the vision docs) | `process-monitors-and-metrics.md`; CHI-220 |
+| 2026-11-15 | A monitor resolves a named target once, at `monitor`, and watches that incarnation; no incarnation queues `Down.Unavailable` at once. Notices bypass the mailbox capacity (at most one per monitor), are dropped once the watcher's shutdown begins, and `unmonitor` also removes a queued notice. `Down` carries how the process ended, not the failure value or defect text. | Implementer (G27) | `process-monitors-and-metrics.md`; CHI-220 |
+| 2026-11-15 | A process reads its own direct address with `Process.address(inbox)` and its backlog with `Process.queued(inbox)` and `Process.capacity(inbox)`; all take the inbox, so only the owning body can ask. | Implementer (G27) | `process-monitors-and-metrics.md`; CHI-220 |
 
 ## Process of building
 

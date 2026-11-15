@@ -1,0 +1,20 @@
+# mutation run at 9fd2ed00b6b67a809730c8db5007189a9dd1f21a
+# g27_mutations.py: 11 mutants against compiler/chimi
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario MB15] (77s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario MB14] (1s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario MB16] (1s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario MB17] (0s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario MB13] (1s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario MB12] (0s)
+KILLED       a notice counts against the capacity [cargo run --quiet --bin chimi-process-lab -- --scenario MB15] (4s)
+KILLED       a notice is refused at a full mailbox [cargo run --quiet --bin chimi-process-lab -- --scenario MB15] (4s)
+KILLED       a notice jumps the queue [cargo run --quiet --bin chimi-process-lab -- --scenario MB15] (7s)
+KILLED       a failure is reported as a return [cargo run --quiet --bin chimi-process-lab -- --scenario MB14] (7s)
+KILLED       a stop is reported as a defect [cargo run --quiet --bin chimi-process-lab -- --scenario MB14] (4s)
+KILLED       nothing to watch reads as a return [cargo run --quiet --bin chimi-process-lab -- --scenario MB14] (4s)
+KILLED       unmonitor leaves a queued notice [cargo run --quiet --bin chimi-process-lab -- --scenario MB16] (7s)
+KILLED       a watcher's own monitors outlive it [cargo run --quiet --bin chimi-process-lab -- --scenario MB17] (7s)
+KILLED       queued counts the message just taken [cargo run --quiet --bin chimi-process-lab -- --scenario MB13] (4s)
+KILLED       capacity reports the backlog [cargo run --quiet --bin chimi-process-lab -- --scenario MB13] (9s)
+KILLED       the own address routes by name [cargo run --quiet --bin chimi-process-lab -- --scenario MB12] (9s)
+# result: every mutant killed

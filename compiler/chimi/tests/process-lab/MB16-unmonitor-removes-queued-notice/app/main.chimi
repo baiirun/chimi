@@ -1,0 +1,81 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/debug as Debug
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Down, Inbox}
+import std/supervisor as Supervisor
+
+// MB16: `watcher` monitors `worker` and sleeps while the worker returns, so
+// the notice is queued (1 entry). `unmonitor` removes it (0 entries), and a
+// second `unmonitor` of the same monitor is ignored. The next receive gets
+// main's `Report`, not the notice. Outcome 10; a notice left behind would
+// crash the watcher and leave the report unanswered (-1).
+pub enum Job {
+  Return
+}
+
+pub enum Watch {
+  Begin(worker: Address<Job>)
+  Gone(down: Down)
+  Report(reply: Sender<Int>)
+}
+
+pub process name worker: Job
+pub process name watcher: Watch
+
+fn work(inbox: Inbox<Job>) -> Void {
+  case Process.receive(inbox) {
+    Job.Return -> Void
+  }
+}
+
+fn watch(inbox: Inbox<Watch>) -> Void needs { clock: Clock } {
+  case Process.receive(inbox) {
+    Watch.Begin(target) -> {
+      let monitor = Process.monitor(inbox, target, fn(down) { Watch.Gone(down) })
+      Clock.sleep(Duration.milliseconds(2))
+      let before = Process.queued(inbox)
+      Process.unmonitor(inbox, monitor)
+      let after = Process.queued(inbox)
+      Process.unmonitor(inbox, monitor)
+      case Process.receive(inbox) {
+        Watch.Report(reply) -> Channel.send(reply, before * 10 + after)
+        Watch.Gone(_) -> Debug.crash("the notice was still queued")
+        Watch.Begin(_) -> Debug.crash("unexpected begin")
+      }
+    }
+    Watch.Gone(_) -> Debug.crash("unexpected notice")
+    Watch.Report(_) -> Debug.crash("unexpected report")
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let working = Process.spec(work, 1, Duration.seconds(1))
+    |> Process.register(worker)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let watching = Process.spec(watch, 2, Duration.seconds(1))
+    |> Process.register(watcher)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([working, watching], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(watcher, Watch.Begin(worker))
+  settle()
+  Process.send(worker, Job.Return)
+  settle()
+  settle()
+  let replies = Channel.bounded(1)
+  Process.send(watcher, Watch.Report(replies.sender))
+  let received = Channel.receive(replies.receiver)
+  let order = case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+  Supervisor.stop(root)
+  order
+}

@@ -37,6 +37,12 @@ use std::num::{NonZeroU32, NonZeroU64};
 use std::rc::Rc;
 use std::time::Duration;
 
+mod monitor;
+
+#[cfg(test)]
+pub(super) use monitor::Down;
+pub use monitor::{MonitorId, Notice};
+
 pub(super) const SCHEDULER_TRACE_PROCESS: u32 = 3;
 pub(super) const RESPONSE_FORCED: u32 = 16;
 pub(super) const RESTART_LIMIT_DEFECT_CODE: i64 = -6;
@@ -326,6 +332,7 @@ pub struct ProcessMetrics {
     pub incarnations: usize,
     pub registered_names: usize,
     pub queued_messages: usize,
+    pub monitors: usize,
     pub blocked_plans: usize,
     pub timers: usize,
     pub process_events: usize,
@@ -441,12 +448,35 @@ pub(super) struct Incarnation {
     membership: MembershipId,
     task: TaskId,
     spec: Rc<SpecRecord>,
-    mailbox: VecDeque<u64>,
+    mailbox: VecDeque<Entry>,
+    /// Monitors other incarnations set on this one.
+    watched_by: Vec<MonitorId>,
+    /// Monitors this incarnation set.
+    watching: Vec<MonitorId>,
+    /// Notices in `mailbox`; the rest are messages, which the capacity bounds.
+    notices: usize,
     /// False once shutdown begins or the body ends; sends then fail.
     accepting: bool,
     /// Parked in receive on an empty mailbox.
     receiving: bool,
     stopping: Option<Stopping>,
+}
+
+/// One accepted entry of a mailbox, in arrival order.
+#[derive(Clone, Copy, Debug)]
+enum Entry {
+    Message(u64),
+    /// Not counted against the capacity.
+    Notice(Notice),
+}
+
+impl Entry {
+    fn handle(self) -> u64 {
+        match self {
+            Self::Message(handle) => handle,
+            Self::Notice(notice) => notice.handle,
+        }
+    }
 }
 
 struct Supervision {
@@ -533,6 +563,8 @@ pub(super) struct ProcessKernel {
     next_supervisor: u64,
     next_membership: u64,
     next_incarnation: u64,
+    next_monitor: u64,
+    monitors: BTreeMap<MonitorId, monitor::MonitorRecord>,
     supervisors: BTreeMap<SupervisorId, Supervision>,
     memberships: BTreeMap<MembershipId, Membership>,
     retired: BTreeMap<MembershipId, Retired>,
@@ -565,6 +597,7 @@ impl ProcessKernel {
 /// How a receive request is answered.
 pub(super) enum Receipt {
     Message(u64),
+    Notice(Notice),
     Pending,
     Cancelled,
     Forced,
@@ -776,10 +809,11 @@ impl Scheduler {
             None => (SendOutcome::Unavailable, None),
             Some(id) => {
                 let incarnation = self.kernel.incarnations.get_mut(&id).expect("resolved");
-                if incarnation.mailbox.len() >= incarnation.spec.mailbox_capacity.get() as usize {
+                let messages = incarnation.mailbox.len() - incarnation.notices;
+                if messages >= incarnation.spec.mailbox_capacity.get() as usize {
                     (SendOutcome::Full, None)
                 } else {
-                    incarnation.mailbox.push_back(message);
+                    incarnation.mailbox.push_back(Entry::Message(message));
                     let wake = std::mem::take(&mut incarnation.receiving);
                     let task = incarnation.task;
                     if let Some((sender, carried)) = carried {
@@ -862,6 +896,7 @@ impl Scheduler {
             incarnations: kernel.incarnations.len(),
             registered_names: kernel.names.len(),
             queued_messages: kernel.incarnations.values().map(|i| i.mailbox.len()).sum(),
+            monitors: kernel.monitors.len(),
             blocked_plans: kernel.blocked.values().map(Vec::len).sum(),
             timers: self.timers.len(),
             process_events: kernel.events.len(),
@@ -1055,7 +1090,7 @@ impl Scheduler {
             Some(stopping) => {
                 stopping.pending = false;
                 match record.mailbox.pop_front() {
-                    Some(message) => Receipt::Message(message),
+                    Some(entry) => monitor::receipt(&mut record.notices, entry),
                     None => {
                         stopping.told = true;
                         Receipt::Cancelled
@@ -1063,7 +1098,7 @@ impl Scheduler {
                 }
             }
             None => match record.mailbox.pop_front() {
-                Some(message) => Receipt::Message(message),
+                Some(entry) => monitor::receipt(&mut record.notices, entry),
                 None => {
                     record.receiving = true;
                     Receipt::Pending
@@ -1385,6 +1420,9 @@ impl Scheduler {
                 task,
                 spec,
                 mailbox: VecDeque::new(),
+                watched_by: Vec::new(),
+                watching: Vec::new(),
+                notices: 0,
                 accepting: true,
                 receiving: false,
                 stopping: None,
@@ -1426,14 +1464,18 @@ impl Scheduler {
         if let Some(timer) = record.stopping.and_then(|stopping| stopping.timer) {
             self.cancel_timer(timer);
         }
-        for message in record.mailbox {
-            self.discard_message(message);
+        for entry in record.mailbox {
+            match entry {
+                Entry::Message(message) => self.discard_message(message),
+                Entry::Notice(_) => self.release_message(entry.handle()),
+            }
         }
         let membership = record.membership;
         if let Some(entry) = self.kernel.memberships.get_mut(&membership) {
             entry.current = None;
         }
         let cause = terminal_cause(outcome, record.stopping);
+        self.end_monitors(record.watched_by, record.watching, cause);
         let stack_overflow = matches!(outcome, TaskOutcome::StackOverflow { .. });
         if cause == TerminalCause::Defected
             && let Some((report, context)) = self.kernel.defect_report
