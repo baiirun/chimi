@@ -83,7 +83,12 @@ Byron's standing approval: a lane merges its own PR into `main` once review and
 the verifier are done and every CI check passes.
 
 - Subscribe to your PR's activity right after opening it, and watch its CI,
-  passes as well as failures. Do not wait to be woken.
+  passes as well as failures.
+- Never end a turn while a PR waits on CI without a way back. The PR
+  subscription sends an event when every check suite finishes, but a delivery
+  can be lost. So before ending the turn, also schedule a wake-up
+  (`send_later`) for about when CI should finish, roughly 15 minutes. When you
+  wake, read the checks and merge, fix, or schedule the next check.
 - If `main` moved since the last CI run, update the branch and wait for CI to
   rerun. There is no branch protection, so this is on the lane.
 - Merge or rebase, never force-push.
