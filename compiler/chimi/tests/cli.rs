@@ -290,6 +290,46 @@ fn build_links_a_runnable_executable_and_reports_its_artifacts() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// testing.md: `chimi build` drops test items before lowering, so appending
+// tests to a module changes nothing in the executable.
+#[test]
+fn build_output_is_identical_with_and_without_test_items() {
+    let scratch = scratch_directory("build-without-tests");
+    let program = concat!(
+        "import std/debug as Debug\n\n",
+        "fn double(value: Int) -> Int {\n  value * 2\n}\n\n",
+        "pub fn main() -> Int {\n  double(21)\n}\n",
+    );
+    let with_tests = format!(
+        "{program}\ntest \"doubles\" {{\n  let rendered = Debug.render(double(2))\n  Void\n}}\n"
+    );
+    let mut executables = Vec::new();
+    for (name, text) in [("plain", program.to_owned()), ("tested", with_tests)] {
+        let source = scratch.join(format!("{name}.chimi"));
+        std::fs::write(&source, text).unwrap();
+        let executable = scratch.join(name);
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .arg("build")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .expect("build Chimi source");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        executables.push(std::fs::read(executable).unwrap());
+    }
+    assert!(
+        executables[0] == executables[1],
+        "test items changed the executable"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 /// A copy of the embedded standard tree in `directory`, for `--std-dir`.
 fn copy_standard_tree(directory: &Path) {
     std::fs::create_dir_all(directory).unwrap();

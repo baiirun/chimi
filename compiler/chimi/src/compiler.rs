@@ -580,7 +580,7 @@ impl Compiler {
     }
 
     pub fn lower_project(sources: Vec<ProjectSource>) -> Result<CoreStats, Vec<Diagnostic>> {
-        let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?)?;
+        let core = lower(seal_entry(check_project(resolve_program_sources(sources)))?)?;
         let (
             functions,
             module_constants,
@@ -606,7 +606,7 @@ impl Compiler {
     }
 
     pub fn prepare_backend(sources: Vec<ProjectSource>) -> Result<BackendProgram, Vec<Diagnostic>> {
-        let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?)?;
+        let core = lower(seal_entry(check_project(resolve_program_sources(sources)))?)?;
         Ok(BackendProgram::new(core))
     }
 
@@ -614,7 +614,7 @@ impl Compiler {
         sources: Vec<ProjectSource>,
         config: ExecutionConfig,
     ) -> Result<ExecutionReport, Vec<Diagnostic>> {
-        let core = lower(seal_entry(check_project(resolve_project_sources(sources)))?)?;
+        let core = lower(seal_entry(check_project(resolve_program_sources(sources)))?)?;
         Ok(execute(&core, config))
     }
 
@@ -625,7 +625,7 @@ impl Compiler {
     pub fn standard_operations_reached(
         sources: Vec<ProjectSource>,
     ) -> Result<Vec<String>, Vec<Diagnostic>> {
-        let root = seal_entry(check_project(resolve_project_sources(sources)))?;
+        let root = seal_entry(check_project(resolve_program_sources(sources)))?;
         let typed = Arc::clone(&root.typed);
         let core = lower(root)?;
         let mut reached = core
@@ -684,9 +684,19 @@ impl Compiler {
     }
 }
 
-pub(crate) fn resolve_project_sources(mut sources: Vec<ProjectSource>) -> ResolvedProject {
+pub(crate) fn resolve_project_sources(sources: Vec<ProjectSource>) -> ResolvedProject {
+    resolve_project(lower_project_sources(sources))
+}
+
+/// What `chimi build` and `chimi run` resolve: the project without its `test`
+/// items, which add no code, data, or symbols to a program.
+pub(crate) fn resolve_program_sources(sources: Vec<ProjectSource>) -> ResolvedProject {
+    resolve_project(lower_project_sources(sources).without_tests())
+}
+
+fn lower_project_sources(mut sources: Vec<ProjectSource>) -> semantic::SemanticProject {
     crate::standard_tree::add_imported_modules(&mut sources);
-    let semantic = semantic::lower_project(
+    semantic::lower_project(
         sources
             .into_iter()
             .map(|source| semantic::ModuleSource {
@@ -695,8 +705,7 @@ pub(crate) fn resolve_project_sources(mut sources: Vec<ProjectSource>) -> Resolv
                 syntax: source.syntax,
             })
             .collect(),
-    );
-    resolve_project(semantic)
+    )
 }
 
 fn seal(
@@ -4280,6 +4289,65 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
                 "[[{}],0,40]",
                 numbers.join(",")
             )))
+        );
+    }
+
+    fn test_item_codes(body: &str) -> Vec<&'static str> {
+        let text = format!(
+            "import std/debug as Debug\n\n\
+             interface Store {{\n  get: fn() -> Int\n}}\n\n\
+             fn read() -> Int needs {{ store: Store }} {{\n  store.get()\n}}\n\n\
+             pub fn main() -> Int {{\n  0\n}}\n\n{body}"
+        );
+        match Compiler::verify_project(vec![module("app/main", "main.chimi", &text)]) {
+            Ok(_) => Vec::new(),
+            Err(diagnostics) => diagnostics.iter().map(Diagnostic::code).collect(),
+        }
+    }
+
+    #[test]
+    fn test_items_type_check_with_their_module() {
+        // `test` stays an identifier everywhere a text literal does not follow it.
+        assert_eq!(
+            test_item_codes(
+                "fn test(test: Int) -> Int {\n  test\n}\n\n\
+                 test \"reads a store it supplies\" {\n  \
+                 let test = test(read() using { store: { get: fn() -> Int { 1 } } })\n  \
+                 Void\n}\n"
+            ),
+            Vec::<&str>::new()
+        );
+        // A test body is checked even though no program reaches it.
+        assert_eq!(
+            test_item_codes("test \"adds\" {\n  let total: Int = \"one\"\n  Void\n}\n"),
+            ["T4203"]
+        );
+    }
+
+    #[test]
+    fn test_items_reject_duplicates_visibility_values_and_open_needs() {
+        for (body, code) in [
+            (
+                "test \"once\" {\n  Void\n}\n\ntest \"once\" {\n  Void\n}\n",
+                "N3120",
+            ),
+            ("pub test \"public\" {\n  Void\n}\n", "L2120"),
+            ("test \"named ${1}\" {\n  Void\n}\n", "L2121"),
+            (
+                "test \"forgets to check\" {\n  read() using { store: { get: fn() -> Int { 1 } } }\n}\n",
+                "T4402",
+            ),
+            (
+                "test \"needs a store\" {\n  let value = read()\n  Void\n}\n",
+                "T4400",
+            ),
+        ] {
+            assert_eq!(test_item_codes(body), [code], "{body}");
+        }
+        // A body that ends in a defect has the success type `Never`, which is fine.
+        assert_eq!(
+            test_item_codes("test \"gives up\" {\n  Debug.crash(\"stop\")\n}\n"),
+            Vec::<&str>::new()
         );
     }
 }
