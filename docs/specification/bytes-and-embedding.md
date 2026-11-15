@@ -6,8 +6,8 @@ This is the normative contract for binary data (G6), fixed-width integers
 inside binary data (L5), and files included at build time (G19), from the
 [language completion plan](../plans/language-completion-plan.md). It is part
 of Phase 6a (CHI-209). `std/bytes` and byte-level integers are implemented on
-both backends (CHI-210). [Embedding](#build-time-embedding-g19) is specified
-here and not implemented yet (CHI-211).
+both backends (CHI-210), and so is [embedding](#build-time-embedding-g19)
+(CHI-211).
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 module follows the [standard library conventions](standard-library-conventions.md).
@@ -172,7 +172,7 @@ reads in the order a protocol description lists a field.
 
 ## Build-time embedding (G19)
 
-<!-- chimi: pending CHI-211 -->
+<!-- chimi: fragment -->
 ```chimi
 import std/embed as Embed
 
@@ -183,21 +183,30 @@ const logo = Embed.bytes("assets/logo.png")
 - `std/embed` declares `text(path: Text) -> Text` and `bytes(path: Text) ->
   Bytes`. Each reads a file when the program is built, and the constant holds
   its contents, so the executable needs no file at run time.
-- A call is valid only as part of a module constant's initializer, because
-  only constants are evaluated at build time (`E5206` elsewhere). The path
-  MUST be a text literal, so the build knows every input before evaluation.
+- A call is valid only as part of a module constant's initializer, and not
+  inside a function value there, because only constants are evaluated at
+  build time and a function value may run later (`E5206` elsewhere). The
+  build reports `E5206` for every constant and for code reachable from
+  `main`; a call in a function nothing calls is never lowered, so it is
+  harmless and not reported. The path MUST be a text literal, not a constant
+  or an interpolation, so the build knows every input before evaluation
+  (`E5207`).
 - The path is relative to the directory of the module's source file, uses
   `/` as the separator, and MUST NOT be absolute or contain an empty, `.`, or
   `..` segment (`E5207`), so a module embeds only files beside it or below
-  it, as Go's `//go:embed` requires.
+  it, as Go's `//go:embed` requires. A symbolic link is followed only when the
+  file it resolves to is still inside that directory (`E5207` otherwise).
 - A missing or unreadable file is a build error (`E5208`), as is a file that
   `Embed.text` reads and that is not valid UTF-8 (`E5209`, which names the
   offset of the first invalid byte).
 - The embedded value counts toward the constant's 16 MiB stored-size budget
   (`E5203`). A `Bytes` constant is stored as hex text, so a file of up to
   8 MiB fits.
-- The constant cache keys on the embedded files' contents as well as the
-  constant's Core, so editing an embedded file rebuilds the constant.
+- Lowering reads each file and puts its contents into the call's Core
+  argument: the text itself for `Embed.text`, its lowercase hex for
+  `Embed.bytes`. Build-time evaluation therefore never touches the host, and
+  any constant cache keyed on a constant's Core sees an edited file as a
+  changed constant.
 
 This needs no new syntax and no macro: it reuses the constant rules, which
 already make build-time evaluation deterministic and side-effect free. Macros

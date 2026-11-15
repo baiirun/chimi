@@ -6,7 +6,7 @@ use crate::executable::{
 };
 use crate::ids::{CoreNodeId, SymbolId};
 use crate::semantic::{BinaryOperator, UnaryOperator};
-use crate::standard::{StandardModule, StandardSymbol};
+use crate::standard::{StandardModule, StandardSymbol, StandardType};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
@@ -551,7 +551,13 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
     .unwrap();
     writeln!(
         output,
-        "const uint32_t CHIMI_REQUIREMENT_SLOT_COUNT = {requirement_slot_count};"
+        "const uint32_t CHIMI_CLOCK_REQUIREMENT_SLOT = {requirement_slot_count};"
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "const uint32_t CHIMI_REQUIREMENT_SLOT_COUNT = {};",
+        requirement_slot_count + 1
     )
     .unwrap();
     render_array(
@@ -677,15 +683,29 @@ pub(super) fn requires_process_runtime(core: &CoreProgram) -> bool {
 }
 
 fn requires_scheduler(core: &CoreProgram) -> bool {
-    core.nodes.iter().any(|node| {
-        let CoreOperation::Reference(symbol) = node.operation else {
-            return false;
-        };
-        matches!(
-            core.symbol(symbol).standard,
-            Some(StandardSymbol::Function(function)) if function.requires_scheduler()
-        )
-    })
+    core.nodes
+        .iter()
+        .any(|node| reaches_scheduler(core, &node.operation))
+}
+
+/// Whether one operation needs the fiber scheduler: a standard function that runs
+/// on it, or a read of the `clock` need, whose execution provider is the
+/// scheduler's clock.
+pub(crate) fn reaches_scheduler(core: &CoreProgram, operation: &CoreOperation) -> bool {
+    match operation {
+        CoreOperation::Reference(symbol) => {
+            let symbol = core.symbol(*symbol);
+            matches!(
+                symbol.standard,
+                Some(StandardSymbol::Function(function)) if function.requires_scheduler()
+            ) || symbol.kind == CoreSymbolKind::Requirement && symbol.name == "clock"
+        }
+        CoreOperation::DependencyMethod { interface, .. } => matches!(
+            core.symbol(*interface).standard,
+            Some(StandardSymbol::Type(StandardType::Clock))
+        ),
+        _ => false,
+    }
 }
 
 const fn operation_opcode(operation: &CoreOperation) -> u8 {

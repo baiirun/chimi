@@ -1,0 +1,16 @@
+# mutation run at 33216fef69a1bfb1b52e4ef608ec801c45033458
+# embed_mutations.py: 7 mutants against compiler/chimi
+BASELINE ok  [language -- embed] (16s)
+BASELINE ok  [std_modules -- standard_programs] (10s)
+KILLED       functions count as build time [language -- embed] (14s)
+KILLED       every declaration counts as build time [language -- embed] (14s)
+KILLED       Embed as a value is allowed [language -- embed] (14s)
+KILLED       parent segments are allowed [language -- embed] (9s)
+KILLED-BUILD symbolic links may escape [language -- embed] (10s)
+KILLED       Embed.text skips the UTF-8 check [language -- embed] (16s)
+KILLED       Rust Embed.bytes drops the last byte [std_modules -- standard_programs] (23s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+EXIT 1
+# note: 'symbolic links may escape' is a real kill. The mutant builds; the symlink
+# test fails on assert ...contains("error[E5207]"), and that text trips build_failed().
+# 7/7 killed.
