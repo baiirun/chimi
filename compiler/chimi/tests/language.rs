@@ -10550,3 +10550,49 @@ fn process_standard_enum_values_match_exhaustively() {
     ));
     assert_eq!(check_codes(&missing), ["T4231"]);
 }
+
+// Guards: a block clones its locals before its first binding, so an inner block's
+// `let` never reaches the enclosing block, while blocks that bind nothing still see
+// every enclosing local (CHI-91 removed the clone for blocks that bind nothing).
+#[test]
+fn an_inner_block_binding_stays_inside_the_block() {
+    let outcome = run_both(
+        "block-binding-scope",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  let x = 1\n",
+            "  let y = {\n",
+            "    let x = 2\n",
+            "    x\n",
+            "  }\n",
+            "  let z = { { x + y } }\n",
+            "  x * 100 + y * 10 + z\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":123");
+}
+
+// Guards: Void, True and False are shared values that no pass boundary reclaims, so a
+// comparison made in one pass is still a Bool in every later pass.
+#[test]
+fn booleans_stay_booleans_across_reclaimed_loop_passes() {
+    let outcome = run_both(
+        "shared-boolean-passes",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  loop count = 0 {\n",
+            "    let even = count % 2 == 0\n",
+            "    case count >= 5000 {\n",
+            "      True -> break count\n",
+            "      False -> case even {\n",
+            "        True -> count + 1\n",
+            "        False -> count + 3\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":5000");
+}
