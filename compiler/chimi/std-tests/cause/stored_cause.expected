@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"success","value":"[first caller]\n[second caller]\nequal: yes, yes\nnone\nnone\n[first caller, again]\nexpected failure\nprimary, 0 suppressed"}

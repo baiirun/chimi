@@ -47,6 +47,7 @@ impl Evaluator<'_> {
         let defect = |message: String| Control::Defect {
             message,
             node: Some(call_node),
+            cause: None,
         };
         let text = |value: String| Control::Success(RuntimeValue::Text(value));
         let boolean = |value: bool| Control::Success(RuntimeValue::Boolean(value));
@@ -64,7 +65,7 @@ impl Evaluator<'_> {
                 {
                     Control::Success(fields[0].value.clone())
                 }
-                _ => Control::Failure(error.clone()),
+                _ => Control::failure(error.clone()),
             },
             (StandardFunction::TextConcat, [RuntimeValue::List(parts)]) => {
                 let mut output = String::new();

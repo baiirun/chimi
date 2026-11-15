@@ -212,6 +212,17 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     // std/embed: build-time only; see `CoreLowerer::embed`.
     pure("std/embed.text", 1, StandardFunction::EmbedText),
     pure("std/embed.bytes", 1, StandardFunction::EmbedBytes),
+
+    // std/cause: `kind` and `reason` map a private code to their enums in source.
+    pure("std/cause.context", 2, StandardFunction::CauseContext),
+    pure("std/cause.of", 1, StandardFunction::CauseOf),
+    pure("std/cause.kind_code", 1, StandardFunction::CauseKindCode),
+    pure("std/cause.summary", 1, StandardFunction::CauseSummary),
+    pure("std/cause.frames", 1, StandardFunction::CauseFrames),
+    pure("std/cause.caused_by", 1, StandardFunction::CauseCausedBy),
+    pure("std/cause.suppressed", 1, StandardFunction::CauseSuppressed),
+    pure("std/cause.reason_code", 1, StandardFunction::CauseReasonCode),
+    pure("std/cause.to_text", 1, StandardFunction::CauseToText),
 ];
 
 pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
@@ -246,6 +257,7 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     native_type("std/decimal.Decimal", StandardType::Decimal),
     native_type("std/bytes.Bytes", StandardType::Bytes),
     native_type("std/json.Number", StandardType::JsonNumber),
+    native_type("std/cause.Cause", StandardType::Cause),
     known_type("std/json.Value", StandardType::JsonValue),
     known_constructor("std/json.Value.Null", StandardConstructor::JsonNull),
     known_constructor("std/json.Value.Boolean", StandardConstructor::JsonBoolean),

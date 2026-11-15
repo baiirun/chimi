@@ -1962,6 +1962,7 @@ impl<'source> Parser<'source> {
     fn parse_function_type(&mut self) {
         self.start(NodeKind::FunctionType);
         self.bump();
+        self.parse_optional_generic_parameters();
         self.skip_newlines();
         self.expect(TokenKind::LeftParen);
         self.skip_newlines();

@@ -17,7 +17,7 @@ struct ProgramData {
     ids: Vec<u32>,
     named_nodes: Vec<(u32, u32)>,
     steps: Vec<(u32, u32, u32)>,
-    arms: Vec<(u32, u32, u32, u32)>,
+    arms: Vec<(u32, u32, u32, u32, u32, u32)>,
     patterns: Vec<(u32, u32, u32, u32, i64)>,
     constant_values: Vec<(u32, u32, u32, u32, i64)>,
 }
@@ -250,6 +250,11 @@ impl ProgramData {
 
 pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String {
     let mut data = ProgramData::default();
+    let origin_locations = core
+        .origin_locations
+        .iter()
+        .map(|location| data.string(location))
+        .collect::<Vec<_>>();
     let locals = local_slots(core);
     let mut functions = Vec::new();
     for (function, local_count) in core.functions.iter().zip(&locals.function_counts) {
@@ -376,11 +381,18 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                 row.3 = method.raw();
                 row.4 = data.string(name);
             }
+            // `b` is the cause local's symbol plus one, 0 without one; `c` is 1
+            // when the construction keeps that cause rather than linking to it.
             CoreOperation::Construct {
                 constructor,
                 arguments,
+                cause,
             } => {
                 row.1 = constructor.raw();
+                if let Some(cause) = cause {
+                    row.2 = cause.local.raw() + 1;
+                    row.3 = u32::from(cause.keep);
+                }
                 (row.5, row.6) = data.ids(arguments.iter().map(|id| id.raw()));
             }
             CoreOperation::Call { callee, arguments } => {
@@ -451,11 +463,18 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                         .map(|pattern| data.pattern(pattern))
                         .collect::<Vec<_>>();
                     let (offset, length) = data.ids(patterns);
+                    let (cause_subject, cause_local) = arm
+                        .cause
+                        .map_or((u32::MAX, u32::MAX), |cause| {
+                            (cause.subject as u32, cause.local.raw())
+                        });
                     data.arms.push((
                         offset,
                         length,
                         arm.guard.map_or(u32::MAX, |id| id.raw()),
                         arm.body.raw(),
+                        cause_subject,
+                        cause_local,
                     ));
                 }
                 row.2 = data.arms.len() as u32 - row.1;
@@ -514,14 +533,15 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
     render_array(
         &mut output,
         "const ChimiOrigin CHIMI_ORIGINS[]",
-        &core.origins,
-        |origin| {
+        &core.origins.iter().zip(&origin_locations).collect::<Vec<_>>(),
+        |(origin, location)| {
             format!(
-                "{{{}, {}, {}, {}}}",
+                "{{{}, {}, {}, {}, {}}}",
                 origin.file_id.raw(),
                 origin.semantic_id.raw(),
                 origin.range.start(),
-                origin.range.end()
+                origin.range.end(),
+                location
             )
         },
     );
@@ -594,7 +614,7 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         &mut output,
         "const ChimiArm CHIMI_ARMS[]",
         &data.arms,
-        |r| format!("{{{}, {}, {}, {}}}", r.0, r.1, r.2, r.3),
+        |r| format!("{{{}, {}, {}, {}, {}, {}}}", r.0, r.1, r.2, r.3, r.4, r.5),
     );
     render_array(
         &mut output,
@@ -883,7 +903,14 @@ fn body_locals(core: &CoreProgram, parameters: &[SymbolId], body: CoreNodeId) ->
             CoreOperation::Constant(_) | CoreOperation::DependencyMethod { .. } => {}
             CoreOperation::Reference(symbol) => add(*symbol, &mut locals),
             CoreOperation::Select { receiver, .. } => pending.push(*receiver),
-            CoreOperation::Construct { arguments, .. } => pending.extend(arguments),
+            CoreOperation::Construct {
+                arguments, cause, ..
+            } => {
+                pending.extend(arguments);
+                if let Some(cause) = cause {
+                    add(cause.local, &mut locals);
+                }
+            }
             CoreOperation::Call { callee, arguments } => {
                 pending.push(*callee);
                 pending.extend(arguments);
@@ -928,6 +955,9 @@ fn body_locals(core: &CoreProgram, parameters: &[SymbolId], body: CoreNodeId) ->
             CoreOperation::Match { subjects, arms } => {
                 pending.extend(subjects);
                 for arm in arms {
+                    if let Some(cause) = arm.cause {
+                        add(cause.local, &mut locals);
+                    }
                     patterns.extend(&arm.patterns);
                     pending.extend(arm.guard);
                     pending.push(arm.body);

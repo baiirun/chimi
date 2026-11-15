@@ -158,6 +158,12 @@ through their keys:
 {"map":[[2,{}],[10,{"a":1,"b":2}]]}
 ```
 
+A `Cause` value is opaque in an outcome, `{"type":"Cause","fields":{}}`. A
+failure, defect, or cancellation record also has a `cause` field, the
+`Cause.to_text` rendering of its cause, when that cause has a context frame,
+a `caused_by` link, or a suppressed cause (time-and-outcomes.md, "Failure
+context"); otherwise the field is absent.
+
 The remaining event and outcome fields retain the executable-kernel contract.
 Adding a field is backward compatible within version 1 only when consumers can
 ignore it without changing record meaning. Removing, renaming, or changing the
