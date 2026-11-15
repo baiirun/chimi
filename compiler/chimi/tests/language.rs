@@ -10596,3 +10596,31 @@ fn booleans_stay_booleans_across_reclaimed_loop_passes() {
     );
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":5000");
 }
+
+// Guards: a match reads every subject, both when its subjects fit the runtime's
+// stack array (up to eight) and when they do not (nine).
+#[test]
+fn a_match_reads_every_one_of_eight_or_nine_subjects() {
+    let outcome = run_both(
+        "match-many-subjects",
+        concat!(
+            "fn eight(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int) -> Int {\n",
+            "  case a, b, c, d, e, f, g, h {\n",
+            "    1, 2, 3, 4, 5, 6, 7, 8 -> 8\n",
+            "    _, _, _, _, _, _, _, _ -> 0\n",
+            "  }\n",
+            "}\n",
+            "fn nine(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int) -> Int {\n",
+            "  case a, b, c, d, e, f, g, h, i {\n",
+            "    1, 2, 3, 4, 5, 6, 7, 8, 9 -> 9\n",
+            "    _, _, _, _, _, _, _, _, _ -> 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  eight(1, 2, 3, 4, 5, 6, 7, 8) * 1000 + eight(1, 2, 3, 4, 5, 6, 7, 0) * 100\n",
+            "    + nine(1, 2, 3, 4, 5, 6, 7, 8, 9) * 10 + nine(1, 2, 3, 4, 5, 6, 7, 8, 0)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":8090");
+}
