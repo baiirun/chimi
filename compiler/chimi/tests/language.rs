@@ -10551,9 +10551,10 @@ fn process_standard_enum_values_match_exhaustively() {
     assert_eq!(check_codes(&missing), ["T4231"]);
 }
 
-// Guards: a block clones its locals before its first binding, so an inner block's
-// `let` never reaches the enclosing block, while blocks that bind nothing still see
-// every enclosing local (CHI-91 removed the clone for blocks that bind nothing).
+// Guards: every `let` of a block stays bound for the block's later steps, an inner
+// block's `let` does not change the enclosing block's names, and a block that binds
+// nothing still sees every enclosing local (CHI-91 clones a block's locals only at
+// its first binding).
 #[test]
 fn an_inner_block_binding_stays_inside_the_block() {
     let outcome = run_both(

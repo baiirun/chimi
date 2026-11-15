@@ -2,6 +2,10 @@
 
 Run: scripts/mutation/mutate.py scripts/mutation/native_allocation_mutations.py
 Each mutant runs one native test in tests/language.rs; it must turn it red.
+
+Not listed: a block that binds into its incoming locals without cloning. Every
+binding has its own environment slot, so no program observes that; the clone
+keeps the documented rule that only a binding boundary writes a table.
 """
 
 CRATE = "compiler/chimi"
@@ -14,9 +18,6 @@ def m(name, edits, targets, filter=""):
 
 
 MUTATIONS = [
- m("a block binds into the enclosing locals",
-   [("      if (environment == incoming) environment = clone_local_environment(incoming);\n", "")],
-   ["language"], "an_inner_block_binding"),
  m("a block always binds into a fresh clone",
    [("      if (environment == incoming) environment = clone_local_environment(incoming);\n",
      "      environment = clone_local_environment(incoming);\n")],
