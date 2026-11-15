@@ -1154,6 +1154,9 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
         nodes: Vec::new(),
         clause_parameter_aliases: HashMap::new(),
         unbound_temporaries: HashSet::new(),
+        at_build_time: false,
+        embed_callee: false,
+        diagnostics: Vec::new(),
     };
     let mut functions = Vec::new();
     let mut constant_initializers = Vec::new();
@@ -1195,7 +1198,9 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
             .as_ref()
             .expect("verified executable declaration owns a body")
             .clone();
+        lowerer.at_build_time = kind == ModuleDeclarationKind::Constant;
         let body = lowerer.expression(module_id, &body);
+        lowerer.at_build_time = false;
         match kind {
             ModuleDeclarationKind::Function => {
                 functions.push(CoreFunction {
@@ -1231,6 +1236,7 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
             symbol.kind = CoreSymbolKind::Other;
         }
     }
+    let lowerer_diagnostics = std::mem::take(&mut lowerer.diagnostics);
     let core = CoreProgram {
         computation,
         entry: root.entry,
@@ -1242,6 +1248,9 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
         nodes: lowerer.nodes,
         origins: root.origins,
     };
+    if !lowerer_diagnostics.is_empty() {
+        return Err(lowerer_diagnostics);
+    }
     let mut core = core;
     core.constants = crate::execution::evaluate_constants(&core)?;
     core.assert_well_formed();
@@ -1262,6 +1271,14 @@ struct CoreLowerer {
     clause_parameter_aliases: HashMap<SymbolId, SymbolId>,
     /// Update temporaries the lowering did not need to bind.
     unbound_temporaries: HashSet<SymbolId>,
+    /// Whether the expression being lowered runs at build time: it is part of a
+    /// constant initializer and not inside a function value, which could run later.
+    at_build_time: bool,
+    /// Whether the reference being lowered is the callee of an `Embed.text` or
+    /// `Embed.bytes` call, the only place either may be named.
+    embed_callee: bool,
+    /// `std/embed` misuse and unreadable files (`E5206`–`E5209`).
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl CoreLowerer {
@@ -1308,11 +1325,22 @@ impl CoreLowerer {
             ModuleExpression::Call {
                 callee, arguments, ..
             } => {
-                let arguments = arguments
-                    .iter()
-                    .map(|argument| self.expression(module_id, &argument.value))
-                    .collect::<Vec<_>>();
                 let callee_symbol = self.expression_symbol(module_id, callee);
+                let embedded = match callee_symbol
+                    .and_then(|symbol| self.typed.resolved.native_operation(symbol))
+                {
+                    Some(
+                        function @ (StandardFunction::EmbedText | StandardFunction::EmbedBytes),
+                    ) => Some(self.embed(module_id, expression, function, arguments)),
+                    _ => None,
+                };
+                let arguments = match embedded {
+                    Some(argument) => vec![argument],
+                    None => arguments
+                        .iter()
+                        .map(|argument| self.expression(module_id, &argument.value))
+                        .collect::<Vec<_>>(),
+                };
                 if let Some(constructor) =
                     callee_symbol.filter(|symbol| is_core_constructor(&self.typed, *symbol))
                 {
@@ -1321,7 +1349,9 @@ impl CoreLowerer {
                         arguments,
                     }
                 } else {
+                    self.embed_callee = embedded.is_some();
                     let callee = self.expression(module_id, callee);
+                    self.embed_callee = false;
                     CoreOperation::Call { callee, arguments }
                 }
             }
@@ -1479,7 +1509,9 @@ impl CoreLowerer {
                     .collect();
                 // Lowering the body registers its clause parameter aliases, which
                 // decide the symbols that its names capture.
+                let at_build_time = std::mem::replace(&mut self.at_build_time, false);
                 let lowered_body = self.expression(module_id, body);
+                self.at_build_time = at_build_time;
                 CoreOperation::Closure {
                     parameters,
                     captures: self.closure_captures(module_id, body),
@@ -2240,6 +2272,84 @@ impl CoreLowerer {
         }
     }
 
+    /// The Core argument of an `Embed.text` or `Embed.bytes` call: the build reads
+    /// the file its literal path names, relative to the module's directory, and the
+    /// argument becomes the file's text or the lowercase hex of its bytes, so
+    /// evaluation never touches the host. A misused call reports a diagnostic and
+    /// keeps its argument.
+    fn embed(
+        &mut self,
+        module_id: ModuleId,
+        call: &ModuleExpression,
+        function: StandardFunction,
+        arguments: &[crate::semantic::CallArgument],
+    ) -> CoreNodeId {
+        let name = match function {
+            StandardFunction::EmbedText => "Embed.text",
+            _ => "Embed.bytes",
+        };
+        let source = &self.typed.resolved.semantic.modules[module_id.raw() as usize].source;
+        let file_id = source.file_id();
+        let directory = source.path().parent().map(std::path::Path::to_path_buf);
+        let argument = &arguments[0].value;
+        let error = |code, range, message| {
+            Diagnostic::error(
+                DiagnosticStage::ExecutionSetup,
+                code,
+                file_id,
+                range,
+                message,
+            )
+        };
+        let contents = if !self.at_build_time {
+            Err(error(
+                "E5206",
+                call.range(),
+                format!(
+                    "`{name}` reads a file when the program is built, so it may only \
+                     initialize a module constant, outside any function value"
+                ),
+            ))
+        } else if let ModuleExpression::Literal(Literal::Text {
+            value: path, range, ..
+        }) = argument
+        {
+            embedded_file(path, directory.as_deref())
+                .map_err(|(code, message)| error(code, *range, message))
+                .and_then(|contents| match function {
+                    StandardFunction::EmbedText => String::from_utf8(contents).map_err(|invalid| {
+                        error(
+                            "E5209",
+                            *range,
+                            format!(
+                                "`{name}` needs UTF-8, but `{path}` is not valid UTF-8 at byte \
+                                 {}; embed it with `Embed.bytes`",
+                                invalid.utf8_error().valid_up_to()
+                            ),
+                        )
+                    }),
+                    _ => Ok(contents.iter().map(|byte| format!("{byte:02x}")).collect()),
+                })
+        } else {
+            Err(error(
+                "E5207",
+                argument.range(),
+                format!("`{name}` needs a text literal path, so the build knows its inputs"),
+            ))
+        };
+        match contents {
+            Ok(contents) => self.push_node(
+                module_id,
+                argument,
+                CoreOperation::Constant(CoreLiteral::Text(contents)),
+            ),
+            Err(diagnostic) => {
+                self.diagnostics.push(diagnostic);
+                self.expression(module_id, argument)
+            }
+        }
+    }
+
     fn standard_function(&self, function: StandardFunction) -> SymbolId {
         self.typed
             .resolved
@@ -2261,6 +2371,23 @@ impl CoreLowerer {
         expression: &ModuleExpression,
         symbol: SymbolId,
     ) -> CoreOperation {
+        // As a value, `Embed.text` could be called after the build, with no file read.
+        if !self.embed_callee
+            && let Some(StandardFunction::EmbedText | StandardFunction::EmbedBytes) =
+                self.typed.resolved.native_operation(symbol)
+        {
+            let source = &self.typed.resolved.semantic.modules[module_id.raw() as usize].source;
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::ExecutionSetup,
+                "E5206",
+                source.file_id(),
+                expression.range(),
+                "`Embed.text` and `Embed.bytes` read a file when the program is built, so they \
+                 may only be called directly in a module constant's initializer, not used as \
+                 values"
+                    .to_owned(),
+            ));
+        }
         match self.typed.resolved.standard_symbol(symbol) {
             Some(StandardSymbol::Constant(StandardConstant::DurationZero)) => {
                 let constructor = self.standard_function(StandardFunction::DurationNanoseconds);
@@ -2426,7 +2553,9 @@ fn bound_locals(functions: &[CoreFunction], nodes: &[CoreNode]) -> HashSet<Symbo
                 bound.insert(*symbol);
             }
             CorePattern::Constructor { fields, .. } | CorePattern::Tuple(fields) => {
-                fields.iter().for_each(|field| pattern_bindings(field, bound));
+                fields
+                    .iter()
+                    .for_each(|field| pattern_bindings(field, bound));
             }
             CorePattern::Outcome { value, .. } => pattern_bindings(value, bound),
             CorePattern::List {
@@ -2726,4 +2855,44 @@ pub(crate) fn lower_legacy(root: LegacyVerifiedRoot) -> LegacyCoreProgram {
         field_name: typed.resolved.symbol(field).name.clone(),
         value,
     }
+}
+
+/// The bytes of the file that `path` names under `directory`, a module's
+/// directory, or the code and message of why it cannot be embedded.
+fn embedded_file(
+    path: &str,
+    directory: Option<&std::path::Path>,
+) -> Result<Vec<u8>, (&'static str, String)> {
+    // An absolute path starts with an empty segment.
+    if path.is_empty()
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|segment| matches!(segment, "" | "." | ".."))
+    {
+        return Err((
+            "E5207",
+            format!(
+                "embedded path `{path}` must be relative to this module's directory, with `/` \
+                 between segments and no empty, `.`, or `..` segment"
+            ),
+        ));
+    }
+    let Some(directory) = directory else {
+        return Err((
+            "E5208",
+            format!("cannot embed `{path}`: this module has no directory"),
+        ));
+    };
+    let unreadable = |error: std::io::Error| ("E5208", format!("cannot embed `{path}`: {error}"));
+    // A symbolic link may point anywhere, so the file it resolves to must still be
+    // inside the module's directory.
+    let file = directory.join(path).canonicalize().map_err(unreadable)?;
+    if !file.starts_with(directory.canonicalize().map_err(unreadable)?) {
+        return Err((
+            "E5207",
+            format!("embedded path `{path}` resolves outside this module's directory"),
+        ));
+    }
+    std::fs::read(file).map_err(unreadable)
 }

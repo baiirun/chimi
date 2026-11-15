@@ -1,0 +1,20 @@
+# mutation run at 5d7f4a57f86bd85b32433e1f9c3b07934291732b
+# clock_timeout_mutations.py: 15 mutants against compiler/chimi
+BASELINE ok  [clock] (27s)
+KILLED       a timeout converts any cancellation [clock] (11s)
+KILLED       a terminal cancellation still exits its scopes [clock] (10s)
+KILLED       the innermost fired scope is delivered [clock] (10s)
+KILLED       a firing scope leaves the park in place [clock] (6s)
+KILLED       a receive cannot be withdrawn [clock] (6s)
+KILLED       a firing scope leaves its children running [clock] (6s)
+KILLED       an exited scope keeps its timer [clock] (6s)
+KILLED       a busy loop never polls for scope deadlines [clock] (69s)
+KILLED       requests do not fire the task's due scope deadlines [clock] (81s)
+KILLED       a deadline equal to now starts the operation [clock] (21s)
+KILLED       a deadline carries the deadline instead of the time to it [clock] (12s)
+KILLED       time functions bypass the bound provider [clock] (11s)
+KILLED       starting_at ignores its timestamp [clock] (11s)
+KILLED       --clock-start is accepted with the real clock [clock] (12s)
+KILLED       scope firing is reported as a timer fire [clock] (11s)
+# result: every mutant killed
+exit=0

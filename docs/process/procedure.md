@@ -53,9 +53,22 @@ that the vision docs cannot predict.
 1. **Branch.** Work on the lane's own branch from the latest `main`, and open
    one PR (or a few small ones when the lane has separable parts). Push early,
    plain push, never force [N27, N29].
-2. **Implement** with the code-quality skill
-   ([github.com/baiirun/skills](https://github.com/baiirun/skills)), skipping
-   its approval gates.
+2. **Implement** with the code-quality skill. It is vendored in the repo
+   under `.claude/skills/` (source and re-sync steps in
+   [.claude/skills/README.md](../../.claude/skills/README.md)), so there is
+   nothing to fetch. Every implementing lane must load it:
+   - `code-quality` is user-invoked only, so it is not in the Skill tool's
+     list. Read `.claude/skills/code-quality/SKILL.md` directly, then call
+     each matching routing skill (`modeling-data`, `testing-and-verifying`
+     and so on) with the Skill tool, or read the single principle file the
+     router names.
+   - Skip its approval gates. Byron does not review skeletons or
+     intermediate work, so the "wait for the user's approval" step in
+     `skeleton-first` (Phase 4) does not apply: write the skeleton, state its
+     key decisions in the PR description, and carry on implementing.
+   - Name the routing skills and principles you used in the PR description,
+     under a "Code-quality routes" line, so reviewers can check the work
+     against them.
 3. **Test what matters** [N31]. Locally, run only the tests that cover the
    change; CI runs the full suite. Tests assert observable behaviour only:
    program output, diagnostics, outcomes and contractual bounds. Each test must
@@ -157,6 +170,7 @@ be merged, and don't wait when nothing is gained by waiting (Byron,
 | Mutation runner and lists | `scripts/mutation/` |
 | Process conformance lab | `compiler/chimi/src/process_lab/`, `compiler/chimi/tests/process-lab/` |
 | Std sources and tests | `compiler/chimi/std/`, `compiler/chimi/std-tests/`, `compiler/chimi/tests/std_modules.rs` |
+| Code-quality skill (vendored) | `.claude/skills/` |
 | Tickets | Linear team "chimi" (CHI) |
 
 `scripts/integrate-branch.sh` and `scripts/heavy.sh` came from local runs on
