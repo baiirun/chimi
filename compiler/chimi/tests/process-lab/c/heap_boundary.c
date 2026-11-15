@@ -34,6 +34,7 @@ ChimiFiberCommand chimi_fiber_request(void *request, const ChimiRootFrame *roots
 const char *CHIMI_COMPUTATION = "process-lab-heap-boundary";
 const uint32_t CHIMI_REQUIRES_SCHEDULER = 0;
 const char *CHIMI_STRINGS[] = {""};
+const uint32_t CHIMI_STRING_LENGTHS[] = {0};
 const uint32_t CHIMI_IDS[] = {0};
 const ChimiOrigin CHIMI_ORIGINS[] = {{0}};
 const ChimiNode CHIMI_NODES[] = {{0}};
@@ -141,7 +142,7 @@ static BoundaryWork cross_into_foreign_values(uint32_t size) {
         heap_totals.footprint_bytes - footprint);
   work.copy_peak_bytes = heap_totals.peak_footprint_bytes - footprint;
   CHECK(list_sum(foreign) == foreign_sum, "the copy changed the foreign list");
-  CHECK(strlen(foreign_text->as.text) == size, "the copy changed the foreign Text");
+  CHECK(foreign_text->as.text.length == size, "the copy changed the foreign Text");
 
   AllocationScope region;
   allocation_scope_begin(&region);
@@ -155,7 +156,7 @@ static BoundaryWork cross_into_foreign_values(uint32_t size) {
   heap_destroy(heap_a);
   /* Under AddressSanitizer a pass that swept heap B's allocations fails here. */
   CHECK(list_sum(foreign) == foreign_sum, "the pass changed the foreign list");
-  CHECK(strlen(foreign_text->as.text) == size, "the pass changed the foreign Text");
+  CHECK(foreign_text->as.text.length == size, "the pass changed the foreign Text");
   heap_destroy(heap_b);
   return work;
 }

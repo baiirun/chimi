@@ -1615,6 +1615,8 @@ fn int_parse_accepts_decimal_text_and_names_each_failure() {
         ("+4", "InvalidDigit"),
         (" 4", "InvalidDigit"),
         ("99999999999999999999", "OutOfRange"),
+        // U+0000 is not a digit; a C string would have stopped before it.
+        ("4\\u{0}", "InvalidDigit"),
     ] {
         assert_eq!(
             std_outcome(
@@ -1650,6 +1652,7 @@ fn float_parse_rejects_text_outside_the_finite_literal_grammar() {
         ("1.", "Invalid"),
         ("+1.0", "Invalid"),
         ("1e400", "OutOfRange"),
+        ("1.5\\u{0}", "Invalid"),
     ] {
         assert_eq!(
             std_outcome(
@@ -1660,6 +1663,70 @@ fn float_parse_rejects_text_outside_the_finite_literal_grammar() {
             "{text:?}"
         );
     }
+}
+
+// ts-ce73fb: Text may hold U+0000. Native Text was a C string, so every operation
+// stopped at the first NUL byte and disagreed with the interpreter.
+#[test]
+fn text_holding_nul_keeps_every_byte_on_both_backends() {
+    let outcome = run_both(
+        "text-nul",
+        concat!(
+            "import std/text as Text\n",
+            "import std/list as List\n",
+            "import std/debug as Debug\n",
+            "import std/json as Json\n",
+            "import std/json.{Value}\n",
+            "fn flag(value: Bool) -> Text {\n",
+            "  case value {\n",
+            "    True -> \"T\"\n",
+            "    False -> \"F\"\n",
+            "  }\n",
+            "}\n",
+            "fn tag(text: Text) -> Text {\n",
+            "  case text {\n",
+            "    \"a\\u{0}b\" -> \"exact\"\n",
+            "    _ -> \"other\"\n",
+            "  }\n",
+            "}\n",
+            "fn decoded_length(source: Text) -> Int {\n",
+            "  case Json.decode(source) {\n",
+            "    Success(Value.Text(text)) -> Text.byte_length(text)\n",
+            "    Success(_) -> -1\n",
+            "    Failure(_) -> -2\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Text {\n",
+            "  let text = \"a\\u{0}b\"\n",
+            "  let joined = Text.concat([text, \"c\"])\n",
+            "  let parts = Text.split(joined, \"\\u{0}\")\n",
+            "  [\n",
+            "    \"${Text.byte_length(text)}\",\n",
+            "    \"${Text.byte_length(joined)}\",\n",
+            "    \"${List.length(parts)}\",\n",
+            "    Text.replace(joined, \"\\u{0}\", \"-\"),\n",
+            "    \"${Text.byte_length(Text.trim(\" a\\u{0} \"))}\",\n",
+            "    flag(text == \"a\\u{0}c\"),\n",
+            "    flag(Text.contains(text, \"b\")),\n",
+            "    flag(Text.starts_with(text, \"a\\u{0}b\")),\n",
+            "    flag(Text.ends_with(joined, \"bc\")),\n",
+            "    tag(text),\n",
+            "    tag(\"a\\u{0}c\"),\n",
+            "    Debug.render(text),\n",
+            "    Json.encode(Json.text(text)),\n",
+            "    \"${decoded_length(\"\\\"x\\\\u0000y\\\"\")}\",\n",
+            "    joined,\n",
+            "  ] |> Text.join(\"|\")\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        concat!(
+            "\"outcome\":\"success\",\"value\":",
+            "\"3|4|2|a-bc|2|F|T|T|T|exact|other|\\\"a\\\\u{0}b\\\"|\\\"a\\\\u0000b\\\"|3|a\\u0000bc\""
+        )
+    );
 }
 
 // The std/int and std/float failure types are module members: a program names
