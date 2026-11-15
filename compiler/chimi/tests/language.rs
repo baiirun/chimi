@@ -10590,3 +10590,78 @@ fn process_standard_enum_values_match_exhaustively() {
     ));
     assert_eq!(check_codes(&missing), ["T4231"]);
 }
+
+// Guards: every `let` of a block stays bound for the block's later steps, an inner
+// block's `let` does not change the enclosing block's names, and a block that binds
+// nothing still sees every enclosing local (CHI-91 clones a block's locals only at
+// its first binding).
+#[test]
+fn an_inner_block_binding_stays_inside_the_block() {
+    let outcome = run_both(
+        "block-binding-scope",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  let x = 1\n",
+            "  let y = {\n",
+            "    let x = 2\n",
+            "    x\n",
+            "  }\n",
+            "  let z = { { x + y } }\n",
+            "  x * 100 + y * 10 + z\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":123");
+}
+
+// Guards: Void, True and False are shared values that no pass boundary reclaims, so a
+// comparison made in one pass is still a Bool in every later pass.
+#[test]
+fn booleans_stay_booleans_across_reclaimed_loop_passes() {
+    let outcome = run_both(
+        "shared-boolean-passes",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  loop count = 0 {\n",
+            "    let even = count % 2 == 0\n",
+            "    case count >= 5000 {\n",
+            "      True -> break count\n",
+            "      False -> case even {\n",
+            "        True -> count + 1\n",
+            "        False -> count + 3\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":5000");
+}
+
+// Guards: a match reads every subject, both when its subjects fit the runtime's
+// stack array (up to eight) and when they do not (nine).
+#[test]
+fn a_match_reads_every_one_of_eight_or_nine_subjects() {
+    let outcome = run_both(
+        "match-many-subjects",
+        concat!(
+            "fn eight(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int) -> Int {\n",
+            "  case a, b, c, d, e, f, g, h {\n",
+            "    1, 2, 3, 4, 5, 6, 7, 8 -> 8\n",
+            "    _, _, _, _, _, _, _, _ -> 0\n",
+            "  }\n",
+            "}\n",
+            "fn nine(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int) -> Int {\n",
+            "  case a, b, c, d, e, f, g, h, i {\n",
+            "    1, 2, 3, 4, 5, 6, 7, 8, 9 -> 9\n",
+            "    _, _, _, _, _, _, _, _, _ -> 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  eight(1, 2, 3, 4, 5, 6, 7, 8) * 1000 + eight(1, 2, 3, 4, 5, 6, 7, 0) * 100\n",
+            "    + nine(1, 2, 3, 4, 5, 6, 7, 8, 9) * 10 + nine(1, 2, 3, 4, 5, 6, 7, 8, 0)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":8090");
+}
