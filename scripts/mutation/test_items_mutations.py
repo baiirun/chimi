@@ -3,6 +3,10 @@ word, the duplicate-name and visibility checks, the test body contract, and
 dropping tests from builds.
 
 Run: scripts/mutation/mutate.py scripts/mutation/test_items_mutations.py
+
+Not listed: reading `test` as a keyword without the text literal after it is
+equivalent on valid programs, since no other module item starts with an
+identifier named `test`; it only changes the syntax error for broken input.
 """
 
 CRATE = "compiler/chimi"
@@ -18,10 +22,6 @@ def lib(name, file, edits, filter="test_items"):
 
 
 MUTATIONS = [
-    lib("parser: `test` needs no text literal after it", P, [(
-        "            && matches!(\n                self.kind_at(index + 1),\n                TokenKind::Text | TokenKind::TextStart\n            )",
-        "",
-    )]),
     lib("lowering: duplicate test names are allowed", S, [(
         ".find(|declaration| declaration.test && declaration.name.text == name.text)",
         ".find(|declaration| declaration.test && declaration.name.text == name.text && false)",
@@ -45,6 +45,10 @@ MUTATIONS = [
     lib("typing: the test plan closes nothing", Y, [(
         "            Some(StandardSymbol::Type(StandardType::Console)) => true,\n            Some(StandardSymbol::Type(StandardType::Clock)) => need.lexical_name == \"clock\",\n            _ => false,\n        }\n    }\n\n    /// Whether the runner's",
         "            _ => false,\n        }\n    }\n\n    /// Whether the runner's",
+    )]),
+    lib("typing: the test plan closes a clock under any name", Y, [(
+        "            Some(StandardSymbol::Type(StandardType::Clock)) => need.lexical_name == \"clock\",\n            _ => false,\n        }\n    }\n\n    /// Whether the runner's",
+        "            Some(StandardSymbol::Type(StandardType::Clock)) => true,\n            _ => false,\n        }\n    }\n\n    /// Whether the runner's",
     )]),
     dict(name="build: tests are kept in a program", file=C, edits=[(
         "    resolve_project(lower_project_sources(sources).without_tests())",

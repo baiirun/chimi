@@ -4294,7 +4294,7 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
 
     fn test_item_codes(body: &str) -> Vec<&'static str> {
         let text = format!(
-            "import std/debug as Debug\n\n\
+            "import std/clock as Clock\nimport std/clock.{{Clock}}\nimport std/debug as Debug\nimport std/io.{{Console, FileSystem}}\n\n\
              interface Store {{\n  get: fn() -> Int\n}}\n\n\
              fn read() -> Int needs {{ store: Store }} {{\n  store.get()\n}}\n\n\
              pub fn main() -> Int {{\n  0\n}}\n\n{body}"
@@ -4341,9 +4341,42 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
                 "test \"needs a store\" {\n  let value = read()\n  Void\n}\n",
                 "T4400",
             ),
+                    // The plan closes the clock only under the name `clock`, and no file
+            // system at all.
+            (
+                "fn wait() -> Void needs { other: Clock } {\n  Void\n}\n\n\
+                 test \"waits\" {\n  wait()\n}\n",
+                "T4400",
+            ),
+            (
+                "fn list() -> Void needs { files: FileSystem } {\n  Void\n}\n\n\
+                 test \"lists\" {\n  list()\n}\n",
+                "T4400",
+            ),
         ] {
             assert_eq!(test_item_codes(body), [code], "{body}");
         }
+        // The plan closes `clock: Clock` and a console under any name.
+        assert_eq!(
+            test_item_codes(
+                "fn wait() -> Void needs { clock: Clock, out: Console } {\n  Void\n}\n\n\
+                 test \"waits\" {\n  wait()\n}\n"
+            ),
+            Vec::<&str>::new()
+        );
+        // Test names need only be unique within their module.
+        let shared = "test \"shared name\" {\n  Void\n}\n";
+        assert!(
+            Compiler::verify_project(vec![
+                module(
+                    "app/main",
+                    "main.chimi",
+                    &format!("pub fn main() -> Int {{\n  0\n}}\n\n{shared}")
+                ),
+                module("app/other", "other.chimi", shared),
+            ])
+            .is_ok()
+        );
         // A body that ends in a defect has the success type `Never`, which is fine.
         assert_eq!(
             test_item_codes("test \"gives up\" {\n  Debug.crash(\"stop\")\n}\n"),

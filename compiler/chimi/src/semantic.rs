@@ -1618,7 +1618,13 @@ impl ProjectLowerer {
                     visibility.range(),
                     "a test is not a value and takes no visibility; remove `pub`",
                 )
-                .with_fix(visibility.range(), ""),
+                .with_fix(
+                    TextRange::new(
+                        visibility.range().start() as usize,
+                        test_keyword_start(node).unwrap_or(visibility.range().end() as usize),
+                    ),
+                    "",
+                ),
             );
         }
         let name = if let Some(literal) = direct_child(node, NodeKind::Literal) {
@@ -3049,6 +3055,15 @@ fn clause_head_range(node: &SyntaxNode<'_>) -> TextRange {
         significant_range(&parameters).end()
     });
     TextRange::new(start as usize, end as usize)
+}
+
+/// Where the `test` word of a `TestDeclaration` starts, so a fix that removes
+/// `pub` also removes the space after it.
+fn test_keyword_start(node: &SyntaxNode<'_>) -> Option<usize> {
+    node.child_tokens()
+        .into_iter()
+        .find(|token| token.kind() == TokenKind::Identifier)
+        .map(|token| token.range().start() as usize)
 }
 
 fn direct_child<'tree>(node: &SyntaxNode<'tree>, kind: NodeKind) -> Option<SyntaxNode<'tree>> {
