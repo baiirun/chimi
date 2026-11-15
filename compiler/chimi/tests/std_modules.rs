@@ -237,6 +237,38 @@ fn a_native_fn_outside_the_standard_tree_is_rejected() {
     );
 }
 
+// Conformance: a `native type` is declared only in the embedded standard tree,
+// and has no fields or constructors anywhere.
+#[test]
+fn a_native_type_outside_the_standard_tree_is_rejected() {
+    assert_eq!(
+        diagnostic_codes(vec![module(
+            "app/handle",
+            "pub native type Handle<T>\npub fn main() -> Int { 0 }\n"
+        )]),
+        ["N3101"]
+    );
+    assert_eq!(
+        diagnostic_codes(vec![module(
+            "app/handle",
+            "native type Handle { raw: Int }\npub fn main() -> Int { 0 }\n"
+        )]),
+        ["N3101", "S1102"]
+    );
+}
+
+// `type` after `native` is read as a keyword only there.
+#[test]
+fn type_is_an_ordinary_name_elsewhere() {
+    assert_eq!(
+        diagnostic_codes(vec![module(
+            "main",
+            "fn native(type: Int) -> Int { type }\npub fn main() -> Int { native(1) }\n"
+        )]),
+        Vec::<String>::new()
+    );
+}
+
 // A module may still name a value `native`: the word is read only before `fn`.
 #[test]
 fn native_is_an_ordinary_name_elsewhere() {

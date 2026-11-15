@@ -273,10 +273,21 @@ mod tests {
             })
             .collect::<Vec<_>>();
         bound.sort();
-        let mut registered = OPERATIONS.iter().map(|operation| operation.id).collect::<Vec<_>>();
+        // An operation registered ahead of its module's port has no declaration yet.
+        let mut registered = OPERATIONS
+            .iter()
+            .filter(|operation| !operation.porting)
+            .map(|operation| operation.id)
+            .collect::<Vec<_>>();
         registered.sort_unstable();
         assert_eq!(bound, registered);
-        for entry in RUNTIME_KNOWN {
+        // A runtime-known declaration of a module not yet in the tree keeps its
+        // synthesized built-in until that module's port.
+        let ported = |id: &str| {
+            let module = id.split_once('.').map_or(id, |(module, _)| module);
+            crate::standard_tree::embedded_module(module).is_some()
+        };
+        for entry in RUNTIME_KNOWN.iter().filter(|entry| ported(entry.id)) {
             let identity = match entry.identity {
                 RuntimeIdentity::Type(kind) | RuntimeIdentity::NativeType(kind) => {
                     StandardSymbol::Type(kind)

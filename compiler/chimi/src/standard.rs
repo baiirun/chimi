@@ -1022,7 +1022,9 @@ impl StandardConstructor {
             | StandardType::FileSystem
             | StandardType::Map
             | StandardType::Path
-            | StandardType::Duration => None,
+            | StandardType::Duration
+            | StandardType::Set
+            | StandardType::Decimal => None,
         }
     }
 
