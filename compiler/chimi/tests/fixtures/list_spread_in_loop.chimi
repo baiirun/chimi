@@ -1,0 +1,8 @@
+pub fn main() -> List<Int> {
+  loop out = [] {
+    case out {
+      [] -> [..out, 1]
+      _ -> break out
+    }
+  }
+}

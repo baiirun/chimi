@@ -9713,12 +9713,10 @@ impl ProjectTypeChecker {
             self.types[right.raw() as usize].clone(),
         ) {
             (CanonicalType::InferenceVariable(variable), _) => {
-                self.inference_bindings.insert(variable, right);
-                true
+                self.bind_inference_variable(variable, right)
             }
             (_, CanonicalType::InferenceVariable(variable)) => {
-                self.inference_bindings.insert(variable, left);
-                true
+                self.bind_inference_variable(variable, left)
             }
             // `Never` has no values, so a `Never` value fits any expected type.
             // The rule is one-way: nothing else fits where `Never` is expected.
@@ -9751,11 +9749,8 @@ impl ProjectTypeChecker {
                 let Some(variable) = right_variable else {
                     return false;
                 };
-                if !self.failure_row_within_enum(row, symbol) {
-                    return false;
-                }
-                self.inference_bindings.insert(variable, left);
-                true
+                self.failure_row_within_enum(row, symbol)
+                    && self.bind_inference_variable(variable, left)
             }
             (CanonicalType::Function(left), CanonicalType::Function(right)) => {
                 left.inputs.len() == right.inputs.len()
@@ -9807,6 +9802,35 @@ impl ProjectTypeChecker {
                 self.unify(left, right)
             }
             _ => false,
+        }
+    }
+
+    /// Binds `variable` to `type_id` unless `type_id` contains `variable`: a
+    /// binding such as `T = List<T>` would make an infinite type, so the two
+    /// types do not unify and the caller reports the mismatch.
+    fn bind_inference_variable(&mut self, variable: u32, type_id: TypeId) -> bool {
+        if self.inference_variable_occurs(variable, type_id) {
+            return false;
+        }
+        self.inference_bindings.insert(variable, type_id);
+        true
+    }
+
+    fn inference_variable_occurs(&self, variable: u32, type_id: TypeId) -> bool {
+        let occurs = |id: TypeId| self.inference_variable_occurs(variable, id);
+        let contract_occurs = |contract: &CallableContract| {
+            contract.inputs.iter().copied().any(occurs) || occurs(contract.success)
+        };
+        match &self.types[self.resolve_inference_type(type_id).raw() as usize] {
+            CanonicalType::InferenceVariable(found) => *found == variable,
+            CanonicalType::Named { arguments, .. } => arguments.iter().copied().any(occurs),
+            CanonicalType::Function(contract)
+            | CanonicalType::PolymorphicFunction { contract, .. } => contract_occurs(contract),
+            CanonicalType::Record(fields) => fields.iter().any(|field| occurs(field.type_id)),
+            CanonicalType::Tuple(elements) => elements.iter().copied().any(occurs),
+            CanonicalType::Generic(_) | CanonicalType::FailureSetValue(_) | CanonicalType::Poison => {
+                false
+            }
         }
     }
 

@@ -2394,6 +2394,25 @@ fn the_last_element_pattern_reads_one_element_of_a_large_list() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":200");
 }
 
+// ts-1bba2b: an element type that must contain itself has no finite type. The
+// mismatch is reported instead of building `T = List<T>` and recursing forever.
+#[test]
+fn a_type_that_must_contain_itself_is_a_mismatch() {
+    assert_eq!(
+        check_codes(concat!(
+            "pub fn main() -> List<Int> {\n",
+            "  loop out = [] {\n",
+            "    case out {\n",
+            "      [] -> [out]\n",
+            "      _ -> break out\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        )),
+        ["T4203"]
+    );
+}
+
 // LP-08 on both paths, at 2^14 elements for the same reason as LP-07.
 #[test]
 fn a_loop_drains_a_large_list_by_rebinding_the_rest() {

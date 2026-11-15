@@ -2553,6 +2553,9 @@ fn run_executes_the_checkout_forcing_program_with_dependency_traces() {
 fn invalid_programs_stop_at_the_owning_stage() {
     let cases = [
         ("missing_closing_brace", "error[S1001] syntax"),
+        // ts-1bba2b: the recovered `[out, 1]` asks for `T = List<T>`, which used
+        // to overflow the stack while formatting the mismatch.
+        ("list_spread_in_loop", "error[S1001] syntax"),
         ("missing_main", "error[E5001] execution-setup"),
         ("unresolved_constructor", "error[E_UNRESOLVED_VALUE] name"),
         ("invalid_field_type", "error[T4203] type"),
