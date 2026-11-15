@@ -154,7 +154,7 @@ const TASK_TERMINAL: &[&str] = &["task_terminal"];
 
 use Stage::*;
 
-pub static SCENARIOS: [Scenario; 131] = [
+pub static SCENARIOS: [Scenario; 132] = [
     // Static: compile-pass.
     fixture("SP01", "static-contract-example", U1),
     fixture("SP02", "spec-inside-using-shareable-provider", U2),
@@ -330,10 +330,13 @@ pub static SCENARIOS: [Scenario; 131] = [
     fixture("OB06", "virtual-time-costs-no-wall-time", U6),
     Scenario::new(
         "OB07",
-        "trace-abi-version-six",
+        "trace-abi-version",
         U5,
-        Form::Check(super::observability_kind::trace_abi_version_six),
+        Form::Check(super::observability_kind::trace_abi_version),
     ),
+    fixture("OB08", "trace-off-root-names-process-defect", U5)
+        .defects()
+        .runs(&["overflow", "divide"]),
     fixture("IP01", "interpreter-rejects-processes", U5).defects(),
     // Forcing program.
     fixture("FP01", "supervised-pool", U10),
@@ -458,7 +461,7 @@ mod tests {
             rows += 1;
         }
         // Every scenario except FP01 and the gates, which carry no unlock column.
-        assert_eq!(rows, 131 - 1 - 10);
+        assert_eq!(rows, SCENARIOS.len() - 1 - 10);
     }
 
     // Rejects a duplicated or missing ID, and an ID whose prefix maps to no

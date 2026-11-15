@@ -48,6 +48,10 @@ __attribute__((weak)) ChimiSchedulerOutcome chimi_scheduler_run(
 }
 
 __attribute__((weak)) size_t chimi_scheduler_live_memberships(void) { return 0; }
+/* Without the fiber archive nothing is ever cancelled and no scope fires. */
+__attribute__((weak)) uint32_t chimi_fiber_cancel_is_terminal(void) { return 1; }
+__attribute__((weak)) uint32_t chimi_fiber_scope_cancel_pending(void) { return 0; }
+__attribute__((weak)) uint32_t chimi_fiber_scope_polls(void) { return 0; }
 
 typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
                VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER, VALUE_TASK,
@@ -55,6 +59,9 @@ typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN
                VALUE_CHANNEL_COMPLETION, VALUE_TUPLE, VALUE_RANGE,
                /* A `Duration`: nanoseconds in `as.integer`. */
                VALUE_DURATION,
+               /* A `std/clock.Instant`: nanoseconds since the execution's origin, and a
+                  `Timestamp`: nanoseconds since the Unix epoch; both in `as.integer`. */
+               VALUE_INSTANT, VALUE_TIMESTAMP,
                /* A `Decimal`: plain data in `as.decimal`, copied as-is. */
                VALUE_DECIMAL,
                /* Process values (std/process, std/supervisor). Each is plain data that
@@ -68,7 +75,11 @@ typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN
 /* CALL_CONSTRUCTOR is a constructor with fields named as a value; calling it constructs. */
 typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC,
                CALL_CONSTRUCTOR } CallableKind;
-typedef enum { HOST_PROCESS_UTF8_LINES, HOST_WRITE_LINE, HOST_WRITE_ERROR } HostFunction;
+/* The HOST_CLOCK_* functions are the execution clock provider's methods. A shifted
+   timestamp is `Clock.starting_at`'s: its `inner` reads now, plus `shift`. */
+typedef enum { HOST_PROCESS_UTF8_LINES, HOST_WRITE_LINE, HOST_WRITE_ERROR,
+               HOST_CLOCK_NOW, HOST_CLOCK_TIMESTAMP, HOST_CLOCK_SLEEP_UNTIL,
+               HOST_CLOCK_SHIFTED_TIMESTAMP } HostFunction;
 /* CONTROL_BREAK carries the target loop's state symbol in `node` and its value in `value`.
    Verified programs keep it inside one function, so it never reaches a call or root. */
 typedef enum { CONTROL_SUCCESS, CONTROL_FAILURE, CONTROL_DEFECT, CONTROL_CANCEL, CONTROL_BREAK } ControlKind;
@@ -119,6 +130,7 @@ typedef struct ChimiCallable {
   const char *name;
   uint32_t intrinsic;
   HostFunction host;
+  int64_t shift;
 } ChimiCallable;
 
 struct ChimiValue {
@@ -179,6 +191,9 @@ struct ChimiTaskContext {
   ChimiNodeFn entry;
   struct RuntimeFragment *captures;
   uint64_t span;
+  /* The task that started this one: a child's result hands its exclusive
+     capabilities to it before the child ends. */
+  uint64_t parent;
 };
 
 typedef enum {
@@ -201,8 +216,18 @@ struct ChimiRuntime {
   bool full_trace;
   /* `--clock=virtual`: the scheduler's deterministic time source. */
   bool virtual_clock;
+  /* `--clock-start`: the virtual source's Timestamp at Instant zero, in Unix ns. */
+  int64_t clock_start;
   /* The parked tasks of a virtual-time deadlock, from the scheduler's report. */
   char *deadlock_waiters;
+  /* The latest process incarnation that defected, from the scheduler's
+     termination report under any trace mode, and how many have defected. A
+     root that cannot finish names it, so a process defect is never only in
+     the trace. */
+  uint64_t last_defect_incarnation;
+  uint64_t last_defect_membership;
+  char *last_defect_message;
+  uint64_t process_defect_count;
   /* The defect message of each task the scheduler defected for a channel
      capability violation, from its report. */
   struct CapabilityViolationNote *capability_violations;
@@ -686,6 +711,99 @@ static ChimiControl *failure(ChimiValue *value) { return new_control(CONTROL_FAI
 static ChimiControl *defect(const char *message, int64_t node) { return new_control(CONTROL_DEFECT, NULL, message, node); }
 static ChimiControl *cancelled(void) { return new_control(CONTROL_CANCEL, NULL, NULL, -1); }
 
+/* Timestamps (time-and-outcomes.md, "Timestamp"): signed nanoseconds since
+   1970-01-01T00:00:00Z ignoring leap seconds, written in RFC 3339 UTC. Civil dates
+   use the proleptic Gregorian calendar (days_from_civil and civil_from_days). */
+static int64_t days_from_civil(int64_t year, int64_t month, int64_t day) {
+  year -= month <= 2;
+  int64_t era = (year >= 0 ? year : year - 399) / 400;
+  int64_t year_of_era = year - era * 400;
+  int64_t day_of_year = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  int64_t day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+  return era * 146097 + day_of_era - 719468;
+}
+static void civil_from_days(int64_t days, int64_t *year, int64_t *month, int64_t *day) {
+  days += 719468;
+  int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+  int64_t day_of_era = days - era * 146097;
+  int64_t year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
+  int64_t day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+  int64_t shifted = (5 * day_of_year + 2) / 153;
+  *day = day_of_year - (153 * shifted + 2) / 5 + 1;
+  *month = shifted < 10 ? shifted + 3 : shifted - 9;
+  *year = year_of_era + era * 400 + (*month <= 2);
+}
+/* Writes `nanoseconds` as `2026-11-10T09:30:00.25Z`: the fraction loses its trailing
+   zeros and is left out when it is zero. `out` holds at least 40 bytes. */
+static void timestamp_text(int64_t nanoseconds, char *out) {
+  int64_t seconds = nanoseconds / 1000000000, fraction = nanoseconds % 1000000000;
+  if (fraction < 0) { fraction += 1000000000; seconds -= 1; }
+  int64_t days = seconds / 86400, of_day = seconds % 86400;
+  if (of_day < 0) { of_day += 86400; days -= 1; }
+  int64_t year, month, day;
+  civil_from_days(days, &year, &month, &day);
+  int length = sprintf(out, "%04" PRId64 "-%02" PRId64 "-%02" PRId64 "T%02" PRId64 ":%02" PRId64 ":%02" PRId64,
+                       year, month, day, of_day / 3600, of_day / 60 % 60, of_day % 60);
+  if (fraction) {
+    char digits[10]; sprintf(digits, "%09" PRId64, fraction);
+    size_t used = 9; while (digits[used - 1] == '0') --used;
+    digits[used] = '\0'; length += sprintf(out + length, ".%s", digits);
+  }
+  strcpy(out + length, "Z");
+}
+static bool parse_digits(const char **cursor, int count, int64_t *value) {
+  *value = 0;
+  for (int i = 0; i < count; ++i, ++*cursor) {
+    if (**cursor < '0' || **cursor > '9') return false;
+    *value = *value * 10 + (**cursor - '0');
+  }
+  return true;
+}
+/* Parses an RFC 3339 date-time (`T` and `Z` in either case, a fraction of up to nine
+   digits, `Z` or a `+HH:MM`/`-HH:MM` offset) into Unix nanoseconds. Leap second 60 and
+   values outside the Timestamp range are rejected. */
+static bool parse_timestamp(const char *text, int64_t *out) {
+  const char *cursor = text;
+  int64_t year, month, day, hour, minute, second, fraction = 0, offset = 0;
+  if (!parse_digits(&cursor, 4, &year) || *cursor++ != '-' || !parse_digits(&cursor, 2, &month) ||
+      *cursor++ != '-' || !parse_digits(&cursor, 2, &day) || (*cursor != 'T' && *cursor != 't'))
+    return false;
+  ++cursor;
+  if (!parse_digits(&cursor, 2, &hour) || *cursor++ != ':' || !parse_digits(&cursor, 2, &minute) ||
+      *cursor++ != ':' || !parse_digits(&cursor, 2, &second))
+    return false;
+  if (*cursor == '.') {
+    ++cursor; int digits = 0;
+    while (*cursor >= '0' && *cursor <= '9') {
+      if (++digits > 9) return false;
+      fraction = fraction * 10 + (*cursor++ - '0');
+    }
+    if (digits == 0) return false;
+    for (; digits < 9; ++digits) fraction *= 10;
+  }
+  if (*cursor == 'Z' || *cursor == 'z') ++cursor;
+  else if (*cursor == '+' || *cursor == '-') {
+    int64_t sign = *cursor++ == '-' ? -1 : 1, offset_hours, offset_minutes;
+    if (!parse_digits(&cursor, 2, &offset_hours) || *cursor++ != ':' ||
+        !parse_digits(&cursor, 2, &offset_minutes) || offset_hours > 23 || offset_minutes > 59)
+      return false;
+    offset = sign * (offset_hours * 3600 + offset_minutes * 60);
+  } else return false;
+  if (*cursor != '\0') return false;
+  static const int month_days[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  if (year < 1678 || year > 2262 || month < 1 || month > 12 || day < 1 || day > month_days[month - 1] ||
+      (month == 2 && day == 29 && !leap) || hour > 23 || minute > 59 || second > 59)
+    return false;
+  int64_t seconds = days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - offset;
+  int64_t nanoseconds;
+  if (__builtin_mul_overflow(seconds, INT64_C(1000000000), &nanoseconds) ||
+      __builtin_add_overflow(nanoseconds, fraction, &nanoseconds))
+    return false;
+  *out = nanoseconds;
+  return true;
+}
+
 static ChimiValue **new_value_slots(uint32_t count) {
   if (count == 0) return NULL;
   ChimiValue **slots = allocate(count, sizeof(*slots));
@@ -1015,6 +1133,8 @@ static void mark_children(void *pointer) {
         case VALUE_BOOLEAN:
         case VALUE_RANGE:
         case VALUE_DURATION:
+        case VALUE_INSTANT:
+        case VALUE_TIMESTAMP:
         case VALUE_DECIMAL:
         case VALUE_PROCESS_ADDRESS:
         case VALUE_PROCESS_INBOX:
@@ -1363,6 +1483,8 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
         case VALUE_BOOLEAN:
         case VALUE_RANGE:
         case VALUE_DURATION:
+        case VALUE_INSTANT:
+        case VALUE_TIMESTAMP:
         case VALUE_DECIMAL:
         case VALUE_PROCESS_ADDRESS:
         case VALUE_PROCESS_INBOX:
@@ -1622,7 +1744,22 @@ static ChimiValue *integer_value(int64_t raw) { ChimiValue *v = new_value(VALUE_
 static ChimiValue *range_value(int64_t start, int64_t end) {
   ChimiValue *v = new_value(VALUE_RANGE); v->as.range.start = start; v->as.range.end = end; return v;
 }
-static ChimiValue *void_value(void) { return new_value(VALUE_VOID); }
+/* Void, True and False are each one shared value in the static area, because values
+   never change after construction and conditions and effects produce them on almost
+   every pass. Static values are never collected, copied or freed. */
+static ChimiValue *shared_values[3];
+static ChimiValue *shared_value(uint32_t index) {
+  if (!shared_values[index]) {
+    AllocationArea *previous = allocation_target;
+    allocation_target = &static_area;
+    ChimiValue *value = new_value(index == 0 ? VALUE_VOID : VALUE_BOOLEAN);
+    if (index == 2) value->as.boolean = true;
+    allocation_target = previous;
+    shared_values[index] = value;
+  }
+  return shared_values[index];
+}
+static ChimiValue *void_value(void) { return shared_value(0); }
 static char *copy_text(const char *raw) {
   size_t length = strlen(raw);
   char *copy = allocate(length + 1, 1);
@@ -1649,7 +1786,7 @@ static bool text_holds_nul(const ChimiValue *text) {
 static const char *text_find(const char *text, size_t length, const char *needle, size_t width) {
   return memmem(text, length, needle, width);
 }
-static ChimiValue *boolean_value(bool raw) { ChimiValue *v = new_value(VALUE_BOOLEAN); v->as.boolean = raw; return v; }
+static ChimiValue *boolean_value(bool raw) { return shared_value(raw ? 2 : 1); }
 static ChimiValue *float_value(double raw) { ChimiValue *v = new_value(VALUE_FLOAT); v->as.floating = raw; return v; }
 
 /* The numeric model. It mirrors compiler/chimi/src/numeric.rs value for value and
@@ -2101,6 +2238,13 @@ typedef struct {
   size_t pending_capacity;
   uint64_t child;
   bool cancelled;
+  /* Collecting for a send instead of transferring: each capability found is
+     recorded here with the sender's token, and its copy in the message takes
+     the in-flight token (ChimiCarriedCapability). */
+  bool collect;
+  ChimiCarriedCapability *carried;
+  size_t carried_count;
+  size_t carried_capacity;
 } CapabilityTransfer;
 
 /* Visited-set slots examined by every capture transfer so far; the memory report's
@@ -2156,8 +2300,31 @@ static void transfer_push(CapabilityTransfer *transfer, TransferPartKind kind, v
   transfer->pending[transfer->pending_length++] = (TransferPart){kind, pointer};
 }
 
+static void collect_carried_capability(CapabilityTransfer *transfer, ChimiValue *value,
+                                       uint32_t capability) {
+  if (transfer->carried_count == transfer->carried_capacity) {
+    size_t capacity = transfer->carried_capacity ? transfer->carried_capacity * 2 : 8;
+    ChimiCarriedCapability *carried = realloc(transfer->carried, capacity * sizeof(*carried));
+    if (!carried) exhausted_memory();
+    transfer->carried = carried;
+    transfer->carried_capacity = capacity;
+  }
+  transfer->carried[transfer->carried_count++] = (ChimiCarriedCapability){
+    .channel = value->as.capability.channel,
+    .token = value->as.capability.token,
+    .capability = capability,
+  };
+  ++value->as.capability.token;
+}
+
 static bool transfer_captured_capability(CapabilityTransfer *transfer, ChimiValue *value,
                                          uint32_t request_kind) {
+  if (transfer->collect) {
+    collect_carried_capability(transfer, value,
+                               request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER
+                                 ? CHIMI_CAPABILITY_RECEIVER : CHIMI_CAPABILITY_COMPLETION);
+    return true;
+  }
   ChimiSchedulerRequest request = {
     .kind = request_kind,
     .task = transfer->child,
@@ -2209,6 +2376,8 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
     case VALUE_BOOLEAN:
     case VALUE_RANGE:
     case VALUE_DURATION:
+    case VALUE_INSTANT:
+    case VALUE_TIMESTAMP:
     case VALUE_DECIMAL:
     case VALUE_JSON_NUMBER:
     case VALUE_TASK:
@@ -2611,6 +2780,8 @@ static void json_value(FILE *output, const ChimiValue *root) {
         json_push_fields(&steps, value->as.record.fields, value->as.record.length, true, "}");
         break;
       case VALUE_DURATION: fprintf(output, "{\"duration\":%" PRId64 "}", value->as.integer); break;
+      case VALUE_INSTANT: fprintf(output, "{\"instant\":%" PRId64 "}", value->as.integer); break;
+      case VALUE_TIMESTAMP: fprintf(output, "{\"timestamp\":%" PRId64 "}", value->as.integer); break;
       case VALUE_DECIMAL: {
         char text[DECIMAL_TEXT_BYTES]; decimal_normalized_text(decimal_of(value), text);
         fputs("{\"decimal\":", output); json_string(output, text); fputc(0x7d, output); break;
@@ -2689,7 +2860,9 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
     switch (left->kind) {
       case VALUE_VOID: break;
       case VALUE_INTEGER:
-      case VALUE_DURATION: order = order_of(left->as.integer, right->as.integer); break;
+      case VALUE_DURATION:
+      case VALUE_INSTANT:
+      case VALUE_TIMESTAMP: order = order_of(left->as.integer, right->as.integer); break;
       case VALUE_DECIMAL: order = decimal_compare(decimal_of(left), decimal_of(right)); break;
       /* Finite, so total; -0.0 and 0.0 are equal. */
       case VALUE_FLOAT: order = (left->as.floating > right->as.floating) - (left->as.floating < right->as.floating); break;
@@ -4871,6 +5044,9 @@ static ChimiControl *invoke_bytes_operation(uint32_t intrinsic, ChimiValue **arg
       }
       return optional_value(bytes_from(raw, width));
     }
+    /* CHIMI_INTRINSIC_EMBED_TEXT and _BYTES never run here: lowering admits them
+       only in module constants, which the build evaluates before emitting program
+       data, so a native program receives their values as constant rows. */
   }
   return intrinsic_shape_defect(call_node);
 }
@@ -5066,6 +5242,10 @@ static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
 }
 
 static ChimiControl *construct_value(uint32_t symbol, ChimiValue **values);
+static ChimiControl *invoke_clock_host(ChimiRuntime *runtime, ChimiCallable *callable,
+                                       ChimiValue **arguments, uint32_t argument_count,
+                                       uint64_t span, uint32_t call_node,
+                                       ChimiEnvironment *environment);
 
 static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
                             uint32_t argument_count, uint64_t span, uint32_t call_node,
@@ -5081,6 +5261,9 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
   if (callable->kind == CALL_INTRINSIC)
     return invoke_intrinsic(runtime, callable->intrinsic, arguments, argument_count,
                             span, call_node, call_environment);
+  if (callable->kind == CALL_HOST && callable->host >= HOST_CLOCK_NOW)
+    return invoke_clock_host(runtime, callable, arguments, argument_count, span, call_node,
+                             call_environment);
   if (callable->kind == CALL_HOST)
     return invoke_host(runtime, callable->host, arguments, argument_count,
                        span, call_node, call_environment);
@@ -5154,12 +5337,23 @@ static ChimiFiberResult chimi_task_entry(void *raw_context) {
   uint64_t span = context->span;
   RuntimeHeap *heap = heap_create();
   current_heap = heap;
+  uint64_t parent = context->parent;
   void *captures[FRAGMENT_ROOTS];
   fragment_adopt(context->captures, captures);
   free(context);
   ChimiValue *callable = captures[0];
   ChimiControl *control = invoke(runtime, callable->as.callable, NULL, 0, span, UINT32_MAX,
                                  captures[1]);
+  /* Only the parent can read the result (a task handle is parent-local), so the
+     result's exclusive capabilities become the parent's before this task ends
+     and its cleanup would abort them. */
+  if ((control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE) && control->value) {
+    CapabilityTransfer transfer = {.child = parent};
+    if (!transfer_captures(&transfer, control->value))
+      control = transfer.cancelled
+        ? cancelled()
+        : defect("Task could not hand an exclusive capability in its result to its parent", -1);
+  }
   ChimiFiberResult result = child_task_result(control);
   heap_destroy(heap);
   current_heap = NULL;
@@ -5609,6 +5803,12 @@ static void debug_expand(DebugRenderer *renderer, DebugSteps *steps, const Chimi
     }
     /* The registry's render override: the canonical text form. */
     case VALUE_DURATION: duration_text(value->as.integer, scalar); debug_text(buffer, scalar); return;
+    /* An Instant has no text form, so debug shows its offset from the origin. */
+    case VALUE_INSTANT: {
+      char offset[48]; duration_text(value->as.integer, offset);
+      snprintf(scalar, sizeof(scalar), "Instant(%s)", offset); debug_text(buffer, scalar); return;
+    }
+    case VALUE_TIMESTAMP: timestamp_text(value->as.integer, scalar); debug_text(buffer, scalar); return;
     /* Not the `Decimal.to_text` form, which keeps the scale: equal values render the same. */
     case VALUE_DECIMAL: {
       char text[DECIMAL_TEXT_BYTES]; decimal_normalized_text(decimal_of(value), text); debug_text(buffer, text); return;
@@ -5906,8 +6106,9 @@ typedef struct {
 /* The largest peak of live payload bytes of any incarnation's heap. */
 static size_t process_heap_peak_value_bytes;
 
-/* The defect messages of incarnations whose body defected, kept while tracing so
-   the `process_terminated` event that follows can carry them (`defect`). */
+/* The defect messages of incarnations whose body defected, kept until the
+   scheduler reports the incarnation's end (record_process_defect), which
+   follows before any other incarnation of the same body can run. */
 typedef struct { uint64_t incarnation; char *message; } ProcessDefect;
 static ProcessDefect *process_defects;
 static size_t process_defect_count;
@@ -5954,7 +6155,7 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
     case CONTROL_CANCEL: result = (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED}; break;
     case CONTROL_DEFECT:
     case CONTROL_BREAK:
-      if (!runtime->silent) remember_process_defect(control->message);
+      remember_process_defect(control->message);
       result = (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1};
       break;
   }
@@ -6568,6 +6769,249 @@ static ChimiControl *invoke_decimal_operation(ChimiRuntime *runtime, uint32_t in
   return intrinsic_shape_defect(call_node);
 }
 
+/* std/clock and timeouts (time-and-outcomes.md, "Time sources" and "Timeouts and
+   deadlines").
+
+   A `clock` provider bound by `using` sits in CHIMI_CLOCK_REQUIREMENT_SLOT, and every
+   std/clock function reads time through it. With none bound, the runner's execution
+   clock provider answers: the scheduler's real or virtual source. Its methods are
+   HOST_CLOCK_* callables, and referencing the `clock` need builds it as a record, so
+   it can be passed on, for example to `Clock.starting_at`.
+
+   `Task.timeout` and `Task.deadline` read and wait on the execution time source, not
+   on a bound provider: a scope's deadline is a scheduler timer. */
+static ChimiValue *instant_value(int64_t nanoseconds) {
+  ChimiValue *v = new_value(VALUE_INSTANT); v->as.integer = nanoseconds; return v;
+}
+static ChimiValue *timestamp_value(int64_t nanoseconds) {
+  ChimiValue *v = new_value(VALUE_TIMESTAMP); v->as.integer = nanoseconds; return v;
+}
+static ChimiValue *clock_host_value(HostFunction function) {
+  ChimiCallable *callable = allocate(1, sizeof(*callable));
+  allocation_kind(callable, ALLOCATION_CALLABLE);
+  callable->kind = CALL_HOST; callable->host = function; callable->name = "clock";
+  return callable_value(callable);
+}
+/* A Clock record: `now`, `sleep_until`, `timestamp`, in field order. */
+static ChimiValue *clock_record(ChimiValue *now, ChimiValue *sleep_until, ChimiValue *timestamp) {
+  ChimiValue *value = new_value(VALUE_RECORD);
+  value->as.record.length = 3;
+  value->as.record.fields = allocate(3, sizeof(*value->as.record.fields));
+  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
+  value->as.record.fields[0] = (RuntimeField){"now", now};
+  value->as.record.fields[1] = (RuntimeField){"sleep_until", sleep_until};
+  value->as.record.fields[2] = (RuntimeField){"timestamp", timestamp};
+  return value;
+}
+static ChimiValue *execution_clock_value(void) {
+  return clock_record(clock_host_value(HOST_CLOCK_NOW), clock_host_value(HOST_CLOCK_SLEEP_UNTIL),
+                      clock_host_value(HOST_CLOCK_TIMESTAMP));
+}
+
+/* Reads the execution source's now. Reading checks cancellation. NULL on success. */
+static ChimiControl *execution_now(int64_t *now, uint32_t call_node) {
+  ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TIMER_NOW};
+  if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+  if (request.status != CHIMI_RESPONSE_OK) return defect("Clock scheduler request failed", call_node);
+  *now = request.value;
+  return NULL;
+}
+/* Parks until `deadline`; at or before now it returns without parking. */
+static ChimiControl *execution_sleep_until(int64_t deadline, uint32_t call_node) {
+  for (;;) {
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TIMER_SLEEP_UNTIL, .value = deadline};
+    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+    if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
+    if (request.status != CHIMI_RESPONSE_PENDING)
+      return defect("Clock scheduler request failed", call_node);
+  }
+}
+/* Virtual wall time is `--clock-start` plus now, so both advance together; real wall
+   time is the host's. */
+static ChimiControl *execution_timestamp(ChimiRuntime *runtime, uint32_t call_node) {
+  int64_t now;
+  ChimiControl *stopped = execution_now(&now, call_node);
+  if (stopped) return stopped;
+  if (runtime->virtual_clock) {
+    int64_t wall;
+    if (__builtin_add_overflow(runtime->clock_start, now, &wall))
+      return defect("`Clock.timestamp` overflows the Timestamp range", call_node);
+    return success(timestamp_value(wall));
+  }
+  struct timespec host;
+  clock_gettime(CLOCK_REALTIME, &host);
+  return success(timestamp_value((int64_t)host.tv_sec * INT64_C(1000000000) + host.tv_nsec));
+}
+
+static ChimiControl *invoke_clock_host(ChimiRuntime *runtime, ChimiCallable *callable,
+                                       ChimiValue **arguments, uint32_t argument_count,
+                                       uint64_t span, uint32_t call_node,
+                                       ChimiEnvironment *environment) {
+  switch (callable->host) {
+    case HOST_CLOCK_NOW: {
+      int64_t now;
+      ChimiControl *stopped = execution_now(&now, call_node);
+      return stopped ? stopped : success(instant_value(now));
+    }
+    case HOST_CLOCK_TIMESTAMP: return execution_timestamp(runtime, call_node);
+    case HOST_CLOCK_SLEEP_UNTIL:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_INSTANT)
+        return intrinsic_shape_defect(call_node);
+      return execution_sleep_until(arguments[0]->as.integer, call_node);
+    case HOST_CLOCK_SHIFTED_TIMESTAMP: {
+      ChimiControl *now = invoke(runtime, callable->inner, NULL, 0, span, call_node, environment);
+      if (now->kind != CONTROL_SUCCESS) return now;
+      if (now->value->kind != VALUE_INSTANT) return intrinsic_shape_defect(call_node);
+      int64_t wall;
+      if (__builtin_add_overflow(now->value->as.integer, callable->shift, &wall))
+        return defect("`Clock.starting_at` clock's timestamp overflows the Timestamp range", call_node);
+      return success(timestamp_value(wall));
+    }
+    default: return defect("unknown clock host function", call_node);
+  }
+}
+
+/* Calls `method` of the bound clock provider, or of the execution clock. */
+static ChimiControl *clock_method(ChimiRuntime *runtime, ChimiEnvironment *environment,
+                                  const char *method, ChimiValue **arguments,
+                                  uint32_t argument_count, uint64_t span, uint32_t call_node) {
+  ChimiValue *provider = environment->requirements[CHIMI_CLOCK_REQUIREMENT_SLOT];
+  if (!provider) provider = execution_clock_value();
+  ChimiValue *callable = select_value(provider, method);
+  if (!callable || callable->kind != VALUE_CALLABLE)
+    return defect("provider has no callable field", call_node);
+  return invoke(runtime, callable->as.callable, arguments, argument_count, span, call_node, environment);
+}
+
+static ChimiControl *timed_out(int64_t limit, uint32_t call_node) {
+  ChimiValue *fields[] = {duration_value(limit)};
+  ChimiValue *error = standard_value(CHIMI_CONSTRUCTOR_TIMEOUT_TIMED_OUT, fields, 1);
+  return error ? failure(error) : defect("Timeout.TimedOut is missing from the program", call_node);
+}
+
+/* Runs `operation` in a cancellation scope of the calling task that the scheduler
+   fires at `deadline` (time-and-outcomes.md, "Semantics" of timeouts):
+   - A deadline at or before now never starts the operation.
+   - The operation's own outcome stands: success, failure, defect, or a cancellation
+     that is not this scope's (the task's, an enclosing scope's, or shutdown's).
+   - The scope's cancellation becomes `Timeout.TimedOut(limit)` here. The scheduler
+     says whether it is that cancellation when the scope exits; a terminal
+     cancellation exits nothing, because the fiber must not park again. */
+static ChimiControl *run_in_scope(ChimiRuntime *runtime, ChimiValue *operation, int64_t now,
+                                  int64_t deadline, int64_t limit, uint64_t span,
+                                  uint32_t call_node, ChimiEnvironment *environment) {
+  if (deadline <= now) return timed_out(limit, call_node);
+  ChimiSchedulerRequest enter = {.kind = CHIMI_REQUEST_SCOPE_ENTER, .value = deadline};
+  if (scheduler_request(&enter) == CHIMI_FIBER_CANCEL) return cancelled();
+  if (enter.status != CHIMI_RESPONSE_OK) return defect("Task.timeout scheduler request failed", call_node);
+  ChimiControl *control = invoke(runtime, operation->as.callable, NULL, 0, span, call_node, environment);
+  if (control->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()) return control;
+  for (;;) {
+    ChimiSchedulerRequest exit = {.kind = CHIMI_REQUEST_SCOPE_EXIT, .token = enter.token};
+    if (scheduler_request(&exit) == CHIMI_FIBER_CANCEL) return cancelled();
+    if (exit.status == CHIMI_RESPONSE_PENDING) continue;
+    if (exit.status != CHIMI_RESPONSE_OK) return defect("Task.timeout scheduler request failed", call_node);
+    if (control->kind == CONTROL_CANCEL && exit.value == 1) return timed_out(limit, call_node);
+    return control;
+  }
+}
+
+static ChimiControl *invoke_clock(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
+                                  uint32_t argument_count, uint64_t span, uint32_t call_node,
+                                  ChimiEnvironment *environment) {
+#define CLOCK_SHAPE(count, ...) \
+  do { if (argument_count != (count)) return intrinsic_shape_defect(call_node); \
+       ValueKind kinds[] = {__VA_ARGS__}; \
+       for (uint32_t i = 0; i < (count); ++i) \
+         if (arguments[i]->kind != kinds[i]) return intrinsic_shape_defect(call_node); } while (0)
+  int64_t result;
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_CLOCK_NOW:
+      if (argument_count != 0) return intrinsic_shape_defect(call_node);
+      return clock_method(runtime, environment, "now", NULL, 0, span, call_node);
+    case CHIMI_INTRINSIC_CLOCK_TIMESTAMP:
+      if (argument_count != 0) return intrinsic_shape_defect(call_node);
+      return clock_method(runtime, environment, "timestamp", NULL, 0, span, call_node);
+    case CHIMI_INTRINSIC_CLOCK_SLEEP_UNTIL:
+      CLOCK_SHAPE(1, VALUE_INSTANT);
+      return clock_method(runtime, environment, "sleep_until", arguments, 1, span, call_node);
+    case CHIMI_INTRINSIC_CLOCK_SINCE: {
+      CLOCK_SHAPE(1, VALUE_INSTANT);
+      ChimiControl *now = clock_method(runtime, environment, "now", NULL, 0, span, call_node);
+      if (now->kind != CONTROL_SUCCESS) return now;
+      if (now->value->kind != VALUE_INSTANT) return intrinsic_shape_defect(call_node);
+      if (__builtin_sub_overflow(now->value->as.integer, arguments[0]->as.integer, &result))
+        return defect("`Clock.since` overflows the Duration range", call_node);
+      return success(duration_value(result));
+    }
+    case CHIMI_INTRINSIC_CLOCK_ADD:
+      CLOCK_SHAPE(2, VALUE_INSTANT, VALUE_DURATION);
+      if (__builtin_add_overflow(arguments[0]->as.integer, arguments[1]->as.integer, &result))
+        return defect("`Clock.add` overflows the Instant range", call_node);
+      return success(instant_value(result));
+    case CHIMI_INTRINSIC_CLOCK_BETWEEN:
+      CLOCK_SHAPE(2, VALUE_INSTANT, VALUE_INSTANT);
+      if (__builtin_sub_overflow(arguments[1]->as.integer, arguments[0]->as.integer, &result))
+        return defect("`Clock.between` overflows the Duration range", call_node);
+      return success(duration_value(result));
+    case CHIMI_INTRINSIC_CLOCK_TIMESTAMP_TO_TEXT: {
+      CLOCK_SHAPE(1, VALUE_TIMESTAMP);
+      char text[48]; timestamp_text(arguments[0]->as.integer, text);
+      return success(text_value(text));
+    }
+    case CHIMI_INTRINSIC_CLOCK_UNIX_NANOSECONDS:
+      CLOCK_SHAPE(1, VALUE_TIMESTAMP);
+      return success(integer_value(arguments[0]->as.integer));
+    case CHIMI_INTRINSIC_CLOCK_FROM_UNIX_NANOSECONDS:
+      CLOCK_SHAPE(1, VALUE_INTEGER);
+      return success(timestamp_value(arguments[0]->as.integer));
+    case CHIMI_INTRINSIC_CLOCK_TIMESTAMP_BETWEEN:
+      CLOCK_SHAPE(2, VALUE_TIMESTAMP, VALUE_TIMESTAMP);
+      if (__builtin_sub_overflow(arguments[1]->as.integer, arguments[0]->as.integer, &result))
+        return defect("`Clock.timestamp_between` overflows the Duration range", call_node);
+      return success(duration_value(result));
+    case CHIMI_INTRINSIC_CLOCK_STARTING_AT: {
+      CLOCK_SHAPE(2, VALUE_RECORD, VALUE_TIMESTAMP);
+      ChimiValue *now = select_value(arguments[0], "now");
+      ChimiValue *sleep_until = select_value(arguments[0], "sleep_until");
+      if (!now || now->kind != VALUE_CALLABLE || !sleep_until)
+        return defect("provider has no callable field", call_node);
+      ChimiControl *started = invoke(runtime, now->as.callable, NULL, 0, span, call_node, environment);
+      if (started->kind != CONTROL_SUCCESS) return started;
+      if (started->value->kind != VALUE_INSTANT) return intrinsic_shape_defect(call_node);
+      int64_t shift;
+      if (__builtin_sub_overflow(arguments[1]->as.integer, started->value->as.integer, &shift))
+        return defect("`Clock.starting_at` overflows the Timestamp range", call_node);
+      ChimiValue *timestamp = clock_host_value(HOST_CLOCK_SHIFTED_TIMESTAMP);
+      timestamp->as.callable->inner = now->as.callable;
+      timestamp->as.callable->shift = shift;
+      return success(clock_record(now, sleep_until, timestamp));
+    }
+    case CHIMI_INTRINSIC_TASK_TIMEOUT:
+    case CHIMI_INTRINSIC_TASK_DEADLINE: {
+      bool timeout = intrinsic == CHIMI_INTRINSIC_TASK_TIMEOUT;
+      CLOCK_SHAPE(2, VALUE_CALLABLE, timeout ? VALUE_DURATION : VALUE_INSTANT);
+      int64_t now, deadline, limit;
+      ChimiControl *stopped = execution_now(&now, call_node);
+      if (stopped) return stopped;
+      if (timeout) {
+        limit = arguments[1]->as.integer;
+        if (__builtin_add_overflow(now, limit, &deadline)) {
+          char text[32]; duration_text(limit, text);
+          return defect(numeric_message("`Task.timeout(%s)` overflows the Instant range", text), call_node);
+        }
+      } else {
+        deadline = arguments[1]->as.integer;
+        if (__builtin_sub_overflow(deadline, now, &limit))
+          return defect("`Task.deadline` is too far from now for a Duration", call_node);
+      }
+      return run_in_scope(runtime, arguments[0], now, deadline, limit, span, call_node, environment);
+    }
+  }
+#undef CLOCK_SHAPE
+  return defect("unknown standard intrinsic", call_node);
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
@@ -6581,12 +7025,14 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_json_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DECIMAL_SCALED && intrinsic <= CHIMI_INTRINSIC_DECIMAL_TO_FLOAT)
     return invoke_decimal_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_BYTES_INT_BYTES)
+  if (intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_EMBED_BYTES)
     return invoke_bytes_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
     return invoke_process(runtime, intrinsic, arguments, argument_count, call_node);
+  if (intrinsic >= CHIMI_INTRINSIC_CLOCK_NOW && intrinsic <= CHIMI_INTRINSIC_TASK_DEADLINE)
+    return invoke_clock(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DEBUG_CRASH && intrinsic <= CHIMI_INTRINSIC_LIST_SET)
     return invoke_core_operation(intrinsic, arguments, argument_count, call_node);
   switch (intrinsic) {
@@ -6756,7 +7202,9 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       }
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
       /* The child has not run yet: it adopts the fragment when it first runs, so the
-         transfer below rewrites the capabilities in the child's copy. */
+         transfer below rewrites the capabilities in the child's copy, and the
+         context is still the child's to read. */
+      context->parent = request.owner;
       CapabilityTransfer transfer = {.child = request.task};
       bool transferred = transfer_captures(&transfer, captures->roots[0]);
       if (!transferred) {
@@ -6824,12 +7272,21 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       RuntimeFragment *message = NULL;
       if (fragment_copy(roots, kinds, 1, &message) != HEAP_OK)
         return defect(FOREIGN_POINTER_DEFECT, call_node);
+      /* Receivers and Completions in the message travel with it: the scheduler
+         puts them in flight, and the message's copies take the in-flight token
+         before anything can receive them. */
+      CapabilityTransfer carried = {.collect = true};
+      transfer_captures(&carried, message->roots[0]);
+      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
+      bool first = true;
       for (;;) {
         ChimiSchedulerRequest request = {
           .kind = CHIMI_REQUEST_CHANNEL_SEND,
           .channel = arguments[0]->as.capability.channel,
           .value = (int64_t)(intptr_t)message,
+          .context = first && capabilities.count ? &capabilities : NULL,
         };
+        first = false;
         ChimiFiberCommand command = scheduler_request(&request);
         /* The scheduler takes the message on OK or PENDING and hands it back on
            CLOSED or ABORTED; any other reply leaves it with the sender. Either way
@@ -6840,6 +7297,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                         request.status == CHIMI_RESPONSE_ABORTED;
         if (returned) fragment_free((RuntimeFragment *)(intptr_t)request.value);
         else if (!taken) fragment_free(message);
+        free(carried.carried);
+        carried.carried = NULL;
         if (command == CHIMI_FIBER_CANCEL) return cancelled();
         if (request.status == CHIMI_RESPONSE_PENDING) continue;
         if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
@@ -6904,6 +7363,21 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
          parking (time-and-outcomes.md, "The Clock capability"). */
       if (argument_count != 1 || arguments[0]->kind != VALUE_DURATION)
         return intrinsic_shape_defect(call_node);
+      if (environment->requirements[CHIMI_CLOCK_REQUIREMENT_SLOT]) {
+        /* A bound provider: `sleep_until(add(now(), d))` through its methods. */
+        ChimiControl *read = clock_method(runtime, environment, "now", NULL, 0, span, call_node);
+        if (read->kind != CONTROL_SUCCESS) return read;
+        if (read->value->kind != VALUE_INSTANT) return intrinsic_shape_defect(call_node);
+        int64_t until;
+        if (__builtin_add_overflow(read->value->as.integer, arguments[0]->as.integer, &until)) {
+          char duration[32];
+          duration_text(arguments[0]->as.integer, duration);
+          return defect(numeric_message("`Clock.sleep(%s)` overflows the Instant range", duration),
+                        call_node);
+        }
+        ChimiValue *at[] = {instant_value(until)};
+        return clock_method(runtime, environment, "sleep_until", at, 1, span, call_node);
+      }
       ChimiSchedulerRequest now = {.kind = CHIMI_REQUEST_TIMER_NOW};
       if (scheduler_request(&now) == CHIMI_FIBER_CANCEL) return cancelled();
       if (now.status != CHIMI_RESPONSE_OK)
@@ -6961,6 +7435,8 @@ static void bind_constant_requirements(ChimiEnvironment *environment, const uint
       if (CHIMI_SYMBOLS[symbol].kind == CHIMI_SYMBOL_REQUIREMENT &&
           strcmp(CHIMI_STRINGS[CHIMI_SYMBOLS[symbol].name], name) == 0)
         environment->requirements[CHIMI_SYMBOLS[symbol].environment_slot] = constant_values[pairs[2 * i + 1]];
+    if (strcmp(name, "clock") == 0)
+      environment->requirements[CHIMI_CLOCK_REQUIREMENT_SLOT] = constant_values[pairs[2 * i + 1]];
   }
 }
 
@@ -7093,6 +7569,8 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
     case CHIMI_SYMBOL_REQUIREMENT:
       if (environment->requirements[shape->environment_slot])
         return success(environment->requirements[shape->environment_slot]);
+      /* The runner closes `clock: Clock` with the execution clock provider. */
+      if (strcmp(CHIMI_STRINGS[shape->name], "clock") == 0) return success(execution_clock_value());
       return defect("closed core has no provider", -1);
     case CHIMI_SYMBOL_LOCAL:
       if (environment->locals[shape->environment_slot])
@@ -7160,6 +7638,8 @@ NODE_WRAPPER(dependency_method, "dependency_method", {
       inner->host = HOST_WRITE_LINE;
     else if (standard_type == CHIMI_TYPE_CONSOLE && node->c == 1)
       inner->host = HOST_WRITE_ERROR;
+    else if (standard_type == CHIMI_TYPE_CLOCK && node->c <= 2)
+      inner->host = node->c == 0 ? HOST_CLOCK_NOW : node->c == 1 ? HOST_CLOCK_TIMESTAMP : HOST_CLOCK_SLEEP_UNTIL;
     else { result = defect("closed core has no provider", node_id); break; }
   } else {
     ChimiValue *method = select_value(provider, CHIMI_STRINGS[node->d]);
@@ -7312,17 +7792,23 @@ NODE_WRAPPER(provision, "provision", {
       if (CHIMI_SYMBOLS[symbol].kind == CHIMI_SYMBOL_REQUIREMENT &&
           strcmp(CHIMI_STRINGS[CHIMI_SYMBOLS[symbol].name], name) == 0)
         environment->requirements[CHIMI_SYMBOLS[symbol].environment_slot] = control->value;
+    if (strcmp(name, "clock") == 0) environment->requirements[CHIMI_CLOCK_REQUIREMENT_SLOT] = control->value;
   } if (!stopped) result = RUN(node->a);
 })
 
 NODE_WRAPPER(sequence, "sequence", {
+  /* The locals are cloned at the first binding step, so a block that binds nothing
+     (a loop body such as `{ case ... }`) allocates no environment. Steps before that
+     one read the incoming locals, which the clone would have copied unchanged. */
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *last = NULL; bool stopped = false;
-  environment = clone_local_environment(incoming);
   for (uint32_t i = 0; i < node->length; ++i) {
     const ChimiStep *step = &CHIMI_STEPS[node->offset + i]; ChimiControl *control = RUN(step->node);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
     last = control->value;
-    if (step->kind == 0) environment->locals[environment_slot(step->symbol)] = last;
+    if (step->kind == 0) {
+      if (environment == incoming) environment = clone_local_environment(incoming);
+      environment->locals[environment_slot(step->symbol)] = last;
+    }
   } if (!stopped) result = success(last);
 })
 
@@ -7418,7 +7904,12 @@ static bool pattern_binds(uint32_t pattern_id) {
 }
 
 NODE_WRAPPER(match, "match", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; MatchValue *values = allocate(node->length, sizeof(*values)); bool stopped = false;
+  /* Most matches have one or two subjects, so their values live on the C stack. */
+  enum { MATCH_STACK_SUBJECTS = 8 };
+  const ChimiNode *node = &CHIMI_NODES[node_id]; MatchValue stack_values[MATCH_STACK_SUBJECTS];
+  MatchValue *values = node->length <= MATCH_STACK_SUBJECTS ? stack_values
+                                                              : allocate(node->length, sizeof(*values));
+  bool stopped = false;
   for (uint32_t subject = 0; subject < node->length; ++subject) {
     bool contextual = false;
     for (uint32_t arm_index = 0; arm_index < node->b; ++arm_index) {
@@ -7483,8 +7974,18 @@ NODE_WRAPPER(loop, "loop", {
   ChimiValue *state = initial->value;
   AllocationScope passes;
   allocation_scope_begin(&passes);
+  uint32_t polls = 0;
   for (;;) {
     if (runtime->cancel) { result = cancelled(); break; }
+    if (CHIMI_REQUIRES_SCHEDULER &&
+        (chimi_fiber_scope_cancel_pending() ||
+         (chimi_fiber_scope_polls() && (++polls & 1023u) == 0))) {
+      /* A fired timeout scope, or one whose real-clock deadline may have
+         passed while this loop never parked: a loop pass is a cancellation
+         point. */
+      ChimiSchedulerRequest check = {.kind = CHIMI_REQUEST_SCOPE_CHECK};
+      if (scheduler_request(&check) == CHIMI_FIBER_CANCEL) { result = cancelled(); break; }
+    }
     environment->locals[state_slot] = state;
     ChimiControl *pass = RUN(node->c);
     if (pass->kind == CONTROL_SUCCESS) {
@@ -7620,7 +8121,7 @@ static const char *scheduler_event_name(const ChimiSchedulerTraceEvent *event) {
     return task_names[event->kind - 1];
   static const char *clock_names[] = {
     "clock_advanced", "clock_timer_started", "clock_timer_fired",
-    "clock_timer_cancelled", "clock_deadlock_waiter",
+    "clock_timer_cancelled", "clock_deadlock_waiter", "clock_scope_fired",
   };
   if (event->family == CHIMI_SCHEDULER_TRACE_CHANNEL &&
       event->kind > 0 && event->kind <= sizeof(channel_names) / sizeof(*channel_names))
@@ -7664,7 +8165,8 @@ static const char *process_cause_word(const ChimiSchedulerTraceEvent *event) {
 /* The process family's fields (supervised-process-conformance.md, "Runner telemetry
    for process and clock events"): identities at the top level, the rest in
    `attributes`, a field the kind does not set as null. */
-static void emit_process_fields(FILE *output, const ChimiSchedulerTraceEvent *event, bool attributes) {
+static void emit_process_fields(const ChimiRuntime *runtime, FILE *output,
+                                const ChimiSchedulerTraceEvent *event, bool attributes) {
   if (!attributes) {
     json_identity(output, "supervisor_id", event->supervisor);
     json_identity(output, "membership_id", event->membership);
@@ -7684,17 +8186,13 @@ static void emit_process_fields(FILE *output, const ChimiSchedulerTraceEvent *ev
   fprintf(output, ",\"attempts_in_window\":%" PRIu64, event->attempts_in_window);
   /* `defect`: why a defected incarnation ended. A stack overflow ends the body
      without returning, so the scheduler reports it (CHIMI_PROCESS_DEFECT_*). */
-  char *defect = NULL;
   const char *named = NULL;
   if (event->kind == CHIMI_PROCESS_TRACE_TERMINATED && event->cause == CHIMI_PROCESS_CAUSE_DEFECTED) {
     if (event->outcome == CHIMI_PROCESS_DEFECT_STACK_OVERFLOW) named = "Process stack overflow";
-#if CHIMI_PROCESS_KERNEL
-    defect = take_process_defect(event->incarnation);
-    if (!named) named = defect;
-#endif
+    if (!named && runtime->last_defect_incarnation == event->incarnation)
+      named = runtime->last_defect_message;
   }
   json_word(output, "defect", named);
-  free(defect);
 }
 
 static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *event) {
@@ -7720,7 +8218,7 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
   else fprintf(output, "%" PRIu64, event->cause);
   fputs(",\"channel_id\":", output);
   if (event->channel == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->channel);
-  if (process) emit_process_fields(output, event, false);
+  if (process) emit_process_fields(runtime, output, event, false);
   fprintf(output,
           ",\"attributes\":{\"scheduler_sequence\":%" PRIu64
           ",\"capacity\":%" PRIu64 ",\"queue_depth\":%" PRIu64
@@ -7730,7 +8228,7 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
   if (clock)
     fprintf(output, ",\"time_ns\":%" PRId64 ",\"request_kind\":%" PRIu64,
             event->time, event->cause);
-  if (process) emit_process_fields(output, event, true);
+  if (process) emit_process_fields(runtime, output, event, true);
   fputs("}}\n", output);
 }
 
@@ -7806,6 +8304,14 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
                  PRIu64 " in %s: %s", violation->task, capability_name(violation->capability),
                  violation->channel, channel_operation(violation->request_kind), holder);
       break;
+    case CHIMI_VIOLATION_IN_FLIGHT:
+      snprintf(text, sizeof(text),
+               "channel capability violation: task %" PRIu64 " cannot %s the %s of channel %" PRIu64
+               "%s%s: this copy is stale; the capability was sent in a message no task has "
+               "received yet", violation->task, transfer ? "hand" : "use",
+               capability_name(violation->capability), violation->channel,
+               transfer ? "" : " in ", transfer ? "" : channel_operation(violation->request_kind));
+      break;
     case CHIMI_VIOLATION_OVERLAPPING_OPERATION:
       snprintf(text, sizeof(text),
                "channel capability violation: task %" PRIu64
@@ -7860,6 +8366,44 @@ static void record_deadlock(void *context, const ChimiDeadlockWaiter *waiters, s
   runtime->deadlock_waiters = message;
 }
 
+#if CHIMI_PROCESS_KERNEL
+/* Keeps the latest defected incarnation and its message: the body's own defect,
+   remembered when it ended, or a stack overflow the scheduler saw. */
+static void record_process_defect(void *context, const ChimiProcessTermination *termination) {
+  ChimiRuntime *runtime = context;
+  char *message = take_process_defect(termination->incarnation);
+  if (termination->stack_overflow) {
+    free(message);
+    message = strdup("Process stack overflow");
+    if (!message) exhausted_memory();
+  }
+  free(runtime->last_defect_message);
+  runtime->last_defect_message = message;
+  runtime->last_defect_incarnation = termination->incarnation;
+  runtime->last_defect_membership = termination->membership;
+  ++runtime->process_defect_count;
+}
+#endif
+
+/* `message`, followed by the latest process defect when one happened: a root that
+   cannot finish is often waiting on a process that defected, and with tracing off
+   nothing else says so. The result belongs to the defect it is passed to. */
+static const char *with_process_defect(ChimiRuntime *runtime, const char *message) {
+  if (!runtime->process_defect_count) return message;
+  const char *defect = runtime->last_defect_message ? runtime->last_defect_message : "defect";
+  char count[64] = "";
+  if (runtime->process_defect_count > 1)
+    snprintf(count, sizeof(count), " (the last of %" PRIu64 " process defects)",
+             runtime->process_defect_count);
+  size_t capacity = strlen(message) + strlen(defect) + 160;
+  char *combined = malloc(capacity);
+  if (!combined) exhausted_memory();
+  snprintf(combined, capacity, "%s; process incarnation %" PRIu64 " of membership %" PRIu64
+           " defected%s: %s", message, runtime->last_defect_incarnation,
+           runtime->last_defect_membership, count, defect);
+  return combined;
+}
+
 static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn entry,
                                            ChimiEnvironment *environment) {
   if (!CHIMI_REQUIRES_SCHEDULER) return entry(runtime, environment, 1);
@@ -7884,6 +8428,10 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .deadlock_context = runtime,
     .capability_violation_report = record_capability_violation,
     .capability_violation_context = runtime,
+#if CHIMI_PROCESS_KERNEL
+    .process_defect_report = record_process_defect,
+    .process_defect_context = runtime,
+#endif
     .release_task_value = release_task_word,
     .release_channel_value = release_channel_word,
     .release_task_context = release_task_context,
@@ -7913,7 +8461,7 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     return task_reply(outcome.defect_code);
   if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code == CHIMI_SCHEDULER_DEFECT_DEADLOCK &&
       runtime->deadlock_waiters)
-    return defect(runtime->deadlock_waiters, -1);
+    return defect(with_process_defect(runtime, runtime->deadlock_waiters), -1);
   const char *violation = outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0
     ? capability_violation_of(runtime, outcome.origin) : NULL;
   if (violation) return defect(violation, -1);
@@ -7928,8 +8476,10 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
      deadlock as before, leaving the suspended tasks to process exit. */
   if (outcome.state == CHIMI_FIBER_PARKED ||
       (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0))
-    return defect("Task scheduler defected: the root task could not finish, "
-                  "because every task is parked (deadlock) or the scheduler failed", -1);
+    return defect(with_process_defect(runtime,
+                                      "Task scheduler defected: the root task could not finish, "
+                                      "because every task is parked (deadlock) or the scheduler failed"),
+                  -1);
   if (outcome.state == CHIMI_FIBER_STACK_OVERFLOW)
     return defect("Task stack overflow", -1);
   return defect("Task scheduler failed to produce a terminal root", -1);
@@ -7949,6 +8499,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     .next_span = 2,
   };
   uint32_t benchmark_repeats = 0;
+  bool clock_start_given = false;
   const char *telemetry_path = NULL;
   const char *outcome_path = NULL;
   const char *memory_report_path = NULL;
@@ -7973,6 +8524,14 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = true;
     else if (strcmp(argv[index], "--clock=real") == 0) runtime.virtual_clock = false;
     else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;
+    else if (strncmp(argv[index], "--clock-start=", 14) == 0) {
+      if (!parse_timestamp(argv[index] + 14, &runtime.clock_start)) {
+        fputs("--clock-start requires an RFC 3339 timestamp from 1678 through 2262, "
+              "such as 2026-11-10T09:30:00Z\n", stderr);
+        return 64;
+      }
+      clock_start_given = true;
+    }
     else if (strncmp(argv[index], "--max-line-bytes=", 17) == 0) {
       errno = 0;
       char *end = NULL;
@@ -7990,6 +8549,10 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     }
     if (!found_boundary) {
       fputs("Chimi runner configuration must end with --\n", stderr);
+      return 64;
+    }
+    if (clock_start_given && !runtime.virtual_clock) {
+      fputs("--clock-start requires --clock=virtual; the real clock reads the host's wall time\n", stderr);
       return 64;
     }
   }

@@ -193,6 +193,29 @@ linearization follow [bounded channel semantics](../research/channel-semantics.m
 Channel operations add no effect row. `send` and `receive` may park and tooling
 may expose that compiler-private execution property.
 
+### Handing a capability back
+
+Ownership of a Receiver or Completion follows the value that holds it, on the
+native runtime (ts-f4e749):
+
+- **Sent through a channel.** When the channel accepts or parks the send, every
+  exclusive capability in the message is in flight: no task owns it, and the
+  sender's own copies are stale. The task that receives the message owns them.
+  A refused send (`SendError.Closed(value)` or `Aborted(value)`) gives them
+  back to the sender, whose copies work again. A message discarded unread (its
+  channel aborted or released while it was queued, or its parked send
+  cancelled) ends them as an owner's exit would: an open Receiver or
+  Completion aborts its channel.
+- **Returned as `Task.result`.** A child's success or failure value hands its
+  exclusive capabilities to the task that started it before the child ends,
+  so the child's cleanup leaves them open. Only that task can read the result,
+  because a task handle is parent-local. A parent that never reads the result
+  still owns them, and its own exit cleans them up.
+
+`Channel.SendError<T>` has the concurrent properties of `T`, as
+`Channel.Receive<T>` does, so the checker treats a refused exclusive value as
+exclusive (ts-f704d3).
+
 ## Owner exit and automatic cleanup
 
 The runtime tracks children and exclusive capabilities as part of task
@@ -289,10 +312,16 @@ Checked at run time (native, by the owner token):
 - any of these after the task that was handed the capability has ended: its
   cleanup aborted the channel and dropped the capability, so the stale copy
   still defects, and the message says the owner ended instead of naming one;
-- a stale copy that reaches the task that owns the capability (a duplicate
-  sent to the child that captured the other copy): the owner's use of the
-  stale copy defects, and the message says this copy is stale and that task
-  owns the capability (it may already have closed or aborted the current copy).
+- a stale copy sent in a message (a duplicate sent to the child that captured
+  the other copy): the send defects the sender, naming the owner, because a
+  sent capability travels with its message (see
+  [hand-back](#handing-a-capability-back));
+- a stale copy used by the task that owns the capability: the use defects,
+  and the message says this copy is stale and that task owns the capability
+  (it may already have closed or aborted the current copy);
+- the sender's own copy of a capability it sent, while the message waits to
+  be received: the use defects, and the message says the capability was sent
+  in a message no task has received yet.
 
 The defect names the capability, the task that broke the contract, and the task
 that owns the capability, for example
@@ -307,18 +336,9 @@ Not yet covered:
 
 - the interpreter has no bounded-channel runtime (`Channel.bounded` defects with
   "requires the bounded Channel runtime"), so these routes run natively only;
-- a Receiver or Completion sent through a channel keeps its sender as owner in
-  the native runtime: the task that receives it defects on first use, even when
-  the sender has not touched it since (a legitimate hand-off fails), and a
-  sender that keeps using it after the send is not the one that defects;
-  a child that ends after sending it, or that returns it as its `Task.result`,
-  aborts the channel in its cleanup, so the task that receives it holds a
-  Receiver of an aborted channel (a later `Channel.send` on it fails with
-  `SendError.Aborted`). Ownership moves only when `Task.start` captures a
-  capability, so making it follow a hand-back needs a new transfer protocol
-  (ts-f4e749);
-- `Channel.SendError<T>` is shareable whatever `T` is, so the payload handed
-  back by `Closed(value)` or `Aborted(value)` is not exclusive to the checker;
+- a Receiver or Completion sent in a `Process.send` message keeps its sender
+  as owner: the incarnation that receives it defects on first use. Inbox
+  delivery does not yet follow the channel hand-back rule below (CHI-213);
 - a violation emits no dedicated trace event; the trace shows only the
   defected task's cancellation and terminal events.
 

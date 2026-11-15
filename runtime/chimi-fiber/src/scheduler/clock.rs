@@ -118,6 +118,8 @@ pub(super) enum TimerTarget {
     Wake(TaskId),
     /// Forces an incarnation whose cleanup has not finished by its deadline.
     ShutdownDeadline(IncarnationId),
+    /// Fires a task's cancellation scope.
+    ScopeDeadline(TaskId, super::ScopeId),
 }
 
 #[derive(Default)]

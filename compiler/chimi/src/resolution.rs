@@ -631,6 +631,9 @@ impl ProjectResolver {
                 StandardModule::Supervisor,
             ),
             (StandardType::Clock, StandardModule::Clock),
+            (StandardType::Instant, StandardModule::Clock),
+            (StandardType::Timestamp, StandardModule::Clock),
+            (StandardType::Timeout, StandardModule::Task),
         ] {
             if self.declared_in_source(StandardSymbol::Type(kind)) {
                 continue;
@@ -825,6 +828,18 @@ impl ProjectResolver {
         ]
         .into_iter()
         .chain(self.process_callable_parameters())
+        .chain([StandardFunction::TaskTimeout, StandardFunction::TaskDeadline].map(
+            |function| {
+                (
+                    self.standard_function_symbol(function),
+                    vec![
+                        StandardGeneric::TimeoutValue,
+                        StandardGeneric::TimeoutFailures,
+                        StandardGeneric::TimeoutNeeds,
+                    ],
+                )
+            },
+        ))
         {
             self.standard_callable_parameters.insert(
                 callable,

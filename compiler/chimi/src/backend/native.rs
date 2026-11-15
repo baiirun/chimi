@@ -8,7 +8,6 @@ use super::runtime_archive_key::{
 use crate::executable::{CoreOperation, CoreProgram};
 use crate::json::write_json_string;
 use crate::semantic::{BinaryOperator, UnaryOperator};
-use crate::standard::StandardSymbol;
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     AbiParam, Function, InstBuilder, Signature, UserFuncName, Value, types,
@@ -29,7 +28,7 @@ const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
 const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
 const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
 const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v5-process-kernel";
-const RUNTIME_ABI_VERSION: u32 = 22;
+const RUNTIME_ABI_VERSION: u32 = 23;
 const FIBER_RUNTIME_ABI_VERSION: u32 = chimi_fiber::ABI_VERSION;
 static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -437,15 +436,9 @@ pub(crate) fn bundled_fiber_archive() -> Result<PathBuf, String> {
 }
 
 fn requires_fiber_runtime(core: &CoreProgram) -> bool {
-    core.nodes.iter().any(|node| {
-        let CoreOperation::Reference(symbol) = node.operation else {
-            return false;
-        };
-        matches!(
-            core.symbol(symbol).standard,
-            Some(StandardSymbol::Function(function)) if function.requires_scheduler()
-        )
-    })
+    core.nodes
+        .iter()
+        .any(|node| super::program_data::reaches_scheduler(core, &node.operation))
 }
 
 fn run(command: &mut Command, operation: &str) -> Result<(), String> {

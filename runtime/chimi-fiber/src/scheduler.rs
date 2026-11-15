@@ -8,13 +8,15 @@ mod process_abi;
 mod process_tests;
 #[cfg(test)]
 mod release_tests;
+mod scope;
 
 pub use self::clock::{ClockMode, Instant, TimerId};
+pub use self::scope::{ScopeExit, ScopeId, chimi_fiber_cancel_is_terminal, chimi_fiber_scope_cancel_pending};
 pub use self::process::{
-    Address, IncarnationId, Member, MembershipId, MessageRelease, NameId, Policy, PolicyError,
-    ProcessError, ProcessEvent, ProcessEventKind, ProcessMetrics, ProcessSpec, Progress, Restart,
-    Restarts, SendFailure, SendOutcome, SendRejected, SpecContextRelease, StartError,
-    SupervisorId, SupervisorState, TerminalCause,
+    Address, ChimiProcessTermination, IncarnationId, Member, MembershipId, MessageRelease, NameId,
+    Policy, PolicyError, ProcessDefectReport, ProcessError, ProcessEvent, ProcessEventKind,
+    ProcessMetrics, ProcessSpec, Progress, Restart, Restarts, SendFailure, SendOutcome,
+    SendRejected, SpecContextRelease, StartError, SupervisorId, SupervisorState, TerminalCause,
 };
 pub use self::process_abi::{
     ChimiDeadlockWaiter, ChimiProcessRequest, ChimiProcessSpec, ChimiSchedulerConfig,
@@ -23,8 +25,8 @@ pub use self::process_abi::{
 use self::clock::{Clock, TimerQueue, TimerTarget};
 use self::process::ProcessKernel;
 pub use crate::channel::{
-    ChannelCapabilities, ChannelError, ChannelEventKind, ChannelId, ChannelMetrics, Completion,
-    ReceiveResult, Receiver, SendResult, Sender,
+    CapabilityKind, Carried, ChannelCapabilities, ChannelError, ChannelEventKind, ChannelId,
+    ChannelMetrics, Completion, ReceiveResult, Receiver, SendResult, Sender,
 };
 use crate::channel::{ChannelRegistry, Observation, Transition};
 use crate::{
@@ -65,6 +67,16 @@ pub const REQUEST_SUPERVISOR_WAIT: u32 = 21;
 pub const REQUEST_SUPERVISOR_START_SUPERVISOR: u32 = 22;
 pub const REQUEST_SUPERVISOR_REMOVE_SUPERVISOR: u32 = 23;
 pub const REQUEST_CHANNEL_RELEASE: u32 = 24;
+/// Enters a cancellation scope: `value` is its deadline; the reply's `token`
+/// is the scope id. A cancellation point.
+pub const REQUEST_SCOPE_ENTER: u32 = 25;
+/// Leaves the scope whose id is `token`; the reply's `value` is 1 when that
+/// scope's cancellation is the one unwinding the task. PENDING while children
+/// it cancelled drain. Never a cancellation point.
+pub const REQUEST_SCOPE_EXIT: u32 = 26;
+/// A loop pass's cancellation point: answered OK, or with a pending scope
+/// cancellation.
+pub const REQUEST_SCOPE_CHECK: u32 = 27;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -187,6 +199,7 @@ pub const VIOLATION_OVERLAPPING_OPERATION: u32 = 2;
 pub const VIOLATION_PENDING_OPERATION: u32 = 3;
 pub const VIOLATION_UNKNOWN_CHANNEL: u32 = 4;
 pub const VIOLATION_CHANNEL_STILL_LIVE: u32 = 5;
+pub const VIOLATION_IN_FLIGHT: u32 = 6;
 pub const CAPABILITY_NONE: u32 = 0;
 pub const CAPABILITY_RECEIVER: u32 = 1;
 pub const CAPABILITY_COMPLETION: u32 = 2;
@@ -248,6 +261,15 @@ impl ChimiCapabilityViolation {
             ChannelError::ChannelStillLive(channel) => (
                 VIOLATION_CHANNEL_STILL_LIVE,
                 CAPABILITY_NONE,
+                Some(channel),
+                None,
+            ),
+            ChannelError::CapabilityInFlight { channel, kind } => (
+                VIOLATION_IN_FLIGHT,
+                match kind {
+                    CapabilityKind::Receiver => CAPABILITY_RECEIVER,
+                    CapabilityKind::Completion => CAPABILITY_COMPLETION,
+                },
                 Some(channel),
                 None,
             ),
@@ -385,7 +407,12 @@ impl OwnedFiber {
         Ok(Self(pointer))
     }
 
-    fn resume(&mut self, command: ChimiFiberCommand) -> ChimiFiberEvent {
+    fn resume(
+        &mut self,
+        command: ChimiFiberCommand,
+        context: scope::ResumeContext,
+    ) -> ChimiFiberEvent {
+        scope::set_resume_context(context);
         unsafe { chimi_fiber_resume(self.0.as_ptr(), command as u32) }
     }
 }
@@ -420,6 +447,10 @@ struct Task {
     entry_context: *mut c_void,
     /// The sleep timer this task is parked on.
     timer: Option<TimerId>,
+    /// The cancellation scopes the task is inside, innermost last.
+    scopes: Vec<scope::Scope>,
+    /// The parent's innermost scope when this task was started.
+    started_in_scope: Option<ScopeId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -431,6 +462,8 @@ pub enum ClockEventKind {
     TimerCancelled,
     /// One parked task in a detected deadlock. A boundary event.
     DeadlockWaiter,
+    /// A cancellation scope's deadline passed. A boundary event.
+    ScopeFired,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -551,6 +584,7 @@ pub struct Scheduler {
     /// `release_task_value` is set. `Task.result` copies a value without
     /// consuming it, so every one stays until the scheduler is dropped.
     task_values: BTreeMap<TaskId, TaskValue>,
+    next_scope: u64,
 }
 
 impl Drop for Scheduler {
@@ -616,6 +650,7 @@ impl Scheduler {
             capability_violation_report: capability_violation_report
                 .map(|report| (report, violation_context)),
             task_values: BTreeMap::new(),
+            next_scope: 0,
         }
     }
 
@@ -670,7 +705,7 @@ impl Scheduler {
             return false;
         };
         let task = match target {
-            TimerTarget::Wake(task) => Some(task),
+            TimerTarget::Wake(task) | TimerTarget::ScopeDeadline(task, _) => Some(task),
             TimerTarget::ShutdownDeadline(_) => None,
         };
         let now = self.clock.now();
@@ -763,6 +798,10 @@ impl Scheduler {
                 TimerTarget::ShutdownDeadline(incarnation) => {
                     self.emit_timer(ClockEventKind::TimerFired, None, deadline);
                     self.force(incarnation);
+                }
+                TimerTarget::ScopeDeadline(task, scope) => {
+                    self.emit_timer(ClockEventKind::TimerFired, Some(task), deadline);
+                    self.fire_scope(task, scope, true);
                 }
             }
         }
@@ -949,8 +988,20 @@ impl Scheduler {
         sender: Sender,
         value: usize,
     ) -> Result<SendResult, SchedulerError> {
+        self.channel_send_carrying(task, sender, value, &[])
+    }
+
+    /// `channel_send` of a value that holds `carried`, `task`'s exclusive
+    /// capabilities (`ChannelRegistry::send_carrying`).
+    pub fn channel_send_carrying(
+        &mut self,
+        task: TaskId,
+        sender: Sender,
+        value: usize,
+        carried: &[Carried],
+    ) -> Result<SendResult, SchedulerError> {
         self.require_parked_task(task)?;
-        match self.channels.send(task, sender, value) {
+        match self.channels.send_carrying(task, sender, value, carried) {
             Ok((result, transition)) => {
                 self.apply_channel_transition(transition);
                 Ok(result)
@@ -1257,6 +1308,10 @@ impl Scheduler {
                 ran: false,
                 entry_context: std::ptr::null_mut(),
                 timer: None,
+                scopes: Vec::new(),
+                started_in_scope: parent.and_then(|parent| {
+                    self.tasks[&parent].scopes.last().map(|entry| entry.id)
+                }),
             },
         );
         if let Some(parent) = parent {
@@ -1283,11 +1338,23 @@ impl Scheduler {
         record.request = std::ptr::null_mut();
         record.ran = true;
         record.entry_context = std::ptr::null_mut();
-        let event = record
+        let context = scope::ResumeContext {
+            // A forced incarnation is abandoned at its next park, so its
+            // unwind must issue no request either, scope exits included.
+            terminal: command == ChimiFiberCommand::Cancel
+                && self.tasks[&task].process.is_some()
+                && self.is_forced(task),
+            scope_pending: self.scope_cancel_pending(task),
+            polls: self.polls_scope_deadlines(task),
+        };
+        let event = self
+            .tasks
+            .get_mut(&task)
+            .expect("running task")
             .fiber
             .as_mut()
             .expect("runnable task owns a fiber")
-            .resume(command);
+            .resume(command, context);
         if event.state == ChimiFiberState::Parked as u32 {
             let record = self.tasks.get_mut(&task).expect("running task");
             record.phase = TaskPhase::Parked;
@@ -1341,6 +1408,10 @@ impl Scheduler {
         if process && self.park_lingers(owner, kind) {
             return;
         }
+        self.poll_scope_deadlines(owner);
+        if self.refuse_for_scope(owner, kind) {
+            return;
+        }
         if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_REMOVE_SUPERVISOR).contains(&kind) {
             self.handle_process_request(owner, request.cast());
         } else {
@@ -1384,6 +1455,28 @@ impl Scheduler {
                     let _ = self.start_wake_timer(owner, deadline);
                 }
             }
+            REQUEST_SCOPE_ENTER => {
+                let scope = self.enter_scope(owner, Instant::from_nanos(request.value));
+                request.token = scope.get();
+                request.status = RESPONSE_OK;
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_SCOPE_EXIT => match self.exit_scope(owner, ScopeId::from_raw(request.token)) {
+                ScopeExit::Pending => request.status = RESPONSE_PENDING,
+                ScopeExit::Exited { delivered } => {
+                    request.value = i64::from(delivered);
+                    request.status = RESPONSE_OK;
+                    let _ = self.wake_front(owner);
+                }
+                ScopeExit::Unknown => {
+                    request.status = RESPONSE_ERROR;
+                    let _ = self.wake_front(owner);
+                }
+            },
+            REQUEST_SCOPE_CHECK => {
+                request.status = RESPONSE_OK;
+                let _ = self.wake_front(owner);
+            }
             REQUEST_TASK_START => {
                 let Some(entry) = request.entry else {
                     request.status = RESPONSE_ERROR;
@@ -1397,6 +1490,9 @@ impl Scheduler {
                             .expect("started task")
                             .entry_context = request.context;
                         request.task = task.get();
+                        // The child hands the capabilities in its result to
+                        // this task (`include/chimi_fiber.h`).
+                        request.owner = owner.get();
                         request.status = RESPONSE_OK;
                     }
                     Err(_) => request.status = RESPONSE_ERROR,
@@ -1453,10 +1549,14 @@ impl Scheduler {
             }
             REQUEST_CHANNEL_SEND => {
                 let result = self.take_send_result(owner).or_else(|| {
-                    self.channel_send(
+                    // SAFETY: the host's record names `context` capabilities
+                    // that stay valid while it is suspended on the request.
+                    let carried = unsafe { carried_capabilities(request.context) };
+                    self.channel_send_carrying(
                         owner,
                         Sender::from_raw(request.channel),
                         request.value as usize,
+                        &carried,
                     )
                     .ok()
                 });
@@ -1585,6 +1685,7 @@ impl Scheduler {
         if let Some(timer) = record.timer.take() {
             self.cancel_timer(timer);
         }
+        self.clear_scopes(task);
         self.unroute_task(task);
 
         let channel_cleanup = self.channels.cleanup_task(task);
@@ -1602,7 +1703,7 @@ impl Scheduler {
                 .get_mut(&task)
                 .and_then(|record| record.fiber.as_mut())
                 .expect("non-terminal task owns a fiber")
-                .resume(ChimiFiberCommand::Cancel);
+                .resume(ChimiFiberCommand::Cancel, scope::ResumeContext::TERMINAL);
             self.keep_task_value(task, &cleanup);
             if !outcome.is_defect() {
                 outcome = match cleanup.state {
@@ -1678,6 +1779,7 @@ impl Scheduler {
         self.emit(task, TaskEventKind::Terminal, cause(outcome), false);
         if let Some(parent) = parent {
             self.finish_draining(parent);
+            self.wake_scope_exit(parent);
         }
 
         let waiting_parent = parent.filter(|parent| {
@@ -1873,6 +1975,58 @@ impl Scheduler {
         );
         Err(SchedulerError::Channel(error))
     }
+}
+
+/// The capabilities a CHIMI_REQUEST_CHANNEL_SEND's message carries: `context`
+/// is null or a `ChimiMessageCapabilities` record.
+///
+/// # Safety
+///
+/// A non-null `context` points to a readable record whose `items` holds
+/// `count` readable entries.
+unsafe fn carried_capabilities(context: *mut c_void) -> Vec<Carried> {
+    // SAFETY: the caller guarantees a null or readable record.
+    let Some(record) = (unsafe { context.cast::<ChimiMessageCapabilities>().as_ref() }) else {
+        return Vec::new();
+    };
+    if record.count == 0 || record.items.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: as above, `items` holds `count` entries.
+    let items = unsafe { std::slice::from_raw_parts(record.items, record.count) };
+    items
+        .iter()
+        .filter_map(|item| {
+            let kind = match item.capability {
+                CAPABILITY_RECEIVER => CapabilityKind::Receiver,
+                CAPABILITY_COMPLETION => CapabilityKind::Completion,
+                _ => return None,
+            };
+            Some(Carried {
+                channel: ChannelId::from_raw(item.channel),
+                kind,
+                token: item.token,
+            })
+        })
+        .collect()
+}
+
+/// One exclusive capability a sent message holds: the sender's copy.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ChimiCarriedCapability {
+    pub channel: u64,
+    pub token: u64,
+    pub capability: u32,
+}
+
+/// The `context` of a CHIMI_REQUEST_CHANNEL_SEND whose message holds
+/// exclusive capabilities.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ChimiMessageCapabilities {
+    pub items: *const ChimiCarriedCapability,
+    pub count: usize,
 }
 
 fn scheduler_defect_outcome(code: i64) -> SchedulerOutcome {

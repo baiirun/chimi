@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 6u
+#define CHIMI_FIBER_ABI_VERSION 8u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -52,10 +52,14 @@ typedef void (*ChimiRootVisitor)(void *context, uintptr_t *slot);
 typedef struct ChimiFiber ChimiFiber;
 
 enum {
+  /* ChimiSchedulerRequest: an OK reply sets `task` to the child and `owner` to
+     the starter, the task the child's result capabilities go to. */
   CHIMI_REQUEST_TASK_START = 1,
   CHIMI_REQUEST_TASK_RESULT = 2,
   CHIMI_REQUEST_TASK_CANCEL = 3,
   CHIMI_REQUEST_CHANNEL_BOUNDED = 4,
+  /* ChimiSchedulerRequest: `value` is the message and `context` is null or a
+     ChimiMessageCapabilities naming the exclusive capabilities it holds. */
   CHIMI_REQUEST_CHANNEL_SEND = 5,
   CHIMI_REQUEST_CHANNEL_RECEIVE = 6,
   CHIMI_REQUEST_CHANNEL_CLOSE = 7,
@@ -94,6 +98,19 @@ enum {
      The id is invalid afterwards: any channel request naming it, a second
      release included, is a contract violation that defects the caller. */
   CHIMI_REQUEST_CHANNEL_RELEASE = 24,
+  /* ChimiSchedulerRequest: enters a cancellation scope of the calling task
+     whose deadline Instant is `value`; the reply's `token` is the scope id.
+     A cancellation point (see chimi_fiber_scope_cancel_pending). */
+  CHIMI_REQUEST_SCOPE_ENTER = 25,
+  /* ChimiSchedulerRequest: leaves the scope whose id is `token`, and any
+     scope nested in it. PENDING while child tasks the scope cancelled still
+     drain; then OK with `value` 1 when this scope's own cancellation is the
+     one the task is unwinding, else 0. ERROR when the task is not inside it.
+     Never a cancellation point; never issue it after a terminal cancel. */
+  CHIMI_REQUEST_SCOPE_EXIT = 26,
+  /* ChimiSchedulerRequest: a loop pass's cancellation point. OK, or the
+     task resumes with CHIMI_FIBER_CANCEL for a fired scope. */
+  CHIMI_REQUEST_SCOPE_CHECK = 27,
 };
 
 enum {
@@ -267,6 +284,8 @@ enum {
   CHIMI_CLOCK_TRACE_TIMER_FIRED = 3,
   CHIMI_CLOCK_TRACE_TIMER_CANCELLED = 4,
   CHIMI_CLOCK_TRACE_DEADLOCK_WAITER = 5,
+  /* A cancellation scope's deadline passed (boundaries). */
+  CHIMI_CLOCK_TRACE_SCOPE_FIRED = 6,
 };
 
 typedef struct {
@@ -322,6 +341,9 @@ enum {
   CHIMI_VIOLATION_UNKNOWN_CHANNEL = 4,
   /* A release named a channel some task still holds. */
   CHIMI_VIOLATION_CHANNEL_STILL_LIVE = 5,
+  /* The capability travels in a sent message no task has received yet, so
+     the copy used is stale. */
+  CHIMI_VIOLATION_IN_FLIGHT = 6,
 };
 
 enum {
@@ -344,12 +366,51 @@ typedef struct {
   uint32_t reason;
 } ChimiCapabilityViolation;
 
+/* One Receiver or Completion inside a sent message: its channel, the token of
+   the sender's copy, and CHIMI_CAPABILITY_RECEIVER or _COMPLETION.
+
+   A send whose reply is OK or PENDING puts each one in flight with token + 1,
+   so the host writes token + 1 into the message's copies before it sends and
+   the sender's own copies are stale from then on. The task that receives the
+   message owns them. A reply of CLOSED or ABORTED gives them back to the
+   sender with their old tokens, and a discarded message aborts their
+   channels as its owner's exit would. Any ERROR reply changes nothing: one
+   that is not the sender's current copy defects the sender. */
+typedef struct {
+  uint64_t channel;
+  uint64_t token;
+  uint32_t capability;
+} ChimiCarriedCapability;
+
+typedef struct {
+  const ChimiCarriedCapability *items;
+  size_t count;
+} ChimiMessageCapabilities;
+
 /* Called once per violation, before the violating task begins to end, under
    the conditions of ChimiValueRelease: on the scheduler's thread with no task
    running, and it must not call back into the scheduler. The record lives
    for the call. */
 typedef void (*ChimiCapabilityViolationReport)(void *context,
                                                const ChimiCapabilityViolation *violation);
+
+/* How one incarnation ended (`cause` is the process_terminated event's cause
+   code). The kernel builds it for every end, under any trace mode. */
+typedef struct {
+  uint64_t membership;
+  uint64_t incarnation;
+  uint64_t cause;
+  /* 1 when the body overflowed its fiber stack, which the host cannot see:
+     the body never returns from its entry. */
+  uint32_t stack_overflow;
+} ChimiProcessTermination;
+
+/* Called with the record of every incarnation that defected, as it finishes
+   and before its process_terminated event, whatever the trace mode. It runs
+   on the scheduler's thread with no task running and must not call back
+   into the scheduler. The record lives for the call. */
+typedef void (*ChimiProcessDefectReport)(void *context,
+                                         const ChimiProcessTermination *termination);
 
 enum {
   CHIMI_SCHEDULER_CLOCK_REAL = 0,
@@ -447,6 +508,9 @@ typedef struct {
   /* Called for each channel capability violation; may be null. */
   ChimiCapabilityViolationReport capability_violation_report;
   void *capability_violation_context;
+  /* Called for each process incarnation that defected; may be null. */
+  ChimiProcessDefectReport process_defect_report;
+  void *process_defect_context;
 } ChimiSchedulerConfig;
 
 /* The arguments of chimi_scheduler_execute_with_config. The release hooks
@@ -476,6 +540,18 @@ void chimi_fiber_destroy(ChimiFiber *fiber);
 
 ChimiFiberCommand chimi_fiber_park(const ChimiRootFrame *roots);
 ChimiFiberCommand chimi_fiber_request(void *request, const ChimiRootFrame *roots);
+/* Read by the running fiber after a resume. 1 when that resume was a
+   task-level cancellation: the fiber must unwind without any request that can
+   park, CHIMI_REQUEST_SCOPE_EXIT included. A scope's cancellation, or a
+   process body told to stop, is not terminal. */
+uint32_t chimi_fiber_cancel_is_terminal(void);
+/* 1 when a fired cancellation scope of the running task waits for its next
+   cancellation point; a loop pass then issues CHIMI_REQUEST_SCOPE_CHECK. */
+uint32_t chimi_fiber_scope_cancel_pending(void);
+/* 1 when the running task is inside a timeout scope under the real clock:
+   loop passes then issue CHIMI_REQUEST_SCOPE_CHECK every so often, because
+   every request first fires the task's due scope deadlines. */
+uint32_t chimi_fiber_scope_polls(void);
 ChimiSchedulerOutcome chimi_scheduler_execute(ChimiFiberEntry entry, void *context,
                                               size_t stack_bytes,
                                               uint32_t trace_mode,

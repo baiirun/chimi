@@ -11,11 +11,14 @@ gaps G13, G14, and G25 of the
 type, constructors, conversions, arithmetic, text form, parser, `Duration.zero`,
 derived equality and order, debug rendering, module constants, `T4303` help,
 and `T4348` to `T4350`, on both backends (see
-[Implementation notes](#implementation-notes)). `T4263` for process
-durations waits for `Process.spec`. Of the clock, only `Clock.sleep`, the
-root `clock` need, the runner's real and virtual sources, virtual deadlock,
-and the clock trace events are implemented, on the native backend only (see
-[Clock slice](#clock-slice-for-supervised-processes-ts-6ccbc9)).
+[Implementation notes](#implementation-notes)). `T4263` rejects
+out-of-range process durations that fold to constants (`typing/process.rs`). The clock is implemented on the native
+backend only: `Instant`, `Timestamp`, the structural `Clock` interface, every
+`std/clock` function, the root `clock` need, the runner's real and virtual
+sources with `--clock-start`, virtual deadlock, `Task.timeout`,
+`Task.deadline`, `Timeout`, cancellation scopes, and the clock trace events
+(see [Clock slice](#clock-slice-for-supervised-processes-ts-6ccbc9) and
+[Clock, timeouts, and scopes](#clock-timeouts-and-scopes-chi-201)).
 [Failure-set types](#failure-set-types), their projection into type arguments,
 joins, `T4340`, `T4341`, `T4346` for a failure-set value passed where a member
 is missing, and [`std/result`](#stdresult) are implemented on both backends
@@ -380,7 +383,7 @@ Every execution has one time source, chosen by the runner:
 - `virtual`: a deterministic source owned by the scheduler. This is the
   default for test runs (T1) and is available as the runner flag
   `--clock=virtual` (`--clock=real` selects the default).
-  The runner accepts `--clock-start <RFC 3339>` for the initial `Timestamp`
+  The runner accepts `--clock-start=<RFC 3339>` for the initial `Timestamp`
   and defaults to `1970-01-01T00:00:00Z`.
 
 The runner binds a root `clock: Clock` need to the execution clock provider,
@@ -1109,7 +1112,7 @@ program.
   literals, module constants, `Duration.zero`, `Int` arithmetic, and the
   `std/duration` constructors, conversions, and arithmetic, and reports a
   defect a folded call always raises. `T4348` uses it for constructors whose
-  argument folds; process typing will use it for `T4263`.
+  argument folds; process typing uses it for `T4263`.
 - **Constant `parse`.** `T4349` and `T4350` apply when the argument is a
   `Text` literal or a reference to a module constant whose value folds to
   text. A local `let` bound to a literal is not a module constant and is not
@@ -1267,13 +1270,17 @@ program.
     `--clock=virtual` before `--`. `runtime.c` enters the scheduler through
     `chimi_scheduler_run`, which gained the task and channel release hooks
     of `chimi_scheduler_execute_with_config`. The new fields change the
-    config's layout, so `CHIMI_FIBER_ABI_VERSION` became 5 (it is now 6; the
+    config's layout, so `CHIMI_FIBER_ABI_VERSION` became 5 (it is now 8; the
     lab's OB07 checks the current version).
   - **Virtual deadlock.** The root defects with
     `virtual-time deadlock: every task is parked and no timer is pending:`
     followed by ` task <id> waits on <operation>` for each parked task,
     separated by `;`. The operation is `Task.result`, `Channel.send`,
-    `Channel.receive`, or `a scheduler request`. Under the real clock a root
+    `Channel.receive`, or `a scheduler request`. When a process incarnation
+    has defected during the run, this defect and the generic one below end
+    with `; process incarnation <id> of membership <id> defected: <defect>`
+    for the latest one (with `(the last of <n> process defects)` before the
+    colon when there were several), whatever the trace mode (lab OB08). Under the real clock a root
     with nothing pending stays suspended in the scheduler. The native
     runtime has no asynchronous host operations, so it reports the earlier
     generic deadlock defect and leaves the suspended tasks to process exit.
@@ -1286,11 +1293,84 @@ program.
     defects with ``Clock.sleep requires the native runtime; build the program
     with `chimi build` ``.
 - Instant, Timestamp, `now`, `--clock-start`, and the structural `Clock`
-  interface fields are not part of this slice.
+  interface fields came later (next section).
+
+- **Supervisor time** (conformance row). Restart windows and
+  `shutdown_within` deadlines are timers on the execution time source, so
+  under the virtual clock they elapse with no real waiting.
+  `process_tests.rs` `supervisor_windows_and_shutdown_deadlines_elapse_under_virtual_time`
+  rolls an hour-long window and forces a stubborn cleanup at an hour-long
+  deadline, at exactly that instant; lab OB06 runs 2m35s of windows through
+  the native runner.
+### Clock, timeouts, and scopes (CHI-201)
+
+- **Types.** `Instant`, `Timestamp`, and `Timeout` are standard types
+  (`Instant` and `Timestamp` in `std/clock`, `Timeout` in `std/task`).
+  `Clock` is now the structural interface `{ now, timestamp, sleep_until }`,
+  so a user record with those fields is a `Clock`. `Instant` and `Timestamp`
+  are native-only values: the interpreter reports every new operation with
+  the native-only defect `Clock.sleep` already had, and a module constant of
+  either type is rejected (an `Instant` has no meaning outside its
+  execution; a `Timestamp` comes only from runtime operations).
+- **Rendering.** `Debug.render` shows an `Instant` as
+  `Instant(<duration since the origin>)`, such as `Instant(1.5s)`, and a
+  `Timestamp` as its RFC 3339 text. The outcome file writes them as
+  `{"instant":<ns>}` and `{"timestamp":<ns>}`.
+- **Providers.** The std time functions read the bound `clock` provider: the
+  execution clock at the root, or whatever `using { clock: … }` binds.
+  `Clock.sleep(d)` under a user provider is `sleep_until(now() + d)` on that
+  provider. `Clock.starting_at` returns a record whose `timestamp` is the
+  given value plus the wrapped clock's `now` since the wrapper was made.
+- **Timeouts use the execution clock.** `Task.timeout` and `Task.deadline`
+  read `now` and arm their timer on the execution time source, not on a
+  bound provider. The scope timer is a scheduler timer, and a user `Clock`
+  cannot cancel a task. `Select.after` is where a user timer will plug in.
+- **`--clock-start=<RFC 3339>`** sets the virtual clock's starting
+  `Timestamp` and is accepted only with `--clock=virtual`; under the real
+  clock `timestamp` is the host's wall time, so the flag would be ignored.
+  It takes `Z` or a `±HH:MM` offset, a fraction of at most nine digits, and
+  years 1678 to 2262, and rejects a leap second. A bad value exits 64.
+- **Real time source.** The real `Instant` is Rust's `std::time::Instant`
+  (`CLOCK_MONOTONIC` on Linux, `mach_absolute_time` on macOS). Neither
+  counts time the host spends suspended, which the SHOULD in
+  [Instant](#instant) asks for; switching to `CLOCK_BOOTTIME` and
+  `mach_continuous_time` is a follow-up ticket.
+- **Scopes.** `Task.timeout` runs the thunk in the calling task. The
+  scheduler keeps a stack of scopes per task (`scheduler/scope.rs`):
+  `REQUEST_SCOPE_ENTER` pushes one with its deadline timer,
+  `REQUEST_SCOPE_EXIT` pops it and every scope above it, and
+  `REQUEST_SCOPE_CHECK` is the cheap cancellation point a loop pass uses.
+  A child task belongs to the innermost scope of its parent when it starts
+  and moves to the enclosing scope when that scope exits normally.
+  When a scope's timer fires, the scheduler marks it fired, withdraws the
+  task's current park if it can be withdrawn (sleep, `Task.result`, channel
+  send or receive, process receive), and cancels that scope's children and
+  the children of the scopes inside it. The task is resumed with
+  cancellation for the outermost fired scope only. Its exit replies
+  whether that scope's own cancellation was delivered, and only then does
+  the runtime convert it to `TimedOut`; any other cancellation passes
+  through. A scope exit waits until the cancelled children have drained.
+  A task-level (terminal) cancellation skips scope exits altogether.
+  Under the real clock a task that never parks would never let the
+  scheduler fire its timers, so every request first fires the task's own
+  due scope deadlines, and while a task is inside a scope a loop issues
+  `REQUEST_SCOPE_CHECK` every 1,024 passes. A timeout over a busy loop is
+  therefore late by at most 1,024 passes.
+  Exclusive capabilities owned by the scope are not yet released at the
+  scope boundary: they are released at task exit as before (follow-up
+  ticket). The scope module documents where masked cancellation will hook
+  in.
+- **Telemetry.** `clock_scope_fired` (clock kind 6) is a boundary event
+  whose `task_id` is the task that owns the scope. The scope's timer emits
+  the motion events `clock_timer_started`, `clock_timer_fired`, and
+  `clock_timer_cancelled` like a sleep.
+- **ABI.** `CHIMI_FIBER_ABI_VERSION` is 8 and the native runtime ABI is 23.
+  Program data gains `CHIMI_CLOCK_REQUIREMENT_SLOT`, the requirement slot
+  that `using { clock: … }` binds for the std time functions.
 
 ### Runner
 
-- Add `--clock-start`, and make the test runner default to virtual. The
+- Make the test runner default to virtual (`--clock-start` is done). The
   native runner already takes `--clock=real|virtual` and binds the root
   `clock` need (see the clock slice).
 - Expose cause limits as execution configuration.

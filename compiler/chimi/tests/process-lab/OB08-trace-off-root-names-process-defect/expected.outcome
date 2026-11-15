@@ -1,0 +1,2 @@
+{"schema":"chimi.runtime.v1","outcome":"defect","message":"virtual-time deadlock: every task is parked and no timer is pending: task 1 waits on Channel.receive; process incarnation 1 of membership 1 defected: Process stack overflow","core_node_id":null,"origin_id":null}
+{"schema":"chimi.runtime.v1","outcome":"defect","message":"virtual-time deadlock: every task is parked and no timer is pending: task 1 waits on Channel.receive; process incarnation 1 of membership 1 defected: integer division by zero in `/`: 1 / 0","core_node_id":null,"origin_id":null}

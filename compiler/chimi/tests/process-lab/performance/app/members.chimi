@@ -11,7 +11,9 @@ import std/list as List
 // on its first receive, and `stop` then ends them all. The last one started
 // registers `tail`; main asks it for a report and waits, and incarnations
 // run in start order, so every earlier one has parked by the time `tail`
-// replies. The outcome is N, or -1 if a start failed.
+// replies. The outcome is N, or -1 if a start failed. A second argument K
+// injects PG05's regression: the i-th anonymous start first spins K * i
+// iterations, so a process costs more the more have started.
 
 pub enum Message {
   Report(reply: Sender<Int>)
@@ -40,8 +42,21 @@ fn ask_tail() -> Int {
   }
 }
 
+fn spin(iterations: Int) -> Int {
+  loop done = 0 {
+    case done >= iterations {
+      True -> break done
+      False -> done + 1
+    }
+  }
+}
+
 pub fn main(arguments: List<Text>) -> Int {
   let count = case List.first(arguments) {
+    Some(text) -> Int.parse(text)
+    None -> 0
+  }
+  let spins = case List.get(arguments, 1) {
     Some(text) -> Int.parse(text)
     None -> 0
   }
@@ -50,9 +65,12 @@ pub fn main(arguments: List<Text>) -> Int {
   let started = loop left = count - 1 {
     case left <= 0 {
       True -> break count
-      False -> case Supervisor.start_process(root, anonymous, Supervisor.Restart.Never) {
-        Success(member) -> left - 1
-        Failure(error) -> break -1
+      False -> {
+        spin(spins * (count - 1 - left))
+        case Supervisor.start_process(root, anonymous, Supervisor.Restart.Never) {
+          Success(member) -> left - 1
+          Failure(error) -> break -1
+        }
       }
     }
   }

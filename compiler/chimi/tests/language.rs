@@ -1637,6 +1637,168 @@ fn a_decimal_task_result_crosses_heaps_intact() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// The diagnostic codes `chimi run` reports for `source` as `main.chimi` in a
+/// directory that holds `data/note.txt` (UTF-8) and `data/blob.bin` (not UTF-8).
+fn embed_codes(name: &str, source: &str) -> Vec<String> {
+    let scratch = scratch_directory(name);
+    std::fs::create_dir_all(scratch.join("data")).unwrap();
+    std::fs::write(scratch.join("data/note.txt"), "note").unwrap();
+    std::fs::write(scratch.join("data/blob.bin"), [0x61, 0xff]).unwrap();
+    let path = scratch.join("main.chimi");
+    std::fs::write(&path, source).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .expect("run the reference interpreter");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    std::fs::remove_dir_all(scratch).unwrap();
+    let mut codes = stderr
+        .split("error[")
+        .skip(1)
+        .filter_map(|rest| rest.split(']').next())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    codes.sort();
+    codes
+}
+
+#[test]
+fn embedding_is_rejected_outside_a_constant_and_for_bad_paths() {
+    let header = "import std/embed as Embed\n";
+    let main = "pub fn main() -> Int { 0 }\n";
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "in-function",
+            "fn read() -> Text { Embed.text(\"data/note.txt\") }\n",
+            &["E5206"],
+        ),
+        (
+            "in-closure",
+            "const read = fn() { Embed.text(\"data/note.txt\") }\n",
+            &["E5206"],
+        ),
+        (
+            "as-value",
+            "const read = Embed.text\nconst note = read(\"data/note.txt\")\n",
+            &["E5206"],
+        ),
+        (
+            "computed",
+            "const name = \"data/note.txt\"\nconst note = Embed.text(name)\n",
+            &["E5207"],
+        ),
+        (
+            "parent",
+            "const note = Embed.text(\"../data/note.txt\")\n",
+            &["E5207"],
+        ),
+        (
+            "dot",
+            "const note = Embed.text(\"./data/note.txt\")\n",
+            &["E5207"],
+        ),
+        (
+            "absolute",
+            "const note = Embed.text(\"/etc/hostname\")\n",
+            &["E5207"],
+        ),
+        (
+            "empty-segment",
+            "const note = Embed.text(\"data//note.txt\")\n",
+            &["E5207"],
+        ),
+        (
+            "missing",
+            "const note = Embed.bytes(\"data/absent.txt\")\n",
+            &["E5208"],
+        ),
+        (
+            "not-utf8",
+            "const blob = Embed.text(\"data/blob.bin\")\n",
+            &["E5209"],
+        ),
+        (
+            "valid",
+            "const note = Embed.text(\"data/note.txt\")\nconst blob = Embed.bytes(\"data/blob.bin\")\n",
+            &[],
+        ),
+    ];
+    for (name, declarations, expected) in cases {
+        // `main` calls `read` where a case defines it, so the call is reachable.
+        let main = if declarations.contains("fn read()") {
+            "pub fn main() -> Int { Text.byte_length(read()) }\nimport std/text as Text\n"
+        } else {
+            main
+        };
+        let codes = embed_codes(
+            &format!("embed-{name}"),
+            &format!("{header}{declarations}{main}"),
+        );
+        assert_eq!(codes, *expected, "{name}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_embedded_symbolic_link_must_stay_inside_the_module_directory() {
+    let scratch = scratch_directory("embed-link");
+    let outside = scratch.join("outside.txt");
+    std::fs::write(&outside, "secret").unwrap();
+    let module = scratch.join("app");
+    std::fs::create_dir_all(&module).unwrap();
+    std::fs::write(module.join("inside.txt"), "fine").unwrap();
+    std::os::unix::fs::symlink(&outside, module.join("escape.txt")).unwrap();
+    std::os::unix::fs::symlink(module.join("inside.txt"), module.join("alias.txt")).unwrap();
+    let codes = |constant: &str| {
+        let path = module.join("main.chimi");
+        std::fs::write(
+            &path,
+            format!("import std/embed as Embed\n{constant}\npub fn main() -> Int {{ 0 }}\n"),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .arg("run")
+            .arg(&path)
+            .output()
+            .expect("run the reference interpreter");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    assert!(codes("const leak = Embed.text(\"escape.txt\")").contains("error[E5207]"));
+    assert!(!codes("const ok = Embed.text(\"alias.txt\")").contains("error["));
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn an_embedded_file_is_in_the_native_executable_and_rebuilds_when_edited() {
+    let scratch = scratch_directory("embed-native");
+    std::fs::write(scratch.join("blob.bin"), [0x00, 0xca, 0xfe]).unwrap();
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        "import std/embed as Embed\nimport std/bytes.{Bytes}\n\
+         const blob = Embed.bytes(\"blob.bin\")\n\
+         pub fn main() -> Bytes { blob }\n",
+    )
+    .unwrap();
+    let outcome = native_outcome(&scratch, &path);
+    assert!(
+        outcome.ends_with("\"outcome\":\"success\",\"value\":{\"bytes\":\"00cafe\"}}"),
+        "{outcome}"
+    );
+    // Editing only the embedded file changes the next build, cache or not.
+    std::fs::write(scratch.join("blob.bin"), [0xbe, 0xef]).unwrap();
+    for record in ["telemetry.jsonl", "outcome.jsonl"] {
+        std::fs::remove_file(scratch.join(record)).unwrap();
+    }
+    let outcome = native_outcome(&scratch, &path);
+    assert!(
+        outcome.ends_with("\"outcome\":\"success\",\"value\":{\"bytes\":\"beef\"}}"),
+        "{outcome}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn a_bytes_task_result_crosses_heaps_intact() {
     let scratch = scratch_directory("bytes-task-result");
@@ -10482,6 +10644,46 @@ fn a_received_value_has_the_capability_class_of_its_payload() {
     assert_eq!(found, [("T4241", true)], "{found:?}");
 }
 
+// ts-f704d3: `Channel.SendError<T>` hands back the refused value, so it is what `T`
+// is, as `Receive<T>` is. Rejects a `SendError<T>` that is shareable whatever `T`
+// is (two children could capture one refused receiver), and one that is never
+// shareable (a refused `Int` captured twice is fine).
+#[test]
+fn a_refused_send_has_the_capability_class_of_its_payload() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "fn captured_twice(s: Sender<Receiver<Int>>, r: Receiver<Int>) -> Int {{\n",
+            "  case Channel.send(s, r) {{\n",
+            "    Success(_) -> 0\n",
+            "    Failure(error) -> {{\n",
+            "      let a = Task.start(fn() -> Int {{\n        error\n        1\n      }})\n",
+            "      let b = Task.start(fn() -> Int {{\n        error\n        2\n      }})\n",
+            "      1\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+            "fn ints_twice(s: Sender<Int>) -> Int {{\n",
+            "  case Channel.send(s, 1) {{\n",
+            "    Success(_) -> 0\n",
+            "    Failure(error) -> {{\n",
+            "      let a = Task.start(fn() -> Int {{\n        error\n        1\n      }})\n",
+            "      let b = Task.start(fn() -> Int {{\n        error\n        2\n      }})\n",
+            "      1\n",
+            "    }}\n",
+            "  }}\n",
+            "}}\n",
+        ),
+        program = HAND_PROGRAM,
+    ));
+    let found = check_diagnostics(&source);
+    let found = found
+        .iter()
+        .map(|(code, _, message)| (code.as_str(), message.contains("`error` was transferred")))
+        .collect::<Vec<_>>();
+    assert_eq!(found, [("T4241", true)], "{found:?}");
+}
+
 // Removing a managed supervisor consumes its handle, as removing a process does.
 // Rejects a `remove_supervisor` that leaves the handle usable after removal or
 // across loop passes.
@@ -11126,4 +11328,79 @@ pub fn main() -> Int {
         run_both("failure-set-nested-join", program),
         "\"outcome\":\"success\",\"value\":1"
     );
+}
+
+// Guards: every `let` of a block stays bound for the block's later steps, an inner
+// block's `let` does not change the enclosing block's names, and a block that binds
+// nothing still sees every enclosing local (CHI-91 clones a block's locals only at
+// its first binding).
+#[test]
+fn an_inner_block_binding_stays_inside_the_block() {
+    let outcome = run_both(
+        "block-binding-scope",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  let x = 1\n",
+            "  let y = {\n",
+            "    let x = 2\n",
+            "    x\n",
+            "  }\n",
+            "  let z = { { x + y } }\n",
+            "  x * 100 + y * 10 + z\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":123");
+}
+
+// Guards: Void, True and False are shared values that no pass boundary reclaims, so a
+// comparison made in one pass is still a Bool in every later pass.
+#[test]
+fn booleans_stay_booleans_across_reclaimed_loop_passes() {
+    let outcome = run_both(
+        "shared-boolean-passes",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  loop count = 0 {\n",
+            "    let even = count % 2 == 0\n",
+            "    case count >= 5000 {\n",
+            "      True -> break count\n",
+            "      False -> case even {\n",
+            "        True -> count + 1\n",
+            "        False -> count + 3\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":5000");
+}
+
+// Guards: a match reads every subject, both when its subjects fit the runtime's
+// stack array (up to eight) and when they do not (nine).
+#[test]
+fn a_match_reads_every_one_of_eight_or_nine_subjects() {
+    let outcome = run_both(
+        "match-many-subjects",
+        concat!(
+            "fn eight(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int) -> Int {\n",
+            "  case a, b, c, d, e, f, g, h {\n",
+            "    1, 2, 3, 4, 5, 6, 7, 8 -> 8\n",
+            "    _, _, _, _, _, _, _, _ -> 0\n",
+            "  }\n",
+            "}\n",
+            "fn nine(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int) -> Int {\n",
+            "  case a, b, c, d, e, f, g, h, i {\n",
+            "    1, 2, 3, 4, 5, 6, 7, 8, 9 -> 9\n",
+            "    _, _, _, _, _, _, _, _, _ -> 0\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  eight(1, 2, 3, 4, 5, 6, 7, 8) * 1000 + eight(1, 2, 3, 4, 5, 6, 7, 0) * 100\n",
+            "    + nine(1, 2, 3, 4, 5, 6, 7, 8, 9) * 10 + nine(1, 2, 3, 4, 5, 6, 7, 8, 0)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":8090");
 }

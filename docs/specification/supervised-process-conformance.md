@@ -105,7 +105,7 @@ docs/performance/supervised-process-conformance-baseline.md   written by ts-1765
 ```text
 chimi-process-lab <kind>... [--through <stage>] [--scenario <ID>]
                   [--backend <native|interpreter>] [--print-actual]
-                  [--baseline <report.json>]
+                  [--baseline <report.json>] [--inject-pg05-regression <factor>]
 ```
 
 - Several kinds may be listed, and each runs in the order given; `all` is
@@ -372,8 +372,9 @@ from U5, the process family:
 
   A field the kind does not set is `null`, and `attempts_in_window` is 0.
 - Clock family (4): `clock_advanced`, `clock_timer_started`,
-  `clock_timer_fired`, `clock_timer_cancelled`, and
-  `clock_deadlock_waiter`. `task_id` is the timer's or waiter's task, or
+  `clock_timer_fired`, `clock_timer_cancelled`, `clock_deadlock_waiter`,
+  and `clock_scope_fired` (a timeout scope's deadline fired; a boundary
+  event). `task_id` is the timer's or waiter's task, or
   `null`. The scheduler stores a waiter's request kind in the event's
   `cause` field, so `cause_task_id` is `null` and `attributes` adds
   `request_kind`, read from `cause` (0 except on `clock_deadlock_waiter`),
@@ -764,7 +765,8 @@ outcome, a dynamic member, a stop); FP01 adds the same check at U10.
 | OB04 | U6 | Every transcript fixture runs twice. Telemetry is byte-identical once `execution_id` is removed | Nondeterministic scheduling or identities |
 | OB05 | U5 | Process, task, and channel events share one strictly increasing `sequence` | A separate sequence for process events |
 | OB06 | U6 | A fixture with 30 s windows and 5 s deadlines finishes in less than 2 s of wall time | Real waiting under virtual time |
-| OB07 | U5 | The trace ABI reports `CHIMI_FIBER_ABI_VERSION` 6 (5 until the capability-violation hook joined the scheduler config). Process events carry dedicated `supervisor`, `membership`, and `incarnation` fields, separate from `task_id` | Identities carried in task fields |
+| OB07 | U5 | The trace ABI reports `CHIMI_FIBER_ABI_VERSION` 7 (5 until the capability-violation hook joined the scheduler config, 6 until the process-defect hook did). Process events carry dedicated `supervisor`, `membership`, and `incarnation` fields, separate from `task_id` | Identities carried in task fields |
+| OB08 | U5 | A process defects before replying, so main parks and the run ends in a virtual-time deadlock. The `--trace=off` outcome still names the incarnation and its defect: a stack overflow, or the body's own defect message | A process defect that only the trace names |
 | IP01 | U5 | `chimi run` on a process fixture defects with "requires the supervised process runtime" | Silent divergence between backends |
 
 As built at U6:
@@ -809,6 +811,7 @@ arguments, and no extra events. `Runs` lists each run's argument.
 | ES04 | fixture | 70 | - | - |
 | ES05 | fixture | 70 | - | - |
 | IP01 | fixture | 70 | - | - |
+| OB08 | fixture | 70 | `overflow`, `divide` | - |
 | MF01 | fixture | 0 | `10000`, `1000000` | - |
 | MF02 | fixture | 0 | `100`, `10000` | - |
 | MF03 | fixture | 0 | `100`, `10000` | - |
@@ -1049,7 +1052,7 @@ does. Memory and count gates are the same in both profiles.
 | PG02 | Trace overhead on PG01 | `boundaries` and `full` against `off` | n/a | `boundaries` < 1.25x; `full` reported, no gate |
 | PG03 | µs per restart cycle | Defect, terminate, restart, first park of the replacement. N1 = 1,000, N2 = 10,000, with a limit above N2 | 3.9 | < 40 |
 | PG04 | µs per process to start and first park, and to stop | 1,000 dynamic processes | 5.1 start, 2.8 stop | < 50 start, < 30 stop |
-| PG05 | Scaling of PG04 | Per-process cost at 1,000 divided by the cost at 100 | 1.28 | < 2.0 |
+| PG05 | Scaling of PG04 | Marginal per-process cost from 100 to 1,000 processes divided by the marginal cost from 10 to 100. Fixed costs cancel, so a process at 1,000 that costs 2 times one at 100 reads about 2.1 | about 1.1 (1.00 to 1.54 from medians on a shared cloud host, 2026-11-15) | < 1.75 |
 | PG06 | ns per message by payload | Text 4 KiB; List of 1,000 Ints; the 21-value DAG from CB02 | 190; 13,351; 402 | < 2,000; < 70,000; < 5,000 |
 | PG07 | Resident memory growth | PG01 at N2 against N1 | flat | < 1 MiB |
 | PG08 | Parked resident memory | 1,000 parked processes with 64 KiB stacks | n/a | < 64 MiB |
@@ -1061,6 +1064,19 @@ does. Memory and count gates are the same in both profiles.
 full run costs about 100 times trace-off. PG02 reports that ratio as the
 metric `pg02_full_over_off` without a gate (`ts-8f201b`). Production tracing
 is `--trace=boundaries`, and its gate stays.
+
+PG05 used to divide the average per-process cost at 1,000 by the average at
+100. About 3 ms of fixed cost sat in both averages and dominated the one at
+100, so a process at 1,000 could cost 5 times one at 100 and still pass
+(`ts-cc1f03`). Both marginals subtract the median of seven runs at each
+size rather than the p95, which for seven runs is the slowest: a
+difference of two slowest runs magnifies one noisy run into a false
+failure. `chimi-process-lab performance --scenario PG05
+--inject-pg05-regression 3` proves the current gate catches such a
+regression: every start in the workload first spins long enough that a
+process at 1,000 costs 3 times one at 100, and the gate must fail
+(`pg05_fails_on_an_injected_three_times_regression`, ignored by default
+because it measures wall time).
 
 The executable sizes of FP01 and of a process-free program are recorded
 without a gate. MF06 already guards pay-for-play linking.
@@ -1077,7 +1093,9 @@ without a gate. MF06 already guards pay-for-play linking.
   with a saved report. A metric more than 1.5 times its baseline value prints
   a warning line. A warning does not fail the run, because hosts differ. A
   warning on the baseline host becomes a new decision ticket, as ts-1765ba
-  requires for every failure.
+  requires for every failure. `--baseline` without the `performance` kind,
+  and `--inject-pg05-regression` without PG05, are usage errors rather than
+  flags silently ignored.
 
 ## Unlock order
 
@@ -1091,7 +1109,7 @@ scenarios pass and `CURRENT_STAGE` names it.
 | U2 | Capability checking for specs, inboxes, and managed handles, and lowering to verified Core | SP02, SP04–SP06, SF01–SF03, SF19–SF24, CO01–CO04 |
 | U3 | Per-owner heaps, regions, and fragments in `runtime.c`, with loop reclamation on in every tier. The concurrency lab stays green | CB06, MF05 |
 | U4 | Copy on transfer for `Task.start`, `Task.result`, and `Channel.send` | none |
-| U5 | The process kernel: `Process.spec`, `send`, `receive`, `Supervisor.start`, `start_process`, `stop`, the trace family, ABI version 5 (now 6), and the memory-report fields | MB01–MB04, MB06, MB07, MB11, RT08, SV01, SD01, SD09, CB01–CB03, CB07, MF01, MF04, MF06, OB01–OB03, OB05, OB07, IP01 |
+| U5 | The process kernel: `Process.spec`, `send`, `receive`, `Supervisor.start`, `start_process`, `stop`, the trace family, ABI version 5 (now 7), and the memory-report fields | MB01–MB04, MB06, MB07, MB11, RT08, SV01, SD01, SD09, CB01–CB03, CB07, MF01, MF04, MF06, OB01–OB03, OB05, OB07, OB08, IP01 |
 | U6 | Restart accounting and escalation at the root. Needs `Duration` and `--clock=virtual` from ts-f31a20 | MB05, MB10, RT01, RT02, SV03, SV04, SV11, RA01–RA05, RA08, ES01, ES05, CB08, OB04, OB06 |
 | U7 | Admission, names, removal, `Supervisor.wait`, drain on cancellation | MB08, MB09, RT03–RT07, SV02, SV05–SV08, SV12, RA06, RR01–RR04, SD08, CB04 |
 | U8 | `shutdown_within` deadlines, forced termination, and structured child tasks inside processes | RA07, RR05, RR06, SD02–SD07, CB05 |
@@ -1129,10 +1147,10 @@ changing a contract.
 | Shutdown and forced termination (SD) | 9 |
 | Copy-boundary safety (CB) | 8 |
 | Memory flatness (MF) | 6 |
-| Observability (OB) and backend support (IP) | 8 |
+| Observability (OB) and backend support (IP) | 9 |
 | Forcing program (FP) | 1 |
 | Performance gates (PG) | 10 |
-| **Total** | **131** |
+| **Total** | **132** |
 
 Four scenarios use C harnesses: RA06, SD04, CB06, and CB07.
 

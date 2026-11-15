@@ -138,6 +138,8 @@ fn execute_once(entry: ChimiFiberEntry, through: Entry) -> (SchedulerOutcome, Lo
                 release_task_context: Some(release_context),
                 capability_violation_report: None,
                 capability_violation_context: ptr::null_mut(),
+                process_defect_report: None,
+                process_defect_context: ptr::null_mut(),
             };
             unsafe { process_abi::chimi_scheduler_run(&config) }
         }

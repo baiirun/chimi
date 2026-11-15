@@ -217,6 +217,13 @@ impl Evaluator<'_> {
                 };
                 self.optional(layout.write(*value).map(bytes))
             }
+            // Lowering put the file's contents, or their hex, in the argument.
+            (StandardFunction::EmbedText, [RuntimeValue::Text(contents)]) => {
+                RuntimeValue::Text(contents.clone())
+            }
+            (StandardFunction::EmbedBytes, [RuntimeValue::Text(hex)]) => {
+                RuntimeValue::Bytes(from_hex(hex).into())
+            }
             _ => return self.intrinsic_shape_defect(function, call_node),
         };
         Control::Success(value)

@@ -1639,6 +1639,19 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::SupervisorStop
             | StandardFunction::SupervisorWait
             | StandardFunction::ClockSleep => self.invoke_process(function, arguments, call_node),
+            StandardFunction::ClockNow
+            | StandardFunction::ClockTimestamp
+            | StandardFunction::ClockSince
+            | StandardFunction::ClockSleepUntil
+            | StandardFunction::ClockAdd
+            | StandardFunction::ClockBetween
+            | StandardFunction::ClockTimestampToText
+            | StandardFunction::ClockUnixNanoseconds
+            | StandardFunction::ClockFromUnixNanoseconds
+            | StandardFunction::ClockTimestampBetween
+            | StandardFunction::ClockStartingAt
+            | StandardFunction::TaskTimeout
+            | StandardFunction::TaskDeadline => self.invoke_process(function, arguments, call_node),
             StandardFunction::DebugCrash
             | StandardFunction::OptionUnwrapOrFail
             | StandardFunction::TextConcat
@@ -1704,7 +1717,9 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::BytesToTextLossy
             | StandardFunction::BytesValidUtf8Length
             | StandardFunction::BytesReadIntCode
-            | StandardFunction::BytesIntBytes => {
+            | StandardFunction::BytesIntBytes
+            | StandardFunction::EmbedText
+            | StandardFunction::EmbedBytes => {
                 self.invoke_bytes_operation(function, arguments, call_node)
             }
             StandardFunction::IoPath => {

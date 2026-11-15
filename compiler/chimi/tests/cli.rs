@@ -4851,15 +4851,14 @@ fn native_backstop_reading_one_receiver_field_into_two_tasks_defects_the_second_
     );
 }
 
-// task-and-channel-capabilities.md, "Checked at run time": a stale copy can reach
+// task-and-channel-capabilities.md, "Checked at run time": a stale copy sent toward
 // the task that owns the capability. `dup` through a function value gives main two
 // copies of one Receiver; the child captures `a`, so it owns the Receiver, and main
-// then sends the stale `b` to that same child over a side channel. The child's
-// receive on `b` must defect, and since the owner is the task using the copy, the
-// message must say this copy is stale and the task owns the capability, not that
-// it handed the Receiver on and got it back (task 2 never handed it on). Rejects a
-// runtime that accepts the stale copy because its user owns the channel (the child
-// would read 5 and main return it).
+// then sends the stale `b` to that same child over a side channel. A sent Receiver
+// travels with its message (ts-f4e749), so the send itself must defect main, naming
+// the child as owner: main is the task that broke the contract. Rejects a runtime
+// that lets the stale copy through (the child would read 5 and main return it), and
+// one that defects only the child that received it.
 #[test]
 fn native_backstop_a_stale_copy_sent_to_the_owner_defects() {
     let message = native_capability_defect(
@@ -4900,8 +4899,51 @@ fn native_backstop_a_stale_copy_sent_to_the_owner_defects() {
     );
     assert_eq!(
         message,
-        "channel capability violation: task 2 cannot use the Receiver of channel 1 \
-         in Channel.receive: this copy is stale; task 2 owns the capability"
+        "channel capability violation: task 1 cannot use the Receiver of channel 1 \
+         in Channel.send: task 2 owns it"
+    );
+}
+
+// task-and-channel-capabilities.md, "Checked at run time": a stale copy used by the
+// task that owns the capability. Main duplicates a Receiver through a function
+// value, hands one copy to a child, and gets it back as the child's result, so main
+// owns the Receiver again; its other copy predates both moves. Using that copy must
+// defect, and since main owns the capability, the message must say the copy is
+// stale rather than name another owner. Rejects a runtime that accepts a copy
+// because its user owns the channel (main would read 5).
+#[test]
+fn native_backstop_a_stale_copy_at_its_owner_defects() {
+    let message = native_capability_defect(
+        "stale-copy-at-owner",
+        concat!(
+            "fn dup<T>(x: T) -> (T, T) {\n",
+            "  (x, x)\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let c = Channel.bounded(1)\n",
+            "  let f = dup\n",
+            "  let p = f(c.receiver)\n",
+            "  case p {\n",
+            "    (a, b) -> {\n",
+            "      let child = Task.start(fn() -> Receiver<Int> {\n",
+            "        a\n",
+            "      })\n",
+            "      let back = Task.result(child)\n",
+            "      Channel.send(c.sender, 5)\n",
+            "      let got = Channel.receive(b)\n",
+            "      case got {\n",
+            "        Receive.Received(v) -> v\n",
+            "        Receive.Drained -> 0\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        message,
+        "channel capability violation: task 1 cannot use the Receiver of channel 1 \
+         in Channel.receive: this copy is stale; task 1 owns the capability"
     );
 }
 
@@ -5788,4 +5830,184 @@ fn native_host_io_keeps_text_bytes_after_nul() {
     let stdout = String::from_utf8_lossy(&interpreted.stdout);
     assert_eq!(stdout.lines().last(), Some(expected));
     std::fs::remove_dir_all(scratch).unwrap();
+}
+
+/// Builds a program, runs it natively under `--trace=boundaries`, and returns its
+/// outcome line.
+fn native_hand_back_outcome(name: &str, source: &str) -> String {
+    let scratch = scratch_directory(name);
+    let executable = build_native(&scratch, name, source);
+    let execution = execute_native(&executable, &scratch, name, "boundaries");
+    let outcome = execution.outcome.trim_end().to_owned();
+    std::fs::remove_dir_all(scratch).unwrap();
+    outcome
+}
+
+const HAND_BACK_PRELUDE: &str = concat!(
+    "import std/channel as Channel\n",
+    "import std/channel.{Receive, Receiver, SendError}\n",
+    "import std/task as Task\n",
+    "fn take(r: Receiver<Int>) -> Int {\n",
+    "  let got = Channel.receive(r)\n",
+    "  case got {\n",
+    "    Receive.Received(v) -> v\n",
+    "    Receive.Drained -> 0\n",
+    "  }\n",
+    "}\n",
+);
+
+// task-and-channel-capabilities.md, "Owner exit and automatic cleanup": handing a
+// Receiver on transfers its cleanup responsibility (ts-f4e749). A child that sends
+// the Receiver it captured back to its parent over a channel, or returns it as its
+// `Task.result`, and then ends must leave it open and usable by the parent.
+// Before, ownership moved only at `Task.start`, so the ended child's cleanup
+// aborted the channel and the parent's send failed with `Aborted` (-1 here),
+// or its receive defected while the child still lived.
+#[test]
+fn native_a_receiver_handed_back_to_the_parent_stays_open_after_the_child_ends() {
+    let over_a_channel = native_hand_back_outcome(
+        "hand-back-channel",
+        &format!(
+            "{HAND_BACK_PRELUDE}{}",
+            concat!(
+                "pub fn main() -> Int {\n",
+                "  let data = Channel.bounded(1)\n",
+                "  let back = Channel.bounded(1)\n",
+                "  let r = data.receiver\n",
+                "  let back_sender = back.sender\n",
+                "  let back_receiver = back.receiver\n",
+                "  let child = Task.start(fn() -> Int {\n",
+                "    Channel.send(back_sender, r)\n",
+                "    1\n",
+                "  })\n",
+                "  let returned = Channel.receive(back_receiver)\n",
+                "  let ended = Task.result(child)\n",
+                "  case returned {\n",
+                "    Receive.Received(mine) -> case Channel.send(data.sender, 5) {\n",
+                "      Success(_) -> take(mine) + ended - 1\n",
+                "      Failure(_) -> -1\n",
+                "    }\n",
+                "    Receive.Drained -> -2\n",
+                "  }\n",
+                "}\n",
+            )
+        ),
+    );
+    assert_eq!(
+        over_a_channel,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":5}"
+    );
+    let as_its_result = native_hand_back_outcome(
+        "hand-back-result",
+        &format!(
+            "{HAND_BACK_PRELUDE}{}",
+            concat!(
+                "pub fn main() -> Int {\n",
+                "  let data = Channel.bounded(1)\n",
+                "  let r = data.receiver\n",
+                "  let child = Task.start(fn() -> Receiver<Int> {\n",
+                "    r\n",
+                "  })\n",
+                "  let mine = Task.result(child)\n",
+                "  case Channel.send(data.sender, 5) {\n",
+                "    Success(_) -> take(mine)\n",
+                "    Failure(_) -> -1\n",
+                "  }\n",
+                "}\n",
+            )
+        ),
+    );
+    assert_eq!(
+        as_its_result,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":5}"
+    );
+}
+
+// ts-f4e749: what happens to a Receiver sent in a message that no task receives.
+// - A refused send hands it back to the sender, whose own copy works again: main
+//   reads 5 through the Receiver it got back from `SendError.Closed`.
+// - A message discarded unread (its channel aborted while it was queued) takes
+//   the Receiver out of the program, so its channel aborts as if its owner had
+//   ended, and a later send on it fails (7). A runtime that left it open with no
+//   owner would accept the send and return 0, and any task waiting on that
+//   channel would wait forever.
+// - The sender's own copy is stale while the message is in flight: using it
+//   defects the sender and says why.
+#[test]
+fn native_a_receiver_in_an_unreceived_message_is_returned_or_ends() {
+    let refused = native_hand_back_outcome(
+        "hand-back-refused",
+        &format!(
+            "{HAND_BACK_PRELUDE}{}",
+            concat!(
+                "pub fn main() -> Int {\n",
+                "  let data = Channel.bounded(1)\n",
+                "  let parcels = Channel.bounded(1)\n",
+                "  Channel.close(parcels.completion)\n",
+                "  case Channel.send(parcels.sender, data.receiver) {\n",
+                "    Success(_) -> -1\n",
+                "    Failure(SendError.Closed(back)) -> {\n",
+                "      Channel.send(data.sender, 5)\n",
+                "      take(back)\n",
+                "    }\n",
+                "    Failure(SendError.Aborted(back)) -> -2\n",
+                "  }\n",
+                "}\n",
+            )
+        ),
+    );
+    assert_eq!(
+        refused,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":5}"
+    );
+    let discarded = native_hand_back_outcome(
+        "hand-back-discarded",
+        &format!(
+            "{HAND_BACK_PRELUDE}{}",
+            concat!(
+                "pub fn main() -> Int {\n",
+                "  let data = Channel.bounded(1)\n",
+                "  let parcels = Channel.bounded(1)\n",
+                "  Channel.send(parcels.sender, data.receiver)\n",
+                "  Channel.abort(parcels.receiver)\n",
+                "  case Channel.send(data.sender, 5) {\n",
+                "    Success(_) -> 0\n",
+                "    Failure(SendError.Aborted(_)) -> 7\n",
+                "    Failure(SendError.Closed(_)) -> -1\n",
+                "  }\n",
+                "}\n",
+            )
+        ),
+    );
+    assert_eq!(
+        discarded,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":7}"
+    );
+    let message = native_capability_defect(
+        "hand-back-in-flight",
+        concat!(
+            "fn dup<T>(x: T) -> (T, T) {\n",
+            "  (x, x)\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let data = Channel.bounded(1)\n",
+            "  let parcels = Channel.bounded(1)\n",
+            "  let f = dup\n",
+            "  let p = f(data.receiver)\n",
+            "  case p {\n",
+            "    (a, b) -> {\n",
+            "      Channel.send(parcels.sender, a)\n",
+            "      let got = Channel.receive(b)\n",
+            "      0\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        message,
+        "channel capability violation: task 1 cannot use the Receiver of channel 1 \
+         in Channel.receive: this copy is stale; the capability was sent in a message \
+         no task has received yet"
+    );
 }
