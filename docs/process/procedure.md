@@ -91,6 +91,9 @@ the verifier are done and every CI check passes.
   wake, read the checks and merge, fix, or schedule the next check.
 - If `main` moved since the last CI run, update the branch and wait for CI to
   rerun. There is no branch protection, so this is on the lane.
+- **Docs-only PRs** (no code, tests or CI config changed) don't wait on CI.
+  Merge them once they're written and checked, and don't rerun CI when `main`
+  moves, as long as merging `main` in is clean (Byron, 2026-11-15).
 - Merge or rebase, never force-push.
 - The checks that must pass are `test (macos-latest)` and `test (ubuntu-latest)`.
   `program outputs (*)` compares 12 program outputs with the base branch. A red
