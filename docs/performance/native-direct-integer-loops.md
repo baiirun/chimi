@@ -29,8 +29,9 @@ Cranelift function `int32_t pass(int64_t state, int64_t *out)`, and the runtime'
   loop reruns that pass from the same state. The pass is pure, so the rerun
   reports exactly the runtime's defect, operands and origin.
 - **Cancellation** is checked before every pass, as in the runtime loop.
-- **Tracing.** Only `--trace=off` runs take the direct path. Any tracing needs
-  every node's span, so traced runs use the runtime loop from the start.
+- **Tracing and profiling.** Only `--trace=off` runs without `--profile-file`
+  take the direct path. Any tracing needs every node's span and profiling counts
+  every node, so those runs use the runtime loop from the start.
 - **State type.** A body that never reads its state (`loop s = "x" { break 5 }`)
   lowers whatever the state's type; a state that is not an `Int` runs on the
   runtime loop.
