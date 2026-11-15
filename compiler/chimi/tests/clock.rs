@@ -171,7 +171,7 @@ fn time_functions_surface_the_clock_need() {
     );
     assert_eq!(
         report.contract("main", "bounded").as_deref(),
-        Some("fn() -> Int errors { LoadError, Timeout } needs { clock: Clock, store: Store }")
+        Some("fn() -> Int errors LoadError | Timeout needs { clock: Clock, store: Store }")
     );
     for (function, contract) in [
         ("Clock.now", "fn() -> Instant needs { clock: Clock }"),

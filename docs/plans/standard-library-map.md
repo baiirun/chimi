@@ -194,11 +194,12 @@ cancellation is masked and must not let the raw handle escape.
 
 ### G13. Storable outcomes
 
-A failure set cannot be projected into a user generic value position
-(*verified*: `fn capture<T, E>(op: fn() -> T errors E)` returning
-`Err(error)` fails with `T4203`). Without this, `Result`, `Task.all`, channels
-that carry failures, batch reporting, and selective retry predicates cannot be
-written. The retry prototype records the same limit.
+Done (CHI-200): a failure set projects into a user generic value position,
+so `fn capture<T, E, R>(op: fn() -> T errors E needs R) -> Result<T, E>`
+compiles, and `std/result` provides `Result`, `capture`, and `get`. Before
+this, `Err(error)` failed with `T4203`, and `Result`, `Task.all`, channels that
+carry failures, batch reporting, and selective retry predicates could not be
+written.
 
 ### G14. Time, timers, and choice
 

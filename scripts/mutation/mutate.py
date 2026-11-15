@@ -61,6 +61,7 @@ import os
 import re
 import runpy
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -106,17 +107,28 @@ def cargo_test(crate: Path, args, targets, test_filter, target_dir: Path, timeou
         command += ["--lib"] if target == "lib" else ["--test", target]
     if test_filter:
         command += ["--", test_filter]
-    environment = dict(os.environ, CARGO_TARGET_DIR=str(target_dir))
-    return subprocess.run(
-        command, cwd=crate, env=environment, capture_output=True, text=True, timeout=timeout
-    )
+    return run_command(crate, command, target_dir, timeout)
 
 
 def run_command(crate: Path, command, target_dir: Path, timeout):
+    """Runs `command`, and on a timeout stops everything it started.
+
+    A mutant that makes a program loop forever leaves the test binary and the
+    program it built running after cargo is killed, so the command gets its own
+    process group and the whole group is killed.
+    """
     environment = dict(os.environ, CARGO_TARGET_DIR=str(target_dir))
-    return subprocess.run(
-        command, cwd=crate, env=environment, capture_output=True, text=True, timeout=timeout
+    process = subprocess.Popen(
+        command, cwd=crate, env=environment, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, start_new_session=True,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def tests_run(output: str) -> int:

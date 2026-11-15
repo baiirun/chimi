@@ -299,6 +299,12 @@ fn format_parse(parsed: &ParseResult) -> String {
                 writer.trim_space();
                 writer.write(token.text());
             }
+            // `|` joins failure-set members; `+` was the old spelling after
+            // `errors` and is rewritten.
+            TokenKind::Bar | TokenKind::Plus if token.parent().kind() == NodeKind::UnionType => {
+                writer.space();
+                writer.write("| ");
+            }
             TokenKind::Minus
                 if token_has_ancestor(token, &[NodeKind::UnaryExpression, NodeKind::Pattern]) =>
             {

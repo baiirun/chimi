@@ -1,0 +1,17 @@
+// Result derives equality from its type arguments, and orders every Ok before
+// every Err when the error is a single enum.
+import std/debug as Debug
+import std/result.{Result, Ok, Err}
+
+enum Problem {
+  Small
+  Large
+}
+
+pub fn main() -> Text {
+  let one: Result<Int, Problem> = Ok(1)
+  let small: Result<Int, Problem> = Err(Problem.Small)
+  let large: Result<Int, Problem> = Err(Problem.Large)
+  let checks = [one == Ok(1), small == Err(Problem.Small), small == large, one < small, small < large]
+  Debug.render(checks)
+}
