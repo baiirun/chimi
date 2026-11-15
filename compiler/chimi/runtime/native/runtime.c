@@ -4703,6 +4703,7 @@ static unsigned hex_value(char digit) { return digit <= '9' ? (unsigned)(digit -
 static ChimiValue *bytes_from_hex(const char *hex, size_t length) {
   char *raw = allocate(length / 2 + 1, 1);
   for (size_t i = 0; i < length / 2; ++i) raw[i] = (char)(hex_value(hex[2 * i]) << 4 | hex_value(hex[2 * i + 1]));
+  raw[length / 2] = '\0';
   ChimiValue *value = new_value(VALUE_BYTES); value->as.text.bytes = raw; value->as.text.length = length / 2;
   return value;
 }
@@ -4769,6 +4770,7 @@ static ChimiControl *invoke_bytes_operation(uint32_t intrinsic, ChimiValue **arg
                                         i, element->as.integer), call_node);
         raw[i] = (char)element->as.integer;
       }
+      raw[length] = '\0';
       ChimiValue *value = new_value(VALUE_BYTES); value->as.text.bytes = raw; value->as.text.length = length;
       return success(value);
     }
