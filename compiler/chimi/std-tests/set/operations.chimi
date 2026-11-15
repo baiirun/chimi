@@ -1,0 +1,34 @@
+// std/set: items go in out of order and repeated, so enumeration shows the
+// ascending order and that equal items are kept once; sets built in different
+// orders compare equal.
+import std/debug as Debug
+import std/set as Set
+import std/set.{Set}
+
+enum Tag {
+  Plain
+  Named(name: Text)
+}
+
+const primes = Set.from([7, 2, 5, 3, 2])
+
+pub fn main() -> List<Text> {
+  let digits = Set.from([3, 1, 2, 3, 1])
+  let nothing: Set<Int> = Set.empty()
+  let tags = Set.from([Tag.Named("b"), Tag.Plain, Tag.Named("a"), Tag.Named("b")])
+  [
+    "from: ${Debug.render(digits)}",
+    "empty: ${Debug.render(nothing)}",
+    "contains: ${Debug.render([Set.contains(digits, 2), Set.contains(digits, 9)])}",
+    "size: ${Debug.render([Set.size(digits), Set.size(nothing)])}",
+    "is_empty: ${Debug.render([Set.is_empty(digits), Set.is_empty(nothing)])}",
+    "add: ${Debug.render([Set.add(digits, 0), Set.add(digits, 2)])}",
+    "remove: ${Debug.render([Set.remove(digits, 2), Set.remove(digits, 9)])}",
+    "to_list: ${Debug.render(Set.to_list(digits))}",
+    "filter: ${Debug.render(Set.filter(digits, fn(digit) { digit != 2 }))}",
+    "reduce, in ascending order: ${Set.reduce(digits, "", fn(text, digit) { "${text}${digit};" })}",
+    "equal items are kept once: ${Debug.render([Set.size(tags), Set.size(Set.add(tags, Tag.Named("a")))])}",
+    "equal whatever the insertion order: ${Debug.render([digits == Set.from([2, 3, 1]), digits == Set.from([1, 2])])}",
+    "constant: ${Debug.render(primes)}",
+  ]
+}

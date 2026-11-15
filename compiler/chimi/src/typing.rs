@@ -1344,9 +1344,10 @@ struct ProjectTypeChecker {
     /// The innermost expression being inferred, where a generic function value
     /// that meets a function type is instantiated.
     expression_site: Option<(ModuleId, TextRange)>,
-    /// Written `Map` key types seen while declarations are lowered, checked
-    /// once every field is known; `None` once they have been checked.
-    written_map_keys: Option<Vec<(ModuleId, TextRange, TypeId)>>,
+    /// Written `Map` key and `Set` item types seen while declarations are
+    /// lowered, checked once every field is known; `None` once they have been
+    /// checked.
+    written_map_keys: Option<Vec<(ModuleId, TextRange, TypeId, &'static str)>>,
     /// The callable each generic function value's parameter list comes from,
     /// to name it in a diagnostic about that instantiation.
     polymorphic_owners: HashMap<Vec<SymbolId>, SymbolId>,
@@ -2716,8 +2717,8 @@ impl ProjectTypeChecker {
                 self.check_declaration(*module_id, &declaration);
             }
         }
-        for (module_id, range, key) in self.written_map_keys.take().unwrap_or_default() {
-            self.check_written_map_key(module_id, range, key);
+        for (module_id, range, key, role) in self.written_map_keys.take().unwrap_or_default() {
+            self.check_written_map_key(module_id, range, key, role);
         }
         let declaration_count = body_modules
             .iter()
@@ -2920,6 +2921,7 @@ impl ProjectTypeChecker {
                 let function_type = self.intern_type(CanonicalType::Function(contract));
                 self.declaration_types
                     .insert((module_id, declaration.semantic_id), function_type);
+                self.add_stated_requirements(module_id, declaration, &generic_symbols);
             }
             ModuleDeclarationKind::Constant => {
                 if let Some(annotation) = &declaration.annotation {
@@ -2936,6 +2938,35 @@ impl ProjectTypeChecker {
                         .insert((module_id, declaration.semantic_id), address);
                 }
             }
+        }
+    }
+
+    /// Gives a standard function the generic requirements the registry states
+    /// for it (`operations::STATED_REQUIREMENTS`), as an intrinsic's are: with
+    /// no origin, so a lack is reported at the caller's call.
+    fn add_stated_requirements(
+        &mut self,
+        module_id: ModuleId,
+        declaration: &ModuleDeclaration,
+        generic_symbols: &HashMap<String, SymbolId>,
+    ) {
+        if !self.resolved.is_standard_module(module_id) {
+            return;
+        }
+        let module_path = &self.resolved.semantic.modules[module_id.raw() as usize].path;
+        let id = format!("{module_path}.{}", declaration.name.text);
+        for stated in crate::operations::stated_requirements(&id) {
+            let generic = generic_symbols
+                .get(stated.generic)
+                .copied()
+                .unwrap_or_else(|| panic!("{id} declares no generic {}", stated.generic));
+            self.generic_requirements.insert(
+                generic,
+                GenericRequirement {
+                    property: stated.property,
+                    origin: None,
+                },
+            );
         }
     }
 
@@ -7847,15 +7878,16 @@ impl ProjectTypeChecker {
                                     name,
                                 );
                             }
-                            if matches!(
-                                self.resolved.standard_symbol(symbol),
-                                Some(StandardSymbol::Type(StandardType::Map))
-                            ) && let Some(key) = lowered.first()
-                            {
+                            let role = match self.resolved.standard_symbol(symbol) {
+                                Some(StandardSymbol::Type(StandardType::Map)) => Some("`Map` keys"),
+                                Some(StandardSymbol::Type(StandardType::Set)) => Some("`Set` items"),
+                                _ => None,
+                            };
+                            if let (Some(role), Some(key)) = (role, lowered.first()) {
                                 if let Some(pending) = &mut self.written_map_keys {
-                                    pending.push((module_id, name.range, *key));
+                                    pending.push((module_id, name.range, *key, role));
                                 } else {
-                                    self.check_written_map_key(module_id, name.range, *key);
+                                    self.check_written_map_key(module_id, name.range, *key, role);
                                 }
                             }
                             self.intern_type(CanonicalType::Named {
@@ -7929,7 +7961,14 @@ impl ProjectTypeChecker {
 
     /// Rejects a written `Map<K, V>` whose `K` is not equatable, at the `Map`
     /// name. A generic `K` is left to the code that builds the map.
-    fn check_written_map_key(&mut self, module_id: ModuleId, range: TextRange, key: TypeId) {
+    /// `role` names what `key` is, as "`Map` keys".
+    fn check_written_map_key(
+        &mut self,
+        module_id: ModuleId,
+        range: TextRange,
+        key: TypeId,
+        role: &str,
+    ) {
         let Some(lack) = self.type_view().derive(key, ValueProperty::Equatable).lack else {
             return;
         };
@@ -7939,7 +7978,7 @@ impl ProjectTypeChecker {
             "T4300",
             range,
             format!(
-                "`Map` keys must be equatable, but `{found}` is not equatable: {}",
+                "{role} must be equatable, but `{found}` is not equatable: {}",
                 lack.describe()
             ),
         );

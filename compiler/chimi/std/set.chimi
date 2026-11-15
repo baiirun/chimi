@@ -1,0 +1,112 @@
+/// Operations on `Set<T>`, an immutable set of equatable items. Every function
+/// returns a new set. Functions that enumerate a set (`to_list`, `reduce`,
+/// `each`, `filter`) visit its items in ascending structural order, so they
+/// need `T` to be ordered; callbacks run in that order, in the calling task,
+/// and stop at their first failure.
+
+import std/list as List
+
+// 1. Public types.
+
+/// An immutable set of distinct items. Equatable when `T` is, never ordered,
+/// and shareable when `T` is.
+pub native type Set<T>
+
+// 4. Constructors.
+
+/// Returns a set with no items.
+///
+/// Cost: O(1).
+pub native fn empty<T>() -> Set<T>
+
+/// Returns the distinct items of `items`.
+///
+/// Cost: O(n log n).
+pub fn from<T>(items: List<T>) -> Set<T> {
+  List.reduce(items, empty(), add)
+}
+
+// 5. Queries and predicates.
+
+/// Returns `True` when `set` holds an item equal to `item`.
+///
+/// Cost: O(log n).
+pub native fn contains<T>(set: Set<T>, item: T) -> Bool
+
+/// Returns the number of items in `set`.
+///
+/// Cost: O(n).
+pub native fn size<T>(set: Set<T>) -> Int
+
+/// Returns `True` when `set` has no items.
+///
+/// Cost: O(n).
+pub fn is_empty<T>(set: Set<T>) -> Bool {
+  size(set) == 0
+}
+
+// 5. Changing.
+
+/// Returns `set` with `item` added; `set` itself when it already holds it.
+///
+/// Cost: O(log n).
+pub native fn add<T>(set: Set<T>, item: T) -> Set<T>
+
+/// Returns `set` without `item`; `set` itself when it does not hold it.
+///
+/// Cost: O(log n).
+pub native fn remove<T>(set: Set<T>, item: T) -> Set<T>
+
+// Enumerating, in ascending order.
+
+/// Returns the items of `set` in ascending order.
+///
+/// Cost: O(n).
+pub fn to_list<T>(set: Set<T>) -> List<T> {
+  reduce(set, [], List.push)
+}
+
+// 6. Transformations, with callbacks last.
+
+/// Returns the items of `set` for which `keep` returns `True`.
+///
+/// Calls: `keep` once per item, in ascending order; stops at its first
+/// failure.
+/// Cost: O(n log n).
+pub fn filter<T, E, R>(set: Set<T>, keep: fn(T) -> Bool errors E needs R) -> Set<T> {
+  reduce(set, empty(), fn(done, item) {
+    let kept = keep(item)
+    case kept {
+      True -> add(done, item)
+      False -> done
+    }
+  })
+}
+
+/// Combines the items of `set` into one value: `step` receives the state so
+/// far, starting at `initial`, and each item, and returns the next state.
+///
+/// Calls: `step` once per item, in ascending order; stops at its first
+/// failure.
+/// Cost: O(n).
+pub fn reduce<T, S, E, R>(set: Set<T>, initial: S, step: fn(S, T) -> S errors E needs R) -> S {
+  reduce_items(set, initial, step)
+}
+
+/// Calls `action` with each item of `set`, for its effect.
+///
+/// Calls: `action` once per item, in ascending order; stops at its first
+/// failure.
+/// Cost: O(n).
+pub fn each<T, E, R>(set: Set<T>, action: fn(T) -> Void errors E needs R) -> Void {
+  reduce(set, Void, fn(_done, item) { action(item) })
+}
+
+// 8. Private native core.
+
+/// Combines the items of `set` in ascending order, for `reduce`.
+native fn reduce_items<T, S, E, R>(
+  set: Set<T>,
+  initial: S,
+  step: fn(S, T) -> S errors E needs R,
+) -> S errors E needs R

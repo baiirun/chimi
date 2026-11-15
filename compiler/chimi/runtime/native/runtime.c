@@ -60,7 +60,9 @@ typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN
                /* Process values (std/process, std/supervisor). Each is plain data that
                   copies as-is: identities the scheduler resolves, never pointers. */
                VALUE_PROCESS_ADDRESS, VALUE_PROCESS_INBOX, VALUE_SUPERVISOR_RUNNING,
-               VALUE_MANAGED_PROCESS, VALUE_MANAGED_SUPERVISOR } ValueKind;
+               VALUE_MANAGED_PROCESS, VALUE_MANAGED_SUPERVISOR,
+               /* A `std/set.Set` in `as.map`: each item is a key bound to Void. */
+               VALUE_SET } ValueKind;
 /* CALL_CONSTRUCTOR is a constructor with fields named as a value; calling it constructs. */
 typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC,
                CALL_CONSTRUCTOR } CallableKind;
@@ -985,7 +987,8 @@ static void mark_children(void *pointer) {
         case VALUE_TUPLE: mark_push(value->as.record.fields, ALLOCATION_FIELDS); break;
         case VALUE_CONSTRUCTED: mark_push(value->as.constructed.fields, ALLOCATION_FIELDS); break;
         case VALUE_CALLABLE: mark_push(value->as.callable, ALLOCATION_CALLABLE); break;
-        case VALUE_MAP: mark_push(value->as.map, ALLOCATION_MAP_NODE); break;
+        case VALUE_MAP:
+        case VALUE_SET: mark_push(value->as.map, ALLOCATION_MAP_NODE); break;
         case VALUE_TASK:
         case VALUE_CHANNEL_SENDER:
         case VALUE_CHANNEL_RECEIVER:
@@ -1331,7 +1334,8 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
           break;
         case VALUE_CALLABLE:
           value->as.callable = copy_forward(copy, value->as.callable, ALLOCATION_CALLABLE); break;
-        case VALUE_MAP: value->as.map = copy_forward(copy, value->as.map, ALLOCATION_MAP_NODE); break;
+        case VALUE_MAP:
+        case VALUE_SET: value->as.map = copy_forward(copy, value->as.map, ALLOCATION_MAP_NODE); break;
         case VALUE_TASK:
         case VALUE_CHANNEL_SENDER:
         case VALUE_CHANNEL_RECEIVER:
@@ -1985,6 +1989,7 @@ static ChimiControl *decimal_arithmetic(uint32_t operator, Decimal l, Decimal r,
 }
 static ChimiValue *callable_value(ChimiCallable *raw) { ChimiValue *v = new_value(VALUE_CALLABLE); v->as.callable = raw; return v; }
 static ChimiValue *map_value(MapNode *raw) { ChimiValue *v = new_value(VALUE_MAP); v->as.map = raw; return v; }
+static ChimiValue *set_value(MapNode *raw) { ChimiValue *v = new_value(VALUE_SET); v->as.map = raw; return v; }
 static ChimiValue *json_number_value(const char *raw) { ChimiValue *v = new_value(VALUE_JSON_NUMBER); v->as.json_number = copy_text(raw); return v; }
 static ChimiValue *task_value(uint64_t raw) { ChimiValue *v = new_value(VALUE_TASK); v->as.task = raw; return v; }
 static ChimiValue *channel_capability_value(ValueKind kind, uint64_t channel,
@@ -2156,7 +2161,8 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
         transfer_push(transfer, TRANSFER_VALUE, value->as.constructed.fields[index].value);
       return true;
     case VALUE_CALLABLE: transfer_push(transfer, TRANSFER_CALLABLE, value->as.callable); return true;
-    case VALUE_MAP: transfer_push(transfer, TRANSFER_MAP_NODE, value->as.map); return true;
+    case VALUE_MAP:
+    case VALUE_SET: transfer_push(transfer, TRANSFER_MAP_NODE, value->as.map); return true;
     case VALUE_VOID:
     case VALUE_INTEGER:
     case VALUE_FLOAT:
@@ -2286,6 +2292,34 @@ static MapNode *map_put_node(MapNode *node, ChimiValue *key, ChimiValue *value) 
                                             map_put_node(node->left, key, value), node->right));
   return map_balance(map_node(node->key, node->value, node->left,
                               map_put_node(node->right, key, value)));
+}
+/* The least node of `node` in `*least`, and the tree without it. */
+static MapNode *map_remove_least(MapNode *node, MapNode **least) {
+  if (!node->left) { *least = node; return node->right; }
+  MapNode *left = map_remove_least(node->left, least);
+  return map_balance(map_node(node->key, node->value, left, node->right));
+}
+/* `node` without `key`, rebalanced; `node` itself when it has no such key. The
+   recursion is bounded by the tree height. */
+static MapNode *map_remove_node(MapNode *node, const ChimiValue *key) {
+  if (!node) return NULL;
+  int order = chimi_value_compare(key, node->key);
+  if (order < 0) {
+    MapNode *left = map_remove_node(node->left, key);
+    return left == node->left ? node : map_balance(map_node(node->key, node->value, left, node->right));
+  }
+  if (order > 0) {
+    MapNode *right = map_remove_node(node->right, key);
+    return right == node->right ? node : map_balance(map_node(node->key, node->value, node->left, right));
+  }
+  if (!node->left) return node->right;
+  if (!node->right) return node->left;
+  MapNode *least = NULL;
+  MapNode *right = map_remove_least(node->right, &least);
+  return map_balance(map_node(least->key, least->value, node->left, right));
+}
+static int64_t map_size(const MapNode *node) {
+  return node ? 1 + map_size(node->left) + map_size(node->right) : 0;
 }
 static ChimiValue *map_get_node(MapNode *node, const ChimiValue *key) {
   while (node) {
@@ -2576,6 +2610,18 @@ static void json_value(FILE *output, const ChimiValue *root) {
         fputc('{', output);
         json_push_map(&steps, value->as.map);
         break;
+      /* A set is a list of its items in ascending order, as the interpreter writes it. */
+      case VALUE_SET: {
+        MapEntries entries = map_entries(value->as.map);
+        fputc('[', output);
+        json_step(&steps, JSON_STEP_FREE, entries.nodes);
+        json_step(&steps, JSON_STEP_TEXT, "]");
+        for (size_t index = entries.length; index-- > 0;) {
+          json_step(&steps, JSON_STEP_VALUE, entries.nodes[index]->key);
+          if (index) json_step(&steps, JSON_STEP_TEXT, ",");
+        }
+        break;
+      }
       case VALUE_JSON_NUMBER: json_string(output, value->as.json_number); break;
       case VALUE_TASK: fprintf(output, "{\"task\":%" PRIu64 "}", value->as.task); break;
       case VALUE_CHANNEL_SENDER:
@@ -2654,7 +2700,9 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
           compare_push(&stack, left->as.constructed.fields[index].value, right->as.constructed.fields[index].value, 0);
         break;
       }
-      case VALUE_MAP: {
+      /* A set's values are all Void, so the walk compares its items. */
+      case VALUE_MAP:
+      case VALUE_SET: {
         MapEntries left_entries = map_entries(left->as.map), right_entries = map_entries(right->as.map);
         size_t shared = left_entries.length < right_entries.length ? left_entries.length : right_entries.length;
         compare_decide(&stack, order_of((int64_t)left_entries.length, (int64_t)right_entries.length));
@@ -5341,6 +5389,22 @@ static void debug_expand(DebugRenderer *renderer, DebugSteps *steps, const Chimi
       }
       return;
     }
+    case VALUE_SET: {
+      MapEntries entries = map_entries(value->as.map);
+      if (!debug_open(renderer, steps, "Set {", "}", true, (uint32_t)entries.length)) {
+        free(entries.nodes);
+        return;
+      }
+      DebugStep close = steps->items[--steps->length];
+      debug_step(steps, DEBUG_STEP_FREE, entries.nodes, 0, false);
+      steps->items[steps->length++] = close;
+      for (size_t i = entries.length; i-- > 0;) {
+        debug_step(steps, DEBUG_STEP_PART_END, NULL, 0, false);
+        debug_step(steps, DEBUG_STEP_VALUE, entries.nodes[i]->key, 0, false);
+        debug_step(steps, DEBUG_STEP_SEPARATOR, NULL, (uint32_t)i, true);
+      }
+      return;
+    }
     case VALUE_JSON_NUMBER:
       debug_text(buffer, "Json.Number(");
       debug_json_number(buffer, value->as.json_number);
@@ -5978,33 +6042,89 @@ static ChimiControl *not_implemented_yet(const char *operation_id, uint32_t call
   return defect(numeric_message("%s is not implemented yet", operation_id), call_node);
 }
 
-/* The native core of std/map; owned by its port. */
+/* Calls `step` with the state, starting at `initial`, then the key of each node
+   of `entries` and, when `with_value`, its value; stops at the first call that does
+   not succeed. Frees `entries`. */
+static ChimiControl *reduce_in_order(ChimiRuntime *runtime, ChimiCallable *step, ChimiValue *initial,
+                                     MapEntries entries, bool with_value, uint64_t span,
+                                     uint32_t call_node, ChimiEnvironment *environment) {
+  ChimiControl *control = success(initial);
+  for (size_t index = 0; index < entries.length; ++index) {
+    ChimiValue *step_arguments[] = {control->value, entries.nodes[index]->key, entries.nodes[index]->value};
+    control = invoke(runtime, step, step_arguments, with_value ? 3 : 2, span, call_node, environment);
+    if (control->kind != CONTROL_SUCCESS) break;
+  }
+  free(entries.nodes);
+  return control;
+}
+
+static ChimiControl *option_value(ChimiValue *found) {
+  if (!found) return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
+  ChimiValue *fields[] = {found};
+  return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
+}
+
+/* The native core of std/map; execution/map_operations.rs is the interpreter's. */
 static ChimiControl *invoke_map_operation(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment) {
-  (void)runtime; (void)arguments; (void)argument_count; (void)span; (void)environment;
+  if (intrinsic == CHIMI_INTRINSIC_MAP_EMPTY)
+    return argument_count == 0 ? success(map_value(NULL)) : intrinsic_shape_defect(call_node);
+  if (argument_count == 0 || arguments[0]->kind != VALUE_MAP) return intrinsic_shape_defect(call_node);
+  MapNode *map = arguments[0]->as.map;
   switch (intrinsic) {
-    case CHIMI_INTRINSIC_MAP_REMOVE: return not_implemented_yet("std/map.remove", call_node);
-    case CHIMI_INTRINSIC_MAP_SIZE: return not_implemented_yet("std/map.size", call_node);
-    case CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES: return not_implemented_yet("std/map.reduce_entries", call_node);
+    case CHIMI_INTRINSIC_MAP_GET:
+      if (argument_count != 2) break;
+      return option_value(map_get_node(map, arguments[1]));
+    case CHIMI_INTRINSIC_MAP_PUT:
+      if (argument_count != 3) break;
+      return success(map_value(map_put_node(map, arguments[1], arguments[2])));
+    case CHIMI_INTRINSIC_MAP_REMOVE: {
+      if (argument_count != 2) break;
+      MapNode *removed = map_remove_node(map, arguments[1]);
+      return success(removed == map ? arguments[0] : map_value(removed));
+    }
+    case CHIMI_INTRINSIC_MAP_SIZE:
+      if (argument_count != 1) break;
+      return success(integer_value(map_size(map)));
+    case CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES:
+      if (argument_count != 3 || arguments[2]->kind != VALUE_CALLABLE) break;
+      return reduce_in_order(runtime, arguments[2]->as.callable, arguments[1], map_entries(map), true,
+                             span, call_node, environment);
   }
   return intrinsic_shape_defect(call_node);
 }
 
-/* The native core of std/set; owned by its port. */
+/* The native core of std/set: a map whose values are Void. */
 static ChimiControl *invoke_set_operation(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment) {
-  (void)runtime; (void)arguments; (void)argument_count; (void)span; (void)environment;
+  if (intrinsic == CHIMI_INTRINSIC_SET_EMPTY)
+    return argument_count == 0 ? success(set_value(NULL)) : intrinsic_shape_defect(call_node);
+  if (argument_count == 0 || arguments[0]->kind != VALUE_SET) return intrinsic_shape_defect(call_node);
+  MapNode *set = arguments[0]->as.map;
   switch (intrinsic) {
-    case CHIMI_INTRINSIC_SET_EMPTY: return not_implemented_yet("std/set.empty", call_node);
-    case CHIMI_INTRINSIC_SET_CONTAINS: return not_implemented_yet("std/set.contains", call_node);
-    case CHIMI_INTRINSIC_SET_ADD: return not_implemented_yet("std/set.add", call_node);
-    case CHIMI_INTRINSIC_SET_REMOVE: return not_implemented_yet("std/set.remove", call_node);
-    case CHIMI_INTRINSIC_SET_SIZE: return not_implemented_yet("std/set.size", call_node);
-    case CHIMI_INTRINSIC_SET_REDUCE_ITEMS: return not_implemented_yet("std/set.reduce_items", call_node);
+    case CHIMI_INTRINSIC_SET_CONTAINS:
+      if (argument_count != 2) break;
+      return success(boolean_value(map_get_node(set, arguments[1]) != NULL));
+    case CHIMI_INTRINSIC_SET_ADD:
+      if (argument_count != 2) break;
+      return success(map_get_node(set, arguments[1]) ? arguments[0]
+                                                      : set_value(map_put_node(set, arguments[1], void_value())));
+    case CHIMI_INTRINSIC_SET_REMOVE: {
+      if (argument_count != 2) break;
+      MapNode *removed = map_remove_node(set, arguments[1]);
+      return success(removed == set ? arguments[0] : set_value(removed));
+    }
+    case CHIMI_INTRINSIC_SET_SIZE:
+      if (argument_count != 1) break;
+      return success(integer_value(map_size(set)));
+    case CHIMI_INTRINSIC_SET_REDUCE_ITEMS:
+      if (argument_count != 3 || arguments[2]->kind != VALUE_CALLABLE) break;
+      return reduce_in_order(runtime, arguments[2]->as.callable, arguments[1], map_entries(set), false,
+                             span, call_node, environment);
   }
   return intrinsic_shape_defect(call_node);
 }
@@ -6088,7 +6208,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment) {
-  if (intrinsic >= CHIMI_INTRINSIC_MAP_REMOVE && intrinsic <= CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES)
+  if ((intrinsic >= CHIMI_INTRINSIC_MAP_REMOVE && intrinsic <= CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES) ||
+      (intrinsic >= CHIMI_INTRINSIC_MAP_EMPTY && intrinsic <= CHIMI_INTRINSIC_MAP_PUT))
     return invoke_map_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_SET_EMPTY && intrinsic <= CHIMI_INTRINSIC_SET_REDUCE_ITEMS)
     return invoke_set_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
@@ -6133,21 +6254,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     case CHIMI_INTRINSIC_ORDER_MAX:
       if (argument_count != 2) return intrinsic_shape_defect(call_node);
       return success(chimi_value_compare(arguments[0], arguments[1]) < 0 ? arguments[1] : arguments[0]);
-    case CHIMI_INTRINSIC_MAP_EMPTY:
-      return argument_count == 0 ? success(map_value(NULL)) : intrinsic_shape_defect(call_node);
-    case CHIMI_INTRINSIC_MAP_GET: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_MAP)
-        return intrinsic_shape_defect(call_node);
-      ChimiValue *found = map_get_node(arguments[0]->as.map, arguments[1]);
-      if (!found) return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
-      ChimiValue *fields[] = {found};
-      return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
-    }
-    case CHIMI_INTRINSIC_MAP_PUT: {
-      if (argument_count != 3 || arguments[0]->kind != VALUE_MAP)
-        return intrinsic_shape_defect(call_node);
-      return success(map_value(map_put_node(arguments[0]->as.map, arguments[1], arguments[2])));
-    }
     case CHIMI_INTRINSIC_MAP_FROM: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_LIST) return intrinsic_shape_defect(call_node);
       MapNode *map = NULL;
@@ -6627,6 +6733,12 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
       for (uint32_t i = 0; i < raw->length; ++i)
         map = map_put_node(map, constant_values[ids[2 * i]], constant_values[ids[2 * i + 1]]);
       return map_value(map);
+    }
+    case CHIMI_CONSTANT_SET: {
+      MapNode *set = NULL;
+      for (uint32_t i = 0; i < raw->length; ++i)
+        set = map_put_node(set, constant_values[ids[i]], void_value());
+      return set_value(set);
     }
     default: break;
   }

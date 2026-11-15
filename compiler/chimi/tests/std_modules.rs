@@ -317,3 +317,54 @@ fn transitive_standard_imports_are_loaded() {
         );
     }
 }
+
+// Conformance: `Map` keys and `Set` items must be equatable, and enumerating
+// either needs them ordered, because enumeration shows the ascending order
+// (standard library conventions, open question 2). Building and querying a map
+// keyed by a record, which is equatable but not ordered, is accepted; listing
+// its keys is not. Each lack is reported at the caller's call.
+#[test]
+fn map_and_set_state_their_key_requirements_at_the_call() {
+    let ordered = |function: &str, generic: &str| {
+        Some(("T4301", format!("`{function}` needs `{generic}` to be ordered")))
+    };
+    let equatable = |function: &str, generic: &str| {
+        Some(("T4300", format!("`{function}` needs `{generic}` to be equatable")))
+    };
+    let cases = [
+        ("Map.keys(Map.put(Map.empty(), { a: 1 }, 2))", ordered("Map.keys", "K")),
+        (
+            "Map.reduce(Map.put(Map.empty(), { a: 1 }, 2), 0, fn(total, _key, value) { total + value })",
+            ordered("Map.reduce", "K"),
+        ),
+        (
+            "Map.size(Map.merge(Map.put(Map.empty(), { a: 1 }, 2), Map.from([({ a: 2 }, 3)])))",
+            None,
+        ),
+        (
+            "Map.has_key(Map.remove(Map.put(Map.empty(), { a: 1 }, 2), { a: 1 }), { a: 1 })",
+            None,
+        ),
+        ("Map.from([(fn() { 1 }, 2)])", equatable("Map.from", "K")),
+        ("Set.to_list(Set.add(Set.empty(), { a: 1 }))", ordered("Set.to_list", "T")),
+        ("Set.contains(Set.from([{ a: 1 }]), { a: 1 })", None),
+        ("Set.from([fn() { 1 }])", equatable("Set.from", "T")),
+    ];
+    for (call, expected) in cases {
+        let source =
+            format!("import std/map as Map\nimport std/set as Set\npub fn main() {{ {call} }}\n");
+        let report = Compiler::type_project(vec![module("main", &source)]);
+        let found = report
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| (diagnostic.code().to_owned(), diagnostic.message().to_owned()))
+            .collect::<Vec<_>>();
+        match expected {
+            None => assert!(found.is_empty(), "{call}: {found:?}"),
+            Some((code, message)) => assert!(
+                found.len() == 1 && found[0].0 == code && found[0].1.starts_with(&message),
+                "{call}: {found:?}"
+            ),
+        }
+    }
+}

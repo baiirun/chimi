@@ -127,6 +127,17 @@ impl Renderer<'_> {
                     });
                 self.composite("Map ", "{", "}", true, parts.collect());
             }
+            RuntimeValue::Set(set) => {
+                let parts = set
+                    .entry_refs()
+                    .into_iter()
+                    .map(|(item, _)| Part {
+                        label: None,
+                        value: item,
+                    })
+                    .collect();
+                self.composite("Set ", "{", "}", true, parts);
+            }
             RuntimeValue::JsonNumber(text) => {
                 self.output.push_str("Json.Number(");
                 self.output.push_str(&normalize_json_number(text));

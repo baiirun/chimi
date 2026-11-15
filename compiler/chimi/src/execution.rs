@@ -7,7 +7,6 @@ mod json_operations;
 mod map_operations;
 mod persistent_list;
 mod processes;
-mod set_operations;
 mod structural;
 mod teardown;
 
@@ -386,6 +385,9 @@ enum RuntimeValue {
         fields: Arc<Vec<RuntimeField>>,
     },
     Map(RuntimeMap),
+    /// A `std/set.Set`: a map from each item to `Void`, kept a separate kind so
+    /// rendering and outcomes show a set.
+    Set(RuntimeMap),
     JsonNumber(String),
     Callable(RuntimeCallable),
 }
@@ -407,6 +409,7 @@ impl RuntimeValue {
                 | Self::Record(_)
                 | Self::Constructed { .. }
                 | Self::Map(_)
+                | Self::Set(_)
                 | Self::Callable(_)
         )
     }
@@ -452,9 +455,9 @@ struct RuntimeMapNode {
     right: Option<Arc<Self>>,
 }
 
-/// The internal total order over keys: structural order, which is consistent
-/// with equality for every equatable type. It is never observable through
-/// enumeration, which `Map` does not promise.
+/// The order over keys: structural order, which is consistent with equality
+/// for every equatable type. Enumeration visits keys in this order, which
+/// `std/map` exposes only for an ordered key type.
 type KeyOrder<'order> = dyn Fn(&RuntimeValue, &RuntimeValue) -> Comparison + 'order;
 
 impl RuntimeMap {
@@ -474,6 +477,15 @@ impl RuntimeMap {
         Self {
             root: Some(map_insert(self.root.clone(), key, value, order)),
         }
+    }
+
+    /// The map without `key`, or `None` when it has no such key.
+    fn remove(&self, key: &RuntimeValue, order: &KeyOrder<'_>) -> Option<Self> {
+        map_remove(self.root.clone(), key, order).map(|root| Self { root })
+    }
+
+    fn size(&self) -> usize {
+        self.entry_refs().len()
     }
 
     /// Entries in key order, borrowed. The walk keeps its own stack; the tree is
@@ -528,6 +540,65 @@ fn map_insert(
         ),
     };
     map_balance(updated)
+}
+
+/// `node` without `key`, rebalanced; `None` when `key` is absent. The recursion
+/// is bounded by the tree height.
+fn map_remove(
+    node: Option<Arc<RuntimeMapNode>>,
+    key: &RuntimeValue,
+    order: &KeyOrder<'_>,
+) -> Option<Option<Arc<RuntimeMapNode>>> {
+    let node = node?;
+    let rebuilt = |left, right| {
+        Some(Some(map_balance(map_node(
+            node.key.clone(),
+            node.value.clone(),
+            left,
+            right,
+        ))))
+    };
+    match order(key, &node.key) {
+        Comparison::Less => {
+            let left = map_remove(node.left.clone(), key, order)?;
+            rebuilt(left, node.right.clone())
+        }
+        Comparison::Greater => {
+            let right = map_remove(node.right.clone(), key, order)?;
+            rebuilt(node.left.clone(), right)
+        }
+        Comparison::Equal => Some(match (&node.left, &node.right) {
+            (None, right) => right.clone(),
+            (left, None) => left.clone(),
+            (left, Some(right)) => {
+                let (least, rest) = map_remove_least(right.clone());
+                Some(map_balance(map_node(
+                    least.key.clone(),
+                    least.value.clone(),
+                    left.clone(),
+                    rest,
+                )))
+            }
+        }),
+    }
+}
+
+/// The least node of `node` and the rest of the tree without it.
+fn map_remove_least(
+    node: Arc<RuntimeMapNode>,
+) -> (Arc<RuntimeMapNode>, Option<Arc<RuntimeMapNode>>) {
+    let Some(left) = node.left.clone() else {
+        let rest = node.right.clone();
+        return (node, rest);
+    };
+    let (least, rest) = map_remove_least(left);
+    let rebuilt = map_balance(map_node(
+        node.key.clone(),
+        node.value.clone(),
+        rest,
+        node.right.clone(),
+    ));
+    (least, Some(rebuilt))
 }
 
 fn map_height(node: &Option<Arc<RuntimeMapNode>>) -> u16 {
@@ -1575,7 +1646,10 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::ListSet => {
                 self.invoke_core_operation(function, arguments, call_node)
             }
-            StandardFunction::MapRemove
+            StandardFunction::MapEmpty
+            | StandardFunction::MapGet
+            | StandardFunction::MapPut
+            | StandardFunction::MapRemove
             | StandardFunction::MapSize
             | StandardFunction::MapReduceEntries => {
                 self.invoke_map_operation(function, arguments, span, call_node, environment)
@@ -1625,31 +1699,6 @@ impl<'core> Evaluator<'core> {
                 Control::Success(RuntimeValue::Integer(
                     i64::try_from(values.len()).unwrap_or(i64::MAX),
                 ))
-            }
-            StandardFunction::MapEmpty => {
-                Control::Success(RuntimeValue::Map(RuntimeMap::default()))
-            }
-            StandardFunction::MapGet => {
-                let [RuntimeValue::Map(map), key] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                let value = map.get(key, &self.key_order());
-                Control::Success(match value {
-                    Some(value) => {
-                        self.standard_value(StandardConstructor::OptionSome, vec![value])
-                    }
-                    None => self.standard_value(StandardConstructor::OptionNone, Vec::new()),
-                })
-            }
-            StandardFunction::MapPut => {
-                let [RuntimeValue::Map(map), key, value] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                Control::Success(RuntimeValue::Map(map.put(
-                    key.clone(),
-                    value.clone(),
-                    &self.key_order(),
-                )))
             }
             StandardFunction::MapFrom => {
                 let [RuntimeValue::List(pairs)] = arguments.as_slice() else {
@@ -2649,6 +2698,12 @@ fn public_value(value: &RuntimeValue) -> ExecutionValue {
                     },
                     value: public_value(value),
                 })
+                .collect(),
+        ),
+        RuntimeValue::Set(set) => ExecutionValue::List(
+            set.entry_refs()
+                .into_iter()
+                .map(|(item, _)| public_value(item))
                 .collect(),
         ),
         RuntimeValue::Callable(callable) => ExecutionValue::Callable {

@@ -134,6 +134,14 @@ pub(super) fn structural_order(
                 }
                 Ordering::Equal
             }
+            (RuntimeValue::Set(left), RuntimeValue::Set(right)) => {
+                let (left, right) = (left.entry_refs(), right.entry_refs());
+                steps.push(Step::Decide(left.len().cmp(&right.len())));
+                for ((left_item, _), (right_item, _)) in left.into_iter().zip(right).rev() {
+                    steps.push(Step::Compare(left_item, right_item));
+                }
+                Ordering::Equal
+            }
             // Typing admits no other pair; rank keeps the order total regardless.
             (left, right) => rank(left).cmp(&rank(right)),
         };
@@ -168,6 +176,7 @@ const fn rank(value: &RuntimeValue) -> u8 {
         RuntimeValue::Duration(_) => 13,
         RuntimeValue::ProcessAddress(_) => 14,
         RuntimeValue::Decimal(_) => 15,
+        RuntimeValue::Set(_) => 16,
     }
 }
 

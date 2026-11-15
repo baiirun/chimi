@@ -16,7 +16,7 @@
 use crate::compiler::{ProjectSource, resolve_project_sources};
 use crate::diagnostic::Diagnostic;
 use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol, StandardType};
-use crate::typing::check_project;
+use crate::typing::{ValueProperty, check_project};
 use std::collections::{HashMap, HashSet};
 
 /// What an operation may touch, which decides where it may run.
@@ -115,21 +115,18 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/list.push", 2, StandardFunction::ListPush),
     pure("std/list.slice", 2, StandardFunction::ListSlice),
     pure("std/list.set", 3, StandardFunction::ListSet),
-    // std/map: the first three are the built-in intrinsics the old path runs.
-    porting("std/map.empty", 0, StandardFunction::MapEmpty),
-    porting("std/map.get", 2, StandardFunction::MapGet),
-    porting("std/map.put", 3, StandardFunction::MapPut),
-    porting("std/map.remove", 2, StandardFunction::MapRemove),
-    porting("std/map.size", 1, StandardFunction::MapSize),
-    porting("std/map.reduce_entries", 3, StandardFunction::MapReduceEntries),
-
-    // std/set
-    porting("std/set.empty", 0, StandardFunction::SetEmpty),
-    porting("std/set.contains", 2, StandardFunction::SetContains),
-    porting("std/set.add", 2, StandardFunction::SetAdd),
-    porting("std/set.remove", 2, StandardFunction::SetRemove),
-    porting("std/set.size", 1, StandardFunction::SetSize),
-    porting("std/set.reduce_items", 3, StandardFunction::SetReduceItems),
+    pure("std/map.empty", 0, StandardFunction::MapEmpty),
+    pure("std/map.get", 2, StandardFunction::MapGet),
+    pure("std/map.put", 3, StandardFunction::MapPut),
+    pure("std/map.remove", 2, StandardFunction::MapRemove),
+    pure("std/map.size", 1, StandardFunction::MapSize),
+    pure("std/map.reduce_entries", 3, StandardFunction::MapReduceEntries),
+    pure("std/set.empty", 0, StandardFunction::SetEmpty),
+    pure("std/set.contains", 2, StandardFunction::SetContains),
+    pure("std/set.add", 2, StandardFunction::SetAdd),
+    pure("std/set.remove", 2, StandardFunction::SetRemove),
+    pure("std/set.size", 1, StandardFunction::SetSize),
+    pure("std/set.reduce_items", 3, StandardFunction::SetReduceItems),
 
     // std/json: all but number_to_decimal are the built-in intrinsics.
     porting("std/json.decode", 1, StandardFunction::JsonDecode),
@@ -199,6 +196,59 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
         StandardConstructor::NumberOutOfRange,
     ),
 ];
+
+/// A property a standard function needs of one of its generic parameters that
+/// its source cannot state: a `native fn` has no body to infer it from, and a
+/// Chimi function whose result shows the structural order of its input needs
+/// that order without comparing anything itself.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StatedRequirement {
+    /// The qualified name of the function.
+    pub(crate) function: &'static str,
+    /// The name of its generic parameter.
+    pub(crate) generic: &'static str,
+    pub(crate) property: ValueProperty,
+}
+
+const fn requires(
+    function: &'static str,
+    generic: &'static str,
+    property: ValueProperty,
+) -> StatedRequirement {
+    StatedRequirement {
+        function,
+        generic,
+        property,
+    }
+}
+
+/// `Map` keys and `Set` items are equatable wherever a native operation takes
+/// or makes one. Enumeration visits them in ascending structural order, which
+/// the conventions expose only for an ordered type, so each module's `reduce`,
+/// which every enumerating function calls, needs it (open question 2 of the
+/// standard library conventions).
+pub(crate) const STATED_REQUIREMENTS: &[StatedRequirement] = &[
+    requires("std/map.empty", "K", ValueProperty::Equatable),
+    requires("std/map.get", "K", ValueProperty::Equatable),
+    requires("std/map.put", "K", ValueProperty::Equatable),
+    requires("std/map.remove", "K", ValueProperty::Equatable),
+    requires("std/map.reduce", "K", ValueProperty::Ordered),
+    requires("std/set.empty", "T", ValueProperty::Equatable),
+    requires("std/set.contains", "T", ValueProperty::Equatable),
+    requires("std/set.add", "T", ValueProperty::Equatable),
+    requires("std/set.remove", "T", ValueProperty::Equatable),
+    requires("std/set.reduce", "T", ValueProperty::Ordered),
+];
+
+/// The requirements [`STATED_REQUIREMENTS`] states for the standard function
+/// with this qualified name.
+pub(crate) fn stated_requirements(
+    function: &str,
+) -> impl Iterator<Item = &'static StatedRequirement> {
+    STATED_REQUIREMENTS
+        .iter()
+        .filter(move |requirement| requirement.function == function)
+}
 
 const fn native_type(id: &'static str, kind: StandardType) -> RuntimeKnownDeclaration {
     RuntimeKnownDeclaration {
@@ -301,6 +351,23 @@ pub(crate) fn verify_tree(sources: Vec<ProjectSource>) -> StandardTreeVerificati
                 "registered operation {} has {count} `native fn` declarations",
                 operation.id
             )),
+        }
+    }
+    // A stated requirement names a function of a module the tree holds; its
+    // generic is checked when the function's contract is lowered.
+    for stated in STATED_REQUIREMENTS {
+        let module = stated.function.split_once('.').map_or(stated.function, |(module, _)| module);
+        if !modules.contains(module) {
+            continue;
+        }
+        let declared = resolved.symbols.iter().any(|symbol| {
+            symbol.module_id.is_some_and(|module_id| {
+                let module = &resolved.semantic.modules[module_id.raw() as usize];
+                format!("{}.{}", module.path, symbol.name) == stated.function
+            })
+        });
+        if !declared {
+            mismatches.push(format!("stated requirement names {}, which is not declared", stated.function));
         }
     }
     for entry in RUNTIME_KNOWN {

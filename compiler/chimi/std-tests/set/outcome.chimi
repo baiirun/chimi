@@ -1,0 +1,8 @@
+// A set that is the program's result is written as the list of its items in
+// ascending order.
+import std/set as Set
+import std/set.{Set}
+
+pub fn main() -> Set<Text> {
+  Set.from(["pear", "fig", "apple", "fig"])
+}

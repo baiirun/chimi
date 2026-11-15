@@ -124,6 +124,14 @@ impl ProgramData {
                 let (offset, _) = self.ids(ids);
                 (8, 0, offset, entries.len() as u32, 0)
             }
+            ConstantValue::Set(items) => {
+                let ids = items
+                    .iter()
+                    .map(|item| self.constant_value(item))
+                    .collect::<Vec<_>>();
+                let (offset, length) = self.ids(ids);
+                (19, 0, offset, length, 0)
+            }
             ConstantValue::JsonNumber(text) => (9, self.string(text), 0, 0, 0),
             ConstantValue::Function(ConstantFunction::Declared {
                 symbol,

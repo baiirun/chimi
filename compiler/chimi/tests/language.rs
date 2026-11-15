@@ -5045,6 +5045,18 @@ fn comparing_values_without_the_property_names_the_offending_component() {
             "`Map`, which has no order",
         ),
         (
+            "import std/set.{Set}\n\
+             fn keyed(items: Set<fn() -> Int>) -> Int { 1 }\n",
+            "T4300",
+            "`Set` items must be equatable, but `fn() -> Int` is not equatable: it is a function",
+        ),
+        (
+            "import std/set.{Set}\n\
+             fn less(a: Set<Int>, b: Set<Int>) -> Bool { a < b }\n",
+            "T4301",
+            "`Set`, which has no order",
+        ),
+        (
             "import std/json.{Value}\n\
              fn less(a: List<Value>, b: List<Value>) -> Bool { a < b }\n",
             "T4301",

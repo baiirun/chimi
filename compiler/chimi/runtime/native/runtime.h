@@ -347,6 +347,8 @@ enum {
      the high and low halves of the magnitude's high 64 bits; `integer` holds its
      low 64 bits. */
   CHIMI_CONSTANT_DECIMAL,
+  /* `length` item value ids at `offset`, in ascending order. */
+  CHIMI_CONSTANT_SET,
 };
 
 typedef struct {

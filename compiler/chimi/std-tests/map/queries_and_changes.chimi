@@ -1,0 +1,50 @@
+// std/map constructors, queries, and changes, with keys inserted out of order
+// so that enumeration shows the ascending key order, and maps built in
+// different insertion orders compare equal.
+import std/debug as Debug
+import std/map as Map
+import std/map.{Map}
+
+const limits = Map.from([("burst", 10), ("rate", 2)])
+
+pub fn main() -> List<Text> {
+  let scores = Map.from([("cy", 3), ("ada", 1), ("bo", 2), ("ada", 4)])
+  let same = Map.put(Map.put(Map.put(Map.empty(), "bo", 2), "ada", 4), "cy", 3)
+  let without_bo = Map.remove(scores, "bo")
+  let pairs = Map.put(Map.empty(), (1, "a"), 5)
+  let nothing: Map<Text, Int> = Map.empty()
+  // Keys 1 to 20 inserted from both ends, then every even key removed, so
+  // removal reaches nodes with two children.
+  let many = loop (low, high, built) = (1, 20, Map.empty()) {
+    case low > high {
+      True -> break built
+      False -> (low + 1, high - 1, Map.put(Map.put(built, low, low * low), high, high * high))
+    }
+  }
+  let odd = loop (key, kept) = (2, many) {
+    case key > 20 {
+      True -> break kept
+      False -> (key + 2, Map.remove(kept, key))
+    }
+  }
+  [
+    "from, a later pair wins: ${Debug.render(scores)}",
+    "get: ${Debug.render([Map.get(scores, "ada"), Map.get(scores, "zed")])}",
+    "get with an equal, separately built key: ${Debug.render(Map.get(pairs, (1, "a")))}",
+    "has_key: ${Debug.render([Map.has_key(scores, "bo"), Map.has_key(scores, "zed")])}",
+    "size: ${Debug.render([Map.size(scores), Map.size(nothing)])}",
+    "is_empty: ${Debug.render([Map.is_empty(scores), Map.is_empty(nothing)])}",
+    "put replaces: ${Debug.render(Map.put(scores, "bo", 20))}",
+    "put adds: ${Debug.render(Map.put(scores, "al", 0))}",
+    "remove: ${Debug.render(without_bo)}",
+    "remove of an absent key: ${Debug.render(Map.remove(scores, "zed") == scores)}",
+    "remove of the last key: ${Debug.render(Map.remove(Map.remove(without_bo, "ada"), "cy"))}",
+    "remove of many keys keeps the rest in order: ${Debug.render(Map.entries(odd))}",
+    "merge, overrides win: ${Debug.render(Map.merge(scores, Map.from([("bo", 7), ("di", 5)])))}",
+    "keys: ${Debug.render(Map.keys(scores))}",
+    "values: ${Debug.render(Map.values(scores))}",
+    "entries: ${Debug.render(Map.entries(scores))}",
+    "equal whatever the insertion order: ${Debug.render([scores == same, scores == Map.put(same, "cy", 30)])}",
+    "constant: ${Debug.render(limits)}",
+  ]
+}
