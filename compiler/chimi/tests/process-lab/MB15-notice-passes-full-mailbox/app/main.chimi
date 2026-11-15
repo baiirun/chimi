@@ -1,0 +1,106 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/debug as Debug
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Down, Inbox, SendError}
+import std/supervisor as Supervisor
+
+// MB15: `watcher` has capacity 1. It monitors `first` and `second` and
+// sleeps. Meanwhile main crashes `first` (its notice takes no capacity, so
+// `Note(7)` is still accepted), `Note(8)` is `Full`, and main crashes `second`,
+// whose notice is queued into the full mailbox. Awake, the watcher sees 3
+// entries queued, then receives them in arrival order: Defected (3), 7,
+// Defected (3), recorded as digits after the backlog: 3373. With 1000 for the
+// one `Full`, the outcome is 4373.
+pub enum Job {
+  Crash
+}
+
+pub enum Watch {
+  Target(worker: Address<Job>)
+  Note(value: Int)
+  Gone(down: Down)
+  Report(reply: Sender<Int>)
+}
+
+pub process name first: Job
+pub process name second: Job
+pub process name watcher: Watch
+
+fn work(inbox: Inbox<Job>) -> Void {
+  case Process.receive(inbox) {
+    Job.Crash -> Debug.crash("crash")
+  }
+}
+
+fn digit(down: Down) -> Int {
+  case down {
+    Down.Returned -> 1
+    Down.Failed -> 2
+    Down.Defected -> 3
+    Down.Stopped -> 4
+    Down.Unavailable -> 5
+  }
+}
+
+fn watch(inbox: Inbox<Watch>) -> Void needs { clock: Clock } {
+  loop order = 0 {
+    case Process.receive(inbox) {
+      Watch.Target(target) -> {
+        Process.monitor(inbox, target, fn(down) { Watch.Gone(down) })
+        Process.monitor(inbox, second, fn(down) { Watch.Gone(down) })
+        Clock.sleep(Duration.milliseconds(5))
+        Process.queued(inbox)
+      }
+      Watch.Note(value) -> order * 10 + value
+      Watch.Gone(down) -> order * 10 + digit(down)
+      Watch.Report(reply) -> {
+        Channel.send(reply, order)
+        order
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let working = Process.spec(work, 1, Duration.seconds(1))
+    |> Process.register(first)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let also_working = Process.spec(work, 1, Duration.seconds(1))
+    |> Process.register(second)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let watching = Process.spec(watch, 1, Duration.seconds(1))
+    |> Process.register(watcher)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([working, also_working, watching], 3, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(watcher, Watch.Target(first))
+  settle()
+  Process.send(first, Job.Crash)
+  settle()
+  Process.send(watcher, Watch.Note(7))
+  let full = case Process.send(watcher, Watch.Note(8)) {
+    Success(_) -> 0
+    Failure(error) -> case error {
+      SendError.Full(_) -> 1000
+      SendError.Unavailable(_) -> -1000
+    }
+  }
+  Process.send(second, Job.Crash)
+  Clock.sleep(Duration.milliseconds(5))
+  let replies = Channel.bounded(1)
+  Process.send(watcher, Watch.Report(replies.sender))
+  let received = Channel.receive(replies.receiver)
+  let order = case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+  Supervisor.stop(root)
+  full + order
+}

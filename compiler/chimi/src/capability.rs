@@ -45,6 +45,8 @@ enum TransferBoundary {
     TaskStart,
     ChannelSend,
     ProcessSend,
+    /// The notice of `Process.monitor`, kept by the monitor until it is delivered.
+    ProcessMonitor,
     ProcessRemoval,
     SupervisorRemoval,
     /// A `let` or loop state binding took the value that carried it.
@@ -61,6 +63,7 @@ impl TransferBoundary {
             Self::TaskStart => "by Task.start".to_owned(),
             Self::ChannelSend => "by Channel.send".to_owned(),
             Self::ProcessSend => "by Process.send".to_owned(),
+            Self::ProcessMonitor => "by Process.monitor".to_owned(),
             Self::ProcessRemoval => "by Supervisor.remove_process".to_owned(),
             Self::SupervisorRemoval => "by Supervisor.remove_supervisor".to_owned(),
             Self::IntoBinding(owner) => format!("into `{}`", typed.resolved.symbol(owner).name),
@@ -379,6 +382,17 @@ impl CapabilityChecker<'_> {
                                 argument,
                                 message,
                                 TransferBoundary::ProcessSend,
+                                environment,
+                            );
+                        }
+                    }
+                    Some(StandardFunction::ProcessMonitor) => {
+                        if let Some((argument, notice)) = arguments.get(2) {
+                            self.check_message_transfer(
+                                module_id,
+                                argument,
+                                notice,
+                                TransferBoundary::ProcessMonitor,
                                 environment,
                             );
                         }
@@ -727,6 +741,7 @@ impl CapabilityChecker<'_> {
     }
 
     /// `Channel.send` and `Process.send`: the payload moves to the receiver.
+    /// `Process.monitor`: the notice moves into the monitor, which runs it at most once.
     ///
     /// Ensures: `T4243` when the payload is never transferable; otherwise every
     /// exclusive binding the payload carries is transferred, so a later use is `T4241`.
@@ -740,6 +755,7 @@ impl CapabilityChecker<'_> {
     ) {
         let operation = match boundary {
             TransferBoundary::ProcessSend => "Process.send",
+            TransferBoundary::ProcessMonitor => "Process.monitor",
             _ => "Channel.send",
         };
         if payload.properties.transferable == PropertyDerivation::Never {

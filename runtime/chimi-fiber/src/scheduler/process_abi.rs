@@ -2,8 +2,8 @@
 //! configurable scheduler entry point. Layouts match `chimi_fiber.h`.
 
 use super::process::{
-    Address, HandleKind, IncarnationId, Member, MembershipId, NameId, Policy, ProcessSpec, Receipt,
-    Restart, Restarts, StartError, SupervisorId, SupervisorState, Waiter,
+    Address, HandleKind, IncarnationId, Member, MembershipId, MonitorId, NameId, Policy,
+    ProcessSpec, Receipt, Restart, Restarts, StartError, SupervisorId, SupervisorState, Waiter,
 };
 use super::{
     CapabilityViolationReport, MessageRelease, ProcessDefectReport, SendFailure,
@@ -49,6 +49,15 @@ pub struct ChimiProcessRequest {
     pub owner: u64,
     pub policy: *const ChimiSupervisorPolicy,
     pub spec: *const ChimiProcessSpec,
+    /// MONITOR's reply and UNMONITOR's input.
+    pub monitor: u64,
+    /// MAILBOX's reply: messages and notices waiting.
+    pub queued: u64,
+    /// MAILBOX's reply.
+    pub capacity: u32,
+    /// RECEIVE's reply: 0 for a message, else the `Down` code of a notice,
+    /// whose handle is then in `message`.
+    pub down: u32,
 }
 
 impl ChimiProcessRequest {
@@ -66,6 +75,10 @@ impl ChimiProcessRequest {
             owner: 0,
             policy: std::ptr::null(),
             spec: std::ptr::null(),
+            monitor: 0,
+            queued: 0,
+            capacity: 0,
+            down: 0,
         }
     }
 }
@@ -275,6 +288,36 @@ impl Scheduler {
                 }),
                 Err(_) => self.respond(waiter, RESPONSE_ERROR, |_| {}),
             },
+            super::REQUEST_PROCESS_MONITOR => {
+                let (Some(watcher), Some(target)) = (
+                    self.incarnation_of(owner),
+                    address(input.address_kind, input.address),
+                ) else {
+                    return self.respond(waiter, RESPONSE_ERROR, |_| {});
+                };
+                let monitor = self.process_monitor(watcher, target, input.message);
+                self.respond(waiter, RESPONSE_OK, |r| r.monitor = monitor.get());
+            }
+            super::REQUEST_PROCESS_UNMONITOR => {
+                let (Some(watcher), Some(monitor)) = (
+                    self.incarnation_of(owner),
+                    MonitorId::from_raw(input.monitor),
+                ) else {
+                    return self.respond(waiter, RESPONSE_ERROR, |_| {});
+                };
+                self.process_unmonitor(watcher, monitor);
+                self.respond(waiter, RESPONSE_OK, |_| {});
+            }
+            super::REQUEST_PROCESS_MAILBOX => {
+                let Some(incarnation) = self.incarnation_of(owner) else {
+                    return self.respond(waiter, RESPONSE_ERROR, |_| {});
+                };
+                let (queued, capacity) = self.mailbox_metrics(incarnation);
+                self.respond(waiter, RESPONSE_OK, |r| {
+                    r.queued = queued as u64;
+                    r.capacity = capacity;
+                });
+            }
             super::REQUEST_PROCESS_SEND => {
                 let Some(target) = address(input.address_kind, input.address) else {
                     return self.respond(waiter, RESPONSE_ERROR, |_| {});
@@ -293,9 +336,14 @@ impl Scheduler {
                     return self.respond(waiter, RESPONSE_ERROR, |_| {});
                 };
                 match self.receive_for(incarnation) {
-                    Receipt::Message(message) => {
-                        self.respond(waiter, RESPONSE_SUCCEEDED, |r| r.message = message)
-                    }
+                    Receipt::Message(message) => self.respond(waiter, RESPONSE_SUCCEEDED, |r| {
+                        r.message = message;
+                        r.down = 0;
+                    }),
+                    Receipt::Notice(notice) => self.respond(waiter, RESPONSE_SUCCEEDED, |r| {
+                        r.message = notice.handle;
+                        r.down = notice.down.code();
+                    }),
                     Receipt::Pending => self.write(waiter, RESPONSE_PENDING, |_| {}),
                     Receipt::Cancelled => self.respond_cancel(waiter, RESPONSE_CANCELLED),
                     Receipt::Forced => self.respond_cancel(waiter, RESPONSE_FORCED),
