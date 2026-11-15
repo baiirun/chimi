@@ -18,7 +18,7 @@ use super::catalogue::{Form, Scenario};
 use super::fixture::{self, Scratch};
 use crate::Compiler;
 use crate::backend::native::build_application;
-use crate::project::LoadedProject;
+use crate::project::{LoadedProject, StandardTree};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -104,7 +104,7 @@ fn defined_symbols(directory: &Path, source: &str) -> Result<Vec<String>, String
         .map_err(|error| format!("create {}: {error}", directory.display()))?;
     std::fs::write(directory.join("app/main.chimi"), source)
         .map_err(|error| format!("write the program: {error}"))?;
-    let project = LoadedProject::load(directory, "app/main")
+    let project = LoadedProject::load(directory, "app/main", &StandardTree::embedded())
         .map_err(|error| format!("load the program: {error}"))?;
     let program = Compiler::prepare_backend(project.sources()).map_err(|diagnostics| {
         format!(
@@ -113,8 +113,13 @@ fn defined_symbols(directory: &Path, source: &str) -> Result<Vec<String>, String
         )
     })?;
     let executable = directory.join("program");
-    build_application(&program, &executable, &directory.join("artifacts"))
-        .map_err(|error| format!("native build failed: {error}"))?;
+    build_application(
+        &program,
+        &StandardTree::embedded(),
+        &executable,
+        &directory.join("artifacts"),
+    )
+    .map_err(|error| format!("native build failed: {error}"))?;
     let output = Command::new("nm")
         .arg("-g")
         .arg("-U")

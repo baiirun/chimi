@@ -8,7 +8,7 @@
 //! removed. Every registered native operation must be reached by some program,
 //! so each primitive has differential coverage.
 
-use chimi::project::LoadedProject;
+use chimi::project::{LoadedProject, StandardTree};
 use chimi::{Compiler, ProjectSource};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -158,9 +158,10 @@ fn standard_programs_match_their_expected_outcomes_on_both_backends() {
 fn every_registered_operation_is_reached_by_a_standard_program() {
     let mut reached = BTreeSet::new();
     for program in programs() {
-        let sources: Vec<ProjectSource> = LoadedProject::single_file(&program)
-            .expect("load program")
-            .sources();
+        let sources: Vec<ProjectSource> =
+            LoadedProject::single_file(&program, &StandardTree::embedded())
+                .expect("load program")
+                .sources();
         let operations = Compiler::standard_operations_reached(sources)
             .unwrap_or_else(|diagnostics| panic!("{}: {diagnostics:?}", program.display()));
         reached.extend(operations);

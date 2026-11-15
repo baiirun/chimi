@@ -11,15 +11,19 @@ use super::Options;
 use super::catalogue::Scenario;
 use super::fixture;
 use crate::Compiler;
-use crate::project::LoadedProject;
+use crate::project::{LoadedProject, StandardTree};
 
 const DIAGNOSTICS: &str = "expected.diagnostics";
 const CONTRACTS: &str = "expected.contracts";
 
 pub(super) fn check(scenario: &Scenario, options: &Options) -> Result<(), String> {
     let expected = fixture::expected_lines(scenario, DIAGNOSTICS)?;
-    let project = LoadedProject::load(fixture::root(scenario), "app/main")
-        .map_err(|error| format!("load fixture: {error}"))?;
+    let project = LoadedProject::load(
+        fixture::root(scenario),
+        "app/main",
+        &StandardTree::embedded(),
+    )
+    .map_err(|error| format!("load fixture: {error}"))?;
     let diagnostics = match Compiler::verify_project(project.sources()) {
         Ok(_) => Vec::new(),
         Err(diagnostics) => diagnostics,

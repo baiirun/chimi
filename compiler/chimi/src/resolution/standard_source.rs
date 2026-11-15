@@ -13,7 +13,7 @@ use crate::standard_tree;
 impl ProjectResolver {
     pub(super) fn is_standard_module(&self, module_index: usize) -> bool {
         let module = &self.semantic.modules[module_index];
-        standard_tree::is_embedded(&module.path, &module.source)
+        standard_tree::is_standard(&module.path, &module.source)
     }
 
     /// `N3102`: the `std/` prefix belongs to the compiler's embedded tree.

@@ -12,6 +12,7 @@ from the philosophy and earlier decisions; any of these can be overruled.
 
 | Date | Decision | By | Detail |
 | --- | --- | --- | --- |
+| 2026-11-15 | `chimi --std-dir <dir> <command>` reads the whole standard tree from `<dir>` (`list.chimi` is `std/list`), with no fallback to the embedded copy; its modules keep their `chimi-std:///std/<path>.chimi` names, which is what makes a module standard source, and `chimi.build.v1` records `standard_library` as `embedded` or `override` with the directory. | Implementer | `project.rs` `StandardTree`; `standard-modules-and-constants.md` Source tree |
 | 2026-11-14 | Phase 2 registry: a `native fn` binds the operation named by its qualified name, implemented for now by a `StandardFunction` intrinsic both backends already dispatch; runtime-known declarations (`Option`, `Int.ParseError`, `Ordering`) are source enums that take the standard identity. `operations.h` and `chimi_op_` symbols wait for the rest of `standard.rs`. | Implementer | `compiler/chimi/src/operations.rs`; `ts-0ba63e` |
 | 2026-11-14 | A build loads only the std modules it imports; without `import std/option` the prelude's `Option` is the synthesized built-in with the same runtime identity. | Implementer | `standard_tree.rs`; `ts-0ba63e` |
 | 2026-11-14 | `Option.unwrap_or_fail` and `Text.append` are native: a Chimi body cannot fail with a generic payload, and `concat([a, b])` allocated a list per append. `std/order` (`compare`, `min`, `max`, `by`, `reverse`, `then`) is all Chimi. | Implementer | `compiler/chimi/std/`; `ts-0ba63e` |

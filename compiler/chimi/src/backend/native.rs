@@ -51,6 +51,9 @@ pub struct NativeArtifact {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct NativeBuildReport {
+    /// The `--std-dir` directory the build read `std/` modules from, or `None`
+    /// for the tree embedded in the compiler.
+    pub standard_override: Option<PathBuf>,
     pub executable_path: PathBuf,
     pub artifact_directory: PathBuf,
     pub application_object_paths: Vec<PathBuf>,
@@ -81,7 +84,16 @@ impl NativeBuildReport {
         write_json_string(&mut output, std::env::consts::OS);
         output.push_str(",\"arch\":");
         write_json_string(&mut output, std::env::consts::ARCH);
-        output.push_str("},\"executable\":");
+        output.push_str("},\"standard_library\":");
+        match &self.standard_override {
+            None => output.push_str("{\"source\":\"embedded\"}"),
+            Some(directory) => {
+                output.push_str("{\"source\":\"override\",\"directory\":");
+                write_path(&mut output, directory);
+                output.push('}');
+            }
+        }
+        output.push_str(",\"executable\":");
         write_path(&mut output, &self.executable_path);
         output.push_str(",\"artifacts\":{\"directory\":");
         write_path(&mut output, &self.artifact_directory);
@@ -128,6 +140,7 @@ impl NativeBuildReport {
 
 pub fn build_application(
     program: &BackendProgram,
+    standard: &crate::project::StandardTree,
     executable_path: &Path,
     artifact_directory: &Path,
 ) -> Result<NativeBuildReport, String> {
@@ -135,6 +148,7 @@ pub fn build_application(
     let dynamic_dependencies = dynamic_dependencies(executable_path)?;
     let manifest_path = artifact_directory.join("build.json");
     let report = NativeBuildReport {
+        standard_override: standard.override_directory().map(Path::to_owned),
         executable_path: executable_path.to_owned(),
         artifact_directory: artifact_directory.to_owned(),
         application_object_paths: artifact.object_paths,

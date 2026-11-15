@@ -242,6 +242,10 @@ fn build_links_a_runnable_executable_and_reports_its_artifacts() {
     let report = String::from_utf8(output.stdout).unwrap();
     assert!(report.starts_with("{\"schema\":\"chimi.build.v1\""));
     assert!(report.contains("\"backend\":\"native-aot\""));
+    assert!(
+        report.contains("\"standard_library\":{\"source\":\"embedded\"}"),
+        "{report}"
+    );
     // G7: the build report records the constant evaluation budgets the spec states.
     assert!(
         report.contains(concat!(
@@ -281,6 +285,79 @@ fn build_links_a_runnable_executable_and_reports_its_artifacts() {
             "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",",
             "\"value\":{\"type\":\"Answer\",\"fields\":{\"value\":42}}}\n"
         )
+    );
+
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+/// A copy of the embedded standard tree in `directory`, for `--std-dir`.
+fn copy_standard_tree(directory: &Path) {
+    std::fs::create_dir_all(directory).unwrap();
+    let tree = Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
+    for entry in std::fs::read_dir(tree).unwrap() {
+        let path = entry.unwrap().path();
+        std::fs::copy(&path, directory.join(path.file_name().unwrap())).unwrap();
+    }
+}
+
+// `--std-dir` reads `std/` modules from disk instead of the embedded tree, and
+// the build report says that it did.
+#[test]
+fn build_reads_the_standard_tree_from_a_std_dir_override() {
+    let scratch = scratch_directory("std-dir-build");
+    let standard = scratch.join("std");
+    copy_standard_tree(&standard);
+    let list = standard.join("list.chimi");
+    let mut text = std::fs::read_to_string(&list).unwrap();
+    text.push_str("\npub fn answer() -> Int {\n  42\n}\n");
+    std::fs::write(&list, text).unwrap();
+    let source = scratch.join("main.chimi");
+    std::fs::write(
+        &source,
+        "import std/list as List\n\npub fn main() -> Int {\n  List.answer() + List.length([1])\n}\n",
+    )
+    .unwrap();
+    let executable = scratch.join("answer");
+
+    let embedded = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("check")
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        !embedded.status.success(),
+        "the embedded std/list has no answer"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("--std-dir")
+        .arg(&standard)
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = String::from_utf8(output.stdout).unwrap();
+    let directory = standard.canonicalize().unwrap();
+    assert!(
+        report.contains(&format!(
+            "\"standard_library\":{{\"source\":\"override\",\"directory\":\"{}\"}}",
+            directory.display()
+        )),
+        "{report}"
+    );
+    let execution = execute_native(&executable, &scratch, "std-dir", "off");
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":43}\n"
     );
 
     std::fs::remove_dir_all(scratch).unwrap();
@@ -2729,7 +2806,8 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi check [--json] --root <project-dir> <entry-module> | ",
             "chimi run --root <project-dir> <entry-module> [-- <argument>...] | ",
             "chimi build --root <project-dir> <entry-module> ",
-            "[-o <executable>]\n"
+            "[-o <executable>]; a compiler developer may put --std-dir <directory> before ",
+            "inspect, check, run, or build\n"
         )
     );
 }

@@ -10,7 +10,7 @@
 
 use chimi::diagnostic::{Diagnostic, DiagnosticStage};
 use chimi::line_index::{LineIndex, LinePosition, PositionEncoding};
-use chimi::project::{LoadedProject, SourceReader};
+use chimi::project::{LoadedProject, SourceReader, StandardTree};
 use chimi::source::SourceSnapshot;
 use chimi::{
     CallableInspection, Compiler, CompilerSession, IncrementalTypeReport, InspectionReport,
@@ -348,6 +348,7 @@ impl Workspace {
             &project.root,
             project.entry_module.clone(),
             &OpenBuffers(&self.documents),
+            &StandardTree::embedded(),
         );
         let analysis = self
             .analyses
