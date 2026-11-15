@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 mod clock;
+mod combinators;
 mod constants;
 pub(crate) mod durations;
 pub(crate) mod failure_sets;
@@ -1653,6 +1654,7 @@ impl ProjectTypeChecker {
 
         self.index_process_contracts();
         self.index_clock_contracts();
+        self.index_combinator_contracts();
         let text = self.builtin_type("Text");
         let int = self.builtin_type("Int");
         let bool_type = self.builtin_type("Bool");
@@ -2143,6 +2145,8 @@ impl ProjectTypeChecker {
         );
 
         for constructor in StandardConstructor::ALL {
+            // `Ok` and `Err` take their generic shapes from the `std/result`
+            // declaration itself; only the runtime knows their identity.
             if self
                 .resolved
                 .loaded_standard_type(constructor.type_kind())
@@ -2260,6 +2264,16 @@ impl ProjectTypeChecker {
             | StandardConstructor::DownStopped
             | StandardConstructor::DownUnavailable => self.process_constructor_shape(constructor),
             StandardConstructor::TimeoutTimedOut => self.timeout_constructor_shape(),
+            StandardConstructor::ResultOk | StandardConstructor::ResultErr => {
+                let value = self.standard_generic_type(StandardGeneric::ResultValue);
+                let error = self.standard_generic_type(StandardGeneric::ResultError);
+                let result = self.standard_named_type(StandardType::Result, vec![value, error]);
+                let input = match constructor {
+                    StandardConstructor::ResultOk => value,
+                    _ => error,
+                };
+                (vec![input], result)
+            }
             StandardConstructor::DurationParseEmpty
             | StandardConstructor::DurationParseInvalid
             | StandardConstructor::DurationParseOutOfRange => (

@@ -40,7 +40,7 @@ impl CauseKind {
 /// Why a cause sits in another's suppressed list; the code `std/cause.reason`
 /// maps to its `Suppression` variant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)] // Produced by Task.all (CHI-205) and the file-close rule.
+#[allow(dead_code)] // The interpreter has no tasks; the native runtime produces Sibling (CHI-205).
 pub(super) enum Suppression {
     Cleanup = 0,
     Sibling = 1,
@@ -118,7 +118,7 @@ impl Cause {
         self
     }
 
-    #[allow(dead_code)] // Produced by Task.all (CHI-205) and the file-close rule.
+    #[allow(dead_code)] // The interpreter has no tasks; the native runtime produces Sibling (CHI-205).
     pub(super) fn with_suppressed(&self, mut suppressed: Self, reason: Suppression) -> Self {
         suppressed.reason = Some(reason);
         let mut cause = self.clone();

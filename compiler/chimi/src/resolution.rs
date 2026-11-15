@@ -775,6 +775,24 @@ impl ProjectResolver {
                 self.standard_constructor_symbol(StandardConstructor::OptionNone),
                 vec![StandardGeneric::OptionValue],
             ),
+        ]
+        .into_iter()
+        .chain(
+            [
+                StandardConstructor::ResultOk,
+                StandardConstructor::ResultErr,
+            ]
+            .into_iter()
+            .filter_map(|constructor| self.loaded_constructor_symbol(constructor))
+            .map(|symbol| {
+                (
+                    symbol,
+                    vec![StandardGeneric::ResultValue, StandardGeneric::ResultError],
+                )
+            })
+            .collect::<Vec<_>>(),
+        )
+        .chain([
             (
                 self.standard_function_symbol(StandardFunction::TaskStart),
                 vec![
@@ -827,11 +845,17 @@ impl ProjectResolver {
                 self.standard_constructor_symbol(StandardConstructor::ChannelDrained),
                 vec![StandardGeneric::ChannelValue],
             ),
-        ]
-        .into_iter()
+        ])
         .chain(self.process_callable_parameters())
-        .chain([StandardFunction::TaskTimeout, StandardFunction::TaskDeadline].map(
-            |function| {
+        .chain(
+            [
+                StandardFunction::TaskTimeout,
+                StandardFunction::TaskDeadline,
+                StandardFunction::TaskAll,
+                StandardFunction::TaskResults,
+                StandardFunction::TaskRace,
+            ]
+            .map(|function| {
                 (
                     self.standard_function_symbol(function),
                     vec![
@@ -840,9 +864,8 @@ impl ProjectResolver {
                         StandardGeneric::TimeoutNeeds,
                     ],
                 )
-            },
-        ))
-        {
+            }),
+        ) {
             self.standard_callable_parameters.insert(
                 callable,
                 parameters
@@ -937,6 +960,14 @@ impl ProjectResolver {
                 (*standard == StandardSymbol::Function(function)).then_some(*symbol)
             })
             .expect("standard function is indexed")
+    }
+
+    /// The symbol of a constructor that only a loaded standard module declares,
+    /// such as `std/result.Result.Ok`, or `None` when it is not loaded.
+    fn loaded_constructor_symbol(&self, constructor: StandardConstructor) -> Option<SymbolId> {
+        self.standard_symbols.iter().find_map(|(symbol, standard)| {
+            (*standard == StandardSymbol::Constructor(constructor)).then_some(*symbol)
+        })
     }
 
     fn standard_constructor_symbol(&self, constructor: StandardConstructor) -> SymbolId {

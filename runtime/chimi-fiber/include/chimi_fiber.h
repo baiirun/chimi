@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 9u
+#define CHIMI_FIBER_ABI_VERSION 10u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -121,6 +121,17 @@ enum {
   CHIMI_REQUEST_PROCESS_UNMONITOR = 29,
   /* The OK reply carries `queued` and `capacity`. */
   CHIMI_REQUEST_PROCESS_MAILBOX = 30,
+  /* ChimiSchedulerRequest: `context` points to `value` uint64_t ids of the
+     caller's children. Replies like a ready TASK_RESULT (SUCCEEDED, CANCELLED,
+     DEFECTED or STACK_OVERFLOW) with `task` set to the listed child that
+     terminated first, in termination order; PENDING while none has. The
+     outcome is only reported: a cancelled child cancels nothing. ERROR for an
+     empty list or a task the caller does not own. A cancellation point that
+     a firing scope withdraws. */
+  CHIMI_REQUEST_TASK_ANY = 31,
+  /* TASK_ANY for children the caller already cancelled: neither a
+     cancellation point nor withdrawn by a firing scope. */
+  CHIMI_REQUEST_TASK_DRAIN = 32,
 };
 
 /* `down` of a RECEIVE reply whose `message` is a notice handle. */

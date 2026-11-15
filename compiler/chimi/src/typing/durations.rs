@@ -1,4 +1,5 @@
-//! Build-time `Duration` values and the checks that use them (`T4348`, `T4349`, `T4350`).
+//! Build-time `Duration` values and the checks that use them (`T4348`, `T4349`, `T4350`),
+//! plus `T4345`, the one other check of a call's literal argument.
 //!
 //! `ConstantEvaluator` folds an expression the compiler can know without running the
 //! program: literals, module constants, `Duration.zero`, `Int` arithmetic, and calls of
@@ -351,6 +352,25 @@ impl Checker<'_> {
         }
     }
 
+    /// `T4345`: an empty list literal passed to `Task.race`, which always defects.
+    fn is_race_of_empty_literal(
+        &self,
+        module_id: ModuleId,
+        callee: &ModuleExpression,
+        arguments: &[crate::semantic::CallArgument],
+    ) -> bool {
+        let is_race = self
+            .evaluator
+            .value_symbol(module_id, callee)
+            .and_then(|symbol| self.evaluator.typed.resolved.standard_symbol(symbol))
+            == Some(StandardSymbol::Function(StandardFunction::TaskRace));
+        is_race
+            && matches!(
+                arguments,
+                [argument] if matches!(&argument.value, ModuleExpression::List { elements, .. } if elements.is_empty())
+            )
+    }
+
     fn check_call(&mut self, module_id: ModuleId, call: &ModuleExpression) {
         let ModuleExpression::Call {
             callee, arguments, ..
@@ -358,16 +378,27 @@ impl Checker<'_> {
         else {
             return;
         };
+        let file_id = self.evaluator.typed.resolved.semantic.modules[module_id.raw() as usize]
+            .source
+            .file_id();
+        let range = call.range();
+        if self.is_race_of_empty_literal(module_id, callee, arguments) {
+            self.errors.push(Diagnostic::error(
+                DiagnosticStage::Type,
+                "T4345",
+                file_id,
+                range,
+                "`Task.race` of an empty list has no operation to win, so this call always \
+                 defects",
+            ));
+            return;
+        }
         let Some(function) = self.evaluator.duration_function(module_id, callee) else {
             return;
         };
         let [argument] = arguments.as_slice() else {
             return;
         };
-        let file_id = self.evaluator.typed.resolved.semantic.modules[module_id.raw() as usize]
-            .source
-            .file_id();
-        let range = call.range();
         if matches!(
             function.duration_unit(),
             Some((_, DurationUnitRole::Constructor))

@@ -80,6 +80,17 @@ pub const REQUEST_SCOPE_CHECK: u32 = 27;
 pub const REQUEST_PROCESS_MONITOR: u32 = 28;
 pub const REQUEST_PROCESS_UNMONITOR: u32 = 29;
 pub const REQUEST_PROCESS_MAILBOX: u32 = 30;
+/// Waits for the first of several children to terminate: `context` points to
+/// `value` task ids, all owned by the caller. Replies like a ready
+/// `REQUEST_TASK_RESULT`, with `task` set to the listed child that terminated
+/// first in termination order; PENDING while none has. The child's outcome is
+/// only reported: a cancelled child does not cancel the caller. A
+/// cancellation point, and a firing scope withdraws it.
+pub const REQUEST_TASK_ANY: u32 = 31;
+/// `REQUEST_TASK_ANY` for draining children a combinator already cancelled:
+/// neither a cancellation point nor withdrawn by a scope, so a scope that
+/// fires meanwhile cannot replace the outcome the combinator already chose.
+pub const REQUEST_TASK_DRAIN: u32 = 32;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -432,6 +443,10 @@ struct Task {
     parent: Option<TaskId>,
     children: BTreeSet<TaskId>,
     waiting_on: Option<TaskId>,
+    /// The children a `REQUEST_TASK_ANY` or `REQUEST_TASK_DRAIN` waits for.
+    waiting_any: Vec<TaskId>,
+    /// Stamped when the task becomes terminal; orders `REQUEST_TASK_ANY`.
+    terminal_sequence: u64,
     fiber: Option<OwnedFiber>,
     phase: TaskPhase,
     observed: bool,
@@ -588,6 +603,28 @@ pub struct Scheduler {
     /// consuming it, so every one stays until the scheduler is dropped.
     task_values: BTreeMap<TaskId, TaskValue>,
     next_scope: u64,
+    next_terminal_sequence: u64,
+}
+
+/// Writes a terminal child's outcome into a `REQUEST_TASK_RESULT`,
+/// `REQUEST_TASK_ANY`, or `REQUEST_TASK_DRAIN` reply.
+fn reply_with_outcome(request: &mut SchedulerRequest, outcome: TaskOutcome) {
+    match outcome {
+        TaskOutcome::Succeeded(value) => {
+            request.status = RESPONSE_SUCCEEDED;
+            request.value = value;
+        }
+        TaskOutcome::Cancelled => request.status = RESPONSE_CANCELLED,
+        TaskOutcome::Defected { origin, code } => {
+            request.status = RESPONSE_DEFECTED;
+            request.owner = origin.get();
+            request.value = code;
+        }
+        TaskOutcome::StackOverflow { origin } => {
+            request.status = RESPONSE_STACK_OVERFLOW;
+            request.owner = origin.get();
+        }
+    }
 }
 
 impl Drop for Scheduler {
@@ -654,6 +691,7 @@ impl Scheduler {
                 .map(|report| (report, violation_context)),
             task_values: BTreeMap::new(),
             next_scope: 0,
+            next_terminal_sequence: 0,
         }
     }
 
@@ -1301,6 +1339,8 @@ impl Scheduler {
                 parent,
                 children: BTreeSet::new(),
                 waiting_on: None,
+                waiting_any: Vec::new(),
+                terminal_sequence: 0,
                 fiber: Some(fiber),
                 phase: TaskPhase::Runnable,
                 observed: false,
@@ -1509,26 +1549,42 @@ impl Scheduler {
             REQUEST_TASK_RESULT => match self.result(Some(owner), TaskId(request.task)) {
                 Ok(TaskResult::Pending) => request.status = RESPONSE_PENDING,
                 Ok(TaskResult::Ready(outcome)) => {
-                    match outcome {
-                        TaskOutcome::Succeeded(value) => {
-                            request.status = RESPONSE_SUCCEEDED;
-                            request.value = value;
-                        }
-                        TaskOutcome::Cancelled => request.status = RESPONSE_CANCELLED,
-                        TaskOutcome::Defected { origin, code } => {
-                            request.status = RESPONSE_DEFECTED;
-                            request.owner = origin.get();
-                            request.value = code;
-                        }
-                        TaskOutcome::StackOverflow { origin } => {
-                            request.status = RESPONSE_STACK_OVERFLOW;
-                            request.owner = origin.get();
-                        }
-                    }
+                    reply_with_outcome(request, outcome);
                     let _ = self.wake(owner);
                 }
                 Err(_) => request.status = RESPONSE_ERROR,
             },
+            REQUEST_TASK_ANY | REQUEST_TASK_DRAIN => {
+                let count = usize::try_from(request.value).unwrap_or(0);
+                let tasks: Vec<TaskId> = if count == 0 || request.context.is_null() {
+                    Vec::new()
+                } else {
+                    // SAFETY: the caller's record names `count` task ids that
+                    // stay valid while it is suspended on the request.
+                    unsafe { std::slice::from_raw_parts(request.context.cast::<u64>(), count) }
+                        .iter()
+                        .map(|raw| TaskId(*raw))
+                        .collect()
+                };
+                if tasks.is_empty() {
+                    request.status = RESPONSE_ERROR;
+                    let _ = self.wake_front(owner);
+                } else {
+                    match self.first_terminal(owner, &tasks) {
+                        Ok(Some(task)) => {
+                            request.task = task.get();
+                            let TaskPhase::Terminal(outcome) = self.tasks[&task].phase else {
+                                unreachable!("first_terminal returns a terminal child");
+                            };
+                            self.tasks.get_mut(&task).expect("terminal child").observed = true;
+                            reply_with_outcome(request, outcome);
+                            let _ = self.wake_front(owner);
+                        }
+                        Ok(None) => request.status = RESPONSE_PENDING,
+                        Err(_) => request.status = RESPONSE_ERROR,
+                    }
+                }
+            }
             REQUEST_TASK_CANCEL => {
                 request.status = if self.cancel(Some(owner), TaskId(request.task)).is_ok() {
                     RESPONSE_OK
@@ -1773,7 +1829,10 @@ impl Scheduler {
 
     fn publish_terminal(&mut self, task: TaskId, outcome: TaskOutcome) {
         let parent = self.tasks.get(&task).expect("known task").parent;
-        self.tasks.get_mut(&task).expect("known task").phase = TaskPhase::Terminal(outcome);
+        self.next_terminal_sequence += 1;
+        let record = self.tasks.get_mut(&task).expect("known task");
+        record.phase = TaskPhase::Terminal(outcome);
+        record.terminal_sequence = self.next_terminal_sequence;
         if let Some(parent) = parent {
             self.tasks
                 .get_mut(&parent)
@@ -1821,7 +1880,49 @@ impl Scheduler {
             && !self.absorbs_child_defect(parent)
         {
             self.begin_terminal(parent, outcome, false);
+        } else if let Some(parent) = parent.filter(|parent| {
+            self.tasks.get(parent).is_some_and(|record| {
+                record.phase == TaskPhase::Parked && record.waiting_any.contains(&task)
+            })
+        }) {
+            self.tasks
+                .get_mut(&parent)
+                .expect("waiting parent")
+                .waiting_any
+                .clear();
+            let _ = self.wake(parent);
         }
+    }
+
+    /// Serves `REQUEST_TASK_ANY` and `REQUEST_TASK_DRAIN`: the listed child
+    /// that terminated first, or `None` after arming the wait.
+    fn first_terminal(
+        &mut self,
+        owner: TaskId,
+        tasks: &[TaskId],
+    ) -> Result<Option<TaskId>, SchedulerError> {
+        for task in tasks {
+            if let Err(error) = self.require_owner(Some(owner), *task) {
+                self.defect_contract_violator(Some(owner));
+                return Err(error);
+            }
+        }
+        let first = tasks
+            .iter()
+            .filter_map(|task| {
+                let record = &self.tasks[task];
+                matches!(record.phase, TaskPhase::Terminal(_))
+                    .then_some((record.terminal_sequence, *task))
+            })
+            .min()
+            .map(|(_, task)| task);
+        if first.is_none() {
+            self.tasks
+                .get_mut(&owner)
+                .expect("validated owner")
+                .waiting_any = tasks.to_vec();
+        }
+        Ok(first)
     }
 
     fn require_owner(&self, owner: Option<TaskId>, task: TaskId) -> Result<(), SchedulerError> {
