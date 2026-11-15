@@ -407,6 +407,64 @@ fn a_user_clock_timer_works_through_its_sleep_until() {
     assert_eq!(clock_advances(&result.telemetry), [3 * SECOND]);
 }
 
+// ----- Mixed events ---------------------------------------------------------
+
+// Events of different failure sets join in one list: a receive (which may
+// fail with `Channel.Aborted`) and a timer (which never fails). A worker
+// loop takes jobs until the channel drains and beats on a timer while idle,
+// as in the spec's example. Rejects a list that drops the receive's failure,
+// and a heartbeat that fires while jobs keep arriving.
+#[test]
+fn a_worker_takes_jobs_and_beats_while_idle() {
+    let result = run_virtual(
+        "worker",
+        concat!(
+            "enum Wake {\n  Next(next: Receive<Int>)\n  Beat\n}\n",
+            "fn feed(sender: Channel.Sender<Int>, completion: Channel.Completion<Int>) -> Int needs { clock: Clock.Clock } {\n",
+            "  Channel.send(sender, 1)\n",
+            "  Clock.sleep(Duration.seconds(1))\n",
+            "  Channel.send(sender, 2)\n",
+            "  Clock.sleep(Duration.seconds(25))\n",
+            "  Channel.send(sender, 3)\n",
+            "  Channel.close(completion)\n",
+            "  0\n",
+            "}\n",
+            "fn work(jobs: Receiver<Int>) -> Int needs { clock: Clock.Clock } {\n",
+            "  let period = Duration.seconds(10)\n",
+            "  loop state = (0, 0, Clock.add(Clock.now(), period)) {\n",
+            "    let (sum, beats, next_beat) = state\n",
+            "    let wake = case Select.first([\n",
+            "      Select.receive(jobs, fn(next: Receive<Int>) -> Wake { Wake.Next(next) }),\n",
+            "      Select.at(next_beat, Wake.Beat),\n",
+            "    ]) {\n",
+            "      Success(wake) -> wake\n",
+            "      Failure(ChannelError.Aborted) -> break -1\n",
+            "    }\n",
+            "    case wake {\n",
+            "      Wake.Next(Receive.Received(job)) -> (sum + job, beats, Clock.add(Clock.now(), period))\n",
+            "      Wake.Next(Receive.Drained) -> break sum * 100 + beats\n",
+            "      Wake.Beat -> (sum, beats + 1, Clock.add(next_beat, period))\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let jobs = Channel.bounded(0)\n",
+            "  let sender = jobs.sender\n",
+            "  let completion = jobs.completion\n",
+            "  let feeder = Task.start(fn() { feed(sender, completion) })\n",
+            "  work(jobs.receiver)\n",
+            "}\n",
+        ),
+        "boundaries",
+    );
+    // Jobs at 0 s and 1 s; beats at 11 s and 21 s; the last job at 26 s.
+    assert_eq!(result.outcome, success("602"));
+    assert_eq!(
+        clock_advances(&result.telemetry),
+        [SECOND, 11 * SECOND, 21 * SECOND, 26 * SECOND]
+    );
+}
+
 // ----- Select cancellation ----------------------------------------------------
 
 // A timeout that cancels a parked select delivers nothing and leaves the

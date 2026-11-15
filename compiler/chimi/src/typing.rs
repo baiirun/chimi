@@ -20,6 +20,7 @@ use std::sync::Arc;
 mod clock;
 mod constants;
 pub(crate) mod durations;
+pub(crate) mod failure_sets;
 pub(crate) mod process;
 mod select;
 
@@ -528,7 +529,7 @@ impl TypeFormatter<'_> {
         } else if members.len() == 1 {
             members.pop().expect("one member")
         } else {
-            format!("{{ {} }}", members.join(", "))
+            members.join(" | ")
         }
     }
 
@@ -1379,6 +1380,10 @@ struct ProjectTypeChecker {
     /// is inside. A function input is contravariant, so there `Never` matches
     /// only `Never`: a `fn(Never)` must not pass for a `fn(Int)`.
     function_input_depth: u32,
+    /// Inference variables some check has already used as the narrower side.
+    /// Such a variable is bounded above, so widening its failure set by union
+    /// would leave that check stale; it may only stay as wide as it is.
+    bounded_inference_variables: HashSet<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -1613,6 +1618,7 @@ impl ProjectTypeChecker {
             arm_types: HashMap::new(),
             undetermined_constants: HashSet::new(),
             function_input_depth: 0,
+            bounded_inference_variables: HashSet::new(),
         };
         checker.intern_type(CanonicalType::Poison);
         checker.intern_failure_row(FailureRow {
@@ -2521,6 +2527,7 @@ impl ProjectTypeChecker {
             arm_types: HashMap::new(),
             undetermined_constants: HashSet::new(),
             function_input_depth: 0,
+            bounded_inference_variables: HashSet::new(),
         }
     }
 
@@ -3856,6 +3863,9 @@ impl ProjectTypeChecker {
             };
         }
 
+        if let Some(fact) = facts.first() {
+            self.promote_raised_generic(fact.success, generics);
+        }
         let constructed_failure =
             arguments
                 .first()
@@ -4544,6 +4554,9 @@ impl ProjectTypeChecker {
         context: PatternContext<'_>,
         bindings: &mut HashMap<SymbolId, ValueBinding>,
     ) -> MatchPattern {
+        // A failure-set parameter's value is an open failure set: its variant
+        // patterns are checked against the set, as for a `Failure(...)` payload.
+        let expected = self.open_failure_set_view(expected);
         if context.clause_head
             && self.inspects_generic(pattern, expected)
             && let CanonicalType::Generic(parameter) =
@@ -5570,32 +5583,29 @@ impl ProjectTypeChecker {
     ) -> Vec<SymbolId> {
         let annotated = self.lower_value_type(module_id, type_use, context.generics);
         let annotated = self.resolve_inference_type(annotated);
-        let owner = match self.types[annotated.raw() as usize].clone() {
-            CanonicalType::Named { symbol, .. }
-                if self.resolved.symbol(symbol).kind == ProjectSymbolKind::Enum
-                    || matches!(
-                        self.resolved.standard_symbol(symbol),
-                        Some(StandardSymbol::Type(kind)) if kind.is_failure_enum()
-                    ) =>
-            {
-                symbol
-            }
+        // The annotation names failure-set members: a closed enum, one variant,
+        // or a written set of them. A generic member cannot be selected.
+        let selected = match self.types[annotated.raw() as usize] {
             CanonicalType::Poison => return Vec::new(),
-            _ => {
-                let name = self.type_display_name(annotated);
-                self.type_error_range(
-                    module_id,
-                    "T4230",
-                    range,
-                    format!(
-                        "a failure-type pattern selects the variants of a closed enum, and `{name}` is not one"
-                    ),
-                );
-                return Vec::new();
-            }
+            _ => self
+                .failure_set_of(annotated)
+                .map(|row| self.failure_rows[row.raw() as usize].clone())
+                .filter(|row| row.parameters.is_empty() && !row.variants.is_empty()),
         };
-        let variants = self
-            .enum_variant_symbols(owner)
+        let Some(selected) = selected else {
+            let name = self.type_display_name(annotated);
+            self.type_error_range(
+                module_id,
+                "T4230",
+                range,
+                format!(
+                    "a failure-type pattern selects the variants of a closed enum, and `{name}` is not one"
+                ),
+            );
+            return Vec::new();
+        };
+        let variants = selected
+            .variants
             .into_iter()
             .filter(|variant| self.failure_row_may_contain(failures, *variant))
             .collect::<Vec<_>>();
@@ -6292,7 +6302,27 @@ impl ProjectTypeChecker {
         }
     }
 
+    /// The constructors a value of `type_id` may be built with, each with its
+    /// field types, or `None` for an open domain. A constructor with a field no
+    /// value inhabits, as `Err` of `Result<T, E>` with the empty failure set `E`,
+    /// builds no value and is left out, so a `case` need not cover it.
     fn complete_pattern_domain(&mut self, type_id: TypeId) -> Option<Vec<(MatchTag, Vec<TypeId>)>> {
+        let mut domain = self.declared_pattern_domain(type_id)?;
+        domain.retain(|(_, fields)| !fields.iter().any(|field| self.is_uninhabited(*field)));
+        Some(domain)
+    }
+
+    /// `Never`, or the empty failure set: a type with no values.
+    fn is_uninhabited(&self, type_id: TypeId) -> bool {
+        let type_id = self.resolve_inference_type(type_id);
+        self.is_never(type_id)
+            || matches!(
+                self.types[type_id.raw() as usize],
+                CanonicalType::FailureSetValue(failures) if self.failure_row_is_empty(failures)
+            )
+    }
+
+    fn declared_pattern_domain(&mut self, type_id: TypeId) -> Option<Vec<(MatchTag, Vec<TypeId>)>> {
         let type_id = self.resolve_inference_type(type_id);
         if let CanonicalType::FailureSetValue(failures) = self.types[type_id.raw() as usize].clone()
         {
@@ -7084,6 +7114,8 @@ impl ProjectTypeChecker {
                 }))
             }
             CanonicalType::FailureSetValue(failures) => Some(failures),
+            // `Never` has no values: the empty failure set.
+            _ if self.is_never(type_id) => Some(FailureRowId::new(0)),
             _ => None,
         }
     }
@@ -7101,6 +7133,17 @@ impl ProjectTypeChecker {
         let row = self.failure_rows[failures.raw() as usize].clone();
         if row.variants.is_empty() && row.parameters.is_empty() {
             return None;
+        }
+        // One unrestricted failure-set parameter projects to the parameter
+        // itself, so `Failure(error)` over `errors E` binds a value of type `E`
+        // when the signature also uses `E` as a value type.
+        if let ([], [parameter], []) = (
+            row.variants.as_slice(),
+            row.parameters.as_slice(),
+            row.exclusions.as_slice(),
+        ) && self.generic_kinds.get(parameter) == Some(&GenericKind::FailureSet)
+        {
+            return Some(self.intern_type(CanonicalType::Generic(*parameter)));
         }
         let mut owners = row
             .variants
@@ -7226,18 +7269,6 @@ impl ProjectTypeChecker {
             row.exclusions.sort_by_key(|exclusion| exclusion.parameter);
         }
         self.intern_failure_row(row)
-    }
-
-    /// Whether every member of the closed row `failures` is a variant of `owner`, so
-    /// a value narrowed to them is accepted where the enum is expected.
-    fn failure_row_within_enum(&self, failures: FailureRowId, owner: SymbolId) -> bool {
-        let row = &self.failure_rows[failures.raw() as usize];
-        row.parameters.is_empty()
-            && !row.variants.is_empty()
-            && row
-                .variants
-                .iter()
-                .all(|variant| self.enum_owner_for_variant(*variant) == Some(owner))
     }
 
     fn failure_row_is_empty(&self, failures: FailureRowId) -> bool {
@@ -7671,6 +7702,9 @@ impl ProjectTypeChecker {
                     path.last(),
                     self.resolved_type_symbol(module_id, *semantic_id),
                 ) {
+                    (Some(_), Some(symbol)) if self.is_failure_variant(symbol) => {
+                        self.variant_failure_set_type(symbol)
+                    }
                     (Some(name), Some(symbol)) => {
                         let kind = self.resolved.symbol(symbol).kind;
                         if kind == ProjectSymbolKind::GenericParameter {
@@ -7713,7 +7747,9 @@ impl ProjectTypeChecker {
                             }
                             let role = match self.resolved.standard_symbol(symbol) {
                                 Some(StandardSymbol::Type(StandardType::Map)) => Some("`Map` keys"),
-                                Some(StandardSymbol::Type(StandardType::Set)) => Some("`Set` items"),
+                                Some(StandardSymbol::Type(StandardType::Set)) => {
+                                    Some("`Set` items")
+                                }
                                 _ => None,
                             };
                             if let (Some(role), Some(key)) = (role, lowered.first()) {
@@ -7755,6 +7791,7 @@ impl ProjectTypeChecker {
                     needs,
                 }))
             }
+            TypeUse::Union { members, .. } => self.lower_failure_set_type(module_id, members),
             TypeUse::Tuple { elements, .. } => {
                 let elements = elements
                     .iter()
@@ -7815,98 +7852,6 @@ impl ProjectTypeChecker {
                 lack.describe()
             ),
         );
-    }
-
-    fn lower_failure_row(
-        &mut self,
-        module_id: ModuleId,
-        type_use: &TypeUse,
-        _generics: &HashMap<String, SymbolId>,
-    ) -> FailureRowId {
-        let TypeUse::Named {
-            semantic_id, path, ..
-        } = type_use
-        else {
-            return FailureRowId::new(0);
-        };
-        let Some(name) = path.last() else {
-            return FailureRowId::new(0);
-        };
-        let Some(symbol) = self.resolved_type_symbol(module_id, *semantic_id) else {
-            return FailureRowId::new(0);
-        };
-        // `Never` is the empty failure set.
-        if self.is_builtin_type(symbol, "Never") {
-            return FailureRowId::new(0);
-        }
-        if self.resolved.symbol(symbol).kind == ProjectSymbolKind::GenericParameter {
-            self.constrain_generic(module_id, symbol, GenericKind::FailureRow, name);
-            return self.intern_failure_row(FailureRow {
-                variants: Vec::new(),
-                variant_arguments: Vec::new(),
-                parameters: vec![symbol],
-                exclusions: Vec::new(),
-            });
-        }
-        if matches!(
-            self.resolved.standard_symbol(symbol),
-            Some(StandardSymbol::Type(kind)) if kind.is_failure_enum()
-        ) {
-            return self.intern_failure_row(FailureRow {
-                variants: self.enum_variant_symbols(symbol),
-                variant_arguments: Vec::new(),
-                parameters: Vec::new(),
-                exclusions: Vec::new(),
-            });
-        }
-        if self.resolved.symbol(symbol).kind != ProjectSymbolKind::Enum {
-            self.type_error(
-                module_id,
-                "T4102",
-                name,
-                format!(
-                    "failure row expects an enum or row parameter, found {}",
-                    name.text
-                ),
-            );
-            return FailureRowId::new(0);
-        }
-        let symbol_module = self
-            .resolved
-            .symbol(symbol)
-            .module_id
-            .expect("enum is source-backed");
-        let declaration = self.resolved.semantic.modules[symbol_module.raw() as usize]
-            .declarations
-            .iter()
-            .find(|declaration| {
-                declaration.semantic_id
-                    == self
-                        .resolved
-                        .symbol(symbol)
-                        .semantic_id
-                        .expect("enum has semantic identity")
-            })
-            .expect("enum symbol resolves to its declaration");
-        let mut variants = declaration
-            .variants
-            .iter()
-            .filter_map(|variant| {
-                self.find_symbol(
-                    symbol_module,
-                    Some(variant.semantic_id),
-                    ProjectSymbolKind::EnumConstructor,
-                    &variant.name.text,
-                )
-            })
-            .collect::<Vec<_>>();
-        variants.sort_unstable();
-        self.intern_failure_row(FailureRow {
-            variants,
-            variant_arguments: Vec::new(),
-            parameters: Vec::new(),
-            exclusions: Vec::new(),
-        })
     }
 
     fn lower_needs_row(
@@ -8334,15 +8279,27 @@ impl ProjectTypeChecker {
                     // Show the parameter with what the call has bound so far, without
                     // binding anything new for the arguments still to match.
                     let expected = self.substitute_call_type(expected, &mut substitution.clone());
-                    let message =
-                        self.mismatch_message("call argument", argument.success, expected);
-                    self.type_error_range(module_id, "T4203", argument_range, message);
+                    if let Some(message) =
+                        self.failure_set_shortfall("call argument", argument.success, expected)
+                    {
+                        self.type_error_range(module_id, "T4346", argument_range, message);
+                    } else {
+                        let message =
+                            self.mismatch_message("call argument", argument.success, expected);
+                        self.type_error_range(module_id, "T4203", argument_range, message);
+                    }
                 }
             } else if constructs_struct || self.both_functions(argument.success, expected) {
                 if !self.value_fits(argument.success, expected) {
-                    let message =
-                        self.mismatch_message("call argument", argument.success, expected);
-                    self.type_error_range(module_id, "T4203", argument_range, message);
+                    if let Some(message) =
+                        self.failure_set_shortfall("call argument", argument.success, expected)
+                    {
+                        self.type_error_range(module_id, "T4346", argument_range, message);
+                    } else {
+                        let message =
+                            self.mismatch_message("call argument", argument.success, expected);
+                        self.type_error_range(module_id, "T4203", argument_range, message);
+                    }
                 }
             } else {
                 self.unify_at(
@@ -8902,10 +8859,16 @@ impl ProjectTypeChecker {
                     if let Some(bound) = substitution.values.get(&parameter).copied() {
                         return self.unify(actual, bound);
                     }
+                    // A failure set takes only a failure-set value, or its row
+                    // would lose the failures it stands for.
+                    let Some(failures) = self.failure_row_for_type(actual) else {
+                        return matches!(
+                            self.types[actual.raw() as usize],
+                            CanonicalType::InferenceVariable(_) | CanonicalType::Poison
+                        );
+                    };
                     substitution.values.insert(parameter, actual);
-                    if let Some(failures) = self.failure_row_for_type(actual) {
-                        substitution.failures.insert(parameter, failures);
-                    }
+                    substitution.failures.insert(parameter, failures);
                     return true;
                 }
                 if let Some(bound) = substitution.values.get(&parameter).copied() {
@@ -9488,11 +9451,23 @@ impl ProjectTypeChecker {
         joined: TypeId,
         context: &str,
     ) -> TypeId {
-        if self.unify(actual, joined) {
-            return joined;
+        if let Some(join) = self.join_alternative_types(actual, joined) {
+            return join;
         }
-        if self.unify(joined, actual) {
-            return actual;
+        if self.are_distinct_enums(actual, joined) {
+            let joined_name = self.type_display_name(joined);
+            let actual_name = self.type_display_name(actual);
+            self.type_error_range(
+                module_id,
+                "T4341",
+                range,
+                format!(
+                    "{context} has type `{actual_name}`, but earlier ones have `{joined_name}`; \
+                     two different enums do not mix silently. To keep both, give a value the \
+                     failure-set type, as in `let value: {joined_name} | {actual_name} = ...`"
+                ),
+            );
+            return joined;
         }
         self.type_error_range(
             module_id,
@@ -9513,6 +9488,10 @@ impl ProjectTypeChecker {
     ) -> bool {
         if self.unify(actual, expected) {
             return true;
+        }
+        if let Some(message) = self.failure_set_shortfall(context, actual, expected) {
+            self.type_error_range(module_id, "T4346", range, message);
+            return false;
         }
         let message = self.mismatch_message(context, actual, expected);
         self.type_error_range(module_id, "T4203", range, message);
@@ -9585,6 +9564,16 @@ impl ProjectTypeChecker {
     /// side is an inference variable, which then widens to the enum.
     fn unify(&mut self, left: TypeId, right: TypeId) -> bool {
         let right_variable = self.last_inference_variable(right);
+        // Whichever side must fit the other is now bounded above: the actual
+        // side outside function inputs, the expected side inside an odd number.
+        let narrower = if self.function_input_depth.is_multiple_of(2) {
+            self.last_inference_variable(left)
+        } else {
+            right_variable
+        };
+        if let Some(variable) = narrower {
+            self.bounded_inference_variables.insert(variable);
+        }
         let left = self.resolve_inference_type(left);
         let right = self.resolve_inference_type(right);
         if left == right || left == TypeId::new(0) || right == TypeId::new(0) {
@@ -9613,26 +9602,86 @@ impl ProjectTypeChecker {
                     arguments: right_arguments,
                 },
             ) => {
-                left_symbol == right_symbol
-                    && left_arguments.len() == right_arguments.len()
-                    && left_arguments
-                        .into_iter()
-                        .zip(right_arguments)
-                        .all(|(left, right)| self.unify(left, right))
+                if left_symbol != right_symbol || left_arguments.len() != right_arguments.len() {
+                    return false;
+                }
+                // Two instances meeting in inference join a covariant failure-set
+                // argument by union ("Joins"), so a list of two captures with
+                // different rows holds `Result<T, A | B>`.
+                let mut joined = Vec::with_capacity(right_arguments.len());
+                let mut widened = false;
+                for (index, (left, right)) in
+                    left_arguments.into_iter().zip(right_arguments).enumerate()
+                {
+                    if self.unify(left, right) {
+                        // A failure-set argument fits a wider one only where the
+                        // parameter is covariant; elsewhere, as for `Handler<E>`
+                        // holding a `fn(E)`, the two sets must be equal.
+                        if self.resolve_inference_type(left) != self.resolve_inference_type(right)
+                            && !self.type_parameter_is_covariant(left_symbol, index)
+                            && !self.unify(right, left)
+                        {
+                            return false;
+                        }
+                        joined.push(right);
+                        continue;
+                    }
+                    let union = match (
+                        right_variable,
+                        self.failure_set_of(left),
+                        self.failure_set_of(right),
+                    ) {
+                        (Some(variable), Some(left), Some(right))
+                            if self.function_input_depth.is_multiple_of(2)
+                                && !self.bounded_inference_variables.contains(&variable)
+                                && self.type_parameter_is_covariant(left_symbol, index) =>
+                        {
+                            self.join_failure_sets([left, right])
+                        }
+                        _ => return false,
+                    };
+                    joined.push(self.failure_set_type(union));
+                    widened = true;
+                }
+                if let (true, Some(variable)) = (widened, right_variable) {
+                    let joined = self.intern_type(CanonicalType::Named {
+                        symbol: left_symbol,
+                        arguments: joined,
+                    });
+                    self.inference_bindings.insert(variable, joined);
+                }
+                true
             }
             (CanonicalType::Generic(left), CanonicalType::Generic(right)) => left == right,
-            (CanonicalType::FailureSetValue(left), CanonicalType::FailureSetValue(right)) => {
-                self.failure_rows_equivalent(left, right)
-            }
-            (CanonicalType::FailureSetValue(row), CanonicalType::Named { symbol, .. }) => {
-                self.failure_row_within_enum(row, symbol)
-            }
-            (CanonicalType::Named { symbol, .. }, CanonicalType::FailureSetValue(row)) => {
-                let Some(variable) = right_variable else {
+            // A failure-set value fits a set that includes it. Under an odd number
+            // of function inputs the direction flips: a `fn(A)` must not pass for
+            // a `fn(A | B)`, which may hand it a `B`. Where the expected side is
+            // still being inferred outside inputs, two failure sets join by union.
+            (CanonicalType::FailureSetValue(_), CanonicalType::FailureSetValue(_))
+            | (CanonicalType::Generic(_), CanonicalType::FailureSetValue(_))
+            | (CanonicalType::FailureSetValue(_), CanonicalType::Generic(_))
+            | (CanonicalType::Named { .. }, CanonicalType::FailureSetValue(_))
+            | (CanonicalType::FailureSetValue(_), CanonicalType::Named { .. }) => {
+                let (Some(actual), Some(expected)) =
+                    (self.failure_set_of(left), self.failure_set_of(right))
+                else {
                     return false;
                 };
-                self.failure_row_within_enum(row, symbol)
-                    && self.bind_inference_variable(variable, left)
+                if !self.function_input_depth.is_multiple_of(2) {
+                    return self.failure_set_is_subset(expected, actual);
+                }
+                if self.failure_set_is_subset(actual, expected) {
+                    return true;
+                }
+                let Some(variable) = right_variable
+                    .filter(|variable| !self.bounded_inference_variables.contains(variable))
+                else {
+                    return false;
+                };
+                let union = self.join_failure_sets([actual, expected]);
+                let joined = self.failure_set_type(union);
+                self.inference_bindings.insert(variable, joined);
+                true
             }
             (CanonicalType::Function(left), CanonicalType::Function(right)) => {
                 left.inputs.len() == right.inputs.len()
@@ -9710,9 +9759,9 @@ impl ProjectTypeChecker {
             | CanonicalType::PolymorphicFunction { contract, .. } => contract_occurs(contract),
             CanonicalType::Record(fields) => fields.iter().any(|field| occurs(field.type_id)),
             CanonicalType::Tuple(elements) => elements.iter().copied().any(occurs),
-            CanonicalType::Generic(_) | CanonicalType::FailureSetValue(_) | CanonicalType::Poison => {
-                false
-            }
+            CanonicalType::Generic(_)
+            | CanonicalType::FailureSetValue(_)
+            | CanonicalType::Poison => false,
         }
     }
 
