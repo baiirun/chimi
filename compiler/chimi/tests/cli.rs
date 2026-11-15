@@ -3684,6 +3684,107 @@ fn native_traced_integer_loop_reports_every_pass() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// The rows of a `--profile-file` document, each as its JSON text.
+fn profile_rows(profile: &str) -> Vec<&str> {
+    profile.split("{\"core_node_id\":").skip(1).collect()
+}
+
+/// The `field` of the first profile row for `operation`, summed over every such row.
+fn profile_total(profile: &str, operation: &str, field: &str) -> u64 {
+    profile_rows(profile)
+        .into_iter()
+        .filter(|row| row.contains(&format!("\"operation\":\"{operation}\"")))
+        .map(|row| json_u64_field(row, field))
+        .sum()
+}
+
+// Guards: --profile-file counts every evaluation of every node, charges each
+// allocation to the node that made it, lists the heaviest allocators first, and turns
+// off the direct paths, which would hide nodes (T6).
+#[test]
+fn native_profile_counts_evaluations_and_allocations_per_operation() {
+    let scratch = scratch_directory("native-profile");
+    let executable = build_native(
+        &scratch,
+        "profile",
+        concat!(
+            "fn step(n: Int) -> Int { n + 1 }\n",
+            "fn counted() -> Int {\n",
+            "  loop count = 0 {\n",
+            "    case count >= 1000 {\n",
+            "      True -> break count\n",
+            "      False -> step(count)\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "fn direct() -> Int {\n",
+            "  loop count = 0 {\n",
+            "    case count {\n",
+            "      500 -> break count\n",
+            "      _ -> count + 1\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int { counted() + direct() }\n",
+        ),
+    );
+    let profile_path = scratch.join("profile.json");
+    let execution = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--profile-file={}", profile_path.display()))
+        .arg("--")
+        .output()
+        .expect("run native program with a profile");
+    assert!(
+        execution.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+    let profile = std::fs::read_to_string(&profile_path).unwrap();
+    assert!(
+        profile.starts_with("{\"schema\":\"chimi.runtime-profile.v1\",\"operations\":["),
+        "{profile}"
+    );
+    assert_eq!(profile_total(&profile, "loop", "evaluations"), 2, "{profile}");
+    assert_eq!(profile_total(&profile, "call", "evaluations"), 1000 + 2, "{profile}");
+    // 1,001 passes of the first loop and 501 of the second, which profiling keeps
+    // off the direct path.
+    assert_eq!(profile_total(&profile, "match", "evaluations"), 1001 + 501, "{profile}");
+    assert!(profile_total(&profile, "call", "allocated_bytes") > 0, "{profile}");
+    // An integer constant allocates its value and its result, and nothing its parent
+    // allocates after it returns is charged to it.
+    for row in profile_rows(&profile) {
+        if row.contains("\"operation\":\"constant\"") {
+            assert_eq!(
+                json_u64_field(row, "allocations"),
+                2 * json_u64_field(row, "evaluations"),
+                "{row}"
+            );
+        }
+    }
+    let allocated = profile_rows(&profile)
+        .into_iter()
+        .map(|row| json_u64_field(row, "allocated_bytes"))
+        .collect::<Vec<_>>();
+    assert!(allocated.windows(2).all(|pair| pair[0] >= pair[1]), "{profile}");
+
+    let rerun = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--profile-file={}", profile_path.display()))
+        .arg("--")
+        .output()
+        .expect("run native program onto an existing profile");
+    assert_eq!(rerun.status.code(), Some(74));
+    assert!(
+        String::from_utf8_lossy(&rerun.stderr).contains("cannot open profile file"),
+        "{}",
+        String::from_utf8_lossy(&rerun.stderr)
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn native_list_is_a_persistent_vector() {
     let scratch = scratch_directory("native-list-runtime");
