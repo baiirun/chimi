@@ -1417,7 +1417,8 @@ static void forward_children(void *pointer) {
           FORWARD(value->as.list.vector.tail);
           break;
         case VALUE_RECORD:
-        case VALUE_TUPLE: FORWARD(value->as.record.fields); break;
+        case VALUE_TUPLE:
+        case VALUE_CAUSE: FORWARD(value->as.record.fields); break;
         case VALUE_CONSTRUCTED: FORWARD(value->as.constructed.fields); break;
         case VALUE_CALLABLE: FORWARD(value->as.callable); break;
         case VALUE_MAP:
@@ -1463,7 +1464,10 @@ static void forward_children(void *pointer) {
       FORWARD(node->right);
       break;
     }
-    case ALLOCATION_CONTROL: FORWARD(((ChimiControl *)pointer)->value); break;
+    case ALLOCATION_CONTROL:
+      FORWARD(((ChimiControl *)pointer)->value);
+      FORWARD(((ChimiControl *)pointer)->cause);
+      break;
     case ALLOCATION_BYTES: break;
     case ALLOCATION_FRAME_ENVIRONMENT:
     case ALLOCATION_KIND_COUNT: allocation_graph_inconsistent();
