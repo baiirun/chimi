@@ -307,7 +307,9 @@ fn build_output_is_identical_with_and_without_test_items() {
     for (name, text) in [("plain", program.to_owned()), ("tested", with_tests)] {
         let source = scratch.join(format!("{name}.chimi"));
         std::fs::write(&source, text).unwrap();
-        let executable = scratch.join(name);
+        // One file name for both: macOS signs an executable with its name.
+        std::fs::create_dir_all(scratch.join(name)).unwrap();
+        let executable = scratch.join(name).join("program");
         let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
             .current_dir(&scratch)
             .arg("build")
