@@ -11547,6 +11547,29 @@ fn task_results_kept_across_bump_allocated_passes_stay_intact() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// Guards: a crash message built inside a loop pass is allocated in the pass's
+// young chunk, and the defect leaves the region, so the message must not live in
+// the chunk the region frees (CHI-219 review).
+#[test]
+fn a_crash_message_built_inside_a_loop_survives_the_loop() {
+    let outcome = run_both(
+        "bump-crash-message",
+        concat!(
+            "import std/debug as Debug\n",
+            "import std/text as Text\n",
+            "pub fn main() -> Int {\n",
+            "  loop n = 0 {\n",
+            "    case n >= 3 {\n",
+            "      True -> Debug.crash(Text.append(\"boom-\", \"message-in-chunk\"))\n",
+            "      False -> n + 1\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(defect_message(&outcome), "boom-message-in-chunk", "{outcome}");
+}
+
 // Guards: a match reads every subject, both when its subjects fit the runtime's
 // stack array (up to eight) and when they do not (nine).
 #[test]

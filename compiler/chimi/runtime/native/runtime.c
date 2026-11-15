@@ -484,10 +484,30 @@ static AllocationArea *current_area(void) {
   return current_heap->innermost ? &current_heap->innermost->young : &current_heap->base;
 }
 
+/* Footprint of the young chunk allocations whose counters are still deferred to
+   their scope's next flush. Bumping one only adds to this, so the true footprint
+   (footprint_bytes plus this) peaks just before it falls: footprint_sub and
+   footprint_add record the peak there, and the report reads footprint_peak(). */
+static size_t pending_footprint_bytes;
+
+static void footprint_record_peak(void) {
+  size_t footprint = heap_totals.footprint_bytes + pending_footprint_bytes;
+  if (footprint > heap_totals.peak_footprint_bytes) heap_totals.peak_footprint_bytes = footprint;
+}
+
 static void footprint_add(size_t bytes) {
   heap_totals.footprint_bytes += bytes;
-  if (heap_totals.footprint_bytes > heap_totals.peak_footprint_bytes)
-    heap_totals.peak_footprint_bytes = heap_totals.footprint_bytes;
+  footprint_record_peak();
+}
+
+static void footprint_sub(size_t bytes) {
+  footprint_record_peak();
+  heap_totals.footprint_bytes -= bytes;
+}
+
+static size_t footprint_peak(void) {
+  footprint_record_peak();
+  return heap_totals.peak_footprint_bytes;
 }
 
 static void fragment_footprint_add(size_t bytes) {
@@ -553,8 +573,10 @@ static void young_chunk_give(YoungChunk *chunk) {
 }
 
 /* Adds the chunk allocations made since the last call to the memory counters. A
-   pass only adds to them until its boundary, so deferring the additions to the
-   boundary (or to a nested region's start) leaves every peak the same. */
+   pass only adds to its scope's and heap's counters until its boundary, so
+   deferring the additions to the boundary (or to a nested region's start) leaves
+   those peaks the same. The global footprint can fall mid-pass, so its peak
+   counts the deferred bytes through pending_footprint_bytes. */
 static void flush_young_counts(AllocationScope *scope) {
   size_t bytes = scope->pending_bytes, count = scope->pending_count;
   if (count == 0) return;
@@ -567,6 +589,7 @@ static void flush_young_counts(AllocationScope *scope) {
   scope->total_allocated_bytes += bytes;
   scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
   heap_totals.live_allocations += count;
+  pending_footprint_bytes -= count * sizeof(AllocationHeader) + bytes;
   footprint_add(count * sizeof(AllocationHeader) + bytes);
 }
 
@@ -601,8 +624,8 @@ static void *allocate(size_t count, size_t size) {
       bytes > SIZE_MAX - sizeof(AllocationHeader) - SMALL_BLOCK_GRAIN) {
     fputs("Chimi runtime allocation overflow\n", stderr); exit(70);
   }
-  AllocationScope *innermost = current_heap->innermost;
-  if (!allocation_target && innermost && bytes <= YOUNG_CHUNK_LARGEST) {
+  AllocationScope *innermost = allocation_target ? NULL : current_heap->innermost;
+  if (innermost && bytes <= YOUNG_CHUNK_LARGEST) {
     size_t rounded = young_rounded(bytes);
     AllocationHeader *header = young_bump(innermost, rounded);
     header->bytes = bytes;
@@ -610,6 +633,7 @@ static void *allocate(size_t count, size_t size) {
     header->in_chunk = true;
     innermost->pending_bytes += bytes;
     ++innermost->pending_count;
+    pending_footprint_bytes += sizeof(AllocationHeader) + bytes;
     if (profile_rows && current_heap->profiled_node_plus_one) {
       ProfileRow *row = &profile_rows[current_heap->profiled_node_plus_one - 1];
       ++row->allocations;
@@ -760,7 +784,7 @@ static void release_allocation(AllocationHeader *header) {
   if (header->area->heap) header->area->heap->live_bytes -= header->bytes;
   if (header->area->role != AREA_STATIC) {
     --heap_totals.live_allocations;
-    heap_totals.footprint_bytes -= sizeof(*header) + header->bytes;
+    footprint_sub(sizeof(*header) + header->bytes);
   }
   small_block_give(header, sizeof(*header) + header->bytes);
 }
@@ -804,7 +828,7 @@ typedef struct RuntimeFragment {
 
 /* Frees an emptied adopted area, which is the record of the fragment it came from. */
 static void area_free(AllocationArea *area) {
-  heap_totals.footprint_bytes -= sizeof(RuntimeFragment);
+  footprint_sub(sizeof(RuntimeFragment));
   small_block_give(area, sizeof(RuntimeFragment));
 }
 
@@ -1467,7 +1491,7 @@ static void reset_young_chunks(AllocationScope *scope, bool keep_first) {
   scope->live_bytes -= dead_bytes;
   scope->heap->live_bytes -= dead_bytes;
   heap_totals.live_allocations -= dead_count;
-  heap_totals.footprint_bytes -= dead_count * sizeof(AllocationHeader) + dead_bytes;
+  footprint_sub(dead_count * sizeof(AllocationHeader) + dead_bytes);
   YoungChunk *rest = first->next;
 #ifdef CHIMI_POISON_YOUNG_CHUNKS
   keep_first = false;
@@ -2114,6 +2138,17 @@ static ChimiValue *float_value(double raw) { ChimiValue *v = new_value(VALUE_FLO
    message for message, because both execution paths must report identical outcomes. */
 
 /* A defect message that outlives the collector: a defect ends its unit of work. */
+/* A defect message outlives every region the defect passes through, and no pass
+   traces ChimiControl.message, so it lives outside the heap like the numeric
+   messages. */
+static const char *defect_message_copy(const char *raw) {
+  size_t length = strlen(raw);
+  char *message = malloc(length + 1);
+  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); exit(70); }
+  memcpy(message, raw, length + 1);
+  return message;
+}
+
 static const char *numeric_message(const char *format, ...) {
   va_list arguments; va_start(arguments, format);
   char *message = malloc(256);
@@ -5049,7 +5084,7 @@ static ChimiControl *invoke_core_operation(uint32_t intrinsic, ChimiValue **argu
   switch (intrinsic) {
     case CHIMI_INTRINSIC_DEBUG_CRASH:
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return defect(copy_text(arguments[0]->as.text.bytes), call_node);
+      return defect(defect_message_copy(arguments[0]->as.text.bytes), call_node);
     case CHIMI_INTRINSIC_OPTION_UNWRAP_OR_FAIL:
       if (argument_count != 2 || arguments[0]->kind != VALUE_CONSTRUCTED) break;
       if (arguments[0]->as.constructed.length == 1) return success(arguments[0]->as.constructed.fields[0].value);
@@ -8492,12 +8527,12 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           runtime->scoped_full_collections,
           runtime->scoped_scanned_allocations,
           unscoped_allocated_bytes,
-          heap_totals.peak_footprint_bytes,
+          footprint_peak(),
           heap_totals.peak_fragment_footprint_bytes,
           capture_transfer_probes,
-          /* runtime.c has no chunks: an allocation is its unit of heap memory. */
+          /* Reported per allocation: young chunks are not counted separately. */
           heap_totals.live_allocations,
-          heap_totals.peak_footprint_bytes,
+          footprint_peak(),
           heap_totals.live_fragments,
           heap_totals.peak_fragment_footprint_bytes,
 #if CHIMI_PROCESS_KERNEL

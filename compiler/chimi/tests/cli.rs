@@ -4438,6 +4438,53 @@ fn memory_report_over_rounds(name: &str, source: &str, runner: &[&str], rounds: 
     report
 }
 
+// Guards: a pass's young chunk allocations are counted at its boundary, while a
+// child task's heap is freed in the middle of the pass. The peak footprint must
+// still count both at once: here the 1500 pushes still live in the pass while
+// the child maps a 20000-element list (CHI-219 review).
+#[test]
+fn native_peak_footprint_counts_a_pass_and_a_child_task_together() {
+    let source = |pushes: usize| {
+        format!(
+            concat!(
+                "import std/list as List\n",
+                "import std/task as Task\n",
+                "fn heavy(seed: Int) -> Int {{\n",
+                "  List.length(List.map(List.repeat(seed, 20000), fn(n: Int) -> Int {{ n + 1 }}))\n",
+                "}}\n",
+                "fn build(n: Int, acc: List<Int>) -> List<Int> {{\n",
+                "  case n <= 0 {{\n",
+                "    True -> acc\n",
+                "    False -> build(n - 1, List.push(acc, n))\n",
+                "  }}\n",
+                "}}\n",
+                "pub fn main() -> Int {{\n",
+                "  loop s = 0 {{\n",
+                "    case s >= 50000 {{\n",
+                "      True -> break s\n",
+                "      False -> {{\n",
+                "        let big = build({pushes}, [])\n",
+                "        let r = Task.result(Task.start(fn() -> Int {{ heavy(s) }}))\n",
+                "        s + r + List.length(big)\n",
+                "      }}\n",
+                "    }}\n",
+                "  }}\n",
+                "}}\n",
+            ),
+            pushes = pushes
+        )
+    };
+    let alone = memory_report_over_rounds("peak-child-alone", &source(1), &[], 0);
+    let together = memory_report_over_rounds("peak-child-together", &source(1500), &[], 0);
+    let alone_peak = json_u64_field(&alone, "peak_footprint_bytes");
+    let together_peak = json_u64_field(&together, "peak_footprint_bytes");
+    // The pushes alone keep about as much live as the child does.
+    assert!(
+        together_peak > alone_peak * 3 / 2,
+        "peak footprint {together_peak} with the pushes, {alone_peak} without"
+    );
+}
+
 fn assert_flat_fragment_peak(small: &str, large: &str) {
     assert_eq!(
         json_u64_field(large, "peak_fragment_footprint_bytes"),
