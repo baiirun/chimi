@@ -1589,6 +1589,20 @@ fn decimal_operators_take_two_decimals() {
         messages[0].starts_with("T4302") && messages[0].contains("Decimal.of(value, 0)"),
         "{messages:?}"
     );
+    // A `Float` has no exact conversion, so the `Int` hint would mislead.
+    for body in ["Decimal.of(1, 0) * 2.5", "2.5 - Decimal.of(1, 0)"] {
+        let messages = check_messages(&format!(
+            "{DECIMAL_IMPORTS}pub fn main() -> Decimal {{ {body} }}\n"
+        ));
+        assert_eq!(messages.len(), 1, "{body}: {messages:?}");
+        assert!(
+            messages[0].starts_with("T4302")
+                && messages[0].contains("no conversion from `Float`")
+                && !messages[0].contains("Decimal.of(value, 0)")
+                && !messages[0].contains("Float.from_int"),
+            "{body}: {messages:?}"
+        );
+    }
 }
 
 // A `Decimal` is plain data: a task's result crosses heaps with its sign,

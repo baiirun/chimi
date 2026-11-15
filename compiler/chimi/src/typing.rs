@@ -5157,8 +5157,13 @@ impl ProjectTypeChecker {
                 .all(|id| *id == int || *id == float)
             {
                 "; convert one side with `Float.from_int` or `Float.to_int`"
-            } else {
+            } else if left_type == int || right_type == int {
                 "; build an exact `Decimal` from an `Int` with `Decimal.of(value, 0)`"
+            } else if left_type == float || right_type == float {
+                "; `Decimal` has no conversion from `Float`, which is not exact: build the \
+                 `Decimal` from its digits with `Decimal.of` or `Decimal.parse`"
+            } else {
+                ""
             };
             self.type_error_range(
                 module_id,
