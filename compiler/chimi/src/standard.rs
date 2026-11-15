@@ -260,8 +260,6 @@ pub(crate) enum StandardFunction {
     MapEmpty,
     MapGet,
     MapPut,
-    MapUpdate,
-    MapMapValues,
     JsonDecode,
     JsonEncode,
     JsonBoolean,
@@ -303,8 +301,6 @@ pub(crate) enum StandardFunction {
     OrderCompare,
     OrderMin,
     OrderMax,
-    /// `std/map.from`: a map of the `(key, value)` pairs; a later pair wins.
-    MapFrom,
     RangeStart,
     /// The exclusive end.
     RangeEnd,
@@ -375,10 +371,11 @@ pub(crate) enum StandardFunction {
     ListPush,
     ListSlice,
     ListSet,
-    // Registered ahead of the `std/map`, `std/set`, `std/json`, and
-    // `std/decimal` ports (phase 2 steps 5 and 6). Until a port implements one,
-    // both backends defect with "<operation id> is not implemented yet". Each
-    // module's variants stay contiguous: the native runtime dispatches by range.
+    // The native cores of the phase 2 ports (steps 5 and 6) that no built-in
+    // intrinsic ran before: `std/map`, `std/set`, `std/json`, and `std/decimal`.
+    // Until a port implements one, both backends defect with "<operation id> is
+    // not implemented yet". Each module's variants stay contiguous: the native
+    // runtime dispatches by range.
     MapRemove,
     MapSize,
     MapReduceEntries,
@@ -400,7 +397,7 @@ pub(crate) enum StandardFunction {
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 81] = [
+    pub(crate) const ALL: [Self; 75] = [
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -443,12 +440,6 @@ impl StandardFunction {
         Self::DurationToText,
         Self::DurationParse,
         Self::IoPath,
-        Self::MapEmpty,
-        Self::MapGet,
-        Self::MapPut,
-        Self::MapUpdate,
-        Self::MapMapValues,
-        Self::MapFrom,
         Self::JsonDecode,
         Self::JsonEncode,
         Self::JsonBoolean,
@@ -504,12 +495,6 @@ impl StandardFunction {
             | Self::SupervisorWait => Some(StandardModule::Supervisor),
             Self::ClockSleep => Some(StandardModule::Clock),
             Self::IoPath => Some(StandardModule::Io),
-            Self::MapEmpty
-            | Self::MapGet
-            | Self::MapPut
-            | Self::MapUpdate
-            | Self::MapMapValues
-            | Self::MapFrom => Some(StandardModule::Map),
             Self::JsonDecode
             | Self::JsonEncode
             | Self::JsonBoolean
@@ -587,6 +572,9 @@ impl StandardFunction {
             | Self::ListPush
             | Self::ListSlice
             | Self::ListSet
+            | Self::MapEmpty
+            | Self::MapGet
+            | Self::MapPut
             | Self::MapRemove
             | Self::MapSize
             | Self::MapReduceEntries
@@ -616,9 +604,6 @@ impl StandardFunction {
             Self::MapEmpty => "empty",
             Self::MapGet => "get",
             Self::MapPut => "put",
-            Self::MapUpdate => "update",
-            Self::MapMapValues => "map_values",
-            Self::MapFrom => "from",
             Self::RangeStart => "start",
             Self::RangeEnd => "end",
             Self::RangeLength => "length",
@@ -1161,21 +1146,6 @@ pub(crate) enum StandardGeneric {
     ListFirstValue,
     ListLengthValue,
     OptionValue,
-    MapEmptyKey,
-    MapEmptyValue,
-    MapGetKey,
-    MapGetValue,
-    MapPutKey,
-    MapPutValue,
-    MapUpdateKey,
-    MapUpdateValue,
-    MapUpdateFailures,
-    MapUpdateNeeds,
-    MapValuesKey,
-    MapValuesInput,
-    MapValuesOutput,
-    MapValuesFailures,
-    MapValuesNeeds,
     TaskValue,
     TaskFailures,
     TaskNeeds,
@@ -1183,8 +1153,6 @@ pub(crate) enum StandardGeneric {
     OrderCompareValue,
     OrderMinValue,
     OrderMaxValue,
-    MapFromKey,
-    MapFromValue,
     ProcessSpecMessage,
     ProcessSpecFailures,
     ProcessSpecNeeds,
@@ -1201,28 +1169,13 @@ pub(crate) enum StandardGeneric {
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 43] = [
+    pub(crate) const ALL: [Self; 26] = [
         Self::FileState,
         Self::FileFailures,
         Self::FileNeeds,
         Self::ListFirstValue,
         Self::ListLengthValue,
         Self::OptionValue,
-        Self::MapEmptyKey,
-        Self::MapEmptyValue,
-        Self::MapGetKey,
-        Self::MapGetValue,
-        Self::MapPutKey,
-        Self::MapPutValue,
-        Self::MapUpdateKey,
-        Self::MapUpdateValue,
-        Self::MapUpdateFailures,
-        Self::MapUpdateNeeds,
-        Self::MapValuesKey,
-        Self::MapValuesInput,
-        Self::MapValuesOutput,
-        Self::MapValuesFailures,
-        Self::MapValuesNeeds,
         Self::TaskValue,
         Self::TaskFailures,
         Self::TaskNeeds,
@@ -1230,8 +1183,6 @@ impl StandardGeneric {
         Self::OrderCompareValue,
         Self::OrderMinValue,
         Self::OrderMaxValue,
-        Self::MapFromKey,
-        Self::MapFromValue,
         Self::ProcessSpecMessage,
         Self::ProcessSpecFailures,
         Self::ProcessSpecNeeds,
@@ -1257,21 +1208,6 @@ impl StandardGeneric {
             Self::ListFirstValue => "T",
             Self::ListLengthValue => "T",
             Self::OptionValue => "T",
-            Self::MapEmptyKey => "K",
-            Self::MapEmptyValue => "V",
-            Self::MapGetKey => "K",
-            Self::MapGetValue | Self::MapFromValue => "V",
-            Self::MapPutKey => "K",
-            Self::MapPutValue => "V",
-            Self::MapUpdateKey => "K",
-            Self::MapUpdateValue => "V",
-            Self::MapUpdateFailures => "E",
-            Self::MapUpdateNeeds => "R",
-            Self::MapValuesKey | Self::MapFromKey => "K",
-            Self::MapValuesInput => "A",
-            Self::MapValuesOutput => "B",
-            Self::MapValuesFailures => "E",
-            Self::MapValuesNeeds => "R",
             Self::TaskValue => "T",
             Self::TaskFailures => "E",
             Self::TaskNeeds => "R",
@@ -1295,17 +1231,13 @@ impl StandardGeneric {
 
     pub(crate) const fn kind(self) -> StandardGenericKind {
         match self {
-            Self::FileFailures | Self::MapUpdateFailures | Self::MapValuesFailures => {
-                StandardGenericKind::FailureRow
-            }
+            Self::FileFailures => StandardGenericKind::FailureRow,
             Self::TaskFailures
             | Self::ProcessSpecFailures
             | Self::ProcessRegisterFailures
             | Self::SupervisorProcessFailures
             | Self::SupervisorStartProcessFailures => StandardGenericKind::FailureSet,
             Self::FileNeeds
-            | Self::MapUpdateNeeds
-            | Self::MapValuesNeeds
             | Self::ProcessSpecNeeds => StandardGenericKind::NeedsRow,
             _ => StandardGenericKind::Value,
         }

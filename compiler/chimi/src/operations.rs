@@ -41,7 +41,7 @@ pub(crate) struct Operation {
     pub(crate) class: OperationClass,
     pub(crate) implementation: StandardFunction,
     /// Registered ahead of its module's port: the module is not importable yet
-    /// (`std/map`, `std/json`) or the operation defects with
+    /// (`std/json`) or the operation defects with
     /// "<id> is not implemented yet". The std-tests coverage check skips it; a
     /// port flips it with [`pure`] once a program reaches the operation.
     pub(crate) porting: bool,

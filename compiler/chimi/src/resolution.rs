@@ -751,41 +751,6 @@ impl ProjectResolver {
                 vec![StandardGeneric::ListLengthValue],
             ),
             (
-                self.standard_function_symbol(StandardFunction::MapEmpty),
-                vec![StandardGeneric::MapEmptyKey, StandardGeneric::MapEmptyValue],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::MapGet),
-                vec![StandardGeneric::MapGetKey, StandardGeneric::MapGetValue],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::MapPut),
-                vec![StandardGeneric::MapPutKey, StandardGeneric::MapPutValue],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::MapFrom),
-                vec![StandardGeneric::MapFromKey, StandardGeneric::MapFromValue],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::MapUpdate),
-                vec![
-                    StandardGeneric::MapUpdateKey,
-                    StandardGeneric::MapUpdateValue,
-                    StandardGeneric::MapUpdateFailures,
-                    StandardGeneric::MapUpdateNeeds,
-                ],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::MapMapValues),
-                vec![
-                    StandardGeneric::MapValuesKey,
-                    StandardGeneric::MapValuesInput,
-                    StandardGeneric::MapValuesOutput,
-                    StandardGeneric::MapValuesFailures,
-                    StandardGeneric::MapValuesNeeds,
-                ],
-            ),
-            (
                 self.standard_function_symbol(StandardFunction::OrderCompare),
                 vec![StandardGeneric::OrderCompareValue],
             ),

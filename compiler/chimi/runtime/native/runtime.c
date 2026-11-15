@@ -4955,22 +4955,6 @@ static void release_task_context(void *context, void *raw) {
   free(task);
 }
 
-static ChimiControl *map_values_node(ChimiRuntime *runtime, MapNode *node,
-                                     ChimiCallable *callback, MapNode **output,
-                                     uint64_t span, uint32_t call_node,
-                                     ChimiEnvironment *environment) {
-  if (!node) return success(NULL);
-  ChimiControl *control = map_values_node(runtime, node->left, callback, output,
-                                         span, call_node, environment);
-  if (control->kind != CONTROL_SUCCESS) return control;
-  ChimiValue *arguments[] = {node->value};
-  control = invoke(runtime, callback, arguments, 1, span, call_node, environment);
-  if (control->kind != CONTROL_SUCCESS) return control;
-  *output = map_put_node(*output, node->key, control->value);
-  return map_values_node(runtime, node->right, callback, output,
-                         span, call_node, environment);
-}
-
 /* `digits [. digits] [(e|E) [+|-] digits]`, as numeric.rs `is_decimal_number`. */
 static bool is_decimal_number(const char *text) {
   const char *cursor = text;
@@ -6254,37 +6238,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     case CHIMI_INTRINSIC_ORDER_MAX:
       if (argument_count != 2) return intrinsic_shape_defect(call_node);
       return success(chimi_value_compare(arguments[0], arguments[1]) < 0 ? arguments[1] : arguments[0]);
-    case CHIMI_INTRINSIC_MAP_FROM: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST) return intrinsic_shape_defect(call_node);
-      MapNode *map = NULL;
-      for (uint32_t i = 0; i < list_length(arguments[0]); ++i) {
-        ChimiValue *pair = list_get(arguments[0], i);
-        if (pair->kind != VALUE_TUPLE || pair->as.record.length != 2) return intrinsic_shape_defect(call_node);
-        map = map_put_node(map, pair->as.record.fields[0].value, pair->as.record.fields[1].value);
-      }
-      return success(map_value(map));
-    }
-    case CHIMI_INTRINSIC_MAP_UPDATE: {
-      if (argument_count != 3 || arguments[0]->kind != VALUE_MAP ||
-          arguments[2]->kind != VALUE_CALLABLE) return intrinsic_shape_defect(call_node);
-      ChimiValue *found = map_get_node(arguments[0]->as.map, arguments[1]);
-      ChimiValue *current;
-      if (found) { ChimiValue *fields[] = {found}; current = standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1); }
-      else current = standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0);
-      ChimiValue *callback_arguments[] = {current};
-      ChimiControl *control = invoke(runtime, arguments[2]->as.callable, callback_arguments, 1,
-                                     span, call_node, environment);
-      if (control->kind != CONTROL_SUCCESS) return control;
-      return success(map_value(map_put_node(arguments[0]->as.map, arguments[1], control->value)));
-    }
-    case CHIMI_INTRINSIC_MAP_MAP_VALUES: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_MAP || arguments[1]->kind != VALUE_CALLABLE)
-        return intrinsic_shape_defect(call_node);
-      MapNode *output = NULL;
-      ChimiControl *control = map_values_node(runtime, arguments[0]->as.map, arguments[1]->as.callable,
-                                              &output, span, call_node, environment);
-      return control->kind == CONTROL_SUCCESS ? success(map_value(output)) : control;
-    }
     case CHIMI_INTRINSIC_JSON_DECODE: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
       JsonParser parser = {arguments[0]->as.text, strlen(arguments[0]->as.text), 0, NULL};
