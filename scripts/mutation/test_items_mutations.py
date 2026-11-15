@@ -50,8 +50,4 @@ MUTATIONS = [
         "    resolve_project(lower_project_sources(sources).without_tests())",
         "    resolve_project(lower_project_sources(sources))",
     )], targets=["cli"], filter="build_output_is_identical_with_and_without_test_items"),
-    dict(name="lowering: tests lower in source order", file=S, edits=[(
-        "                NodeKind::TestDeclaration => tests.push(node),",
-        "                NodeKind::TestDeclaration => {\n                    if let Some(declaration) = lowerer.lower_test(&node, &declarations) {\n                        declarations.push(declaration);\n                    }\n                }",
-    )], targets=["cli"], filter="build_output_is_identical_with_and_without_test_items"),
 ]

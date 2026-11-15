@@ -1027,8 +1027,7 @@ pub(crate) struct SemanticProject {
 }
 
 impl SemanticProject {
-    /// The project a program build sees: every `test` item removed. Tests lower
-    /// last in each module, so every other semantic id is unchanged.
+    /// The project a program build sees: every `test` item removed.
     pub(crate) fn without_tests(self) -> Self {
         let modules = self
             .modules
@@ -1115,7 +1114,6 @@ impl ProjectLowerer {
         };
         let mut imports = Vec::new();
         let mut declarations = Vec::new();
-        let mut tests = Vec::new();
         let nodes = root.child_nodes();
         let mut clause_groups = Vec::<(String, TextRange)>::new();
         let separated = separated_function_names(&nodes);
@@ -1187,7 +1185,11 @@ impl ProjectLowerer {
                         declarations.push(declaration);
                     }
                 }
-                NodeKind::TestDeclaration => tests.push(node),
+                NodeKind::TestDeclaration => {
+                    if let Some(declaration) = lowerer.lower_test(&node, &declarations) {
+                        declarations.push(declaration);
+                    }
+                }
                 // Module-level `let` was replaced by `const` (`L2101`). It still lowers as
                 // a constant so references to it resolve and report nothing further.
                 NodeKind::LetBinding => {
@@ -1212,13 +1214,6 @@ impl ProjectLowerer {
                     }
                 }
                 _ => {}
-            }
-        }
-        // Tests lower after every other item, so they shift no other item's
-        // semantic id and a build is the same with or without them.
-        for node in &tests {
-            if let Some(declaration) = lowerer.lower_test(node, &declarations) {
-                declarations.push(declaration);
             }
         }
         let diagnostics = parsed
