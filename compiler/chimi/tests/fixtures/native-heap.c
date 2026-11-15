@@ -515,7 +515,8 @@ static void test_a_pass_boundary_moves_shared_values_once(void) {
   ChimiValue *state = int_value(0);
   for (int pass = 0; pass < 100; ++pass) {
     ChimiValue *shared = pair(int_value(pass), state);
-    (void)pair(int_value(-1), int_value(-2));
+    /* Most of the pass is garbage, so the region keeps bumping (see links_young). */
+    for (int garbage = 0; garbage < 20; ++garbage) (void)pair(int_value(-1), int_value(-2));
     state = pair(shared, shared);
     CHECK(allocation_header(state)->in_chunk, "pass %d: a small value was not bump-allocated", pass);
     CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_OK, "pass %d", pass);
@@ -523,6 +524,37 @@ static void test_a_pass_boundary_moves_shared_values_once(void) {
     CHECK(item(state, 0) == item(state, 1), "pass %d: a shared value was moved twice", pass);
     CHECK(integer(item(item(state, 0), 0)) == pass, "pass %d: the moved value changed", pass);
   }
+  allocation_scope_end(&region, &state, NULL);
+  enter(previous);
+  heap_destroy(heap);
+}
+
+/* CHI-219: a pass after one where over a quarter of the young bytes survived links
+   its allocations instead of bumping them, and a pass after a mostly dead one bumps
+   again. Values made in either mode stay intact in the other. */
+static void test_a_region_links_after_a_pass_that_mostly_survives(void) {
+  RuntimeHeap *heap = heap_create();
+  RuntimeHeap *previous = enter(heap);
+  AllocationScope region;
+  allocation_scope_begin(&region);
+  ChimiValue *state = int_value(0);
+  for (int pass = 0; pass < 40; ++pass) {
+    /* Passes 0-9 and 20-29 keep all they make; passes 10-19 and 30-39 keep 1 in 21. */
+    state = pair(int_value(pass), state);
+    if ((pass / 10) % 2 == 1)
+      for (int garbage = 0; garbage < 20; ++garbage) (void)pair(int_value(-1), int_value(-2));
+    bool bumped = allocation_header(state)->in_chunk;
+    /* The first pass of a region bumps, and so does the pass after a mostly dead one. */
+    bool expected = pass == 0 || ((pass - 1) / 10) % 2 == 1;
+    CHECK(bumped == expected, "pass %d: bumped %d, expected %d", pass, bumped, expected);
+    CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_OK, "pass %d", pass);
+  }
+  ChimiValue *cursor = state;
+  for (int pass = 39; pass >= 0; --pass) {
+    CHECK(integer(item(cursor, 0)) == pass, "pass %d's value changed", pass);
+    cursor = item(cursor, 1);
+  }
+  CHECK(integer(cursor) == 0, "the first state changed");
   allocation_scope_end(&region, &state, NULL);
   enter(previous);
   heap_destroy(heap);
@@ -592,6 +624,7 @@ int main(int argc, char **argv) {
   test_queued_small_messages_cost_bytes_proportional_to_their_size();
   test_regions_fragments_and_passes_compose();
   test_a_pass_boundary_moves_shared_values_once();
+  test_a_region_links_after_a_pass_that_mostly_survives();
   if (argc > 1 && strcmp(argv[1], "measure") == 0) measure_messages();
   puts("ok");
   return 0;

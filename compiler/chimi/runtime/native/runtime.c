@@ -350,6 +350,10 @@ struct AllocationScope {
      counters (see flush_young_counts). */
   size_t pending_bytes;
   size_t pending_count;
+  /* Most of the last pass's young bytes survived it. Moving survivors out of the
+     chunks would then cost more than bumping saves, so this pass links its
+     allocations to the young list instead, as they would have to be anyway. */
+  bool links_young;
   size_t live_bytes;
   size_t peak_live_bytes;
   size_t total_allocated_bytes;
@@ -625,7 +629,7 @@ static void *allocate(size_t count, size_t size) {
     fputs("Chimi runtime allocation overflow\n", stderr); exit(70);
   }
   AllocationScope *innermost = allocation_target ? NULL : current_heap->innermost;
-  if (innermost && bytes <= YOUNG_CHUNK_LARGEST) {
+  if (innermost && !innermost->links_young && bytes <= YOUNG_CHUNK_LARGEST) {
     size_t rounded = young_rounded(bytes);
     AllocationHeader *header = young_bump(innermost, rounded);
     header->bytes = bytes;
@@ -1458,9 +1462,14 @@ static void forward_marked_list(AllocationArea *area) {
     if (header->mark_epoch == collecting_epoch) forward_children(header + 1);
 }
 
+/* Whether this pass of `scope` has bumped an allocation into its chunks. */
+static bool young_chunks_used(const AllocationScope *scope) {
+  return scope->first_chunk && (scope->first_chunk->next || scope->bump != scope->first_chunk->data);
+}
+
 /* Moves what the roots reach out of `scope`'s chunks and updates the roots. */
 static void forward_survivors(AllocationScope *scope, ChimiValue **value, ChimiControl **control) {
-  if (!scope->first_chunk) return;
+  if (!young_chunks_used(scope)) return;
   if (value) *value = forward_young(*value);
   if (control) *control = forward_young(*control);
   forward_marked_list(&scope->young);
@@ -1472,7 +1481,7 @@ static void forward_survivors(AllocationScope *scope, ChimiValue **value, ChimiC
    chunks for the next pass, keeping the first one. Requires flush_young_counts. */
 static void reset_young_chunks(AllocationScope *scope, bool keep_first) {
   YoungChunk *first = scope->first_chunk;
-  if (!first) return;
+  if (!first || (keep_first && !young_chunks_used(scope))) return;
   scope->last_chunk->used = scope->bump;
   size_t dead_bytes = 0, dead_count = 0;
   for (YoungChunk *chunk = first; chunk; chunk = chunk->next) {
@@ -1583,9 +1592,11 @@ static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **va
   mark_push(control ? *control : NULL, ALLOCATION_CONTROL);
   while (mark_stack.length) mark_children(mark_stack.items[--mark_stack.length]);
   bool foreign = collecting_foreign;
+  size_t young_bytes = scope->young.bytes, promoted_before = scope->promoted_bytes;
   forward_survivors(scope, value, control);
   reset_young_chunks(scope, !ending);
   promote_marked(scope, &scope->young);
+  scope->links_young = 4 * (scope->promoted_bytes - promoted_before) > young_bytes;
   while (scope->adopted) {
     AllocationArea *area = scope->adopted;
     scope->adopted = area->next;

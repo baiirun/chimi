@@ -11547,6 +11547,49 @@ fn task_results_kept_across_bump_allocated_passes_stay_intact() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// Guards: a loop region switches between bumping a pass's allocations into its
+// chunks and linking them, by how much of the last pass survived (CHI-219). Here
+// the phases alternate every 40 passes between keeping all a pass builds and
+// keeping almost none of it, so values made in either mode are kept and read in
+// the other.
+#[test]
+fn values_kept_across_linked_and_bumped_passes_agree_with_the_interpreter() {
+    let outcome = run_both(
+        "bump-mode-switch",
+        concat!(
+            "import std/list as List\n",
+            "struct State {\n",
+            "  count: Int,\n",
+            "  kept: List<List<Int>>,\n",
+            "  scratch: Int,\n",
+            "}\n",
+            "fn keep(state: State) -> State {\n",
+            "  let n = state.count\n",
+            "  State(n + 1, List.push(state.kept, [n, n * 3, n * 7]), state.scratch)\n",
+            "}\n",
+            "fn churn(state: State) -> State {\n",
+            "  let garbage = List.map(List.repeat(state.count, 60), fn(x: Int) -> Int { x + 1 })\n",
+            "  State(state.count + 1, state.kept, state.scratch + List.length(garbage))\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let final = loop state = State(0, [], 0) {\n",
+            "    case state.count >= 400 {\n",
+            "      True -> break state\n",
+            "      False -> case (state.count / 40) % 2 {\n",
+            "        0 -> keep(state)\n",
+            "        _ -> churn(state)\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "  let total = List.reduce(List.concat(final.kept), 0, fn(sum: Int, n: Int) -> Int { sum + n })\n",
+            "  total + final.scratch\n",
+            "}\n",
+        ),
+    );
+    // Kept passes add 11 * n for n in the five kept phases; each churn pass adds 60.
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":406900");
+}
+
 // Guards: a crash message built inside a loop pass is allocated in the pass's
 // young chunk, and the defect leaves the region, so the message must not live in
 // the chunk the region frees (CHI-219 review).
