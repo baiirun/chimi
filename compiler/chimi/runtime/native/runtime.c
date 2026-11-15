@@ -8558,7 +8558,9 @@ static void print_outcome(FILE *output, const ChimiControl *control) {
   }
   ChimiValue *cause = control->kind == CONTROL_SUCCESS ? NULL : control_cause(control);
   if (cause && cause_has_detail(cause)) {
-    fputs(",\"cause\":", output); json_string(output, cause_text(cause)->as.text.bytes);
+    fputs(",\"cause\":", output);
+    ChimiValue *text = cause_text(cause);
+    json_bytes(output, text->as.text.bytes, text->as.text.length);
   }
   fputs("}\n", output);
 }

@@ -26,17 +26,24 @@ fn retry(last: Result<Int, Attempt>) -> Int {
   }
 }
 
+// The entries kept just before and after the dropped ones, and the marker.
+fn around_the_drop(lines: List<Text>) -> Text {
+  case List.find_index(lines, fn(line) { Text.contains(line, "dropped") }) {
+    Some(index) -> List.slice(lines, (index - 1)..(index + 2)) |> List.map(Text.trim) |> Text.join(" / ")
+    None -> "nothing dropped"
+  }
+}
+
 fn describe(result: Result<Int, Attempt>) -> Text {
   case Cause.of(result) {
     Some(cause) -> {
       let lines = Cause.to_text(cause) |> Text.lines
-      let dropped = lines |> List.filter(fn(line) { Text.contains(line, "dropped") })
       let frames = Cause.frames(cause)
       [
         "frames kept: ${List.length(frames)}",
         "first frame: ${List.first(frames) |> Option.unwrap_or("none")}",
         "lines: ${List.length(lines)}",
-        Text.join(dropped |> List.map(Text.trim), "; "),
+        around_the_drop(lines),
       ] |> Text.join("\n")
     }
     None -> "none"

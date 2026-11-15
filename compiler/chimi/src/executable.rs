@@ -1743,13 +1743,20 @@ impl CoreLowerer {
                 .guard
                 .as_ref()
                 .map(|guard| self.expression(module_id, guard));
+            // An arm that matches no failure leaves the enclosing cause arm's
+            // scope in place, so a `Failure(...)` in a nested `case` still links.
             let source = self.cause_source(&alternatives);
-            self.cause_scopes.push(source.as_ref().map(|(_, carriers)| CauseScope {
-                local: None,
-                carriers: carriers.clone(),
-            }));
+            if let Some((_, carriers)) = &source {
+                self.cause_scopes.push(Some(CauseScope {
+                    local: None,
+                    carriers: carriers.clone(),
+                }));
+            }
             let body = self.expression(module_id, &arm.body);
-            let scope = self.cause_scopes.pop().flatten();
+            let scope = source
+                .is_some()
+                .then(|| self.cause_scopes.pop().flatten())
+                .flatten();
             let cause = source
                 .zip(scope.and_then(|scope| scope.local))
                 .map(|((subject, _), local)| ArmCause { subject, local });

@@ -31,6 +31,17 @@ MUTATIONS = [
     programs("every conversion keeps the matched cause", LOWERING, [
         ("let keep = argument.is_some_and(|symbol| scope.carriers.contains(&symbol));",
          "let keep = argument.is_some();")]),
+    programs("a nested case hides the enclosing cause arm", LOWERING, [
+        ("            if let Some((_, carriers)) = &source {\n                self.cause_scopes.push(Some(CauseScope {",
+         "            self.cause_scopes.push(None);\n            if let Some((_, carriers)) = &source {\n                self.cause_scopes.pop();\n                self.cause_scopes.push(Some(CauseScope {"),
+        ("            let scope = source\n                .is_some()\n                .then(|| self.cause_scopes.pop().flatten())\n                .flatten();",
+         "            let scope = self.cause_scopes.pop().flatten();")]),
+    programs("a function literal links to the enclosing arm", LOWERING, [
+        ("                self.cause_scopes.push(None);\n                let lowered_body = self.expression(module_id, body);\n                self.cause_scopes.pop();",
+         "                let lowered_body = self.expression(module_id, body);")]),
+    programs("C: the root report stops at a NUL", RUNTIME, [
+        ("    json_bytes(output, text->as.text.bytes, text->as.text.length);",
+         "    json_string(output, text->as.text.bytes);")]),
     programs("an Err arm is not a cause source", LOWERING, [
         ("if fields.len() == 1 && self.is_result_err(*symbol) =>",
          "if false && fields.len() == 1 && self.is_result_err(*symbol) =>")]),

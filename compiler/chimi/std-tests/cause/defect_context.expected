@@ -1,1 +1,1 @@
-{"schema":"chimi.runtime.v1","outcome":"defect","message":"integer division by zero in `/`: 10 / 0","cause":"defect integer division by zero in `/`: 10 / 0 (main.chimi:6)\n  context: averaging 10 over 0 (main.chimi:10)\n  context: building the report (main.chimi:14)"}
+{"schema":"chimi.runtime.v1","outcome":"defect","message":"integer division by zero in `/`: 10 / 0","cause":"defect integer division by zero in `/`: 10 / 0 (main.chimi:6)\n  context: averaging 10 over 0 (main.chimi:10)\n  context: building the\u0000report (main.chimi:14)"}
