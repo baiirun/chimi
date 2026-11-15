@@ -175,6 +175,15 @@ fn succeeded(value: i64) -> ChimiFiberResult {
     }
 }
 
+/// A child's answer to a cancellation: it must issue no further request.
+fn cancelled() -> ChimiFiberResult {
+    ChimiFiberResult {
+        state: ChimiFiberState::Cancelled as u32,
+        value: 0,
+        defect_code: 0,
+    }
+}
+
 fn run(entry: ChimiFiberEntry) -> (SchedulerOutcome, Vec<i64>) {
     run_on(entry, process_abi::CLOCK_VIRTUAL)
 }
@@ -341,7 +350,9 @@ unsafe extern "C" fn wake_at_five(context: *mut c_void) -> ChimiFiberResult {
     let a = unsafe { *context.cast::<Channel>() };
     let mut sleep = blank(REQUEST_TIMER_SLEEP_UNTIL);
     sleep.value = now() + 5_000_000;
-    call(&mut sleep);
+    if !call(&mut sleep) {
+        return cancelled();
+    }
     send(a, 1);
     succeeded(0)
 }
@@ -352,7 +363,9 @@ unsafe extern "C" fn wake_at_five(context: *mut c_void) -> ChimiFiberResult {
 unsafe extern "C" fn hog_after_five(_context: *mut c_void) -> ChimiFiberResult {
     let mut sleep = blank(REQUEST_TIMER_SLEEP_UNTIL);
     sleep.value = now() + 5_000_000;
-    call(&mut sleep);
+    if !call(&mut sleep) {
+        return cancelled();
+    }
     let until = std::time::Instant::now() + std::time::Duration::from_millis(40);
     while std::time::Instant::now() < until {}
     succeeded(0)
@@ -394,6 +407,8 @@ unsafe extern "C" fn scope_refuses_a_woken_select(_context: *mut c_void) -> Chim
     succeeded(0)
 }
 
+/// On a slow host the scope may fire before the send; the select is then
+/// withdrawn while parked, and the result is the same.
 #[test]
 fn a_select_a_scope_refuses_leaves_no_registration_behind() {
     let (outcome, seen) = run_on(scope_refuses_a_woken_select, process_abi::CLOCK_REAL);
