@@ -851,9 +851,11 @@ original cause and add no chain link. `Result.get` re-raises the same way.
 An arm that matched a stored `Err(...)` pattern of `std/result` follows the
 same rule, with the cause the `Err` keeps: converting it links, and
 re-raising the bound error keeps the cause. That is how `Result.get` keeps
-it. The rule applies to `Failure(...)` and `Err(...)` constructions written
-directly in the arm's body, not in its guard or inside a function literal in
-the body, and only the arm's first `Failure` or `Err` pattern is the source.
+it. The rule applies to `Failure(...)` and `Err(...)` constructions anywhere
+in the arm's body, inside a nested `case` too, but not in its guard or inside
+a function literal written in the body. The innermost enclosing failure arm
+is the source, and within it the first subject matched by a `Failure` or
+`Err` pattern.
 
 The compiler resolves the link statically. Lowering passes the matched
 outcome as an explicit operand of the failure construction. The runtime does

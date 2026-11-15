@@ -1,0 +1,6 @@
+# cause_mutations.py (CHI-204), 2026-11-15
+# First run at e12a4f1: 13 of 14 killed. "every conversion keeps the matched
+# cause" survived: no test converted to a named, non-matched value. Added that
+# case to std-tests/cause/chain_scope.chimi, plus three mutants for the
+# review fixes (nested case scope, function-literal barrier, NUL in the root
+# report). Rerun of those four: all killed. Result: 17 of 17 killed.
