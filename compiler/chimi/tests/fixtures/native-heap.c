@@ -93,7 +93,7 @@ static PassWork work_for_state(uint32_t size, uint32_t passes) {
   free(values);
   for (uint32_t pass = 0; pass < passes; ++pass) {
     (void)pair(int_value(pass), int_value(pass + 1));
-    CHECK(allocation_scope_collect(&region, state, NULL) == HEAP_OK, "pass %u", pass);
+    CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_OK, "pass %u", pass);
   }
   int64_t sum = 0;
   for (uint32_t index = 0; index < size; ++index) sum += integer(item(state, index));
@@ -138,7 +138,7 @@ static void test_a_million_passes_keep_peak_memory_flat(void) {
     int64_t next = integer(state) + 1;
     (void)pair(int_value(pass), int_value(pass));
     state = int_value(next);
-    CHECK(allocation_scope_collect(&region, state, NULL) == HEAP_OK, "pass %u", pass);
+    CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_OK, "pass %u", pass);
     if (pass == 10000) {
       peak_after_warmup = heap_totals.peak_footprint_bytes;
       allocations_after_warmup = region.survivors.count;
@@ -167,9 +167,9 @@ static void test_values_allocated_before_the_loop_survive_its_collections(void) 
   ChimiValue *state = int_value(0);
   for (int pass = 0; pass < 1000; ++pass) {
     (void)items((ChimiValue *[]){int_value(1)}, 1);
-    CHECK(allocation_scope_collect(&region, state, NULL) == HEAP_OK, "pass %d", pass);
+    CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_OK, "pass %d", pass);
   }
-  allocation_scope_end(&region, state, NULL);
+  allocation_scope_end(&region, &state, NULL);
   CHECK(integer(item(outer, 0)) == 7 && integer(item(outer, 1)) == 8, "outer value changed");
   enter(previous);
   heap_destroy(heap);
@@ -191,10 +191,10 @@ static void test_inner_passes_keep_outer_values_and_exit_hands_survivors_out(voi
   for (int pass = 0; pass < 1000; ++pass) {
     (void)items((ChimiValue *[]){int_value(pass)}, 1);
     inner_state = pair(outer_value, int_value(pass));
-    CHECK(allocation_scope_collect(&inner_region, inner_state, NULL) == HEAP_OK, "inner %d", pass);
+    CHECK(allocation_scope_collect(&inner_region, &inner_state, NULL) == HEAP_OK, "inner %d", pass);
     CHECK(item(inner_state, 0) == outer_value, "inner pass %d lost the outer value", pass);
   }
-  allocation_scope_end(&inner_region, inner_state, NULL);
+  allocation_scope_end(&inner_region, &inner_state, NULL);
   CHECK(integer(item(outer_value, 0)) == 7 && integer(item(outer_value, 1)) == 8, "outer changed");
 
   /* The inner survivors now belong to the outer region, whose passes must keep them
@@ -208,7 +208,7 @@ static void test_inner_passes_keep_outer_values_and_exit_hands_survivors_out(voi
     text[4096] = '\0';
     (void)text_value(text);
     (void)pair(int_value(pass), int_value(pass));
-    CHECK(allocation_scope_collect(&outer_region, outer_state, NULL) == HEAP_OK, "outer %d", pass);
+    CHECK(allocation_scope_collect(&outer_region, &outer_state, NULL) == HEAP_OK, "outer %d", pass);
     if (pass == 100) peak_at_warmup = heap_totals.peak_footprint_bytes;
   }
   CHECK(heap_totals.peak_footprint_bytes == peak_at_warmup, "outer garbage was not reclaimed");
@@ -243,7 +243,7 @@ static void test_adopted_fragments_join_the_innermost_region_and_are_reclaimed(v
     CHECK(owner_of(adopted) == receiver, "an adopted value does not belong to the receiver");
     /* Keep the newest message as the state; every older one is garbage. */
     ChimiValue *state = pair(adopted, int_value(round));
-    CHECK(allocation_scope_collect(&region, state, NULL) == HEAP_OK, "round %d", round);
+    CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_OK, "round %d", round);
     ChimiValue *message = item(state, 0);
     CHECK(integer(item(message, 0)) + integer(item(message, 1)) == 42, "round %d message", round);
     if (round == 3000) peak_at_warmup = heap_totals.peak_footprint_bytes;
@@ -295,7 +295,7 @@ static void test_a_pointer_into_another_heap_is_reported_not_followed(void) {
   AllocationScope region;
   allocation_scope_begin(&region);
   ChimiValue *state = items((ChimiValue *[]){foreign}, 1);
-  CHECK(allocation_scope_collect(&region, state, NULL) == HEAP_FOREIGN_POINTER,
+  CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_FOREIGN_POINTER,
         "a pass followed a pointer into another heap");
   allocation_scope_end(&region, NULL, NULL);
   CHECK(integer(foreign) == 5, "the foreign value was freed");
@@ -352,7 +352,7 @@ static void test_a_fragment_copies_into_a_heap_without_being_consumed(void) {
           "call %d read a damaged result", call);
     CHECK(item(seen->value, 0) == item(seen->value, 1), "the copy lost sharing");
     state = call % 2 ? seen->value : int_value(call);
-    CHECK(allocation_scope_collect(&region, state, NULL) == HEAP_OK, "pass %d", call);
+    CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_OK, "pass %d", call);
   }
   allocation_scope_end(&region, NULL, NULL);
   CHECK(heap_totals.live_fragments >= 1, "copying consumed the fragment");
@@ -465,9 +465,9 @@ static void test_regions_fragments_and_passes_compose(void) {
       ChimiValue *text = text_value("hello");
       ChimiValue *large = large_value(3000 + below(3000), below(2) ? text : inner);
       inner = items((ChimiValue *[]){inner, large, large, text}, 4);
-      CHECK(allocation_scope_collect(&inner_region, inner, NULL) == HEAP_OK, "inner %d.%d", pass, step);
+      CHECK(allocation_scope_collect(&inner_region, &inner, NULL) == HEAP_OK, "inner %d.%d", pass, step);
     }
-    allocation_scope_end(&inner_region, inner, NULL);
+    allocation_scope_end(&inner_region, &inner, NULL);
     CHECK(integer(outer) == 7 && integer(outer_young) == 11, "pass %d: an older value changed", pass);
     uint64_t want = digest(inner, 0);
     /* Round-trip through the peer heap, as a request and its reply would. */
@@ -481,7 +481,7 @@ static void test_regions_fragments_and_passes_compose(void) {
     ChimiValue *previous_state = state;
     state = items((ChimiValue *[]){adopted, outer_young, below(4) ? previous_state : state, outer}, 4);
     if (below(3) == 0) state = items((ChimiValue *[]){adopted, outer_young, outer}, 3);
-    CHECK(allocation_scope_collect(&outer_region, state, NULL) == HEAP_OK, "outer pass %d", pass);
+    CHECK(allocation_scope_collect(&outer_region, &state, NULL) == HEAP_OK, "outer pass %d", pass);
     CHECK(item(state, list_length(state) - 1) == outer, "pass %d: a pre-region value moved", pass);
     outer_young = item(state, 1);
     CHECK(integer(outer_young) == 11, "pass %d: outer young value lost", pass);
@@ -502,6 +502,30 @@ static void test_regions_fragments_and_passes_compose(void) {
           heap_totals.footprint_bytes == before.footprint_bytes &&
           heap_totals.live_fragments == before.live_fragments,
         "allocations leaked");
+}
+
+/* CHI-219: a pass boundary moves what the state reaches out of the region's chunks.
+   A value the state reaches twice is moved once, so sharing survives, and the
+   moved values sit outside every chunk while the chunks are reused. */
+static void test_a_pass_boundary_moves_shared_values_once(void) {
+  RuntimeHeap *heap = heap_create();
+  RuntimeHeap *previous = enter(heap);
+  AllocationScope region;
+  allocation_scope_begin(&region);
+  ChimiValue *state = int_value(0);
+  for (int pass = 0; pass < 100; ++pass) {
+    ChimiValue *shared = pair(int_value(pass), state);
+    (void)pair(int_value(-1), int_value(-2));
+    state = pair(shared, shared);
+    CHECK(allocation_header(state)->in_chunk, "pass %d: a small value was not bump-allocated", pass);
+    CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_OK, "pass %d", pass);
+    CHECK(!allocation_header(state)->in_chunk, "pass %d: the state stayed in a chunk", pass);
+    CHECK(item(state, 0) == item(state, 1), "pass %d: a shared value was moved twice", pass);
+    CHECK(integer(item(item(state, 0), 0)) == pass, "pass %d: the moved value changed", pass);
+  }
+  allocation_scope_end(&region, &state, NULL);
+  enter(previous);
+  heap_destroy(heap);
 }
 
 static double seconds_now(void) {
@@ -540,7 +564,7 @@ static void measure_messages(void) {
     enter(receiver);
     ChimiValue *message = adopt_value(fragment);
     state = int_value(integer(state) + integer(message));
-    allocation_scope_collect(&region, state, NULL);
+    allocation_scope_collect(&region, &state, NULL);
   }
   double elapsed = seconds_now() - started;
   printf("measure int_message_ns=%.1f peak_footprint_bytes=%zu full_passes=%llu\n",
@@ -567,6 +591,7 @@ int main(int argc, char **argv) {
   test_a_copy_of_a_window_copies_only_the_window();
   test_queued_small_messages_cost_bytes_proportional_to_their_size();
   test_regions_fragments_and_passes_compose();
+  test_a_pass_boundary_moves_shared_values_once();
   if (argc > 1 && strcmp(argv[1], "measure") == 0) measure_messages();
   puts("ok");
   return 0;

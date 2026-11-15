@@ -3944,9 +3944,15 @@ fn native_per_owner_heaps_meet_the_prototype_heap_contracts() {
             .output()
             .expect("compile native heap test")
     };
-    let sanitized = compile(&["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]);
+    // A checking build frees every young chunk at its pass boundary, so a pointer
+    // kept across one fails as a use after free.
+    let sanitized = compile(&[
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-DCHIMI_POISON_YOUNG_CHUNKS",
+    ]);
     if !sanitized.status.success() {
-        let plain = compile(&[]);
+        let plain = compile(&["-DCHIMI_POISON_YOUNG_CHUNKS"]);
         assert!(
             plain.status.success(),
             "{}",
