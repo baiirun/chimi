@@ -10,6 +10,7 @@ mod duration;
 mod executable;
 pub mod execution;
 mod formatter;
+mod graphemes;
 #[cfg(feature = "frontend-benchmarks")]
 #[doc(hidden)]
 pub mod frontend_benchmark;

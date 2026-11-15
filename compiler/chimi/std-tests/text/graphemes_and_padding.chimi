@@ -1,0 +1,35 @@
+// std/text graphemes and padding: combining marks, emoji joined by ZWJ,
+// regional-indicator flags, CRLF, an Indic conjunct, and padding that counts
+// graphemes rather than bytes or code points. The official break cases are in
+// grapheme_break_test.chimi.
+import std/debug as Debug
+import std/list as List
+import std/text as Text
+
+fn byte_lengths(text: Text) -> List<Int> {
+  List.map(Text.graphemes(text), Text.byte_length)
+}
+
+pub fn main() -> Text {
+  let family = "👨\u{200d}👩\u{200d}👧"
+  let results = [
+    Debug.render([Text.graphemes(""), Text.graphemes("abc"), Text.graphemes("a\r\nb")]),
+    // e followed by U+0301 COMBINING ACUTE ACCENT is one grapheme of 3 bytes.
+    Debug.render([byte_lengths("e\u{301}x"), byte_lengths(family), byte_lengths("🇯🇵🇫🇷🇫")]),
+    // क्षि: KA, VIRAMA, SSA, vowel sign I join into one conjunct (GB9c).
+    Debug.render([byte_lengths("क्षि"), byte_lengths("👍🏽!")]),
+    Debug.render([
+      Text.grapheme_count(""),
+      Text.grapheme_count("e\u{301}x"),
+      Text.grapheme_count(family),
+      Text.grapheme_count("🇯🇵🇫🇷"),
+      Text.grapheme_count("a\r\n"),
+    ]),
+    Debug.render([Text.pad_start("7", 4, "ab"), Text.pad_end("7", 4, "ab"), Text.pad_start("42", 5, "0")]),
+    // Width counts graphemes: the accented e and the flag are one each.
+    Debug.render([Text.pad_start("e\u{301}", 3, "."), Text.pad_end("🇯🇵", 3, "-"), Text.pad_start("1", 3, "e\u{301}")]),
+    Debug.render([Text.byte_length(Text.pad_start("e\u{301}", 3, ".")), Text.byte_length(Text.pad_start("1", 3, "e\u{301}"))]),
+    Debug.render([Text.pad_start("hello", 3, "*"), Text.pad_end("x", -2, "*"), Text.pad_end("ab", 2, "*")]),
+  ]
+  Debug.render(results)
+}

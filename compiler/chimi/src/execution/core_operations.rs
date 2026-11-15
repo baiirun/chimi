@@ -141,13 +141,25 @@ impl Evaluator<'_> {
             }
             // Rust's mappings are the Unicode default case conversion, Final_Sigma
             // included; `runtime.c` holds tables generated from them
-            // (`tests/unicode_case_tables.rs`).
+            // (`tests/unicode_tables.rs`).
             (StandardFunction::TextLowercase, [RuntimeValue::Text(value)]) => {
                 text(value.to_lowercase())
             }
             (StandardFunction::TextUppercase, [RuntimeValue::Text(value)]) => {
                 text(value.to_uppercase())
             }
+            (
+                StandardFunction::TextGraphemeEnd,
+                [RuntimeValue::Text(value), RuntimeValue::Integer(start)],
+            ) => match usize::try_from(*start) {
+                Ok(start) if value.is_char_boundary(start) => Control::Success(RuntimeValue::Integer(
+                    i64::try_from(crate::graphemes::grapheme_end(value, start))
+                        .expect("a text length fits in Int"),
+                )),
+                _ => defect(format!(
+                    "Text.grapheme_end: offset {start} is not a character boundary"
+                )),
+            },
             (StandardFunction::ListGet, [RuntimeValue::List(list), RuntimeValue::Integer(index)]) => {
                 let found = usize::try_from(*index)
                     .ok()

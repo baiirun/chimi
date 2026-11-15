@@ -3,6 +3,7 @@
 /// `Text.byte_slice`); most work needs no positions: `Text.split`,
 /// `Text.join`, `Text.trim`, `Text.starts_with`, `Text.replace`.
 
+import std/debug as Debug
 import std/list as List
 import std/order as Order
 import std/order.{Ordering}
@@ -47,6 +48,28 @@ pub fn repeat(text: Text, count: Int) -> Text {
   }
 }
 
+/// Returns `text` after copies of `fill`, so that it is `width` graphemes
+/// long; `text` unchanged when it already has `width` graphemes or more. The
+/// last copy of `fill` is cut, by graphemes, to fit: `pad_start("7", 4, "ab")`
+/// is `"aba7"`.
+///
+/// Defects when: `fill` is empty.
+/// Cost: O(n) in the result length.
+pub fn pad_start(text: Text, width: Int, fill: Text) -> Text {
+  append(padding("Text.pad_start", grapheme_count(text), width, fill), text)
+}
+
+/// Returns `text` before copies of `fill`, so that it is `width` graphemes
+/// long; `text` unchanged when it already has `width` graphemes or more. The
+/// last copy of `fill` is cut, by graphemes, to fit: `pad_end("7", 4, "ab")`
+/// is `"7aba"`.
+///
+/// Defects when: `fill` is empty.
+/// Cost: O(n) in the result length.
+pub fn pad_end(text: Text, width: Int, fill: Text) -> Text {
+  append(text, padding("Text.pad_end", grapheme_count(text), width, fill))
+}
+
 // 5. Queries and predicates.
 
 /// Returns `True` when `text` has no bytes.
@@ -61,6 +84,20 @@ pub fn is_empty(text: Text) -> Bool {
 ///
 /// Cost: O(1).
 pub native fn byte_length(text: Text) -> Int
+
+/// Returns the number of graphemes in `text`: extended grapheme clusters
+/// (Unicode UAX #29), what a reader sees as one character each.
+///
+/// Cost: O(n).
+pub fn grapheme_count(text: Text) -> Int {
+  let length = byte_length(text)
+  loop (start, count) = (0, 0) {
+    case start < length {
+      True -> (grapheme_end(text, start), count + 1)
+      False -> break count
+    }
+  }
+}
 
 /// Returns `True` when `needle` occurs in `text`.
 ///
@@ -116,6 +153,25 @@ pub fn lines(text: Text) -> List<Text> {
     case remaining {
       [] -> break done
       [line, ..rest] -> (rest, List.push(done, strip_carriage_return(line)))
+    }
+  }
+}
+
+/// Returns the graphemes of `text` in order: its extended grapheme clusters
+/// (Unicode UAX #29), what a reader sees as one character each. `"e\u{301}"`
+/// (e and a combining accent), `"\r\n"`, a flag, and emoji joined by
+/// U+200D are one grapheme each.
+///
+/// Cost: O(n).
+pub fn graphemes(text: Text) -> List<Text> {
+  let length = byte_length(text)
+  loop (start, done) = (0, []) {
+    case start < length {
+      True -> {
+        let end = grapheme_end(text, start)
+        (end, List.push(done, byte_slice(text, start..end)))
+      }
+      False -> break done
     }
   }
 }
@@ -210,4 +266,26 @@ fn strip_carriage_return(line: Text) -> Text {
 
 fn without_case(text: Text) -> Text {
   lowercase(uppercase(text))
+}
+
+/// Returns the byte offset where the grapheme that starts at `start` ends.
+///
+/// Defects when: `start` is not a character boundary of `text`.
+native fn grapheme_end(text: Text, start: Int) -> Int
+
+/// Returns `missing` graphemes of `fill` repeated, where `missing` is what
+/// `count` lacks of `width`; `function` names the caller in the defect.
+fn padding(function: Text, count: Int, width: Int, fill: Text) -> Text {
+  let pieces = graphemes(fill)
+  let size = List.length(pieces)
+  case size == 0 {
+    True -> Debug.crash("${function}: fill must not be empty")
+    False -> {
+      let missing = width - count
+      case missing <= 0 {
+        True -> ""
+        False -> append(repeat(fill, missing / size), concat(List.take(pieces, missing % size)))
+      }
+    }
+  }
 }

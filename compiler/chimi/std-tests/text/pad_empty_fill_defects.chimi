@@ -1,0 +1,7 @@
+// An empty fill cannot pad; Text.pad_start defects naming itself, even when
+// no padding is needed.
+import std/text as Text
+
+pub fn main() -> Text {
+  Text.pad_start("abc", 1, "")
+}
