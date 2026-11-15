@@ -20,7 +20,6 @@ const ChimiNode CHIMI_NODES[] = {{0}};
 const uint32_t CHIMI_NODE_COUNT = 0;
 const ChimiSymbol CHIMI_SYMBOLS[] = {{0}};
 const uint32_t CHIMI_SYMBOL_COUNT = 0;
-const uint32_t CHIMI_LOCAL_SLOT_COUNT = 0;
 const uint32_t CHIMI_CLOCK_REQUIREMENT_SLOT = 0;
 const uint32_t CHIMI_REQUIREMENT_SLOT_COUNT = 1;
 const ChimiFunction CHIMI_FUNCTIONS[] = {{0}};

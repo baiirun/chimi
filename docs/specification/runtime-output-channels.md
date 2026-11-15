@@ -113,6 +113,21 @@ execution:
 {"schema":"chimi.runtime.v1","outcome":"success","value":42}
 ```
 
+An outcome's `value` (or `error`) encodes a Chimi value as JSON. Int, Float,
+Bool, and Text are JSON scalars, and a List or a Set (in ascending order) is an
+array. A record is an object of its fields, and a struct or enum value is
+`{"type":...,"variant":...,"fields":{...}}`. A tuple is `{"tuple":[...]}`, a
+range `{"range":{"start":0,"end":3}}`, a Duration `{"duration":<nanoseconds>}`,
+a Decimal `{"decimal":"<normalized text>"}`, a function `{"callable":"<name>"}`,
+and `Void` is `{"type":"Void"}`. A map whose keys are Text is an object of its
+entries, and an empty map is `{}`. Any other map is its entries in key order as
+`[key, value]` pairs, so each key is written once however deep maps nest
+through their keys:
+
+```json
+{"map":[[2,{}],[10,{"a":1,"b":2}]]}
+```
+
 The remaining event and outcome fields retain the executable-kernel contract.
 Adding a field is backward compatible within version 1 only when consumers can
 ignore it without changing record meaning. Removing, renaming, or changing the

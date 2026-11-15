@@ -1,0 +1,32 @@
+# mutation run at e1d42def56b40b57010606ae31d2e260d55ec078
+# bytes_mutations.py: 24 mutants against compiler/chimi
+BASELINE ok  [std_modules -- standard_programs] (91s)
+KILLED       Rust from accepts 256 [std_modules -- standard_programs] (22s)
+KILLED       C from accepts 256 [std_modules -- standard_programs] (27s)
+KILLED       C get admits index == length [std_modules -- standard_programs] (17s)
+KILLED       C get reads a signed char [std_modules -- standard_programs] (17s)
+KILLED       Rust index_of allows an empty needle [std_modules -- standard_programs] (19s)
+KILLED       C slice skips clamping [std_modules -- standard_programs] (28s)
+SURVIVED     ends_with drops the length guard [std_modules -- standard_programs] (23s)
+KILLED       split_once keeps the separator [std_modules -- standard_programs] (23s)
+KILLED       Rust Bytes order reversed [std_modules -- standard_programs] (23s)
+KILLED       C accepts surrogates [std_modules -- standard_programs] (10s)
+KILLED       C accepts overlong three-byte forms [std_modules -- standard_programs] (11s)
+KILLED       C accepts past U+10FFFF [std_modules -- standard_programs] (11s)
+KILLED       C replaces a whole truncated sequence per byte [std_modules -- standard_programs] (17s)
+KILLED       to_text reports the end, not the first invalid byte [std_modules -- standard_programs] (22s)
+STALE        Rust layout swaps byte order for 16 and 32 bits: edit text occurs 0 times in src/execution/bytes_operations.rs
+KILLED       C reads without sign extension [std_modules -- standard_programs] (22s)
+KILLED       Rust read without sign extension [std_modules -- standard_programs] (18s)
+KILLED       C read admits a field one past the end [std_modules -- standard_programs] (21s)
+SURVIVED     Rust unsigned write admits 2^bits [std_modules -- standard_programs] (18s)
+KILLED       C signed write admits 2^(bits-1) [std_modules -- standard_programs] (18s)
+KILLED       C little-endian write is big-endian [std_modules -- standard_programs] (18s)
+KILLED       layout codes swap I64Be and I64Le [std_modules -- standard_programs] (24s)
+KILLED       C constant hex decodes the low digit as high [std_modules -- standard_programs] (22s)
+KILLED       C renders without separators [std_modules -- standard_programs] (17s)
+# first run: 1 survivor, 1 stale; both fixed in the follow-up commit and rerun below
+# rerun at 7a500bd
+KILLED       Rust unsigned write admits 2^bits
+KILLED       Rust layout swaps byte order for 16 and 32 bits
+# result: 24 of 24 killed

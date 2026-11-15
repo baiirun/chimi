@@ -1293,7 +1293,7 @@ program.
   whose `task_id` is the task that owns the scope. The scope's timer emits
   the motion events `clock_timer_started`, `clock_timer_fired`, and
   `clock_timer_cancelled` like a sleep.
-- **ABI.** `CHIMI_FIBER_ABI_VERSION` is 7 and the native runtime ABI is 22.
+- **ABI.** `CHIMI_FIBER_ABI_VERSION` is 7 and the native runtime ABI is 23.
   Program data gains `CHIMI_CLOCK_REQUIREMENT_SLOT`, the requirement slot
   that `using { clock: … }` binds for the std time functions.
 

@@ -4,9 +4,10 @@ use crate::executable::{
     ConstantFunction, ConstantValue, CoreLiteral, CoreOperation, CorePattern, CoreProgram,
     CoreStep, CoreSymbolKind,
 };
+use crate::ids::{CoreNodeId, SymbolId};
 use crate::semantic::{BinaryOperator, UnaryOperator};
 use crate::standard::{StandardModule, StandardSymbol, StandardType};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 #[derive(Default)]
@@ -76,6 +77,7 @@ impl ProgramData {
             // The runtime reads the IEEE 754 bits back with `memcpy`.
             ConstantValue::Float(value) => (2, 0, 0, 0, value.to_bits() as i64),
             ConstantValue::Text(value) => (3, self.string(value), 0, 0, 0),
+            ConstantValue::Bytes(hex) => (20, self.string(hex), 0, 0, 0),
             ConstantValue::Boolean(value) => (4, 0, 0, 0, i64::from(*value)),
             ConstantValue::List(values) => {
                 let ids = values
@@ -248,15 +250,21 @@ impl ProgramData {
 
 pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String {
     let mut data = ProgramData::default();
+    let locals = local_slots(core);
     let mut functions = Vec::new();
-    for function in &core.functions {
+    for (function, local_count) in core.functions.iter().zip(&locals.function_counts) {
         let (offset, length) = data.ids(function.parameters.iter().map(|symbol| symbol.raw()));
-        functions.push((function.symbol.raw(), function.body.raw(), offset, length));
+        functions.push((
+            function.symbol.raw(),
+            function.body.raw(),
+            offset,
+            length,
+            *local_count,
+        ));
     }
     let mut constructors = Vec::new();
     let mut symbols = Vec::new();
-    let mut local_slot_count = 0;
-    let mut requirement_slot_count = 0;
+    let mut requirement_slot_count = 0_u32;
     for symbol in &core.symbols {
         let name = data.string(&symbol.name);
         let function = core
@@ -295,11 +303,17 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         } else {
             u32::MAX
         };
-        let environment_slot = environment_slot(
-            symbol.kind,
-            &mut local_slot_count,
-            &mut requirement_slot_count,
-        );
+        let environment_slot = match symbol.kind {
+            CoreSymbolKind::Local => locals.slots[symbol.id.raw() as usize],
+            CoreSymbolKind::Requirement => {
+                let slot = requirement_slot_count;
+                requirement_slot_count = slot
+                    .checked_add(1)
+                    .expect("environment slot count fits u32");
+                slot
+            }
+            _ => u32::MAX,
+        };
         symbols.push((
             symbol_kind(symbol.kind),
             name,
@@ -424,6 +438,7 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
             } => {
                 row.1 = body.raw();
                 (row.2, row.3) = data.ids(captures.iter().map(|id| id.raw()));
+                row.4 = locals.closure_count(node.id);
                 (row.5, row.6) = data.ids(parameters.iter().map(|id| id.raw()));
             }
             CoreOperation::Match { subjects, arms } => {
@@ -536,14 +551,6 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
     .unwrap();
     writeln!(
         output,
-        "const uint32_t CHIMI_LOCAL_SLOT_COUNT = {local_slot_count};"
-    )
-    .unwrap();
-    // One slot past the requirement symbols holds the provider of the fixed
-    // `clock` need, which `std/clock` functions read: a `using { clock: ... }`
-    // binds it even when no source requirement is named `clock`.
-    writeln!(
-        output,
         "const uint32_t CHIMI_CLOCK_REQUIREMENT_SLOT = {requirement_slot_count};"
     )
     .unwrap();
@@ -557,7 +564,7 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         &mut output,
         "const ChimiFunction CHIMI_FUNCTIONS[]",
         &functions,
-        |r| format!("{{{}, {}, {}, {}}}", r.0, r.1, r.2, r.3),
+        |r| format!("{{{}, {}, {}, {}, {}}}", r.0, r.1, r.2, r.3, r.4),
     );
     writeln!(
         output,
@@ -768,22 +775,204 @@ const fn symbol_kind(kind: CoreSymbolKind) -> u32 {
         CoreSymbolKind::ProcessName => 7,
     }
 }
-fn environment_slot(
-    kind: CoreSymbolKind,
-    local_slot_count: &mut u32,
-    requirement_slot_count: &mut u32,
-) -> u32 {
-    let count = match kind {
-        CoreSymbolKind::Local => local_slot_count,
-        CoreSymbolKind::Requirement => requirement_slot_count,
-        _ => return u32::MAX,
-    };
-    let slot = *count;
-    *count = count
-        .checked_add(1)
-        .expect("environment slot count fits u32");
-    slot
+/// Where each local lives in a native environment, and how large each
+/// environment is.
+struct LocalSlots {
+    /// By symbol ID; `u32::MAX` for a symbol that is not a local.
+    slots: Vec<u32>,
+    /// By function, in `core.functions` order.
+    function_counts: Vec<u32>,
+    /// By closure node: the local count of the body it is written in.
+    closure_counts: HashMap<CoreNodeId, u32>,
+    /// The largest body's local count.
+    largest: u32,
 }
+
+impl LocalSlots {
+    /// A closure no body contains never runs; the largest count covers any slot.
+    fn closure_count(&self, closure: CoreNodeId) -> u32 {
+        self.closure_counts
+            .get(&closure)
+            .copied()
+            .unwrap_or(self.largest)
+    }
+}
+
+/// An environment only ever holds the locals of one body: a function's, or a
+/// constant initializer's, with the closures written inside it. So each body
+/// numbers its locals from the same start, and each environment has one slot
+/// per local of its body. A local that more than one body names, or that no
+/// body names, gets a slot below that start, which no body reuses.
+fn local_slots(core: &CoreProgram) -> LocalSlots {
+    let roots = core
+        .functions
+        .iter()
+        .map(|function| (function.parameters.as_slice(), function.body))
+        .chain(
+            core.constant_initializers
+                .iter()
+                .map(|initializer| (&[][..], initializer.value)),
+        );
+    let mut bodies = Vec::new();
+    let mut named_by = vec![0_u32; core.symbols.len()];
+    for (parameters, body) in roots {
+        let body = body_locals(core, parameters, body);
+        for symbol in &body.locals {
+            named_by[symbol.raw() as usize] += 1;
+        }
+        bodies.push(body);
+    }
+    let mut slots = vec![u32::MAX; core.symbols.len()];
+    let mut shared = 0_u32;
+    for symbol in &core.symbols {
+        if symbol.kind == CoreSymbolKind::Local && named_by[symbol.id.raw() as usize] != 1 {
+            slots[symbol.id.raw() as usize] = shared;
+            shared += 1;
+        }
+    }
+    let mut counts = Vec::with_capacity(bodies.len());
+    let mut closure_counts = HashMap::new();
+    for body in &bodies {
+        let mut next = shared;
+        for symbol in &body.locals {
+            if named_by[symbol.raw() as usize] == 1 {
+                slots[symbol.raw() as usize] = next;
+                next += 1;
+            }
+        }
+        counts.push(next);
+        for closure in &body.closures {
+            let count = closure_counts.entry(*closure).or_insert(0);
+            *count = next.max(*count);
+        }
+    }
+    let largest = counts.iter().copied().max().unwrap_or(shared);
+    counts.truncate(core.functions.len());
+    LocalSlots {
+        slots,
+        function_counts: counts,
+        closure_counts,
+        largest,
+    }
+}
+
+struct BodyLocals {
+    /// Distinct, in first-seen order.
+    locals: Vec<SymbolId>,
+    closures: Vec<CoreNodeId>,
+}
+
+/// The locals `parameters` and the nodes under `body` bind or read, and the
+/// closures written there.
+fn body_locals(core: &CoreProgram, parameters: &[SymbolId], body: CoreNodeId) -> BodyLocals {
+    let mut seen = HashSet::new();
+    let mut locals = Vec::new();
+    let mut closures = Vec::new();
+    let mut add = |symbol: SymbolId, locals: &mut Vec<SymbolId>| {
+        if core.symbol(symbol).kind == CoreSymbolKind::Local && seen.insert(symbol) {
+            locals.push(symbol);
+        }
+    };
+    for symbol in parameters {
+        add(*symbol, &mut locals);
+    }
+    let mut pending = vec![body];
+    let mut patterns = Vec::new();
+    while let Some(node) = pending.pop() {
+        match &core.nodes[node.raw() as usize].operation {
+            CoreOperation::Constant(_) | CoreOperation::DependencyMethod { .. } => {}
+            CoreOperation::Reference(symbol) => add(*symbol, &mut locals),
+            CoreOperation::Select { receiver, .. } => pending.push(*receiver),
+            CoreOperation::Construct { arguments, .. } => pending.extend(arguments),
+            CoreOperation::Call { callee, arguments } => {
+                pending.push(*callee);
+                pending.extend(arguments);
+            }
+            CoreOperation::List(items) | CoreOperation::Tuple(items) => pending.extend(items),
+            CoreOperation::Record(fields) => {
+                pending.extend(fields.iter().map(|field| field.value));
+            }
+            CoreOperation::Unary { operand, .. } | CoreOperation::Identity(operand) => {
+                pending.push(*operand);
+            }
+            CoreOperation::Binary { left, right, .. } => pending.extend([*left, *right]),
+            CoreOperation::Provision {
+                expression,
+                providers,
+            } => {
+                pending.push(*expression);
+                pending.extend(providers.iter().map(|field| field.value));
+            }
+            CoreOperation::Sequence(steps) => {
+                for step in steps {
+                    match step {
+                        CoreStep::Bind { symbol, value } => {
+                            add(*symbol, &mut locals);
+                            pending.push(*value);
+                        }
+                        CoreStep::Expression(value) => pending.push(*value),
+                    }
+                }
+            }
+            CoreOperation::Closure {
+                parameters,
+                captures,
+                body,
+            } => {
+                for symbol in parameters.iter().chain(captures) {
+                    add(*symbol, &mut locals);
+                }
+                closures.push(node);
+                pending.push(*body);
+            }
+            CoreOperation::Match { subjects, arms } => {
+                pending.extend(subjects);
+                for arm in arms {
+                    patterns.extend(&arm.patterns);
+                    pending.extend(arm.guard);
+                    pending.push(arm.body);
+                }
+            }
+            CoreOperation::Loop {
+                state,
+                initial,
+                body,
+            } => {
+                add(*state, &mut locals);
+                pending.extend([*initial, *body]);
+            }
+            CoreOperation::Break { target, value } => {
+                add(*target, &mut locals);
+                pending.extend(value);
+            }
+        }
+        while let Some(pattern) = patterns.pop() {
+            match pattern {
+                CorePattern::Wildcard | CorePattern::Literal(_) => {}
+                CorePattern::Binding(symbol) => add(*symbol, &mut locals),
+                CorePattern::Constructor { fields, .. } | CorePattern::Tuple(fields) => {
+                    patterns.extend(fields);
+                }
+                CorePattern::Outcome { value, .. } => patterns.push(value),
+                CorePattern::List {
+                    prefix,
+                    rest,
+                    suffix,
+                } => {
+                    patterns.extend(prefix);
+                    patterns.extend(rest.as_deref());
+                    patterns.extend(suffix);
+                }
+                CorePattern::Alias { pattern, binding } => {
+                    add(*binding, &mut locals);
+                    patterns.push(pattern);
+                }
+            }
+        }
+    }
+    BodyLocals { locals, closures }
+}
+
 const fn binary_operator(operator: BinaryOperator) -> u32 {
     match operator {
         BinaryOperator::Add => 0,
@@ -806,24 +995,59 @@ const fn binary_operator(operator: BinaryOperator) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{CoreSymbolKind, environment_slot};
+    use super::{body_locals, local_slots};
+    use crate::compiler::{ProjectSource, resolve_project_sources};
+    use crate::executable::{CoreOperation, lower, seal_entry};
+    use crate::source::SourceSnapshot;
+    use crate::typing::check_project;
+    use std::collections::HashSet;
 
+    // An environment holds one body's locals, so each local's slot must be below
+    // its body's count and the locals of one body must never share a slot; a body
+    // with few locals must get a small environment whatever other bodies declare.
     #[test]
-    fn environment_slots_are_dense_and_independent_by_symbol_kind() {
-        let mut locals = 0;
-        let mut requirements = 0;
-        let slots = [
-            CoreSymbolKind::Function,
-            CoreSymbolKind::Local,
-            CoreSymbolKind::Requirement,
-            CoreSymbolKind::Local,
-            CoreSymbolKind::Constructor,
-            CoreSymbolKind::Requirement,
-        ]
-        .map(|kind| environment_slot(kind, &mut locals, &mut requirements));
-
-        assert_eq!(slots, [u32::MAX, 0, 0, 1, u32::MAX, 1]);
-        assert_eq!(locals, 2);
-        assert_eq!(requirements, 2);
+    fn each_body_gets_distinct_slots_and_its_own_count() {
+        let source = concat!(
+            "fn wide(x: Int) -> Int {\n",
+            "  let a = x\n  let b = a + 1\n  let c = b + 1\n  let d = c + 1\n",
+            "  let add = fn(y: Int) { y + d }\n",
+            "  case add(a) {\n    0 -> b\n    n -> n + c\n  }\n",
+            "}\n",
+            "fn step(i: Int) -> Int { i + 1 }\n",
+            "pub fn main() -> Int { step(wide(1)) }\n",
+        );
+        let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+            .expect("valid module path");
+        let root = seal_entry(check_project(resolve_project_sources(vec![module])))
+            .unwrap_or_else(|_| panic!("the program compiles"));
+        let core = lower(root).unwrap_or_else(|_| panic!("the program lowers"));
+        let slots = local_slots(&core);
+        let mut counts = Vec::new();
+        for (function, count) in core.functions.iter().zip(&slots.function_counts) {
+            let body = body_locals(&core, &function.parameters, function.body);
+            let taken = body
+                .locals
+                .iter()
+                .map(|symbol| slots.slots[symbol.raw() as usize])
+                .collect::<Vec<_>>();
+            assert!(taken.iter().all(|slot| slot < count), "{taken:?} within {count}");
+            assert_eq!(taken.iter().collect::<HashSet<_>>().len(), taken.len());
+            for closure in &body.closures {
+                assert_eq!(slots.closure_count(*closure), *count);
+                assert!(matches!(
+                    core.nodes[closure.raw() as usize].operation,
+                    CoreOperation::Closure { .. }
+                ));
+            }
+            counts.push((core.symbol(function.symbol).name.clone(), *count));
+        }
+        let count_of = |name: &str| {
+            counts
+                .iter()
+                .find(|(function, _)| function == name)
+                .map(|(_, count)| *count)
+                .expect("the function is lowered")
+        };
+        assert!(count_of("step") < count_of("wide"), "{counts:?}");
     }
 }

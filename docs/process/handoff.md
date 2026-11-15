@@ -1,5 +1,9 @@
 # Coordinator handoff (2026-11-14)
 
+> **Historical.** This records the state at the 2026-11-14 handoff. The
+> current way of working is in [procedure.md](procedure.md), and tickets moved
+> from prog to Linear (team CHI) on 2026-11-15.
+
 The first coordinator session (started 2026-11-11) hands the language build
 to the projects coordinator. This note says where the work stands, how we work,
 and what has and has not worked. The

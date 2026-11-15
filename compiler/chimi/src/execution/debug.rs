@@ -65,6 +65,17 @@ impl Renderer<'_> {
             // Not the `Decimal.to_text` form, which keeps the scale: equal
             // values render the same.
             RuntimeValue::Decimal(value) => self.output.push_str(&value.normalized_text()),
+            // Two hex digits per byte, as a hex dump shows them: `Bytes(68 69)`.
+            RuntimeValue::Bytes(bytes) => {
+                self.output.push_str("Bytes(");
+                for (index, byte) in bytes.iter().enumerate() {
+                    if index > 0 {
+                        self.output.push(' ');
+                    }
+                    self.output.push_str(&format!("{byte:02x}"));
+                }
+                self.output.push(')');
+            }
             RuntimeValue::Tuple(values) => {
                 let parts = values.iter().map(|value| Part { label: None, value });
                 self.composite("", "(", ")", false, parts.collect());

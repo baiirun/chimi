@@ -106,6 +106,8 @@ pub(crate) enum StandardType {
     Set,
     /// `std/decimal.Decimal`: an exact base-10 number.
     Decimal,
+    /// `std/bytes.Bytes`: immutable binary data.
+    Bytes,
     /// `std/clock.Instant`: signed nanoseconds on the execution's monotonic
     /// time source, meaningful only within the execution that read it.
     Instant,
@@ -178,6 +180,7 @@ impl StandardType {
             Self::Clock => "Clock",
             Self::Set => "Set",
             Self::Decimal => "Decimal",
+            Self::Bytes => "Bytes",
             Self::Instant => "Instant",
             Self::Timestamp => "Timestamp",
             Self::Timeout => "Timeout",
@@ -231,6 +234,7 @@ impl StandardType {
             | Self::SupervisorRestart
             | Self::SupervisorStartError
             | Self::Decimal
+            | Self::Bytes
             | Self::Instant
             | Self::Timestamp
             | Self::Timeout => StandardProperties::Structural,
@@ -423,6 +427,19 @@ pub(crate) enum StandardFunction {
     DecimalMultiplyChecked,
     DecimalDivideRounded,
     DecimalToFloat,
+    // The native core of `std/bytes`.
+    BytesFrom,
+    BytesLength,
+    BytesGet,
+    BytesIndexOf,
+    BytesConcat,
+    BytesSlice,
+    BytesToList,
+    BytesFromText,
+    BytesToTextLossy,
+    BytesValidUtf8Length,
+    BytesReadIntCode,
+    BytesIntBytes,
 }
 
 impl StandardFunction {
@@ -637,7 +654,19 @@ impl StandardFunction {
             | Self::DecimalSubtractChecked
             | Self::DecimalMultiplyChecked
             | Self::DecimalDivideRounded
-            | Self::DecimalToFloat => None,
+            | Self::DecimalToFloat
+            | Self::BytesFrom
+            | Self::BytesLength
+            | Self::BytesGet
+            | Self::BytesIndexOf
+            | Self::BytesConcat
+            | Self::BytesSlice
+            | Self::BytesToList
+            | Self::BytesFromText
+            | Self::BytesToTextLossy
+            | Self::BytesValidUtf8Length
+            | Self::BytesReadIntCode
+            | Self::BytesIntBytes => None,
         }
     }
 
@@ -767,6 +796,18 @@ impl StandardFunction {
             Self::DecimalMultiplyChecked => "multiply_checked",
             Self::DecimalDivideRounded => "divide_rounded",
             Self::DecimalToFloat => "to_float",
+            Self::BytesFrom => "from",
+            Self::BytesLength => "length",
+            Self::BytesGet => "get",
+            Self::BytesIndexOf => "index_of",
+            Self::BytesConcat => "concat",
+            Self::BytesSlice => "slice",
+            Self::BytesToList => "to_list",
+            Self::BytesFromText => "from_text",
+            Self::BytesToTextLossy => "to_text_lossy",
+            Self::BytesValidUtf8Length => "valid_utf8_length",
+            Self::BytesReadIntCode => "read_int_code",
+            Self::BytesIntBytes => "int_bytes",
         }
     }
 
@@ -1088,6 +1129,7 @@ impl StandardConstructor {
             | StandardType::Duration
             | StandardType::Set
             | StandardType::Decimal
+            | StandardType::Bytes
             | StandardType::JsonValue
             | StandardType::JsonNumber
             | StandardType::DecodeError
