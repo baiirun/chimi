@@ -99,6 +99,9 @@ pub struct Options {
     /// Print actual diagnostics, outcomes, and transcripts to stderr.
     pub print_actual: bool,
     pub backend: Backend,
+    /// Run PG05 with a per-process regression of this factor injected into
+    /// its workload, to show that the gate fails on one.
+    pub injected_pg05_regression: Option<f64>,
 }
 
 impl Default for Options {
@@ -108,6 +111,7 @@ impl Default for Options {
             scenario: None,
             print_actual: false,
             backend: Backend::Native,
+            injected_pg05_regression: None,
         }
     }
 }
@@ -317,7 +321,10 @@ fn run_scenarios(
 
 /// A gate scenario passes when every gate it measured passed; its gates and
 /// metrics join `measured` either way.
-fn measure(gate: catalogue::Measure, measured: &mut Measurement) -> Result<(), String> {
+fn measure(
+    gate: impl FnOnce() -> Result<Measurement, String>,
+    measured: &mut Measurement,
+) -> Result<(), String> {
     let measurement = gate()?;
     let failure = measurement
         .gates
@@ -344,6 +351,16 @@ fn status(scenario: &Scenario, options: &Options, measured: &mut Measurement) ->
     }
     let result = match (scenario.kind(), scenario.form) {
         (_, Form::Check(check)) => check().map(|()| None),
+        (_, Form::Gate(_))
+            if scenario.id == "PG05"
+                && let Some(factor) = options.injected_pg05_regression =>
+        {
+            measure(
+                || performance::pg05_with_injected_regression(factor),
+                measured,
+            )
+            .map(|()| None)
+        }
         (_, Form::Gate(gate)) => measure(gate, measured).map(|()| None),
         (Kind::Static, Form::Fixture) => static_kind::check(scenario, options).map(|()| None),
         (Kind::Heap, Form::Fixture | Form::CHarness(_)) => heap_kind::check(scenario, options),

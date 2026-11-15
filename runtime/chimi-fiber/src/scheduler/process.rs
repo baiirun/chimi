@@ -333,6 +333,27 @@ pub struct ProcessMetrics {
 pub type MessageRelease = unsafe extern "C" fn(*mut c_void, u64);
 pub type SpecContextRelease = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
+/// How one incarnation ended. The kernel builds it for every end, whatever
+/// the trace mode, so a reader that is not the trace (the runner's root
+/// outcome today, monitors later) learns why a process went down.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct ChimiProcessTermination {
+    pub membership: u64,
+    pub incarnation: u64,
+    /// `TerminalCause::code`, as the `process_terminated` trace event carries it.
+    pub cause: u64,
+    /// 1 when the body overflowed its fiber stack: a defect the host cannot
+    /// see, because the body never returns from its entry.
+    pub stack_overflow: u32,
+}
+
+/// Receives the termination record of every incarnation that defected, as
+/// the incarnation finishes and before its `process_terminated` event. It
+/// runs on the scheduler's thread with no task running, and must not call
+/// back into the scheduler.
+pub type ProcessDefectReport = unsafe extern "C" fn(*mut c_void, *const ChimiProcessTermination);
+
 /// An admitted specification. Dropping the last reference releases its
 /// context through the scheduler's hook.
 pub(super) struct SpecRecord {
@@ -522,6 +543,7 @@ pub(super) struct ProcessKernel {
     pub(super) events: Vec<ProcessEvent>,
     pub(super) release_message: Option<(MessageRelease, *mut c_void)>,
     pub(super) release_spec: Option<(SpecContextRelease, *mut c_void)>,
+    pub(super) defect_report: Option<(ProcessDefectReport, *mut c_void)>,
     #[cfg(test)]
     pub(super) failing_spawns: u32,
 }
@@ -548,6 +570,16 @@ pub(super) enum Receipt {
 }
 
 impl Scheduler {
+    /// Installs the hook that receives every defected incarnation's
+    /// termination record, under any trace mode.
+    pub fn set_process_defect_report(
+        &mut self,
+        report: Option<ProcessDefectReport>,
+        context: *mut c_void,
+    ) {
+        self.kernel.defect_report = report.map(|report| (report, context));
+    }
+
     // ----- Host-facing operations -----------------------------------------
 
     /// Starts a root supervisor and its declared members in list order.
@@ -1378,11 +1410,25 @@ impl Scheduler {
             entry.current = None;
         }
         let cause = terminal_cause(outcome, record.stopping);
+        let stack_overflow = matches!(outcome, TaskOutcome::StackOverflow { .. });
+        if cause == TerminalCause::Defected
+            && let Some((report, context)) = self.kernel.defect_report
+        {
+            let termination = ChimiProcessTermination {
+                membership: membership.0,
+                incarnation: incarnation.0,
+                cause: cause.code(),
+                stack_overflow: u32::from(stack_overflow),
+            };
+            // SAFETY: the hook's owner keeps it and its context valid for the
+            // scheduler's lifetime; the record lives for the call.
+            unsafe { report(context, &termination) };
+        }
         self.emit_process(ProcessEventKind::Terminated {
             membership,
             incarnation,
             cause,
-            stack_overflow: matches!(outcome, TaskOutcome::StackOverflow { .. }),
+            stack_overflow,
         });
         if record.stopping.is_none() {
             self.member_ended(membership, cause);

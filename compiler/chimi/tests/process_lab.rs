@@ -88,6 +88,51 @@ fn performance_gates_pass_on_an_idle_machine() {
     assert!(!report.contains("\"gates\":[]"), "{report}");
 }
 
+// PG05 must catch a per-process regression that its fixed costs would hide: with
+// a start that makes a process at 1,000 cost three times one at 100, the gate
+// fails (ts-cc1f03). Measures wall time, so it runs only on request:
+// `cargo test --release -p chimi --test process_lab -- --ignored pg05`.
+#[test]
+#[ignore = "measures wall time; run explicitly on an idle machine"]
+fn pg05_fails_on_an_injected_three_times_regression() {
+    let output = lab(&[
+        "performance",
+        "--scenario",
+        "PG05",
+        "--inject-pg05-regression",
+        "3",
+    ]);
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(!output.status.success(), "{report}");
+    assert_eq!(
+        statuses(&report),
+        [("PG05".to_owned(), "fail".to_owned())],
+        "{report}"
+    );
+}
+
+// A flag the requested kinds would ignore is an error, not a silent no-op.
+#[test]
+fn a_baseline_or_injection_without_performance_is_an_error() {
+    // A readable baseline, so only the missing `performance` kind is wrong.
+    let baseline = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/process_lab.rs");
+    for arguments in [
+        &["static", "--baseline", baseline][..],
+        &["static", "--inject-pg05-regression", "3"],
+        &[
+            "performance",
+            "--scenario",
+            "PG04",
+            "--inject-pg05-regression",
+            "3",
+        ],
+    ] {
+        let output = lab(arguments);
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}");
+        assert!(output.stdout.is_empty(), "{arguments:?}");
+    }
+}
+
 #[test]
 fn all_prints_one_report_per_kind_in_order() {
     let output = lab(&["all", "--through", Stage::U0.name()]);

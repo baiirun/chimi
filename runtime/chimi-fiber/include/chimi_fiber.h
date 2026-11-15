@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 7u
+#define CHIMI_FIBER_ABI_VERSION 8u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -52,10 +52,14 @@ typedef void (*ChimiRootVisitor)(void *context, uintptr_t *slot);
 typedef struct ChimiFiber ChimiFiber;
 
 enum {
+  /* ChimiSchedulerRequest: an OK reply sets `task` to the child and `owner` to
+     the starter, the task the child's result capabilities go to. */
   CHIMI_REQUEST_TASK_START = 1,
   CHIMI_REQUEST_TASK_RESULT = 2,
   CHIMI_REQUEST_TASK_CANCEL = 3,
   CHIMI_REQUEST_CHANNEL_BOUNDED = 4,
+  /* ChimiSchedulerRequest: `value` is the message and `context` is null or a
+     ChimiMessageCapabilities naming the exclusive capabilities it holds. */
   CHIMI_REQUEST_CHANNEL_SEND = 5,
   CHIMI_REQUEST_CHANNEL_RECEIVE = 6,
   CHIMI_REQUEST_CHANNEL_CLOSE = 7,
@@ -337,6 +341,9 @@ enum {
   CHIMI_VIOLATION_UNKNOWN_CHANNEL = 4,
   /* A release named a channel some task still holds. */
   CHIMI_VIOLATION_CHANNEL_STILL_LIVE = 5,
+  /* The capability travels in a sent message no task has received yet, so
+     the copy used is stale. */
+  CHIMI_VIOLATION_IN_FLIGHT = 6,
 };
 
 enum {
@@ -359,12 +366,51 @@ typedef struct {
   uint32_t reason;
 } ChimiCapabilityViolation;
 
+/* One Receiver or Completion inside a sent message: its channel, the token of
+   the sender's copy, and CHIMI_CAPABILITY_RECEIVER or _COMPLETION.
+
+   A send whose reply is OK or PENDING puts each one in flight with token + 1,
+   so the host writes token + 1 into the message's copies before it sends and
+   the sender's own copies are stale from then on. The task that receives the
+   message owns them. A reply of CLOSED or ABORTED gives them back to the
+   sender with their old tokens, and a discarded message aborts their
+   channels as its owner's exit would. Any ERROR reply changes nothing: one
+   that is not the sender's current copy defects the sender. */
+typedef struct {
+  uint64_t channel;
+  uint64_t token;
+  uint32_t capability;
+} ChimiCarriedCapability;
+
+typedef struct {
+  const ChimiCarriedCapability *items;
+  size_t count;
+} ChimiMessageCapabilities;
+
 /* Called once per violation, before the violating task begins to end, under
    the conditions of ChimiValueRelease: on the scheduler's thread with no task
    running, and it must not call back into the scheduler. The record lives
    for the call. */
 typedef void (*ChimiCapabilityViolationReport)(void *context,
                                                const ChimiCapabilityViolation *violation);
+
+/* How one incarnation ended (`cause` is the process_terminated event's cause
+   code). The kernel builds it for every end, under any trace mode. */
+typedef struct {
+  uint64_t membership;
+  uint64_t incarnation;
+  uint64_t cause;
+  /* 1 when the body overflowed its fiber stack, which the host cannot see:
+     the body never returns from its entry. */
+  uint32_t stack_overflow;
+} ChimiProcessTermination;
+
+/* Called with the record of every incarnation that defected, as it finishes
+   and before its process_terminated event, whatever the trace mode. It runs
+   on the scheduler's thread with no task running and must not call back
+   into the scheduler. The record lives for the call. */
+typedef void (*ChimiProcessDefectReport)(void *context,
+                                         const ChimiProcessTermination *termination);
 
 enum {
   CHIMI_SCHEDULER_CLOCK_REAL = 0,
@@ -462,6 +508,9 @@ typedef struct {
   /* Called for each channel capability violation; may be null. */
   ChimiCapabilityViolationReport capability_violation_report;
   void *capability_violation_context;
+  /* Called for each process incarnation that defected; may be null. */
+  ChimiProcessDefectReport process_defect_report;
+  void *process_defect_context;
 } ChimiSchedulerConfig;
 
 /* The arguments of chimi_scheduler_execute_with_config. The release hooks

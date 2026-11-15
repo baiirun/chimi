@@ -191,6 +191,9 @@ struct ChimiTaskContext {
   ChimiNodeFn entry;
   struct RuntimeFragment *captures;
   uint64_t span;
+  /* The task that started this one: a child's result hands its exclusive
+     capabilities to it before the child ends. */
+  uint64_t parent;
 };
 
 typedef enum {
@@ -217,6 +220,14 @@ struct ChimiRuntime {
   int64_t clock_start;
   /* The parked tasks of a virtual-time deadlock, from the scheduler's report. */
   char *deadlock_waiters;
+  /* The latest process incarnation that defected, from the scheduler's
+     termination report under any trace mode, and how many have defected. A
+     root that cannot finish names it, so a process defect is never only in
+     the trace. */
+  uint64_t last_defect_incarnation;
+  uint64_t last_defect_membership;
+  char *last_defect_message;
+  uint64_t process_defect_count;
   /* The defect message of each task the scheduler defected for a channel
      capability violation, from its report. */
   struct CapabilityViolationNote *capability_violations;
@@ -2212,6 +2223,13 @@ typedef struct {
   size_t pending_capacity;
   uint64_t child;
   bool cancelled;
+  /* Collecting for a send instead of transferring: each capability found is
+     recorded here with the sender's token, and its copy in the message takes
+     the in-flight token (ChimiCarriedCapability). */
+  bool collect;
+  ChimiCarriedCapability *carried;
+  size_t carried_count;
+  size_t carried_capacity;
 } CapabilityTransfer;
 
 /* Visited-set slots examined by every capture transfer so far; the memory report's
@@ -2267,8 +2285,31 @@ static void transfer_push(CapabilityTransfer *transfer, TransferPartKind kind, v
   transfer->pending[transfer->pending_length++] = (TransferPart){kind, pointer};
 }
 
+static void collect_carried_capability(CapabilityTransfer *transfer, ChimiValue *value,
+                                       uint32_t capability) {
+  if (transfer->carried_count == transfer->carried_capacity) {
+    size_t capacity = transfer->carried_capacity ? transfer->carried_capacity * 2 : 8;
+    ChimiCarriedCapability *carried = realloc(transfer->carried, capacity * sizeof(*carried));
+    if (!carried) exhausted_memory();
+    transfer->carried = carried;
+    transfer->carried_capacity = capacity;
+  }
+  transfer->carried[transfer->carried_count++] = (ChimiCarriedCapability){
+    .channel = value->as.capability.channel,
+    .token = value->as.capability.token,
+    .capability = capability,
+  };
+  ++value->as.capability.token;
+}
+
 static bool transfer_captured_capability(CapabilityTransfer *transfer, ChimiValue *value,
                                          uint32_t request_kind) {
+  if (transfer->collect) {
+    collect_carried_capability(transfer, value,
+                               request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER
+                                 ? CHIMI_CAPABILITY_RECEIVER : CHIMI_CAPABILITY_COMPLETION);
+    return true;
+  }
   ChimiSchedulerRequest request = {
     .kind = request_kind,
     .task = transfer->child,
@@ -5278,12 +5319,23 @@ static ChimiFiberResult chimi_task_entry(void *raw_context) {
   uint64_t span = context->span;
   RuntimeHeap *heap = heap_create();
   current_heap = heap;
+  uint64_t parent = context->parent;
   void *captures[FRAGMENT_ROOTS];
   fragment_adopt(context->captures, captures);
   free(context);
   ChimiValue *callable = captures[0];
   ChimiControl *control = invoke(runtime, callable->as.callable, NULL, 0, span, UINT32_MAX,
                                  captures[1]);
+  /* Only the parent can read the result (a task handle is parent-local), so the
+     result's exclusive capabilities become the parent's before this task ends
+     and its cleanup would abort them. */
+  if ((control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE) && control->value) {
+    CapabilityTransfer transfer = {.child = parent};
+    if (!transfer_captures(&transfer, control->value))
+      control = transfer.cancelled
+        ? cancelled()
+        : defect("Task could not hand an exclusive capability in its result to its parent", -1);
+  }
   ChimiFiberResult result = child_task_result(control);
   heap_destroy(heap);
   current_heap = NULL;
@@ -6036,8 +6088,9 @@ typedef struct {
 /* The largest peak of live payload bytes of any incarnation's heap. */
 static size_t process_heap_peak_value_bytes;
 
-/* The defect messages of incarnations whose body defected, kept while tracing so
-   the `process_terminated` event that follows can carry them (`defect`). */
+/* The defect messages of incarnations whose body defected, kept until the
+   scheduler reports the incarnation's end (record_process_defect), which
+   follows before any other incarnation of the same body can run. */
 typedef struct { uint64_t incarnation; char *message; } ProcessDefect;
 static ProcessDefect *process_defects;
 static size_t process_defect_count;
@@ -6084,7 +6137,7 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
     case CONTROL_CANCEL: result = (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED}; break;
     case CONTROL_DEFECT:
     case CONTROL_BREAK:
-      if (!runtime->silent) remember_process_defect(control->message);
+      remember_process_defect(control->message);
       result = (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1};
       break;
   }
@@ -7131,7 +7184,9 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       }
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
       /* The child has not run yet: it adopts the fragment when it first runs, so the
-         transfer below rewrites the capabilities in the child's copy. */
+         transfer below rewrites the capabilities in the child's copy, and the
+         context is still the child's to read. */
+      context->parent = request.owner;
       CapabilityTransfer transfer = {.child = request.task};
       bool transferred = transfer_captures(&transfer, captures->roots[0]);
       if (!transferred) {
@@ -7199,12 +7254,21 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       RuntimeFragment *message = NULL;
       if (fragment_copy(roots, kinds, 1, &message) != HEAP_OK)
         return defect(FOREIGN_POINTER_DEFECT, call_node);
+      /* Receivers and Completions in the message travel with it: the scheduler
+         puts them in flight, and the message's copies take the in-flight token
+         before anything can receive them. */
+      CapabilityTransfer carried = {.collect = true};
+      transfer_captures(&carried, message->roots[0]);
+      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
+      bool first = true;
       for (;;) {
         ChimiSchedulerRequest request = {
           .kind = CHIMI_REQUEST_CHANNEL_SEND,
           .channel = arguments[0]->as.capability.channel,
           .value = (int64_t)(intptr_t)message,
+          .context = first && capabilities.count ? &capabilities : NULL,
         };
+        first = false;
         ChimiFiberCommand command = scheduler_request(&request);
         /* The scheduler takes the message on OK or PENDING and hands it back on
            CLOSED or ABORTED; any other reply leaves it with the sender. Either way
@@ -7215,6 +7279,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                         request.status == CHIMI_RESPONSE_ABORTED;
         if (returned) fragment_free((RuntimeFragment *)(intptr_t)request.value);
         else if (!taken) fragment_free(message);
+        free(carried.carried);
+        carried.carried = NULL;
         if (command == CHIMI_FIBER_CANCEL) return cancelled();
         if (request.status == CHIMI_RESPONSE_PENDING) continue;
         if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
@@ -8071,7 +8137,8 @@ static const char *process_cause_word(const ChimiSchedulerTraceEvent *event) {
 /* The process family's fields (supervised-process-conformance.md, "Runner telemetry
    for process and clock events"): identities at the top level, the rest in
    `attributes`, a field the kind does not set as null. */
-static void emit_process_fields(FILE *output, const ChimiSchedulerTraceEvent *event, bool attributes) {
+static void emit_process_fields(const ChimiRuntime *runtime, FILE *output,
+                                const ChimiSchedulerTraceEvent *event, bool attributes) {
   if (!attributes) {
     json_identity(output, "supervisor_id", event->supervisor);
     json_identity(output, "membership_id", event->membership);
@@ -8091,17 +8158,13 @@ static void emit_process_fields(FILE *output, const ChimiSchedulerTraceEvent *ev
   fprintf(output, ",\"attempts_in_window\":%" PRIu64, event->attempts_in_window);
   /* `defect`: why a defected incarnation ended. A stack overflow ends the body
      without returning, so the scheduler reports it (CHIMI_PROCESS_DEFECT_*). */
-  char *defect = NULL;
   const char *named = NULL;
   if (event->kind == CHIMI_PROCESS_TRACE_TERMINATED && event->cause == CHIMI_PROCESS_CAUSE_DEFECTED) {
     if (event->outcome == CHIMI_PROCESS_DEFECT_STACK_OVERFLOW) named = "Process stack overflow";
-#if CHIMI_PROCESS_KERNEL
-    defect = take_process_defect(event->incarnation);
-    if (!named) named = defect;
-#endif
+    if (!named && runtime->last_defect_incarnation == event->incarnation)
+      named = runtime->last_defect_message;
   }
   json_word(output, "defect", named);
-  free(defect);
 }
 
 static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *event) {
@@ -8127,7 +8190,7 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
   else fprintf(output, "%" PRIu64, event->cause);
   fputs(",\"channel_id\":", output);
   if (event->channel == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->channel);
-  if (process) emit_process_fields(output, event, false);
+  if (process) emit_process_fields(runtime, output, event, false);
   fprintf(output,
           ",\"attributes\":{\"scheduler_sequence\":%" PRIu64
           ",\"capacity\":%" PRIu64 ",\"queue_depth\":%" PRIu64
@@ -8137,7 +8200,7 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
   if (clock)
     fprintf(output, ",\"time_ns\":%" PRId64 ",\"request_kind\":%" PRIu64,
             event->time, event->cause);
-  if (process) emit_process_fields(output, event, true);
+  if (process) emit_process_fields(runtime, output, event, true);
   fputs("}}\n", output);
 }
 
@@ -8213,6 +8276,14 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
                  PRIu64 " in %s: %s", violation->task, capability_name(violation->capability),
                  violation->channel, channel_operation(violation->request_kind), holder);
       break;
+    case CHIMI_VIOLATION_IN_FLIGHT:
+      snprintf(text, sizeof(text),
+               "channel capability violation: task %" PRIu64 " cannot %s the %s of channel %" PRIu64
+               "%s%s: this copy is stale; the capability was sent in a message no task has "
+               "received yet", violation->task, transfer ? "hand" : "use",
+               capability_name(violation->capability), violation->channel,
+               transfer ? "" : " in ", transfer ? "" : channel_operation(violation->request_kind));
+      break;
     case CHIMI_VIOLATION_OVERLAPPING_OPERATION:
       snprintf(text, sizeof(text),
                "channel capability violation: task %" PRIu64
@@ -8267,6 +8338,44 @@ static void record_deadlock(void *context, const ChimiDeadlockWaiter *waiters, s
   runtime->deadlock_waiters = message;
 }
 
+#if CHIMI_PROCESS_KERNEL
+/* Keeps the latest defected incarnation and its message: the body's own defect,
+   remembered when it ended, or a stack overflow the scheduler saw. */
+static void record_process_defect(void *context, const ChimiProcessTermination *termination) {
+  ChimiRuntime *runtime = context;
+  char *message = take_process_defect(termination->incarnation);
+  if (termination->stack_overflow) {
+    free(message);
+    message = strdup("Process stack overflow");
+    if (!message) exhausted_memory();
+  }
+  free(runtime->last_defect_message);
+  runtime->last_defect_message = message;
+  runtime->last_defect_incarnation = termination->incarnation;
+  runtime->last_defect_membership = termination->membership;
+  ++runtime->process_defect_count;
+}
+#endif
+
+/* `message`, followed by the latest process defect when one happened: a root that
+   cannot finish is often waiting on a process that defected, and with tracing off
+   nothing else says so. The result belongs to the defect it is passed to. */
+static const char *with_process_defect(ChimiRuntime *runtime, const char *message) {
+  if (!runtime->process_defect_count) return message;
+  const char *defect = runtime->last_defect_message ? runtime->last_defect_message : "defect";
+  char count[64] = "";
+  if (runtime->process_defect_count > 1)
+    snprintf(count, sizeof(count), " (the last of %" PRIu64 " process defects)",
+             runtime->process_defect_count);
+  size_t capacity = strlen(message) + strlen(defect) + 160;
+  char *combined = malloc(capacity);
+  if (!combined) exhausted_memory();
+  snprintf(combined, capacity, "%s; process incarnation %" PRIu64 " of membership %" PRIu64
+           " defected%s: %s", message, runtime->last_defect_incarnation,
+           runtime->last_defect_membership, count, defect);
+  return combined;
+}
+
 static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn entry,
                                            ChimiEnvironment *environment) {
   if (!CHIMI_REQUIRES_SCHEDULER) return entry(runtime, environment, 1);
@@ -8291,6 +8400,10 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .deadlock_context = runtime,
     .capability_violation_report = record_capability_violation,
     .capability_violation_context = runtime,
+#if CHIMI_PROCESS_KERNEL
+    .process_defect_report = record_process_defect,
+    .process_defect_context = runtime,
+#endif
     .release_task_value = release_task_word,
     .release_channel_value = release_channel_word,
     .release_task_context = release_task_context,
@@ -8320,7 +8433,7 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     return task_reply(outcome.defect_code);
   if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code == CHIMI_SCHEDULER_DEFECT_DEADLOCK &&
       runtime->deadlock_waiters)
-    return defect(runtime->deadlock_waiters, -1);
+    return defect(with_process_defect(runtime, runtime->deadlock_waiters), -1);
   const char *violation = outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0
     ? capability_violation_of(runtime, outcome.origin) : NULL;
   if (violation) return defect(violation, -1);
@@ -8335,8 +8448,10 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
      deadlock as before, leaving the suspended tasks to process exit. */
   if (outcome.state == CHIMI_FIBER_PARKED ||
       (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0))
-    return defect("Task scheduler defected: the root task could not finish, "
-                  "because every task is parked (deadlock) or the scheduler failed", -1);
+    return defect(with_process_defect(runtime,
+                                      "Task scheduler defected: the root task could not finish, "
+                                      "because every task is parked (deadlock) or the scheduler failed"),
+                  -1);
   if (outcome.state == CHIMI_FIBER_STACK_OVERFLOW)
     return defect("Task stack overflow", -1);
   return defect("Task scheduler failed to produce a terminal root", -1);

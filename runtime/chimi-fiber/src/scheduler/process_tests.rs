@@ -1401,6 +1401,47 @@ fn ra03_defects_further_apart_than_the_window_do_not_accumulate() {
     assert!(lab.restarts().iter().all(|(_, attempts)| *attempts == 1));
 }
 
+// time-and-outcomes.md, "Supervisor time": a restart window and a
+// `shutdown_within` deadline both elapse under virtual time. Both are an hour,
+// so a scheduler that waited for real would hang this test instead of passing
+// it. Rejects a window that never rolls under virtual time (the second defect
+// would exceed the limit of 1 and escalate), and a deadline that fires at the
+// wrong instant or not at all (the stubborn cleanup would never end).
+#[test]
+fn supervisor_windows_and_shutdown_deadlines_elapse_under_virtual_time() {
+    let hour = Duration::from_secs(3_600);
+    let mut stubborn = spec_with(&STUBBORN, Some(COUNTER), 64);
+    stubborn.shutdown_within = hour;
+    let mut lab = Lab::new();
+    let root = lab
+        .scheduler
+        .start_supervisor(policy_with(
+            vec![Member::Process(stubborn, Restart::OnDefect)],
+            16,
+            1,
+            hour,
+        ))
+        .unwrap();
+    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.settle();
+    lab.sleep(hour + Duration::from_secs(1));
+    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.settle();
+    assert!(!lab.scheduler.program_terminated());
+    assert!(lab.restarts().iter().all(|(_, attempts)| *attempts == 1));
+    let stopped_at = lab.scheduler.now().as_nanos();
+    let _ = lab.scheduler.stop_supervisor(root);
+    let _ = lab.scheduler.run_until_idle();
+    assert_eq!(
+        timed_terminations(&lab).last(),
+        Some(&(stopped_at + hour.as_nanos() as i64, TerminalCause::Forced))
+    );
+    assert_eq!(
+        lab.scheduler.supervisor_state(root),
+        Some(SupervisorState::Stopped)
+    );
+}
+
 #[test]
 fn ra04_a_restart_exactly_within_after_the_last_is_outside_the_window() {
     let mut lab = Lab::new();
@@ -2442,6 +2483,8 @@ fn run_c(entry: ChimiFiberEntry, trace_mode: u32) -> (SchedulerOutcome, Vec<Sche
         release_task_context: None,
         capability_violation_report: None,
         capability_violation_context: ptr::null_mut(),
+        process_defect_report: None,
+        process_defect_context: ptr::null_mut(),
     };
     let outcome = unsafe { chimi_scheduler_run(&config) };
     (outcome, events)
@@ -2545,7 +2588,7 @@ fn a_c_root_with_nothing_to_wake_it_defects_with_the_deadlock_code() {
 #[test]
 fn ob07_the_process_abi_layouts_match_the_c_header() {
     use std::mem::{offset_of, size_of};
-    let mut c = [0_usize; 96];
+    let mut c = [0_usize; 128];
     let count = unsafe { chimi_fixture_process_layouts(c.as_mut_ptr()) };
     let rust = [
         size_of::<ChimiProcessRequest>(),
@@ -2601,6 +2644,12 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiSchedulerConfig, release_task_context),
         offset_of!(ChimiSchedulerConfig, capability_violation_report),
         offset_of!(ChimiSchedulerConfig, capability_violation_context),
+        offset_of!(ChimiSchedulerConfig, process_defect_report),
+        offset_of!(ChimiSchedulerConfig, process_defect_context),
+        size_of::<ChimiProcessTermination>(),
+        offset_of!(ChimiProcessTermination, incarnation),
+        offset_of!(ChimiProcessTermination, cause),
+        offset_of!(ChimiProcessTermination, stack_overflow),
         size_of::<ChimiDeadlockWaiter>(),
         offset_of!(ChimiDeadlockWaiter, request_kind),
         size_of::<ChimiCapabilityViolation>(),
@@ -2622,9 +2671,15 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
             membership: None,
         }
         .trace_kind() as usize,
+        size_of::<ChimiCarriedCapability>(),
+        offset_of!(ChimiCarriedCapability, token),
+        offset_of!(ChimiCarriedCapability, capability),
+        size_of::<ChimiMessageCapabilities>(),
+        offset_of!(ChimiMessageCapabilities, count),
+        VIOLATION_IN_FLIGHT as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 7);
+    assert_eq!(crate::chimi_fiber_abi_version(), 8);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------

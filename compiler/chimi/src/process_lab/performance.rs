@@ -106,18 +106,83 @@ pub(super) fn pg04() -> Result<Measurement, String> {
 
 pub(super) fn pg05() -> Result<Measurement, String> {
     let evidence = members()?;
-    let per_process = |phases: &Phases| phases.start_us + phases.stop_us;
-    Ok(Measurement {
+    Ok(pg05_measurement(
+        evidence.at_10,
+        evidence.at_100,
+        evidence.at_1000,
+    ))
+}
+
+/// PG05 with a regression injected into the workload: from the clean run's
+/// marginal per-process cost, every start spins long enough that a process
+/// at 1,000 costs `factor` times one at 100. The gate must fail; run it with
+/// `chimi-process-lab performance --scenario PG05 --inject-pg05-regression 3`.
+pub(super) fn pg05_with_injected_regression(factor: f64) -> Result<Measurement, String> {
+    if !(factor > 1.0 && factor < 10.0) {
+        return Err(format!(
+            "an injected PG05 regression must be above 1 and below 10, not {factor}"
+        ));
+    }
+    let evidence = members()?;
+    let workload = members_workload()?;
+    // A start that spins `k * i` iterations before the `i`th start costs
+    // `a + b * n` per process at size `n`, with `b = k * spin_ns / 2`. A
+    // process at 1,000 costs `factor` times one at 100 when
+    // `b = a * (factor - 1) / (1000 - 100 * factor)`.
+    let clean = marginal_ns(evidence.at_10, evidence.at_100, 10, 100);
+    let spin_ns = spin_ns_per_iteration(workload, evidence.at_100)?;
+    let per_process_slope = clean * (factor - 1.0) / (1_000.0 - 100.0 * factor);
+    let spins = (2.0 * per_process_slope / spin_ns).ceil().max(1.0) as u64;
+    let phases_at = |count: u64| phases(workload, count, Some(spins));
+    let mut measurement = pg05_measurement(phases_at(10)?, phases_at(100)?, phases_at(1_000)?);
+    measurement
+        .metrics
+        .push(("pg05_injected_spins_per_start_step".into(), spins as f64));
+    Ok(measurement)
+}
+
+/// PG05's gate: the marginal per-process cost between 100 and 1,000 over the
+/// marginal cost between 10 and 100. Each phase time includes a fixed cost
+/// (the first start's allocations, the supervisor's own setup) that a ratio
+/// of averages would divide away, hiding a per-process regression; marginal
+/// costs cancel it. Linear scaling is about 1; a process at 1,000 costing 2
+/// times one at 100 is about 2.1, and 3 times is about 3.2.
+fn pg05_measurement(at_10: Phases, at_100: Phases, at_1000: Phases) -> Measurement {
+    let large = marginal_ns(at_100, at_1000, 100, 1_000);
+    let small = marginal_ns(at_10, at_100, 10, 100);
+    Measurement {
         gates: vec![GateResult::below(
-            "pg05_cost_at_1000_over_100",
-            per_process(&evidence.at_1000) / per_process(&evidence.at_100),
-            2.0,
+            "pg05_marginal_cost_100_to_1000_over_10_to_100",
+            ratio(large, small),
+            1.75,
         )],
         metrics: vec![
-            ("pg05_us_per_start_at_100".into(), evidence.at_100.start_us),
-            ("pg05_us_per_stop_at_100".into(), evidence.at_100.stop_us),
+            ("pg05_marginal_ns_10_to_100".into(), small),
+            ("pg05_marginal_ns_100_to_1000".into(), large),
+            ("pg05_us_per_start_at_100".into(), at_100.start_us),
+            ("pg05_us_per_stop_at_100".into(), at_100.stop_us),
         ],
-    })
+    }
+}
+
+/// ns per process, start and stop together, between two sizes, from the
+/// median runs.
+fn marginal_ns(small: Phases, large: Phases, n1: u64, n2: u64) -> f64 {
+    ((large.median_total_ns - small.median_total_ns) / (n2 - n1) as f64).max(0.0)
+}
+
+/// ns per spin iteration of the `members` workload: the start phase at 100
+/// with 64 spins per start step, against the clean start phase at 100.
+fn spin_ns_per_iteration(workload: &Workload, clean_at_100: Phases) -> Result<f64, String> {
+    const SPINS: u64 = 64;
+    let spun = phases(workload, 100, Some(SPINS))?;
+    // Starts 0..98 spin 0..98 steps (the named tail does not spin).
+    let iterations = SPINS * (0..99).sum::<u64>();
+    let extra_ns = spun.median_start_ns - clean_at_100.median_start_ns;
+    if extra_ns <= 0.0 {
+        return Err("PG05 injection: spinning did not slow the start phase".into());
+    }
+    Ok(extra_ns / iterations as f64)
 }
 
 pub(super) fn pg06() -> Result<Measurement, String> {
@@ -278,42 +343,67 @@ fn restarts() -> Result<f64, String> {
 struct Phases {
     start_us: f64,
     stop_us: f64,
+    /// The median run's start and stop phases together, in ns. PG05's
+    /// marginals subtract two of these, and a p95 of seven runs is the
+    /// slowest one, whose noise the subtraction would magnify.
+    median_total_ns: f64,
+    /// The median run's start phase, in ns.
+    median_start_ns: f64,
 }
 
 struct MemberEvidence {
+    at_10: Phases,
     at_100: Phases,
     at_1000: Phases,
     parked_resident: f64,
+}
+
+fn members_workload() -> Result<&'static Workload, String> {
+    static WORKLOAD: OnceLock<Result<Workload, String>> = OnceLock::new();
+    cached(&WORKLOAD, || {
+        Workload::build("PG-members", &workloads_root(), "app/members")
+    })
+}
+
+/// Per-process phase times at `count`, the p95 of `SAMPLES` runs after one
+/// unmeasured run. With `spins`, the `i`th start first spins `spins * i`
+/// iterations (PG05's injected regression).
+fn phases(workload: &Workload, count: u64, spins: Option<u64>) -> Result<Phases, String> {
+    let mut timed = Run::new(Trace::Boundaries).with_telemetry().real_clock();
+    timed.spins = spins;
+    let argument = count.to_string();
+    workload.run(&timed, &argument, count)?;
+    let mut starts = Vec::with_capacity(SAMPLES);
+    let mut stops = Vec::with_capacity(SAMPLES);
+    let mut totals = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        let run = workload.run(&timed, &argument, count)?;
+        let (start, stop) = phase_nanoseconds(&run.telemetry)?;
+        starts.push(start);
+        stops.push(stop);
+        totals.push(start + stop);
+    }
+    Ok(Phases {
+        start_us: p95(&mut starts) as f64 / count as f64 / 1_000.0,
+        stop_us: p95(&mut stops) as f64 / count as f64 / 1_000.0,
+        median_total_ns: median(&mut totals) as f64,
+        median_start_ns: median(&mut starts) as f64,
+    })
 }
 
 /// PG04, PG05, PG08 on the `members` workload.
 fn members() -> Result<&'static MemberEvidence, String> {
     static EVIDENCE: OnceLock<Result<MemberEvidence, String>> = OnceLock::new();
     cached(&EVIDENCE, || {
-        let workload = Workload::build("PG-members", &workloads_root(), "app/members")?;
-        let timed = Run::new(Trace::Boundaries).with_telemetry().real_clock();
-        let phases_at = |count: u64| -> Result<Phases, String> {
-            let argument = count.to_string();
-            workload.run(&timed, &argument, count)?;
-            let mut starts = Vec::with_capacity(SAMPLES);
-            let mut stops = Vec::with_capacity(SAMPLES);
-            for _ in 0..SAMPLES {
-                let run = workload.run(&timed, &argument, count)?;
-                let (start, stop) = phase_nanoseconds(&run.telemetry)?;
-                starts.push(start);
-                stops.push(stop);
-            }
-            Ok(Phases {
-                start_us: p95(&mut starts) as f64 / count as f64 / 1_000.0,
-                stop_us: p95(&mut stops) as f64 / count as f64 / 1_000.0,
-            })
-        };
-        let at_100 = phases_at(100)?;
-        let at_1000 = phases_at(1_000)?;
+        let workload = members_workload()?;
+        let at_10 = phases(workload, 10, None)?;
+        let at_100 = phases(workload, 100, None)?;
+        let at_1000 = phases(workload, 1_000, None)?;
         let off = Run::new(Trace::Off);
         let empty = workload.run(&off, "0", 0)?;
         let parked = workload.run(&off, "1000", 1_000)?;
         Ok(MemberEvidence {
+            at_10,
             at_100,
             at_1000,
             parked_resident: parked.max_resident.saturating_sub(empty.max_resident) as f64,
@@ -432,6 +522,8 @@ struct Run {
     telemetry: bool,
     memory_report: bool,
     real_clock: bool,
+    /// A second program argument: the `members` workload's spins per start.
+    spins: Option<u64>,
 }
 
 impl Run {
@@ -441,6 +533,7 @@ impl Run {
             telemetry: !matches!(trace, Trace::Off),
             memory_report: false,
             real_clock: false,
+            spins: None,
         }
     }
 
@@ -565,6 +658,7 @@ impl Workload {
         command
             .arg("--")
             .args(argument)
+            .args(run.spins.map(|spins| spins.to_string()))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -672,6 +766,12 @@ fn run_measured(command: &mut Command) -> Result<(Exit, u64, u64), String> {
 
 // ---------------------------------------------------------------------------
 // Pure helpers.
+
+/// The median of `samples` (sorted in place): the value at index `len / 2`.
+fn median(samples: &mut [u64]) -> u64 {
+    samples.sort_unstable();
+    samples[samples.len() / 2]
+}
 
 /// The p95 of `samples` (sorted in place): the value at index
 /// `len * 95 / 100`, which for 7 samples is the slowest.
@@ -822,6 +922,12 @@ mod tests {
 
     // Rejects a p95 that takes the median or the fastest sample, and a sort
     // that leaves the slowest of 7 out.
+    #[test]
+    fn median_of_seven_samples_is_the_fourth_fastest() {
+        assert_eq!(median(&mut [5, 1, 7, 3, 2, 6, 4]), 4);
+        assert_eq!(median(&mut [9; 1]), 9);
+    }
+
     #[test]
     fn p95_of_seven_samples_is_the_slowest() {
         assert_eq!(p95(&mut [5, 1, 7, 3, 2, 6, 4]), 7);
