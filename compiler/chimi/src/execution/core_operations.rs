@@ -139,6 +139,15 @@ impl Evaluator<'_> {
             (StandardFunction::TextTrimEnd, [RuntimeValue::Text(value)]) => {
                 text(value.trim_end_matches(is_white_space).to_owned())
             }
+            // Rust's mappings are the Unicode default case conversion, Final_Sigma
+            // included; `runtime.c` holds tables generated from them
+            // (`tests/unicode_case_tables.rs`).
+            (StandardFunction::TextLowercase, [RuntimeValue::Text(value)]) => {
+                text(value.to_lowercase())
+            }
+            (StandardFunction::TextUppercase, [RuntimeValue::Text(value)]) => {
+                text(value.to_uppercase())
+            }
             (StandardFunction::ListGet, [RuntimeValue::List(list), RuntimeValue::Integer(index)]) => {
                 let found = usize::try_from(*index)
                     .ok()

@@ -1,0 +1,30 @@
+// std/text case mapping: ASCII, non-ASCII, mappings that change the length,
+// combining marks, the context-dependent final sigma, and comparison that
+// ignores case.
+import std/debug as Debug
+import std/text as Text
+
+pub fn main() -> Text {
+  let results = [
+    Debug.render([Text.lowercase("Hello, World 123"), Text.uppercase("Hello, World 123"), Text.lowercase("")]),
+    Debug.render([Text.lowercase("ÉCOLE Ångström"), Text.uppercase("école ångström"), Text.uppercase("日本 ok")]),
+    // ß, the ligature ﬁ, and ŉ uppercase to two characters; İ lowercases to i
+    // and a combining dot, so the byte length grows from 2 to 3.
+    Debug.render([Text.uppercase("straße"), Text.uppercase("ﬁne"), Text.uppercase("ŉ")]),
+    Debug.render((Text.lowercase("İ"), Text.byte_length(Text.lowercase("İ")))),
+    // e followed by U+0301 COMBINING ACUTE ACCENT keeps the mark.
+    Debug.render((Text.uppercase("e\u{301}"), Text.byte_length(Text.uppercase("e\u{301}")))),
+    // Σ is final (ς) after a cased letter, skipping case-ignorable marks such
+    // as the apostrophe, and when no cased letter follows.
+    Debug.render([Text.lowercase("ΟΔΟΣ"), Text.lowercase("ΣΑ"), Text.lowercase("Σ"), Text.lowercase("ΑΣ.")]),
+    Debug.render([Text.lowercase("ΑΣ'Α"), Text.lowercase("Α'Σ"), Text.lowercase("ΟΔΟΣ ΟΔΟΣ")]),
+    Debug.render([Text.uppercase("ὀδός"), Text.uppercase("ς")]),
+    Debug.render([
+      Text.compare_ignoring_case("Straße", "STRASSE"),
+      Text.compare_ignoring_case("apple", "Banana"),
+      Text.compare_ignoring_case("b", "A"),
+      Text.compare_ignoring_case("ὈΔΌΣ", "ὀδός"),
+    ]),
+  ]
+  Debug.render(results)
+}

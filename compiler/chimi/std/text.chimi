@@ -4,6 +4,8 @@
 /// `Text.join`, `Text.trim`, `Text.starts_with`, `Text.replace`.
 
 import std/list as List
+import std/order as Order
+import std/order.{Ordering}
 
 // 4. Building.
 
@@ -173,11 +175,39 @@ pub native fn trim_end(text: Text) -> Text
 /// Cost: O(n * m).
 pub native fn replace(text: Text, old: Text, new: Text) -> Text
 
-// 8. Private helpers.
+/// Returns `text` with the Unicode default lowercase mapping, with no locale.
+/// A mapping may change the length: `"İ"` becomes `"i̇"`, and a final `Σ`
+/// becomes `ς`.
+///
+/// Cost: O(n).
+pub native fn lowercase(text: Text) -> Text
+
+/// Returns `text` with the Unicode default uppercase mapping, with no locale.
+/// A mapping may change the length: `"ß"` becomes `"SS"`.
+///
+/// Cost: O(n).
+pub native fn uppercase(text: Text) -> Text
+
+// 8. Ordering.
+
+/// Returns the `Ordering` of `text` against `other` when case is ignored:
+/// both are compared after `uppercase` and then `lowercase`, so `"Straße"`
+/// equals `"STRASSE"`.
+///
+/// Cost: O(n).
+pub fn compare_ignoring_case(text: Text, other: Text) -> Ordering {
+  Order.compare(without_case(text), without_case(other))
+}
+
+// 9. Private helpers.
 
 fn strip_carriage_return(line: Text) -> Text {
   case strip_suffix(line, "\r") {
     Some(stripped) -> stripped
     None -> line
   }
+}
+
+fn without_case(text: Text) -> Text {
+  lowercase(uppercase(text))
 }

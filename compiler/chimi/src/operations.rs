@@ -107,6 +107,8 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/text.replace", 3, StandardFunction::TextReplace),
     pure("std/text.trim_start", 1, StandardFunction::TextTrimStart),
     pure("std/text.trim_end", 1, StandardFunction::TextTrimEnd),
+    pure("std/text.lowercase", 1, StandardFunction::TextLowercase),
+    pure("std/text.uppercase", 1, StandardFunction::TextUppercase),
     pure("std/list.length", 1, StandardFunction::ListLength),
     pure("std/list.get", 2, StandardFunction::ListGet),
     pure("std/list.push", 2, StandardFunction::ListPush),
