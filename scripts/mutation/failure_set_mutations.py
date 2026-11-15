@@ -46,7 +46,7 @@ MUTATIONS = [
         "                if false && self.failure_set_is_subset(actual, expected) {\n                    return true;\n                }")], "a_failure_set_parameter_accepts"),
     lang("unify: an inferred set does not widen to the union", Y, [(
         "                let union = self.join_failure_sets([actual, expected]);\n                let joined = self.failure_set_type(union);\n                self.inference_bindings.insert(variable, joined);\n                true",
-        "                let _ = variable;\n                false")], "join"),
+        "                let _ = variable;\n                false")], "failure_set_values_in_one_list"),
     lang("covariance: no argument is covariant", F, [(
         "        self.parameter_is_covariant_within(owner, index, 0)\n",
         "        false && self.parameter_is_covariant_within(owner, index, 0)\n")], "join"),
@@ -65,7 +65,7 @@ MUTATIONS = [
     # Projection.
     lang("projection: a lone parameter row stays a set value", Y, [(
         "        ) && self.generic_kinds.get(parameter) == Some(&GenericKind::FailureSet)\n        {",
-        "        ) && false\n        {")], "projects_into_a_type_argument"),
+        "        ) && false\n        {")], ""),
     lang("instantiation: a failure set takes any type", Y, [(
         "                        return matches!(\n                            self.types[actual.raw() as usize],\n                            CanonicalType::InferenceVariable(_) | CanonicalType::Poison\n                        );",
         "                        substitution.values.insert(parameter, actual);\n                        return true;")], "takes_only_a_failure_set"),
@@ -74,7 +74,7 @@ MUTATIONS = [
         "        if self.generic_kinds.get(&parameter) != Some(&GenericKind::FailureSet) || true {\n            return type_id;\n        }\n        let row")], "needs_a_catch_all"),
     lang("patterns: a failure type selects variants not in the row", Y, [(
         "            .filter(|variant| self.failure_row_may_contain(failures, *variant))\n            .collect::<Vec<_>>();\n        if variants.is_empty() {",
-        "            .collect::<Vec<_>>();\n        if variants.is_empty() {")], "a_failure_type_pattern_may_name"),
+        "            .collect::<Vec<_>>();\n        if variants.is_empty() {")], "binds_only_the_variants"),
     # Variance and stale widening (review fixes).
     lang("variance: an invariant argument fits a wider one", Y, [(
         "                            && !self.type_parameter_is_covariant(left_symbol, index)\n                            && !self.unify(right, left)",

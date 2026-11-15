@@ -10888,6 +10888,15 @@ fn a_failure_set_argument_used_as_a_function_input_does_not_join() {
         check_codes(&source("struct Handler<E> { run: Option<fn(E) -> Int> }", "Some")),
         ["T4203"]
     );
+    // An argument of another data type whose parameter is not covariant
+    // counts as an input too.
+    assert_eq!(
+        check_codes(&source(
+            "struct Cell<E> { run: fn(E) -> Int }\nstruct Handler<E> { cell: Cell<E> }",
+            "Cell"
+        )),
+        ["T4203"]
+    );
 }
 
 #[test]
@@ -10983,4 +10992,64 @@ pub fn main() -> Int {
   }
 }
 "#), ["T4203"]);
+}
+
+#[test]
+fn a_failure_type_pattern_binds_only_the_variants_the_row_can_hold() {
+    // `load` never fails with `FileProblem.Denied`, so a `FileProblem`
+    // pattern binds `FileProblem.Missing | FileProblem.TooLong`, which fits
+    // a function that takes exactly those two.
+    let program = format!("{FAILURE_KINDS}{}", r#"fn file_only(error: FileProblem.Missing | FileProblem.TooLong) -> Text {
+  case error {
+    FileProblem.Missing(path) -> "missing ${path}"
+    FileProblem.TooLong(path, _) -> "long ${path}"
+  }
+}
+fn label(choice: Int) -> Text {
+  case load(choice) {
+    Success(text) -> text
+    Failure(error: FileProblem) -> file_only(error)
+    Failure(_) -> "parse"
+  }
+}
+pub fn main() -> Text { "${label(0)} ${label(1)} ${label(2)}" }
+"#);
+    assert_eq!(
+        run_both("failure-type-pattern-row", &program),
+        "\"outcome\":\"success\",\"value\":\"missing a long b parse\""
+    );
+}
+
+#[test]
+fn two_failure_set_values_in_one_list_join_as_the_union() {
+    let program = r#"enum A { XA }
+enum B { XB }
+enum C { XC }
+fn ab() -> A | B {
+  let v: A | B = A.XA
+  v
+}
+fn bc() -> B | C {
+  let v: B | C = C.XC
+  v
+}
+fn name(value: A | B | C) -> Text {
+  case value {
+    A.XA -> "a"
+    B.XB -> "b"
+    C.XC -> "c"
+  }
+}
+pub fn main() -> Text {
+  let values = [ab(), bc()]
+  case values {
+    [first, second] -> "${name(first)} ${name(second)}"
+    _ -> "?"
+  }
+}
+"#;
+    assert_eq!(
+        run_both("failure-set-value-join", program),
+        "\"outcome\":\"success\",\"value\":\"a c\""
+    );
 }
