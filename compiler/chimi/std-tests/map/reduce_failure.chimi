@@ -1,0 +1,19 @@
+// A failing step stops Map.reduce at the first entry it rejects in ascending
+// key order, with the state reached so far in its payload: "c" and "d" would
+// both fail, and "c" escapes after "a" and "b" were added.
+import std/map as Map
+
+enum Rejected {
+  Key(name: Text, total: Int)
+}
+
+fn add_before_c(total: Int, key: Text, value: Int) -> Int {
+  case key < "c" {
+    True -> total + value
+    False -> Failure(Rejected.Key(key, total))
+  }
+}
+
+pub fn main() -> Int {
+  Map.reduce(Map.from([("d", 1000), ("b", 20), ("c", 300), ("a", 1)]), 0, add_before_c)
+}

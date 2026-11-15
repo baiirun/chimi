@@ -1,0 +1,19 @@
+// A failing predicate stops Map.filter at the first key it rejects in
+// ascending key order: "m" and "z" would both fail, and "m" escapes.
+import std/map as Map
+import std/map.{Map}
+
+enum Rejected {
+  Key(name: Text)
+}
+
+fn keep_before_m(key: Text, _value: Int) -> Bool {
+  case key < "m" {
+    True -> True
+    False -> Failure(Rejected.Key(key))
+  }
+}
+
+pub fn main() -> Map<Text, Int> {
+  Map.filter(Map.from([("z", 1), ("m", 2), ("a", 3)]), keep_before_m)
+}

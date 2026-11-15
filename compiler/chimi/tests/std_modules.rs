@@ -346,7 +346,33 @@ fn map_and_set_state_their_key_requirements_at_the_call() {
             None,
         ),
         ("Map.from([(fn() { 1 }, 2)])", equatable("Map.from", "K")),
+        ("Map.values(Map.put(Map.empty(), { a: 1 }, 2))", ordered("Map.values", "K")),
+        ("Map.entries(Map.put(Map.empty(), { a: 1 }, 2))", ordered("Map.entries", "K")),
+        (
+            "Map.map_values(Map.put(Map.empty(), { a: 1 }, 2), fn(value) { value + 1 })",
+            ordered("Map.map_values", "K"),
+        ),
+        (
+            "Map.filter(Map.put(Map.empty(), { a: 1 }, 2), fn(_key, value) { value > 1 })",
+            ordered("Map.filter", "K"),
+        ),
+        (
+            "Map.each(Map.put(Map.empty(), { a: 1 }, 2), fn(_key, _value) { Void })",
+            ordered("Map.each", "K"),
+        ),
         ("Set.to_list(Set.add(Set.empty(), { a: 1 }))", ordered("Set.to_list", "T")),
+        (
+            "Set.filter(Set.add(Set.empty(), { a: 1 }), fn(_item) { True })",
+            ordered("Set.filter", "T"),
+        ),
+        (
+            "Set.reduce(Set.add(Set.empty(), { a: 1 }), 0, fn(total, _item) { total + 1 })",
+            ordered("Set.reduce", "T"),
+        ),
+        (
+            "Set.each(Set.add(Set.empty(), { a: 1 }), fn(_item) { Void })",
+            ordered("Set.each", "T"),
+        ),
         ("Set.contains(Set.from([{ a: 1 }]), { a: 1 })", None),
         ("Set.from([fn() { 1 }])", equatable("Set.from", "T")),
     ];
