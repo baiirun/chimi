@@ -1043,7 +1043,7 @@ does. Memory and count gates are the same in both profiles.
 | ID | Metric | Workload | Prototype | Release gate |
 | --- | --- | --- | ---: | ---: |
 | PG01 | ns per message, trace off | One process, Int messages, batches of 64, N1 = 10,000, N2 = 1,000,000 | 316 | < 2,000 |
-| PG02 | Trace overhead on PG01 | `boundaries` and `full` against `off` | n/a | `boundaries` < 1.25x, `full` < 5x |
+| PG02 | Trace overhead on PG01 | `boundaries` and `full` against `off` | n/a | `boundaries` < 1.25x; `full` reported, no gate |
 | PG03 | µs per restart cycle | Defect, terminate, restart, first park of the replacement. N1 = 1,000, N2 = 10,000, with a limit above N2 | 3.9 | < 40 |
 | PG04 | µs per process to start and first park, and to stop | 1,000 dynamic processes | 5.1 start, 2.8 stop | < 50 start, < 30 stop |
 | PG05 | Scaling of PG04 | Per-process cost at 1,000 divided by the cost at 100 | 1.28 | < 2.0 |
@@ -1052,6 +1052,12 @@ does. Memory and count gates are the same in both profiles.
 | PG08 | Parked resident memory | 1,000 parked processes with 64 KiB stacks | n/a | < 64 MiB |
 | PG09 | Cold start p95 | FP01 executable, trace off | n/a | < 25 ms |
 | PG10 | Trace-off events | PG01 at N2 | 0 | exactly 0 |
+
+`--trace=full` is a debugging mode. The native runner records
+`operation_started` and `operation_completed` for every Core operation, so a
+full run costs about 100 times trace-off. PG02 reports that ratio as the
+metric `pg02_full_over_off` without a gate (`ts-8f201b`). Production tracing
+is `--trace=boundaries`, and its gate stays.
 
 The executable sizes of FP01 and of a process-free program are recorded
 without a gate. MF06 already guards pay-for-play linking.

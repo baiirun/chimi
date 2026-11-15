@@ -13,6 +13,7 @@
 const char *CHIMI_COMPUTATION = "heap-test";
 const uint32_t CHIMI_REQUIRES_SCHEDULER = 0;
 const char *CHIMI_STRINGS[] = {""};
+const uint32_t CHIMI_STRING_LENGTHS[] = {0};
 const uint32_t CHIMI_IDS[] = {0};
 const ChimiOrigin CHIMI_ORIGINS[] = {{0}};
 const ChimiNode CHIMI_NODES[] = {{0}};
@@ -347,7 +348,7 @@ static void test_a_fragment_copies_into_a_heap_without_being_consumed(void) {
     fragment_copy_into_current(result, copied);
     ChimiControl *seen = copied[0];
     CHECK(owner_of(seen) == caller, "the copy is not the caller's");
-    CHECK(seen->kind == CONTROL_SUCCESS && strcmp(item(seen->value, 0)->as.text, "result") == 0,
+    CHECK(seen->kind == CONTROL_SUCCESS && strcmp(item(seen->value, 0)->as.text.bytes, "result") == 0,
           "call %d read a damaged result", call);
     CHECK(item(seen->value, 0) == item(seen->value, 1), "the copy lost sharing");
     state = call % 2 ? seen->value : int_value(call);
@@ -426,7 +427,7 @@ static uint64_t digest(const ChimiValue *value, uint32_t depth) {
   CHECK(depth < 64, "digest too deep");
   switch (value->kind) {
     case VALUE_INTEGER: return (uint64_t)value->as.integer;
-    case VALUE_TEXT: return 1000 * (uint64_t)strlen(value->as.text);
+    case VALUE_TEXT: return 1000 * (uint64_t)value->as.text.length;
     case VALUE_LIST: {
       uint64_t sum = 1, length = list_length(value);
       /* Large lists repeat one value; sample their ends to stay linear. */

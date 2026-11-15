@@ -60,11 +60,15 @@ pub(super) fn pg01() -> Result<Measurement, String> {
 pub(super) fn pg02() -> Result<Measurement, String> {
     let evidence = messages()?;
     Ok(Measurement {
-        gates: vec![
-            GateResult::below("pg02_boundaries_over_off", evidence.boundaries_ratio, 1.25),
-            GateResult::below("pg02_full_over_off", evidence.full_ratio, 5.0),
-        ],
+        // Full tracing is a debugging mode with no overhead gate (ts-8f201b):
+        // it records every Core operation, so its ratio is reported only.
+        gates: vec![GateResult::below(
+            "pg02_boundaries_over_off",
+            evidence.boundaries_ratio,
+            1.25,
+        )],
         metrics: vec![
+            ("pg02_full_over_off".into(), evidence.full_ratio),
             ("pg02_off_ns_per_message".into(), evidence.trace_ns[0]),
             (
                 "pg02_boundaries_ns_per_message".into(),

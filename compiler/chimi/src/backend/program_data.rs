@@ -486,6 +486,12 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
     );
     render_array(
         &mut output,
+        "const uint32_t CHIMI_STRING_LENGTHS[]",
+        &data.strings,
+        |value| value.len().to_string(),
+    );
+    render_array(
+        &mut output,
         "const uint32_t CHIMI_IDS[]",
         &data.ids,
         u32::to_string,

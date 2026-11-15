@@ -1,4 +1,4 @@
-/* Chimi native runtime ABI version 18. */
+/* Chimi native runtime ABI version 20. */
 /* glibc hides open_memstream, strdup, and clock_gettime under -std=c11; macOS
    exposes them by default, and a POSIX feature macro there would hide others. */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
@@ -122,7 +122,9 @@ struct ChimiValue {
   union {
     int64_t integer;
     double floating; /* always finite */
-    const char *text;
+    /* UTF-8 bytes with an explicit length, since Text may hold U+0000. The bytes are
+       also NUL-terminated, so Text without U+0000 can reach a C API directly. */
+    struct { const char *bytes; size_t length; } text;
     bool boolean;
     /* A List is the window [start, start + length) of a shared vector, so
        slicing is O(1) amortized; see list_slice for when a window copies. */
@@ -977,7 +979,7 @@ static void mark_children(void *pointer) {
     case ALLOCATION_VALUE: {
       ChimiValue *value = pointer;
       switch (value->kind) {
-        case VALUE_TEXT: mark_push((void *)value->as.text, ALLOCATION_BYTES); break;
+        case VALUE_TEXT: mark_push((void *)value->as.text.bytes, ALLOCATION_BYTES); break;
         case VALUE_JSON_NUMBER: mark_push((void *)value->as.json_number, ALLOCATION_BYTES); break;
         case VALUE_LIST:
           mark_push(value->as.list.vector.root, ALLOCATION_LIST_NODE);
@@ -1319,7 +1321,7 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
       ChimiValue *value = duplicate;
       switch (value->kind) {
         case VALUE_TEXT:
-          value->as.text = copy_forward(copy, (void *)value->as.text, ALLOCATION_BYTES); break;
+          value->as.text.bytes = copy_forward(copy, (void *)value->as.text.bytes, ALLOCATION_BYTES); break;
         case VALUE_JSON_NUMBER:
           value->as.json_number = copy_forward(copy, (void *)value->as.json_number, ALLOCATION_BYTES);
           break;
@@ -1527,9 +1529,10 @@ static const char *control_name(const ChimiControl *control) {
   return "defect";
 }
 
-static void json_string(FILE *output, const char *value) {
+static void json_bytes(FILE *output, const char *value, size_t length) {
   fputc('"', output);
-  for (const unsigned char *cursor = (const unsigned char *)value; *cursor; ++cursor) {
+  const unsigned char *end = (const unsigned char *)value + length;
+  for (const unsigned char *cursor = (const unsigned char *)value; cursor < end; ++cursor) {
     switch (*cursor) {
       case '"': fputs("\\\"", output); break;
       case '\\': fputs("\\\\", output); break;
@@ -1542,6 +1545,7 @@ static void json_string(FILE *output, const char *value) {
   }
   fputc('"', output);
 }
+static void json_string(FILE *output, const char *value) { json_bytes(output, value, strlen(value)); }
 
 static void json_value(FILE *output, const ChimiValue *value);
 static void float_text(double value, char *output);
@@ -1610,7 +1614,25 @@ static char *copy_text(const char *raw) {
   memcpy(copy, raw, length);
   return copy;
 }
-static ChimiValue *text_value(const char *raw) { ChimiValue *v = new_value(VALUE_TEXT); v->as.text = copy_text(raw); return v; }
+static ChimiValue *text_from_bytes(const char *bytes, size_t length) {
+  char *raw = allocate(length + 1, 1);
+  memcpy(raw, bytes, length); raw[length] = '\0';
+  ChimiValue *v = new_value(VALUE_TEXT); v->as.text.bytes = raw; v->as.text.length = length; return v;
+}
+/* Text from a C string, which cannot hold U+0000: a path, a message, a number. */
+static ChimiValue *text_value(const char *raw) { return text_from_bytes(raw, strlen(raw)); }
+/* A Text literal or constant from the string table, which may hold U+0000. */
+static ChimiValue *string_text(uint32_t id) { return text_from_bytes(CHIMI_STRINGS[id], CHIMI_STRING_LENGTHS[id]); }
+static bool text_equals(const ChimiValue *text, const char *bytes, size_t length) {
+  return text->as.text.length == length && memcmp(text->as.text.bytes, bytes, length) == 0;
+}
+static bool text_holds_nul(const ChimiValue *text) {
+  return memchr(text->as.text.bytes, '\0', text->as.text.length) != NULL;
+}
+/* The first `needle` in `text`, or NULL. `needle` is not empty. */
+static const char *text_find(const char *text, size_t length, const char *needle, size_t width) {
+  return memmem(text, length, needle, width);
+}
 static ChimiValue *boolean_value(bool raw) { ChimiValue *v = new_value(VALUE_BOOLEAN); v->as.boolean = raw; return v; }
 static ChimiValue *float_value(double raw) { ChimiValue *v = new_value(VALUE_FLOAT); v->as.floating = raw; return v; }
 
@@ -2542,7 +2564,7 @@ static void json_value(FILE *output, const ChimiValue *root) {
       case JSON_STEP_KEY: {
         const MapNode *entry = step.pointer;
         if (entry->key->kind == VALUE_TEXT) {
-          json_string(output, entry->key->as.text); fputc(':', output); continue;
+          json_bytes(output, entry->key->as.text.bytes, entry->key->as.text.length); fputc(':', output); continue;
         }
         JsonKey *key = malloc(sizeof(*key));
         if (!key) exhausted_memory();
@@ -2558,7 +2580,7 @@ static void json_value(FILE *output, const ChimiValue *root) {
         JsonKey *key = (JsonKey *)step.pointer;
         fclose(key->buffer);
         output = key->outer;
-        json_string(output, key->name); fputc(':', output);
+        json_bytes(output, key->name, key->name_length); fputc(':', output);
         free(key->name); free(key);
         continue;
       }
@@ -2570,7 +2592,7 @@ static void json_value(FILE *output, const ChimiValue *root) {
       case VALUE_VOID: fputs("{\"type\":\"Void\"}", output); break;
       case VALUE_INTEGER: fprintf(output, "%" PRId64, value->as.integer); break;
       case VALUE_FLOAT: { char text[40]; float_text(value->as.floating, text); fputs(text, output); break; }
-      case VALUE_TEXT: json_string(output, value->as.text); break;
+      case VALUE_TEXT: json_bytes(output, value->as.text.bytes, value->as.text.length); break;
       case VALUE_BOOLEAN: fputs(value->as.boolean ? "true" : "false", output); break;
       case VALUE_LIST:
         fputc('[', output);
@@ -2663,7 +2685,12 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
       /* Finite, so total; -0.0 and 0.0 are equal. */
       case VALUE_FLOAT: order = (left->as.floating > right->as.floating) - (left->as.floating < right->as.floating); break;
       case VALUE_BOOLEAN: order = order_of(left->as.boolean, right->as.boolean); break;
-      case VALUE_TEXT: { int bytes = strcmp(left->as.text, right->as.text); order = (bytes > 0) - (bytes < 0); break; }
+      case VALUE_TEXT: {
+        size_t left_length = left->as.text.length, right_length = right->as.text.length;
+        int bytes = memcmp(left->as.text.bytes, right->as.text.bytes,
+                           left_length < right_length ? left_length : right_length);
+        order = bytes ? (bytes > 0) - (bytes < 0) : order_of(left_length, right_length); break;
+      }
       case VALUE_JSON_NUMBER: order = json_number_compare(left->as.json_number, right->as.json_number); break;
       case VALUE_LIST: {
         uint32_t left_length = list_length(left), right_length = list_length(right);
@@ -2770,9 +2797,10 @@ static void buffer_bytes(TextBuffer *buffer, const char *value, size_t length) {
   buffer->length += length; buffer->data[buffer->length] = '\0';
 }
 static void buffer_char(TextBuffer *buffer, char value) { buffer_bytes(buffer, &value, 1); }
-static void buffer_json_string(TextBuffer *buffer, const char *value) {
+static void buffer_json_string(TextBuffer *buffer, const ChimiValue *text) {
   buffer_char(buffer, '"');
-  for (const unsigned char *cursor = (const unsigned char *)value; *cursor; ++cursor) {
+  const unsigned char *cursor = (const unsigned char *)text->as.text.bytes;
+  for (const unsigned char *end = cursor + text->as.text.length; cursor < end; ++cursor) {
     switch (*cursor) {
       case '"': buffer_bytes(buffer, "\\\"", 2); break;
       case '\\': buffer_bytes(buffer, "\\\\", 2); break;
@@ -2811,7 +2839,7 @@ static bool encode_json_step(TextBuffer *buffer, JsonSteps *steps, const ChimiVa
       buffer_bytes(buffer, field->as.json_number, strlen(field->as.json_number)); return true;
     case CHIMI_CONSTRUCTOR_JSON_TEXT:
       if (!field || field->kind != VALUE_TEXT) return false;
-      buffer_json_string(buffer, field->as.text); return true;
+      buffer_json_string(buffer, field); return true;
     case CHIMI_CONSTRUCTOR_JSON_ARRAY:
       if (!field || field->kind != VALUE_LIST) return false;
       buffer_char(buffer, '[');
@@ -2852,7 +2880,7 @@ static bool encode_json_value(TextBuffer *buffer, const ChimiValue *root) {
       case JSON_STEP_KEY: {
         const MapNode *entry = step.pointer;
         if (entry->key->kind != VALUE_TEXT) { encoded = false; break; }
-        buffer_json_string(buffer, entry->key->as.text); buffer_char(buffer, ':');
+        buffer_json_string(buffer, entry->key); buffer_char(buffer, ':');
         break;
       }
       case JSON_STEP_FREE: free((void *)step.pointer); break;
@@ -2868,8 +2896,12 @@ static bool encode_json_value(TextBuffer *buffer, const ChimiValue *root) {
 
 typedef struct { const char *source; size_t length; size_t offset; const char *message; } JsonParser;
 static void json_skip_space(JsonParser *parser) {
-  while (parser->offset < parser->length &&
-         strchr(" \t\r\n", parser->source[parser->offset])) ++parser->offset;
+  /* Not strchr: it also finds the terminator, so it would skip a U+0000 byte. */
+  while (parser->offset < parser->length) {
+    char next = parser->source[parser->offset];
+    if (next != ' ' && next != '\t' && next != '\r' && next != '\n') break;
+    ++parser->offset;
+  }
 }
 static bool json_hex(char value, uint32_t *digit) {
   if (value >= '0' && value <= '9') *digit = (uint32_t)(value - '0');
@@ -2911,14 +2943,15 @@ static void buffer_utf8(TextBuffer *buffer, uint32_t value) {
     buffer_char(buffer, (char)(0x80 | ((value >> 6) & 0x3f))); buffer_char(buffer, (char)(0x80 | (value & 0x3f)));
   }
 }
-static char *json_parse_string(JsonParser *parser) {
+/* A JSON string as Text; `\u0000` decodes to U+0000. NULL on failure. */
+static ChimiValue *json_parse_string(JsonParser *parser) {
   if (parser->offset >= parser->length || parser->source[parser->offset++] != '"') return NULL;
   TextBuffer buffer = {0};
   while (parser->offset < parser->length) {
     unsigned char value = (unsigned char)parser->source[parser->offset];
     if (value < 0x20) return json_fail(parser, parser->offset, "unescaped control character in JSON string");
     ++parser->offset;
-    if (value == '"') return buffer.data ? buffer.data : allocate(1, 1);
+    if (value == '"') return text_from_bytes(buffer.data ? buffer.data : "", buffer.length);
     if (value != '\\') { buffer_char(&buffer, (char)value); continue; }
     if (parser->offset >= parser->length) return json_fail(parser, parser->offset, "unterminated JSON escape");
     char escaped = parser->source[parser->offset++];
@@ -2981,13 +3014,12 @@ static ChimiValue *json_parse_object(JsonParser *parser, uint32_t depth) {
     if (parser->offset >= parser->length || parser->source[parser->offset] != '"')
       return json_fail(parser, parser->offset, "expected a string key in JSON object");
     size_t key_offset = parser->offset;
-    char *key_text = json_parse_string(parser); if (!key_text) return NULL;
-    ChimiValue *key = text_value(key_text);
+    ChimiValue *key = json_parse_string(parser); if (!key) return NULL;
     if (map_get_node(map, key)) {
       TextBuffer message = {0};
       static const char prefix[] = "duplicate JSON object key `";
       buffer_bytes(&message, prefix, sizeof(prefix) - 1);
-      buffer_bytes(&message, key_text, strlen(key_text)); buffer_char(&message, '`');
+      buffer_bytes(&message, key->as.text.bytes, key->as.text.length); buffer_char(&message, '`');
       return json_fail(parser, key_offset, message.data);
     }
     json_skip_space(parser);
@@ -3044,8 +3076,8 @@ static ChimiValue *json_parse_value(JsonParser *parser, uint32_t depth) {
     bool raw = value == 't'; parser->offset += raw ? 4 : 5; ChimiValue *boolean = boolean_value(raw);
     ChimiValue *fields[] = {boolean}; return standard_value(CHIMI_CONSTRUCTOR_JSON_BOOLEAN, fields, 1);
   }
-  if (value == '"') { char *text = json_parse_string(parser); if (!text) return NULL;
-    ChimiValue *raw = text_value(text); ChimiValue *fields[] = {raw}; return standard_value(CHIMI_CONSTRUCTOR_JSON_TEXT, fields, 1); }
+  if (value == '"') { ChimiValue *raw = json_parse_string(parser); if (!raw) return NULL;
+    ChimiValue *fields[] = {raw}; return standard_value(CHIMI_CONSTRUCTOR_JSON_TEXT, fields, 1); }
   if (value == '[') return json_parse_array(parser, depth);
   if (value == '{') return json_parse_object(parser, depth);
   if (value == '-' || (value >= '0' && value <= '9')) return json_parse_number(parser);
@@ -3086,11 +3118,6 @@ static void clamp_range(int64_t start, int64_t end, size_t length, size_t *from,
   size_t low = start <= 0 ? 0 : (uint64_t)start > length ? length : (size_t)start;
   size_t high = end <= 0 ? 0 : (uint64_t)end > length ? length : (size_t)end;
   *from = low; *to = high < low ? low : high;
-}
-static ChimiValue *text_from_bytes(const char *bytes, size_t length) {
-  char *raw = allocate(length + 1, 1);
-  memcpy(raw, bytes, length);
-  ChimiValue *v = new_value(VALUE_TEXT); v->as.text = raw; return v;
 }
 
 /* Text.lowercase and Text.uppercase: the Unicode default case conversion, as the
@@ -3848,8 +3875,8 @@ static uint8_t sigma_context(uint32_t code) {
 }
 /* Final_Sigma as Rust tests it: skip Case_Ignorable characters, then ask whether the
    next character is Cased. `before` scans backwards from `offset`, otherwise forwards. */
-static bool cased_beyond_ignorables(const char *text, size_t offset, bool before) {
-  size_t length = strlen(text), width;
+static bool cased_beyond_ignorables(const char *text, size_t length, size_t offset, bool before) {
+  size_t width;
   while (before ? offset > 0 : offset < length) {
     size_t start = offset;
     if (before) { start = offset - 1; while (start > 0 && !utf8_boundary(text, length, start)) --start; }
@@ -3859,14 +3886,16 @@ static bool cased_beyond_ignorables(const char *text, size_t offset, bool before
   }
   return false;
 }
-static ChimiValue *text_case_map(const char *text, const CaseMapping *table, size_t count,
+static ChimiValue *text_case_map(const ChimiValue *value, const CaseMapping *table, size_t count,
                                  bool final_sigma) {
+  const char *text = value->as.text.bytes;
+  size_t length = value->as.text.length;
   TextBuffer buffer = {0};
-  for (size_t offset = 0, width; text[offset]; offset += width) {
+  for (size_t offset = 0, width; offset < length; offset += width) {
     uint32_t code = utf8_decode((const unsigned char *)text + offset, &width);
     if (final_sigma && code == CAPITAL_SIGMA) {
-      bool is_final = cased_beyond_ignorables(text, offset, true) &&
-                      !cased_beyond_ignorables(text, offset + width, false);
+      bool is_final = cased_beyond_ignorables(text, length, offset, true) &&
+                      !cased_beyond_ignorables(text, length, offset + width, false);
       buffer_utf8(&buffer, is_final ? SMALL_FINAL_SIGMA : SMALL_SIGMA);
       continue;
     }
@@ -4505,7 +4534,7 @@ static ChimiControl *invoke_core_operation(uint32_t intrinsic, ChimiValue **argu
   switch (intrinsic) {
     case CHIMI_INTRINSIC_DEBUG_CRASH:
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return defect(copy_text(arguments[0]->as.text), call_node);
+      return defect(copy_text(arguments[0]->as.text.bytes), call_node);
     case CHIMI_INTRINSIC_OPTION_UNWRAP_OR_FAIL:
       if (argument_count != 2 || arguments[0]->kind != VALUE_CONSTRUCTED) break;
       if (arguments[0]->as.constructed.length == 1) return success(arguments[0]->as.constructed.fields[0].value);
@@ -4516,16 +4545,16 @@ static ChimiControl *invoke_core_operation(uint32_t intrinsic, ChimiValue **argu
       for (uint32_t i = 0; i < list_length(arguments[0]); ++i) {
         ChimiValue *part = list_get(arguments[0], i);
         if (part->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-        buffer_bytes(&buffer, part->as.text, strlen(part->as.text));
+        buffer_bytes(&buffer, part->as.text.bytes, part->as.text.length);
       }
       return success(buffer.data ? text_from_bytes(buffer.data, buffer.length) : text_value(""));
     }
     case CHIMI_INTRINSIC_TEXT_BYTE_LENGTH:
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return success(integer_value((int64_t)strlen(arguments[0]->as.text)));
+      return success(integer_value((int64_t)arguments[0]->as.text.length));
     case CHIMI_INTRINSIC_TEXT_BYTE_SLICE: {
       if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_RANGE) break;
-      const char *text = arguments[0]->as.text; size_t length = strlen(text), from, to;
+      const char *text = arguments[0]->as.text.bytes; size_t length = arguments[0]->as.text.length, from, to;
       clamp_range(arguments[1]->as.range.start, arguments[1]->as.range.end, length, &from, &to);
       if (!utf8_boundary(text, length, from))
         return defect(numeric_message("Text.byte_slice: bound %zu falls inside a UTF-8 sequence", from), call_node);
@@ -4535,54 +4564,59 @@ static ChimiControl *invoke_core_operation(uint32_t intrinsic, ChimiValue **argu
     }
     case CHIMI_INTRINSIC_TEXT_CONTAINS:
       if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_TEXT) break;
-      if (!arguments[1]->as.text[0]) return defect("Text.contains: needle must not be empty", call_node);
-      return success(boolean_value(strstr(arguments[0]->as.text, arguments[1]->as.text) != NULL));
+      if (!arguments[1]->as.text.length) return defect("Text.contains: needle must not be empty", call_node);
+      return success(boolean_value(text_find(arguments[0]->as.text.bytes, arguments[0]->as.text.length,
+                                             arguments[1]->as.text.bytes, arguments[1]->as.text.length) != NULL));
     case CHIMI_INTRINSIC_TEXT_STARTS_WITH: {
       if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_TEXT) break;
-      size_t prefix = strlen(arguments[1]->as.text);
-      return success(boolean_value(strncmp(arguments[0]->as.text, arguments[1]->as.text, prefix) == 0));
+      size_t prefix = arguments[1]->as.text.length;
+      return success(boolean_value(prefix <= arguments[0]->as.text.length &&
+                                   memcmp(arguments[0]->as.text.bytes, arguments[1]->as.text.bytes, prefix) == 0));
     }
     case CHIMI_INTRINSIC_TEXT_ENDS_WITH: {
       if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_TEXT) break;
-      size_t length = strlen(arguments[0]->as.text), suffix = strlen(arguments[1]->as.text);
+      size_t length = arguments[0]->as.text.length, suffix = arguments[1]->as.text.length;
       return success(boolean_value(suffix <= length &&
-                                   memcmp(arguments[0]->as.text + length - suffix, arguments[1]->as.text, suffix) == 0));
+                                   memcmp(arguments[0]->as.text.bytes + length - suffix, arguments[1]->as.text.bytes, suffix) == 0));
     }
     case CHIMI_INTRINSIC_TEXT_SPLIT: {
       if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_TEXT) break;
-      const char *text = arguments[0]->as.text, *separator = arguments[1]->as.text;
-      size_t width = strlen(separator);
+      const char *text = arguments[0]->as.text.bytes, *separator = arguments[1]->as.text.bytes;
+      const char *end = text + arguments[0]->as.text.length;
+      size_t width = arguments[1]->as.text.length;
       if (!width) return defect("Text.split: separator must not be empty", call_node);
       ChimiValue *parts = list_value((ListVector){NULL, NULL, 0}, 0, 0);
-      for (const char *found; (found = strstr(text, separator)); text = found + width)
+      for (const char *found; (found = text_find(text, (size_t)(end - text), separator, width)); text = found + width)
         parts = list_push(parts, text_from_bytes(text, (size_t)(found - text)));
-      return success(list_push(parts, text_value(text)));
+      return success(list_push(parts, text_from_bytes(text, (size_t)(end - text))));
     }
     case CHIMI_INTRINSIC_TEXT_REPLACE: {
       if (argument_count != 3 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_TEXT ||
           arguments[2]->kind != VALUE_TEXT) break;
-      const char *text = arguments[0]->as.text, *old = arguments[1]->as.text, *new_text = arguments[2]->as.text;
-      size_t width = strlen(old), replacement = strlen(new_text);
+      const char *text = arguments[0]->as.text.bytes, *old = arguments[1]->as.text.bytes;
+      const char *new_text = arguments[2]->as.text.bytes, *end = text + arguments[0]->as.text.length;
+      size_t width = arguments[1]->as.text.length, replacement = arguments[2]->as.text.length;
       if (!width) return defect("Text.replace: pattern must not be empty", call_node);
       TextBuffer buffer = {0};
-      for (const char *found; (found = strstr(text, old)); text = found + width) {
+      for (const char *found; (found = text_find(text, (size_t)(end - text), old, width)); text = found + width) {
         buffer_bytes(&buffer, text, (size_t)(found - text));
         buffer_bytes(&buffer, new_text, replacement);
       }
-      buffer_bytes(&buffer, text, strlen(text));
-      return success(text_from_bytes(buffer.data, buffer.length));
+      buffer_bytes(&buffer, text, (size_t)(end - text));
+      return success(text_from_bytes(buffer.data ? buffer.data : "", buffer.length));
     }
     case CHIMI_INTRINSIC_TEXT_TRIM_START: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      const unsigned char *text = (const unsigned char *)arguments[0]->as.text;
+      const unsigned char *text = (const unsigned char *)arguments[0]->as.text.bytes;
+      const unsigned char *end = text + arguments[0]->as.text.length;
       size_t width;
-      while (*text && is_white_space(utf8_decode(text, &width))) text += width;
-      return success(text_value((const char *)text));
+      while (text < end && is_white_space(utf8_decode(text, &width))) text += width;
+      return success(text_from_bytes((const char *)text, (size_t)(end - text)));
     }
     case CHIMI_INTRINSIC_TEXT_TRIM_END: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      const char *text = arguments[0]->as.text;
-      size_t end = strlen(text), width;
+      const char *text = arguments[0]->as.text.bytes;
+      size_t end = arguments[0]->as.text.length, width;
       while (end > 0) {
         size_t start = end - 1;
         while (start > 0 && !utf8_boundary(text, end, start)) --start;
@@ -4593,16 +4627,16 @@ static ChimiControl *invoke_core_operation(uint32_t intrinsic, ChimiValue **argu
     }
     case CHIMI_INTRINSIC_TEXT_LOWERCASE:
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return success(text_case_map(arguments[0]->as.text, lowercase_mappings,
+      return success(text_case_map(arguments[0], lowercase_mappings,
                                    COUNT_OF(lowercase_mappings), true));
     case CHIMI_INTRINSIC_TEXT_UPPERCASE:
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return success(text_case_map(arguments[0]->as.text, uppercase_mappings,
+      return success(text_case_map(arguments[0], uppercase_mappings,
                                    COUNT_OF(uppercase_mappings), false));
     case CHIMI_INTRINSIC_TEXT_GRAPHEMES: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      const char *text = arguments[0]->as.text;
-      size_t length = strlen(text);
+      const char *text = arguments[0]->as.text.bytes;
+      size_t length = arguments[0]->as.text.length;
       ChimiValue *graphemes = list_value((ListVector){NULL, NULL, 0}, 0, 0);
       for (size_t start = 0, end; start < length; start = end) {
         end = grapheme_end(text, length, start);
@@ -4740,7 +4774,12 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
       arguments[2]->kind != VALUE_CALLABLE)
     return defect("verified host function has invalid runtime arguments", call_node);
   if (runtime->cancel) return cancelled();
-  const char *path = arguments[0]->as.text;
+  const char *path = arguments[0]->as.text.bytes;
+  /* A C path stops at U+0000, so such a path names no file; the message is the one
+     the interpreter's file system reports. */
+  if (text_holds_nul(arguments[0]))
+    return failure(standard_value(CHIMI_CONSTRUCTOR_FILE_OPEN, (ChimiValue *[]){
+      arguments[0], text_value("file name contained an unexpected NUL byte")}, 2));
   bool owns_file = strcmp(path, "-") != 0;
   FILE *input = owns_file ? fopen(path, "rb") : stdin;
   if (!input) return host_file_message(CHIMI_CONSTRUCTOR_FILE_OPEN, path, strerror(errno));
@@ -4816,7 +4855,9 @@ static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
     return defect("verified host function has invalid runtime arguments", call_node);
   if (runtime->cancel) return cancelled();
   FILE *output = function == HOST_WRITE_LINE ? stdout : stderr;
-  if (fputs(arguments[0]->as.text, output) < 0 || fputc('\n', output) == EOF || fflush(output) != 0) {
+  size_t length = arguments[0]->as.text.length;
+  if (fwrite(arguments[0]->as.text.bytes, 1, length, output) != length || fputc('\n', output) == EOF ||
+      fflush(output) != 0) {
     const char *stream = function == HOST_WRITE_LINE ? "stdout" : "stderr";
     ChimiValue *fields[] = {text_value(stream), text_value(strerror(errno))};
     return failure(standard_value(CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED, fields, 2));
@@ -5112,7 +5153,8 @@ static ChimiControl *invoke_duration(uint32_t intrinsic, ChimiValue **arguments,
   }
   if (intrinsic == CHIMI_INTRINSIC_DURATION_PARSE) {
     if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-    int64_t value = 0; uint32_t error = duration_parse(arguments[0]->as.text, &value);
+    int64_t value = 0; uint32_t error = text_holds_nul(arguments[0]) ? CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID
+                                                                     : duration_parse(arguments[0]->as.text.bytes, &value);
     return error ? failure(standard_value(error, NULL, 0)) : success(duration_value(value));
   }
   if (argument_count < 1 || arguments[0]->kind != VALUE_DURATION) return intrinsic_shape_defect(call_node);
@@ -5177,9 +5219,10 @@ typedef struct { TextBuffer *buffer; bool indented; uint32_t depth; } DebugRende
 
 static void debug_text(TextBuffer *buffer, const char *value) { buffer_bytes(buffer, value, strlen(value)); }
 
-static void debug_quote(TextBuffer *buffer, const char *text) {
+static void debug_quote(TextBuffer *buffer, const ChimiValue *text) {
   buffer_char(buffer, '"');
-  for (const unsigned char *cursor = (const unsigned char *)text; *cursor; ++cursor) {
+  const unsigned char *cursor = (const unsigned char *)text->as.text.bytes;
+  for (const unsigned char *end = cursor + text->as.text.length; cursor < end; ++cursor) {
     switch (*cursor) {
       case '"': debug_text(buffer, "\\\""); break;
       case '\\': debug_text(buffer, "\\\\"); break;
@@ -5187,7 +5230,7 @@ static void debug_quote(TextBuffer *buffer, const char *text) {
       case '\r': debug_text(buffer, "\\r"); break;
       case '\t': debug_text(buffer, "\\t"); break;
       case '$':
-        if (cursor[1] == '{') debug_text(buffer, "\\$"); else buffer_char(buffer, '$');
+        if (cursor + 1 < end && cursor[1] == '{') debug_text(buffer, "\\$"); else buffer_char(buffer, '$');
         break;
       default:
         if (*cursor < 0x20 || *cursor == 0x7f) {
@@ -5333,7 +5376,7 @@ static void debug_expand(DebugRenderer *renderer, DebugSteps *steps, const Chimi
     case VALUE_FLOAT:
       float_text(value->as.floating == 0.0 ? 0.0 : value->as.floating, scalar);
       debug_text(buffer, scalar); return;
-    case VALUE_TEXT: debug_quote(buffer, value->as.text); return;
+    case VALUE_TEXT: debug_quote(buffer, value); return;
     case VALUE_BOOLEAN: debug_text(buffer, value->as.boolean ? "True" : "False"); return;
     case VALUE_LIST: {
       uint32_t length = value->as.list.length;
@@ -6215,7 +6258,7 @@ static ChimiControl *invoke_json_operation(ChimiRuntime *runtime, uint32_t intri
   switch (intrinsic) {
     case CHIMI_INTRINSIC_JSON_DECODE: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      JsonParser parser = {arguments[0]->as.text, strlen(arguments[0]->as.text), 0, NULL};
+      JsonParser parser = {arguments[0]->as.text.bytes, arguments[0]->as.text.length, 0, NULL};
       ChimiValue *value = json_parse_value(&parser, 0); if (value) json_skip_space(&parser);
       if (value && parser.offset == parser.length) return success(value);
       if (!parser.message) parser.message = "unexpected characters after JSON value";
@@ -6278,7 +6321,9 @@ static ChimiControl *invoke_decimal_operation(ChimiRuntime *runtime, uint32_t in
     }
     case CHIMI_INTRINSIC_DECIMAL_READ:
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return optional_decimal(decimal_parse(arguments[0]->as.text, &output), output);
+      /* decimal_parse reads a C string, so a U+0000 inside is no digit: Invalid. */
+      if (text_holds_nul(arguments[0])) return optional_decimal(false, (Decimal){0});
+      return optional_decimal(decimal_parse(arguments[0]->as.text.bytes, &output), output);
     case CHIMI_INTRINSIC_DECIMAL_TO_TEXT: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_DECIMAL) break;
       char text[DECIMAL_TEXT_BYTES]; decimal_text(decimal_of(arguments[0]), text);
@@ -6367,19 +6412,19 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     case CHIMI_INTRINSIC_TEXT_APPEND: {
       if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT ||
           arguments[1]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-      size_t left = strlen(arguments[0]->as.text), right = strlen(arguments[1]->as.text);
-      char *output = allocate(left + right + 1, 1);
-      memcpy(output, arguments[0]->as.text, left);
-      memcpy(output + left, arguments[1]->as.text, right);
-      return success(text_value(output));
+      TextBuffer buffer = {0};
+      buffer_bytes(&buffer, arguments[0]->as.text.bytes, arguments[0]->as.text.length);
+      buffer_bytes(&buffer, arguments[1]->as.text.bytes, arguments[1]->as.text.length);
+      return success(text_from_bytes(buffer.data ? buffer.data : "", buffer.length));
     }
     case CHIMI_INTRINSIC_TEXT_EQUAL:
       if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT ||
           arguments[1]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-      return success(boolean_value(strcmp(arguments[0]->as.text, arguments[1]->as.text) == 0));
+      return success(boolean_value(text_equals(arguments[0], arguments[1]->as.text.bytes, arguments[1]->as.text.length)));
     case CHIMI_INTRINSIC_INT_PARSE: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-      int64_t value = 0; uint32_t error = parse_int_text(arguments[0]->as.text, &value);
+      int64_t value = 0; uint32_t error = text_holds_nul(arguments[0]) ? CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT
+                                                                       : parse_int_text(arguments[0]->as.text.bytes, &value);
       return error ? failure(standard_value(error, NULL, 0)) : success(integer_value(value));
     }
     case CHIMI_INTRINSIC_INT_TO_TEXT: {
@@ -6470,7 +6515,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     }
     case CHIMI_INTRINSIC_FLOAT_PARSE: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-      double value = 0; uint32_t error = parse_float_text(arguments[0]->as.text, &value);
+      double value = 0; uint32_t error = text_holds_nul(arguments[0]) ? CHIMI_CONSTRUCTOR_FLOAT_PARSE_INVALID
+                                                                      : parse_float_text(arguments[0]->as.text.bytes, &value);
       return error ? failure(standard_value(error, NULL, 0)) : success(float_value(value));
     }
     case CHIMI_INTRINSIC_TASK_START: {
@@ -6716,7 +6762,7 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
       uint64_t bits = (uint64_t)raw->integer; double value; memcpy(&value, &bits, sizeof(value));
       return float_value(value);
     }
-    case CHIMI_CONSTANT_TEXT: return text_value(CHIMI_STRINGS[raw->a]);
+    case CHIMI_CONSTANT_TEXT: return string_text(raw->a);
     case CHIMI_CONSTANT_BOOLEAN: return boolean_value(raw->integer != 0);
     case CHIMI_CONSTANT_JSON_NUMBER: return json_number_value(CHIMI_STRINGS[raw->a]);
     case CHIMI_CONSTANT_LIST: {
@@ -6875,7 +6921,7 @@ NODE_WRAPPER(constant, "constant", {
   if (node->a == CHIMI_LITERAL_INTEGER) value = integer_value(node->integer);
   else if (node->a == CHIMI_LITERAL_FLOAT) {
     double raw; memcpy(&raw, &node->integer, sizeof(raw)); value = float_value(raw);
-  } else if (node->a == CHIMI_LITERAL_TEXT) value = text_value(CHIMI_STRINGS[node->b]);
+  } else if (node->a == CHIMI_LITERAL_TEXT) value = string_text(node->b);
   else if (node->a == CHIMI_LITERAL_VOID) value = void_value();
   else value = boolean_value(node->integer != 0); result = success(value);
 })
@@ -7080,7 +7126,8 @@ typedef struct { MatchKind kind; ChimiValue *value; } MatchValue;
 
 static bool literal_matches(const ChimiPattern *pattern, const ChimiValue *value) {
   if (pattern->a == CHIMI_LITERAL_INTEGER) return value->kind == VALUE_INTEGER && value->as.integer == pattern->integer;
-  if (pattern->a == CHIMI_LITERAL_TEXT) return value->kind == VALUE_TEXT && strcmp(value->as.text, CHIMI_STRINGS[pattern->offset]) == 0;
+  if (pattern->a == CHIMI_LITERAL_TEXT)
+    return value->kind == VALUE_TEXT && text_equals(value, CHIMI_STRINGS[pattern->offset], CHIMI_STRING_LENGTHS[pattern->offset]);
   return value->kind == VALUE_BOOLEAN && value->as.boolean == (pattern->integer != 0);
 }
 /* The binding pass of a match. `view_failed` records a list view that could not be

@@ -47,7 +47,7 @@ MUTATIONS = [
         "      if (arguments[0]->as.constructed.length == 1) return",
         "      if (arguments[0]->as.constructed.length == 0) return")], filter="standard_programs"),
     std("native Debug.crash drops the caller's message", RUNTIME, [(
-        "      return defect(copy_text(arguments[0]->as.text), call_node);",
+        "      return defect(copy_text(arguments[0]->as.text.bytes), call_node);",
         "      return defect(\"Debug.crash\", call_node);")], filter="standard_programs"),
     # Chimi source of the modules.
     std("Text.lines keeps a final empty line", TEXT, [(

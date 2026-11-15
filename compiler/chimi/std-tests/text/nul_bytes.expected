@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"success","value":"[\"[\\\"A\\\\u{0}B\\\", \\\"ας\\\\u{0}σ\\\"]\", \"[\\\"a\\\", \\\"\\\\u{0}\\\", \\\"b\\\"]\", \"3\", \"Value.Text(\\\"a\\\\u{0}b\\\")\", \"unexpected characters after JSON value at 3\", \"expected a JSON value at 3\", \"ParseError.Invalid\", \"1.5\"]"}

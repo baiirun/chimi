@@ -7,6 +7,7 @@
 const char *CHIMI_COMPUTATION = "map-runtime-test";
 const uint32_t CHIMI_REQUIRES_SCHEDULER = 0;
 const char *CHIMI_STRINGS[] = {""};
+const uint32_t CHIMI_STRING_LENGTHS[] = {0};
 const uint32_t CHIMI_IDS[] = {0};
 const ChimiOrigin CHIMI_ORIGINS[] = {{0}};
 const ChimiNode CHIMI_NODES[] = {{0}};

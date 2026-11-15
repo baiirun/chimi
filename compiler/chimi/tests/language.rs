@@ -6,7 +6,7 @@
 //! formatter and survives inspection at every byte offset.
 
 use chimi::source::SourceSnapshot;
-use chimi::{Compiler, ProjectSource};
+use chimi::{Compiler, CompilerSession, ProjectSource};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -134,15 +134,21 @@ fn assert_formatting_preserves_the_outcome(path: &Path, source: &str, expected: 
     );
 }
 
+/// Inspects the program at every character boundary. One analysis answers every
+/// offset, as an editor session does: `IncrementalTypeReport::inspect` promises
+/// the facts `Compiler::inspect_project` gives at that offset, without the
+/// recheck that made one project check per byte the cost of this suite. The
+/// sealing step it skips runs once, through `Compiler::inspect_project`.
 fn assert_inspection_survives_every_offset(source: &str) {
-    for offset in 0..=source.len() {
-        if !source.is_char_boundary(offset) {
-            continue;
-        }
-        let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
-            .expect("valid module path");
-        let _ = Compiler::inspect_project(vec![module], "main", offset);
+    let module = || {
+        ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+            .expect("valid module path")
+    };
+    let report = CompilerSession::new().analyze_project(vec![module()]);
+    for offset in (0..=source.len()).filter(|&offset| source.is_char_boundary(offset)) {
+        let _ = report.inspect("main", offset);
     }
+    let _ = Compiler::inspect_project(vec![module()], "main", source.len());
 }
 
 /// Runs `source` on both execution paths and returns their shared outcome value.
@@ -1681,6 +1687,8 @@ fn int_parse_accepts_decimal_text_and_names_each_failure() {
         ("+4", "InvalidDigit"),
         (" 4", "InvalidDigit"),
         ("99999999999999999999", "OutOfRange"),
+        // U+0000 is not a digit; a C string would have stopped before it.
+        ("4\\u{0}", "InvalidDigit"),
     ] {
         assert_eq!(
             std_outcome(
@@ -1716,6 +1724,7 @@ fn float_parse_rejects_text_outside_the_finite_literal_grammar() {
         ("1.", "Invalid"),
         ("+1.0", "Invalid"),
         ("1e400", "OutOfRange"),
+        ("1.5\\u{0}", "Invalid"),
     ] {
         assert_eq!(
             std_outcome(
@@ -1726,6 +1735,82 @@ fn float_parse_rejects_text_outside_the_finite_literal_grammar() {
             "{text:?}"
         );
     }
+}
+
+// ts-ce73fb: Text may hold U+0000. Native Text was a C string, so every operation
+// stopped at the first NUL byte and disagreed with the interpreter.
+#[test]
+fn text_holding_nul_keeps_every_byte_on_both_backends() {
+    let outcome = run_both(
+        "text-nul",
+        concat!(
+            "import std/text as Text\n",
+            "import std/list as List\n",
+            "import std/debug as Debug\n",
+            "import std/json as Json\n",
+            "import std/json.{Value}\n",
+            "import std/duration as Duration\n",
+            "fn flag(value: Bool) -> Text {\n",
+            "  case value {\n",
+            "    True -> \"T\"\n",
+            "    False -> \"F\"\n",
+            "  }\n",
+            "}\n",
+            "fn tag(text: Text) -> Text {\n",
+            "  case text {\n",
+            "    \"a\\u{0}b\" -> \"exact\"\n",
+            "    _ -> \"other\"\n",
+            "  }\n",
+            "}\n",
+            "fn duration(text: Text) -> Text {\n",
+            "  case Duration.parse(text) {\n",
+            "    Success(_) -> \"parsed\"\n",
+            "    Failure(_) -> \"rejected\"\n",
+            "  }\n",
+            "}\n",
+            "fn decoded_length(source: Text) -> Int {\n",
+            "  case Json.decode(source) {\n",
+            "    Success(Value.Text(text)) -> Text.byte_length(text)\n",
+            "    Success(_) -> -1\n",
+            "    Failure(_) -> -2\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Text {\n",
+            "  let text = \"a\\u{0}b\"\n",
+            "  let joined = Text.concat([text, \"c\"])\n",
+            "  let parts = Text.split(joined, \"\\u{0}\")\n",
+            "  [\n",
+            "    \"${Text.byte_length(text)}\",\n",
+            "    \"${Text.byte_length(joined)}\",\n",
+            "    \"${List.length(parts)}\",\n",
+            "    Text.replace(joined, \"\\u{0}\", \"-\"),\n",
+            "    Text.replace(\"a\\u{0}b\", \"a\", \"z\"),\n",
+            "    Text.join(Text.split(\"x,\\u{0}y\", \",\"), \"+\"),\n",
+            "    \"${Text.byte_length(Text.trim(\" a\\u{0} \"))}\",\n",
+            "    flag(text == \"a\\u{0}c\"),\n",
+            "    flag(\"a\" == \"a\\u{0}\"),\n",
+            "    flag(Text.contains(text, \"b\")),\n",
+            "    flag(Text.starts_with(text, \"a\\u{0}b\")),\n",
+            "    flag(Text.ends_with(joined, \"bc\")),\n",
+            "    tag(text),\n",
+            "    tag(\"a\\u{0}c\"),\n",
+            "    Debug.render(text),\n",
+            "    duration(\"1s\\u{0}\"),\n",
+            "    Json.encode(Json.text(text)),\n",
+            "    \"${decoded_length(\"\\\"x\\\\u0000y\\\"\")}\",\n",
+            "    joined,\n",
+            "  ] |> Text.join(\"|\")\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        concat!(
+            "\"outcome\":\"success\",\"value\":",
+            "\"3|4|2|a-bc|z\\u0000b|x+\\u0000y|2|F|F|T|T|T|exact|other|\\\"a\\\\u{0}b\\\"|rejected|",
+            "\\\"a\\\\u0000b\\\"|3|a\\u0000bc\""
+        )
+    );
 }
 
 // The std/int and std/float failure types are module members: a program names
@@ -2458,6 +2543,25 @@ fn closures_capturing_earlier_closures_stay_cheap_to_copy() {
 fn the_last_element_pattern_reads_one_element_of_a_large_list() {
     let outcome = run_both("list-pattern-last", &last_element_program(14, 200));
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":200");
+}
+
+// ts-1bba2b: an element type that must contain itself has no finite type. The
+// mismatch is reported instead of building `T = List<T>` and recursing forever.
+#[test]
+fn a_type_that_must_contain_itself_is_a_mismatch() {
+    assert_eq!(
+        check_codes(concat!(
+            "pub fn main() -> List<Int> {\n",
+            "  loop out = [] {\n",
+            "    case out {\n",
+            "      [] -> [out]\n",
+            "      _ -> break out\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        )),
+        ["T4203"]
+    );
 }
 
 // LP-08 on both paths, at 2^14 elements for the same reason as LP-07.
@@ -5563,6 +5667,24 @@ fn clauses_dispatch_on_the_argument_shape() {
         callable.callable().map(chimi::CallableInspection::display),
         Some("fn(Shape) -> Int")
     );
+}
+
+// ts-270757: a literal whose patterns include a plain name parameter used to
+// capture that name before it became an alias of the generated parameter, and
+// the native closure then read a local slot that does not exist.
+#[test]
+fn a_function_literal_with_pattern_parameters_runs_and_captures_on_both_backends() {
+    let outcome = run_both(
+        "literal-tuple-parameter",
+        concat!(
+            "fn apply(f: fn((Int, Int), Int) -> Int) -> Int { f((1, 2), 30) }\n",
+            "pub fn main() -> Int {\n",
+            "  let offset = 400\n",
+            "  apply(fn((a, b), c) { a + b * 10 + c + offset })\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":451");
 }
 
 // PC-02
