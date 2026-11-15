@@ -3297,6 +3297,8 @@ fn native_list_is_a_persistent_vector() {
         ))
         .arg("-o")
         .arg(&executable)
+        // glibc keeps floor, fmod, and the rest of libm out of libc.
+        .arg("-lm")
         .output()
         .expect("compile native list runtime test");
     assert!(
@@ -3343,6 +3345,8 @@ fn native_per_owner_heaps_meet_the_prototype_heap_contracts() {
             ))
             .arg("-o")
             .arg(&executable)
+            // glibc keeps floor, fmod, and the rest of libm out of libc.
+            .arg("-lm")
             .output()
             .expect("compile native heap test")
     };
@@ -3390,6 +3394,8 @@ fn native_structural_comparison_handles_deep_nesting_and_exact_json_numbers() {
         ))
         .arg("-o")
         .arg(&executable)
+        // glibc keeps floor, fmod, and the rest of libm out of libc.
+        .arg("-lm")
         .output()
         .expect("compile native structural compare test");
     assert!(
