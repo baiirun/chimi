@@ -1,0 +1,22 @@
+import std/process as Process
+import std/process.{Address, Down, Inbox}
+
+// SF27: a monitor's notice runs inside the watcher's receive, so it may not
+// fail. A notice that can return `Failure` is a type mismatch.
+pub enum Problem {
+  Broken
+}
+
+pub enum Watch {
+  Gone(down: Down)
+}
+
+fn watch(inbox: Inbox<Watch>, target: Address<Int>) -> Void {
+  Process.monitor(inbox, target, fn(down) {
+    case down {
+      Down.Defected -> Failure(Problem.Broken)
+      _ -> Watch.Gone(down)
+    }
+  })
+  Void
+}

@@ -389,6 +389,13 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       LAYOUT(ChimiSelectSource, deadline),
       CHIMI_CLOCK_TRACE_SELECT_PARKED,
       CHIMI_CLOCK_TRACE_SELECT_COMMITTED,
+      LAYOUT(ChimiProcessRequest, monitor),
+      LAYOUT(ChimiProcessRequest, queued),
+      LAYOUT(ChimiProcessRequest, capacity),
+      LAYOUT(ChimiProcessRequest, down),
+      CHIMI_REQUEST_PROCESS_MONITOR,
+      CHIMI_REQUEST_PROCESS_MAILBOX,
+      CHIMI_DOWN_UNAVAILABLE,
   };
   size_t count = sizeof(values) / sizeof(*values);
   for (size_t index = 0; index < count; index += 1) out[index] = values[index];

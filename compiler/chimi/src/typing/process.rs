@@ -130,6 +130,43 @@ impl ProjectTypeChecker {
             },
         ));
 
+        // The inbox-owner operations of process-monitors-and-metrics.md.
+        let message = self.standard_generic_type(G::ProcessOwnAddressMessage);
+        let inbox = named(self, StandardType::ProcessInbox, vec![message]);
+        let address = named(self, StandardType::ProcessAddress, vec![message]);
+        contracts.push((F::ProcessOwnAddress, pure_contract(vec![inbox], address)));
+        let message = self.standard_generic_type(G::ProcessQueuedMessage);
+        let inbox = named(self, StandardType::ProcessInbox, vec![message]);
+        contracts.push((F::ProcessQueued, pure_contract(vec![inbox], int)));
+        let message = self.standard_generic_type(G::ProcessCapacityMessage);
+        let inbox = named(self, StandardType::ProcessInbox, vec![message]);
+        contracts.push((F::ProcessCapacity, pure_contract(vec![inbox], int)));
+
+        // Process.monitor: fn<M, T>(Inbox<M>, Address<T>, fn(Down) -> M) -> Monitor.
+        // The notice runs inside the watcher's receive, so it may not fail or need.
+        let monitor = named(self, StandardType::ProcessMonitor, Vec::new());
+        let down = named(self, StandardType::ProcessDown, Vec::new());
+        let message = self.standard_generic_type(G::ProcessMonitorMessage);
+        let target = self.standard_generic_type(G::ProcessMonitorTarget);
+        let inbox = named(self, StandardType::ProcessInbox, vec![message]);
+        let address = named(self, StandardType::ProcessAddress, vec![target]);
+        let notice = self.intern_type(CanonicalType::Function(CallableContract {
+            inputs: vec![down],
+            success: message,
+            failures: pure.0,
+            needs: pure.1,
+        }));
+        contracts.push((
+            F::ProcessMonitor,
+            pure_contract(vec![inbox, address, notice], monitor),
+        ));
+        let message = self.standard_generic_type(G::ProcessUnmonitorMessage);
+        let inbox = named(self, StandardType::ProcessInbox, vec![message]);
+        contracts.push((
+            F::ProcessUnmonitor,
+            pure_contract(vec![inbox, monitor], void),
+        ));
+
         let message = self.standard_generic_type(G::SupervisorProcessMessage);
         let failures = self.standard_generic_type(G::SupervisorProcessFailures);
         let spec = named(self, StandardType::ProcessSpec, vec![message, failures]);
@@ -250,6 +287,14 @@ impl ProjectTypeChecker {
             StandardConstructor::StartNameTaken => (
                 vec![self.builtin_type("Text")],
                 self.standard_named_type(StandardType::SupervisorStartError, Vec::new()),
+            ),
+            StandardConstructor::DownReturned
+            | StandardConstructor::DownFailed
+            | StandardConstructor::DownDefected
+            | StandardConstructor::DownStopped
+            | StandardConstructor::DownUnavailable => (
+                Vec::new(),
+                self.standard_named_type(StandardType::ProcessDown, Vec::new()),
             ),
             StandardConstructor::StartCapacityReached | StandardConstructor::StartStopped => (
                 Vec::new(),

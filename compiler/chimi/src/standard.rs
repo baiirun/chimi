@@ -121,6 +121,10 @@ pub(crate) enum StandardType {
     /// `std/select.Event<A, F>`: one wait that produces an `A` or fails with `F`;
     /// task-local.
     SelectEvent,
+    /// `std/process.Monitor`: a watch one incarnation set on another.
+    ProcessMonitor,
+    /// `std/process.Down`: how a monitored incarnation ended.
+    ProcessDown,
 }
 
 impl StandardType {
@@ -191,6 +195,8 @@ impl StandardType {
             Self::Timestamp => "Timestamp",
             Self::Timeout => "Timeout",
             Self::SelectEvent => "Event",
+            Self::ProcessMonitor => "Monitor",
+            Self::ProcessDown => "Down",
         }
     }
 
@@ -204,6 +210,7 @@ impl StandardType {
             Self::ProcessAddress
             | Self::ProcessInbox
             | Self::ProcessSpec
+            | Self::ProcessMonitor
             | Self::SupervisorMember
             | Self::SupervisorPolicy
             | Self::SupervisorRestarts
@@ -239,6 +246,7 @@ impl StandardType {
             | Self::Duration
             | Self::DurationParseError
             | Self::ProcessSendError
+            | Self::ProcessDown
             | Self::SupervisorRestart
             | Self::SupervisorStartError
             | Self::Decimal
@@ -383,6 +391,14 @@ pub(crate) enum StandardFunction {
     ProcessRegister,
     ProcessReceive,
     ProcessSend,
+    /// `Process.address(inbox)`: the owning incarnation's direct address.
+    ProcessOwnAddress,
+    /// `Process.queued(inbox)`: messages and notices waiting in the mailbox.
+    ProcessQueued,
+    /// `Process.capacity(inbox)`: the spec's mailbox capacity.
+    ProcessCapacity,
+    ProcessMonitor,
+    ProcessUnmonitor,
     SupervisorProcess,
     SupervisorSupervisor,
     SupervisorPolicy,
@@ -464,7 +480,7 @@ pub(crate) enum StandardFunction {
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 86] = [
+    pub(crate) const ALL: [Self; 91] = [
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -519,6 +535,11 @@ impl StandardFunction {
         Self::ProcessRegister,
         Self::ProcessReceive,
         Self::ProcessSend,
+        Self::ProcessOwnAddress,
+        Self::ProcessQueued,
+        Self::ProcessCapacity,
+        Self::ProcessMonitor,
+        Self::ProcessUnmonitor,
         Self::SupervisorProcess,
         Self::SupervisorSupervisor,
         Self::SupervisorPolicy,
@@ -558,7 +579,12 @@ impl StandardFunction {
             Self::ProcessSpec
             | Self::ProcessRegister
             | Self::ProcessReceive
-            | Self::ProcessSend => Some(StandardModule::Process),
+            | Self::ProcessSend
+            | Self::ProcessOwnAddress
+            | Self::ProcessQueued
+            | Self::ProcessCapacity
+            | Self::ProcessMonitor
+            | Self::ProcessUnmonitor => Some(StandardModule::Process),
             Self::SupervisorProcess
             | Self::SupervisorSupervisor
             | Self::SupervisorPolicy
@@ -770,6 +796,11 @@ impl StandardFunction {
             Self::ProcessRegister => "register",
             Self::ProcessReceive => "receive",
             Self::ProcessSend => "send",
+            Self::ProcessOwnAddress => "address",
+            Self::ProcessQueued => "queued",
+            Self::ProcessCapacity => "capacity",
+            Self::ProcessMonitor => "monitor",
+            Self::ProcessUnmonitor => "unmonitor",
             Self::SupervisorProcess => "process",
             Self::SupervisorSupervisor => "supervisor",
             Self::SupervisorPolicy => "policy",
@@ -863,6 +894,11 @@ impl StandardFunction {
             self,
             Self::ProcessReceive
                 | Self::ProcessSend
+                | Self::ProcessOwnAddress
+                | Self::ProcessQueued
+                | Self::ProcessCapacity
+                | Self::ProcessMonitor
+                | Self::ProcessUnmonitor
                 | Self::SupervisorStart
                 | Self::SupervisorStartProcess
                 | Self::SupervisorStartSupervisor
@@ -1044,10 +1080,15 @@ pub(crate) enum StandardConstructor {
     StartStopped,
     /// `Timeout.TimedOut(limit: Duration)`.
     TimeoutTimedOut,
+    DownReturned,
+    DownFailed,
+    DownDefected,
+    DownStopped,
+    DownUnavailable,
 }
 
 impl StandardConstructor {
-    pub(crate) const ALL: [Self; 44] = [
+    pub(crate) const ALL: [Self; 49] = [
         Self::IntParseEmpty,
         Self::IntParseInvalidDigit,
         Self::IntParseOutOfRange,
@@ -1092,6 +1133,11 @@ impl StandardConstructor {
         Self::StartNameTaken,
         Self::StartStopped,
         Self::TimeoutTimedOut,
+        Self::DownReturned,
+        Self::DownFailed,
+        Self::DownDefected,
+        Self::DownStopped,
+        Self::DownUnavailable,
     ];
 
     pub(crate) const fn type_kind(self) -> StandardType {
@@ -1132,6 +1178,11 @@ impl StandardConstructor {
                 StandardType::SupervisorStartError
             }
             Self::TimeoutTimedOut => StandardType::Timeout,
+            Self::DownReturned
+            | Self::DownFailed
+            | Self::DownDefected
+            | Self::DownStopped
+            | Self::DownUnavailable => StandardType::ProcessDown,
         }
     }
 
@@ -1165,6 +1216,7 @@ impl StandardConstructor {
             // `Supervisor.Restart.Never`), and `std/channel` already owns a
             // `SendError`, so none is a module member.
             StandardType::ProcessSendError
+            | StandardType::ProcessDown
             | StandardType::SupervisorRestart
             | StandardType::SupervisorStartError => None,
             StandardType::ProcessAddress
@@ -1180,6 +1232,7 @@ impl StandardConstructor {
             | StandardType::Instant
             | StandardType::Timestamp
             | StandardType::SelectEvent => None,
+            | StandardType::ProcessMonitor => None,
             // Written type-qualified, `Timeout.TimedOut`, as the spec does.
             StandardType::Timeout => None,
             StandardType::Console
@@ -1239,6 +1292,11 @@ impl StandardConstructor {
             Self::StartNameTaken => "NameTaken",
             Self::StartStopped => "Stopped",
             Self::TimeoutTimedOut => "TimedOut",
+            Self::DownReturned => "Returned",
+            Self::DownFailed => "Failed",
+            Self::DownDefected => "Defected",
+            Self::DownStopped => "Stopped",
+            Self::DownUnavailable => "Unavailable",
         }
     }
 
@@ -1296,7 +1354,12 @@ impl StandardConstructor {
             Self::RestartNever
             | Self::RestartOnDefect
             | Self::StartCapacityReached
-            | Self::StartStopped => &[],
+            | Self::StartStopped
+            | Self::DownReturned
+            | Self::DownFailed
+            | Self::DownDefected
+            | Self::DownStopped
+            | Self::DownUnavailable => &[],
         }
     }
 
@@ -1369,10 +1432,16 @@ pub(crate) enum StandardGeneric {
     SelectNeeds,
     SelectSource,
     SelectTaskFailures,
+    ProcessOwnAddressMessage,
+    ProcessQueuedMessage,
+    ProcessCapacityMessage,
+    ProcessMonitorMessage,
+    ProcessMonitorTarget,
+    ProcessUnmonitorMessage,
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 34] = [
+    pub(crate) const ALL: [Self; 40] = [
         Self::FileState,
         Self::FileFailures,
         Self::FileNeeds,
@@ -1407,6 +1476,12 @@ impl StandardGeneric {
         Self::SelectNeeds,
         Self::SelectSource,
         Self::SelectTaskFailures,
+        Self::ProcessOwnAddressMessage,
+        Self::ProcessQueuedMessage,
+        Self::ProcessCapacityMessage,
+        Self::ProcessMonitorMessage,
+        Self::ProcessMonitorTarget,
+        Self::ProcessUnmonitorMessage,
     ];
 
     /// The name shown in contracts and diagnostics. Names repeat across
@@ -1431,7 +1506,13 @@ impl StandardGeneric {
             | Self::SupervisorProcessMessage
             | Self::SupervisorStartProcessMessage
             | Self::SupervisorAddressMessage
-            | Self::SupervisorRemoveMessage => "M",
+            | Self::SupervisorRemoveMessage
+            | Self::ProcessOwnAddressMessage
+            | Self::ProcessQueuedMessage
+            | Self::ProcessCapacityMessage
+            | Self::ProcessMonitorMessage
+            | Self::ProcessUnmonitorMessage => "M",
+            Self::ProcessMonitorTarget => "T",
             Self::ProcessSpecFailures
             | Self::ProcessRegisterFailures
             | Self::SupervisorProcessFailures

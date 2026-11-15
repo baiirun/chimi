@@ -83,10 +83,13 @@ pub const REQUEST_SCOPE_EXIT: u32 = 26;
 /// A loop pass's cancellation point: answered OK, or with a pending scope
 /// cancellation.
 pub const REQUEST_SCOPE_CHECK: u32 = 27;
+pub const REQUEST_PROCESS_MONITOR: u32 = 28;
+pub const REQUEST_PROCESS_UNMONITOR: u32 = 29;
+pub const REQUEST_PROCESS_MAILBOX: u32 = 30;
 /// `context` points to `value` `ChimiSelectSource`s. OK with the index of the
 /// first ready source in `value`, or PENDING until one may be ready; reissue
 /// the request after every wake. Consumes nothing (`scheduler/select.rs`).
-pub const REQUEST_SELECT: u32 = 28;
+pub const REQUEST_SELECT: u32 = 31;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -1435,7 +1438,9 @@ impl Scheduler {
         if self.refuse_for_scope(owner, kind) {
             return;
         }
-        if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_REMOVE_SUPERVISOR).contains(&kind) {
+        if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_REMOVE_SUPERVISOR).contains(&kind)
+            || (REQUEST_PROCESS_MONITOR..=REQUEST_PROCESS_MAILBOX).contains(&kind)
+        {
             self.handle_process_request(owner, request.cast());
         } else {
             self.handle_task_request(owner, park, request);
