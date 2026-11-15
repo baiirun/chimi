@@ -3,9 +3,7 @@
 # annotation forms from tests/doc_examples.rs, plus `unreviewed`: compiled and
 # reported, never enforced.
 #
-# These documents are owned by other work in progress and are not yet
-# annotated. Remove an entry once its document's blocks carry annotations.
+# Every document's blocks carry annotations today. Add an entry only for a
+# document that another piece of work owns and has not annotated yet, and
+# remove it once its blocks carry annotations.
 [defaults]
-"docs/plans/standard-library-sketches/" = "unreviewed"
-"docs/specification/core-data-and-operators.md" = "unreviewed"
-"docs/specification/supervised-process-conformance.md" = "unreviewed"

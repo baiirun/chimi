@@ -411,6 +411,7 @@ virtual time without a clock dependency on the supervisor.
 
 Fixtures use one barrier to let every runnable process finish its work:
 
+<!-- chimi: fragment -->
 ```chimi
 fn settle() -> Void needs { clock: Clock } {
   Clock.sleep(Duration.milliseconds(1))
@@ -637,6 +638,7 @@ RR02 pattern. P is named `p` with `OnDefect`. Q is named `q` with
 `Restart.Never`, and its message carries `Running` and P's `ManagedProcess`.
 R is unnamed with `OnDefect`. The root uses `restarts(2, 30s)`:
 
+<!-- chimi: fragment -->
 ```chimi
 let managed_p = Supervisor.start_process(root, spec_p, Supervisor.Restart.OnDefect)
 let managed_q = Supervisor.start_process(root, spec_q, Supervisor.Restart.Never)
@@ -830,6 +832,7 @@ Source spelling follows the current contracts and stays provisional.
 `Process.register` takes each `process name` directly, because passing it
 through a helper parameter is `T4262` (SF08).
 
+<!-- chimi: check -->
 ```chimi
 import std/channel as Channel
 import std/channel.{Receive, Sender}
