@@ -76,6 +76,7 @@ impl ProgramData {
             // The runtime reads the IEEE 754 bits back with `memcpy`.
             ConstantValue::Float(value) => (2, 0, 0, 0, value.to_bits() as i64),
             ConstantValue::Text(value) => (3, self.string(value), 0, 0, 0),
+            ConstantValue::Bytes(hex) => (20, self.string(hex), 0, 0, 0),
             ConstantValue::Boolean(value) => (4, 0, 0, 0, i64::from(*value)),
             ConstantValue::List(values) => {
                 let ids = values

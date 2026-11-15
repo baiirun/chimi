@@ -433,6 +433,9 @@ pub(crate) enum ConstantValue {
     /// A `Duration` in nanoseconds.
     Duration(i64),
     Decimal(crate::decimal::Decimal),
+    /// A `std/bytes.Bytes` as lowercase hex, two digits per byte, so program
+    /// data keeps it in the string table.
+    Bytes(String),
     /// A named `Process.Address`: the `process name` declaration's symbol.
     ProcessAddress(SymbolId),
     Record(Vec<(String, ConstantValue)>),

@@ -1,0 +1,7 @@
+// Bytes.from_int defects on a value that does not fit, here -1 for an unsigned layout.
+import std/bytes as Bytes
+import std/bytes.{Bytes, IntLayout}
+
+pub fn main() -> Bytes {
+  Bytes.from_int(-1, IntLayout.U32Be)
+}

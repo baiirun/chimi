@@ -606,6 +606,8 @@ impl Measure<'_> {
             RuntimeValue::Text(text) | RuntimeValue::JsonNumber(text) => {
                 self.sum(ROW_BYTES, text.len())
             }
+            // Stored as hex text: two characters per byte.
+            RuntimeValue::Bytes(bytes) => self.sum(ROW_BYTES, 2 * bytes.len()),
             RuntimeValue::List(values) => {
                 let identity = values.identity();
                 let address = Weak::as_ptr(&identity) as *const () as usize;
@@ -752,6 +754,7 @@ fn constant_value(
         RuntimeValue::ProcessAddress(symbol) => ConstantValue::ProcessAddress(*symbol),
         RuntimeValue::Float(value) => ConstantValue::Float(*value),
         RuntimeValue::Text(value) => ConstantValue::Text(value.clone()),
+        RuntimeValue::Bytes(value) => ConstantValue::Bytes(super::bytes_operations::hex(value)),
         RuntimeValue::Boolean(value) => ConstantValue::Boolean(*value),
         RuntimeValue::List(values) => {
             ConstantValue::List(values.iter().map(convert).collect::<Result<_, _>>()?)
@@ -861,6 +864,9 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
         ConstantValue::ProcessAddress(symbol) => RuntimeValue::ProcessAddress(*symbol),
         ConstantValue::Float(value) => RuntimeValue::Float(*value),
         ConstantValue::Text(value) => RuntimeValue::Text(value.clone()),
+        ConstantValue::Bytes(hex) => {
+            RuntimeValue::Bytes(super::bytes_operations::from_hex(hex).into())
+        }
         ConstantValue::Boolean(value) => RuntimeValue::Boolean(*value),
         ConstantValue::List(values) => RuntimeValue::List(
             values
