@@ -12,6 +12,8 @@ from the philosophy and earlier decisions; any of these can be overruled.
 
 | Date | Decision | By | Detail |
 | --- | --- | --- | --- |
+| 2026-11-15 | Choice among events stays a library function, `Select.first` over `Select.Event` values, with no `select { ... }` syntax. Revisit only if the Phase 3 forcing program (CHI-207) shows the mapping noise hurts readability. | Coordinator | `time-and-outcomes.md` open question 1; CHI-203 |
+| 2026-11-15 | A stored `Err` carries its cause as metadata outside the value, ignored by equality and ordering, like a stack trace; there is no `Cause.Caught<E>` wrapper. | Coordinator | `time-and-outcomes.md` open question 2; CHI-204 |
 | 2026-11-15 | `Debug.render` of a `Json.Number` is its exact value in one canonical text, never through `Float`: positional when the first significant digit's decimal exponent is from -6 to 20 (as JavaScript writes numbers), otherwise `d.ddde<exponent>` with no `+`, as `Float.to_text` writes exponents; so `1e400`, `10e399`, and `0.1e401` all render `Json.Number(1e400)` and `9007199254740993.0` renders `9007199254740993`. | Implementer (std2 json) | `standard-modules-and-constants.md` (debug rendering) |
 | 2026-11-15 | `Map.put` (and so `Map.from`, `Map.merge`, `Map.update`) with a key equal to a held one but written differently, such as `1.50` for `1.5`, keeps the held key and replaces only the value, as `Set.add` keeps the held item and as Rust and Python maps do. | Coordinator (review) and implementer | `execution.rs` `map_insert`; `runtime.c` `map_put_node` |
 | 2026-11-15 | `chimi std check` loads every `.chimi` file of the standard tree (embedded, or the `--std-dir` directory) and fails, naming each problem, on any diagnostic (`N3104`, `T4320`, `N3105`), a registered non-`porting` operation without exactly one `native fn`, or a runtime-known declaration missing from a module the tree holds; the `operations` unit test runs the same check. | Implementer | `operations.rs` `verify_tree` |
@@ -138,6 +140,7 @@ from the philosophy and earlier decisions; any of these can be overruled.
 
 | Date | Decision | By | Detail |
 | --- | --- | --- | --- |
+| 2026-11-15 | Wave after Phase 2: five parallel lanes (failure-set types, clock and timeouts, process hardening, bug backlog, testing-spec draft), each owning named files so they do not collide, then a queue ordered by shared foundations. Plan only near-term dependents; refactor later when findings arrive rather than planning the whole graph up front. | User (planning style), coordinator (lanes) | `/mnt/project-files/plans/next-waves.md`; CHI-199 |
 | 2026-11-15 | A pull request merges on green CI, which replaces `scripts/integrate-branch.sh`: the `test` job on a fresh checkout is the clean-export check, and the `program-outputs` job compares the 12 recorded program outputs on the merge result against its base, on macOS and Linux. An intended output change shows as a red `program-outputs` job that the merger reads and accepts. | User (process), coordinator (shape) | `.github/workflows/ci.yml`; CHI-193 |
 | 2026-11-11 | Build the whole language without stopping for minor questions; escalate only vision-level choices. | User | `language-completion-plan.md` |
 | 2026-11-11 | Tests assert behaviour and contracts, never implementation details or tautologies. | User | — |
