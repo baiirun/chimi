@@ -527,9 +527,88 @@ fn a_user_clock_timer_does_not_break_the_commit() {
             "  waited(receiver)\n",
             "}\n",
         ),
-        "off",
+        "boundaries",
     );
     assert_eq!(result.outcome, success("7"), "{}", String::from_utf8_lossy(&result.process.stderr));
+    // The losing 10 s timer child was cancelled: time never reaches it.
+    assert_eq!(clock_advances(&result.telemetry), [SECOND]);
+}
+
+// A user-clock timer that is already due is ready at once, so list order
+// decides against a ready receive, as on the execution clock.
+#[test]
+fn a_due_user_clock_timer_keeps_list_order() {
+    let result = run_virtual(
+        "user-clock-due",
+        concat!(
+            "fn wait(receiver: Receiver<Int>) -> Int {\n",
+            "  Select.first([Select.after(Duration.seconds(0), 1), Select.receive(receiver, fn(next) { 2 })])\n",
+            "}\n",
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  let _ = Channel.send(channel.sender, 5)\n",
+            "  let base = clock\n",
+            "  let passing = {\n",
+            "    now: fn() -> Instant { base.now() },\n",
+            "    timestamp: fn() -> Timestamp { base.timestamp() },\n",
+            "    sleep_until: fn(at: Instant) -> Void { base.sleep_until(at) },\n",
+            "  }\n",
+            "  let direct = wait(channel.receiver)\n",
+            "  let waited = wait using { clock: passing }\n",
+            "  direct * 100 + waited(channel.receiver) * 10 + value(Channel.receive(channel.receiver))\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("115"), "{}", String::from_utf8_lossy(&result.process.stderr));
+}
+
+// A parked select wakes when a value is queued on a buffered channel.
+#[test]
+fn a_buffered_send_wakes_a_parked_select() {
+    let result = run_virtual(
+        "buffered-wake",
+        concat!(
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  let sender = channel.sender\n",
+            "  let feeder = Task.start(fn() {\n",
+            "    Clock.sleep(Duration.seconds(1))\n",
+            "    let _ = Channel.send(sender, 4)\n",
+            "    0\n",
+            "  })\n",
+            "  Select.first([Select.receive(channel.receiver, value)])\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("4"), "{}", String::from_utf8_lossy(&result.process.stderr));
+}
+
+// A timeout withdraws a parked select instead of waiting for it.
+#[test]
+fn a_timeout_withdraws_a_parked_select() {
+    let result = run_virtual(
+        "timeout-withdraws",
+        concat!(
+            "fn wait() -> Int {\n",
+            "  let channel = Channel.bounded(1)\n",
+            "  let got = Select.first([Select.receive(channel.receiver, value)])\n",
+            "  let _ = Channel.send(channel.sender, 1)\n",
+            "  got\n",
+            "}\n",
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let start = Clock.now()\n",
+            "  let got = case Task.timeout(wait, Duration.seconds(1)) {\n",
+            "    Success(got) -> got\n",
+            "    Failure(Timeout.TimedOut(_)) -> 100\n",
+            "  }\n",
+            "  got + Duration.to_seconds(Clock.since(start))\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("101"), "{}", String::from_utf8_lossy(&result.process.stderr));
 }
 
 // ----- Mixed events ---------------------------------------------------------

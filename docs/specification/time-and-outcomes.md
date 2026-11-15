@@ -1401,12 +1401,14 @@ program.
   `ChannelError.Aborted` without calling the mapping function. A committed
   task event's failure is the select's failure. The mapping function runs
   with the providers it captured, like any function value.
-- **Timers.** Every `Select.after` in one call measures from a single read of
-  `now` at the start of that call. A timer whose provider is the execution
-  clock (the root clock or `Clock.starting_at` over it) is a scheduler
-  deadline. A timer on a user `Clock` provider reads that provider's `now`,
-  and runs `sleep_until(deadline)` in a child task that the select waits on
-  as a task source. Timer children that did not commit are cancelled, but
+- **Timers.** Every `Select.after` on the execution clock in one call
+  measures from a single read of `now` at the start of that call. A timer
+  whose provider is the execution clock (the root clock or
+  `Clock.starting_at` over it) is a scheduler deadline. A timer on a user
+  `Clock` provider reads that provider's `now` when the call starts; if its
+  deadline has passed it is ready at once, in list order, and otherwise it
+  runs `sleep_until(deadline)` in a child task that the select waits on as a
+  task source. Timer children that did not commit are cancelled, but
   only after the committed source's operation has taken its value: a cancel
   reply lets other tasks run, which would break the commit. Cancelled timer
   children are not yet observed, so each select with a user-clock timer

@@ -6,6 +6,13 @@ Run: scripts/mutation/mutate.py scripts/mutation/select_mutations.py
 Each mutant must turn a test in tests/select.rs red. The scheduler mutants edit
 runtime/chimi-fiber, which the native build links, so they are judged by what
 a compiled Chimi program does. Results: scripts/mutation/select_results.txt.
+
+Left out as equivalent: waking the watcher on abort (only the selecting task
+owns the receiver, so it cannot be parked when its channel aborts), cancelling
+the committed user timer too (its child has already ended), and the
+`clear_select` in `disarm_wake_sources` (every later request clears it).
+Withdrawing an abandoned select on any request is in
+select_fiber_mutations.py, because its proof is a scheduler test.
 """
 
 CRATE = "compiler/chimi"
@@ -57,11 +64,6 @@ MUTATIONS = [
         "                        .push_back(WaitingSend { task, value });\n"
         "                    transition.wakes.extend(channel.select_watcher.take());\n",
         "                        .push_back(WaitingSend { task, value });\n")]),
-    select("an abort does not wake the watcher", CHANNEL, [(
-        "        channel.lifecycle = Lifecycle::Aborted;\n"
-        "        transition.wakes.extend(channel.select_watcher.take());\n",
-        "        channel.lifecycle = Lifecycle::Aborted;\n")]),
-    # Inbox and task sources.
     select("an inbox select registers no wake", PROCESS, [(
         "        let ready = record.stopping.is_some() || !record.mailbox.is_empty();\n"
         "        if !ready {\n            record.receiving = true;\n        }\n",
@@ -75,16 +77,6 @@ MUTATIONS = [
     select("a firing scope cannot withdraw a select", SCOPE, [(
         "            | super::REQUEST_PROCESS_RECEIVE\n            | super::REQUEST_SELECT\n    )\n}\n\nimpl",
         "            | super::REQUEST_PROCESS_RECEIVE\n    )\n}\n\nimpl")]),
-    select("a request leaves an abandoned select registered", SCHEDULER, [(
-        "        self.clear_select(owner);\n        if process && self.park_lingers(owner, kind) {",
-        "        if process && self.park_lingers(owner, kind) {")]),
-    select("disarming keeps the select registrations", PROCESS, [(
-        "        self.clear_select(task);\n        let transition = self.channels.cancel_pending(task);",
-        "        let transition = self.channels.cancel_pending(task);")]),
-    # The runtime's commit.
-    select("the committed user timer is cancelled too", RUNTIME, [(
-        "    if (!user_timer[index] || (int64_t)index == keep) continue;",
-        "    if (!user_timer[index]) continue;")]),
     select("user timers are never cancelled", RUNTIME, [(
         "    cancel_user_timers(runtime, sources, user_timer, count, committed, span, call_node, environment);",
         "    (void)cancel_user_timers;")]),

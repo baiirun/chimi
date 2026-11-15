@@ -7091,17 +7091,15 @@ static bool on_execution_clock(ChimiValue *provider) {
          is_host(select_value(provider, "sleep_until"), HOST_CLOCK_SLEEP_UNTIL);
 }
 
-/* The deadline of a timer event, from `now` (the execution clock's, read once per
-   Select.first) or the event's own provider. NULL on success. */
-static ChimiControl *timer_deadline(ChimiRuntime *runtime, ChimiValue *event, int64_t now,
+/* The deadline of a timer event and the `now` it is measured against: the
+   execution clock's (read once per Select.first) or the event's own provider's.
+   NULL on success. */
+static ChimiControl *timer_deadline(ChimiRuntime *runtime, ChimiValue *event, int64_t *now_io,
                                     int64_t *deadline, uint64_t span, uint32_t call_node,
                                     ChimiEnvironment *environment) {
   ChimiValue *source = select_value(event, "source");
-  if (select_value(event, "kind")->as.integer == SELECT_EVENT_AT) {
-    *deadline = source->as.integer;
-    return NULL;
-  }
   ChimiValue *provider = select_value(event, "clock");
+  int64_t now = *now_io;
   if (!on_execution_clock(provider)) {
     ChimiValue *read = select_value(provider, "now");
     if (!read || read->kind != VALUE_CALLABLE) return defect("provider has no callable field", call_node);
@@ -7109,6 +7107,11 @@ static ChimiControl *timer_deadline(ChimiRuntime *runtime, ChimiValue *event, in
     if (control->kind != CONTROL_SUCCESS) return control;
     if (control->value->kind != VALUE_INSTANT) return intrinsic_shape_defect(call_node);
     now = control->value->as.integer;
+  }
+  *now_io = now;
+  if (select_value(event, "kind")->as.integer == SELECT_EVENT_AT) {
+    *deadline = source->as.integer;
+    return NULL;
   }
   if (__builtin_add_overflow(now, source->as.integer, deadline)) {
     char text[32]; duration_text(source->as.integer, text);
@@ -7219,15 +7222,19 @@ static ChimiControl *select_first(ChimiRuntime *runtime, ChimiValue *events, uin
         /* Every timer measures from the start of this call. */
         if (!read_now && (stopped = execution_now(&now, call_node))) break;
         read_now = true;
-        int64_t deadline;
-        if ((stopped = timer_deadline(runtime, event, now, &deadline, span, call_node, environment))) break;
+        int64_t deadline, measured = now;
+        if ((stopped = timer_deadline(runtime, event, &measured, &deadline, span, call_node, environment)))
+          break;
         ChimiValue *provider = select_value(event, "clock");
         if (on_execution_clock(provider)) {
           *entry = (ChimiSelectSource){.kind = CHIMI_SELECT_TIMER, .deadline = deadline};
+        } else if (deadline <= measured) {
+          /* Already due on its own clock: ready now, in list order. */
+          *entry = (ChimiSelectSource){.kind = CHIMI_SELECT_TIMER, .deadline = INT64_MIN};
         } else {
           entry->kind = CHIMI_SELECT_TASK;
-          user_timer[index] = true;
           stopped = start_user_timer(runtime, provider, deadline, &entry->task, span, call_node, environment);
+          user_timer[index] = !stopped;
         }
       }
     }
