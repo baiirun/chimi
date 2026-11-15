@@ -172,6 +172,9 @@ struct ChimiTaskContext {
   ChimiNodeFn entry;
   struct RuntimeFragment *captures;
   uint64_t span;
+  /* The task that started this one: a child's result hands its exclusive
+     capabilities to it before the child ends. */
+  uint64_t parent;
 };
 
 typedef enum {
@@ -2093,6 +2096,13 @@ typedef struct {
   size_t pending_capacity;
   uint64_t child;
   bool cancelled;
+  /* Collecting for a send instead of transferring: each capability found is
+     recorded here with the sender's token, and its copy in the message takes
+     the in-flight token (ChimiCarriedCapability). */
+  bool collect;
+  ChimiCarriedCapability *carried;
+  size_t carried_count;
+  size_t carried_capacity;
 } CapabilityTransfer;
 
 /* Visited-set slots examined by every capture transfer so far; the memory report's
@@ -2148,8 +2158,31 @@ static void transfer_push(CapabilityTransfer *transfer, TransferPartKind kind, v
   transfer->pending[transfer->pending_length++] = (TransferPart){kind, pointer};
 }
 
+static void collect_carried_capability(CapabilityTransfer *transfer, ChimiValue *value,
+                                       uint32_t capability) {
+  if (transfer->carried_count == transfer->carried_capacity) {
+    size_t capacity = transfer->carried_capacity ? transfer->carried_capacity * 2 : 8;
+    ChimiCarriedCapability *carried = realloc(transfer->carried, capacity * sizeof(*carried));
+    if (!carried) exhausted_memory();
+    transfer->carried = carried;
+    transfer->carried_capacity = capacity;
+  }
+  transfer->carried[transfer->carried_count++] = (ChimiCarriedCapability){
+    .channel = value->as.capability.channel,
+    .token = value->as.capability.token,
+    .capability = capability,
+  };
+  ++value->as.capability.token;
+}
+
 static bool transfer_captured_capability(CapabilityTransfer *transfer, ChimiValue *value,
                                          uint32_t request_kind) {
+  if (transfer->collect) {
+    collect_carried_capability(transfer, value,
+                               request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER
+                                 ? CHIMI_CAPABILITY_RECEIVER : CHIMI_CAPABILITY_COMPLETION);
+    return true;
+  }
   ChimiSchedulerRequest request = {
     .kind = request_kind,
     .task = transfer->child,
@@ -4962,12 +4995,23 @@ static ChimiFiberResult chimi_task_entry(void *raw_context) {
   uint64_t span = context->span;
   RuntimeHeap *heap = heap_create();
   current_heap = heap;
+  uint64_t parent = context->parent;
   void *captures[FRAGMENT_ROOTS];
   fragment_adopt(context->captures, captures);
   free(context);
   ChimiValue *callable = captures[0];
   ChimiControl *control = invoke(runtime, callable->as.callable, NULL, 0, span, UINT32_MAX,
                                  captures[1]);
+  /* Only the parent can read the result (a task handle is parent-local), so the
+     result's exclusive capabilities become the parent's before this task ends
+     and its cleanup would abort them. */
+  if ((control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE) && control->value) {
+    CapabilityTransfer transfer = {.child = parent};
+    if (!transfer_captures(&transfer, control->value))
+      control = transfer.cancelled
+        ? cancelled()
+        : defect("Task could not hand an exclusive capability in its result to its parent", -1);
+  }
   ChimiFiberResult result = child_task_result(control);
   heap_destroy(heap);
   current_heap = NULL;
@@ -6554,7 +6598,9 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       }
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
       /* The child has not run yet: it adopts the fragment when it first runs, so the
-         transfer below rewrites the capabilities in the child's copy. */
+         transfer below rewrites the capabilities in the child's copy, and the
+         context is still the child's to read. */
+      context->parent = request.owner;
       CapabilityTransfer transfer = {.child = request.task};
       bool transferred = transfer_captures(&transfer, captures->roots[0]);
       if (!transferred) {
@@ -6622,12 +6668,21 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       RuntimeFragment *message = NULL;
       if (fragment_copy(roots, kinds, 1, &message) != HEAP_OK)
         return defect(FOREIGN_POINTER_DEFECT, call_node);
+      /* Receivers and Completions in the message travel with it: the scheduler
+         puts them in flight, and the message's copies take the in-flight token
+         before anything can receive them. */
+      CapabilityTransfer carried = {.collect = true};
+      transfer_captures(&carried, message->roots[0]);
+      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
+      bool first = true;
       for (;;) {
         ChimiSchedulerRequest request = {
           .kind = CHIMI_REQUEST_CHANNEL_SEND,
           .channel = arguments[0]->as.capability.channel,
           .value = (int64_t)(intptr_t)message,
+          .context = first && capabilities.count ? &capabilities : NULL,
         };
+        first = false;
         ChimiFiberCommand command = scheduler_request(&request);
         /* The scheduler takes the message on OK or PENDING and hands it back on
            CLOSED or ABORTED; any other reply leaves it with the sender. Either way
@@ -6638,6 +6693,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                         request.status == CHIMI_RESPONSE_ABORTED;
         if (returned) fragment_free((RuntimeFragment *)(intptr_t)request.value);
         else if (!taken) fragment_free(message);
+        free(carried.carried);
+        carried.carried = NULL;
         if (command == CHIMI_FIBER_CANCEL) return cancelled();
         if (request.status == CHIMI_RESPONSE_PENDING) continue;
         if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
@@ -7597,6 +7654,14 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
                  "channel capability violation: task %" PRIu64 " cannot use the %s of channel %"
                  PRIu64 " in %s: %s", violation->task, capability_name(violation->capability),
                  violation->channel, channel_operation(violation->request_kind), holder);
+      break;
+    case CHIMI_VIOLATION_IN_FLIGHT:
+      snprintf(text, sizeof(text),
+               "channel capability violation: task %" PRIu64 " cannot %s the %s of channel %" PRIu64
+               "%s%s: this copy is stale; the capability was sent in a message no task has "
+               "received yet", violation->task, transfer ? "hand" : "use",
+               capability_name(violation->capability), violation->channel,
+               transfer ? "" : " in ", transfer ? "" : channel_operation(violation->request_kind));
       break;
     case CHIMI_VIOLATION_OVERLAPPING_OPERATION:
       snprintf(text, sizeof(text),

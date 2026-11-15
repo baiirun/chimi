@@ -23,8 +23,8 @@ pub use self::process_abi::{
 use self::clock::{Clock, TimerQueue, TimerTarget};
 use self::process::ProcessKernel;
 pub use crate::channel::{
-    ChannelCapabilities, ChannelError, ChannelEventKind, ChannelId, ChannelMetrics, Completion,
-    ReceiveResult, Receiver, SendResult, Sender,
+    CapabilityKind, Carried, ChannelCapabilities, ChannelError, ChannelEventKind, ChannelId,
+    ChannelMetrics, Completion, ReceiveResult, Receiver, SendResult, Sender,
 };
 use crate::channel::{ChannelRegistry, Observation, Transition};
 use crate::{
@@ -187,6 +187,7 @@ pub const VIOLATION_OVERLAPPING_OPERATION: u32 = 2;
 pub const VIOLATION_PENDING_OPERATION: u32 = 3;
 pub const VIOLATION_UNKNOWN_CHANNEL: u32 = 4;
 pub const VIOLATION_CHANNEL_STILL_LIVE: u32 = 5;
+pub const VIOLATION_IN_FLIGHT: u32 = 6;
 pub const CAPABILITY_NONE: u32 = 0;
 pub const CAPABILITY_RECEIVER: u32 = 1;
 pub const CAPABILITY_COMPLETION: u32 = 2;
@@ -248,6 +249,15 @@ impl ChimiCapabilityViolation {
             ChannelError::ChannelStillLive(channel) => (
                 VIOLATION_CHANNEL_STILL_LIVE,
                 CAPABILITY_NONE,
+                Some(channel),
+                None,
+            ),
+            ChannelError::CapabilityInFlight { channel, kind } => (
+                VIOLATION_IN_FLIGHT,
+                match kind {
+                    CapabilityKind::Receiver => CAPABILITY_RECEIVER,
+                    CapabilityKind::Completion => CAPABILITY_COMPLETION,
+                },
                 Some(channel),
                 None,
             ),
@@ -949,8 +959,20 @@ impl Scheduler {
         sender: Sender,
         value: usize,
     ) -> Result<SendResult, SchedulerError> {
+        self.channel_send_carrying(task, sender, value, &[])
+    }
+
+    /// `channel_send` of a value that holds `carried`, `task`'s exclusive
+    /// capabilities (`ChannelRegistry::send_carrying`).
+    pub fn channel_send_carrying(
+        &mut self,
+        task: TaskId,
+        sender: Sender,
+        value: usize,
+        carried: &[Carried],
+    ) -> Result<SendResult, SchedulerError> {
         self.require_parked_task(task)?;
-        match self.channels.send(task, sender, value) {
+        match self.channels.send_carrying(task, sender, value, carried) {
             Ok((result, transition)) => {
                 self.apply_channel_transition(transition);
                 Ok(result)
@@ -1397,6 +1419,9 @@ impl Scheduler {
                             .expect("started task")
                             .entry_context = request.context;
                         request.task = task.get();
+                        // The child hands the capabilities in its result to
+                        // this task (`include/chimi_fiber.h`).
+                        request.owner = owner.get();
                         request.status = RESPONSE_OK;
                     }
                     Err(_) => request.status = RESPONSE_ERROR,
@@ -1453,10 +1478,14 @@ impl Scheduler {
             }
             REQUEST_CHANNEL_SEND => {
                 let result = self.take_send_result(owner).or_else(|| {
-                    self.channel_send(
+                    // SAFETY: the host's record names `context` capabilities
+                    // that stay valid while it is suspended on the request.
+                    let carried = unsafe { carried_capabilities(request.context) };
+                    self.channel_send_carrying(
                         owner,
                         Sender::from_raw(request.channel),
                         request.value as usize,
+                        &carried,
                     )
                     .ok()
                 });
@@ -1873,6 +1902,58 @@ impl Scheduler {
         );
         Err(SchedulerError::Channel(error))
     }
+}
+
+/// The capabilities a CHIMI_REQUEST_CHANNEL_SEND's message carries: `context`
+/// is null or a `ChimiMessageCapabilities` record.
+///
+/// # Safety
+///
+/// A non-null `context` points to a readable record whose `items` holds
+/// `count` readable entries.
+unsafe fn carried_capabilities(context: *mut c_void) -> Vec<Carried> {
+    // SAFETY: the caller guarantees a null or readable record.
+    let Some(record) = (unsafe { context.cast::<ChimiMessageCapabilities>().as_ref() }) else {
+        return Vec::new();
+    };
+    if record.count == 0 || record.items.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: as above, `items` holds `count` entries.
+    let items = unsafe { std::slice::from_raw_parts(record.items, record.count) };
+    items
+        .iter()
+        .filter_map(|item| {
+            let kind = match item.capability {
+                CAPABILITY_RECEIVER => CapabilityKind::Receiver,
+                CAPABILITY_COMPLETION => CapabilityKind::Completion,
+                _ => return None,
+            };
+            Some(Carried {
+                channel: ChannelId::from_raw(item.channel),
+                kind,
+                token: item.token,
+            })
+        })
+        .collect()
+}
+
+/// One exclusive capability a sent message holds: the sender's copy.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ChimiCarriedCapability {
+    pub channel: u64,
+    pub token: u64,
+    pub capability: u32,
+}
+
+/// The `context` of a CHIMI_REQUEST_CHANNEL_SEND whose message holds
+/// exclusive capabilities.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ChimiMessageCapabilities {
+    pub items: *const ChimiCarriedCapability,
+    pub count: usize,
 }
 
 fn scheduler_defect_outcome(code: i64) -> SchedulerOutcome {
