@@ -2900,48 +2900,43 @@ unsafe extern "C" fn defects_after_sleeping(_context: *mut c_void) -> ChimiFiber
     defected()
 }
 
-/// Waits for a child that defects; context 1 makes its cleanup stubborn.
-unsafe extern "C" fn awaits_a_defecting_child(context: *mut c_void) -> ChimiFiberResult {
+/// Waits for a child that defects.
+unsafe extern "C" fn awaits_a_defecting_child(_context: *mut c_void) -> ChimiFiberResult {
     let mut start = blank_request(REQUEST_TASK_START);
     start.entry = Some(defects_after_sleeping);
     scheduler_call(&mut start);
     assert_eq!(start.status, RESPONSE_OK);
     let mut request = blank_request(REQUEST_TASK_RESULT);
     request.task = start.task;
-    if scheduler_call(&mut request) != ChimiFiberCommand::Cancel {
-        return ended(PROCESS_END_RETURNED);
-    }
-    if context as usize == 1 {
-        return stubborn_cleanup();
-    }
+    scheduler_call(&mut request);
     ended(PROCESS_END_RETURNED)
 }
 
+/// The drain keeps the child running, so its defect at 1 ms, after the stop
+/// began, makes the end `defected` without a restart.
 #[test]
 fn a_child_defect_during_shutdown_stays_inside_the_shutdown_protocol() {
-    for (stubborn, expected) in [
-        (0_usize, (1_000_000, TerminalCause::Defected)),
-        (1, (1_000_000, TerminalCause::Defected)),
-    ] {
-        let mut lab = Lab::new();
-        let root = lab
-            .scheduler
-            .start_supervisor(policy(vec![], 3))
-            .expect("root");
-        let spec = process_spec(awaits_a_defecting_child, stubborn as *mut c_void);
-        lab.scheduler
-            .start_process(root, spec, Restart::OnDefect)
-            .expect("admitted");
-        lab.scheduler.drive();
-        let _ = lab.scheduler.stop_supervisor(root);
-        let _ = lab.scheduler.run_until_idle();
-        assert_eq!(timed_terminations(&lab), [expected]);
-        assert!(lab.restarts().is_empty(), "shutdown never restarts");
-        assert_eq!(
-            lab.scheduler.supervisor_state(root),
-            Some(SupervisorState::Stopped)
-        );
-    }
+    let mut lab = Lab::new();
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("root");
+    let spec = process_spec(awaits_a_defecting_child, ptr::null_mut());
+    lab.scheduler
+        .start_process(root, spec, Restart::OnDefect)
+        .expect("admitted");
+    lab.scheduler.drive();
+    let _ = lab.scheduler.stop_supervisor(root);
+    let _ = lab.scheduler.run_until_idle();
+    assert_eq!(
+        timed_terminations(&lab),
+        [(1_000_000, TerminalCause::Defected)]
+    );
+    assert!(lab.restarts().is_empty(), "shutdown never restarts");
+    assert_eq!(
+        lab.scheduler.supervisor_state(root),
+        Some(SupervisorState::Stopped)
+    );
 }
 
 thread_local! {

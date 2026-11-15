@@ -7753,7 +7753,9 @@ impl ProjectTypeChecker {
         match &self.types[self.resolve_inference_type(type_id).raw() as usize] {
             CanonicalType::Generic(symbol) => generics.contains(symbol),
             CanonicalType::Named { arguments, .. } => arguments.iter().copied().any(mentions),
-            CanonicalType::FailureSetValue(row) => self.failure_row_mentions_generics(*row, generics),
+            CanonicalType::FailureSetValue(row) => {
+                self.failure_row_mentions_generics(*row, generics)
+            }
             CanonicalType::Function(contract)
             | CanonicalType::PolymorphicFunction { contract, .. } => contract_mentions(contract),
             CanonicalType::Record(fields) => fields.iter().any(|field| mentions(field.type_id)),
@@ -7764,8 +7766,13 @@ impl ProjectTypeChecker {
 
     fn failure_row_mentions_generics(&self, row: FailureRowId, generics: &[SymbolId]) -> bool {
         let row = &self.failure_rows[row.raw() as usize];
-        row.parameters.iter().any(|parameter| generics.contains(parameter))
-            || row.exclusions.iter().any(|exclusion| generics.contains(&exclusion.parameter))
+        row.parameters
+            .iter()
+            .any(|parameter| generics.contains(parameter))
+            || row
+                .exclusions
+                .iter()
+                .any(|exclusion| generics.contains(&exclusion.parameter))
             || row.variant_arguments.iter().any(|arguments| {
                 arguments
                     .arguments
@@ -7776,7 +7783,9 @@ impl ProjectTypeChecker {
 
     fn needs_row_mentions_generics(&self, row: NeedsRowId, generics: &[SymbolId]) -> bool {
         let row = &self.needs_rows[row.raw() as usize];
-        row.parameters.iter().any(|parameter| generics.contains(parameter))
+        row.parameters
+            .iter()
+            .any(|parameter| generics.contains(parameter))
             || row
                 .entries
                 .iter()
@@ -9475,16 +9484,14 @@ impl ProjectTypeChecker {
                 // Every generic the contract mentions that `inner` leaves open
                 // is kept, the value's own parameters among them.
                 let mut inner_preserved = preserved.to_vec();
-                inner_preserved.extend(
-                    mentioned
-                        .into_iter()
-                        .filter(|generic| {
-                            !inner.values.contains_key(generic)
-                                && !inner.failures.contains_key(generic)
-                        }),
+                inner_preserved.extend(mentioned.into_iter().filter(|generic| {
+                    !inner.values.contains_key(generic) && !inner.failures.contains_key(generic)
+                }));
+                let contract = self.substitute_call_contract_preserving(
+                    contract,
+                    &mut inner,
+                    &inner_preserved,
                 );
-                let contract =
-                    self.substitute_call_contract_preserving(contract, &mut inner, &inner_preserved);
                 self.intern_type(CanonicalType::PolymorphicFunction {
                     parameters,
                     contract,

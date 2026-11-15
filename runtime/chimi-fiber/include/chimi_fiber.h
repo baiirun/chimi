@@ -580,8 +580,9 @@ ChimiFiberCommand chimi_fiber_park(const ChimiRootFrame *roots);
 ChimiFiberCommand chimi_fiber_request(void *request, const ChimiRootFrame *roots);
 /* Read by the running fiber after a resume. 1 when that resume was a
    task-level cancellation: the fiber must unwind without any request that can
-   park, CHIMI_REQUEST_SCOPE_EXIT included. A scope's cancellation, or a
-   process body told to stop, is not terminal. */
+   park, CHIMI_REQUEST_SCOPE_EXIT included. A scope's cancellation, or the
+   cancellation a process body's receive returns once its drain is done, is
+   not terminal. */
 uint32_t chimi_fiber_cancel_is_terminal(void);
 /* 1 when a fired cancellation scope of the running task waits for its next
    cancellation point; a loop pass then issues CHIMI_REQUEST_SCOPE_CHECK. */

@@ -178,7 +178,10 @@ fn an_idle_service_waits_for_a_signal_instead_of_reporting_a_deadlock() {
         assert_eq!(running.next_line(), format!("finished {job}"));
     }
     // Every task is now parked with nothing pending. Before G22 the runner
-    // reported that as a deadlock (exit 70); a service waits instead.
+    // reported that as a deadlock (exit 70); a service waits instead. The
+    // pause only makes it likely the stall has begun; the test passes either
+    // way, and a deadlock report would end the program before the signal.
+    std::thread::sleep(Duration::from_millis(200));
     running.signal(SIGINT);
     let (rest, status) = running.finish();
     assert!(rest.is_empty(), "{rest:?}");

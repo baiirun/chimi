@@ -544,7 +544,7 @@ did for each of its tests.
 | MB16 | U11 | A notice is queued, then `unmonitor` removes it (`queued` 1, then 0); a second `unmonitor` is ignored and the next receive is the next message | A queued notice left behind by `unmonitor` |
 | MB17 | U11 | The watcher returns with a queued `Unavailable` notice and a live monitor; its target ends later. No fragment outlives the run | Notice handles leaked when the watcher ends first |
 | MB18 | U11 | A monitor set through a name sees the first incarnation's defect and nothing from its replacement | A monitor that follows the name across restarts |
-| MB19 | U12 | The watcher's root stops while its handler naps 1 s, so the watcher drains. Its monitored worker, under another root, returns at 500ms. The watcher accepts no notice under shutdown: it reports only its nap and ends at its next `receive` (CHI-220) | A notice accepted, or received, after shutdown began |
+| MB19 | U12 | The watcher's root stops while its handler naps 1 s, so the watcher drains. Its monitored worker, under another root, returns at 501ms. The watcher accepts no notice under shutdown: it reports only its nap and ends at its next `receive` (CHI-220) | A notice accepted, or received, after shutdown began |
 
 ### Runtime: routing
 
@@ -1059,12 +1059,13 @@ ledger; main waits on the root as a service does. A poison job defects one
 worker first, and the supervisor restarts it. Jobs 1 to 5 take 1 s, job 6
 takes 30 s, and each worker's `shutdown_within` is 5 s.
 
-At 1.5s SIGTERM cancels main and the root stops. Jobs 4 and 5, queued when
-the signal arrived, finish during their workers' drains and reach the
-ledger at 2.001s, because the ledger is the oldest member and stays routable
-until its own turn. Job 6 outlasts its deadline, so its worker, the newest
-member and the first to stop, is forced at 6.5s. The other members then end
-`cancelled`. The outcome is `cancellation` and the exit status 143.
+At 1.5s SIGTERM cancels main and the root stops. Members stop one at a
+time, newest first, so `worker_3`, busy with job 6, drains first while the
+older members keep running and stay routable: jobs 4 and 5, queued when the
+signal arrived, finish and reach the ledger at 2.001s. Job 6 outlasts its
+5 s deadline, so `worker_3` is forced at 6.5s. The other members then have
+nothing left to do and end `cancelled` at once, so nothing they accepted is
+lost. The outcome is `cancellation` and the exit status 143.
 `expected.outcome`, `expected.transcript`, and `expected.memory` sit beside
 the program, as for FP01. FP02 proves that drain, ordered shutdown, restart,
 and signal delivery compose in one service.

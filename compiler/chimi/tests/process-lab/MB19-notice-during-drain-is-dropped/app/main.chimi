@@ -10,7 +10,7 @@ import std/supervisor as Supervisor
 // MB19: `watcher` monitors `worker`, which lives under another root. Main
 // asks the watcher to nap (a 1 s handler) and stops the watcher's root while
 // it naps, so the watcher drains. During the drain the worker ends (it
-// returns at 500ms), which would queue a `Down` notice. A watcher under
+// returns at 501ms), which would queue a `Down` notice. A watcher under
 // shutdown accepts no notice, so it is dropped: the watcher reports only its
 // nap, 1, at 1.001s, and its next `receive` ends it. Main then puts 9 on the
 // channel and reads 1 and 9 (outcome 19). A notice delivered during the drain
