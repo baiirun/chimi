@@ -23,6 +23,9 @@ sources with `--clock-start`, virtual deadlock, `Task.timeout`,
 joins, `T4340`, `T4341`, `T4346` for a failure-set value passed where a member
 is missing, and [`std/result`](#stdresult) are implemented on both backends
 (CHI-200; see [Failure-set types as implemented](#failure-set-types-as-implemented-chi-200)).
+[Failure context](#failure-context) is implemented on both backends except
+the suppressed-cause producers and the trace fields (CHI-204; see
+[Failure context as implemented](#failure-context-as-implemented-chi-204)).
 Nothing else here is implemented yet.
 Source spelling follows the current kernel and remains free to break.
 
@@ -820,6 +823,10 @@ A cause is not part of any failure value. Matching, equality, hashing,
 ordering, failure rows, and selective recovery MUST ignore it. Code can read
 it, but a program whose result depends on it is depending on diagnostic data.
 
+`Cause` itself is neither equatable nor ordered, like a function: comparing
+two causes is rejected, `Debug.render` writes `<Cause>`, and a module
+constant cannot hold one.
+
 ### Cause chains
 
 When a `Failure(...)` expression is evaluated in the body of an arm that
@@ -840,6 +847,13 @@ No wrapping syntax is needed.
 If the arm re-raises the bound variable unchanged, as `Failure(error)` where
 `error` is the variable bound by that arm's pattern, the runtime MUST keep the
 original cause and add no chain link. `Result.get` re-raises the same way.
+
+An arm that matched a stored `Err(...)` pattern of `std/result` follows the
+same rule, with the cause the `Err` keeps: converting it links, and
+re-raising the bound error keeps the cause. That is how `Result.get` keeps
+it. The rule applies to `Failure(...)` and `Err(...)` constructions written
+directly in the arm's body, not in its guard or inside a function literal in
+the body, and only the arm's first `Failure` or `Err` pattern is the source.
 
 The compiler resolves the link statically. Lowering passes the matched
 outcome as an explicit operand of the failure construction. The runtime does
@@ -898,7 +912,11 @@ expected failure JobError.Transient("payments returned 503")
 - A cancellation cause names its reason: explicit `Task.cancel`, a timeout
   scope and its limit, owner unwind, or supervisor shutdown.
 - The root report prints the cause tree of a failed, defected, or cancelled
-  root.
+  root when the tree says more than the outcome record: when the cause has a
+  context frame, a `caused_by` link, or a suppressed cause. The outcome record
+  then gains a `cause` field holding the `Cause.to_text` rendering. A
+  failure that only carries its value keeps the record it had before causes
+  existed.
 - Causes exist in every trace mode, because the root report and `Cause.of`
   need them. They are built only on failure paths. In `boundaries` and `full`
   mode, terminal-outcome events carry the cause identity and its variant
@@ -1179,6 +1197,48 @@ program.
   `get` raises the stored error with `Failure(error)`, which makes its `E` a
   failure set. Causes (CHI-204) will ride outside the value, excluded from
   equality, as decided.
+
+### Failure context as implemented (CHI-204)
+
+- **Where a cause lives.** Each terminal outcome carries an optional,
+  immutable, shared cause: the interpreter's `Control` and the native
+  `ChimiControl` gain a cause pointer. Adding a frame or a link copies the
+  node it changes and shares the rest. A cause is built lazily: a failure
+  that nothing annotates has no cause object, and readers treat it as a
+  cause with the failure's value and origin only. So the success path does no
+  cause work at all.
+- **Chains.** Lowering gives every `case` arm whose first cause-source
+  pattern is a `Failure(...)` or `Result.Err(...)` a compiler-generated local
+  holding the matched cause (`CoreArm.cause`). A `Failure` or `Err`
+  construction lexically in that arm's body names the local
+  (`Construct.cause`) and whether to keep it: keep when the argument is
+  exactly the variable bound directly under the matched `Failure` or `Err`,
+  link otherwise. Function literals start a new scope, so a construction
+  inside one never links to an outer arm.
+- **Stored causes.** `Result.capture` keeps the failure's cause on the `Err`
+  it builds. The interpreter holds it in a field of the constructed value
+  that equality, ordering, hashing, `Debug`, and JSON never read. The native
+  runtime stores it as a hidden trailing field after the declared fields,
+  which the collector and the cross-heap copy carry because they copy by
+  allocation size.
+- **Locations.** The Core program gains one `path:line` text per source
+  origin (`CoreProgram.origin_locations`, `ChimiOrigin.location`), so both
+  backends print the same locations.
+- **Bounds** are the spec's: 32 frames, 16 suppressed causes, 64 links. A
+  frame or suppressed list at its limit drops the entry just past the oldest
+  half. A chain past 64 links drops the link at depth 32, so the newest 32
+  links and the oldest stay, and `to_text` writes `(N causes dropped)` where
+  they were. The limits are fixed for now; runner configuration comes when a
+  program needs it.
+- **Not yet.** Nothing produces a suppressed cause yet: `Sibling` waits for
+  `Task.all` (CHI-205) and `Displaced` and `Cleanup` for the file-close rule,
+  so `Cause.suppressed` returns `[]` and `Cause.reason` returns `None` today.
+  Terminal trace events do not yet carry a cause identity. A defect cause
+  does not hold the parked-stack snapshot. A cancellation cause's summary is
+  the fixed text `requested before the next semantic operation`, not its
+  specific reason. The native tests for
+  channel and task transfer run on the native backend only, because the
+  interpreter has no channel runtime.
 
 ### Compiler (`compiler/chimi/src`)
 
