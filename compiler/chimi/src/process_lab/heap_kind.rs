@@ -145,7 +145,7 @@ pub(super) fn kernel_harness(scenario: &Scenario, file: &str) -> Result<Option<S
     let archive = crate::backend::native::bundled_fiber_archive()?;
     let mut libraries = vec![archive.into_os_string()];
     if cfg!(target_os = "linux") {
-        libraries.extend(["-ldl".into(), "-lpthread".into(), "-lm".into()]);
+        libraries.extend(["-ldl".into(), "-lpthread".into()]);
     }
     run_harness(scenario, file, &libraries)
 }
@@ -155,7 +155,8 @@ fn harness(scenario: &Scenario, file: &str) -> Result<Option<String>, String> {
 }
 
 /// Compiles the harness `file` (with AddressSanitizer when the compiler
-/// supports it), links `libraries` after it, and runs it for the scenario.
+/// supports it), links `libraries` and libm after it, and runs it for the
+/// scenario. glibc keeps floor, fmod, and the rest of libm out of libc.
 fn run_harness(
     scenario: &Scenario,
     file: &str,
@@ -174,6 +175,7 @@ fn run_harness(
             .arg(manifest_path("../../runtime/chimi-fiber/include"))
             .arg(&source)
             .args(libraries)
+            .arg("-lm")
             .arg("-o")
             .arg(&executable)
             .output()
@@ -194,25 +196,38 @@ fn run_harness(
             ));
         }
     }
-    let run = Command::new(&executable)
+    // Output goes to files, not pipes, so a chatty harness cannot block on a
+    // full pipe while the run limit is being polled.
+    let stdout_path = scratch.path().join("stdout.txt");
+    let stderr_path = scratch.path().join("stderr.txt");
+    let create = |path: &Path| {
+        std::fs::File::create(path).map_err(|error| format!("create {}: {error}", path.display()))
+    };
+    let mut child = Command::new(&executable)
         .arg(scenario.id)
         .env("ASAN_OPTIONS", "detect_leaks=0:abort_on_error=0")
         .env("UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1")
-        .output()
+        .stdout(create(&stdout_path)?)
+        .stderr(create(&stderr_path)?)
+        .spawn()
         .map_err(|error| format!("run {file}: {error}"))?;
-    if !run.status.success() {
+    let status = fixture::wait_within_run_limit(&mut child, &format!("{file} {}", scenario.id))?;
+    let read = |path: &Path| {
+        std::fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))
+    };
+    if !status.success() {
         return Err(format!(
-            "{file} {} exited with {}: {}",
+            "{file} {} exited with {status}: {}",
             scenario.id,
-            run.status,
-            first_error_line(&run.stderr)
+            first_error_line(&read(&stderr_path)?)
         ));
     }
-    if run.stdout != b"ok\n" {
+    let stdout = read(&stdout_path)?;
+    if stdout != b"ok\n" {
         return Err(format!(
             "{file} {} printed `{}`, expected `ok`",
             scenario.id,
-            String::from_utf8_lossy(&run.stdout).trim_end()
+            String::from_utf8_lossy(&stdout).trim_end()
         ));
     }
     Ok(note)
