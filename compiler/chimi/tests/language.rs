@@ -3,10 +3,10 @@
 //! Every program here runs on the reference interpreter (`chimi run`) and as a
 //! native AOT executable (`chimi build`). Both outcomes must be identical and
 //! must match the expected outcome. Each program also round-trips through the
-//! formatter and survives inspection at every token boundary.
+//! formatter and survives inspection at every byte offset.
 
 use chimi::source::SourceSnapshot;
-use chimi::{Compiler, ProjectSource};
+use chimi::{Compiler, CompilerSession, ProjectSource};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -134,30 +134,21 @@ fn assert_formatting_preserves_the_outcome(path: &Path, source: &str, expected: 
     );
 }
 
-/// Inspects the program at every token boundary: offset 0, each token's end
-/// (which is the next token's start), and the end of the source. An offset
-/// inside a token reaches the same token as its start, so probing every byte
-/// costs a full project check per byte without reaching new cases. Where no
-/// token covers an offset, the walk steps to the next character instead.
+/// Inspects the program at every character boundary. One analysis answers every
+/// offset, as an editor session does: `IncrementalTypeReport::inspect` promises
+/// the facts `Compiler::inspect_project` gives at that offset, without the
+/// recheck that made one project check per byte the cost of this suite. The
+/// sealing step it skips runs once, through `Compiler::inspect_project`.
 fn assert_inspection_survives_every_offset(source: &str) {
-    let inspect = |offset: usize| {
-        let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
-            .expect("valid module path");
-        Compiler::inspect_project(vec![module], "main", offset)
+    let module = || {
+        ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+            .expect("valid module path")
     };
-    let mut offset = 0;
-    while offset < source.len() {
-        let token_end = inspect(offset)
-            .ok()
-            .and_then(|report| report.token().map(|token| token.range().end() as usize))
-            .filter(|&end| end > offset);
-        offset = token_end.unwrap_or_else(|| {
-            (offset + 1..=source.len())
-                .find(|&next| source.is_char_boundary(next))
-                .expect("the source length is a character boundary")
-        });
+    let report = CompilerSession::new().analyze_project(vec![module()]);
+    for offset in (0..=source.len()).filter(|&offset| source.is_char_boundary(offset)) {
+        let _ = report.inspect("main", offset);
     }
-    let _ = inspect(source.len());
+    let _ = Compiler::inspect_project(vec![module()], "main", source.len());
 }
 
 /// Runs `source` on both execution paths and returns their shared outcome value.
