@@ -870,8 +870,8 @@ Each step leaves the full test suite and both backends passing.
    bounded rendering in the runner. Switch `std-tests` expected files to
    rendered output.
 6. **`std/map` and `std/json`.** `Map` and `Json.Number` become native types.
-   `Json.Value`, `DecodeError`, and `NumberError` become source enums listed
-   as runtime-known declarations.
+   `Json.Value`, `DecodeError`, and `ConversionError` (formerly
+   `NumberError`) become source enums listed as runtime-known declarations.
 7. **`std/io`.** `Path`, `FileError`, `ConsoleError`, `Utf8Error`, and
    `Console` move to source, with host operations behind private provider
    constants and the runner's provider plan naming them. `FileSystem` keeps

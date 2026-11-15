@@ -1,0 +1,68 @@
+// Json.number_to_int and Json.number_to_decimal convert by the value a number
+// denotes, not its spelling: integers written with a fraction or an exponent
+// convert, a fractional part is NotInteger, and a value past the target is
+// OutOfRange. Decimals keep the written scale, are exact past 64 bits and to
+// 38 fraction digits, and drop trailing zeros only when the written scale
+// does not fit.
+import std/debug as Debug
+import std/decimal as Decimal
+import std/json as Json
+import std/json.{ConversionError, Number, Value}
+
+fn number(text: Text) -> Number {
+  let value = Json.decode(text)
+  case value {
+    Value.Number(number) -> number
+    _ -> Debug.crash("not a number")
+  }
+}
+
+fn as_int(text: Text) -> Text {
+  case Json.number_to_int(number(text)) {
+    Success(value) -> Debug.render(value)
+    Failure(ConversionError.NotInteger) -> "NotInteger"
+    Failure(ConversionError.OutOfRange) -> "OutOfRange"
+  }
+}
+
+fn as_decimal(text: Text) -> Text {
+  case Json.number_to_decimal(number(text)) {
+    Success(value) -> Decimal.to_text(value)
+    Failure(ConversionError.NotInteger) -> "NotInteger"
+    Failure(ConversionError.OutOfRange) -> "OutOfRange"
+  }
+}
+
+pub fn main() -> List<List<Text>> {
+  [
+    [
+      as_int("0"), as_int("-0"), as_int("0.000e-99999999999999999999"), as_int("1.0"),
+      as_int("1e2"), as_int("1500e-2"), as_int("-12.5e1"), as_int("9223372036854775807"),
+      as_int("-9223372036854775808"), as_int("922337203685477580.7e1"),
+    ],
+    [
+      as_int("9223372036854775808"), as_int("-9223372036854775809"), as_int("1e19"),
+      as_int("1.5e400"), as_int("1e99999999999999999999"),
+    ],
+    [
+      as_int("1.5"), as_int("1e-1"), as_int("12345678901234567890.5"),
+      as_int("1e-99999999999999999999"),
+    ],
+    [
+      as_decimal("1.50"), as_decimal("-0.0"), as_decimal("0e50"), as_decimal("0e-50"),
+      as_decimal("1.5e3"), as_decimal("1500e-2"), as_decimal("-2.5E-3"),
+    ],
+    [
+      as_decimal("123456789012345678901234567890"),
+      as_decimal("0.12345678901234567890123456789012345678"),
+      as_decimal("-9.9999999999999999999999999999999999999e37"),
+      as_decimal("1.0000000000000000000000000000000000000000"),
+    ],
+    [
+      as_decimal("1e38"), as_decimal("0.123456789012345678901234567890123456789"),
+      as_decimal("1e-39"), as_decimal("1e99999999999999999999"),
+      as_decimal("1e-99999999999999999999"),
+    ],
+    [Debug.render(Json.number_to_decimal(number("19.90")) == Decimal.of(199, 1))],
+  ]
+}

@@ -34,12 +34,14 @@ for a broader collections library.
 
 `Json.decode` MUST decode one complete JSON text into a closed `Value`:
 
-<!-- chimi: check -->
+<!-- chimi: fragment -->
 ```chimi
-import std/json.{Number}
+// std/json.chimi
 import std/map.{Map}
 
-enum Value {
+pub native type Number
+
+pub enum Value {
   Null
   Boolean(value: Bool)
   Number(value: Number)
@@ -156,7 +158,7 @@ Json.int(Int) -> Value
 Json.text(Text) -> Value
 Json.array(List<Value>) -> Value
 Json.object(Map<Text, Value>) -> Value
-Json.number_to_int(Number) -> Int errors NumberError
+Json.number_to_int(Number) -> Int errors ConversionError
 Text.equal(Text, Text) -> Bool
 ```
 

@@ -16,7 +16,7 @@ use crate::executable::{
     LegacyCoreProgram,
 };
 use crate::ids::{CoreNodeId, FileId, OriginId, SemanticId, SymbolId, TextRange};
-use crate::json::{JsonData, decode_json, write_json_data, write_json_string};
+use crate::json::write_json_string;
 use crate::numeric::{
     ArithmeticOperator, FloatParseError, FloatToIntError, IntParseError, float_binary,
     float_to_int, integer_binary, integer_modulo, integer_negate, parse_float, parse_int,
@@ -1668,7 +1668,11 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::SetReduceItems => {
                 self.invoke_set_operation(function, arguments, span, call_node, environment)
             }
-            StandardFunction::JsonNumberToDecimal => {
+            StandardFunction::JsonDecode
+            | StandardFunction::JsonEncode
+            | StandardFunction::JsonInt
+            | StandardFunction::JsonNumberToInt
+            | StandardFunction::JsonNumberToDecimal => {
                 self.invoke_json_operation(function, arguments, span, call_node, environment)
             }
             StandardFunction::DecimalScaled
@@ -1705,101 +1709,6 @@ impl<'core> Evaluator<'core> {
                 Control::Success(RuntimeValue::Integer(
                     i64::try_from(values.len()).unwrap_or(i64::MAX),
                 ))
-            }
-            StandardFunction::JsonDecode => {
-                let [RuntimeValue::Text(source)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                match decode_json(source) {
-                    Ok(value) => Control::Success(self.json_to_runtime(value)),
-                    Err(error) => Control::Failure(self.standard_value(
-                        StandardConstructor::DecodeInvalidJson,
-                        vec![
-                            RuntimeValue::Text(error.message),
-                            RuntimeValue::Integer(i64::try_from(error.offset).unwrap_or(i64::MAX)),
-                        ],
-                    )),
-                }
-            }
-            StandardFunction::JsonEncode => {
-                let [value] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                let Ok(value) = self.runtime_to_json(value) else {
-                    return Control::Defect {
-                        message: "verified JSON value has an invalid runtime shape".to_owned(),
-                        node: Some(call_node),
-                    };
-                };
-                let mut output = String::new();
-                write_json_data(&mut output, &value);
-                Control::Success(RuntimeValue::Text(output))
-            }
-            StandardFunction::JsonBoolean => {
-                let [RuntimeValue::Boolean(value)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                Control::Success(self.standard_value(
-                    StandardConstructor::JsonBoolean,
-                    vec![RuntimeValue::Boolean(*value)],
-                ))
-            }
-            StandardFunction::JsonInt => {
-                let [RuntimeValue::Integer(value)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                Control::Success(self.standard_value(
-                    StandardConstructor::JsonNumber,
-                    vec![RuntimeValue::JsonNumber(value.to_string())],
-                ))
-            }
-            StandardFunction::JsonText => {
-                let [RuntimeValue::Text(value)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                Control::Success(self.standard_value(
-                    StandardConstructor::JsonText,
-                    vec![RuntimeValue::Text(value.clone())],
-                ))
-            }
-            StandardFunction::JsonArray => {
-                let [RuntimeValue::List(values)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                Control::Success(self.standard_value(
-                    StandardConstructor::JsonArray,
-                    vec![RuntimeValue::List(values.clone())],
-                ))
-            }
-            StandardFunction::JsonObject => {
-                let [RuntimeValue::Map(fields)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                Control::Success(self.standard_value(
-                    StandardConstructor::JsonObject,
-                    vec![RuntimeValue::Map(fields.clone())],
-                ))
-            }
-            StandardFunction::JsonNumberToInt => {
-                let [RuntimeValue::JsonNumber(number)] = arguments.as_slice() else {
-                    return self.intrinsic_shape_defect(function, call_node);
-                };
-                if number
-                    .bytes()
-                    .any(|byte| matches!(byte, b'.' | b'e' | b'E'))
-                {
-                    return Control::Failure(self.standard_value(
-                        StandardConstructor::NumberNotInteger,
-                        vec![RuntimeValue::JsonNumber(number.clone())],
-                    ));
-                }
-                match number.parse::<i64>() {
-                    Ok(value) => Control::Success(RuntimeValue::Integer(value)),
-                    Err(_) => Control::Failure(self.standard_value(
-                        StandardConstructor::NumberOutOfRange,
-                        vec![RuntimeValue::JsonNumber(number.clone())],
-                    )),
-                }
             }
             StandardFunction::TextAppend => {
                 let [RuntimeValue::Text(left), RuntimeValue::Text(right)] = arguments.as_slice()
@@ -2024,16 +1933,6 @@ impl<'core> Evaluator<'core> {
         }
     }
 
-    /// The defect of an operation registered ahead of its module's port;
-    /// `runtime.c`'s `not_implemented_yet` gives the same message.
-    fn not_implemented_yet(function: StandardFunction, call_node: CoreNodeId) -> Control {
-        let id = crate::operations::operation_id(function).unwrap_or(function.name());
-        Control::Defect {
-            message: format!("{id} is not implemented yet"),
-            node: Some(call_node),
-        }
-    }
-
     fn intrinsic_shape_defect(&self, function: StandardFunction, call_node: CoreNodeId) -> Control {
         Control::Defect {
             message: format!(
@@ -2081,102 +1980,6 @@ impl<'core> Evaluator<'core> {
                     .then_some(symbol.id)
             })
             .expect("core retains every standard constructor")
-    }
-
-    fn json_to_runtime(&self, value: JsonData) -> RuntimeValue {
-        match value {
-            JsonData::Null => self.standard_value(StandardConstructor::JsonNull, Vec::new()),
-            JsonData::Boolean(value) => self.standard_value(
-                StandardConstructor::JsonBoolean,
-                vec![RuntimeValue::Boolean(value)],
-            ),
-            JsonData::Number(value) => self.standard_value(
-                StandardConstructor::JsonNumber,
-                vec![RuntimeValue::JsonNumber(value)],
-            ),
-            JsonData::Text(value) => self.standard_value(
-                StandardConstructor::JsonText,
-                vec![RuntimeValue::Text(value)],
-            ),
-            JsonData::Array(values) => self.standard_value(
-                StandardConstructor::JsonArray,
-                vec![RuntimeValue::List(
-                    values
-                        .into_iter()
-                        .map(|value| self.json_to_runtime(value))
-                        .collect(),
-                )],
-            ),
-            JsonData::Object(fields) => {
-                let mut map = RuntimeMap::default();
-                for (name, value) in fields {
-                    map = map.put(
-                        RuntimeValue::Text(name),
-                        self.json_to_runtime(value),
-                        &self.key_order(),
-                    );
-                }
-                self.standard_value(
-                    StandardConstructor::JsonObject,
-                    vec![RuntimeValue::Map(map)],
-                )
-            }
-        }
-    }
-
-    fn runtime_to_json(&self, value: &RuntimeValue) -> Result<JsonData, ()> {
-        let RuntimeValue::Constructed {
-            constructor,
-            fields,
-            ..
-        } = value
-        else {
-            return Err(());
-        };
-        let Some(StandardSymbol::Constructor(constructor)) =
-            self.core.symbol(*constructor).standard
-        else {
-            return Err(());
-        };
-        let field = |index: usize| fields.get(index).map(|field| &field.value).ok_or(());
-        match constructor {
-            StandardConstructor::JsonNull => Ok(JsonData::Null),
-            StandardConstructor::JsonBoolean => match field(0)? {
-                RuntimeValue::Boolean(value) => Ok(JsonData::Boolean(*value)),
-                _ => Err(()),
-            },
-            StandardConstructor::JsonNumber => match field(0)? {
-                RuntimeValue::JsonNumber(value) => Ok(JsonData::Number(value.clone())),
-                _ => Err(()),
-            },
-            StandardConstructor::JsonText => match field(0)? {
-                RuntimeValue::Text(value) => Ok(JsonData::Text(value.clone())),
-                _ => Err(()),
-            },
-            StandardConstructor::JsonArray => match field(0)? {
-                RuntimeValue::List(values) => values
-                    .iter()
-                    .map(|value| self.runtime_to_json(value))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(JsonData::Array),
-                _ => Err(()),
-            },
-            StandardConstructor::JsonObject => match field(0)? {
-                RuntimeValue::Map(fields) => fields
-                    .entries()
-                    .into_iter()
-                    .map(|(name, value)| match &name {
-                        RuntimeValue::Text(name) => self
-                            .runtime_to_json(&value)
-                            .map(|value| (name.clone(), value)),
-                        _ => Err(()),
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(JsonData::Object),
-                _ => Err(()),
-            },
-            _ => Err(()),
-        }
     }
 
     fn key_order(&self) -> impl Fn(&RuntimeValue, &RuntimeValue) -> Comparison + '_ {

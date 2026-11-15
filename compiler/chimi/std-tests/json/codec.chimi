@@ -1,0 +1,51 @@
+// std/json decode and encode: each kind of value round-trips, numbers keep
+// their spelling while comparing by value, object members encode in ascending
+// UTF-8 byte order at every depth whatever order the map was built in, text
+// escapes only what JSON requires, and a missing member stays apart from a
+// member that holds null.
+import std/json as Json
+import std/json.{Value}
+import std/map as Map
+
+fn round_trip(text: Text) -> Text {
+  let value = Json.decode(text)
+  Json.encode(value)
+}
+
+fn member(text: Text, name: Text) -> Option<Value> {
+  let value = Json.decode(text)
+  case value {
+    Value.Object(fields) -> Map.get(fields, name)
+    _ -> None
+  }
+}
+
+pub fn main() -> List<Text> {
+  let built_forward = Map.from([("a", Json.int(1)), ("b", Json.boolean(True)), ("z", Json.text("last"))])
+  let built_backward = Map.from([("z", Json.text("last")), ("b", Json.boolean(True)), ("a", Json.int(1))])
+  let nested = Json.object(Map.from([
+    ("é", Json.int(3)),
+    ("Z", Json.array([Json.object(Map.from([("y", Json.int(2)), ("x", Json.int(1))]))])),
+    ("e", Value.Null),
+  ]))
+  [
+    round_trip(" { \"b\" : [ 1 , 2.50 , -0 , 1E+2 , 3e-1 ] , \"a\" : { } , \"c\" : [ ] } "),
+    round_trip("[true, false, null, \"\"]"),
+    round_trip("\"\\u00e9 / \\/ \\\" \\\\ \\b\\f\\n\\r\\t \\u0001 \\ud83d\\udca5\""),
+    round_trip("-12345678901234567890123.4567890e-30"),
+    Json.encode(Json.object(built_forward)),
+    Json.encode(Json.object(built_backward)),
+    Json.encode(nested),
+    Json.encode(Json.text("tab\tquote\"del\u{7f}c1\u{85}")),
+    Json.encode(Json.int(-9223372036854775807 - 1)),
+    Json.encode(Json.array([])),
+    Json.encode(Json.boolean(Json.decode("1.0") == Json.decode("1"))),
+    Json.encode(Json.boolean(Json.decode("{\"a\": [1, 2]}") == Json.decode("{\"a\": [1.0, 2e0]}"))),
+    Json.encode(Json.boolean(Json.decode("1.0") == Json.decode("1.01"))),
+    Json.encode(Json.boolean(Json.object(built_forward) == Json.object(built_backward))),
+    Json.encode(Json.array([
+      Json.boolean(member("{\"a\": null}", "a") == Some(Value.Null)),
+      Json.boolean(member("{\"a\": null}", "b") == None),
+    ])),
+  ]
+}

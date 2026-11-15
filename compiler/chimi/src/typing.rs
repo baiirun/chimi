@@ -1704,13 +1704,6 @@ impl ProjectTypeChecker {
         let channel_receive_failures =
             self.standard_failure_row(&[StandardConstructor::ChannelAborted]);
         let path = self.standard_named_type(StandardType::Path, Vec::new());
-        let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
-        let number = self.standard_named_type(StandardType::JsonNumber, Vec::new());
-        let decode_failure = self.standard_failure_row(&[StandardConstructor::DecodeInvalidJson]);
-        let number_failure = self.standard_failure_row(&[
-            StandardConstructor::NumberNotInteger,
-            StandardConstructor::NumberOutOfRange,
-        ]);
         let console_failure = self.standard_failure_row(&[StandardConstructor::ConsoleWriteFailed]);
         for (function, contract) in [
             (
@@ -1791,53 +1784,6 @@ impl ProjectTypeChecker {
         }
 
         let pure = (FailureRowId::new(0), NeedsRowId::new(0));
-        let json_contracts = [
-            (
-                StandardFunction::JsonDecode,
-                vec![text],
-                value,
-                decode_failure,
-            ),
-            (StandardFunction::JsonEncode, vec![value], text, pure.0),
-            (
-                StandardFunction::JsonBoolean,
-                vec![bool_type],
-                value,
-                pure.0,
-            ),
-            (StandardFunction::JsonInt, vec![int], value, pure.0),
-            (StandardFunction::JsonText, vec![text], value, pure.0),
-            (
-                StandardFunction::JsonArray,
-                vec![self.builtin_type_with_arguments("List", vec![value])],
-                value,
-                pure.0,
-            ),
-            (
-                StandardFunction::JsonObject,
-                vec![self.standard_named_type(StandardType::Map, vec![text, value])],
-                value,
-                pure.0,
-            ),
-            (
-                StandardFunction::JsonNumberToInt,
-                vec![number],
-                int,
-                number_failure,
-            ),
-        ];
-        for (function, inputs, success, failures) in json_contracts {
-            let symbol = self.standard_function_symbol(function);
-            self.contracts.insert(
-                symbol,
-                CallableContract {
-                    inputs,
-                    success,
-                    failures,
-                    needs: pure.1,
-                },
-            );
-        }
         let float = self.builtin_type("Float");
         let range = self.builtin_type("Range");
         let int_option = self.standard_named_type(StandardType::Option, vec![int]);
@@ -2179,6 +2125,13 @@ impl ProjectTypeChecker {
         );
 
         for constructor in StandardConstructor::ALL {
+            if self
+                .resolved
+                .loaded_standard_type(constructor.type_kind())
+                .is_none()
+            {
+                continue;
+            }
             let symbol = self.standard_constructor_symbol(constructor);
             let (inputs, success) = self.standard_constructor_shape(constructor);
             self.fields.insert(
@@ -2244,15 +2197,37 @@ impl ProjectTypeChecker {
         })
     }
 
+    /// Requires: `std/json` is loaded, so `Value`, `Number`, and `Map` resolve.
+    fn json_value_constructor_shape(
+        &mut self,
+        constructor: StandardConstructor,
+    ) -> (Vec<TypeId>, TypeId) {
+        let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
+        let inputs = match constructor {
+            StandardConstructor::JsonBoolean => vec![self.builtin_type("Bool")],
+            StandardConstructor::JsonNumber => {
+                vec![self.standard_named_type(StandardType::JsonNumber, Vec::new())]
+            }
+            StandardConstructor::JsonText => vec![self.builtin_type("Text")],
+            StandardConstructor::JsonArray => {
+                vec![self.builtin_type_with_arguments("List", vec![value])]
+            }
+            StandardConstructor::JsonObject => {
+                let text = self.builtin_type("Text");
+                vec![self.standard_named_type(StandardType::Map, vec![text, value])]
+            }
+            StandardConstructor::JsonNull => Vec::new(),
+            other => unreachable!("{other:?} is not a `Json.Value` constructor"),
+        };
+        (inputs, value)
+    }
+
     fn standard_constructor_shape(
         &mut self,
         constructor: StandardConstructor,
     ) -> (Vec<TypeId>, TypeId) {
         let text = self.builtin_type("Text");
         let int = self.builtin_type("Int");
-        let bool_type = self.builtin_type("Bool");
-        let value = self.standard_named_type(StandardType::JsonValue, Vec::new());
-        let number = self.standard_named_type(StandardType::JsonNumber, Vec::new());
         match constructor {
             StandardConstructor::ProcessSendFull
             | StandardConstructor::ProcessSendUnavailable
@@ -2299,25 +2274,15 @@ impl ProjectTypeChecker {
                     self.standard_named_type(StandardType::Option, vec![value]),
                 )
             }
-            StandardConstructor::JsonNull => (Vec::new(), value),
-            StandardConstructor::JsonBoolean => (vec![bool_type], value),
-            StandardConstructor::JsonNumber => (vec![number], value),
-            StandardConstructor::JsonText => (vec![text], value),
-            StandardConstructor::JsonArray => (
-                vec![self.builtin_type_with_arguments("List", vec![value])],
-                value,
-            ),
-            StandardConstructor::JsonObject => (
-                vec![self.standard_named_type(StandardType::Map, vec![text, value])],
-                value,
-            ),
+            StandardConstructor::JsonNull
+            | StandardConstructor::JsonBoolean
+            | StandardConstructor::JsonNumber
+            | StandardConstructor::JsonText
+            | StandardConstructor::JsonArray
+            | StandardConstructor::JsonObject => self.json_value_constructor_shape(constructor),
             StandardConstructor::DecodeInvalidJson => (
                 vec![text, int],
                 self.standard_named_type(StandardType::DecodeError, Vec::new()),
-            ),
-            StandardConstructor::NumberNotInteger | StandardConstructor::NumberOutOfRange => (
-                vec![number],
-                self.standard_named_type(StandardType::NumberError, Vec::new()),
             ),
             StandardConstructor::ChannelSendClosed | StandardConstructor::ChannelSendAborted => {
                 let value = self.standard_generic_type(StandardGeneric::ChannelValue);
@@ -2344,7 +2309,9 @@ impl ProjectTypeChecker {
                 Vec::new(),
                 self.standard_named_type(StandardType::ChannelError, Vec::new()),
             ),
-            StandardConstructor::IntParseEmpty
+            StandardConstructor::JsonNotInteger
+            | StandardConstructor::JsonOutOfRange
+            | StandardConstructor::IntParseEmpty
             | StandardConstructor::IntParseInvalidDigit
             | StandardConstructor::IntParseOutOfRange
             | StandardConstructor::FloatParseEmpty
@@ -6367,7 +6334,7 @@ impl ProjectTypeChecker {
                     | StandardType::Ordering
                     | StandardType::JsonValue
                     | StandardType::DecodeError
-                    | StandardType::NumberError
+                    | StandardType::JsonConversionError
                     | StandardType::ChannelSendError
                     | StandardType::ProcessSendError
                     | StandardType::SupervisorRestart

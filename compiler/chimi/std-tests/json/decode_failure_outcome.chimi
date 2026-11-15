@@ -1,0 +1,8 @@
+// A decode failure that main lets propagate reaches the outcome as
+// `DecodeError.InvalidJson` with its message and byte offset.
+import std/json as Json
+import std/json.{Value}
+
+pub fn main() -> Value {
+  Json.decode("{\"a\": [1, 2}")
+}

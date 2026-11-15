@@ -1,0 +1,119 @@
+/// JSON text and the values it denotes. `Json.decode` reads one complete JSON
+/// text into a `Value`, and `Json.encode` writes a `Value` back with no
+/// insignificant whitespace and object keys in ascending UTF-8 byte order.
+///
+/// JSON null is `Value.Null`, an ordinary value: absence stays `Option`, so a
+/// missing object member is `None` and a member holding null is
+/// `Some(Value.Null)`. A `Number` is exact: it keeps its source spelling for
+/// `Json.encode`, and equality and order compare the numbers it denotes, so
+/// `1.0` equals `1`.
+
+import std/decimal.{Decimal}
+import std/map.{Map}
+
+// 1. Public types.
+
+/// A validated JSON number. Equality and order are numeric and exact, never
+/// through `Float`; `Json.encode` writes the spelling it was decoded from.
+pub native type Number
+
+/// A JSON value. Equatable and not ordered, because an `Object` holds a `Map`.
+pub enum Value {
+  Null
+  Boolean(value: Bool)
+  Number(value: Number)
+  Text(value: Text)
+  Array(values: List<Value>)
+  /// Member names are unique; `Json.encode` writes them in ascending UTF-8
+  /// byte order, whatever order the map was built in.
+  Object(fields: Map<Text, Value>)
+}
+
+// 2. Failure types.
+
+/// Failures of `Json.decode`.
+pub enum DecodeError {
+  /// The text is not one JSON value: malformed, nested more than 128 levels,
+  /// or an object with a duplicate member name. `offset` is the byte where
+  /// reading stopped.
+  InvalidJson(message: Text, offset: Int)
+}
+
+/// Failures of converting a `Number` to another number type.
+pub enum ConversionError {
+  /// The number has a fractional part.
+  NotInteger
+  /// The number does not fit the target type.
+  OutOfRange
+}
+
+// 4. Constructors.
+
+/// Returns the JSON boolean `value`.
+///
+/// Cost: O(1).
+pub fn boolean(value: Bool) -> Value {
+  Value.Boolean(value)
+}
+
+/// Returns `value` as a JSON number in canonical base-ten form, such as `-42`.
+///
+/// Cost: O(1).
+pub native fn int(value: Int) -> Value
+
+/// Returns the JSON string `value`.
+///
+/// Cost: O(1).
+pub fn text(value: Text) -> Value {
+  Value.Text(value)
+}
+
+/// Returns a JSON array of `values`, in list order.
+///
+/// Cost: O(1).
+pub fn array(values: List<Value>) -> Value {
+  Value.Array(values)
+}
+
+/// Returns a JSON object with `fields` as its members.
+///
+/// Cost: O(1).
+pub fn object(fields: Map<Text, Value>) -> Value {
+  Value.Object(fields)
+}
+
+// 7. Conversions.
+
+/// Reads one complete JSON text, with optional whitespace around it.
+///
+/// Fails with: `DecodeError.InvalidJson` for malformed JSON, nesting deeper
+/// than 128 levels, or a duplicate member name in an object.
+/// Cost: O(n).
+pub native fn decode(text: Text) -> Value errors DecodeError
+
+/// Returns `value` as JSON text: no insignificant whitespace, no trailing
+/// newline, object members in ascending UTF-8 byte order of their names,
+/// array items in list order, and each `Number` in its source spelling.
+/// Text is written as UTF-8 with only quotes, backslashes, and control
+/// characters escaped.
+///
+/// Cost: O(n log n) in the largest object's member count, O(n) otherwise.
+pub native fn encode(value: Value) -> Text
+
+/// Returns the `Int` that `number` denotes, so `1`, `1.0`, and `1e0` all
+/// return `1`.
+///
+/// Fails with: `ConversionError.NotInteger` when `number` has a fractional
+/// part; `ConversionError.OutOfRange` when it is an integer outside `Int`.
+/// Cost: O(n) in the length of its spelling.
+pub native fn number_to_int(number: Number) -> Int errors ConversionError
+
+/// Returns the `Decimal` that `number` denotes, exactly. The scale is the
+/// spelling's own, so `1.50` becomes `Decimal` `1.50` and `1.5e3` becomes
+/// `1500`; when that scale does not fit, trailing zeros are dropped until
+/// it does.
+///
+/// Fails with: `ConversionError.OutOfRange` when the value needs more than 38
+/// significant digits or more than 38 fraction digits.
+/// Cost: O(n) in the length of its spelling.
+pub native fn number_to_decimal(number: Number) -> Decimal errors ConversionError

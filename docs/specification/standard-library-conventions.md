@@ -412,7 +412,7 @@ fn port(value: Option<Text>) -> Int errors PortError {
 | `Duration.ParseError` (`Empty`, `Invalid`, `OutOfRange`) | conforms |
 | `Process.SendError` (`Full(message)`, `Unavailable(message)`) | conforms; `message` hands the transferred input back |
 | `Supervisor.StartError` (`CapacityReached`, `NameTaken(name)`, `Stopped`) | conforms; `name` is an identifier (the `process name` label) |
-| `Json.NumberError` (`NotInteger`, `OutOfRange`) | does not conform: rename to `Json.ConversionError` to match `Float.ConversionError` when `std/json` moves to source (migration step 6) |
+| `Json.ConversionError` (`NotInteger`, `OutOfRange`) | conforms; renamed from `Json.NumberError` to match `Float.ConversionError` at migration step 6, and its variants dropped the copied `Number` |
 
 ## `Option` and `Result` helpers
 

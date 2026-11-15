@@ -594,11 +594,6 @@ impl ProjectResolver {
             (StandardType::FileSystem, StandardModule::Io),
             (StandardType::Path, StandardModule::Io),
             (StandardType::Utf8Error, StandardModule::Io),
-            (StandardType::Map, StandardModule::Map),
-            (StandardType::JsonValue, StandardModule::Json),
-            (StandardType::JsonNumber, StandardModule::Json),
-            (StandardType::DecodeError, StandardModule::Json),
-            (StandardType::NumberError, StandardModule::Json),
             (StandardType::ChannelSender, StandardModule::Channel),
             (StandardType::ChannelReceiver, StandardModule::Channel),
             (StandardType::ChannelCompletion, StandardModule::Channel),
@@ -693,10 +688,13 @@ impl ProjectResolver {
         }
 
         for constructor in StandardConstructor::ALL {
+            // A constructor of a type only a standard module declares, such as
+            // `std/json.Value`, exists only when that module is loaded.
             if matches!(
                 constructor,
                 StandardConstructor::OptionSome | StandardConstructor::OptionNone
             ) || self.declared_in_source(StandardSymbol::Constructor(constructor))
+                || !self.standard_types.contains_key(&constructor.type_kind())
             {
                 continue;
             }

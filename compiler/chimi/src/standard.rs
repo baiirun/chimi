@@ -2,8 +2,6 @@
 pub(crate) enum StandardModule {
     Channel,
     Io,
-    Json,
-    Map,
     Task,
     Int,
     Float,
@@ -16,11 +14,9 @@ pub(crate) enum StandardModule {
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 13] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Channel,
         Self::Io,
-        Self::Json,
-        Self::Map,
         Self::Task,
         Self::Int,
         Self::Float,
@@ -36,8 +32,6 @@ impl StandardModule {
         match self {
             Self::Channel => "std/channel",
             Self::Io => "std/io",
-            Self::Json => "std/json",
-            Self::Map => "std/map",
             Self::Task => "std/task",
             Self::Int => "std/int",
             Self::Float => "std/float",
@@ -72,7 +66,7 @@ pub(crate) enum StandardType {
     JsonValue,
     JsonNumber,
     DecodeError,
-    NumberError,
+    JsonConversionError,
     Option,
     ChannelSender,
     ChannelReceiver,
@@ -124,7 +118,7 @@ impl StandardType {
                 | Self::FileError
                 | Self::Utf8Error
                 | Self::DecodeError
-                | Self::NumberError
+                | Self::JsonConversionError
                 | Self::ChannelSendError
                 | Self::ChannelError
                 | Self::IntParseError
@@ -148,7 +142,7 @@ impl StandardType {
             Self::JsonValue => "Value",
             Self::JsonNumber => "Number",
             Self::DecodeError => "DecodeError",
-            Self::NumberError => "NumberError",
+            Self::JsonConversionError => "ConversionError",
             Self::Option => "Option",
             Self::ChannelSender => "Sender",
             Self::ChannelReceiver => "Receiver",
@@ -212,7 +206,7 @@ impl StandardType {
             | Self::FileError
             | Self::Utf8Error
             | Self::DecodeError
-            | Self::NumberError
+            | Self::JsonConversionError
             | Self::ChannelSendError
             | Self::ChannelReceive
             | Self::ChannelError
@@ -260,14 +254,6 @@ pub(crate) enum StandardFunction {
     MapEmpty,
     MapGet,
     MapPut,
-    JsonDecode,
-    JsonEncode,
-    JsonBoolean,
-    JsonInt,
-    JsonText,
-    JsonArray,
-    JsonObject,
-    JsonNumberToInt,
     TextAppend,
     TextEqual,
     TaskStart,
@@ -371,11 +357,9 @@ pub(crate) enum StandardFunction {
     ListPush,
     ListSlice,
     ListSet,
-    // The native cores of the phase 2 ports (steps 5 and 6) that no built-in
-    // intrinsic ran before: `std/map`, `std/set`, `std/json`, and `std/decimal`.
-    // Until a port implements one, both backends defect with "<operation id> is
-    // not implemented yet". Each module's variants stay contiguous: the native
-    // runtime dispatches by range.
+    // The native cores of the phase 2 ports (steps 5 and 6): `std/map`,
+    // `std/set`, `std/json`, and `std/decimal`. Each module's variants stay
+    // contiguous: the native runtime dispatches by range.
     MapRemove,
     MapSize,
     MapReduceEntries,
@@ -385,6 +369,10 @@ pub(crate) enum StandardFunction {
     SetRemove,
     SetSize,
     SetReduceItems,
+    JsonDecode,
+    JsonEncode,
+    JsonInt,
+    JsonNumberToInt,
     JsonNumberToDecimal,
     DecimalScaled,
     DecimalRead,
@@ -397,7 +385,7 @@ pub(crate) enum StandardFunction {
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 75] = [
+    pub(crate) const ALL: [Self; 67] = [
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -440,14 +428,6 @@ impl StandardFunction {
         Self::DurationToText,
         Self::DurationParse,
         Self::IoPath,
-        Self::JsonDecode,
-        Self::JsonEncode,
-        Self::JsonBoolean,
-        Self::JsonInt,
-        Self::JsonText,
-        Self::JsonArray,
-        Self::JsonObject,
-        Self::JsonNumberToInt,
         Self::TaskStart,
         Self::TaskResult,
         Self::TaskCancel,
@@ -495,14 +475,6 @@ impl StandardFunction {
             | Self::SupervisorWait => Some(StandardModule::Supervisor),
             Self::ClockSleep => Some(StandardModule::Clock),
             Self::IoPath => Some(StandardModule::Io),
-            Self::JsonDecode
-            | Self::JsonEncode
-            | Self::JsonBoolean
-            | Self::JsonInt
-            | Self::JsonText
-            | Self::JsonArray
-            | Self::JsonObject
-            | Self::JsonNumberToInt => Some(StandardModule::Json),
             Self::TaskStart | Self::TaskResult | Self::TaskCancel => Some(StandardModule::Task),
             Self::ChannelSend
             | Self::ChannelReceive
@@ -584,6 +556,10 @@ impl StandardFunction {
             | Self::SetRemove
             | Self::SetSize
             | Self::SetReduceItems
+            | Self::JsonDecode
+            | Self::JsonEncode
+            | Self::JsonInt
+            | Self::JsonNumberToInt
             | Self::JsonNumberToDecimal
             | Self::DecimalScaled
             | Self::DecimalRead
@@ -610,11 +586,7 @@ impl StandardFunction {
             Self::RangeContains => "contains",
             Self::JsonDecode => "decode",
             Self::JsonEncode => "encode",
-            Self::JsonBoolean => "boolean",
             Self::JsonInt => "int",
-            Self::JsonText => "text",
-            Self::JsonArray => "array",
-            Self::JsonObject => "object",
             Self::JsonNumberToInt => "number_to_int",
             Self::TextAppend => "append",
             Self::TextEqual => "equal",
@@ -837,8 +809,8 @@ pub(crate) enum StandardConstructor {
     JsonArray,
     JsonObject,
     DecodeInvalidJson,
-    NumberNotInteger,
-    NumberOutOfRange,
+    JsonNotInteger,
+    JsonOutOfRange,
     ChannelSendClosed,
     ChannelSendAborted,
     ChannelReceived,
@@ -898,8 +870,8 @@ impl StandardConstructor {
         Self::JsonArray,
         Self::JsonObject,
         Self::DecodeInvalidJson,
-        Self::NumberNotInteger,
-        Self::NumberOutOfRange,
+        Self::JsonNotInteger,
+        Self::JsonOutOfRange,
         Self::ChannelSendClosed,
         Self::ChannelSendAborted,
         Self::ChannelReceived,
@@ -929,7 +901,7 @@ impl StandardConstructor {
             | Self::JsonArray
             | Self::JsonObject => StandardType::JsonValue,
             Self::DecodeInvalidJson => StandardType::DecodeError,
-            Self::NumberNotInteger | Self::NumberOutOfRange => StandardType::NumberError,
+            Self::JsonNotInteger | Self::JsonOutOfRange => StandardType::JsonConversionError,
             Self::ChannelSendClosed | Self::ChannelSendAborted => StandardType::ChannelSendError,
             Self::ChannelReceived | Self::ChannelDrained => StandardType::ChannelReceive,
             Self::ChannelAborted => StandardType::ChannelError,
@@ -970,10 +942,6 @@ impl StandardConstructor {
             StandardType::ConsoleError | StandardType::FileError | StandardType::Utf8Error => {
                 Some(StandardModule::Io)
             }
-            StandardType::JsonValue
-            | StandardType::JsonNumber
-            | StandardType::DecodeError
-            | StandardType::NumberError => Some(StandardModule::Json),
             StandardType::Option => None,
             StandardType::ChannelSender
             | StandardType::ChannelReceiver
@@ -1006,7 +974,11 @@ impl StandardConstructor {
             | StandardType::Path
             | StandardType::Duration
             | StandardType::Set
-            | StandardType::Decimal => None,
+            | StandardType::Decimal
+            | StandardType::JsonValue
+            | StandardType::JsonNumber
+            | StandardType::DecodeError
+            | StandardType::JsonConversionError => None,
         }
     }
 
@@ -1027,8 +999,8 @@ impl StandardConstructor {
             Self::JsonArray => "Array",
             Self::JsonObject => "Object",
             Self::DecodeInvalidJson => "InvalidJson",
-            Self::NumberNotInteger => "NotInteger",
-            Self::NumberOutOfRange => "OutOfRange",
+            Self::JsonNotInteger => "NotInteger",
+            Self::JsonOutOfRange => "OutOfRange",
             Self::ChannelSendClosed => "Closed",
             Self::ChannelSendAborted | Self::ChannelAborted => "Aborted",
             Self::ChannelReceived => "Received",
@@ -1082,12 +1054,13 @@ impl StandardConstructor {
             Self::JsonArray => &["values"],
             Self::JsonObject => &["fields"],
             Self::DecodeInvalidJson => &["message", "offset"],
-            Self::NumberNotInteger | Self::NumberOutOfRange => &["value"],
             Self::ChannelSendClosed | Self::ChannelSendAborted | Self::ChannelReceived => {
                 &["value"]
             }
             Self::ChannelDrained | Self::ChannelAborted => &[],
-            Self::IntParseEmpty
+            Self::JsonNotInteger
+            | Self::JsonOutOfRange
+            | Self::IntParseEmpty
             | Self::IntParseInvalidDigit
             | Self::IntParseOutOfRange
             | Self::FloatParseEmpty

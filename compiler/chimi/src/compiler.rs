@@ -654,13 +654,12 @@ impl Compiler {
         crate::operations::verify_tree(sources)
     }
 
-    /// Every operation id in the standard registry that a std-tests program must
-    /// reach: all but those registered ahead of their module's port.
+    /// Every operation id in the standard registry, each of which a std-tests
+    /// program must reach.
     #[doc(hidden)]
     pub fn standard_operation_ids() -> Vec<&'static str> {
         crate::operations::OPERATIONS
             .iter()
-            .filter(|operation| !operation.porting)
             .map(|operation| operation.id)
             .collect()
     }

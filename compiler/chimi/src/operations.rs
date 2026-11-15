@@ -40,11 +40,6 @@ pub(crate) struct Operation {
     pub(crate) arity: usize,
     pub(crate) class: OperationClass,
     pub(crate) implementation: StandardFunction,
-    /// Registered ahead of its module's port: the module is not importable yet
-    /// (`std/json`) or the operation defects with
-    /// "<id> is not implemented yet". The std-tests coverage check skips it; a
-    /// port flips it with [`pure`] once a program reaches the operation.
-    pub(crate) porting: bool,
 }
 
 /// A source declaration whose identity the runtime knows.
@@ -71,16 +66,6 @@ const fn pure(id: &'static str, arity: usize, implementation: StandardFunction) 
         arity,
         class: OperationClass::Pure,
         implementation,
-        porting: false,
-    }
-}
-
-/// A pure operation registered ahead of its module's port (see
-/// [`Operation::porting`]).
-const fn porting(id: &'static str, arity: usize, implementation: StandardFunction) -> Operation {
-    Operation {
-        porting: true,
-        ..pure(id, arity, implementation)
     }
 }
 
@@ -128,12 +113,12 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/set.size", 1, StandardFunction::SetSize),
     pure("std/set.reduce_items", 3, StandardFunction::SetReduceItems),
 
-    // std/json: all but number_to_decimal are the built-in intrinsics.
-    porting("std/json.decode", 1, StandardFunction::JsonDecode),
-    porting("std/json.encode", 1, StandardFunction::JsonEncode),
-    porting("std/json.int", 1, StandardFunction::JsonInt),
-    porting("std/json.number_to_int", 1, StandardFunction::JsonNumberToInt),
-    porting("std/json.number_to_decimal", 1, StandardFunction::JsonNumberToDecimal),
+    // std/json: `boolean`, `text`, `array`, and `object` are Chimi.
+    pure("std/json.decode", 1, StandardFunction::JsonDecode),
+    pure("std/json.encode", 1, StandardFunction::JsonEncode),
+    pure("std/json.int", 1, StandardFunction::JsonInt),
+    pure("std/json.number_to_int", 1, StandardFunction::JsonNumberToInt),
+    pure("std/json.number_to_decimal", 1, StandardFunction::JsonNumberToDecimal),
 
     // std/debug
     pure("std/debug.render", 1, StandardFunction::DebugRender),
@@ -186,14 +171,14 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
         "std/json.DecodeError.InvalidJson",
         StandardConstructor::DecodeInvalidJson,
     ),
-    known_type("std/json.NumberError", StandardType::NumberError),
+    known_type("std/json.ConversionError", StandardType::JsonConversionError),
     known_constructor(
-        "std/json.NumberError.NotInteger",
-        StandardConstructor::NumberNotInteger,
+        "std/json.ConversionError.NotInteger",
+        StandardConstructor::JsonNotInteger,
     ),
     known_constructor(
-        "std/json.NumberError.OutOfRange",
-        StandardConstructor::NumberOutOfRange,
+        "std/json.ConversionError.OutOfRange",
+        StandardConstructor::JsonOutOfRange,
     ),
 ];
 
@@ -279,14 +264,6 @@ pub(crate) fn operation(id: &str) -> Option<&'static Operation> {
     OPERATIONS.iter().find(|operation| operation.id == id)
 }
 
-/// The id of the operation that runs `function`, for its defect messages.
-pub(crate) fn operation_id(function: StandardFunction) -> Option<&'static str> {
-    OPERATIONS
-        .iter()
-        .find(|operation| operation.implementation == function)
-        .map(|operation| operation.id)
-}
-
 /// The runtime identity of the source declaration with this qualified name.
 pub(crate) fn runtime_known(id: &str) -> Option<RuntimeIdentity> {
     RUNTIME_KNOWN
@@ -318,9 +295,8 @@ impl StandardTreeVerification {
 /// operation to exactly one `native fn`, and declare every runtime-known item
 /// of the modules it holds.
 ///
-/// An operation registered ahead of its module's port (`porting`) has no
-/// declaration yet, and a runtime-known declaration of a module the tree does
-/// not hold keeps its synthesized built-in, so neither is required.
+/// A runtime-known declaration of a module the tree does not hold keeps its
+/// synthesized built-in, so it is not required.
 pub(crate) fn verify_tree(sources: Vec<ProjectSource>) -> StandardTreeVerification {
     let modules = sources
         .iter()
@@ -340,7 +316,7 @@ pub(crate) fn verify_tree(sources: Vec<ProjectSource>) -> StandardTreeVerificati
             .or_default() += 1;
     }
     let mut mismatches = Vec::new();
-    for operation in OPERATIONS.iter().filter(|operation| !operation.porting) {
+    for operation in OPERATIONS {
         match declarations.get(operation.id).copied().unwrap_or(0) {
             0 => mismatches.push(format!(
                 "registered operation {} has no `native fn` declaration",

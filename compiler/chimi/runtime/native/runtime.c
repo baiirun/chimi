@@ -6022,12 +6022,6 @@ static ChimiControl *invoke_process(ChimiRuntime *runtime, uint32_t intrinsic, C
 #endif
 }
 
-/* An operation registered ahead of its module's port (operations.rs): the
-   interpreter defects with the same message. */
-static ChimiControl *not_implemented_yet(const char *operation_id, uint32_t call_node) {
-  return defect(numeric_message("%s is not implemented yet", operation_id), call_node);
-}
-
 /* Calls `step` with the state, starting at `initial`, then the key of each node
    of `entries` and, when `with_value`, its value; stops at the first call that does
    not succeed. Frees `entries`. */
@@ -6114,14 +6108,117 @@ static ChimiControl *invoke_set_operation(ChimiRuntime *runtime, uint32_t intrin
   return intrinsic_shape_defect(call_node);
 }
 
-/* The native core of std/json; owned by its port. */
+/* The exact value of a JSON number as +-significant x 10^exponent, where
+   `significant` (the spelling's digits, '.' skipped) has no leading or trailing
+   zeros and is empty for zero, and the scale the spelling writes: fraction digits
+   minus the written exponent. As in json.rs, a written exponent is clamped to
+   JSON_EXPONENT_CLAMP, which only numbers far outside Int and Decimal reach. */
+#define JSON_EXPONENT_CLAMP 1000000000000000LL
+typedef struct { bool negative; char *significant; int64_t length; int64_t exponent; int64_t written_scale; } JsonExactNumber;
+static JsonExactNumber json_exact_number(const char *text) {
+  JsonExactNumber number = {0};
+  number.negative = *text == '-'; if (number.negative) ++text;
+  size_t mantissa = strcspn(text, "eE"), point = strcspn(text, ".eE");
+  int64_t fraction_digits = point < mantissa ? (int64_t)(mantissa - point - 1) : 0;
+  int64_t written = 0; bool written_negative = false;
+  if (text[mantissa]) {
+    const char *cursor = text + mantissa + 1;
+    written_negative = *cursor == '-'; if (*cursor == '-' || *cursor == '+') ++cursor;
+    for (; *cursor; ++cursor) {
+      written = written * 10 + (*cursor - '0');
+      if (written > JSON_EXPONENT_CLAMP) written = JSON_EXPONENT_CLAMP;
+    }
+  }
+  if (written_negative) written = -written;
+  number.significant = allocate(mantissa + 1, 1);
+  int64_t length = 0;
+  for (size_t index = 0; index < mantissa; ++index)
+    if (text[index] != '.' && (length > 0 || text[index] != '0')) number.significant[length++] = text[index];
+  int64_t trailing = 0;
+  while (length > 0 && number.significant[length - 1] == '0') { --length; ++trailing; }
+  number.length = length;
+  number.exponent = written - fraction_digits + trailing;
+  number.written_scale = fraction_digits - written;
+  return number;
+}
+
+/* json.rs `number_to_int`: true with `output` set, or false with `not_integer`
+   telling NotInteger from OutOfRange. */
+static bool json_number_to_int(const char *text, int64_t *output, bool *not_integer) {
+  JsonExactNumber number = json_exact_number(text);
+  *not_integer = false; *output = 0;
+  if (number.length == 0) return true;
+  if (number.exponent < 0) { *not_integer = true; return false; }
+  if (number.length + number.exponent > 19) return false;
+  unsigned __int128 magnitude = 0;
+  for (int64_t index = 0; index < number.length; ++index) magnitude = magnitude * 10 + (unsigned)(number.significant[index] - '0');
+  for (int64_t zero = 0; zero < number.exponent; ++zero) magnitude *= 10;
+  if (magnitude > (unsigned __int128)INT64_MAX + (number.negative ? 1u : 0u)) return false;
+  *output = number.negative ? (int64_t)(0 - (uint64_t)magnitude) : (int64_t)magnitude;
+  return true;
+}
+
+/* json.rs `number_to_decimal`: the exact value at the spelling's own scale, or
+   the largest smaller scale that fits; false past 38 significant or fraction digits. */
+static bool json_number_to_decimal(const char *text, Decimal *output) {
+  JsonExactNumber number = json_exact_number(text);
+  int64_t max_scale = DECIMAL_MAX_SCALE;
+  if (number.length == 0) {
+    int64_t scale = number.written_scale < 0 ? 0 : number.written_scale > max_scale ? max_scale : number.written_scale;
+    return decimal_make(false, 0, (uint32_t)scale, output);
+  }
+  if (number.length + (number.exponent > 0 ? number.exponent : 0) > max_scale || -number.exponent > max_scale) return false;
+  /* At least the smallest scale, max(0, -exponent), as in json.rs. */
+  int64_t scale = number.written_scale < 0 ? 0 : number.written_scale;
+  if (scale > max_scale) scale = max_scale;
+  if (scale > max_scale - number.length - number.exponent) scale = max_scale - number.length - number.exponent;
+  DecimalMagnitude magnitude = 0;
+  for (int64_t index = 0; index < number.length; ++index) magnitude = magnitude * 10 + (DecimalMagnitude)(number.significant[index] - '0');
+  for (int64_t zero = 0; zero < number.exponent + scale; ++zero) magnitude *= 10;
+  return decimal_make(number.negative, magnitude, (uint32_t)scale, output);
+}
+
+/* The native core of std/json. */
 static ChimiControl *invoke_json_operation(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment) {
-  (void)runtime; (void)arguments; (void)argument_count; (void)span; (void)environment;
+  (void)runtime; (void)span; (void)environment;
   switch (intrinsic) {
-    case CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL: return not_implemented_yet("std/json.number_to_decimal", call_node);
+    case CHIMI_INTRINSIC_JSON_DECODE: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
+      JsonParser parser = {arguments[0]->as.text, strlen(arguments[0]->as.text), 0, NULL};
+      ChimiValue *value = json_parse_value(&parser, 0); if (value) json_skip_space(&parser);
+      if (value && parser.offset == parser.length) return success(value);
+      if (!parser.message) parser.message = "unexpected characters after JSON value";
+      ChimiValue *fields[] = {text_value(parser.message), integer_value((int64_t)parser.offset)};
+      return failure(standard_value(CHIMI_CONSTRUCTOR_DECODE_INVALID_JSON, fields, 2));
+    }
+    case CHIMI_INTRINSIC_JSON_ENCODE: {
+      if (argument_count != 1) break;
+      TextBuffer buffer = {0};
+      if (!encode_json_value(&buffer, arguments[0])) break;
+      if (!buffer.data) buffer.data = allocate(1, 1);
+      return success(text_value(buffer.data));
+    }
+    case CHIMI_INTRINSIC_JSON_INT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER) break;
+      char *number = allocate(32, 1); snprintf(number, 32, "%" PRId64, arguments[0]->as.integer);
+      ChimiValue *raw = json_number_value(number); ChimiValue *fields[] = {raw};
+      return success(standard_value(CHIMI_CONSTRUCTOR_JSON_NUMBER, fields, 1));
+    }
+    case CHIMI_INTRINSIC_JSON_NUMBER_TO_INT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_JSON_NUMBER) break;
+      int64_t value; bool not_integer;
+      if (json_number_to_int(arguments[0]->as.json_number, &value, &not_integer)) return success(integer_value(value));
+      return failure(standard_value(not_integer ? CHIMI_CONSTRUCTOR_JSON_NOT_INTEGER : CHIMI_CONSTRUCTOR_JSON_OUT_OF_RANGE, NULL, 0));
+    }
+    case CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_JSON_NUMBER) break;
+      Decimal value;
+      if (json_number_to_decimal(arguments[0]->as.json_number, &value)) return success(decimal_value(value));
+      return failure(standard_value(CHIMI_CONSTRUCTOR_JSON_OUT_OF_RANGE, NULL, 0));
+    }
   }
   return intrinsic_shape_defect(call_node);
 }
@@ -6198,7 +6295,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_map_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_SET_EMPTY && intrinsic <= CHIMI_INTRINSIC_SET_REDUCE_ITEMS)
     return invoke_set_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic == CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL)
+  if (intrinsic >= CHIMI_INTRINSIC_JSON_DECODE && intrinsic <= CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL)
     return invoke_json_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DECIMAL_SCALED && intrinsic <= CHIMI_INTRINSIC_DECIMAL_TO_FLOAT)
     return invoke_decimal_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
@@ -6239,58 +6336,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     case CHIMI_INTRINSIC_ORDER_MAX:
       if (argument_count != 2) return intrinsic_shape_defect(call_node);
       return success(chimi_value_compare(arguments[0], arguments[1]) < 0 ? arguments[1] : arguments[0]);
-    case CHIMI_INTRINSIC_JSON_DECODE: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-      JsonParser parser = {arguments[0]->as.text, strlen(arguments[0]->as.text), 0, NULL};
-      ChimiValue *value = json_parse_value(&parser, 0); if (value) json_skip_space(&parser);
-      if (value && parser.offset == parser.length) return success(value);
-      if (!parser.message) parser.message = "unexpected characters after JSON value";
-      ChimiValue *fields[] = {text_value(parser.message), integer_value((int64_t)parser.offset)};
-      return failure(standard_value(CHIMI_CONSTRUCTOR_DECODE_INVALID_JSON, fields, 2));
-    }
-    case CHIMI_INTRINSIC_JSON_ENCODE: {
-      if (argument_count != 1) return intrinsic_shape_defect(call_node);
-      TextBuffer buffer = {0};
-      if (!encode_json_value(&buffer, arguments[0])) return intrinsic_shape_defect(call_node);
-      if (!buffer.data) buffer.data = allocate(1, 1);
-      return success(text_value(buffer.data));
-    }
-    case CHIMI_INTRINSIC_JSON_BOOLEAN: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_BOOLEAN) return intrinsic_shape_defect(call_node);
-      ChimiValue *fields[] = {arguments[0]}; return success(standard_value(CHIMI_CONSTRUCTOR_JSON_BOOLEAN, fields, 1));
-    }
-    case CHIMI_INTRINSIC_JSON_INT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
-      char *number = allocate(32, 1); snprintf(number, 32, "%" PRId64, arguments[0]->as.integer);
-      ChimiValue *raw = json_number_value(number); ChimiValue *fields[] = {raw};
-      return success(standard_value(CHIMI_CONSTRUCTOR_JSON_NUMBER, fields, 1));
-    }
-    case CHIMI_INTRINSIC_JSON_TEXT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-      ChimiValue *fields[] = {arguments[0]}; return success(standard_value(CHIMI_CONSTRUCTOR_JSON_TEXT, fields, 1));
-    }
-    case CHIMI_INTRINSIC_JSON_ARRAY: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST) return intrinsic_shape_defect(call_node);
-      ChimiValue *fields[] = {arguments[0]}; return success(standard_value(CHIMI_CONSTRUCTOR_JSON_ARRAY, fields, 1));
-    }
-    case CHIMI_INTRINSIC_JSON_OBJECT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_MAP) return intrinsic_shape_defect(call_node);
-      ChimiValue *fields[] = {arguments[0]}; return success(standard_value(CHIMI_CONSTRUCTOR_JSON_OBJECT, fields, 1));
-    }
-    case CHIMI_INTRINSIC_JSON_NUMBER_TO_INT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_JSON_NUMBER) return intrinsic_shape_defect(call_node);
-      const char *number = arguments[0]->as.json_number;
-      if (strpbrk(number, ".eE")) {
-        ChimiValue *fields[] = {arguments[0]};
-        return failure(standard_value(CHIMI_CONSTRUCTOR_NUMBER_NOT_INTEGER, fields, 1));
-      }
-      errno = 0; char *end = NULL; int64_t value = strtoll(number, &end, 10);
-      if (errno == ERANGE || !end || *end) {
-        ChimiValue *fields[] = {arguments[0]};
-        return failure(standard_value(CHIMI_CONSTRUCTOR_NUMBER_OUT_OF_RANGE, fields, 1));
-      }
-      return success(integer_value(value));
-    }
     case CHIMI_INTRINSIC_TEXT_APPEND: {
       if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT ||
           arguments[1]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
