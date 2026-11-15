@@ -23,8 +23,8 @@ for the Phase 1 numbers (768 ms cold before this change). The ratio is the
 useful figure: at equal load, removing the runtime compile cuts a cold build by
 about 90%. The fastest "after" build in run 3 took 119 ms, and the fastest
 "before" build 856 ms. The ~130 ms target from the Phase 1 analysis (791 ms minus the
-663 ms compile) was not confirmed at low load; re-run the command below when
-the machine is quiet and add a row.
+663 ms compile) was not confirmed at low load; the quiet-machine check below
+confirms the ratio on Linux.
 
 ### Quiet-machine check on Linux (2026-11-15)
 
@@ -43,8 +43,12 @@ with a `cc` wrapper that reports a different `cc --version`; the build report's
 | `runtime.c` alone at `-O2`, 3 runs | 2,004 to 2,059 ms | | |
 
 A cold build now costs about 14 ms more than a warm one, against 2 s for the
-runtime compile it skips. That is well inside the ticket's target (within 20% of
-the 294 ms Phase 1 cold build), even allowing for the different machine. Host:
+runtime compile it skips. The ticket's target was a cold build within 20% of
+the pre-regression 293.9 ms (the "Cold, isolated cache" row of
+[the Phase 1 baseline](phase-1-baseline.md)), measured on the Mac. There is no
+same-machine baseline here, so this does not confirm the target on macOS. It
+does show what the target was about: the runtime compile is gone from the cold
+path, and what remains is close to a warm build. Host:
 Intel Xeon at 2.30 GHz, 4 cores, Ubuntu 24.04, gcc 13.3 as `cc`, Rust 1.97.0.
 
 Warm builds are unchanged by design: a warm build already hit the cached
