@@ -249,7 +249,9 @@ impl ProjectTypeChecker {
         }
         if let (Some(left_set), Some(right_set)) =
             (self.failure_set_of(left), self.failure_set_of(right))
-            && (inside_argument
+            && ((inside_argument
+                && !self.has_type_arguments(left)
+                && !self.has_type_arguments(right))
                 || self.is_failure_set_type(left)
                 || self.is_failure_set_type(right))
         {
@@ -289,6 +291,16 @@ impl ProjectTypeChecker {
             arguments.push(self.join_types_within(left, right, true, depth + 1)?);
         }
         Some(self.intern_type(CanonicalType::Named { symbol, arguments }))
+    }
+
+    /// Whether `type_id` is a data type applied to arguments, such as
+    /// `Result<Int, A>`. Such a type is joined argument by argument, never as
+    /// a whole-enum failure-set member.
+    fn has_type_arguments(&self, type_id: TypeId) -> bool {
+        matches!(
+            &self.types[self.resolve_inference_type(type_id).raw() as usize],
+            CanonicalType::Named { arguments, .. } if !arguments.is_empty()
+        )
     }
 
     /// Whether `type_id` is a failure-set type in the join sense: written or

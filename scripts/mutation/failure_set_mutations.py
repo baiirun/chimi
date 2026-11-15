@@ -62,6 +62,9 @@ MUTATIONS = [
     lang("T4346: no variant is missing", F, [(
         "            .filter(|variant| !self.failure_row_may_contain(expected, *variant))",
         "            .filter(|variant| !self.failure_row_may_contain(expected, *variant) && false)")], "missing_variants"),
+    lang("joins: a generic data type joins as a whole enum", F, [(
+        "            && ((inside_argument && !self.has_type_arguments(left) && !self.has_type_arguments(right))",
+        "            && (inside_argument")], "nested_in_another_type"),
     # Projection.
     lang("projection: a lone parameter row stays a set value", Y, [(
         "        ) && self.generic_kinds.get(parameter) == Some(&GenericKind::FailureSet)\n        {",

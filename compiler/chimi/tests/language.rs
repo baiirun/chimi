@@ -11079,3 +11079,51 @@ pub fn main() -> Int {
         "\"outcome\":\"success\",\"value\":2"
     );
 }
+
+#[test]
+fn captures_nested_in_another_type_join_by_their_failure_sets() {
+    // Each arm gives `Option<Result<Int, _>>` with a different error enum;
+    // the join is `Option<Result<Int, A | B>>`, so an `Err(A.X)` pattern
+    // inside it still matches.
+    let program = r#"import std/result as Result
+import std/result.{Result, Ok, Err}
+
+enum A {
+  X
+}
+
+enum B {
+  Y
+}
+
+fn fa() -> Int {
+  Failure(A.X)
+}
+
+fn fb() -> Int {
+  Failure(B.Y)
+}
+
+fn only_a(r: Result<Int, A>) -> Int {
+  case r {
+    Ok(v) -> v
+    Err(A.X) -> 1
+  }
+}
+pub fn main() -> Int {
+  let n = 1
+  let c = case n {
+    1 -> Some(Result.capture(fa))
+    _ -> Some(Result.capture(fb))
+  }
+  case c {
+    Some(Err(A.X)) -> 1
+    _ -> 0
+  }
+}
+"#;
+    assert_eq!(
+        run_both("failure-set-nested-join", program),
+        "\"outcome\":\"success\",\"value\":1"
+    );
+}
