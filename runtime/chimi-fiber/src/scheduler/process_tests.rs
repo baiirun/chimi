@@ -2604,6 +2604,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiProcessRequest, owner),
         offset_of!(ChimiProcessRequest, policy),
         offset_of!(ChimiProcessRequest, spec),
+        offset_of!(ChimiProcessRequest, carried),
         size_of::<ChimiProcessSpec>(),
         offset_of!(ChimiProcessSpec, context),
         offset_of!(ChimiProcessSpec, mailbox_capacity),
@@ -2687,7 +2688,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         Down::Unavailable.code() as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 9);
+    assert_eq!(crate::chimi_fiber_abi_version(), 10);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------

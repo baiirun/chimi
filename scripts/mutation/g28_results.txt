@@ -1,0 +1,13 @@
+# mutation run at 1328d5387fabb3a3cfe5f0c6ec5b00f50267b409
+# g28_mutations.py: 10 mutants against compiler/chimi
+KILLED       a received message's capabilities stay with the sender [cargo run --quiet --bin chimi-process-lab -- --scenario CB09] (8s)
+KILLED       an unread message is released without aborting its channels [cargo run --quiet --bin chimi-process-lab -- --scenario CB10] (8s)
+KILLED       an untaken argument is released without aborting its channels [cargo run --quiet --bin chimi-process-lab -- --scenario CB11] (5s)
+KILLED       the start argument's capabilities are never put in flight [cargo run --quiet --bin chimi-process-lab -- --scenario MB19] (8s)
+KILLED       taking the argument leaves its capabilities in flight [cargo run --quiet --bin chimi-process-lab -- --scenario MB19] (8s)
+KILLED       a handoff member restarts [cargo run --quiet --bin chimi-process-lab -- --scenario MB20] (8s)
+KILLED       a stopped supervisor reports a full one [cargo run --quiet --bin chimi-process-lab -- --scenario MB21] (10s)
+KILLED       the argument may be used after start_handoff [cargo run --quiet --bin chimi-process-lab -- --scenario SF29] (10s)
+KILLED       a handoff body may capture a capability [cargo run --quiet --bin chimi-process-lab -- --scenario SF30] (20s)
+KILLED       the start argument need not be transferable [cargo run --quiet --bin chimi-process-lab -- --scenario SF31] (20s)
+# result: every mutant killed
