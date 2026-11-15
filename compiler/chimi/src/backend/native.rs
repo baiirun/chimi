@@ -1,6 +1,7 @@
 //! Native AOT object emission and host linking behind the backend-neutral program boundary.
 
 use super::BackendProgram;
+use super::direct_loop::{Pass, direct_loops, emit_pass};
 use super::program_data::{render_program_data, requires_process_runtime};
 use super::runtime_archive_key::{
     RUNTIME_C_COMPILER, RuntimeArchiveInputs, runtime_archive_key, runtime_c_flags,
@@ -27,8 +28,8 @@ const CACHE_SCHEMA: &str = "chimi.native-cache.v1";
 const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
 const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
 const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
-const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v5-process-kernel";
-const RUNTIME_ABI_VERSION: u32 = 23;
+const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v5-process-kernel;direct-integer-loop-v1";
+const RUNTIME_ABI_VERSION: u32 = 24;
 const FIBER_RUNTIME_ABI_VERSION: u32 = chimi_fiber::ABI_VERSION;
 static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -211,14 +212,21 @@ fn build_to_path(
     let started = Instant::now();
     let mut object_paths = Vec::new();
     let direct_integer_roots = direct_integer_roots(&program.core);
+    let direct_loops = direct_loops(&program.core);
     for (file_id, node_ids) in module_nodes(&program.core) {
         let name = format!("module-{file_id}.o");
         let path = output_directory.join(&name);
-        let key = module_cache_key(&program.core, file_id, &node_ids, &target);
+        let key = module_cache_key(&program.core, file_id, &node_ids, &direct_loops, &target);
         cache.materialize(&key, "o", &path, &name, |temporary| {
             std::fs::write(
                 temporary,
-                emit_module_object(&program.core, file_id, &node_ids, &direct_integer_roots)?,
+                emit_module_object(
+                    &program.core,
+                    file_id,
+                    &node_ids,
+                    &direct_integer_roots,
+                    &direct_loops,
+                )?,
             )
             .map_err(|error| format!("write native module object: {error}"))
         })?;
@@ -560,12 +568,23 @@ fn cache_key(kind: &str, parts: &[&[u8]]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-fn module_cache_key(core: &CoreProgram, file_id: u32, node_ids: &[u32], target: &str) -> String {
+fn module_cache_key(
+    core: &CoreProgram,
+    file_id: u32,
+    node_ids: &[u32],
+    direct_loops: &HashMap<u32, Pass>,
+    target: &str,
+) -> String {
     let mut content = format!("file={file_id}\n");
     for &node_id in node_ids {
         let node = &core.nodes[node_id as usize];
         let origin = &core.origins[node.origin.raw() as usize];
         content.push_str(&format!("{node:?}\n{origin:?}\n"));
+        // A direct pass inlines the values of the constants it reads, which may
+        // live in another module, so the pass itself is part of the key.
+        if let Some(pass) = direct_loops.get(&node_id) {
+            content.push_str(&format!("{pass:?}\n"));
+        }
     }
     let runtime_abi = RUNTIME_ABI_VERSION.to_string();
     cache_key(
@@ -733,6 +752,7 @@ fn emit_module_object(
     file_id: u32,
     node_ids: &[u32],
     direct_integer_roots: &HashMap<u32, u32>,
+    direct_loops: &HashMap<u32, Pass>,
 ) -> Result<Vec<u8>, String> {
     let mut module = new_object_module(&format!("chimi_module_{file_id}"))?;
     let node_signature = node_signature(&module);
@@ -812,8 +832,37 @@ fn emit_module_object(
             &direct_integer_success_signature,
         )
         .map_err(|error| format!("declare direct-integer runtime result: {error}"))?;
+    let direct_loop_signature = Signature {
+        params: vec![
+            AbiParam::new(pointer),
+            AbiParam::new(types::I32),
+            AbiParam::new(pointer),
+            AbiParam::new(types::I64),
+            AbiParam::new(pointer),
+        ],
+        returns: vec![AbiParam::new(pointer)],
+        call_conv: module.target_config().default_call_conv,
+    };
+    let direct_loop = module
+        .declare_function(
+            "chimi_rt_direct_loop",
+            Linkage::Import,
+            &direct_loop_signature,
+        )
+        .map_err(|error| format!("declare direct-loop runtime driver: {error}"))?;
 
     for &node_id in node_ids {
+        if let Some(pass) = direct_loops.get(&node_id) {
+            define_direct_loop(
+                &mut module,
+                functions[&node_id],
+                node_id,
+                pass,
+                direct_loop,
+                node_signature.clone(),
+            )?;
+            continue;
+        }
         let node = &core.nodes[node_id as usize];
         define_node(
             &mut module,
@@ -969,6 +1018,81 @@ fn define_node(
     module
         .define_function(function_id, &mut context)
         .map_err(|error| format!("define native node {node_id}: {error}"))
+}
+
+/// Defines a loop node as a call to `chimi_rt_direct_loop` with its pass, which is
+/// emitted beside it as a local function.
+fn define_direct_loop(
+    module: &mut ObjectModule,
+    function_id: FuncId,
+    node_id: u32,
+    pass: &Pass,
+    direct_loop: FuncId,
+    signature: Signature,
+) -> Result<(), String> {
+    let pointer = module.target_config().pointer_type();
+    let pass_signature = Signature {
+        params: vec![AbiParam::new(types::I64), AbiParam::new(pointer)],
+        returns: vec![AbiParam::new(types::I32)],
+        call_conv: module.target_config().default_call_conv,
+    };
+    let pass_id = module
+        .declare_function(
+            &format!("chimi_loop_pass_{node_id}"),
+            Linkage::Local,
+            &pass_signature,
+        )
+        .map_err(|error| format!("declare direct loop pass {node_id}: {error}"))?;
+    let mut builder_context = FunctionBuilderContext::new();
+
+    let mut context = Context::new();
+    context.func =
+        Function::with_name_signature(UserFuncName::user(0, pass_id.as_u32()), pass_signature);
+    {
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        let parameters = builder.block_params(entry).to_vec();
+        emit_pass(&mut builder, pass, parameters[0], parameters[1]);
+        builder.seal_all_blocks();
+        builder.finalize();
+    }
+    module
+        .define_function(pass_id, &mut context)
+        .map_err(|error| format!("define direct loop pass {node_id}: {error}"))?;
+
+    let mut context = Context::new();
+    context.func =
+        Function::with_name_signature(UserFuncName::user(0, function_id.as_u32()), signature);
+    {
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        let parameters = builder.block_params(entry).to_vec();
+        let driver = module.declare_func_in_func(direct_loop, builder.func);
+        let pass = module.declare_func_in_func(pass_id, builder.func);
+        let pass_address = builder.ins().func_addr(pointer, pass);
+        let node = builder.ins().iconst(types::I32, i64::from(node_id));
+        let call = builder.ins().call(
+            driver,
+            &[
+                parameters[0],
+                node,
+                parameters[1],
+                parameters[2],
+                pass_address,
+            ],
+        );
+        let result = builder.inst_results(call)[0];
+        builder.ins().return_(&[result]);
+        builder.seal_all_blocks();
+        builder.finalize();
+    }
+    module
+        .define_function(function_id, &mut context)
+        .map_err(|error| format!("define native direct loop {node_id}: {error}"))
 }
 
 #[derive(Clone, Copy)]

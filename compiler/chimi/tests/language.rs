@@ -10827,3 +10827,127 @@ fn a_match_reads_every_one_of_eight_or_nine_subjects() {
     );
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":8090");
 }
+
+// Guards: loops that the native backend lowers to machine passes (CHI-90) agree with
+// the interpreter on values, on integer division and remainder at their edges, on
+// module constants, and on nested matches over Int and Bool literals.
+#[test]
+fn direct_integer_loops_agree_with_the_interpreter() {
+    let outcome = run_both(
+        "direct-loop-values",
+        concat!(
+            "const LIMIT: Int = 1000\n",
+            "fn collatz_steps() -> Int {\n",
+            "  loop n = 27 {\n",
+            "    case n == 1 {\n",
+            "      True -> break 0\n",
+            "      False -> case n % 2 {\n",
+            "        0 -> n / 2\n",
+            "        _ -> 3 * n + 1\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "fn counted() -> Int {\n",
+            "  loop count = 0 {\n",
+            "    case count >= LIMIT {\n",
+            "      True -> break count * -2\n",
+            "      False -> count + 1\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "fn edges() -> Int {\n",
+            "  loop n = -7 {\n",
+            "    case n {\n",
+            "      -7 -> n / -1 + n % -1\n",
+            "      7 -> break n % 3 * 100 + -n / 2\n",
+            "      _ -> 0\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  collatz_steps() + counted() * 1000 + edges()\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":-1999903");
+}
+
+// Guards: a direct pass that would overflow or divide by zero hands its pass back to
+// the runtime, so the defect names the same operation and operands on both paths.
+#[test]
+fn direct_integer_loop_defects_match_the_interpreter() {
+    let overflow = run_both(
+        "direct-loop-overflow",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  loop count = 1 {\n",
+            "    case count > 0 {\n",
+            "      True -> count * 3\n",
+            "      False -> break count\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert!(
+        overflow.contains("integer overflow in `*`: 4052555153018976267 * 3"),
+        "{overflow}"
+    );
+    let division = run_both(
+        "direct-loop-division",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  loop count = 3 {\n",
+            "    case count {\n",
+            "      -1 -> break count\n",
+            "      _ -> count - 1 + 6 / count * 0\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert!(
+        division.contains("integer division by zero in `/`: 6 / 0"),
+        "{division}"
+    );
+    let minimum = run_both(
+        "direct-loop-minimum",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  loop n = -9223372036854775807 - 1 {\n",
+            "    case n {\n",
+            "      0 -> break n\n",
+            "      _ -> n / -1\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert!(
+        minimum.contains("integer overflow in `/`: -9223372036854775808 / -1"),
+        "{minimum}"
+    );
+}
+
+// Guards: a loop body that never reads its state lowers directly whatever the state's
+// type, and a state that is not an Int still runs to the loop's value.
+#[test]
+fn direct_loops_over_other_states_agree_with_the_interpreter() {
+    let outcome = run_both(
+        "direct-loop-other-states",
+        concat!(
+            "fn text() -> Int { loop s = \"x\" { break 5 } }\n",
+            "fn flag() -> Int {\n",
+            "  loop s = False {\n",
+            "    case 3 > 2 {\n",
+            "      True -> break 7\n",
+            "      False -> break 0\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int { text() * 10 + flag() }\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":57");
+}
