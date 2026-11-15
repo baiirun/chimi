@@ -2287,7 +2287,8 @@ static MapNode *map_balance(MapNode *node) {
 static MapNode *map_put_node(MapNode *node, ChimiValue *key, ChimiValue *value) {
   if (!node) return map_node(key, value, NULL, NULL);
   int order = chimi_value_compare(key, node->key);
-  if (order == 0) return map_node(key, value, node->left, node->right);
+  /* An equal key already held stays; only the value changes. */
+  if (order == 0) return map_node(node->key, value, node->left, node->right);
   if (order < 0) return map_balance(map_node(node->key, node->value,
                                             map_put_node(node->left, key, value), node->right));
   return map_balance(map_node(node->key, node->value, node->left,
@@ -6096,8 +6097,7 @@ static ChimiControl *invoke_set_operation(ChimiRuntime *runtime, uint32_t intrin
       return success(boolean_value(map_get_node(set, arguments[1]) != NULL));
     case CHIMI_INTRINSIC_SET_ADD:
       if (argument_count != 2) break;
-      return success(map_get_node(set, arguments[1]) ? arguments[0]
-                                                      : set_value(map_put_node(set, arguments[1], void_value())));
+      return success(set_value(map_put_node(set, arguments[1], void_value())));
     case CHIMI_INTRINSIC_SET_REMOVE: {
       if (argument_count != 2) break;
       MapNode *removed = map_remove_node(set, arguments[1]);

@@ -531,7 +531,13 @@ fn map_insert(
             Some(map_insert(node.left.clone(), key, value, order)),
             node.right.clone(),
         ),
-        Comparison::Equal => map_node(key, value, node.left.clone(), node.right.clone()),
+        // An equal key already held stays; only the value changes.
+        Comparison::Equal => map_node(
+            node.key.clone(),
+            value,
+            node.left.clone(),
+            node.right.clone(),
+        ),
         Comparison::Greater => map_node(
             node.key.clone(),
             node.value.clone(),

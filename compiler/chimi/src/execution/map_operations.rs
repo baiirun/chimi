@@ -70,13 +70,9 @@ impl Evaluator<'_> {
             (StandardFunction::SetContains, [RuntimeValue::Set(items), item]) => Control::Success(
                 RuntimeValue::Boolean(items.get(item, &self.key_order()).is_some()),
             ),
-            // An equal item already held stays, as in `runtime.c`.
+            // `put` keeps an equal item already held.
             (StandardFunction::SetAdd, [RuntimeValue::Set(items), item]) => {
-                let order = self.key_order();
-                set(match items.get(item, &order) {
-                    Some(_) => items.clone(),
-                    None => items.put(item.clone(), RuntimeValue::Void, &order),
-                })
+                set(items.put(item.clone(), RuntimeValue::Void, &self.key_order()))
             }
             (StandardFunction::SetRemove, [RuntimeValue::Set(items), item]) => set(items
                 .remove(item, &self.key_order())
