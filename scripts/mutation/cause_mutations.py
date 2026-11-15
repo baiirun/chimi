@@ -39,6 +39,9 @@ MUTATIONS = [
     programs("a function literal links to the enclosing arm", LOWERING, [
         ("                self.cause_scopes.push(None);\n                let lowered_body = self.expression(module_id, body);\n                self.cause_scopes.pop();",
          "                let lowered_body = self.expression(module_id, body);")]),
+    programs("C: a crash message lives in the loop's heap", RUNTIME, [
+        ("      return defect(lasting_message(arguments[0]->as.text.bytes), call_node);",
+         "      return defect(copy_text(arguments[0]->as.text.bytes), call_node);")]),
     programs("C: the root report stops at a NUL", RUNTIME, [
         ("    json_bytes(output, text->as.text.bytes, text->as.text.length);",
          "    json_string(output, text->as.text.bytes);")]),

@@ -1853,6 +1853,17 @@ static const char *numeric_message(const char *format, ...) {
   return message;
 }
 
+/* A defect message copied outside every reclaimable heap, like
+   numeric_message's: a control's message is not traced, and a loop region or a
+   child task's heap may be freed while the defect it ended with is still read. */
+static const char *lasting_message(const char *raw) {
+  size_t length = strlen(raw);
+  char *message = malloc(length + 1);
+  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); exit(70); }
+  memcpy(message, raw, length + 1);
+  return message;
+}
+
 /* Canonical Float text: the shortest digits that parse back to the same value,
    positional for decimal exponents -5..15 and scientific otherwise, always with a
    `.` or an `e`. `output` holds at least 40 bytes. */
@@ -4786,7 +4797,7 @@ static ChimiControl *invoke_core_operation(uint32_t intrinsic, ChimiValue **argu
   switch (intrinsic) {
     case CHIMI_INTRINSIC_DEBUG_CRASH:
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return defect(copy_text(arguments[0]->as.text.bytes), call_node);
+      return defect(lasting_message(arguments[0]->as.text.bytes), call_node);
     case CHIMI_INTRINSIC_OPTION_UNWRAP_OR_FAIL:
       if (argument_count != 2 || arguments[0]->kind != VALUE_CONSTRUCTED) break;
       if (arguments[0]->as.constructed.length == 1) return success(arguments[0]->as.constructed.fields[0].value);
