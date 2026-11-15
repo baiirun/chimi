@@ -387,7 +387,7 @@ enum PortError {
   OutOfRange(port: Int)
 }
 
-fn port(value: Option<Text>) -> Int errors PortError {
+fn port(value: Option<Text>) -> Int {
   case value {
     None -> Failure(PortError.Missing)
     Some(text) -> case Int.parse(Text.trim(text)) {
@@ -451,7 +451,7 @@ enum LookupError {
   UnknownUser(id: Int)
 }
 
-fn display_name(names: Map<Int, Text>, id: Int) -> Text errors LookupError {
+fn display_name(names: Map<Int, Text>, id: Int) -> Text {
   Map.get(names, id) |> Option.unwrap_or_fail(LookupError.UnknownUser(id))
 }
 ```
