@@ -201,17 +201,19 @@ impl Scheduler {
         let Some(record) = self.tasks.get(&task) else {
             return;
         };
-        if !matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked)
-            || self.is_stopping(task)
-        {
-            return;
-        }
+        let live = matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked);
+        let stopping = self.is_stopping(task);
         let record = self.tasks.get_mut(&task).expect("live task");
         let Some(index) = record.scopes.iter().position(|entry| entry.id == scope) else {
             return;
         };
         let entry = &mut record.scopes[index];
+        // The timer has fired either way; a stopping task keeps shutdown's
+        // own cancellation.
         entry.timer = None;
+        if !live || stopping {
+            return;
+        }
         if entry.fired {
             return;
         }

@@ -1323,6 +1323,11 @@ impl Scheduler {
         record.entry_context = std::ptr::null_mut();
         let scope_pending = self.scope_cancel_pending(task);
         let polls = self.polls_scope_deadlines(task);
+        // A forced incarnation is abandoned at its next park, so its unwind
+        // must issue no request either, scope exits included.
+        let forced = command == ChimiFiberCommand::Cancel
+            && self.tasks[&task].process.is_some()
+            && self.is_forced(task);
         let event = self
             .tasks
             .get_mut(&task)
@@ -1330,7 +1335,7 @@ impl Scheduler {
             .fiber
             .as_mut()
             .expect("runnable task owns a fiber")
-            .resume(command, false, scope_pending, polls);
+            .resume(command, forced, scope_pending, polls);
         if event.state == ChimiFiberState::Parked as u32 {
             let record = self.tasks.get_mut(&task).expect("running task");
             record.phase = TaskPhase::Parked;

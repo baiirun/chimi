@@ -840,3 +840,78 @@ fn a_real_clock_timeout_stops_a_loop_that_never_parks() {
     );
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+// ----- Forced process shutdown ----------------------------------------------
+
+// A process body forced to stop while inside a timeout must unwind without
+// issuing the scope exit: the scheduler abandons a forced body at its next
+// park, which would leak the body's stack and heap. Rejects that leak: the
+// run that wraps the body's receive loop in `Task.timeout` must end with as
+// many live heap chunks as the run that does not.
+#[test]
+fn a_forced_process_inside_a_timeout_releases_its_heap() {
+    let program = |body: &str| {
+        format!(
+            "import std/channel.{{Sender}}\n\
+             import std/process as Process\n\
+             import std/process.{{Inbox}}\n\
+             import std/supervisor as Supervisor\n\
+             pub enum Message {{\n  Add(amount: Int, report: Sender<Int>)\n}}\n\
+             fn report_each(inbox: Inbox<Message>) -> Int {{\n  \
+             loop reported = 0 {{\n    \
+             case Process.receive(inbox) {{\n      \
+             Message.Add(amount, report) -> {{\n        \
+             Channel.send(report, amount)\n        \
+             reported + 1\n      }}\n    }}\n  }}\n}}\n\
+             fn body(inbox: Inbox<Message>) -> Void {{\n{body}}}\n\
+             {TAKE}\
+             pub fn main() -> Int needs {{ clock: Clock.Clock }} {{\n  \
+             let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(1, Duration.seconds(30))))\n  \
+             let managed = Supervisor.start_process(root, Process.spec(body, 3, Duration.zero), Supervisor.Restart.OnDefect)\n  \
+             let address = Supervisor.address(managed)\n  \
+             let reports = Channel.bounded(4)\n  \
+             Clock.sleep(Duration.milliseconds(1))\n  \
+             Process.send(address, Message.Add(1, reports.sender))\n  \
+             Supervisor.remove_process(root, managed)\n  \
+             Channel.send(reports.sender, 9)\n  \
+             let first = take(reports.receiver)\n  \
+             Supervisor.stop(root)\n  \
+             first\n}}\n"
+        )
+    };
+    let scratch = scratch_directory("forced-scope");
+    let live_chunks = |name: &str, body: &str| {
+        let executable = build_native(&scratch, name, &program(body));
+        let memory = scratch.join(format!("{name}.memory.json"));
+        let outcome = scratch.join(format!("{name}.outcome.jsonl"));
+        let process = Command::new(&executable)
+            .arg("--chimi-runner")
+            .arg("--clock=virtual")
+            .arg("--trace=off")
+            .arg(format!("--outcome-file={}", outcome.display()))
+            .arg(format!("--memory-report-file={}", memory.display()))
+            .arg("--")
+            .output()
+            .expect("run the forced-shutdown program");
+        assert_eq!(process.status.code(), Some(0), "{name}");
+        assert_eq!(std::fs::read_to_string(&outcome).unwrap(), success("9"));
+        let report = std::fs::read_to_string(&memory).unwrap();
+        let start = report.find("\"heap_chunks_live\":").expect("live chunks") + 19;
+        report[start..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+    };
+    let plain = live_chunks("plain", "  let n = report_each(inbox)\n  Void\n");
+    let scoped = live_chunks(
+        "scoped",
+        concat!(
+            "  case (fn() -> Int { report_each(inbox) }) |> Task.timeout(Duration.seconds(100)) {\n",
+            "    Success(value) -> Void\n",
+            "    Failure(Timeout.TimedOut(limit)) -> Void\n",
+            "  }\n",
+        ),
+    );
+    assert_eq!(scoped, plain);
+    std::fs::remove_dir_all(scratch).unwrap();
+}
