@@ -113,7 +113,7 @@ metrics, crypto, test, url/csv/regex/compression, math.
 
 | ID | Gap | Status |
 | --- | --- | --- |
-| T1 | Test declarations and runner | missing (G16 also needs recorders, virtual time, fake addresses) |
+| T1 | Test declarations and runner | specified in draft (`testing.md`); G16 recorders, virtual time, and fake addresses are in the same spec |
 | T2 | Language server breadth | has diagnostics, hover, definition, formatting; lacks completion, references, rename, inlay types |
 | T3 | Linter | missing |
 | T4 | Documentation generator | missing; doc comments with runnable examples |
