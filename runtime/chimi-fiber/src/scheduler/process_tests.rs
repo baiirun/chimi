@@ -2588,7 +2588,7 @@ fn a_c_root_with_nothing_to_wake_it_defects_with_the_deadlock_code() {
 #[test]
 fn ob07_the_process_abi_layouts_match_the_c_header() {
     use std::mem::{offset_of, size_of};
-    let mut c = [0_usize; 96];
+    let mut c = [0_usize; 128];
     let count = unsafe { chimi_fixture_process_layouts(c.as_mut_ptr()) };
     let rust = [
         size_of::<ChimiProcessRequest>(),
@@ -2671,6 +2671,12 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
             membership: None,
         }
         .trace_kind() as usize,
+        size_of::<ChimiCarriedCapability>(),
+        offset_of!(ChimiCarriedCapability, token),
+        offset_of!(ChimiCarriedCapability, capability),
+        size_of::<ChimiMessageCapabilities>(),
+        offset_of!(ChimiMessageCapabilities, count),
+        VIOLATION_IN_FLIGHT as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
     assert_eq!(crate::chimi_fiber_abi_version(), 7);

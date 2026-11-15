@@ -90,7 +90,9 @@ MUTATIONS = [
     dict(
         name="the child hands its result to itself",
         file=SCHEDULER,
-        edits=[("                        request.owner = owner.get();\n",
+        edits=[("                        // this task (`include/chimi_fiber.h`).\n"
+                "                        request.owner = owner.get();\n",
+                "                        // this task (`include/chimi_fiber.h`).\n"
                 "                        request.owner = task.get();\n")],
         targets=["cli"], filter=HAND_BACK,
     ),

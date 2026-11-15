@@ -114,8 +114,10 @@ fn pg05_fails_on_an_injected_three_times_regression() {
 // A flag the requested kinds would ignore is an error, not a silent no-op.
 #[test]
 fn a_baseline_or_injection_without_performance_is_an_error() {
+    // A readable baseline, so only the missing `performance` kind is wrong.
+    let baseline = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/process_lab.rs");
     for arguments in [
-        &["static", "--baseline", "report.json"][..],
+        &["static", "--baseline", baseline][..],
         &["static", "--inject-pg05-regression", "3"],
         &[
             "performance",

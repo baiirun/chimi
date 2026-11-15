@@ -165,10 +165,10 @@ fn pg05_measurement(at_10: Phases, at_100: Phases, at_1000: Phases) -> Measureme
     }
 }
 
-/// ns per process, start and stop together, between two sizes.
+/// ns per process, start and stop together, between two sizes, from the
+/// median runs.
 fn marginal_ns(small: Phases, large: Phases, n1: u64, n2: u64) -> f64 {
-    let total_ns = |phases: Phases, n: u64| (phases.start_us + phases.stop_us) * n as f64 * 1_000.0;
-    ((total_ns(large, n2) - total_ns(small, n1)) / (n2 - n1) as f64).max(0.0)
+    ((large.median_total_ns - small.median_total_ns) / (n2 - n1) as f64).max(0.0)
 }
 
 /// ns per spin iteration of the `members` workload: the start phase at 100
@@ -178,7 +178,7 @@ fn spin_ns_per_iteration(workload: &Workload, clean_at_100: Phases) -> Result<f6
     let spun = phases(workload, 100, Some(SPINS))?;
     // Starts 0..98 spin 0..98 steps (the named tail does not spin).
     let iterations = SPINS * (0..99).sum::<u64>();
-    let extra_ns = (spun.start_us - clean_at_100.start_us) * 100.0 * 1_000.0;
+    let extra_ns = spun.median_start_ns - clean_at_100.median_start_ns;
     if extra_ns <= 0.0 {
         return Err("PG05 injection: spinning did not slow the start phase".into());
     }
@@ -343,6 +343,12 @@ fn restarts() -> Result<f64, String> {
 struct Phases {
     start_us: f64,
     stop_us: f64,
+    /// The median run's start and stop phases together, in ns. PG05's
+    /// marginals subtract two of these, and a p95 of seven runs is the
+    /// slowest one, whose noise the subtraction would magnify.
+    median_total_ns: f64,
+    /// The median run's start phase, in ns.
+    median_start_ns: f64,
 }
 
 struct MemberEvidence {
@@ -369,15 +375,19 @@ fn phases(workload: &Workload, count: u64, spins: Option<u64>) -> Result<Phases,
     workload.run(&timed, &argument, count)?;
     let mut starts = Vec::with_capacity(SAMPLES);
     let mut stops = Vec::with_capacity(SAMPLES);
+    let mut totals = Vec::with_capacity(SAMPLES);
     for _ in 0..SAMPLES {
         let run = workload.run(&timed, &argument, count)?;
         let (start, stop) = phase_nanoseconds(&run.telemetry)?;
         starts.push(start);
         stops.push(stop);
+        totals.push(start + stop);
     }
     Ok(Phases {
         start_us: p95(&mut starts) as f64 / count as f64 / 1_000.0,
         stop_us: p95(&mut stops) as f64 / count as f64 / 1_000.0,
+        median_total_ns: median(&mut totals) as f64,
+        median_start_ns: median(&mut starts) as f64,
     })
 }
 
@@ -757,6 +767,12 @@ fn run_measured(command: &mut Command) -> Result<(Exit, u64, u64), String> {
 // ---------------------------------------------------------------------------
 // Pure helpers.
 
+/// The median of `samples` (sorted in place): the value at index `len / 2`.
+fn median(samples: &mut [u64]) -> u64 {
+    samples.sort_unstable();
+    samples[samples.len() / 2]
+}
+
 /// The p95 of `samples` (sorted in place): the value at index
 /// `len * 95 / 100`, which for 7 samples is the slowest.
 fn p95(samples: &mut [u64]) -> u64 {
@@ -906,6 +922,12 @@ mod tests {
 
     // Rejects a p95 that takes the median or the fastest sample, and a sort
     // that leaves the slowest of 7 out.
+    #[test]
+    fn median_of_seven_samples_is_the_fourth_fastest() {
+        assert_eq!(median(&mut [5, 1, 7, 3, 2, 6, 4]), 4);
+        assert_eq!(median(&mut [9; 1]), 9);
+    }
+
     #[test]
     fn p95_of_seven_samples_is_the_slowest() {
         assert_eq!(p95(&mut [5, 1, 7, 3, 2, 6, 4]), 7);

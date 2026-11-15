@@ -1327,3 +1327,193 @@ fn record(transition: &mut Transition, enabled: bool, observation: Observation) 
         transition.observations.push(observation);
     }
 }
+
+#[cfg(test)]
+mod parcel_tests {
+    use super::*;
+
+    const PARENT: TaskId = TaskId::from_raw(1);
+    const CHILD: TaskId = TaskId::from_raw(2);
+    const MESSAGE: usize = 0xbeef;
+
+    fn registry() -> ChannelRegistry {
+        ChannelRegistry::new(true, true)
+    }
+
+    fn carried_receiver(capabilities: ChannelCapabilities) -> Carried {
+        Carried {
+            channel: capabilities.receiver.channel(),
+            kind: CapabilityKind::Receiver,
+            token: capabilities.receiver.token(),
+        }
+    }
+
+    fn receiver_at(capabilities: ChannelCapabilities, owner: TaskId, token: u64) -> Receiver {
+        Receiver::from_raw(capabilities.receiver.channel().get(), owner.get(), token)
+    }
+
+    fn aborted(transition: &Transition, channel: ChannelId) -> bool {
+        transition
+            .observations
+            .iter()
+            .any(|seen| seen.channel == channel && seen.kind == ChannelEventKind::Aborted)
+    }
+
+    /// CHILD sends PARENT a message on `route` (owned by PARENT) carrying the
+    /// Receiver of `carried`, which CHILD owns.
+    fn child_sends_receiver(
+        channels: &mut ChannelRegistry,
+        route_capacity: usize,
+    ) -> (ChannelCapabilities, ChannelCapabilities, SendResult) {
+        let (route, _) = channels.create(PARENT, route_capacity);
+        let (carried, _) = channels.create(CHILD, 1);
+        let (result, _) = channels
+            .send_carrying(CHILD, route.sender, MESSAGE, &[carried_receiver(carried)])
+            .expect("CHILD owns the carried Receiver");
+        (route, carried, result)
+    }
+
+    #[test]
+    fn an_unreceived_capability_is_in_flight_and_the_receiver_gets_the_next_token() {
+        let mut channels = registry();
+        let (route, carried, result) = child_sends_receiver(&mut channels, 1);
+        assert_eq!(result, SendResult::Accepted);
+        channels.take_send_result(CHILD);
+        assert_eq!(
+            channels
+                .receive(CHILD, carried.receiver)
+                .map(|(result, _)| result),
+            Err(ChannelError::CapabilityInFlight {
+                channel: carried.receiver.channel(),
+                kind: CapabilityKind::Receiver,
+            })
+        );
+
+        let (received, _) = channels.receive(PARENT, route.receiver).unwrap();
+        assert_eq!(received, ReceiveResult::Received(MESSAGE));
+        channels.take_receive_result(PARENT);
+        assert!(matches!(
+            channels.receive(PARENT, receiver_at(carried, PARENT, 1)),
+            Err(ChannelError::WrongReceiverOwner { .. })
+        ));
+        let (waiting, _) = channels
+            .receive(PARENT, receiver_at(carried, PARENT, 2))
+            .unwrap();
+        assert_eq!(waiting, ReceiveResult::Pending);
+    }
+
+    #[test]
+    fn a_waiting_receiver_owns_the_capability_on_delivery() {
+        let mut channels = registry();
+        let (route, _) = channels.create(PARENT, 0);
+        let (carried, _) = channels.create(CHILD, 1);
+        let (parked, _) = channels.receive(PARENT, route.receiver).unwrap();
+        assert_eq!(parked, ReceiveResult::Pending);
+        channels
+            .send_carrying(CHILD, route.sender, MESSAGE, &[carried_receiver(carried)])
+            .unwrap();
+        assert_eq!(
+            channels.take_receive_result(PARENT),
+            Some(ReceiveResult::Received(MESSAGE))
+        );
+        let (waiting, _) = channels
+            .receive(PARENT, receiver_at(carried, PARENT, 2))
+            .unwrap();
+        assert_eq!(waiting, ReceiveResult::Pending);
+    }
+
+    #[test]
+    fn a_parked_send_refused_by_close_hands_the_capability_back() {
+        let mut channels = registry();
+        let (route, carried, result) = child_sends_receiver(&mut channels, 0);
+        assert_eq!(result, SendResult::Pending);
+        channels.close(PARENT, route.completion).unwrap();
+        assert_eq!(
+            channels.take_send_result(CHILD),
+            Some(SendResult::Closed(MESSAGE))
+        );
+        let (waiting, _) = channels.receive(CHILD, carried.receiver).unwrap();
+        assert_eq!(waiting, ReceiveResult::Pending);
+    }
+
+    #[test]
+    fn a_handed_back_capability_can_be_sent_again() {
+        let mut channels = registry();
+        let (route, carried, _) = child_sends_receiver(&mut channels, 0);
+        channels.close(PARENT, route.completion).unwrap();
+        channels.take_send_result(CHILD);
+        let (again, _) = channels.create(PARENT, 1);
+        let (result, _) = channels
+            .send_carrying(CHILD, again.sender, MESSAGE, &[carried_receiver(carried)])
+            .unwrap();
+        assert_eq!(result, SendResult::Accepted);
+        channels.receive(PARENT, again.receiver).unwrap();
+        channels.take_receive_result(PARENT);
+        let (waiting, _) = channels
+            .receive(PARENT, receiver_at(carried, PARENT, 2))
+            .unwrap();
+        assert_eq!(waiting, ReceiveResult::Pending);
+    }
+
+    #[test]
+    fn a_cancelled_parked_send_aborts_the_carried_channel() {
+        let mut channels = registry();
+        let (_, carried, result) = child_sends_receiver(&mut channels, 0);
+        assert_eq!(result, SendResult::Pending);
+        let transition = channels.cancel_pending(CHILD);
+        assert!(aborted(&transition, carried.receiver.channel()));
+        assert_eq!(transition.discarded, vec![MESSAGE]);
+    }
+
+    #[test]
+    fn a_discarded_completion_aborts_its_channel_and_its_receiver_sees_it() {
+        let mut channels = registry();
+        let (route, _) = channels.create(PARENT, 1);
+        let (carried, _) = channels.create(CHILD, 1);
+        let completion = Carried {
+            channel: carried.completion.channel(),
+            kind: CapabilityKind::Completion,
+            token: carried.completion.token(),
+        };
+        channels
+            .send_carrying(CHILD, route.sender, MESSAGE, &[completion])
+            .unwrap();
+        channels.take_send_result(CHILD);
+        let transition = channels.abort(PARENT, route.receiver).unwrap();
+        assert!(aborted(&transition, carried.completion.channel()));
+        let (seen, _) = channels.receive(CHILD, carried.receiver).unwrap();
+        assert_eq!(seen, ReceiveResult::Aborted);
+    }
+
+    #[test]
+    fn a_capability_named_twice_in_one_message_moves_once() {
+        let mut channels = registry();
+        let (route, _) = channels.create(PARENT, 1);
+        let (carried, _) = channels.create(CHILD, 1);
+        let item = carried_receiver(carried);
+        channels
+            .send_carrying(CHILD, route.sender, MESSAGE, &[item, item])
+            .unwrap();
+        channels.take_send_result(CHILD);
+        channels.receive(PARENT, route.receiver).unwrap();
+        channels.take_receive_result(PARENT);
+        let (waiting, _) = channels
+            .receive(PARENT, receiver_at(carried, PARENT, 2))
+            .unwrap();
+        assert_eq!(waiting, ReceiveResult::Pending);
+    }
+
+    #[test]
+    fn a_send_carrying_someone_elses_capability_changes_nothing() {
+        let mut channels = registry();
+        let (route, _) = channels.create(PARENT, 1);
+        let (carried, _) = channels.create(CHILD, 1);
+        assert!(matches!(
+            channels.send_carrying(PARENT, route.sender, MESSAGE, &[carried_receiver(carried)]),
+            Err(ChannelError::WrongReceiverOwner { .. })
+        ));
+        assert_eq!(channels.metrics(route.sender.channel()).unwrap().queue_depth, 0);
+        let (waiting, _) = channels.receive(CHILD, carried.receiver).unwrap();
+        assert_eq!(waiting, ReceiveResult::Pending);
+    }
+}

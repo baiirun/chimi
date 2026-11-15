@@ -1051,7 +1051,7 @@ does. Memory and count gates are the same in both profiles.
 | PG02 | Trace overhead on PG01 | `boundaries` and `full` against `off` | n/a | `boundaries` < 1.25x; `full` reported, no gate |
 | PG03 | µs per restart cycle | Defect, terminate, restart, first park of the replacement. N1 = 1,000, N2 = 10,000, with a limit above N2 | 3.9 | < 40 |
 | PG04 | µs per process to start and first park, and to stop | 1,000 dynamic processes | 5.1 start, 2.8 stop | < 50 start, < 30 stop |
-| PG05 | Scaling of PG04 | Marginal per-process cost from 100 to 1,000 processes divided by the marginal cost from 10 to 100. Fixed costs cancel, so a process at 1,000 that costs 2 times one at 100 reads about 2.1 | about 1.1 (1.06 to 1.57 on a shared cloud host, 2026-11-15) | < 1.75 |
+| PG05 | Scaling of PG04 | Marginal per-process cost from 100 to 1,000 processes divided by the marginal cost from 10 to 100. Fixed costs cancel, so a process at 1,000 that costs 2 times one at 100 reads about 2.1 | about 1.1 (1.00 to 1.54 from medians on a shared cloud host, 2026-11-15) | < 1.75 |
 | PG06 | ns per message by payload | Text 4 KiB; List of 1,000 Ints; the 21-value DAG from CB02 | 190; 13,351; 402 | < 2,000; < 70,000; < 5,000 |
 | PG07 | Resident memory growth | PG01 at N2 against N1 | flat | < 1 MiB |
 | PG08 | Parked resident memory | 1,000 parked processes with 64 KiB stacks | n/a | < 64 MiB |
@@ -1067,7 +1067,10 @@ is `--trace=boundaries`, and its gate stays.
 PG05 used to divide the average per-process cost at 1,000 by the average at
 100. About 3 ms of fixed cost sat in both averages and dominated the one at
 100, so a process at 1,000 could cost 5 times one at 100 and still pass
-(`ts-cc1f03`). `chimi-process-lab performance --scenario PG05
+(`ts-cc1f03`). Both marginals subtract the median of seven runs at each
+size rather than the p95, which for seven runs is the slowest: a
+difference of two slowest runs magnifies one noisy run into a false
+failure. `chimi-process-lab performance --scenario PG05
 --inject-pg05-regression 3` proves the current gate catches such a
 regression: every start in the workload first spins long enough that a
 process at 1,000 costs 3 times one at 100, and the gate must fail

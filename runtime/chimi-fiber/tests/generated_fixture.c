@@ -370,6 +370,12 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       CHIMI_REQUEST_SUPERVISOR_START_SUPERVISOR,
       CHIMI_REQUEST_SUPERVISOR_REMOVE_SUPERVISOR,
       CHIMI_PROCESS_TRACE_SUPERVISOR_STARTED,
+      sizeof(ChimiCarriedCapability),
+      LAYOUT(ChimiCarriedCapability, token),
+      LAYOUT(ChimiCarriedCapability, capability),
+      sizeof(ChimiMessageCapabilities),
+      LAYOUT(ChimiMessageCapabilities, count),
+      CHIMI_VIOLATION_IN_FLIGHT,
   };
   size_t count = sizeof(values) / sizeof(*values);
   for (size_t index = 0; index < count; index += 1) out[index] = values[index];
