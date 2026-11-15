@@ -373,8 +373,8 @@ impl ChannelRegistry {
 
     /// Puts `carried`, already checked by `check_carried`, in flight in
     /// `value`'s parcel once something other than a channel has accepted
-    /// `value` from `task`. `deliver_parcel`, `return_parcel`, or
-    /// `discard_parcel` settles it.
+    /// `value` from `task`. `deliver_parcel` or `discard_parcel` settles
+    /// it.
     pub fn dispatch_carried(&mut self, task: TaskId, value: usize, carried: &[Carried]) {
         let carried = self
             .validate_carried(task, carried)
