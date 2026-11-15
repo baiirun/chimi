@@ -681,8 +681,8 @@ Each kind of value renders like the declaration or literal that describes it:
 | List | `[1, 2, 3]` |
 | Tuple | `(1, "a")` |
 | `Range` | `0..3`, by its normalized bounds, so `0..=2` renders the same |
-| Map | `Map { "a": 1, "b": 2 }`, entries in an internal canonical order that is not stable across releases |
-| Set | `Set { 1, 2 }`, items in the same order as map keys |
+| Map | `Map { "a": 1, "b": 2 }`, entries in ascending structural order of the key, the order `Map.keys` returns |
+| Set | `Set { 1, 2 }`, items in ascending structural order, the order `Set.to_list` returns |
 | `Json.Number` | `Json.Number(1)`; the canonical normalized number, so `1.0` and `1` both render as `1` |
 | Declared function | `<fn checkout>` |
 | Anonymous function | `<fn>` |
