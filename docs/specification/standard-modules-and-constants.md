@@ -689,6 +689,7 @@ Each kind of value renders like the declaration or literal that describes it:
 | Anonymous function | `<fn>` |
 | Named process address | `<Address counter>` |
 | Direct process address | `<Address direct>` |
+| Test mailbox address ([testing](testing.md#fake-process-addresses)) | `<Address test>` |
 | Std type with a registry render override | `30s` for a `Duration` |
 | Other `native type` | `<Receiver>`, the type's simple name |
 

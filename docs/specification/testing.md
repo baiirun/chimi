@@ -2,20 +2,18 @@
 
 ## Status
 
-Draft. This is the contract for test declarations, the `chimi test` runner,
+This is the contract for test declarations, the `chimi test` runner,
 `std/test`, deterministic time and randomness in tests, fakes, recorders, and
 runnable documentation examples. It covers T1 and G16 of the
 [language completion plan](../plans/language-completion-plan.md) and the
 testing row of the [standard library map](../plans/standard-library-map.md).
-Nothing here is implemented. The build is tracked by CHI-208; this draft is
-CHI-202.
+Nothing here is implemented. The build is tracked by CHI-208; the spec was
+written under CHI-202.
 
-Four choices in this draft touch questions only Byron can settle: the test
+Four choices here touched questions only Byron could settle: the test
 declaration form, stateful fakes and mutation, a built-in assertion form, and
-doc-comment examples. They are listed under [Open questions](#open-questions)
-with their options. The body of this spec is written with the recommended
-option of each, so it reads as one complete design; an answer that differs
-changes only the sections that question names.
+doc-comment examples. He took the recommended option of each on 2026-11-15;
+[Settled questions](#settled-questions) keeps the options he chose between.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative.
 
@@ -126,8 +124,8 @@ test "<name>" { <block> }
   module item position when a text literal follows it, so `test` stays usable
   as an identifier everywhere else.
 - The name is a plain text literal, without interpolation. It MUST be unique
-  within its module (`N3110`). It is the test's name in reports and filters.
-- A test item takes no visibility modifier (`L2102`) and is not a value. Code
+  within its module (`N3120`). It is the test's name in reports and filters.
+- A test item takes no visibility modifier (`L2120`) and is not a value. Code
   cannot reference, call, or import a test.
 - A test MAY appear in any module, including a module that also declares
   `main`. A test sees every item of its own module, public or private, so
@@ -210,11 +208,13 @@ plan is fixed: a module cannot add to it.
 
 - Equality is derived structural equality, the same `==` the program uses. A
   type that is not equatable, such as a function, is rejected at the call
-  (`T4301`, "`Test.assert_equal` needs `T` to be equatable").
+  (`T4300`, "`Test.assert_equal` needs `T` to be equatable").
 - The actual value comes first, so a pipeline reads in the order the work
   happens: `parse("12") |> Test.assert_equal(12)`.
-- There are no twin forms for other comparisons. `Test.assert(count > 3,
-  "count")` covers them, and the message says what was being checked.
+- `assert_not_equal` exists because its report renders both values, which
+  `Test.assert(a != b, ...)` cannot. There are no forms for other
+  comparisons: `Test.assert(count > 3, "count")` covers them, and the message
+  says what was being checked.
 
 ### An assertion failure is a defect
 
@@ -278,9 +278,13 @@ comparing the stored value:
 
 <!-- chimi: fragment -->
 ```chimi
-Result.capture(fn() { Duration.parse("") })
-|> Test.assert_equal(Err(Duration.ParseError.Empty))
+Result.capture(fn() { Int.parse("") })
+|> Test.assert_equal(Err(Int.ParseError.Empty))
 ```
+
+A literal argument works here because `Int.parse` is not checked at compile
+time. `Duration.parse("")` with a literal is `T4349`, so a test of its
+failures passes the text through a variable or a helper parameter.
 
 `std/test` adds no `assert_fails` form. `Result.capture` already turns any
 outcome into a value, and one rule for comparing values covers successes and
@@ -302,9 +306,10 @@ Test.capture_defect:
   the scope's children are cancelled and drained, the exclusive capabilities
   the scope owns are cleaned up as at task exit, and the defect's message is
   the result.
-- When the operation succeeds, fails with an expected failure, or is
-  cancelled by its own scope, `capture_defect` fails the test with the kind
-  `assertion`, naming what happened instead and rendering the value.
+- When the operation succeeds or fails with an expected failure,
+  `capture_defect` fails the test with the kind `assertion`, naming what
+  happened instead and rendering the value. The scope has no timer, so it is
+  never cancelled on its own.
 - An assertion failure inside the operation is not captured. It ends the test
   as usual, so a fake's assertion cannot be mistaken for the defect under
   test.
@@ -415,7 +420,7 @@ Providers:
   identity (module path and name), so a test draws the same numbers whether it
   runs alone, filtered, or among others, and adding a test does not change
   another test's numbers.
-- The run seed is 0 unless `--seed <n>` sets it. A failure report of a test
+- The run seed is 0 unless `--seed=<n>` sets it. A failure report of a test
   that read its random source names the seed, so the failure can be replayed.
 - Programs MAY supply another `Random` through `using`, as with `Clock`.
 
@@ -455,12 +460,15 @@ runtime-owned, append-only types for tests:
 | `Test.script` | `fn<T>(List<T>) -> Script<T>` |
 | `Test.next` | `fn<T>(Script<T>) -> T` |
 
-- A `Recorder<T>` is a shareable handle to a log owned by the test execution.
-  `record` appends a value, which MUST be transferable; `recorded` returns
-  every value recorded so far, in the order the records linearized. Records
+- A `Recorder<T>` is a shareable handle to a log owned by the test execution;
+  the registry declares the type shareable. `record` requires `T` to be
+  shareable, because `recorded` hands the same values out again and an
+  exclusive value such as a `Receiver` would get two owners. `recorded`
+  returns every value recorded so far, in the order the records linearized. Records
   from several tasks or processes interleave in that order.
 - A `Script<T>` is a shareable handle to a queue made from a list. `next`
-  removes and returns its first value. Calling `next` on an empty script fails
+  removes and returns its first value, so each value has one reader and `T`
+  need only be transferable. Calling `next` on an empty script fails
   the test with the kind `assertion`: "script exhausted after N values".
 - Both are test-only operations (`T4401`). They give tests one kind of
   observable state without adding a mutable cell to programs. If mutation
@@ -468,7 +476,7 @@ runtime-owned, append-only types for tests:
   Chimi.
 - Neither renders its contents: `Debug.render` of a recorder is `<Recorder>`.
 
-This is the recommended option of [question 2](#q2-stateful-fakes-and-mutation).
+Byron chose this as [question 2](#q2-stateful-fakes-and-mutation).
 
 ### Fake process addresses
 
@@ -478,15 +486,20 @@ the code a fake address:
 
 | Function | Type |
 | --- | --- |
-| `Test.inbox` | `fn<M>(Int) -> (Process.Address<M>, Inbox<M>)` (capacity) |
-| `Test.received` | `fn<M>(Inbox<M>) -> List<M>` |
+| `Test.mailbox` | `fn<M>(Int) -> (Process.Address<M>, Mailbox<M>)` (capacity) |
+| `Test.received` | `fn<M>(Mailbox<M>) -> List<M>` |
 
-- The address is a direct address that no process owns. `Process.send` to it
+- `Test.Mailbox<M>` is its own type, not `Process.Inbox<M>`: `Process.receive`
+  does not accept it, and it renders as `<Mailbox>`.
+- The address is a third kind of address, beside named and direct, that no
+  process owns. `Process.send` to it
   follows the mailbox rules: it never parks, and it returns
   `SendError.Full(message)` once `capacity` messages are held.
 - `received` returns every message delivered so far, in delivery order, and
   removes them, which frees capacity.
-- Such an address equals only itself and renders as `<Address test>`.
+- Such an address equals only itself and renders as `<Address test>`, a row
+  this spec adds to the [debug rendering
+  table](standard-modules-and-constants.md#format).
 - Both are test-only operations and native-only, as processes are.
 
 ## The runner
@@ -502,18 +515,18 @@ means every module under it. Options:
 
 | Option | Meaning |
 | --- | --- |
-| `--filter <text>` | run only tests whose `<module> <name>` contains the text; repeatable, any match runs |
-| `--backend native\|interpreter` | default `native` |
-| `--clock virtual\|real` | default `virtual` |
-| `--clock-start <RFC 3339>` | the initial `Timestamp`, default `1970-01-01T00:00:00Z` |
-| `--seed <n>` | the run seed, default 0 |
-| `--time-limit <duration>` | wall-clock limit per test, in the `Duration` text form; default `60s` |
-| `--jobs <n>` | tests run at once; default the number of cores |
+| `--filter=<text>` | run only tests whose `<module> <name>` contains the text; repeatable, any match runs |
+| `--backend=native\|interpreter` | default `native` |
+| `--clock=virtual\|real` | default `virtual` |
+| `--clock-start=<RFC 3339>` | the initial `Timestamp`, default `1970-01-01T00:00:00Z` |
+| `--seed=<n>` | the run seed, default 0 |
+| `--time-limit=<duration>` | wall-clock limit per test, in the `Duration` text form; default `60s` |
+| `--jobs=<n>` | tests run at once; default the number of cores |
 | `--show-output` | show captured console output for passing tests too |
 | `--json` | write the [machine-readable output](#machine-readable-output) to stdout instead of the report |
 | `--trace=off\|boundaries\|full` | trace each test's execution, written per test |
 
-The interpreter has no clock yet, so under `--backend interpreter` a test that
+The interpreter has no clock yet, so under `--backend=interpreter` a test that
 reaches the clock reports the kind `defect` with the interpreter's existing
 message, until the interpreter gains virtual time.
 
@@ -531,7 +544,7 @@ message, until the interpreter gains virtual time.
 ### Isolation
 
 Each test MUST run as its own execution. The native runner SHOULD build one
-test executable per run and start it once per test (`<exe> --test <index>`),
+test executable per run and start it once per test (`<exe> --test=<index>`),
 so a crash in the runtime itself loses one test, not the run. Running several
 tests in one OS process is allowed when that guarantee holds.
 
@@ -558,14 +571,15 @@ Fields are added, never renamed, within `v1`.
 ## Documentation examples
 
 Doc comments are `///` lines directly before an item, as `std/` already
-writes them. A fenced ```` ```chimi ```` block in a doc comment is an
+writes them. The documentation generator (T4) owns the rest of their form;
+this section fixes only how an example inside one runs. A fenced ```` ```chimi ```` block in a doc comment is an
 **example**:
 
-- `chimi test` runs each example as a test named `<item> example <n>`, in the
-  module that holds the item, with `n` counting from 1 in source order.
-- An example's body is a test body: statements that end in `Void`, usually an
-  assertion. It sees the module's items as a test in that module does, and
-  imports are written inside the example.
+- `chimi test` runs each example as a test named `<item> example <n>`, with `n` counting from 1 in source order.
+- An example compiles as its own test module that imports the documented
+  module, so it sees public items only, as a reader's code would. Lines at
+  the top of the block that are `import` items are that module's imports; the
+  rest is the test body: statements that end in `Void`, usually an assertion.
 - The formatter formats example code, and `chimi check` type-checks it, so an
   example cannot drift from the item it documents. The documentation
   generator (T4) shows it as written.
@@ -589,8 +603,8 @@ pub fn unwrap_or<T>(option: Option<T>, fallback: T) -> T {
 ```
 
 Markdown documents outside source keep the existing harness
-(`tests/doc_examples.rs`), whose annotations check and run them. This is the
-recommended option of [question 4](#q4-runnable-examples-in-doc-comments).
+(`tests/doc_examples.rs`), whose annotations check and run them. Byron
+chose this as [question 4](#q4-runnable-examples-in-doc-comments).
 
 ## Migrating the std-tests programs
 
@@ -610,12 +624,14 @@ convert to test items once the runner exists:
 
 ## Diagnostics
 
-Codes are provisional until the runner lands.
+Codes are provisional until the runner lands. This specification claims
+`T4400`–`T4419`, `N3120`–`N3129`, and `L2120`–`L2129`, outside the blocks
+[standard modules](standard-modules-and-constants.md#diagnostics) owns.
 
 | Code | When |
 | --- | --- |
-| `N3110` | two tests in one module have the same name |
-| `L2102` | a test item has a visibility modifier |
+| `N3120` | two tests in one module have the same name |
+| `L2120` | a test item has a visibility modifier |
 | `T4400` | a test body needs something the test provider plan does not close and no `using` supplies |
 | `T4401` | a test-only `std/test` operation is reachable from a program's `main` |
 | `T4402` | a test body's success type is not `Void` |
@@ -632,7 +648,7 @@ interpreter.
 | Row | Behaviour | Backends |
 | --- | --- | --- |
 | Declaration | `test "name" { ... }` parses, formats, and type-checks; `test` stays an identifier elsewhere | both |
-| Duplicate name | two tests with one name in a module are `N3110` | both |
+| Duplicate name | two tests with one name in a module are `N3120` | both |
 | Void body | a body ending in a non-`Void` value is `T4402` | both |
 | Unclosed need | a need outside the test plan without `using` is `T4400` | both |
 | Build excludes tests | `chimi build` output is byte-identical with and without test items | native |
@@ -640,15 +656,15 @@ interpreter.
 | Escaped failure | an expected failure leaving the body fails with the kind `failure` and its rendering | both |
 | Assertion in a fake | an assertion inside a provider method fails the test | both |
 | Capture defect | `capture_defect` returns the message; a success or expected failure fails the test; an inner assertion is not captured | both |
-| Test-only from main | `capture_defect`, `record`, or `inbox` reachable from `main` is `T4401` | both |
+| Test-only from main | `capture_defect`, `record`, or `mailbox` reachable from `main` is `T4401` | both |
 | Virtual clock | a 30-second sleep takes no real time and `Clock.since` reads exactly 30s | native |
 | Deadlock | a test that parks forever fails with the kind `deadlock`, listing the parked task | native |
 | Seeded random | the same test draws the same numbers alone and among others; `--seed` changes them | both |
 | Recorder order | records from two tasks come back in linearization order | native |
 | Script exhausted | `next` past the end fails with the kind `assertion` | both |
-| Fake address | a full test inbox returns `SendError.Full`; `received` frees capacity | native |
+| Fake address | a full test mailbox returns `SendError.Full`; `received` frees capacity | native |
 | Isolation | a test that defects does not affect the next test's result | both |
-| Report order | `--jobs 1` and `--jobs 8` print the same report | both |
+| Report order | `--jobs=1` and `--jobs=8` print the same report | both |
 | Exit status | 0, 1, and 2 as specified | both |
 | JSON | `--json` records validate against `chimi.test.v1` | both |
 | Doc example | a doc-comment example runs as `<item> example 1` and a broken one fails `chimi check` | both |
@@ -669,20 +685,20 @@ What this needs from other work:
 Parts:
 
 - `syntax.rs`: the contextual `test` item. `formatter.rs`: its layout.
-- `resolution.rs`: test items as unnamed module members, `N3110`, `L2102`.
+- `resolution.rs`: test items as unnamed module members, `N3120`, `L2120`.
 - `typing.rs`: the test body contract, `T4400`, `T4402`; `T4401` as a
   reachability pass over the program call graph after sealing.
 - `operations.rs`: registry flags for test-only operations and for operations
   that receive their caller's location.
 - `std/test.chimi`: assertions written in Chimi over a native
   `Test.fail_assertion(location, actual, expected)` core; recorders, scripts,
-  and inboxes as native types.
+  and mailboxes as native types.
 - `main.rs`: the `test` command. The native test executable's entry takes
-  `--test <index>` and writes one `chimi.test.v1` record.
+  `--test=<index>` and writes one `chimi.test.v1` record.
 
-## Decisions made in this draft
+## Decisions made in this spec
 
-Decided from the vision docs and recorded in [decisions](../decisions.md):
+Besides the settled questions, decided from the vision docs and recorded in [decisions](../decisions.md):
 
 - A failed assertion is a defect reported as an assertion failure, not an
   expected failure, so assertions work inside fakes.
@@ -695,15 +711,16 @@ Decided from the vision docs and recorded in [decisions](../decisions.md):
 - Each test is its own execution; tests run in parallel with a deterministic
   report order.
 - The test provider plan closes `clock` (virtual), `random` (seeded), and
-  `console` (captured), and nothing else.
+  `console` (captured), and nothing else. A program's runner plan also closes
+  `random`, from operating-system entropy, as it closes `clock`.
 - Test randomness is xoshiro256\*\* seeded through SplitMix64 from the run seed
   and the test identity; the run seed defaults to 0.
 - A test body's success type is `Void`.
 
-## Open questions
+## Settled questions
 
-These four are for Byron. Each lists its options, what each leads to, and the
-recommendation this draft is written with.
+Byron chose the recommended option (the first) of each on 2026-11-15. The
+options stay here as the record of what was weighed.
 
 ### Q1. How a test is declared
 
