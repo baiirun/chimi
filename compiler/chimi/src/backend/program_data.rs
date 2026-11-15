@@ -250,6 +250,11 @@ impl ProgramData {
 
 pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String {
     let mut data = ProgramData::default();
+    let origin_locations = core
+        .origin_locations
+        .iter()
+        .map(|location| data.string(location))
+        .collect::<Vec<_>>();
     let locals = local_slots(core);
     let mut functions = Vec::new();
     for (function, local_count) in core.functions.iter().zip(&locals.function_counts) {
@@ -528,14 +533,15 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
     render_array(
         &mut output,
         "const ChimiOrigin CHIMI_ORIGINS[]",
-        &core.origins,
-        |origin| {
+        &core.origins.iter().zip(&origin_locations).collect::<Vec<_>>(),
+        |(origin, location)| {
             format!(
-                "{{{}, {}, {}, {}}}",
+                "{{{}, {}, {}, {}, {}}}",
                 origin.file_id.raw(),
                 origin.semantic_id.raw(),
                 origin.range.start(),
-                origin.range.end()
+                origin.range.end(),
+                location
             )
         },
     );

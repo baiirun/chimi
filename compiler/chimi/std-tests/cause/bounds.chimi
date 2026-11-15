@@ -1,0 +1,55 @@
+// A cause stays bounded: past 32 context frames or 64 caused_by links it
+// keeps the oldest and the newest and counts what it dropped, so a retry
+// loop of 1000 attempts carries a cause of fixed size.
+import std/cause as Cause
+import std/list as List
+import std/option as Option
+import std/result as Result
+import std/result.{Result, Ok, Err}
+import std/text as Text
+
+enum Attempt {
+  Failed(number: Int)
+}
+
+fn nested(depth: Int) -> Int {
+  case depth {
+    0 -> Failure(Attempt.Failed(0))
+    n -> fn() { nested(n - 1) } |> Cause.context("level ${n}")
+  }
+}
+
+fn retry(last: Result<Int, Attempt>) -> Int {
+  case last {
+    Err(Attempt.Failed(number)) -> Failure(Attempt.Failed(number + 1))
+    Ok(value) -> value
+  }
+}
+
+fn describe(result: Result<Int, Attempt>) -> Text {
+  case Cause.of(result) {
+    Some(cause) -> {
+      let lines = Cause.to_text(cause) |> Text.lines
+      let dropped = lines |> List.filter(fn(line) { Text.contains(line, "dropped") })
+      let frames = Cause.frames(cause)
+      [
+        "frames kept: ${List.length(frames)}",
+        "first frame: ${List.first(frames) |> Option.unwrap_or("none")}",
+        "lines: ${List.length(lines)}",
+        Text.join(dropped |> List.map(Text.trim), "; "),
+      ] |> Text.join("\n")
+    }
+    None -> "none"
+  }
+}
+
+pub fn main() -> Text {
+  let deep = Result.capture(fn() { nested(40) })
+  let retried = loop (attempt, last) = (1, Result.capture(fn() { nested(0) })) {
+    case attempt {
+      n if n > 1000 -> break last
+      n -> (n + 1, Result.capture(fn() { retry(last) }))
+    }
+  }
+  [describe(deep), describe(retried)] |> Text.join("\n---\n")
+}

@@ -3171,6 +3171,7 @@ mod tests {
             type_name: "Nest".to_owned(),
             variant_name: Some("Wrap".to_owned()),
             fields: field(inner),
+            cause: None,
         },
         |inner| {
             RuntimeValue::Map(RuntimeMap::default().put(RuntimeValue::Integer(0), inner, &order))
