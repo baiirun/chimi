@@ -1,0 +1,26 @@
+// A failing root reports its cause when the cause says more than the record:
+// here a context frame and the failure it was converted from.
+import std/cause as Cause
+
+enum HttpError {
+  Status(code: Int)
+}
+
+enum JobError {
+  Transient(code: Int)
+}
+
+fn fetch() -> Int {
+  Failure(HttpError.Status(503))
+}
+
+fn charge() -> Int {
+  case fetch() {
+    Success(value) -> value
+    Failure(HttpError.Status(code)) -> Failure(JobError.Transient(code))
+  }
+}
+
+pub fn main() -> Int {
+  charge |> Cause.context("charging job 42")
+}

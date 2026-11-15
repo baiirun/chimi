@@ -119,6 +119,9 @@ pub(crate) enum StandardType {
     ProcessMonitor,
     /// `std/process.Down`: how a monitored incarnation ended.
     ProcessDown,
+    /// `std/cause.Cause`: the diagnostic record beside a failure, a defect, or a
+    /// cancellation.
+    Cause,
 }
 
 impl StandardType {
@@ -190,6 +193,7 @@ impl StandardType {
             Self::Timeout => "Timeout",
             Self::ProcessMonitor => "Monitor",
             Self::ProcessDown => "Down",
+            Self::Cause => "Cause",
         }
     }
 
@@ -246,6 +250,9 @@ impl StandardType {
             | Self::Instant
             | Self::Timestamp
             | Self::Timeout => StandardProperties::Structural,
+            Self::Cause => StandardProperties::Opaque(
+                "a `Cause`, diagnostic data that equality and order never read",
+            ),
         }
     }
 
@@ -460,6 +467,17 @@ pub(crate) enum StandardFunction {
     // (`text`) or their lowercase hex (`bytes`).
     EmbedText,
     EmbedBytes,
+    // The native core of `std/cause`; the readers of a code map it to an enum
+    // in source.
+    CauseContext,
+    CauseOf,
+    CauseKindCode,
+    CauseSummary,
+    CauseFrames,
+    CauseCausedBy,
+    CauseSuppressed,
+    CauseReasonCode,
+    CauseToText,
 }
 
 impl StandardFunction {
@@ -698,7 +716,16 @@ impl StandardFunction {
             | Self::BytesReadIntCode
             | Self::BytesIntBytes
             | Self::EmbedText
-            | Self::EmbedBytes => None,
+            | Self::EmbedBytes
+            | Self::CauseContext
+            | Self::CauseOf
+            | Self::CauseKindCode
+            | Self::CauseSummary
+            | Self::CauseFrames
+            | Self::CauseCausedBy
+            | Self::CauseSuppressed
+            | Self::CauseReasonCode
+            | Self::CauseToText => None,
         }
     }
 
@@ -847,6 +874,15 @@ impl StandardFunction {
             Self::BytesIntBytes => "int_bytes",
             Self::EmbedText => "text",
             Self::EmbedBytes => "bytes",
+            Self::CauseContext => "context",
+            Self::CauseOf => "of",
+            Self::CauseKindCode => "kind_code",
+            Self::CauseSummary => "summary",
+            Self::CauseFrames => "frames",
+            Self::CauseCausedBy => "caused_by",
+            Self::CauseSuppressed => "suppressed",
+            Self::CauseReasonCode => "reason_code",
+            Self::CauseToText => "to_text",
         }
     }
 
@@ -1191,6 +1227,7 @@ impl StandardConstructor {
             | StandardType::Set
             | StandardType::Decimal
             | StandardType::Bytes
+            | StandardType::Cause
             | StandardType::JsonValue
             | StandardType::JsonNumber
             | StandardType::DecodeError

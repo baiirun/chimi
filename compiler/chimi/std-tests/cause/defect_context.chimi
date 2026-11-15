@@ -1,0 +1,15 @@
+// Context passes a defect on unchanged, and the root report shows the frames
+// it collected, whole even when a frame's text holds a NUL.
+import std/cause as Cause
+
+fn divide(left: Int, right: Int) -> Int {
+  left / right
+}
+
+fn average(total: Int, count: Int) -> Int {
+  fn() { divide(total, count) } |> Cause.context("averaging ${total} over ${count}")
+}
+
+pub fn main() -> Int {
+  fn() { average(10, 0) } |> Cause.context("building the\u{0}report")
+}

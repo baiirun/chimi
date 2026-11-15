@@ -1,0 +1,143 @@
+/// Failure context: where a failure, a defect, or a cancellation came from.
+///
+/// Every terminal outcome carries a `Cause`, diagnostic data that lives beside
+/// the outcome and never inside its value: matching, equality, ordering, and
+/// failure rows ignore it, like a stack trace. `Cause.context` adds a frame to
+/// whatever passes through it; a `Failure(...)` written in an arm that matched
+/// a failure links the new cause to the matched one; `Result.capture` keeps the
+/// cause beside the `Err` it stores, and `Cause.of` reads it back.
+///
+/// A cause keeps at most 32 context frames, 16 suppressed causes, and 64
+/// `caused_by` links. Past a limit it keeps the oldest and the newest entries
+/// and counts what it dropped, so a long retry loop cannot grow one without
+/// bound.
+import std/result.{Result}
+
+// 1. Public types.
+
+/// The diagnostic record of one outcome. Shareable; neither equatable nor
+/// ordered.
+pub native type Cause
+
+/// What kind of outcome a cause describes.
+pub enum Kind {
+  ExpectedFailure
+  Defect
+  Cancellation
+}
+
+/// Why a cause sits in another cause's suppressed list.
+///
+/// `Cleanup` is a failure during unwinding or resource cleanup. `Sibling` is a
+/// concurrent child's failure that lost to the primary one. `Displaced` is an
+/// outcome that a later failure replaced.
+pub enum Suppression {
+  Cleanup
+  Sibling
+  Displaced
+}
+
+// 2. Adding context.
+
+/// Calls `operation` and returns its value. When it ends with an expected
+/// failure, a defect, or a cancellation, adds `text` as a context frame to that
+/// outcome's cause and passes the outcome on unchanged, so callers still match
+/// the same variant. `text` is evaluated before `operation` runs.
+///
+/// ```chimi
+/// import std/cause as Cause
+///
+/// enum LoadError {
+///   Missing
+/// }
+///
+/// fn load() -> Int {
+///   Failure(LoadError.Missing)
+/// }
+///
+/// pub fn main() -> Int {
+///   case load |> Cause.context("loading the config") {
+///     Success(value) -> value
+///     Failure(LoadError.Missing) -> 0
+///   }
+/// }
+/// ```
+///
+/// Calls: `operation` once.
+/// Fails with: whatever `operation` fails with.
+/// Cost: O(1) plus `operation`; O(frames) when it fails.
+pub native fn context<T, E, R>(operation: fn() -> T errors E needs R, text: Text) -> T errors E needs R
+
+// 3. Reading causes.
+
+/// The cause a stored `Err` keeps: the cause of the failure `Result.capture`
+/// stored. `None` for `Ok`, and for an `Err` built directly from a value.
+///
+/// Cost: O(1).
+pub native fn of<T, E>(result: Result<T, E>) -> Option<Cause>
+
+/// Whether `cause` describes an expected failure, a defect, or a cancellation.
+///
+/// Cost: O(1).
+pub fn kind(cause: Cause) -> Kind {
+  case kind_code(cause) {
+    0 -> ExpectedFailure
+    1 -> Defect
+    _ -> Cancellation
+  }
+}
+
+/// The debug rendering of an expected failure's value, a defect's message, or
+/// a cancellation's reason.
+///
+/// Cost: O(size of the value).
+pub native fn summary(cause: Cause) -> Text
+
+/// The context frames, oldest first, without their source locations.
+///
+/// Cost: O(frames).
+pub native fn frames(cause: Cause) -> List<Text>
+
+/// The cause of the failure this one was converted from, if any.
+///
+/// Cost: O(1).
+pub native fn caused_by(cause: Cause) -> Option<Cause>
+
+/// The causes this one suppressed, in the order they were attached.
+///
+/// Cost: O(suppressed causes).
+pub native fn suppressed(cause: Cause) -> List<Cause>
+
+/// Why `cause` was suppressed, for a cause read from `suppressed`; `None`
+/// otherwise.
+///
+/// Cost: O(1).
+pub fn reason(cause: Cause) -> Option<Suppression> {
+  case reason_code(cause) {
+    0 -> Some(Cleanup)
+    1 -> Some(Sibling)
+    2 -> Some(Displaced)
+    _ -> None
+  }
+}
+
+// 4. Conversions.
+
+/// The cause tree, one line per cause, context frame, and suppressed cause,
+/// each with its source location, details indented below what they describe:
+///
+/// ```text
+/// expected failure JobError.Transient("payments returned 503") (app/worker.chimi:12)
+///   context: charging job 42 (app/worker.chimi:41)
+///   caused by: expected failure HttpError.Status(503) (lib/payments.chimi:18)
+/// ```
+///
+/// Cost: O(size of the tree).
+pub native fn to_text(cause: Cause) -> Text
+
+// Private natives.
+
+native fn kind_code(cause: Cause) -> Int
+
+/// 0 cleanup, 1 sibling, 2 displaced, -1 not suppressed.
+native fn reason_code(cause: Cause) -> Int

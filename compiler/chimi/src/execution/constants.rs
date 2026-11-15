@@ -223,6 +223,7 @@ impl Evaluator<'_> {
                     self.core.symbol(symbol).name
                 ),
                 node: None,
+                cause: None,
             };
         };
         let state = self.constant_state();
@@ -266,6 +267,7 @@ impl Evaluator<'_> {
             return Control::Defect {
                 message: format!("constant {} has no value", self.core.symbol(symbol).name),
                 node: None,
+                cause: None,
             };
         };
         if let Some(start) = state
@@ -443,13 +445,13 @@ impl Evaluator<'_> {
                 ),
             ),
             None => match control {
-                Control::Defect { message, node } => diagnostic_at(
+                Control::Defect { message, node, .. } => diagnostic_at(
                     core,
                     node.unwrap_or(initializer),
                     "E5202",
                     format!("constant `{name}` defected at build time: {message}"),
                 ),
-                Control::Failure(_) | Control::Cancellation | Control::Break { .. } => {
+                Control::Failure(..) | Control::Cancellation(_) | Control::Break { .. } => {
                     diagnostic_at(
                         core,
                         initializer,
@@ -491,6 +493,7 @@ fn reported_defect() -> Control {
     Control::Defect {
         message: "constant evaluation stopped".to_owned(),
         node: None,
+        cause: None,
     }
 }
 
@@ -666,7 +669,7 @@ impl Measure<'_> {
                 self.shared.insert(address, part, size);
                 Some(size)
             }
-            RuntimeValue::Callable(_) => Some(ROW_BYTES),
+            RuntimeValue::Callable(_) | RuntimeValue::Cause(_) => Some(ROW_BYTES),
         }
     }
 
@@ -796,6 +799,7 @@ fn constant_value(
                 .collect::<Result<_, String>>()?,
         ),
         RuntimeValue::JsonNumber(text) => ConstantValue::JsonNumber(text.clone()),
+        RuntimeValue::Cause(_) => return Err("a `Cause`".to_owned()),
         RuntimeValue::Callable(callable) => ConstantValue::Function(match callable {
             RuntimeCallable::Declared {
                 symbol,
@@ -917,6 +921,7 @@ pub(super) fn runtime_value(core: &CoreProgram, value: &ConstantValue) -> Runtim
                         })
                         .collect(),
                 ),
+                cause: None,
             }
         }
         ConstantValue::Map(entries) => RuntimeValue::Map(runtime_map(
