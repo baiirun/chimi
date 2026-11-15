@@ -1639,6 +1639,19 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::SupervisorStop
             | StandardFunction::SupervisorWait
             | StandardFunction::ClockSleep => self.invoke_process(function, arguments, call_node),
+            StandardFunction::ClockNow
+            | StandardFunction::ClockTimestamp
+            | StandardFunction::ClockSince
+            | StandardFunction::ClockSleepUntil
+            | StandardFunction::ClockAdd
+            | StandardFunction::ClockBetween
+            | StandardFunction::ClockTimestampToText
+            | StandardFunction::ClockUnixNanoseconds
+            | StandardFunction::ClockFromUnixNanoseconds
+            | StandardFunction::ClockTimestampBetween
+            | StandardFunction::ClockStartingAt
+            | StandardFunction::TaskTimeout
+            | StandardFunction::TaskDeadline => self.invoke_process(function, arguments, call_node),
             StandardFunction::DebugCrash
             | StandardFunction::OptionUnwrapOrFail
             | StandardFunction::TextConcat
