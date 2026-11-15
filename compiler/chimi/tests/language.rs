@@ -1637,6 +1637,168 @@ fn a_decimal_task_result_crosses_heaps_intact() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// The diagnostic codes `chimi run` reports for `source` as `main.chimi` in a
+/// directory that holds `data/note.txt` (UTF-8) and `data/blob.bin` (not UTF-8).
+fn embed_codes(name: &str, source: &str) -> Vec<String> {
+    let scratch = scratch_directory(name);
+    std::fs::create_dir_all(scratch.join("data")).unwrap();
+    std::fs::write(scratch.join("data/note.txt"), "note").unwrap();
+    std::fs::write(scratch.join("data/blob.bin"), [0x61, 0xff]).unwrap();
+    let path = scratch.join("main.chimi");
+    std::fs::write(&path, source).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .expect("run the reference interpreter");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    std::fs::remove_dir_all(scratch).unwrap();
+    let mut codes = stderr
+        .split("error[")
+        .skip(1)
+        .filter_map(|rest| rest.split(']').next())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    codes.sort();
+    codes
+}
+
+#[test]
+fn embedding_is_rejected_outside_a_constant_and_for_bad_paths() {
+    let header = "import std/embed as Embed\n";
+    let main = "pub fn main() -> Int { 0 }\n";
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "in-function",
+            "fn read() -> Text { Embed.text(\"data/note.txt\") }\n",
+            &["E5206"],
+        ),
+        (
+            "in-closure",
+            "const read = fn() { Embed.text(\"data/note.txt\") }\n",
+            &["E5206"],
+        ),
+        (
+            "as-value",
+            "const read = Embed.text\nconst note = read(\"data/note.txt\")\n",
+            &["E5206"],
+        ),
+        (
+            "computed",
+            "const name = \"data/note.txt\"\nconst note = Embed.text(name)\n",
+            &["E5207"],
+        ),
+        (
+            "parent",
+            "const note = Embed.text(\"../data/note.txt\")\n",
+            &["E5207"],
+        ),
+        (
+            "dot",
+            "const note = Embed.text(\"./data/note.txt\")\n",
+            &["E5207"],
+        ),
+        (
+            "absolute",
+            "const note = Embed.text(\"/etc/hostname\")\n",
+            &["E5207"],
+        ),
+        (
+            "empty-segment",
+            "const note = Embed.text(\"data//note.txt\")\n",
+            &["E5207"],
+        ),
+        (
+            "missing",
+            "const note = Embed.bytes(\"data/absent.txt\")\n",
+            &["E5208"],
+        ),
+        (
+            "not-utf8",
+            "const blob = Embed.text(\"data/blob.bin\")\n",
+            &["E5209"],
+        ),
+        (
+            "valid",
+            "const note = Embed.text(\"data/note.txt\")\nconst blob = Embed.bytes(\"data/blob.bin\")\n",
+            &[],
+        ),
+    ];
+    for (name, declarations, expected) in cases {
+        // `main` calls `read` where a case defines it, so the call is reachable.
+        let main = if declarations.contains("fn read()") {
+            "pub fn main() -> Int { Text.byte_length(read()) }\nimport std/text as Text\n"
+        } else {
+            main
+        };
+        let codes = embed_codes(
+            &format!("embed-{name}"),
+            &format!("{header}{declarations}{main}"),
+        );
+        assert_eq!(codes, *expected, "{name}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_embedded_symbolic_link_must_stay_inside_the_module_directory() {
+    let scratch = scratch_directory("embed-link");
+    let outside = scratch.join("outside.txt");
+    std::fs::write(&outside, "secret").unwrap();
+    let module = scratch.join("app");
+    std::fs::create_dir_all(&module).unwrap();
+    std::fs::write(module.join("inside.txt"), "fine").unwrap();
+    std::os::unix::fs::symlink(&outside, module.join("escape.txt")).unwrap();
+    std::os::unix::fs::symlink(module.join("inside.txt"), module.join("alias.txt")).unwrap();
+    let codes = |constant: &str| {
+        let path = module.join("main.chimi");
+        std::fs::write(
+            &path,
+            format!("import std/embed as Embed\n{constant}\npub fn main() -> Int {{ 0 }}\n"),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .arg("run")
+            .arg(&path)
+            .output()
+            .expect("run the reference interpreter");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    assert!(codes("const leak = Embed.text(\"escape.txt\")").contains("error[E5207]"));
+    assert!(!codes("const ok = Embed.text(\"alias.txt\")").contains("error["));
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn an_embedded_file_is_in_the_native_executable_and_rebuilds_when_edited() {
+    let scratch = scratch_directory("embed-native");
+    std::fs::write(scratch.join("blob.bin"), [0x00, 0xca, 0xfe]).unwrap();
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        "import std/embed as Embed\nimport std/bytes.{Bytes}\n\
+         const blob = Embed.bytes(\"blob.bin\")\n\
+         pub fn main() -> Bytes { blob }\n",
+    )
+    .unwrap();
+    let outcome = native_outcome(&scratch, &path);
+    assert!(
+        outcome.ends_with("\"outcome\":\"success\",\"value\":{\"bytes\":\"00cafe\"}}"),
+        "{outcome}"
+    );
+    // Editing only the embedded file changes the next build, cache or not.
+    std::fs::write(scratch.join("blob.bin"), [0xbe, 0xef]).unwrap();
+    for record in ["telemetry.jsonl", "outcome.jsonl"] {
+        std::fs::remove_file(scratch.join(record)).unwrap();
+    }
+    let outcome = native_outcome(&scratch, &path);
+    assert!(
+        outcome.ends_with("\"outcome\":\"success\",\"value\":{\"bytes\":\"beef\"}}"),
+        "{outcome}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn a_bytes_task_result_crosses_heaps_intact() {
     let scratch = scratch_directory("bytes-task-result");
