@@ -53,9 +53,9 @@ MUTATIONS = [
     nul("equal prefixes compare equal", [(
         "        order = bytes ? (bytes > 0) - (bytes < 0) : order_of(left_length, right_length); break;",
         "        order = (bytes > 0) - (bytes < 0); break;")]),
-    nul("Text.equal compares as C strings", [(
-        "      return success(boolean_value(text_equals(arguments[0], arguments[1]->as.text.bytes, arguments[1]->as.text.length)));",
-        "      return success(boolean_value(strcmp(arguments[0]->as.text.bytes, arguments[1]->as.text.bytes) == 0));")]),
+    # No mutant for CHIMI_INTRINSIC_TEXT_EQUAL: no source form reaches it (`==` on
+    # Text goes through structural comparison, and no module binds Text.equal),
+    # so a C-string version survived the first run without being observable.
     nul("contains stops at U+0000", [(
         "      return success(boolean_value(text_find(arguments[0]->as.text.bytes, arguments[0]->as.text.length,\n"
         "                                             arguments[1]->as.text.bytes, arguments[1]->as.text.length) != NULL));",
