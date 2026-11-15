@@ -14,8 +14,8 @@ P = "src/syntax.rs"
 F = "src/typing/failure_sets.rs"
 
 
-def member(name, file, edits):
-    return dict(name=name, file=file, edits=edits, targets=["generic_interface_members"], filter="")
+def member(name, file, edits, targets=("generic_interface_members",)):
+    return dict(name=name, file=file, edits=edits, targets=list(targets), filter="")
 
 
 MUTATIONS = [
@@ -42,7 +42,7 @@ MUTATIONS = [
     member("typing: substitution freshens the member's own generics", Y, [(
         "                    inner.values.remove(parameter);\n",
         "",
-    )]),
+    )], targets=("generic_interface_members", "language")),
     member("conformance: a generic slot unifies like a plain one", Y, [(
         "            ) => self.generic_member_conformance_error(actual, &parameters, contract),\n            (CanonicalType::Function(actual), CanonicalType::Function(expected)) => {",
         "            ) if false => self.generic_member_conformance_error(actual, &parameters, contract),\n            (CanonicalType::Function(actual), CanonicalType::Function(expected)) => {",
