@@ -1,0 +1,17 @@
+// Bytes as Map keys and Set items, in structural order by unsigned byte.
+import std/bytes as Bytes
+import std/bytes.{Bytes}
+import std/debug as Debug
+import std/map as Map
+import std/set as Set
+
+pub fn main() -> Text {
+  let counts = Map.put(Map.put(Map.put(Map.empty(), Bytes.from([0xff]), 1), Bytes.from([0x01, 0x02]), 2), Bytes.from([0x01]), 3)
+  let seen = Set.from([Bytes.from([2]), Bytes.from([1]), Bytes.from([2]), Bytes.empty()])
+  let results = [
+    Debug.render(Map.keys(counts)),
+    Debug.render(Map.get(counts, Bytes.from([0x01, 0x02]))),
+    Debug.render(seen),
+  ]
+  Debug.render(results)
+}

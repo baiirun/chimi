@@ -1,0 +1,7 @@
+// Bytes.from_int defects one past the largest value of a signed layout.
+import std/bytes as Bytes
+import std/bytes.{Bytes, IntLayout}
+
+pub fn main() -> Bytes {
+  Bytes.from_int(32768, IntLayout.I16Le)
+}

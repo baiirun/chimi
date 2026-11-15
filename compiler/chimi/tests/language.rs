@@ -1637,6 +1637,25 @@ fn a_decimal_task_result_crosses_heaps_intact() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+#[test]
+fn a_bytes_task_result_crosses_heaps_intact() {
+    let scratch = scratch_directory("bytes-task-result");
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        "import std/task as Task\nimport std/bytes as Bytes\nimport std/bytes.{Bytes}\n\
+         fn work() -> Bytes { Bytes.concat([Bytes.from([0xca, 0x00, 0xfe]), Bytes.from_text(\"task\")]) }\n\
+         pub fn main() -> Bytes { Task.result(Task.start(work)) }\n",
+    )
+    .unwrap();
+    let outcome = native_outcome(&scratch, &path);
+    assert!(
+        outcome.ends_with("\"outcome\":\"success\",\"value\":{\"bytes\":\"ca00fe7461736b\"}}"),
+        "{outcome}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // N23
 #[test]
 fn float_literal_patterns_are_rejected() {
@@ -6431,6 +6450,29 @@ fn inspecting_any_clause_reports_the_group_and_the_clause_position() {
             Some("fn(Int) -> Text errors CountError"),
             "{needle}"
         );
+    }
+}
+
+// ts-061593 (CHI-158): the name in an ordinary function's declaration reports
+// the function's contract, as a call site does; it is no clause, so there is no
+// clause position. Before, only call sites and clause groups reported it.
+#[test]
+fn inspecting_a_single_clause_function_name_reports_its_contract() {
+    let source = concat!(
+        "enum Shortfall {\n  Short\n}\n",
+        "fn total(a: Int, b: Int) -> Int errors Shortfall {\n",
+        "  case a + b < 0 {\n    True -> Failure(Shortfall.Short)\n    False -> a + b\n  }\n",
+        "}\n",
+        "pub fn main() -> Int errors Shortfall { total(1, 2) }\n",
+    );
+    for occurrence in [0, 1] {
+        let report = inspect_at(source, "total", occurrence);
+        assert_eq!(
+            report.callable().map(chimi::CallableInspection::display),
+            Some("fn(Int, Int) -> Int errors Shortfall"),
+            "occurrence {occurrence}"
+        );
+        assert!(report.clause().is_none(), "occurrence {occurrence}");
     }
 }
 
