@@ -4871,12 +4871,9 @@ static ChimiControl *invoke_bytes_operation(uint32_t intrinsic, ChimiValue **arg
       }
       return optional_value(bytes_from(raw, width));
     }
-    case CHIMI_INTRINSIC_EMBED_TEXT:
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return success(arguments[0]);
-    case CHIMI_INTRINSIC_EMBED_BYTES:
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return success(bytes_from_hex(arguments[0]->as.text.bytes, arguments[0]->as.text.length));
+    /* CHIMI_INTRINSIC_EMBED_TEXT and _BYTES never run here: lowering admits them
+       only in module constants, which the build evaluates before emitting program
+       data, so a native program receives their values as constant rows. */
   }
   return intrinsic_shape_defect(call_node);
 }

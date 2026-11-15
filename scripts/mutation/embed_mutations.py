@@ -1,5 +1,6 @@
 """Mutants of build-time embedding (Phase 6a, CHI-211): the lowering checks in
-src/executable.rs and the runtime natives in bytes_operations.rs and runtime.c.
+src/executable.rs and the interpreter native in bytes_operations.rs. The native runtime never runs
+Embed: constants are evaluated at build time and reach it as constant rows.
 
 Run: scripts/mutation/mutate.py scripts/mutation/embed_mutations.py
 """
@@ -32,18 +33,13 @@ MUTATIONS = [
     checks("parent segments are allowed", LOWERING, [
         ('.any(|segment| matches!(segment, "" | "." | ".."))',
          '.any(|segment| matches!(segment, "" | "."))')]),
-    checks("absolute paths are allowed", LOWERING, [
-        ("        || path.starts_with('/')\n", "")]),
     checks("symbolic links may escape", LOWERING, [
         ("if !file.starts_with(directory.canonicalize().map_err(unreadable)?) {",
-         "if false && !file.starts_with(directory.canonicalize().map_err(unreadable)?) {")]),
+         "if file.starts_with(\"/no-such-root\") && !file.starts_with(directory.canonicalize().map_err(unreadable)?) {")]),
     checks("Embed.text skips the UTF-8 check", LOWERING, [
         ("StandardFunction::EmbedText => String::from_utf8(contents).map_err(|invalid| {",
          "StandardFunction::EmbedText => Ok::<String, std::string::FromUtf8Error>(String::from_utf8_lossy(&contents).into_owned()).map_err(|invalid| {")]),
     programs("Rust Embed.bytes drops the last byte", CORE, [
         ("RuntimeValue::Bytes(from_hex(hex).into())",
          "RuntimeValue::Bytes(from_hex(&hex[..hex.len().saturating_sub(2)]).into())")]),
-    programs("C Embed.bytes returns the hex as text", RUNTIME, [
-        ("return success(bytes_from_hex(arguments[0]->as.text.bytes, arguments[0]->as.text.length));",
-         "return success(arguments[0]);")]),
 ]

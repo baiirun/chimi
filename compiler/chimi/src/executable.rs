@@ -2863,8 +2863,8 @@ fn embedded_file(
     path: &str,
     directory: Option<&std::path::Path>,
 ) -> Result<Vec<u8>, (&'static str, String)> {
+    // An absolute path starts with an empty segment.
     if path.is_empty()
-        || path.starts_with('/')
         || path.contains('\\')
         || path
             .split('/')
