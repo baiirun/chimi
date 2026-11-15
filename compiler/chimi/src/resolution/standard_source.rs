@@ -48,9 +48,7 @@ impl ProjectResolver {
             for entry in RUNTIME_KNOWN {
                 let (kind, declaration_kind) = match entry.identity {
                     RuntimeIdentity::Type(kind) => (kind, ModuleDeclarationKind::Enum),
-                    RuntimeIdentity::NativeType(kind) => {
-                        (kind, ModuleDeclarationKind::NativeType)
-                    }
+                    RuntimeIdentity::NativeType(kind) => (kind, ModuleDeclarationKind::NativeType),
                     RuntimeIdentity::Constructor(_) => continue,
                 };
                 let Some(type_name) = entry
@@ -115,7 +113,10 @@ impl ProjectResolver {
         semantic_id: SemanticId,
         symbol: SymbolId,
     ) {
-        let Some(identity) = self.source_identities.get(&(module_id, semantic_id)).copied()
+        let Some(identity) = self
+            .source_identities
+            .get(&(module_id, semantic_id))
+            .copied()
         else {
             return;
         };
@@ -144,7 +145,11 @@ impl ProjectResolver {
     /// standard tree (`N3101`) or with no registered native type of its
     /// qualified name (`N3104`). A registered one took its identity in
     /// [`Self::find_source_identities`].
-    pub(super) fn check_native_type(&mut self, module_index: usize, declaration: &ModuleDeclaration) {
+    pub(super) fn check_native_type(
+        &mut self,
+        module_index: usize,
+        declaration: &ModuleDeclaration,
+    ) {
         let module = &self.semantic.modules[module_index];
         let name = &declaration.name;
         let diagnostic = if !self.is_standard_module(module_index) {
@@ -261,9 +266,10 @@ fn source_variants(
     let mut variants = Vec::new();
     for variant in &declaration.variants {
         let id = format!("{type_id}.{}", variant.name.text);
-        let Some(RuntimeIdentity::Constructor(constructor)) = operations::runtime_known(&id)
-        else {
-            return Err(format!("variant {id} is not a registered runtime-known declaration"));
+        let Some(RuntimeIdentity::Constructor(constructor)) = operations::runtime_known(&id) else {
+            return Err(format!(
+                "variant {id} is not a registered runtime-known declaration"
+            ));
         };
         let expected = constructor.field_names().len();
         if variant.fields.len() != expected {
@@ -285,7 +291,10 @@ fn source_variants(
                 .iter()
                 .any(|variant| variant.name.text == variant_name)
         {
-            return Err(format!("runtime-known variant {} is not declared", entry.id));
+            return Err(format!(
+                "runtime-known variant {} is not declared",
+                entry.id
+            ));
         }
     }
     Ok(variants)

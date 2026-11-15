@@ -27,7 +27,11 @@ pub(crate) fn is_white_space(character: char) -> bool {
 
 /// Clamps `start..end` to `0..length`; a reversed range clamps to empty.
 pub(super) fn clamp_range(start: i64, end: i64, length: usize) -> std::ops::Range<usize> {
-    let clamp = |bound: i64| usize::try_from(bound.max(0)).unwrap_or(usize::MAX).min(length);
+    let clamp = |bound: i64| {
+        usize::try_from(bound.max(0))
+            .unwrap_or(usize::MAX)
+            .min(length)
+    };
     let start = clamp(start);
     start..clamp(end).max(start)
 }
@@ -77,7 +81,10 @@ impl Evaluator<'_> {
             ),
             (
                 StandardFunction::TextByteSlice,
-                [RuntimeValue::Text(value), RuntimeValue::Range { start, end }],
+                [
+                    RuntimeValue::Text(value),
+                    RuntimeValue::Range { start, end },
+                ],
             ) => {
                 let range = clamp_range(*start, *end, value.len());
                 for bound in [range.start, range.end] {
@@ -155,7 +162,10 @@ impl Evaluator<'_> {
                         .collect(),
                 ))
             }
-            (StandardFunction::ListGet, [RuntimeValue::List(list), RuntimeValue::Integer(index)]) => {
+            (
+                StandardFunction::ListGet,
+                [RuntimeValue::List(list), RuntimeValue::Integer(index)],
+            ) => {
                 let found = usize::try_from(*index)
                     .ok()
                     .and_then(|index| list.get(index));
@@ -175,7 +185,8 @@ impl Evaluator<'_> {
             ) => {
                 let range = clamp_range(*start, *end, list.len());
                 Control::Success(RuntimeValue::List(
-                    list.slice(range).expect("a clamped range is inside the list"),
+                    list.slice(range)
+                        .expect("a clamped range is inside the list"),
                 ))
             }
             (

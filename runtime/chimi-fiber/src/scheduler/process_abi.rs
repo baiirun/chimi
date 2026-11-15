@@ -133,6 +133,17 @@ pub struct ChimiSchedulerConfig {
     pub capability_violation_context: *mut c_void,
     pub process_defect_report: Option<ProcessDefectReport>,
     pub process_defect_context: *mut c_void,
+    /// The runner's received-signal word: 0, or the number of the first
+    /// SIGINT or SIGTERM. Read between resumes; an injected signal is
+    /// written here when it fires. May be null.
+    pub signal: *mut i32,
+    /// Read end of the pipe the runner's handler writes to; 0 or negative
+    /// for none, so a zeroed config has none.
+    pub signal_fd: i32,
+    /// Nonzero: deliver this signal when the clock reaches
+    /// `injected_signal_at` nanoseconds.
+    pub injected_signal: i32,
+    pub injected_signal_at: i64,
 }
 
 /// One task parked in a detected deadlock and the request kind it waits on
@@ -576,6 +587,7 @@ impl Scheduler {
     /// still running is stopped and its cleanup is driven to completion.
     pub fn run_root(&mut self, root: TaskId, deadlock_code: i64) -> RootRun {
         let mut deadlock = Vec::new();
+        self.set_signal_root(root);
         loop {
             let root_live = |scheduler: &Self| {
                 matches!(
@@ -598,6 +610,10 @@ impl Scheduler {
                         );
                     }
                 }
+                Idle::Stalled(_) if root_live(self) && self.stall_waits_for_signal() => {
+                    self.wait_for_signal();
+                    continue;
+                }
                 Idle::Stalled(_) if root_live(self) => {
                     return RootRun {
                         outcome: parked_outcome(),
@@ -613,6 +629,7 @@ impl Scheduler {
             if !root_done {
                 continue;
             }
+            self.retire_signal_timer();
             self.shutdown_processes();
             if !self.has_blocked_plans() && self.runnable.is_empty() {
                 break;
@@ -698,6 +715,15 @@ pub unsafe extern "C" fn chimi_scheduler_run(
     scheduler.set_trace_sink(config.trace_sink, config.trace_context);
     scheduler
         .set_process_defect_report(config.process_defect_report, config.process_defect_context);
+    scheduler.set_signal_source(config.signal, config.signal_fd);
+    if config.injected_signal != 0 {
+        scheduler.inject_signal_at(
+            super::Instant::ORIGIN.saturating_add(Duration::from_nanos(
+                u64::try_from(config.injected_signal_at).unwrap_or(0),
+            )),
+            config.injected_signal,
+        );
+    }
     let Ok(root) = scheduler.start_root_with_context(entry, config.context) else {
         return defect_outcome(SCHEDULER_DEFECT_CODE);
     };

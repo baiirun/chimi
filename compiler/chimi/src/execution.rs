@@ -2895,7 +2895,11 @@ mod tests {
                     unreachable!("every key is an Int")
                 };
                 path.push(key);
-                node = if leftmost { current.left.as_deref() } else { current.right.as_deref() };
+                node = if leftmost {
+                    current.left.as_deref()
+                } else {
+                    current.right.as_deref()
+                };
             }
             let removals = (0..COUNT).map(|step| if ascending { step } else { COUNT - 1 - step });
             for value in removals.filter(|value| !path.contains(value)) {

@@ -25,8 +25,10 @@ const RUN_LIMIT: Duration = Duration::from_secs(60);
 /// The project root of a fixture scenario.
 pub(super) fn root(scenario: &Scenario) -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if scenario.id == "FP01" {
-        return manifest.join("../../programs/supervised-pool");
+    match scenario.id {
+        "FP01" => return manifest.join("../../programs/supervised-pool"),
+        "FP02" => return manifest.join("../../programs/service-pool"),
+        _ => {}
     }
     manifest
         .join("tests/process-lab")
@@ -290,6 +292,7 @@ fn run_once(
     let mut child = Command::new(executable)
         .arg("--chimi-runner")
         .arg("--clock=virtual")
+        .args(scenario.runner)
         .arg(trace.flag())
         .arg(format!("--telemetry-file={}", telemetry_path.display()))
         .arg(format!("--outcome-file={}", outcome_path.display()))

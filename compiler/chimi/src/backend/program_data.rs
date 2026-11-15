@@ -1030,7 +1030,10 @@ mod tests {
                 .iter()
                 .map(|symbol| slots.slots[symbol.raw() as usize])
                 .collect::<Vec<_>>();
-            assert!(taken.iter().all(|slot| slot < count), "{taken:?} within {count}");
+            assert!(
+                taken.iter().all(|slot| slot < count),
+                "{taken:?} within {count}"
+            );
             assert_eq!(taken.iter().collect::<HashSet<_>>().len(), taken.len());
             for closure in &body.closures {
                 assert_eq!(slots.closure_count(*closure), *count);

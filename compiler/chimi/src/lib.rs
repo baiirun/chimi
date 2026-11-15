@@ -10,10 +10,10 @@ mod duration;
 mod executable;
 pub mod execution;
 mod formatter;
-mod graphemes;
 #[cfg(feature = "frontend-benchmarks")]
 #[doc(hidden)]
 pub mod frontend_benchmark;
+mod graphemes;
 mod ids;
 mod inspection;
 mod json;
@@ -39,8 +39,8 @@ pub use compiler::{
     ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport, ValuePropertyStatus,
 };
 pub use formatter::FormatReport;
-pub use operations::StandardTreeVerification;
 pub use inspection::{
     CallableInspection, ClausePosition, InspectedToken, InspectionError, InspectionReport,
     NeedInspection, ReferenceInspection, SymbolInspection, SyntaxFrame, ValuePropertyInspection,
 };
+pub use operations::StandardTreeVerification;

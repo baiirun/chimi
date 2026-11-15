@@ -31,9 +31,7 @@
 //! would be a scope that [`Scheduler::deliverable_scope`] skips until it exits.
 
 use super::clock::{Instant, TimerTarget};
-use super::{
-    ClockEvent, ClockEventKind, RequestHeader, Scheduler, TaskId, TaskOutcome, TaskPhase,
-};
+use super::{ClockEvent, ClockEventKind, RequestHeader, Scheduler, TaskId, TaskOutcome, TaskPhase};
 use crate::ChimiFiberCommand;
 use std::cell::Cell;
 
@@ -191,7 +189,10 @@ impl Scheduler {
         let Some(index) = record.scopes.iter().position(|entry| entry.id == scope) else {
             return ScopeExit::Unknown;
         };
-        let leaving: Vec<ScopeId> = record.scopes[index..].iter().map(|entry| entry.id).collect();
+        let leaving: Vec<ScopeId> = record.scopes[index..]
+            .iter()
+            .map(|entry| entry.id)
+            .collect();
         let fired = record.scopes[index..].iter().any(|entry| entry.fired);
         let children = self.scope_children(task, &leaving);
         if fired && !children.is_empty() {
@@ -207,7 +208,10 @@ impl Scheduler {
             }
         }
         for child in children {
-            self.tasks.get_mut(&child).expect("live child").started_in_scope = parent_scope;
+            self.tasks
+                .get_mut(&child)
+                .expect("live child")
+                .started_in_scope = parent_scope;
         }
         ScopeExit::Exited { delivered }
     }
@@ -220,23 +224,26 @@ impl Scheduler {
             return;
         };
         let live = matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked);
-        let stopping = self.is_stopping(task);
+        let forced = self.is_forced(task);
         let record = self.tasks.get_mut(&task).expect("live task");
         let Some(index) = record.scopes.iter().position(|entry| entry.id == scope) else {
             return;
         };
         let entry = &mut record.scopes[index];
-        // The timer has fired either way; a stopping task keeps shutdown's
-        // own cancellation.
+        // The timer has fired either way; a forced incarnation keeps
+        // shutdown's own cancellation. A draining one still times out.
         entry.timer = None;
-        if !live || stopping {
+        if !live || forced {
             return;
         }
         if entry.fired {
             return;
         }
         entry.fired = true;
-        let nested: Vec<ScopeId> = record.scopes[index..].iter().map(|entry| entry.id).collect();
+        let nested: Vec<ScopeId> = record.scopes[index..]
+            .iter()
+            .map(|entry| entry.id)
+            .collect();
         let now = self.clock.now();
         self.emit_clock(ClockEvent {
             sequence: 0,
@@ -302,7 +309,7 @@ impl Scheduler {
     pub(super) fn refuse_for_scope(&mut self, task: TaskId, kind: u32) -> bool {
         if !is_cancellation_point(kind)
             || self.deliverable_scope(task).is_none()
-            || self.is_stopping(task)
+            || self.is_forced(task)
         {
             return false;
         }

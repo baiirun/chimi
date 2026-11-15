@@ -59,7 +59,7 @@ impl Kind {
         Some(match id.get(..2)? {
             "SP" | "SF" => Self::Static,
             "CO" => Self::Core,
-            "MB" | "RT" | "SV" | "RA" | "ES" | "RR" | "SD" => Self::Runtime,
+            "MB" | "RT" | "SV" | "RA" | "ES" | "RR" | "SD" | "SG" => Self::Runtime,
             "CB" | "MF" => Self::Heap,
             "OB" | "IP" => Self::Observability,
             "FP" => Self::Forcing,
@@ -423,6 +423,7 @@ mod tests {
         exit_code: 0,
         arguments: &[],
         extra_events: &[],
+        runner: &[],
     };
 
     // Rejects a report that hides weaker evidence, such as a C harness that ran

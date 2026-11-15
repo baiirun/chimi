@@ -5,8 +5,7 @@
 use super::{Control, Environment, Evaluator, RuntimeMap, RuntimeValue};
 use crate::ids::CoreNodeId;
 use crate::json::{
-    JsonData, NumberConversionError, decode_json, number_to_decimal, number_to_int,
-    write_json_data,
+    JsonData, NumberConversionError, decode_json, number_to_decimal, number_to_int, write_json_data,
 };
 use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol};
 
@@ -53,8 +52,12 @@ impl Evaluator<'_> {
                     Ok(value) => Control::Success(RuntimeValue::Integer(value)),
                     Err(error) => {
                         let variant = match error {
-                            NumberConversionError::NotInteger => StandardConstructor::JsonNotInteger,
-                            NumberConversionError::OutOfRange => StandardConstructor::JsonOutOfRange,
+                            NumberConversionError::NotInteger => {
+                                StandardConstructor::JsonNotInteger
+                            }
+                            NumberConversionError::OutOfRange => {
+                                StandardConstructor::JsonOutOfRange
+                            }
                         };
                         Control::Failure(self.standard_value(variant, Vec::new()))
                     }

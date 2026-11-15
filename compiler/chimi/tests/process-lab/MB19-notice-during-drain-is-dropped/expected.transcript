@@ -1,0 +1,11 @@
+@0s supervisor_started supervisor=S1 parent=root
+@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.worker
+@0s supervisor_started supervisor=S2 parent=root
+@0s process_started supervisor=S2 membership=M2 incarnation=I2 name=app/main.watcher
+@0s process_send kind=named name=app/main.watcher incarnation=I2 outcome=accepted
+@1ms process_send kind=named name=app/main.worker incarnation=I1 outcome=accepted
+@1ms process_send kind=named name=app/main.watcher incarnation=I2 outcome=accepted
+@501ms process_terminated membership=M1 incarnation=I1 cause=returned
+@1.001s process_terminated membership=M2 incarnation=I2 cause=cancelled
+@1.001s supervisor_stopped supervisor=S2
+@1.001s supervisor_stopped supervisor=S1

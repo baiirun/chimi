@@ -1,0 +1,61 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// SG01: run with `--signal=TERM@1500ms`. A worker handles three queued jobs
+// of 1 s each and tells the `ledger` process each id it finished; main waits
+// on the root. SIGTERM at 1.5s cancels main, which stops the root it
+// started. Members stop newest first, so the worker drains first: job 2 (in
+// flight) and job 3 (queued) both finish, and the transcript shows their
+// `process_send` to the ledger at 2s and 3s before the worker ends
+// `cancelled` at 3s. Then the ledger drains and ends. The program ends with
+// the cancellation outcome and exits 143 (128 + SIGTERM). A signal that
+// cancelled the worker at once would end it at 1.5s with two jobs lost.
+
+pub enum Job {
+  Work(id: Int)
+}
+
+pub enum Entry {
+  Finished(id: Int)
+}
+
+pub process name worker: Job
+pub process name ledger: Entry
+
+fn work(inbox: Inbox<Job>) -> Void needs { clock: Clock } {
+  loop done = 0 {
+    case Process.receive(inbox) {
+      Job.Work(id) -> {
+        Clock.sleep(Duration.seconds(1))
+        Process.send(ledger, Entry.Finished(id))
+        done + 1
+      }
+    }
+  }
+}
+
+fn record(inbox: Inbox<Entry>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Entry.Finished(id) -> total + id
+    }
+  }
+}
+
+pub fn main() -> Void needs { clock: Clock } {
+  let recording = Process.spec(record, 4, Duration.seconds(5))
+    |> Process.register(ledger)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let working = Process.spec(work, 4, Duration.seconds(5))
+    |> Process.register(worker)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([recording, working], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  Process.send(worker, Job.Work(1))
+  Process.send(worker, Job.Work(2))
+  Process.send(worker, Job.Work(3))
+  Supervisor.wait(root)
+}

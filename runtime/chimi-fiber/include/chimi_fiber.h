@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 9u
+#define CHIMI_FIBER_ABI_VERSION 10u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -535,6 +535,20 @@ typedef struct {
   /* Called for each process incarnation that defected; may be null. */
   ChimiProcessDefectReport process_defect_report;
   void *process_defect_context;
+  /* The runner's received-signal word: 0, or the number of the first SIGINT or
+     SIGTERM its handler saw. The scheduler reads it between resumes and
+     cancels the root once; an injected signal is written here when it fires.
+     May be null. */
+  volatile int32_t *signal;
+  /* Read end of a non-blocking pipe the handler writes a byte to, so a
+     real-clock wait wakes; 0 or negative for none, so a zeroed config has
+     none. While a supervisor runs, a real-clock
+     run with nothing to do waits on it instead of reporting a deadlock. */
+  int32_t signal_fd;
+  /* Nonzero: deliver this signal when the execution clock reaches
+     `injected_signal_at` nanoseconds (the runner's --signal option). */
+  int32_t injected_signal;
+  int64_t injected_signal_at;
 } ChimiSchedulerConfig;
 
 /* The arguments of chimi_scheduler_execute_with_config. The release hooks

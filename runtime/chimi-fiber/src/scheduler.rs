@@ -9,9 +9,11 @@ mod process_tests;
 #[cfg(test)]
 mod release_tests;
 mod scope;
+mod signal;
 
+use self::clock::{Clock, TimerQueue, TimerTarget};
 pub use self::clock::{ClockMode, Instant, TimerId};
-pub use self::scope::{ScopeExit, ScopeId, chimi_fiber_cancel_is_terminal, chimi_fiber_scope_cancel_pending};
+use self::process::ProcessKernel;
 pub use self::process::{
     Address, ChimiProcessTermination, IncarnationId, Member, MembershipId, MessageRelease, NameId,
     Policy, PolicyError, ProcessDefectReport, ProcessError, ProcessEvent, ProcessEventKind,
@@ -22,8 +24,9 @@ pub use self::process_abi::{
     ChimiDeadlockWaiter, ChimiProcessRequest, ChimiProcessSpec, ChimiSchedulerConfig,
     ChimiSupervisorMember, ChimiSupervisorPolicy, DeadlockReport, RootRun,
 };
-use self::clock::{Clock, TimerQueue, TimerTarget};
-use self::process::ProcessKernel;
+pub use self::scope::{
+    ScopeExit, ScopeId, chimi_fiber_cancel_is_terminal, chimi_fiber_scope_cancel_pending,
+};
 pub use crate::channel::{
     CapabilityKind, Carried, ChannelCapabilities, ChannelError, ChannelEventKind, ChannelId,
     ChannelMetrics, Completion, ReceiveResult, Receiver, SendResult, Sender,
@@ -467,6 +470,9 @@ pub enum ClockEventKind {
     DeadlockWaiter,
     /// A cancellation scope's deadline passed. A boundary event.
     ScopeFired,
+    /// SIGINT or SIGTERM (its number in `request_kind`) cancelled the
+    /// root. A boundary event.
+    SignalReceived,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -588,6 +594,7 @@ pub struct Scheduler {
     /// consuming it, so every one stays until the scheduler is dropped.
     task_values: BTreeMap<TaskId, TaskValue>,
     next_scope: u64,
+    signals: signal::Signals,
 }
 
 impl Drop for Scheduler {
@@ -654,6 +661,7 @@ impl Scheduler {
                 .map(|report| (report, violation_context)),
             task_values: BTreeMap::new(),
             next_scope: 0,
+            signals: signal::Signals::default(),
         }
     }
 
@@ -694,7 +702,13 @@ impl Scheduler {
     ) -> Result<TimerId, SchedulerError> {
         self.require_live_task(task)?;
         let id = self.timers.insert(deadline, TimerTarget::Wake(task));
-        if let Some(previous) = self.tasks.get_mut(&task).expect("live task").timer.replace(id) {
+        if let Some(previous) = self
+            .tasks
+            .get_mut(&task)
+            .expect("live task")
+            .timer
+            .replace(id)
+        {
             self.cancel_timer(previous);
         }
         self.emit_timer(ClockEventKind::TimerStarted, Some(task), deadline);
@@ -709,7 +723,7 @@ impl Scheduler {
         };
         let task = match target {
             TimerTarget::Wake(task) | TimerTarget::ScopeDeadline(task, _) => Some(task),
-            TimerTarget::ShutdownDeadline(_) => None,
+            TimerTarget::ShutdownDeadline(_) | TimerTarget::Signal(_) => None,
         };
         let now = self.clock.now();
         self.emit_timer(ClockEventKind::TimerCancelled, task, now);
@@ -729,7 +743,7 @@ impl Scheduler {
             let Some(deadline) = self.timers.earliest() else {
                 break;
             };
-            if self.clock.wait_until(deadline) {
+            if self.clock.wait_until(deadline, self.signals.wake_fd()) {
                 self.emit_clock(ClockEvent {
                     sequence: 0,
                     kind: ClockEventKind::Advanced,
@@ -806,6 +820,10 @@ impl Scheduler {
                     self.emit_timer(ClockEventKind::TimerFired, Some(task), deadline);
                     self.fire_scope(task, scope, true);
                 }
+                TimerTarget::Signal(signal) => {
+                    self.emit_timer(ClockEventKind::TimerFired, None, deadline);
+                    self.fire_signal(signal);
+                }
             }
         }
     }
@@ -873,8 +891,10 @@ impl Scheduler {
     }
 
     pub fn drive(&mut self) {
+        self.deliver_signal();
         while let Some(task) = self.runnable.pop_front() {
             self.run(task);
+            self.deliver_signal();
         }
     }
 
@@ -1312,9 +1332,8 @@ impl Scheduler {
                 entry_context: std::ptr::null_mut(),
                 timer: None,
                 scopes: Vec::new(),
-                started_in_scope: parent.and_then(|parent| {
-                    self.tasks[&parent].scopes.last().map(|entry| entry.id)
-                }),
+                started_in_scope: parent
+                    .and_then(|parent| self.tasks[&parent].scopes.last().map(|entry| entry.id)),
             },
         );
         if let Some(parent) = parent {
@@ -1371,9 +1390,6 @@ impl Scheduler {
             }
             if !event.request.is_null() {
                 self.handle_request(task, event.request.cast());
-            } else if process {
-                let park = self.tasks[&task].park;
-                self.interrupt_blocked_park(task, park, 0);
             }
             return;
         }
@@ -1407,10 +1423,6 @@ impl Scheduler {
         // `chimi_fiber_request` keeps it alive until the fiber resumes.
         let kind = unsafe { (*request.cast::<RequestHeader>()).kind };
         let park = self.tasks[&owner].park;
-        let process = self.tasks[&owner].process.is_some();
-        if process && self.park_lingers(owner, kind) {
-            return;
-        }
         self.poll_scope_deadlines(owner);
         if self.refuse_for_scope(owner, kind) {
             return;
@@ -1421,9 +1433,6 @@ impl Scheduler {
             self.handle_process_request(owner, request.cast());
         } else {
             self.handle_task_request(owner, park, request);
-        }
-        if process {
-            self.interrupt_blocked_park(owner, park, kind);
         }
     }
 
@@ -1696,6 +1705,7 @@ impl Scheduler {
         let channel_cleanup = self.channels.cleanup_task(task);
         self.apply_channel_transition(channel_cleanup);
 
+        let mut cleanup_parked = false;
         if !fiber_is_terminal {
             self.emit(
                 task,
@@ -1710,6 +1720,7 @@ impl Scheduler {
                 .expect("non-terminal task owns a fiber")
                 .resume(ChimiFiberCommand::Cancel, scope::ResumeContext::TERMINAL);
             self.keep_task_value(task, &cleanup);
+            cleanup_parked = cleanup.state == ChimiFiberState::Parked as u32;
             if !outcome.is_defect() {
                 outcome = match cleanup.state {
                     value if value == ChimiFiberState::Defected as u32 => TaskOutcome::Defected {
@@ -1730,6 +1741,11 @@ impl Scheduler {
             }
         }
         let record = self.tasks.get_mut(&task).expect("draining task");
+        if cleanup_parked {
+            // Cleanup parked again. A parked fiber cannot be destroyed
+            // (destruction unwinds through C and aborts), so it is abandoned.
+            std::mem::forget(record.fiber.take());
+        }
         record.fiber = None;
         let unrun_context = std::mem::replace(&mut record.entry_context, std::ptr::null_mut());
         self.release_task_context(unrun_context);

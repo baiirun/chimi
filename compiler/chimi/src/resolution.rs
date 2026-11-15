@@ -830,8 +830,12 @@ impl ProjectResolver {
         ]
         .into_iter()
         .chain(self.process_callable_parameters())
-        .chain([StandardFunction::TaskTimeout, StandardFunction::TaskDeadline].map(
-            |function| {
+        .chain(
+            [
+                StandardFunction::TaskTimeout,
+                StandardFunction::TaskDeadline,
+            ]
+            .map(|function| {
                 (
                     self.standard_function_symbol(function),
                     vec![
@@ -840,9 +844,8 @@ impl ProjectResolver {
                         StandardGeneric::TimeoutNeeds,
                     ],
                 )
-            },
-        ))
-        {
+            }),
+        ) {
             self.standard_callable_parameters.insert(
                 callable,
                 parameters

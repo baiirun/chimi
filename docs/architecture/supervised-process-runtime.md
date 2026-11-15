@@ -286,39 +286,77 @@ end. A forced body that parks again is abandoned, not destroyed.
 
 ### Drain and cancellation rules
 
-Shutdown of an incarnation follows these steps, in order:
+G22 replaced "cancel, then drain" with "drain, then force"
+([application lifecycle](../specification/application-lifecycle.md)).
+`begin_shutdown` in `scheduler/process.rs` starts an incarnation's shutdown
+in these steps:
 
-1. Routing is removed for the whole subtree before any cleanup runs.
-2. The body's child tasks are cancelled and drained.
-3. Whatever the body's current park waits on is withdrawn: its sleep timer,
-   the child it awaits, its pending channel operation, and its receive.
-4. The body learns of the cancellation:
+1. The incarnation is unrouted and its mailbox closed. A supervisor's stop
+   only closes the supervisor first; each member is unrouted at its own
+   turn, so a draining member can still reach an older one.
+2. The deadline `now + shutdown_within` is set; a timer is armed when the
+   stop or removal must wait for the incarnation.
+3. Tasks of the incarnation parked in a supervisor operation that waits on
+   its own shutdown (a stop or wait of an ancestor supervisor, a removal of
+   its own membership or an ancestor) are answered `Cancelled`, since that
+   operation could never complete (SV05, SD08). The incarnation's
+   supervisor is kept on the incarnation, because a stop forgets membership
+   records before the incarnation ends.
+4. The body itself:
    - A body that has not run yet is cancelled before its first run and
      ends `cancelled`.
-   - A body parked in `receive` gets the messages accepted before shutdown,
-     oldest first, and then `Cancelled` on every call.
-   - A body parked anywhere else is cancelled at that park.
-   - A body that is running is cancelled at its next park that would block.
+   - A body parked in `receive` is woken. `receive` returns the messages
+     accepted before shutdown, oldest first, and then `Cancelled` on every
+     call.
+   - A body parked anywhere else, or running, is left alone. Its sleeps,
+     child tasks, `Task.result`, and channel operations proceed, and timeout
+     scopes still fire.
+   - With a zero deadline the body is forced at once instead.
 
-These follow coordinator decision 1 on `ts-3d5b38`. A draining handler's
-sleep, `Task.result`, and channel operations are cancelled. Its supervisor
-operations are served (RR06). After the body has been told it is
-cancelled, every later blocking call except a receive waits for the
-deadline. A child task that defects during shutdown makes the end
-`defected`, inside the shutdown protocol.
+At the deadline the pending park gets a forced reply and the body's child
+tasks are cancelled; the body runs no more user code. A body whose cleanup
+parked is abandoned, never destroyed, because destroying a parked fiber
+unwinds through code that cannot unwind. A child task that defects during
+the drain makes the end `defected`, inside the shutdown protocol.
 
 | Rule | Test | Mutant |
 | --- | --- | --- |
 | Receive drains accepted messages, then cancels | `mb08_removal_drains_messages_accepted_before_it_then_cancels` | cleanup does not drain |
-| Routing is removed for the subtree first | `sd06_routing_is_removed_for_the_whole_subtree_before_any_cleanup` | unroute member by member |
+| A draining member can still reach an older member | `sd06_a_draining_member_can_still_reach_an_older_member_that_stops_after_it` | unroute the whole subtree first |
+| A sleeping handler finishes during the drain | `rr05_removal_lets_a_sleeping_handler_finish_and_drain_before_it_ends` | sleep interrupted at shutdown |
+| A handler still parked at its deadline is forced there | `sd04_a_handler_still_sleeping_at_its_deadline_is_forced_there` | None |
+| A draining body keeps its child task | `a_draining_body_keeps_its_child_task_and_collects_its_result` | children cancelled at shutdown |
+| A draining body keeps its channel operations | `a_draining_body_receives_a_channel_value_sent_during_its_drain` | None |
+| A running body is not cancelled at its next park | `an_incarnation_running_when_shutdown_begins_is_not_cancelled_at_its_next_park` | None |
+| A self-stop is answered with cancellation | `sv05_sd08_a_member_that_stops_its_own_root_is_cancelled_and_wait_returns` | self-wait not interrupted |
+| A removal reply never reaches a later park | `a_removal_reply_for_an_interrupted_park_never_reaches_a_later_park` | None |
 | Child tasks drain before the next member terminates, and before a replacement starts | `sd05_each_members_children_drain_before_the_next_member_terminates`, `ra07_child_tasks_drain_before_the_replacement_starts` | replacement before children drain |
-| A sleeping handler is interrupted without moving time | `rr05_removal_interrupts_a_sleeping_handler_without_advancing_time` | None |
 | A cancelled sleep leaves no timer | `cancelling_a_sleeper_removes_its_timer_and_time_never_reaches_it` | sleep timer kept on cancel |
-| A pending channel receive is withdrawn | `shutdown_cancels_a_pending_channel_receive_so_a_later_send_does_not_reach_cleanup` | None |
-| A running body is cancelled at its next park | `an_incarnation_runnable_when_shutdown_begins_is_cancelled_at_its_next_park` | None |
 | A removal during a stop terminates its target once | `rr06_a_removal_during_stop_terminates_the_sibling_once_and_stop_skips_it` | None |
 | A child defect during shutdown stays in the protocol | `a_child_defect_during_shutdown_stays_inside_the_shutdown_protocol` | None |
 | Removal waits for termination | `rr01_rt05_removing_a_parked_process_cancels_it_and_frees_its_name` | remove does not wait |
+
+### Signals
+
+The runner (`runtime.c`) owns the SIGINT and SIGTERM handlers. The handler
+stores the first signal's number in a word whose address the scheduler
+config carries (`signal`) and writes a byte to a self-pipe whose read end is
+`signal_fd`; a second signal restores the default action and raises it.
+`scheduler/signal.rs` checks the word between resumes and, at the first
+signal, cancels the root task with `begin_terminal`, which stops the root's
+supervisors through the drain above. A real-clock wait for the next timer
+polls the pipe, so a signal ends it early, and a real-clock stall with a
+running supervisor waits on the pipe instead of reporting a deadlock. An
+injected signal (`injected_signal` at `injected_signal_at`) is a
+`TimerTarget::Signal`, retired when the root ends so that it never moves
+virtual time. Delivery emits the `SignalReceived` clock event.
+
+| Rule | Test | Mutant |
+| --- | --- | --- |
+| SIGTERM drains a service, then the program dies by SIGTERM | `sigterm_lets_the_worker_drain_its_jobs_then_ends_the_program_by_sigterm` (`tests/signals.rs`), SG01 | None |
+| An idle service waits for a signal | `an_idle_service_waits_for_a_signal_instead_of_reporting_a_deadlock` | stall always deadlocks |
+| A second signal ends the program at once | `a_second_signal_ends_the_program_at_once` | None |
+| A signal after main ends changes nothing | SG03 | signal timer kept after the root ends |
 
 ### Deadlock reporting
 

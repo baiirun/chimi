@@ -7,13 +7,13 @@ import std/process as Process
 import std/process.{Inbox}
 import std/supervisor as Supervisor
 
-// RR05: the body handles `Nap` by sleeping for 60 s, then reporting 1. Main
-// removes it while it sleeps. Cancellation interrupts the sleep (open question
-// 2: shutdown interrupts every park), so the body ends `cancelled` at 1ms and
-// never reports. A removal that waited for the sleeping handler would end the
-// body at 60.001s; one that waited for the 5 s deadline, at 5.001s. Main then
-// puts 9 on the report channel itself and reads it back first: a handler that
-// ran on after the removal would have put its 1 there before.
+// SD10: the body handles `Nap` by sleeping for 60 s, then reporting 1. Main
+// removes it while it sleeps. The drain lets the sleep run, but it outlasts
+// `shutdown_within = 5s` from the removal at 1ms, so the body is forced at
+// its deadline, 5.001s, and never reports. This is the forced path reached
+// from Chimi source rather than a C harness. Main then puts 9 on the report channel and reads it back
+// first (outcome 9): a handler that ran on after forcing would have put its
+// 1 there before.
 
 pub enum Message {
   Nap(report: Sender<Int>)

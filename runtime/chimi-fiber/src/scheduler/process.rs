@@ -27,7 +27,8 @@
 
 use super::clock::{Instant, TimerTarget};
 use super::{
-    RequestHeader, Scheduler, SchedulerTraceEvent, TaskId, TaskOutcome, TaskPhase, TraceMode,
+    ChimiProcessRequest, RequestHeader, Scheduler, SchedulerTraceEvent, TaskId, TaskOutcome,
+    TaskPhase, TraceMode,
 };
 use crate::{ChimiFiberCommand, ChimiFiberEntry};
 use std::collections::{BTreeMap, VecDeque};
@@ -427,17 +428,15 @@ struct Retired {
     announce: bool,
 }
 
+/// An incarnation's shutdown. From the request until `deadline` the body
+/// drains: it is not cancelled, so in-flight work (sleeps, child tasks,
+/// channel operations) finishes, while its mailbox accepts nothing new and
+/// `receive` returns the queued entries, then `Cancelled`. At the deadline
+/// it is forced.
 #[derive(Clone, Copy, Debug)]
 struct Stopping {
     deadline: Instant,
     timer: Option<super::clock::TimerId>,
-    /// The body has been told it is cancelled; its next park (other than a
-    /// receive) waits for the deadline.
-    told: bool,
-    /// The body was running when shutdown began and has not parked since:
-    /// its next park that would block, of any kind, is cancelled. A receive
-    /// ends this and drains the mailbox instead.
-    pending: bool,
     /// A child task defected during shutdown; the end is a defect.
     child_defected: bool,
     forced: bool,
@@ -445,6 +444,9 @@ struct Stopping {
 
 pub(super) struct Incarnation {
     membership: MembershipId,
+    /// The supervisor it runs under. Kept here because a stop forgets the
+    /// membership record before the incarnation ends.
+    supervisor: SupervisorId,
     task: TaskId,
     spec: Rc<SpecRecord>,
     mailbox: VecDeque<Entry>,
@@ -892,6 +894,14 @@ impl Scheduler {
         }
     }
 
+    /// True while some supervisor runs: the program is a service.
+    pub(super) fn has_running_supervisor(&self) -> bool {
+        self.kernel
+            .supervisors
+            .values()
+            .any(|record| record.state == SupervisorState::Running)
+    }
+
     pub(super) fn has_blocked_plans(&self) -> bool {
         !self.kernel.blocked.is_empty()
     }
@@ -1067,16 +1077,10 @@ impl Scheduler {
                 stopping.forced = true;
                 Receipt::Forced
             }
-            Some(stopping) => {
-                stopping.pending = false;
-                match record.mailbox.pop_front() {
-                    Some(entry) => monitor::receipt(&mut record.notices, entry),
-                    None => {
-                        stopping.told = true;
-                        Receipt::Cancelled
-                    }
-                }
-            }
+            Some(_) => match record.mailbox.pop_front() {
+                Some(entry) => monitor::receipt(&mut record.notices, entry),
+                None => Receipt::Cancelled,
+            },
             None => match record.mailbox.pop_front() {
                 Some(entry) => monitor::receipt(&mut record.notices, entry),
                 None => {
@@ -1085,51 +1089,6 @@ impl Scheduler {
                 }
             },
         }
-    }
-
-    /// True when a request from this task must not be answered: its
-    /// incarnation was already told it is cancelled and the request is one
-    /// that can park, so it waits for the shutdown deadline. Requests that
-    /// never park (send, self, now, starts) are still answered, and a
-    /// receive answers `Cancelled` again.
-    pub(super) fn park_lingers(&self, task: TaskId, kind: u32) -> bool {
-        can_park(kind) && self.stopping(task).is_some_and(|stopping| stopping.told)
-    }
-
-    /// Delivers shutdown to a request that left its caller blocked on park
-    /// number `park` (`kind` 0 is a bare park). Before the body is told, a
-    /// blocking sleep, task result, or channel operation is cancelled, and
-    /// so is any blocking park while the cancellation is still pending. A
-    /// request that completed is answered, so a value it took is not lost.
-    /// Supervisor operations from a draining handler are served.
-    pub(super) fn interrupt_blocked_park(&mut self, task: TaskId, park: u64, kind: u32) {
-        let blocked = self
-            .tasks
-            .get(&task)
-            .is_some_and(|record| record.phase == TaskPhase::Parked && record.park == park);
-        let Some(incarnation) = self.incarnation_of(task).filter(|_| blocked) else {
-            return;
-        };
-        let Some(stopping) = self
-            .kernel
-            .incarnations
-            .get_mut(&incarnation)
-            .and_then(|record| record.stopping.as_mut())
-            .filter(|stopping| !stopping.told)
-        else {
-            return;
-        };
-        let interrupts = stopping.pending || interrupted_while_draining(kind);
-        if !interrupts {
-            return;
-        }
-        stopping.told = true;
-        stopping.pending = false;
-        self.disarm_wake_sources(task);
-        let record = self.tasks.get_mut(&task).expect("blocked task");
-        record.command = ChimiFiberCommand::Cancel;
-        set_status(record.request, super::RESPONSE_CANCELLED, true);
-        let _ = self.wake_front(task);
     }
 
     /// Removes everything that could still wake a parked task out of band:
@@ -1176,12 +1135,6 @@ impl Scheduler {
     /// True when the task is a forced incarnation, which must not park again.
     pub(super) fn is_forced(&self, task: TaskId) -> bool {
         self.stopping(task).is_some_and(|stopping| stopping.forced)
-    }
-
-    /// True when the task is an incarnation under shutdown. A cancellation
-    /// scope never fires into it: shutdown's own cancellation wins.
-    pub(super) fn is_stopping(&self, task: TaskId) -> bool {
-        self.stopping(task).is_some()
     }
 
     fn stopping(&self, task: TaskId) -> Option<Stopping> {
@@ -1381,6 +1334,7 @@ impl Scheduler {
             self.kernel.failing_spawns -= 1;
             return Err(StartError::SpawnFailed);
         }
+        let supervisor = self.kernel.memberships[&membership].supervisor;
         let incarnation = IncarnationId(self.kernel.next_incarnation + 1);
         let task = self
             .create_task(None, spec.entry, spec.context, Some(incarnation))
@@ -1393,6 +1347,7 @@ impl Scheduler {
             incarnation,
             Incarnation {
                 membership,
+                supervisor,
                 task,
                 spec,
                 mailbox: VecDeque::new(),
@@ -1601,7 +1556,7 @@ impl Scheduler {
         while let Some(step) = plan.steps.pop_front() {
             match step {
                 Step::StopMembers(supervisor) => {
-                    self.close_and_unroute(supervisor);
+                    self.close(supervisor);
                     let Some(supervision) = self.kernel.supervisors.get_mut(&supervisor) else {
                         continue;
                     };
@@ -1747,32 +1702,14 @@ impl Scheduler {
         }
     }
 
-    /// Closes admission and restarts, and unroutes every incarnation in the
-    /// subtree before any of them is cancelled.
-    fn close_and_unroute(&mut self, supervisor: SupervisorId) {
-        let Some(supervision) = self.kernel.supervisors.get_mut(&supervisor) else {
-            return;
-        };
-        if supervision.state == SupervisorState::Running {
+    /// Closes the supervisor to new members. Its members stay routable
+    /// until their own turn to stop: shutdown is ordered, so a member that
+    /// drains can still hand work to the older members that stop after it.
+    fn close(&mut self, supervisor: SupervisorId) {
+        if let Some(supervision) = self.kernel.supervisors.get_mut(&supervisor)
+            && supervision.state == SupervisorState::Running
+        {
             supervision.state = SupervisorState::Stopping;
-        }
-        let members: Vec<_> = supervision
-            .dynamic
-            .iter()
-            .chain(&supervision.declared)
-            .copied()
-            .collect();
-        for membership in members {
-            match self
-                .kernel
-                .memberships
-                .get(&membership)
-                .and_then(|e| e.current)
-            {
-                Some(Instance::Process(incarnation)) => self.unroute(incarnation),
-                Some(Instance::Supervisor(child)) => self.close_and_unroute(child),
-                None => {}
-            }
         }
     }
 
@@ -1845,11 +1782,13 @@ impl Scheduler {
         false
     }
 
-    /// Unroutes, sets the deadline, cancels and drains the body's child
-    /// tasks, and arranges how the body learns of the cancellation: a fresh
-    /// body never runs; a receive is reissued so it can drain; any other
-    /// park is interrupted; a running body is cancelled at its next park
-    /// that blocks. A zero deadline forces at once.
+    /// Unroutes, sets the deadline, and starts the drain. The body is not
+    /// cancelled: a park in progress (a sleep, a child's result, a channel
+    /// operation) completes as usual, and so do child tasks. A receive is
+    /// reissued so it can drain the mailbox. Two cases end at once instead:
+    /// a body that has not run yet has nothing in flight, and a supervisor
+    /// operation that waits for this very shutdown would otherwise wait for
+    /// the deadline. A zero deadline forces at once.
     fn begin_shutdown(&mut self, incarnation: IncarnationId) {
         let now = self.clock.now();
         let Some(record) = self.kernel.incarnations.get(&incarnation) else {
@@ -1861,6 +1800,8 @@ impl Scheduler {
         let deadline = now.saturating_add(record.spec.shutdown_within);
         let forced = deadline <= now;
         let task = record.task;
+        let receiving = record.receiving;
+        let self_waiting = self.tasks_awaiting_own_shutdown(incarnation);
         self.unroute(incarnation);
         self.kernel
             .incarnations
@@ -1869,61 +1810,97 @@ impl Scheduler {
             .stopping = Some(Stopping {
             deadline,
             timer: None,
-            told: false,
-            pending: false,
             child_defected: false,
             forced,
         });
-        let phase = self.tasks[&task].phase;
-        let receiving =
-            phase == TaskPhase::Parked && self.kernel.incarnations[&incarnation].receiving;
-        if phase == TaskPhase::Parked {
-            self.disarm_wake_sources(task);
+        for waiting in self_waiting
+            .into_iter()
+            .filter(|waiting| *waiting != task || !forced)
+        {
+            self.disarm_wake_sources(waiting);
+            let record = self.tasks.get_mut(&waiting).expect("parked task");
+            record.command = ChimiFiberCommand::Cancel;
+            set_status(record.request, super::RESPONSE_CANCELLED, true);
+            let _ = self.wake_front(waiting);
         }
-        self.cancel_children(task);
         let task_record = self.tasks.get_mut(&task).expect("incarnation task");
-        let (told, pending) = match task_record.phase {
+        match task_record.phase {
             TaskPhase::Runnable if !task_record.ran || forced => {
                 task_record.command = ChimiFiberCommand::Cancel;
                 set_status(task_record.request, RESPONSE_FORCED, forced);
-                (true, false)
             }
-            TaskPhase::Runnable => (false, true),
-            TaskPhase::Parked => {
-                let told = if forced {
-                    task_record.command = ChimiFiberCommand::Cancel;
-                    set_status(task_record.request, RESPONSE_FORCED, true);
-                    false
-                } else if !receiving {
-                    task_record.command = ChimiFiberCommand::Cancel;
-                    set_status(task_record.request, super::RESPONSE_CANCELLED, true);
-                    true
-                } else {
-                    false
-                };
-                task_record.phase = TaskPhase::Runnable;
-                self.runnable.push_front(task);
-                (told, false)
+            TaskPhase::Parked if forced => {
+                task_record.command = ChimiFiberCommand::Cancel;
+                set_status(task_record.request, RESPONSE_FORCED, true);
+                self.disarm_wake_sources(task);
+                let _ = self.wake_front(task);
             }
-            TaskPhase::Draining(_) | TaskPhase::Terminal(_) => (false, false),
-        };
-        let stopping = self
-            .kernel
-            .incarnations
-            .get_mut(&incarnation)
-            .and_then(|record| record.stopping.as_mut())
-            .expect("stopping incarnation");
-        stopping.told = told;
-        stopping.pending = pending;
+            TaskPhase::Parked if receiving => {
+                self.disarm_wake_sources(task);
+                let _ = self.wake_front(task);
+            }
+            TaskPhase::Runnable
+            | TaskPhase::Parked
+            | TaskPhase::Draining(_)
+            | TaskPhase::Terminal(_) => {}
+        }
     }
 
-    /// Cancels the task's structured children; each drains before this
-    /// returns.
-    fn cancel_children(&mut self, task: TaskId) {
-        let children: Vec<_> = self.tasks[&task].children.iter().copied().collect();
-        for child in children {
-            self.begin_terminal(child, TaskOutcome::Cancelled, false);
+    /// The incarnation's task and its descendant tasks that are parked in a
+    /// supervisor operation that cannot finish before this incarnation
+    /// ends: `stop` or `wait` on a supervisor above it, or the removal of
+    /// its own membership or of a supervisor above it.
+    fn tasks_awaiting_own_shutdown(&self, incarnation: IncarnationId) -> Vec<TaskId> {
+        let Some(record) = self.kernel.incarnations.get(&incarnation) else {
+            return Vec::new();
+        };
+        let mut memberships = vec![record.membership];
+        let mut supervisors = Vec::new();
+        let mut supervisor = Some(record.supervisor);
+        while let Some(current) = supervisor {
+            supervisors.push(current);
+            supervisor = self
+                .kernel
+                .supervisors
+                .get(&current)
+                .and_then(|record| record.parent)
+                .map(|(parent, membership)| {
+                    memberships.push(membership);
+                    parent
+                });
         }
+        let mut found = Vec::new();
+        let mut pending = vec![record.task];
+        while let Some(task) = pending.pop() {
+            let Some(task_record) = self.tasks.get(&task) else {
+                continue;
+            };
+            pending.extend(task_record.children.iter().copied());
+            if task_record.phase != TaskPhase::Parked || task_record.request.is_null() {
+                continue;
+            }
+            // SAFETY: a recorded request stays valid while its task is
+            // parked, and every request starts with `RequestHeader`.
+            let kind = unsafe { (*task_record.request.cast::<RequestHeader>()).kind };
+            let waits_on_self = match kind {
+                super::REQUEST_SUPERVISOR_STOP | super::REQUEST_SUPERVISOR_WAIT => {
+                    // SAFETY: supervisor requests are `ChimiProcessRequest`s.
+                    let request = unsafe { &*task_record.request.cast::<ChimiProcessRequest>() };
+                    supervisors.contains(&SupervisorId::from_raw(request.supervisor))
+                }
+                super::REQUEST_SUPERVISOR_REMOVE_PROCESS
+                | super::REQUEST_SUPERVISOR_REMOVE_SUPERVISOR => {
+                    // SAFETY: as above.
+                    let request = unsafe { &*task_record.request.cast::<ChimiProcessRequest>() };
+                    memberships.contains(&MembershipId::from_raw(request.membership))
+                }
+                _ => false,
+            };
+            if waits_on_self {
+                found.push(task);
+            }
+        }
+        found
     }
 
     /// The shutdown deadline passed: answer the pending call with a forced
@@ -2195,32 +2172,6 @@ fn terminal_cause(outcome: TaskOutcome, stopping: Option<Stopping>) -> TerminalC
         Some(_) => TerminalCause::Cancelled,
         None => natural,
     }
-}
-
-/// Parks a draining handler cannot block in: shutdown cancels them.
-fn interrupted_while_draining(kind: u32) -> bool {
-    matches!(
-        kind,
-        0 | super::REQUEST_TASK_RESULT
-            | super::REQUEST_CHANNEL_SEND
-            | super::REQUEST_CHANNEL_RECEIVE
-            | super::REQUEST_TIMER_SLEEP_UNTIL
-    )
-}
-
-/// Request kinds that may leave the caller parked.
-fn can_park(kind: u32) -> bool {
-    matches!(
-        kind,
-        super::REQUEST_TASK_RESULT
-            | super::REQUEST_CHANNEL_SEND
-            | super::REQUEST_CHANNEL_RECEIVE
-            | super::REQUEST_TIMER_SLEEP_UNTIL
-            | super::REQUEST_SUPERVISOR_REMOVE_PROCESS
-            | super::REQUEST_SUPERVISOR_REMOVE_SUPERVISOR
-            | super::REQUEST_SUPERVISOR_STOP
-            | super::REQUEST_SUPERVISOR_WAIT
-    )
 }
 
 /// Writes a status into a parked request's shared header.

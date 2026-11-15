@@ -1,0 +1,31 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// SG03: run with `--signal=TERM@10s`. Main starts a root, sleeps 1 s, and
+// returns 3 without stopping it, so the runner stops the root at the end. The
+// signal is due after main has ended: it is never delivered, virtual time
+// stops at 1s, and the program exits 0 with outcome 3. A pending signal that
+// still moved time would put the root's stop at 10s.
+
+pub enum Message {
+  Ping
+}
+
+fn idle(inbox: Inbox<Message>) -> Void {
+  loop pings = 0 {
+    case Process.receive(inbox) {
+      Message.Ping -> pings + 1
+    }
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let member = Process.spec(idle, 1, Duration.seconds(5)) |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  Clock.sleep(Duration.seconds(1))
+  3
+}

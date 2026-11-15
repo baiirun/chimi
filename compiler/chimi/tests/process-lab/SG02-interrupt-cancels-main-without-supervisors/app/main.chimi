@@ -1,0 +1,13 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+
+// SG02: run with `--signal=INT@2s`. Main sleeps for an hour and runs no
+// supervisor. SIGINT at 2s cancels main's sleep, so the program ends with
+// the cancellation outcome at 2s and exits 130 (128 + SIGINT). A signal that
+// waited for main would end at 1h with success.
+
+pub fn main() -> Int needs { clock: Clock } {
+  Clock.sleep(Duration.hours(1))
+  1
+}

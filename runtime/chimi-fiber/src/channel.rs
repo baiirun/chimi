@@ -1224,7 +1224,10 @@ impl Operation {
 
 impl Channel {
     /// The owner, token, and parcel of one of the channel's capabilities.
-    fn holder(&mut self, kind: CapabilityKind) -> (&mut Option<TaskId>, &mut u64, &mut Option<usize>) {
+    fn holder(
+        &mut self,
+        kind: CapabilityKind,
+    ) -> (&mut Option<TaskId>, &mut u64, &mut Option<usize>) {
         match kind {
             CapabilityKind::Receiver => (
                 &mut self.receiver_owner,
@@ -1518,7 +1521,13 @@ mod parcel_tests {
             channels.send_carrying(PARENT, route.sender, MESSAGE, &[carried_receiver(carried)]),
             Err(ChannelError::WrongReceiverOwner { .. })
         ));
-        assert_eq!(channels.metrics(route.sender.channel()).unwrap().queue_depth, 0);
+        assert_eq!(
+            channels
+                .metrics(route.sender.channel())
+                .unwrap()
+                .queue_depth,
+            0
+        );
         let (waiting, _) = channels.receive(CHILD, carried.receiver).unwrap();
         assert_eq!(waiting, ReceiveResult::Pending);
     }

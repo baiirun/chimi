@@ -1,0 +1,111 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox}
+import std/supervisor as Supervisor
+
+// The Phase 4 forcing program (lab scenario FP02): a dispatcher hands jobs
+// round-robin to a dynamic pool of three workers, which report each finished
+// job to a ledger. The program runs as a service until a stop signal, then
+// shuts down gracefully. See README.md for the run and what it shows.
+
+pub enum Job {
+  Work(id: Int, milliseconds: Int)
+  Poison
+}
+
+pub enum Entry {
+  Done(id: Int)
+}
+
+pub enum Dispatch {
+  Submit(job: Job)
+}
+
+pub process name ledger: Entry
+pub process name dispatcher: Dispatch
+pub process name worker_1: Job
+pub process name worker_2: Job
+pub process name worker_3: Job
+
+fn worker_at(index: Int) -> Address<Job> {
+  case index {
+    0 -> worker_1
+    1 -> worker_2
+    _ -> worker_3
+  }
+}
+
+fn next_worker(index: Int) -> Int {
+  case index {
+    2 -> 0
+    _ -> index + 1
+  }
+}
+
+fn dispatch(inbox: Inbox<Dispatch>) -> Void {
+  loop next = 0 {
+    case Process.receive(inbox) {
+      Dispatch.Submit(job) -> {
+        case Process.send(worker_at(next), job) {
+          Success(_) -> next_worker(next)
+          Failure(_) -> next_worker(next)
+        }
+      }
+    }
+  }
+}
+
+fn work(inbox: Inbox<Job>) -> Void needs { clock: Clock } {
+  loop finished = 0 {
+    case Process.receive(inbox) {
+      Job.Work(id, milliseconds) -> {
+        Clock.sleep(Duration.milliseconds(milliseconds))
+        case Process.send(ledger, Entry.Done(id)) {
+          Success(_) -> finished + 1
+          Failure(_) -> finished
+        }
+      }
+      Job.Poison -> finished / 0
+    }
+  }
+}
+
+fn record(inbox: Inbox<Entry>) -> Void {
+  loop recorded = 0 {
+    case Process.receive(inbox) {
+      Entry.Done(_) -> recorded + 1
+    }
+  }
+}
+
+fn settle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn submit(id: Int, milliseconds: Int) -> Void {
+  Process.send(dispatcher, Dispatch.Submit(Job.Work(id, milliseconds)))
+}
+
+pub fn main() -> Void needs { clock: Clock } {
+  let recording = Process.spec(record, 16, Duration.seconds(5))
+    |> Process.register(ledger)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let dispatching = Process.spec(dispatch, 16, Duration.seconds(5))
+    |> Process.register(dispatcher)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([recording, dispatching], 5, Supervisor.restarts(3, Duration.seconds(30))))
+  let first = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5)) |> Process.register(worker_1), Supervisor.Restart.OnDefect)
+  let second = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5)) |> Process.register(worker_2), Supervisor.Restart.OnDefect)
+  let third = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5)) |> Process.register(worker_3), Supervisor.Restart.OnDefect)
+  Process.send(worker_1, Job.Poison)
+  settle()
+  submit(1, 1000)
+  submit(2, 1000)
+  submit(3, 1000)
+  submit(4, 1000)
+  submit(5, 1000)
+  submit(6, 30000)
+  Supervisor.wait(root)
+}

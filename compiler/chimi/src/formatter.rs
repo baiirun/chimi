@@ -776,7 +776,11 @@ mod tests {
     fn embedded_standard_modules_are_canonically_formatted() {
         for (path, text) in crate::standard_tree::EMBEDDED_MODULES {
             let report = format(text);
-            assert!(!report.is_blocked(), "{path}: {}", report.render_diagnostics());
+            assert!(
+                !report.is_blocked(),
+                "{path}: {}",
+                report.render_diagnostics()
+            );
             assert_eq!(report.text(), *text, "{path} is not in canonical format");
         }
     }

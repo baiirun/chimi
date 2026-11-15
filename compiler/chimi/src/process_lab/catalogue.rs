@@ -6,7 +6,7 @@ use super::Kind;
 
 /// The last stage whose scenarios must pass. Each ts-6ccbc9 commit that
 /// completes a stage bumps this in the same commit.
-pub const CURRENT_STAGE: Stage = Stage::U11;
+pub const CURRENT_STAGE: Stage = Stage::U12;
 
 /// An implementation stage from the lab's unlock order.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -23,10 +23,11 @@ pub enum Stage {
     U9,
     U10,
     U11,
+    U12,
 }
 
 impl Stage {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::U0,
         Self::U1,
         Self::U2,
@@ -39,6 +40,7 @@ impl Stage {
         Self::U9,
         Self::U10,
         Self::U11,
+        Self::U12,
     ];
 
     pub fn name(self) -> &'static str {
@@ -55,6 +57,7 @@ impl Stage {
             Self::U9 => "U9",
             Self::U10 => "U10",
             Self::U11 => "U11",
+            Self::U12 => "U12",
         }
     }
 
@@ -73,7 +76,8 @@ pub type Measure = fn() -> Result<super::Measurement, String>;
 #[derive(Clone, Copy, Debug)]
 pub enum Form {
     /// A Chimi project at `tests/process-lab/<ID>-<slug>/` with the expected
-    /// files its kind needs. FP01's project is `programs/supervised-pool/`.
+    /// files its kind needs. FP01's project is `programs/supervised-pool/`, FP02's
+    /// `programs/service-pool/`.
     Fixture,
     /// A white-box C harness under `tests/process-lab/c/`.
     CHarness(&'static str),
@@ -99,6 +103,9 @@ pub struct Scenario {
     pub arguments: &'static [&'static str],
     /// Events kept in the transcript beyond the process family.
     pub extra_events: &'static [&'static str],
+    /// Runner options every run adds after `--clock=virtual`, such as an
+    /// injected `--signal`.
+    pub runner: &'static [&'static str],
 }
 
 impl Scenario {
@@ -115,6 +122,7 @@ impl Scenario {
             exit_code: 0,
             arguments: &[],
             extra_events: &[],
+            runner: &[],
         }
     }
 
@@ -130,6 +138,14 @@ impl Scenario {
 
     const fn with_events(mut self, extra_events: &'static [&'static str]) -> Self {
         self.extra_events = extra_events;
+        self
+    }
+
+    /// The run ends by an injected signal (`--signal`): it exits 128 plus
+    /// the signal's number.
+    const fn signalled(mut self, runner: &'static [&'static str], exit_code: i32) -> Self {
+        self.runner = runner;
+        self.exit_code = exit_code;
         self
     }
 }
@@ -157,7 +173,7 @@ const TASK_TERMINAL: &[&str] = &["task_terminal"];
 
 use Stage::*;
 
-pub static SCENARIOS: [Scenario; 141] = [
+pub static SCENARIOS: [Scenario; 148] = [
     // Static: compile-pass.
     fixture("SP01", "static-contract-example", U1),
     fixture("SP02", "spec-inside-using-shareable-provider", U2),
@@ -241,6 +257,7 @@ pub static SCENARIOS: [Scenario; 141] = [
     fixture("MB16", "unmonitor-removes-queued-notice", U11),
     fixture("MB17", "watcher-end-releases-notices", U11),
     fixture("MB18", "named-monitor-watches-one-incarnation", U11),
+    fixture("MB19", "notice-during-drain-is-dropped", U12),
     // Runtime: routing.
     fixture("RT01", "named-follows-replacement-direct-goes-stale", U6),
     fixture("RT02", "never-member-name-released", U6),
@@ -285,7 +302,7 @@ pub static SCENARIOS: [Scenario; 141] = [
     fixture("RR02", "removal-during-replacement-start", U7),
     fixture("RR03", "defect-during-removal-drain", U7),
     fixture("RR04", "removal-after-return", U7),
-    fixture("RR05", "removal-interrupts-sleeping-handler", U8),
+    fixture("RR05", "removal-lets-handler-finish", U12),
     fixture("RR06", "removal-during-stop", U8),
     // Runtime: shutdown and forced termination.
     fixture("SD01", "stop-order", U5),
@@ -298,10 +315,20 @@ pub static SCENARIOS: [Scenario; 141] = [
         KERNEL_FAULTS,
     ),
     fixture("SD05", "member-children-end-before-next-member", U8).with_events(TASK_TERMINAL),
-    fixture("SD06", "subtree-unrouted-before-cleanup", U8),
+    fixture("SD06", "older-member-routable-while-newer-drains", U12),
     fixture("SD07", "shutdown-ends-not-restarted", U8),
     fixture("SD08", "member-stops-own-root", U7),
     fixture("SD09", "second-stop-is-silent", U5),
+    fixture("SD10", "deadline-forces-in-flight-handler", U12),
+    fixture("SD11", "draining-handler-awaits-child-task", U12),
+    fixture("SG01", "terminate-drains-then-exits", U12)
+        .signalled(&["--signal=TERM@1500ms"], 143)
+        .with_events(&["clock_signal_received"]),
+    fixture("SG02", "interrupt-cancels-main-without-supervisors", U12)
+        .signalled(&["--signal=INT@2s"], 130)
+        .with_events(&["clock_signal_received"]),
+    fixture("SG03", "signal-after-main-ends-changes-nothing", U12)
+        .signalled(&["--signal=TERM@10s"], 0),
     // Heap: copy-boundary safety.
     fixture("CB01", "message-survives-sender-reclamation", U5),
     fixture("CB02", "copy-preserves-sharing", U5),
@@ -352,6 +379,9 @@ pub static SCENARIOS: [Scenario; 141] = [
     fixture("IP01", "interpreter-rejects-processes", U5).defects(),
     // Forcing program.
     fixture("FP01", "supervised-pool", U10),
+    fixture("FP02", "service-pool", U12)
+        .signalled(&["--signal=TERM@1500ms"], 143)
+        .with_events(&["clock_signal_received"]),
     // Performance gates.
     gate("PG01", "message-cost-trace-off", super::performance::pg01),
     gate("PG02", "trace-overhead", super::performance::pg02),
@@ -472,8 +502,9 @@ mod tests {
             assert_eq!(unlocks.get(row[0]), Some(&stage), "{}", row[0]);
             rows += 1;
         }
-        // Every scenario except FP01 and the gates, which carry no unlock column.
-        assert_eq!(rows, SCENARIOS.len() - 1 - 10);
+        // Every scenario except the forcing programs and the gates, which
+        // carry no unlock column.
+        assert_eq!(rows, SCENARIOS.len() - 2 - 10);
     }
 
     // Rejects a duplicated or missing ID, and an ID whose prefix maps to no
@@ -529,17 +560,17 @@ mod tests {
             .collect()
     }
 
-    // Rejects a catalogue whose form, harness file, exit code, runs, or extra
-    // events differ from the specification's catalogue data. Unlisted
+    // Rejects a catalogue whose form, harness file, exit code, runs, extra
+    // events, or runner options differ from the specification's catalogue data. Unlisted
     // scenarios must keep every default.
     #[test]
     fn forms_exit_codes_runs_and_extra_events_match_the_catalogue_data() {
-        let default = ("fixture".to_owned(), 0, Vec::new(), Vec::new());
+        let default = ("fixture".to_owned(), 0, Vec::new(), Vec::new(), Vec::new());
         let mut specified = BTreeMap::new();
         let table = section("### Catalogue data", SPECIFICATION);
         for row in table.lines() {
             let row = cells(row);
-            if row.len() != 5 || !is_scenario_id(&row[0][..4.min(row[0].len())]) {
+            if row.len() != 6 || !is_scenario_id(&row[0][..4.min(row[0].len())]) {
                 continue;
             }
             let data = (
@@ -547,6 +578,7 @@ mod tests {
                 row[2].parse::<i32>().expect("an exit code"),
                 listed(row[3]),
                 listed(row[4]),
+                listed(row[5]),
             );
             for id in expand(row[0]) {
                 assert!(
@@ -566,6 +598,11 @@ mod tests {
                     .collect::<Vec<_>>(),
                 scenario
                     .extra_events
+                    .iter()
+                    .map(|item| (*item).to_owned())
+                    .collect::<Vec<_>>(),
+                scenario
+                    .runner
                     .iter()
                     .map(|item| (*item).to_owned())
                     .collect::<Vec<_>>(),
