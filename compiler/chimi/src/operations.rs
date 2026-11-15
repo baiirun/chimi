@@ -109,7 +109,7 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/text.trim_end", 1, StandardFunction::TextTrimEnd),
     pure("std/text.lowercase", 1, StandardFunction::TextLowercase),
     pure("std/text.uppercase", 1, StandardFunction::TextUppercase),
-    pure("std/text.grapheme_end", 2, StandardFunction::TextGraphemeEnd),
+    pure("std/text.graphemes", 1, StandardFunction::TextGraphemes),
     pure("std/list.length", 1, StandardFunction::ListLength),
     pure("std/list.get", 2, StandardFunction::ListGet),
     pure("std/list.push", 2, StandardFunction::ListPush),

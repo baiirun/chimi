@@ -4598,15 +4598,16 @@ static ChimiControl *invoke_core_operation(uint32_t intrinsic, ChimiValue **argu
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
       return success(text_case_map(arguments[0]->as.text, uppercase_mappings,
                                    COUNT_OF(uppercase_mappings), false));
-    case CHIMI_INTRINSIC_TEXT_GRAPHEME_END: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT || arguments[1]->kind != VALUE_INTEGER) break;
+    case CHIMI_INTRINSIC_TEXT_GRAPHEMES: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
       const char *text = arguments[0]->as.text;
       size_t length = strlen(text);
-      int64_t start = arguments[1]->as.integer;
-      if (start < 0 || (uint64_t)start > length || !utf8_boundary(text, length, (size_t)start))
-        return defect(numeric_message("Text.grapheme_end: offset %lld is not a character boundary",
-                                      (long long)start), call_node);
-      return success(integer_value((int64_t)grapheme_end(text, length, (size_t)start)));
+      ChimiValue *graphemes = list_value((ListVector){NULL, NULL, 0}, 0, 0);
+      for (size_t start = 0, end; start < length; start = end) {
+        end = grapheme_end(text, length, start);
+        graphemes = list_push(graphemes, text_from_bytes(text + start, end - start));
+      }
+      return success(graphemes);
     }
     case CHIMI_INTRINSIC_LIST_GET: {
       if (argument_count != 2 || arguments[0]->kind != VALUE_LIST || arguments[1]->kind != VALUE_INTEGER) break;

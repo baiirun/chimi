@@ -148,18 +148,13 @@ impl Evaluator<'_> {
             (StandardFunction::TextUppercase, [RuntimeValue::Text(value)]) => {
                 text(value.to_uppercase())
             }
-            (
-                StandardFunction::TextGraphemeEnd,
-                [RuntimeValue::Text(value), RuntimeValue::Integer(start)],
-            ) => match usize::try_from(*start) {
-                Ok(start) if value.is_char_boundary(start) => Control::Success(RuntimeValue::Integer(
-                    i64::try_from(crate::graphemes::grapheme_end(value, start))
-                        .expect("a text length fits in Int"),
-                )),
-                _ => defect(format!(
-                    "Text.grapheme_end: offset {start} is not a character boundary"
-                )),
-            },
+            (StandardFunction::TextGraphemes, [RuntimeValue::Text(value)]) => {
+                Control::Success(RuntimeValue::List(
+                    crate::graphemes::graphemes(value)
+                        .map(|grapheme| RuntimeValue::Text(grapheme.to_owned()))
+                        .collect(),
+                ))
+            }
             (StandardFunction::ListGet, [RuntimeValue::List(list), RuntimeValue::Integer(index)]) => {
                 let found = usize::try_from(*index)
                     .ok()

@@ -366,7 +366,7 @@ pub(crate) enum StandardFunction {
     TextTrimEnd,
     TextLowercase,
     TextUppercase,
-    TextGraphemeEnd,
+    TextGraphemes,
     ListGet,
     ListPush,
     ListSlice,
@@ -567,7 +567,7 @@ impl StandardFunction {
             | Self::TextTrimEnd
             | Self::TextLowercase
             | Self::TextUppercase
-            | Self::TextGraphemeEnd
+            | Self::TextGraphemes
             | Self::ListGet
             | Self::ListPush
             | Self::ListSlice
@@ -692,7 +692,7 @@ impl StandardFunction {
             Self::TextTrimEnd => "trim_end",
             Self::TextLowercase => "lowercase",
             Self::TextUppercase => "uppercase",
-            Self::TextGraphemeEnd => "grapheme_end",
+            Self::TextGraphemes => "graphemes",
             Self::ListGet => "get",
             Self::ListPush => "push",
             Self::ListSlice => "slice",

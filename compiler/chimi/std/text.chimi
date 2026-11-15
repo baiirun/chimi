@@ -90,13 +90,7 @@ pub native fn byte_length(text: Text) -> Int
 ///
 /// Cost: O(n).
 pub fn grapheme_count(text: Text) -> Int {
-  let length = byte_length(text)
-  loop (start, count) = (0, 0) {
-    case start < length {
-      True -> (grapheme_end(text, start), count + 1)
-      False -> break count
-    }
-  }
+  List.length(graphemes(text))
 }
 
 /// Returns `True` when `needle` occurs in `text`.
@@ -163,18 +157,7 @@ pub fn lines(text: Text) -> List<Text> {
 /// U+200D are one grapheme each.
 ///
 /// Cost: O(n).
-pub fn graphemes(text: Text) -> List<Text> {
-  let length = byte_length(text)
-  loop (start, done) = (0, []) {
-    case start < length {
-      True -> {
-        let end = grapheme_end(text, start)
-        (end, List.push(done, byte_slice(text, start..end)))
-      }
-      False -> break done
-    }
-  }
-}
+pub native fn graphemes(text: Text) -> List<Text>
 
 /// Returns `text` without `prefix`, or `None` when `text` does not begin
 /// with it.
@@ -267,11 +250,6 @@ fn strip_carriage_return(line: Text) -> Text {
 fn without_case(text: Text) -> Text {
   lowercase(uppercase(text))
 }
-
-/// Returns the byte offset where the grapheme that starts at `start` ends.
-///
-/// Defects when: `start` is not a character boundary of `text`.
-native fn grapheme_end(text: Text, start: Int) -> Int
 
 /// Returns `missing` graphemes of `fill` repeated, where `missing` is what
 /// `count` lacks of `width`; `function` names the caller in the defect.

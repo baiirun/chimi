@@ -128,13 +128,26 @@ impl Cluster {
     }
 }
 
+/// Returns the grapheme clusters of `text` in order.
+///
+/// Cost: O(n): each cluster is read once.
+pub(crate) fn graphemes(text: &str) -> impl Iterator<Item = &str> {
+    let mut start = 0;
+    std::iter::from_fn(move || {
+        let end = grapheme_end(text, start);
+        let grapheme = (end > start).then(|| &text[start..end]);
+        start = end;
+        grapheme
+    })
+}
+
 /// Returns the byte offset where the grapheme cluster that starts at `start`
 /// ends, or `text.len()` when `start` is the end.
 ///
 /// Requires: `start` is a character boundary of `text`. A cluster boundary
-/// depends only on the text from the cluster's start, so callers walk clusters
+/// depends only on the text from the cluster's start, so clusters are read
 /// one at a time.
-pub(crate) fn grapheme_end(text: &str, start: usize) -> usize {
+fn grapheme_end(text: &str, start: usize) -> usize {
     let mut characters = text[start..].char_indices();
     let Some((_, first)) = characters.next() else {
         return start;
@@ -152,7 +165,7 @@ pub(crate) fn grapheme_end(text: &str, start: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::grapheme_end;
+    use super::graphemes;
 
     /// Every case of the official `GraphemeBreakTest.txt`: `÷` marks a
     /// boundary, `×` none, between hexadecimal code points.
@@ -178,8 +191,8 @@ mod tests {
                 }
             }
             let mut boundaries = vec![0];
-            while let Some(&start) = boundaries.last().filter(|&&start| start < text.len()) {
-                boundaries.push(grapheme_end(&text, start));
+            for grapheme in graphemes(&text) {
+                boundaries.push(boundaries.last().unwrap() + grapheme.len());
             }
             if boundaries != expected {
                 failures.push(format!("{case}: got byte boundaries {boundaries:?}"));

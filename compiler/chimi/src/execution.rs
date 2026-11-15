@@ -1639,7 +1639,7 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::TextTrimEnd
             | StandardFunction::TextLowercase
             | StandardFunction::TextUppercase
-            | StandardFunction::TextGraphemeEnd
+            | StandardFunction::TextGraphemes
             | StandardFunction::ListGet
             | StandardFunction::ListPush
             | StandardFunction::ListSlice
