@@ -38,13 +38,21 @@ typedef void *(*MmapFunction)(void *, size_t, int, int, int, off_t);
 static MmapFunction system_mmap;
 static int failing_stacks;
 
+/* Resolved on first use, not in main: AddressSanitizer's startup maps memory
+   through this definition before main runs, and on Linux a null system_mmap
+   there faults inside ASan's own handler and hangs the process. */
+static MmapFunction system_mmap_function(void) {
+  if (!system_mmap) system_mmap = (MmapFunction)dlsym(RTLD_NEXT, "mmap");
+  return system_mmap;
+}
+
 void *mmap(void *address, size_t length, int protection, int flags, int descriptor, off_t offset) {
   if (failing_stacks > 0 && protection == PROT_NONE && descriptor == -1) {
     --failing_stacks;
     errno = ENOMEM;
     return MAP_FAILED;
   }
-  return system_mmap(address, length, protection, flags, descriptor, offset);
+  return system_mmap_function()(address, length, protection, flags, descriptor, offset);
 }
 
 /* The process events the scheduler emitted, in order. */
@@ -310,8 +318,7 @@ static void sd04(void) {
 }
 
 int main(int argc, char **argv) {
-  system_mmap = (MmapFunction)dlsym(RTLD_NEXT, "mmap");
-  if (!system_mmap) {
+  if (!system_mmap_function()) {
     fputs("cannot find the system mmap\n", stderr);
     return 1;
   }
