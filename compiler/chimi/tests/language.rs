@@ -11053,3 +11053,29 @@ pub fn main() -> Text {
         "\"outcome\":\"success\",\"value\":\"a c\""
     );
 }
+
+#[test]
+fn a_lambda_parameter_no_check_has_bounded_takes_both_sets() {
+    // Nothing inside `ignore` constrains `v`, so its type widens to
+    // `A | B | C` and both calls fit.
+    let program = r#"enum A { XA }
+enum B { XB }
+enum C { XC }
+fn ab() -> A | B {
+  let v: A | B = A.XA
+  v
+}
+fn bc() -> B | C {
+  let v: B | C = C.XC
+  v
+}
+pub fn main() -> Int {
+  let ignore = fn(v) { 1 }
+  ignore(ab()) + ignore(bc())
+}
+"#;
+    assert_eq!(
+        run_both("failure-set-lambda-widen", program),
+        "\"outcome\":\"success\",\"value\":2"
+    );
+}

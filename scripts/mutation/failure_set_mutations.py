@@ -46,7 +46,7 @@ MUTATIONS = [
         "                if false && self.failure_set_is_subset(actual, expected) {\n                    return true;\n                }")], "a_failure_set_parameter_accepts"),
     lang("unify: an inferred set does not widen to the union", Y, [(
         "                let union = self.join_failure_sets([actual, expected]);\n                let joined = self.failure_set_type(union);\n                self.inference_bindings.insert(variable, joined);\n                true",
-        "                let _ = variable;\n                false")], "failure_set_values_in_one_list"),
+        "                let _ = variable;\n                false")], "no_check_has_bounded"),
     lang("covariance: no argument is covariant", F, [(
         "        self.parameter_is_covariant_within(owner, index, 0)\n",
         "        false && self.parameter_is_covariant_within(owner, index, 0)\n")], "join"),
