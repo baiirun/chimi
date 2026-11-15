@@ -65,6 +65,21 @@ The three changes:
 Callgrind on a 200,000-pass `loop` shows 10 allocations a pass before and 7
 after, and 2,895 instructions a pass before and 2,337 after.
 
+## Comparisons without a heap work stack
+
+Every `==`, `<`, `>=` and Map key lookup walks its values with an explicit
+work stack, so that deep values never use host stack. That stack was
+allocated with `realloc` and released with `free` on every comparison, even
+for two integers: about 300 instructions, or 7% of a `loop-bind` pass. Its
+first 32 steps now live in the comparing function's frame, and only longer
+walks move to the heap.
+
+| Workload | Before (`cd8d7f6`) | After |
+| --- | ---: | ---: |
+| `loop-bind` | 240 ns | 211 ns |
+
+10,000,000 passes, 9 interleaved runs, p50, with a load average of about 2.
+
 ## What is left
 
 About 60% of the remaining instructions in `loop` are the allocator:

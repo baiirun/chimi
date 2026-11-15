@@ -11377,6 +11377,40 @@ fn booleans_stay_booleans_across_reclaimed_loop_passes() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":5000");
 }
 
+// Guards: comparing values whose walk outgrows the runtime's inline compare steps
+// (32) keeps every pending step, so long lists and nested records still compare
+// element by element, and the last element decides.
+#[test]
+fn comparisons_past_the_inline_compare_steps_agree_with_the_interpreter() {
+    let items = |last: u32| {
+        (1..=40)
+            .map(|index| {
+                let value = if index == 40 { last } else { index };
+                format!("Pair([{value}, {index}], {index})")
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let source = format!(
+        concat!(
+            "struct Pair {{\n  left: List<Int>,\n  right: Int,\n}}\n",
+            "pub fn main() -> List<Bool> {{\n",
+            "  let same = [{same}]\n",
+            "  let copy = [{same}]\n",
+            "  let later = [{later}]\n",
+            "  let counts = [{counts}]\n",
+            "  let longer = [{counts}, 0]\n",
+            "  [same == copy, same == later, same != later, counts < longer, longer < counts]\n",
+            "}}\n",
+        ),
+        same = items(40),
+        later = items(41),
+        counts = (1..=40).map(|index| index.to_string()).collect::<Vec<_>>().join(", "),
+    );
+    let outcome = run_both("compare-past-inline-steps", &source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[true,false,true,true,false]", "{outcome}");
+}
+
 // Guards: a match reads every subject, both when its subjects fit the runtime's
 // stack array (up to eight) and when they do not (nine).
 #[test]
