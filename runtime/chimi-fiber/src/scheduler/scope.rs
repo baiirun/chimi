@@ -23,9 +23,9 @@
 //! Task cancellation, an enclosing scope's cancellation, and process shutdown
 //! are never delivered for an inner scope, so they pass through it unchanged.
 //!
-//! A task-level cancellation (`begin_terminal`) resumes the fiber with
-//! [`set_resume_context`]'s `terminal` flag set, which tells the boundary to
-//! issue no request: a terminal fiber must finish without parking.
+//! A task-level cancellation (`begin_terminal`) or a forced process body
+//! resumes the fiber with [`ResumeContext::terminal`] set, which tells the
+//! boundary to issue no request: a terminal fiber must finish without parking.
 //!
 //! Hook for masked cancellation (G12 scope-owned resources): a masked region
 //! would be a scope that [`Scheduler::deliverable_scope`] skips until it exits.
@@ -80,14 +80,31 @@ thread_local! {
     static RESUME_POLLS: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Records, for the fiber about to resume, whether this resume is a terminal
-/// cancellation, whether a fired scope waits for its next cancellation point,
-/// and whether loop passes must poll for scope deadlines. Every resume sets
-/// all three.
-pub(super) fn set_resume_context(terminal: bool, scope_pending: bool, polls: bool) {
-    RESUME_TERMINAL.with(|cell| cell.set(terminal));
-    RESUME_SCOPE_PENDING.with(|cell| cell.set(scope_pending));
-    RESUME_POLLS.with(|cell| cell.set(polls));
+/// What the fiber about to resume may read about its own cancellation state.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ResumeContext {
+    /// The cancellation ends the whole task (`begin_terminal`, or a forced
+    /// process body): unwind without any request that can park.
+    pub(super) terminal: bool,
+    /// A fired scope waits for the task's next cancellation point.
+    pub(super) scope_pending: bool,
+    /// Loop passes must poll the scheduler for scope deadlines.
+    pub(super) polls: bool,
+}
+
+impl ResumeContext {
+    pub(super) const TERMINAL: Self = Self {
+        terminal: true,
+        scope_pending: false,
+        polls: false,
+    };
+}
+
+/// Records `context` for the fiber about to resume. Every resume sets it.
+pub(super) fn set_resume_context(context: ResumeContext) {
+    RESUME_TERMINAL.with(|cell| cell.set(context.terminal));
+    RESUME_SCOPE_PENDING.with(|cell| cell.set(context.scope_pending));
+    RESUME_POLLS.with(|cell| cell.set(context.polls));
 }
 
 #[unsafe(no_mangle)]
@@ -176,7 +193,8 @@ impl Scheduler {
         };
         let leaving: Vec<ScopeId> = record.scopes[index..].iter().map(|entry| entry.id).collect();
         let fired = record.scopes[index..].iter().any(|entry| entry.fired);
-        if fired && !self.scope_children(task, &leaving).is_empty() {
+        let children = self.scope_children(task, &leaving);
+        if fired && !children.is_empty() {
             return ScopeExit::Pending;
         }
         let record = self.tasks.get_mut(&task).expect("task inside the scope");
@@ -188,8 +206,8 @@ impl Scheduler {
                 self.cancel_timer(timer);
             }
         }
-        for child in self.scope_children(task, &leaving) {
-            self.tasks.get_mut(&child).expect("live child").scope = parent_scope;
+        for child in children {
+            self.tasks.get_mut(&child).expect("live child").started_in_scope = parent_scope;
         }
         ScopeExit::Exited { delivered }
     }
@@ -364,7 +382,7 @@ impl Scheduler {
             .filter(|child| {
                 self.tasks
                     .get(child)
-                    .and_then(|record| record.scope)
+                    .and_then(|record| record.started_in_scope)
                     .is_some_and(|scope| scopes.contains(&scope))
             })
             .collect()

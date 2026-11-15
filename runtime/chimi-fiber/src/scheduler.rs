@@ -407,17 +407,12 @@ impl OwnedFiber {
         Ok(Self(pointer))
     }
 
-    /// `terminal` marks a task-level cancellation; `scope_pending` says a
-    /// fired scope waits for the task's next cancellation point; `polls`
-    /// says loop passes must poll the scheduler for scope deadlines.
     fn resume(
         &mut self,
         command: ChimiFiberCommand,
-        terminal: bool,
-        scope_pending: bool,
-        polls: bool,
+        context: scope::ResumeContext,
     ) -> ChimiFiberEvent {
-        scope::set_resume_context(terminal, scope_pending, polls);
+        scope::set_resume_context(context);
         unsafe { chimi_fiber_resume(self.0.as_ptr(), command as u32) }
     }
 }
@@ -455,7 +450,7 @@ struct Task {
     /// The cancellation scopes the task is inside, innermost last.
     scopes: Vec<scope::Scope>,
     /// The parent's innermost scope when this task was started.
-    scope: Option<ScopeId>,
+    started_in_scope: Option<ScopeId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1314,7 +1309,7 @@ impl Scheduler {
                 entry_context: std::ptr::null_mut(),
                 timer: None,
                 scopes: Vec::new(),
-                scope: parent.and_then(|parent| {
+                started_in_scope: parent.and_then(|parent| {
                     self.tasks[&parent].scopes.last().map(|entry| entry.id)
                 }),
             },
@@ -1343,13 +1338,15 @@ impl Scheduler {
         record.request = std::ptr::null_mut();
         record.ran = true;
         record.entry_context = std::ptr::null_mut();
-        let scope_pending = self.scope_cancel_pending(task);
-        let polls = self.polls_scope_deadlines(task);
-        // A forced incarnation is abandoned at its next park, so its unwind
-        // must issue no request either, scope exits included.
-        let forced = command == ChimiFiberCommand::Cancel
-            && self.tasks[&task].process.is_some()
-            && self.is_forced(task);
+        let context = scope::ResumeContext {
+            // A forced incarnation is abandoned at its next park, so its
+            // unwind must issue no request either, scope exits included.
+            terminal: command == ChimiFiberCommand::Cancel
+                && self.tasks[&task].process.is_some()
+                && self.is_forced(task),
+            scope_pending: self.scope_cancel_pending(task),
+            polls: self.polls_scope_deadlines(task),
+        };
         let event = self
             .tasks
             .get_mut(&task)
@@ -1357,7 +1354,7 @@ impl Scheduler {
             .fiber
             .as_mut()
             .expect("runnable task owns a fiber")
-            .resume(command, forced, scope_pending, polls);
+            .resume(command, context);
         if event.state == ChimiFiberState::Parked as u32 {
             let record = self.tasks.get_mut(&task).expect("running task");
             record.phase = TaskPhase::Parked;
@@ -1706,7 +1703,7 @@ impl Scheduler {
                 .get_mut(&task)
                 .and_then(|record| record.fiber.as_mut())
                 .expect("non-terminal task owns a fiber")
-                .resume(ChimiFiberCommand::Cancel, true, false, false);
+                .resume(ChimiFiberCommand::Cancel, scope::ResumeContext::TERMINAL);
             self.keep_task_value(task, &cleanup);
             if !outcome.is_defect() {
                 outcome = match cleanup.state {

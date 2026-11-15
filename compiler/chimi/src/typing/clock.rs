@@ -80,7 +80,10 @@ impl ProjectTypeChecker {
 
         // Task.timeout: fn<T, E, R>(fn() -> T errors E needs R, Duration)
         //   -> T errors E | Timeout needs R + { clock: Clock }; Task.deadline takes
-        // an Instant instead.
+        // an Instant instead. The `clock` need is the spec's contract, so code
+        // that times out needs time like code that sleeps; the native runtime
+        // still arms the scope timer on the execution clock, because only a
+        // scheduler timer can cancel the scope (decisions.md, CHI-201).
         let value = self.standard_generic_type(StandardGeneric::TimeoutValue);
         let failures = self.resolved.standard_generic(StandardGeneric::TimeoutFailures);
         let needs = self.resolved.standard_generic(StandardGeneric::TimeoutNeeds);
