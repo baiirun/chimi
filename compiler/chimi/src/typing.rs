@@ -1373,6 +1373,10 @@ struct ProjectTypeChecker {
     /// is inside. A function input is contravariant, so there `Never` matches
     /// only `Never`: a `fn(Never)` must not pass for a `fn(Int)`.
     function_input_depth: u32,
+    /// Inference variables some check has already used as the narrower side.
+    /// Such a variable is bounded above, so widening its failure set by union
+    /// would leave that check stale; it may only stay as wide as it is.
+    bounded_inference_variables: HashSet<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -1607,6 +1611,7 @@ impl ProjectTypeChecker {
             arm_types: HashMap::new(),
             undetermined_constants: HashSet::new(),
             function_input_depth: 0,
+            bounded_inference_variables: HashSet::new(),
         };
         checker.intern_type(CanonicalType::Poison);
         checker.intern_failure_row(FailureRow {
@@ -2512,6 +2517,7 @@ impl ProjectTypeChecker {
             arm_types: HashMap::new(),
             undetermined_constants: HashSet::new(),
             function_input_depth: 0,
+            bounded_inference_variables: HashSet::new(),
         }
     }
 
@@ -7254,18 +7260,6 @@ impl ProjectTypeChecker {
         self.intern_failure_row(row)
     }
 
-    /// Whether every member of the closed row `failures` is a variant of `owner`, so
-    /// a value narrowed to them is accepted where the enum is expected.
-    fn failure_row_within_enum(&self, failures: FailureRowId, owner: SymbolId) -> bool {
-        let row = &self.failure_rows[failures.raw() as usize];
-        row.parameters.is_empty()
-            && !row.variants.is_empty()
-            && row
-                .variants
-                .iter()
-                .all(|variant| self.enum_owner_for_variant(*variant) == Some(owner))
-    }
-
     fn failure_row_is_empty(&self, failures: FailureRowId) -> bool {
         let row = &self.failure_rows[failures.raw() as usize];
         row.variants.is_empty() && row.parameters.is_empty()
@@ -9557,6 +9551,16 @@ impl ProjectTypeChecker {
     /// side is an inference variable, which then widens to the enum.
     fn unify(&mut self, left: TypeId, right: TypeId) -> bool {
         let right_variable = self.last_inference_variable(right);
+        // Whichever side must fit the other is now bounded above: the actual
+        // side outside function inputs, the expected side inside an odd number.
+        let narrower = if self.function_input_depth.is_multiple_of(2) {
+            self.last_inference_variable(left)
+        } else {
+            right_variable
+        };
+        if let Some(variable) = narrower {
+            self.bounded_inference_variables.insert(variable);
+        }
         let left = self.resolve_inference_type(left);
         let right = self.resolve_inference_type(right);
         if left == right || left == TypeId::new(0) || right == TypeId::new(0) {
@@ -9597,6 +9601,15 @@ impl ProjectTypeChecker {
                     left_arguments.into_iter().zip(right_arguments).enumerate()
                 {
                     if self.unify(left, right) {
+                        // A failure-set argument fits a wider one only where the
+                        // parameter is covariant; elsewhere, as for `Handler<E>`
+                        // holding a `fn(E)`, the two sets must be equal.
+                        if self.resolve_inference_type(left) != self.resolve_inference_type(right)
+                            && !self.type_parameter_is_covariant(left_symbol, index)
+                            && !self.unify(right, left)
+                        {
+                            return false;
+                        }
                         joined.push(right);
                         continue;
                     }
@@ -9605,8 +9618,10 @@ impl ProjectTypeChecker {
                         self.failure_set_of(left),
                         self.failure_set_of(right),
                     ) {
-                        (Some(_), Some(left), Some(right))
-                            if self.type_parameter_is_covariant(left_symbol, index) =>
+                        (Some(variable), Some(left), Some(right))
+                            if self.function_input_depth.is_multiple_of(2)
+                                && !self.bounded_inference_variables.contains(&variable)
+                                && self.type_parameter_is_covariant(left_symbol, index) =>
                         {
                             self.join_failure_sets([left, right])
                         }
@@ -9625,30 +9640,35 @@ impl ProjectTypeChecker {
                 true
             }
             (CanonicalType::Generic(left), CanonicalType::Generic(right)) => left == right,
-            // A failure-set value fits a set that includes it. Where the expected
-            // side is still being inferred, two failure sets join by union.
+            // A failure-set value fits a set that includes it. Under an odd number
+            // of function inputs the direction flips: a `fn(A)` must not pass for
+            // a `fn(A | B)`, which may hand it a `B`. Where the expected side is
+            // still being inferred outside inputs, two failure sets join by union.
             (CanonicalType::FailureSetValue(_), CanonicalType::FailureSetValue(_))
             | (CanonicalType::Generic(_), CanonicalType::FailureSetValue(_))
             | (CanonicalType::FailureSetValue(_), CanonicalType::Generic(_))
-            | (CanonicalType::Named { .. }, CanonicalType::FailureSetValue(_)) => {
+            | (CanonicalType::Named { .. }, CanonicalType::FailureSetValue(_))
+            | (CanonicalType::FailureSetValue(_), CanonicalType::Named { .. }) => {
                 let (Some(actual), Some(expected)) =
                     (self.failure_set_of(left), self.failure_set_of(right))
                 else {
                     return false;
                 };
+                if !self.function_input_depth.is_multiple_of(2) {
+                    return self.failure_set_is_subset(expected, actual);
+                }
                 if self.failure_set_is_subset(actual, expected) {
                     return true;
                 }
-                let Some(variable) = right_variable else {
+                let Some(variable) = right_variable
+                    .filter(|variable| !self.bounded_inference_variables.contains(variable))
+                else {
                     return false;
                 };
                 let union = self.join_failure_sets([actual, expected]);
                 let joined = self.failure_set_type(union);
                 self.inference_bindings.insert(variable, joined);
                 true
-            }
-            (CanonicalType::FailureSetValue(row), CanonicalType::Named { symbol, .. }) => {
-                self.failure_row_within_enum(row, symbol)
             }
             (CanonicalType::Function(left), CanonicalType::Function(right)) => {
                 left.inputs.len() == right.inputs.len()

@@ -10865,3 +10865,122 @@ fn a_failure_set_value_passed_where_a_member_is_missing_names_the_missing_varian
         diagnostics[0].message()
     );
 }
+
+#[test]
+fn a_failure_set_argument_used_as_a_function_input_does_not_join() {
+    // A `Handler<E>` takes `E` in, so a handler of `UserError` must not pass
+    // for a handler of `UserError | OrderError`: it would be handed an
+    // `OrderError` it cannot match. Only covariant arguments join by union,
+    // and an input nested in another data type still counts.
+    let source = |declaration: &str, wrap: &str| {
+        format!(
+            "{CAPTURE}enum UserError {{ Missing }}\nenum OrderError {{ Lost }}\n{declaration}\n\
+             fn user(error: UserError) -> Int {{ 1 }}\n\
+             fn order(error: OrderError) -> Int {{ 2 }}\n\
+             fn both() -> Int {{\n  let handlers = [Handler({wrap}(user)), Handler({wrap}(order))]\n  0\n}}\n"
+        )
+    };
+    assert_eq!(
+        check_codes(&source("struct Handler<E> { run: fn(E) -> Int }", "")),
+        ["T4203"]
+    );
+    assert_eq!(
+        check_codes(&source("struct Handler<E> { run: Option<fn(E) -> Int> }", "Some")),
+        ["T4203"]
+    );
+}
+
+#[test]
+fn a_callback_for_a_narrower_failure_set_does_not_fit_a_wider_one() {
+    // A callback that takes only `A` must not stand in for one that takes
+    // `A | B`: it would be handed a `B`. The other way round is fine.
+    let rejected = "enum A { XA }\nenum B { XB }\nstruct Handler<E> { run: fn(E) -> Text }\n\
+        fn takes_a(a: A) -> Text {\n  case a {\n    A.XA -> \"a\"\n  }\n}\n\
+        fn run_ab(f: fn(A | B) -> Text) -> Text { f(B.XB) }\n\
+        fn run_handler(h: Handler<A | B>) -> Text { (h.run)(B.XB) }\n\
+        pub fn main() -> Text { \"${run_ab(takes_a)} ${run_handler(Handler(takes_a))}\" }\n";
+    assert_eq!(check_codes(rejected), ["T4203", "T4203"]);
+
+    let accepted = "enum A { XA }\nenum B { XB }\n\
+        fn takes_either(value: A | B) -> Text {\n  case value {\n    A.XA -> \"a\"\n    B.XB -> \"b\"\n  }\n}\n\
+        fn run_a(f: fn(A) -> Text) -> Text { f(A.XA) }\n\
+        pub fn main() -> Text { run_a(takes_either) }\n";
+    assert_eq!(run_both("callback_wider_input", accepted),
+        "\"outcome\":\"success\",\"value\":\"a\""
+    );
+}
+
+#[test]
+fn a_set_already_checked_against_a_narrower_one_does_not_widen_later() {
+    // The lambda's `v` is first checked to fit `A | C` inside `score(v)`; a
+    // later call with `B | C` must not widen `v` past that check.
+    assert_eq!(check_codes(r#"enum A {
+  Alpha
+}
+
+enum B {
+  Beta
+}
+
+enum C {
+  Gamma
+}
+
+fn score(x: A | C) -> Int {
+  case x {
+    A.Alpha -> 1
+    C.Gamma -> 2
+  }
+}
+
+fn beta() -> B | C {
+  let v: B | C = B.Beta
+  v
+}
+
+pub fn main() -> Int {
+  let g = fn(v) {
+    score(v)
+  }
+  g(beta())
+}
+"#), ["T4346"]);
+}
+
+#[test]
+fn a_sender_of_one_enum_does_not_pass_for_a_sender_of_a_wider_set() {
+    // A `Sender<A | B>` may send a `B`, so a `Sender<A>` cannot stand in.
+    assert_eq!(check_codes(r#"import std/channel as Channel
+import std/channel.{Sender, Receive}
+
+enum A {
+  Alpha
+}
+
+enum B {
+  Beta
+}
+
+fn wide(s: Sender<A | B>) -> Int {
+  let r = Channel.send(s, B.Beta)
+  1
+}
+
+fn score(a: A) -> Int {
+  case a {
+    A.Alpha -> 7
+  }
+}
+
+pub fn main() -> Int {
+  let ca = Channel.bounded(1)
+  let narrow: Sender<A> = ca.sender
+  let n = wide(narrow)
+  let got = Channel.receive(ca.receiver)
+  case got {
+    Receive.Received(v) -> score(v)
+    Receive.Drained -> 0
+  }
+}
+"#), ["T4203"]);
+}

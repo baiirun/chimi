@@ -1157,7 +1157,16 @@ program.
   `StartError.NameTaken`; only a narrowed value, such as a `Failure(...)`
   binding, does (CHI-218). Joining two arguments for one generic parameter by
   union (spec "Joins", third case) applies to list elements and case arms, not
-  yet to two call arguments that bind the same failure-set parameter.
+  yet to two call arguments that bind the same failure-set parameter. A set
+  written across lines must keep each `|` at the end of a line, not the start
+  of the next. Of the `Result` helpers in the conventions doc, only `capture`
+  and `get` exist; `map`, `map_error`, `unwrap_or`, `to_option`, `error`,
+  `is_ok`, and `is_err` come later.
+- **Variance.** A data type's argument fits a wider one only where its
+  parameter is covariant; an argument used as a function input (a
+  `Handler<E>` holding `fn(E)`) does not widen. A function value fits where
+  its inputs are at least as wide, so `fn(A | B)` passes for `fn(A)` and
+  `fn(A)` does not pass for `fn(A | B)`.
 - **Runtime identity.** Both backends already identify an enum value by its
   constructor symbol, which is unique across the program, so matching,
   equality, and `Debug` tell `HttpError.Timeout` from `Timeout.TimedOut`

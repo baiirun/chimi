@@ -1628,9 +1628,10 @@ impl ProjectResolver {
 
     /// Resolves `Enum.Variant` or `Alias.Enum.Variant` in a type position to the
     /// variant's constructor: a one-member failure-set type
-    /// (`docs/specification/time-and-outcomes.md`, "Failure-set types"). The type
-    /// checker rejects it outside a failure-set position. `None` when the owner is
-    /// not an enum in scope or has no such variant.
+    /// (`docs/specification/time-and-outcomes.md`, "Failure-set types"). It is a
+    /// type wherever a type may be written: a parameter, field, result or `let`
+    /// annotation. `None` when the owner is not an enum in scope or has no such
+    /// variant.
     fn resolve_variant_type(
         &self,
         module_index: usize,
