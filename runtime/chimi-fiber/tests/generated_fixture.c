@@ -376,6 +376,19 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       sizeof(ChimiMessageCapabilities),
       LAYOUT(ChimiMessageCapabilities, count),
       CHIMI_VIOLATION_IN_FLIGHT,
+      CHIMI_REQUEST_SELECT,
+      CHIMI_SELECT_RECEIVE,
+      CHIMI_SELECT_INBOX,
+      CHIMI_SELECT_TASK,
+      CHIMI_SELECT_TIMER,
+      sizeof(ChimiSelectSource),
+      LAYOUT(ChimiSelectSource, channel),
+      LAYOUT(ChimiSelectSource, owner),
+      LAYOUT(ChimiSelectSource, token),
+      LAYOUT(ChimiSelectSource, task),
+      LAYOUT(ChimiSelectSource, deadline),
+      CHIMI_CLOCK_TRACE_SELECT_PARKED,
+      CHIMI_CLOCK_TRACE_SELECT_COMMITTED,
   };
   size_t count = sizeof(values) / sizeof(*values);
   for (size_t index = 0; index < count; index += 1) out[index] = values[index];

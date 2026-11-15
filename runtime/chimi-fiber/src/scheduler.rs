@@ -8,9 +8,15 @@ mod process_abi;
 mod process_tests;
 #[cfg(test)]
 mod release_tests;
+#[cfg(test)]
+mod select_tests;
 mod scope;
+mod select;
 
 pub use self::clock::{ClockMode, Instant, TimerId};
+pub use self::select::{
+    ChimiSelectSource, SELECT_INBOX, SELECT_RECEIVE, SELECT_TASK, SELECT_TIMER,
+};
 pub use self::scope::{ScopeExit, ScopeId, chimi_fiber_cancel_is_terminal, chimi_fiber_scope_cancel_pending};
 pub use self::process::{
     Address, ChimiProcessTermination, IncarnationId, Member, MembershipId, MessageRelease, NameId,
@@ -77,6 +83,10 @@ pub const REQUEST_SCOPE_EXIT: u32 = 26;
 /// A loop pass's cancellation point: answered OK, or with a pending scope
 /// cancellation.
 pub const REQUEST_SCOPE_CHECK: u32 = 27;
+/// `context` points to `value` `ChimiSelectSource`s. OK with the index of the
+/// first ready source in `value`, or PENDING until one may be ready; reissue
+/// the request after every wake. Consumes nothing (`scheduler/select.rs`).
+pub const REQUEST_SELECT: u32 = 28;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -451,6 +461,8 @@ struct Task {
     scopes: Vec<scope::Scope>,
     /// The parent's innermost scope when this task was started.
     started_in_scope: Option<ScopeId>,
+    /// What the task's parked `Select.first` waits on.
+    select: Option<select::SelectWait>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -464,6 +476,11 @@ pub enum ClockEventKind {
     DeadlockWaiter,
     /// A cancellation scope's deadline passed. A boundary event.
     ScopeFired,
+    /// A `Select.first` found nothing ready and parked. A boundary event.
+    SelectParked,
+    /// A `Select.first` committed to the event whose index is
+    /// `request_kind`. A boundary event.
+    SelectCommitted,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -472,7 +489,8 @@ pub struct ClockEvent {
     pub kind: ClockEventKind,
     pub task: Option<TaskId>,
     pub time: Instant,
-    /// For a deadlock waiter: the request kind it is parked on, or 0.
+    /// For a deadlock waiter: the request kind it is parked on, or 0. For a
+    /// select commit: the committed event's index.
     pub request_kind: u32,
 }
 
@@ -1312,6 +1330,7 @@ impl Scheduler {
                 started_in_scope: parent.and_then(|parent| {
                     self.tasks[&parent].scopes.last().map(|entry| entry.id)
                 }),
+                select: None,
             },
         );
         if let Some(parent) = parent {
@@ -1477,6 +1496,7 @@ impl Scheduler {
                 request.status = RESPONSE_OK;
                 let _ = self.wake_front(owner);
             }
+            REQUEST_SELECT => self.handle_select(owner, request),
             REQUEST_TASK_START => {
                 let Some(entry) = request.entry else {
                     request.status = RESPONSE_ERROR;
@@ -1685,6 +1705,7 @@ impl Scheduler {
         if let Some(timer) = record.timer.take() {
             self.cancel_timer(timer);
         }
+        self.clear_select(task);
         self.clear_scopes(task);
         self.unroute_task(task);
 
@@ -1780,6 +1801,10 @@ impl Scheduler {
         if let Some(parent) = parent {
             self.finish_draining(parent);
             self.wake_scope_exit(parent);
+            // A defect instead reaches the parent through containment below.
+            if !outcome.is_defect() {
+                self.wake_selecting_parent(parent, task);
+            }
         }
 
         let waiting_parent = parent.filter(|parent| {

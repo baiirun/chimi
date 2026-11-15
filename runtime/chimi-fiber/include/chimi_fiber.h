@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 8u
+#define CHIMI_FIBER_ABI_VERSION 9u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -111,7 +111,34 @@ enum {
   /* ChimiSchedulerRequest: a loop pass's cancellation point. OK, or the
      task resumes with CHIMI_FIBER_CANCEL for a fired scope. */
   CHIMI_REQUEST_SCOPE_CHECK = 27,
+  /* ChimiSchedulerRequest: `context` points to `value` ChimiSelectSources.
+     OK with the index of the first ready source in `value`, in list order;
+     PENDING until one may be ready, so reissue after every wake. It consumes
+     nothing: the caller then issues the committed source's own request
+     (receive, process receive, task result), which answers at once. ERROR
+     for an empty list or an unknown kind. A cancellation point. */
+  CHIMI_REQUEST_SELECT = 28,
 };
+
+enum {
+  /* `channel`, `owner` and `token` are the receiver's. */
+  CHIMI_SELECT_RECEIVE = 1,
+  /* The calling process body's inbox. */
+  CHIMI_SELECT_INBOX = 2,
+  /* `task` is a child the caller owns. */
+  CHIMI_SELECT_TASK = 3,
+  /* `deadline` is an Instant of the execution clock. */
+  CHIMI_SELECT_TIMER = 4,
+};
+
+typedef struct {
+  uint32_t kind;
+  uint64_t channel;
+  uint64_t owner;
+  uint64_t token;
+  uint64_t task;
+  int64_t deadline;
+} ChimiSelectSource;
 
 enum {
   CHIMI_RESPONSE_UNSET = 0,
@@ -286,6 +313,10 @@ enum {
   CHIMI_CLOCK_TRACE_DEADLOCK_WAITER = 5,
   /* A cancellation scope's deadline passed (boundaries). */
   CHIMI_CLOCK_TRACE_SCOPE_FIRED = 6,
+  /* A Select.first parked (boundaries). */
+  CHIMI_CLOCK_TRACE_SELECT_PARKED = 7,
+  /* A Select.first committed; `cause` is the event's index (boundaries). */
+  CHIMI_CLOCK_TRACE_SELECT_COMMITTED = 8,
 };
 
 typedef struct {

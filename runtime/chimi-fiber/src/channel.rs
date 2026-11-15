@@ -250,6 +250,10 @@ struct Channel {
     /// capability in flight has no owner.
     receiver_parcel: Option<usize>,
     completion_parcel: Option<usize>,
+    /// The receiver's owner while it waits in `Select.first` with an event
+    /// on this channel. It is woken, not answered, when the channel turns
+    /// ready to receive, and it receives only when it polls again.
+    select_watcher: Option<TaskId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -304,6 +308,7 @@ impl ChannelRegistry {
                 completion_token: 1,
                 receiver_parcel: None,
                 completion_parcel: None,
+                select_watcher: None,
             },
         );
         self.owned_channels.entry(owner).or_default().insert(id);
@@ -405,11 +410,13 @@ impl ChannelRegistry {
                 } else if channel.queue.len() < channel.capacity {
                     debug_assert!(channel.waiting_senders.is_empty());
                     channel.queue.push_back(value);
+                    transition.wakes.extend(channel.select_watcher.take());
                     SendResult::Accepted
                 } else {
                     channel
                         .waiting_senders
                         .push_back(WaitingSend { task, value });
+                    transition.wakes.extend(channel.select_watcher.take());
                     self.operations.insert(
                         task,
                         Operation::Sending {
@@ -598,6 +605,7 @@ impl ChannelRegistry {
             return Ok(transition);
         }
         channel.lifecycle = Lifecycle::Closed;
+        transition.wakes.extend(channel.select_watcher.take());
         while let Some(waiter) = channel.waiting_senders.pop_front() {
             self.operations.insert(
                 waiter.task,
@@ -777,6 +785,36 @@ impl ChannelRegistry {
 
     /// True while the task has a send or receive registered, pending or with
     /// a ready result it has not collected.
+    /// One receive event of `Select.first`: true when a receive by `task`
+    /// would answer at once (a value, a parked rendezvous sender, `Drained`,
+    /// or `Aborted`). Otherwise `task` becomes the channel's select watcher,
+    /// woken when that changes. Consumes nothing either way. The receiver
+    /// must be `task`'s current copy, as for a receive.
+    pub fn select_receive(&mut self, task: TaskId, receiver: Receiver) -> Result<bool, ChannelError> {
+        self.begin_operation(task)?;
+        let channel = self
+            .channels
+            .get_mut(&receiver.channel)
+            .ok_or(ChannelError::UnknownChannel(receiver.channel))?;
+        validate_receiver(channel, receiver, task)?;
+        let ready = channel.lifecycle != Lifecycle::Open
+            || !channel.queue.is_empty()
+            || !channel.waiting_senders.is_empty();
+        if !ready {
+            channel.select_watcher = Some(task);
+        }
+        Ok(ready)
+    }
+
+    /// Removes `task` as the select watcher of `channel`, if it still is.
+    pub fn unwatch(&mut self, task: TaskId, channel: ChannelId) {
+        if let Some(channel) = self.channels.get_mut(&channel)
+            && channel.select_watcher == Some(task)
+        {
+            channel.select_watcher = None;
+        }
+    }
+
     pub fn has_operation(&self, task: TaskId) -> bool {
         self.operations.contains_key(&task)
     }
@@ -1139,6 +1177,7 @@ impl ChannelRegistry {
             return transition;
         }
         channel.lifecycle = Lifecycle::Aborted;
+        transition.wakes.extend(channel.select_watcher.take());
         let discard_count = channel.queue.len();
         transition.discarded.extend(channel.queue.drain(..));
         while let Some(waiter) = channel.waiting_senders.pop_front() {
