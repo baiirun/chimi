@@ -1174,5 +1174,6 @@ already follows it, so module work does not wait on them.
    *Recommendation:* add `Debug.crash(message: Text) -> Never` to
    `std/debug`, a `pure` native operation. "Crash" is the word the design
    philosophy and Erlang already use for a bounded failure. `panic` suggests
-   a whole-process abort, and `fail` collides with expected failures. Until
-   it exists, std wrappers keep preconditions in their native operations.
+   a whole-process abort, and `fail` collides with expected failures.
+   *Resolved:* `std/debug` declares `crash` as recommended, and std wrappers
+   written in Chimi call it to check their preconditions.

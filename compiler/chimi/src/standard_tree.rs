@@ -53,10 +53,12 @@ fn source_path(module_path: &str) -> String {
 
 /// Whether `source` was loaded from the standard tree, embedded or read from a
 /// `--std-dir` override: only such a module may declare `native` items or take
-/// a runtime identity. The project loader names workspace files by their path
-/// on disk, so it never produces a `chimi-std:///` name.
+/// a runtime identity. The project loader names workspace files by their
+/// canonical path on disk, and a single file may be named anything, so the
+/// module path must also be under `std/`, which no workspace module may use
+/// (`N3102`).
 pub(crate) fn is_standard(module_path: &str, source: &SourceSnapshot) -> bool {
-    source.path().to_str() == Some(&source_path(module_path))
+    module_path.starts_with("std/") && source.path().to_str() == Some(&source_path(module_path))
 }
 
 /// The alias a program conventionally imports `module_path` under, as
@@ -119,4 +121,18 @@ fn imports(source: &ProjectSource) -> Vec<String> {
         .map(|import| import.path)
         .filter(|path| path.starts_with("std/"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A single file the user names `chimi-std:///main.chimi` is not standard source.
+    #[test]
+    fn a_standard_looking_path_outside_std_is_not_standard() {
+        let crafted = SourceSnapshot::from_text(source_path("main"), "");
+        assert!(!is_standard("main", &crafted));
+        let embedded = SourceSnapshot::from_text(source_path("std/list"), "");
+        assert!(is_standard("std/list", &embedded));
+    }
 }
