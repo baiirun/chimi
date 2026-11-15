@@ -36,7 +36,7 @@ that the vision docs cannot predict.
   later work needs from it ("builds toward").
 - **File ownership** prevents collisions. Each wave's plan names which lane
   owns which files or sections; other lanes stay out or only append where the
-  plan allows [W3, N1].
+  plan allows [W3].
 - The briefs and the ordered queue live in
   `/mnt/project-files/plans/next-waves.md` (the project's shared folder). Its
   "Rules every lane follows" block is pasted into each brief.
@@ -61,29 +61,36 @@ that the vision docs cannot predict.
    reject a plausible wrong implementation. No wall-clock gates in the default
    suite [N18].
 4. **Check**, with these run in parallel:
-   - a mutation run with `scripts/mutation/mutate.py` [W2];
+   - a mutation run with `scripts/mutation/mutate.py`, once per branch [W2,
+     N30]. Rerun it after a rebase only if the rebase changed a mutated file;
    - an independent review by Sonnet, plus Opus for soundness-critical work
      (types, memory, scheduling) [W1].
 5. **Verify.** A verifier that defaults to "refuted" reproduces or refutes each
-   finding [N30]. Fix only findings with a reachable failure, a broken contract
+   finding [W1]. Fix only findings with a reachable failure, a broken contract
    or a wrong test claim. File tickets for the rest and drop nits [N2].
 6. **Stop and rethink** after two review rounds in a row with new HIGH
    findings [N20, N26].
+
+Briefs state the scope and any user concern already handled [N28]. For
+design-heavy work they also give a token budget and a fallback, with a
+check-in at half the budget. Agent reports stay short, with the details in a
+file [N7].
 
 ## Merging
 
 Byron's standing approval: a lane merges its own PR into `main` once review and
 the verifier are done and every CI check passes.
 
-- Watch your own PR's CI, passes as well as failures. Do not wait to be woken.
+- Subscribe to your PR's activity right after opening it, and watch its CI,
+  passes as well as failures. Do not wait to be woken.
 - If `main` moved since the last CI run, update the branch and wait for CI to
   rerun. There is no branch protection, so this is on the lane.
 - Merge or rebase, never force-push.
-- The required checks are `test (macos-latest)` and `test (ubuntu-latest)`.
+- The checks that must pass are `test (macos-latest)` and `test (ubuntu-latest)`.
   `program outputs (*)` compares 12 program outputs with the base branch. A red
   `program outputs` check may be merged only when the difference is expected
   and the program outputs are identical, with the reason noted on the PR
-  (decisions.md, 2026-11-15).
+  (Byron, 2026-11-15; the check itself is in decisions.md).
 - Never call CI green while any check is red.
 - If auto mode blocks the merge, ask Byron in the lane's thread to write the
   go-ahead, naming the PR.
@@ -93,7 +100,8 @@ the verifier are done and every CI check passes.
 - Decide from the vision docs, and record every decision in
   [decisions.md](../decisions.md), the only decision ledger [N8].
 - Escalate only important choices whose answer the vision docs cannot predict.
-  The open questions are listed in the wave plan's rules block.
+  The open questions are listed in the wave plan's rules block. Until they
+  are decided, add no `try` or `?` sugar.
 - Batch escalations: each question with two to four options and a
   recommendation, put to Byron at once. Keep working on the recommended option
   while waiting, unless the step cannot be undone.
@@ -120,8 +128,9 @@ the verifier are done and every CI check passes.
 
 ## Standing constraints
 
-- Ask Byron before running evals, installing anything, or changing machine,
-  agent or Claude Code config.
+- Ask Byron before running evals, installing anything, or changing machine
+  or agent config. Edits to Claude Code or Codex config need his direct
+  confirmation.
 - Stage only your own paths. No `git stash` or `git add -A` in a shared
   checkout, and no attribution trailers on commits [N4, N11, N14].
 - Leave other Chimi sessions alone.
