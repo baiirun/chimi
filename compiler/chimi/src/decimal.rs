@@ -251,10 +251,12 @@ impl Decimal {
         }
         let mut magnitude = 0u128;
         for byte in whole.bytes().chain(fraction.bytes()) {
-            magnitude = magnitude * 10 + u128::from(byte - b'0');
-            if magnitude > MAX_MAGNITUDE {
+            // Checked before multiplying: 38 nines times 10 leaves `u128`.
+            let digit = u128::from(byte - b'0');
+            if magnitude > (MAX_MAGNITUDE - digit) / 10 {
                 return None;
             }
+            magnitude = magnitude * 10 + digit;
         }
         Self::new(negative, magnitude, u32::try_from(fraction.len()).ok()?)
     }
@@ -363,7 +365,9 @@ mod tests {
             ("-5", "2", ["-2", "-3", "-3", "-2", "-2", "-3", "-2"]),
             ("-7", "2", ["-3", "-4", "-4", "-3", "-3", "-4", "-4"]),
             ("-13", "5", ["-2", "-3", "-3", "-2", "-3", "-3", "-3"]),
+            ("-12", "5", ["-2", "-3", "-3", "-2", "-2", "-2", "-2"]),
             ("4", "2", ["2", "2", "2", "2", "2", "2", "2"]),
+            ("-4", "2", ["-2", "-2", "-2", "-2", "-2", "-2", "-2"]),
         ];
         let modes = [
             Rounding::TowardZero,
@@ -574,6 +578,11 @@ mod tests {
                 Some("0.00000000000000000000000000000000000001"),
             ),
             ("100000000000000000000000000000000000000", None),
+            // Past 39 digits the accumulation would wrap `u128` (2^128 and up).
+            ("999999999999999999999999999999999999999", None),
+            ("340282366920938463463374607431768211456", None),
+            ("340282366920938463463374607431768211457", None),
+            ("3402823669209384634633746074317682114560", None),
             ("0.000000000000000000000000000000000000001", None),
             ("", None),
             ("-", None),

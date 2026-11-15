@@ -1958,8 +1958,10 @@ static bool decimal_parse(const char *text, Decimal *output) {
   for (; *cursor; ++cursor) {
     if (*cursor == '.' && !point) { point = true; continue; }
     if (*cursor < '0' || *cursor > '9') return false;
-    magnitude = magnitude * 10 + (DecimalMagnitude)(*cursor - '0');
-    if (magnitude > largest) return false;
+    /* Checked before multiplying: 38 nines times 10 leaves the magnitude type. */
+    DecimalMagnitude digit = (DecimalMagnitude)(*cursor - '0');
+    if (magnitude > (largest - digit) / 10) return false;
+    magnitude = magnitude * 10 + digit;
     if (point) ++fraction; else ++whole;
   }
   if (whole == 0 || (point && fraction == 0) || fraction > DECIMAL_MAX_SCALE) return false;
