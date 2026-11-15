@@ -7932,6 +7932,18 @@ impl ProjectTypeChecker {
                         .entry(*parameter)
                         .or_insert(GenericKind::Unconstrained);
                 }
+                // Rows look their parameters up by name, so the member's own
+                // generics join the ones in scope.
+                let mut scoped;
+                let generics = if parameters.is_empty() {
+                    generics
+                } else {
+                    scoped = generics.clone();
+                    for parameter in &parameters {
+                        scoped.insert(self.resolved.symbol(*parameter).name.clone(), *parameter);
+                    }
+                    &scoped
+                };
                 let inputs = inputs
                     .iter()
                     .map(|input| self.lower_value_type(module_id, input, generics))
@@ -9037,7 +9049,17 @@ impl ProjectTypeChecker {
                     return true;
                 }
                 if let Some(bound) = substitution.values.get(&parameter).copied() {
-                    self.unify(actual, bound)
+                    let unified = self.unify(actual, bound);
+                    // A generic function bound first and a fixed one second
+                    // share the fixed type: keeping the generic one would let
+                    // the call use the fixed function at any type.
+                    if unified
+                        && self.is_polymorphic_function(bound)
+                        && !self.is_polymorphic_function(actual)
+                    {
+                        substitution.values.insert(parameter, actual);
+                    }
+                    unified
                 } else {
                     substitution.values.insert(parameter, actual);
                     true
@@ -9128,6 +9150,13 @@ impl ProjectTypeChecker {
             }
             _ => self.unify(actual, expected),
         }
+    }
+
+    fn is_polymorphic_function(&self, type_id: TypeId) -> bool {
+        matches!(
+            self.types[self.resolve_inference_type(type_id).raw() as usize],
+            CanonicalType::PolymorphicFunction { .. }
+        )
     }
 
     fn both_functions(&mut self, actual: TypeId, expected: TypeId) -> bool {
@@ -9435,8 +9464,9 @@ impl ProjectTypeChecker {
                 for type_id in contract.inputs.iter().chain([&contract.success]) {
                     formatter.collect_generics(*type_id, &mut mentioned);
                 }
+                // Every generic the contract mentions that `inner` leaves open
+                // is kept, the value's own parameters among them.
                 let mut inner_preserved = preserved.to_vec();
-                inner_preserved.extend(parameters.iter().copied());
                 inner_preserved.extend(
                     mentioned
                         .into_iter()

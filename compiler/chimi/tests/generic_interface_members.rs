@@ -355,3 +355,114 @@ fn the_formatter_writes_member_generics_in_canonical_form() {
         "interface Boxer {\n  wrap: fn<A, B>(A) -> B\n}\n"
     );
 }
+
+const RUNNER: &str = concat!(
+    "interface Runner { run: fn<F>(fn() -> Int errors F) -> Int errors F }\n",
+    "fn total() -> Int needs { runner: Runner } {\n",
+    "  runner.run(fn() { 20 }) + runner.run(fn() { 1 })\n",
+    "}\n",
+);
+
+// `F` appears only in failure rows, so the check must hold row parameters
+// rigid as it does value parameters.
+#[test]
+fn a_member_generic_used_only_in_failure_rows_is_provided_by_a_row_generic_function() {
+    let outcome = run_both(
+        "row-only-member-generic",
+        &format!(
+            "{RUNNER}fn call<E>(operation: fn() -> Int errors E) -> Int {{ operation() }}\n\
+             pub fn main() -> Int {{ total() using {{ runner: {{ run: call }} }} }}\n"
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":21");
+}
+
+#[test]
+fn a_provider_that_cannot_fail_through_its_callback_does_not_fit_a_row_generic_member() {
+    let source = format!(
+        "{RUNNER}fn call(operation: fn() -> Int) -> Int {{ operation() }}\n\
+         pub fn main() -> Int {{ total() using {{ runner: {{ run: call }} }} }}\n"
+    );
+    assert_eq!(check_codes(&source), ["T4213"]);
+}
+
+// Each member's `A` is its own parameter, so a provider for one says nothing
+// about the other.
+#[test]
+fn two_members_may_each_name_a_generic_a() {
+    let outcome = run_both(
+        "members-share-a-name",
+        concat!(
+            "import std/list as List\n",
+            "interface Shelf { keep: fn<A>(A) -> A, count: fn<A>(List<A>) -> Int }\n",
+            "fn use_it() -> Int needs { shelf: Shelf } {\n",
+            "  shelf.keep(3) + shelf.count([\"a\", \"b\"]) + shelf.count([True])\n",
+            "}\n",
+            "fn same<T>(value: T) -> T { value }\n",
+            "fn size<T>(items: List<T>) -> Int { List.length(items) }\n",
+            "pub fn main() -> Int { use_it() using { shelf: { keep: same, count: size } } }\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":6");
+}
+
+// A reference to an unannotated function is instantiated where it is named,
+// so it is no more generic than a lambda.
+#[test]
+fn an_unannotated_function_reference_does_not_fit_a_generic_member() {
+    let source = concat!(
+        "interface Boxer { wrap: fn<A>(A) -> A }\n",
+        "fn same(value) { value }\n",
+        "fn use_it() -> Int needs { boxer: Boxer } { boxer.wrap(1) }\n",
+        "pub fn main() -> Int { use_it() using { boxer: { wrap: same } } }\n",
+    );
+    assert_eq!(check_codes(source), ["T4213"]);
+}
+
+// A case or list that mixes a generic function with a fixed one may hold the
+// fixed one, so the join must have the fixed type, not the generic one.
+#[test]
+fn joining_a_generic_function_with_a_fixed_one_gives_the_fixed_type() {
+    let joins = [
+        "  let pick = case False {\n    True -> keep\n    False -> ints\n  }\n",
+        "  let pick = case [keep, ints] {\n    [_, second] -> second\n    _ -> ints\n  }\n",
+        "  let pick = apply(keep, fn(unused) { ints })\n",
+    ];
+    for join in joins {
+        let source = format!(
+            "{STORE}fn ints(key: Text, fallback: Int) -> Int {{ fallback + 1 }}\n\
+             fn apply<T>(value: T, f: fn(T) -> T) -> T {{ f(value) }}\n\
+             pub fn main() -> Text {{\n{join}  pick(\"k\", \"text\")\n}}\n"
+        );
+        assert!(check_codes(&source).contains(&"T4203".to_owned()), "{join}");
+        let provided = format!(
+            "{STORE}fn ints(key: Text, fallback: Int) -> Int {{ fallback + 1 }}\n\
+             fn apply<T>(value: T, f: fn(T) -> T) -> T {{ f(value) }}\n\
+             fn inner() -> Text needs {{ store: Store<Text> }} {{ store.get(\"a\", \"text\") }}\n\
+             pub fn main() -> Text {{\n{join}  inner() using {{ store: {{ get: pick }} }}\n}}\n"
+        );
+        assert_eq!(check_codes(&provided), ["T4213"], "{join}");
+    }
+}
+
+// `N` appears only in needs rows; the member's own generics must be in scope
+// there as they are in value positions.
+#[test]
+fn a_member_generic_may_be_a_needs_row() {
+    let outcome = run_both(
+        "needs-row-member-generic",
+        concat!(
+            "interface Log { line: fn(Text) -> Int }\n",
+            "interface Runner { run: fn<N>(fn() -> Int needs N) -> Int needs N }\n",
+            "fn call<N>(operation: fn() -> Int needs N) -> Int { operation() }\n",
+            "fn use_it() -> Int needs { runner: Runner, log: Log } {\n",
+            "  runner.run(fn() { log.line(\"x\") })\n",
+            "}\n",
+            "fn four(text: Text) -> Int { 4 }\n",
+            "pub fn main() -> Int {\n",
+            "  use_it() using { runner: { run: call }, log: { line: four } }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":4");
+}

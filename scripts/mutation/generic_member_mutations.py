@@ -11,6 +11,7 @@ CRATE = "compiler/chimi"
 Y = "src/typing.rs"
 R = "src/resolution.rs"
 P = "src/syntax.rs"
+F = "src/typing/failure_sets.rs"
 
 
 def member(name, file, edits):
@@ -39,7 +40,7 @@ MUTATIONS = [
         "                let _ = (&mut inner, &inner_preserved);\n                self.intern_type(CanonicalType::PolymorphicFunction {",
     )]),
     member("typing: substitution freshens the member's own generics", Y, [(
-        "                inner_preserved.extend(parameters.iter().copied());\n",
+        "                    inner.values.remove(parameter);\n",
         "",
     )]),
     member("conformance: a generic slot unifies like a plain one", Y, [(
@@ -57,5 +58,17 @@ MUTATIONS = [
     member("conformance: a failed check keeps its bindings", Y, [(
         "        if reason.is_some() {\n            self.inference_bindings = bindings;",
         "        if reason.is_some() && false {\n            self.inference_bindings = bindings;",
+    )]),
+    member("join: a generic and a fixed function join to the generic type", F, [(
+        "            return Some(self.fixed_function_side(right, left));",
+        "            return Some(right);",
+    )]),
+    member("call: a generic binding is kept after a fixed function matches it", Y, [(
+        "                        substitution.values.insert(parameter, actual);\n                    }\n                    unified",
+        "                    }\n                    unified",
+    )]),
+    member("lowering: member generics are not in scope in needs rows", Y, [(
+        "                let generics = if parameters.is_empty() {\n                    generics\n                } else {\n                    scoped = generics.clone();",
+        "                let generics = if true {\n                    generics\n                } else {\n                    scoped = generics.clone();",
     )]),
 ]
