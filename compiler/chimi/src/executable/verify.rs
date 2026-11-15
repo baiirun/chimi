@@ -104,7 +104,7 @@ impl<'a> Verifier<'a> {
                         return Err(CoreViolation::RegisterTakesComputedName { call: node.id });
                     }
                 }
-                Some(StandardFunction::ProcessSpec) => {
+                Some(StandardFunction::ProcessSpec | StandardFunction::ProcessHandoffSpec) => {
                     if let Some(body) = arguments.first() {
                         self.check_spec_body(node.id, *body)?;
                     }

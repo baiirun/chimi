@@ -1,0 +1,39 @@
+import std/channel as Channel
+import std/channel.{Receiver}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// CB11: a handoff incarnation removed before its body runs still ends its
+// argument as an owner's exit would. Main starts a connection with `data`'s
+// Receiver and removes it at once, so the body never reads; the open Receiver
+// aborts its channel and main's send fails with Aborted (1). An argument
+// forgotten in flight would leave the channel open with no owner (0). No
+// fragment outlives the run.
+
+pub enum Message {
+  Stop
+}
+
+fn serve(inbox: Inbox<Message>, requests: Receiver<Int>) -> Void {
+  Void
+}
+
+pub fn main() -> Int {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let data = Channel.bounded(1)
+  let started = case Supervisor.start_handoff(root, Process.handoff_spec(serve, 1, Duration.seconds(1)), data.receiver) {
+    Success(managed) -> {
+      Supervisor.remove_process(root, managed)
+      0
+    }
+    Failure(_) -> 10
+  }
+  let written = case Channel.send(data.sender, 5) {
+    Success(_) -> 0
+    Failure(_) -> 1
+  }
+  Supervisor.stop(root)
+  started + written
+}

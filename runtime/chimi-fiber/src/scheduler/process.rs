@@ -460,6 +460,8 @@ pub(super) struct Incarnation {
     /// Parked in receive on an empty mailbox.
     receiving: bool,
     stopping: Option<Stopping>,
+    /// The start argument of a handoff incarnation until its body takes it.
+    argument: Option<u64>,
 }
 
 /// One accepted entry of a mailbox, in arrival order.
@@ -736,6 +738,43 @@ impl Scheduler {
             restart,
         };
         self.admit_handle(supervisor, member)
+    }
+
+    /// `start_process` of a never-restarted member whose first incarnation
+    /// owns `argument`, a message from `sender` that holds `carried`
+    /// (already checked with `check_carried`). On success the argument is in
+    /// flight until the body takes it with `take_argument`, or the
+    /// incarnation ends and discards it; a refused start leaves it with the
+    /// sender.
+    pub(super) fn start_handoff(
+        &mut self,
+        supervisor: SupervisorId,
+        spec: ProcessSpec,
+        sender: TaskId,
+        argument: u64,
+        carried: &[Carried],
+    ) -> Result<MembershipId, StartError> {
+        let membership = self.start_process(supervisor, spec, Restart::Never)?;
+        self.channels
+            .dispatch_carried(sender, argument as usize, carried);
+        let started = match self.kernel.memberships[&membership].current {
+            Some(Instance::Process(incarnation)) => self.kernel.incarnations.get_mut(&incarnation),
+            _ => None,
+        };
+        match started {
+            Some(incarnation) => incarnation.argument = Some(argument),
+            None => self.discard_message(argument),
+        }
+        Ok(membership)
+    }
+
+    /// The start argument of the incarnation `task` runs, once; the task owns
+    /// what it carries from then on.
+    pub(super) fn take_argument(&mut self, task: TaskId) -> Option<u64> {
+        let incarnation = self.incarnation_of(task)?;
+        let argument = self.kernel.incarnations.get_mut(&incarnation)?.argument.take()?;
+        self.channels.deliver_parcel(argument as usize, task);
+        Some(argument)
     }
 
     /// Admits a dynamic member that a managed handle will refer to.
@@ -1426,6 +1465,7 @@ impl Scheduler {
                 accepting: true,
                 receiving: false,
                 stopping: None,
+                argument: None,
             },
         );
         Ok(incarnation)
@@ -1463,6 +1503,9 @@ impl Scheduler {
         }
         if let Some(timer) = record.stopping.and_then(|stopping| stopping.timer) {
             self.cancel_timer(timer);
+        }
+        if let Some(argument) = record.argument {
+            self.discard_message(argument);
         }
         for entry in record.mailbox {
             match entry {

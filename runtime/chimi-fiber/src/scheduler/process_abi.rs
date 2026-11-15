@@ -312,6 +312,10 @@ impl Scheduler {
                 self.process_unmonitor(watcher, monitor);
                 self.respond(waiter, RESPONSE_OK, |_| {});
             }
+            super::REQUEST_PROCESS_ARGUMENT => match self.take_argument(owner) {
+                Some(argument) => self.respond(waiter, RESPONSE_OK, |r| r.message = argument),
+                None => self.respond(waiter, RESPONSE_ERROR, |_| {}),
+            },
             super::REQUEST_PROCESS_MAILBOX => {
                 let Some(incarnation) = self.incarnation_of(owner) else {
                     return self.respond(waiter, RESPONSE_ERROR, |_| {});
@@ -405,7 +409,27 @@ impl Scheduler {
                     }
                     return self.respond(waiter, RESPONSE_ERROR, |_| {});
                 };
-                match self.start_process(supervisor, spec, restart) {
+                // SAFETY: the host's record names capabilities that stay
+                // valid while it is suspended on the request.
+                let carried =
+                    unsafe { super::carried_capabilities(input.carried.cast_mut().cast()) };
+                let started = if input.message == 0 {
+                    self.start_process(supervisor, spec, restart)
+                } else {
+                    // A violation leaves the request unanswered, so the host
+                    // still owns the spec context and the message.
+                    if let Err(error) = self.channels.check_carried(owner, &carried) {
+                        let _ = self.channel_violation::<()>(
+                            owner,
+                            error,
+                            super::REQUEST_SUPERVISOR_START_PROCESS,
+                            None,
+                        );
+                        return;
+                    }
+                    self.start_handoff(supervisor, spec, owner, input.message, &carried)
+                };
+                match started {
                     Ok(membership) => {
                         let direct = self.process_address(membership);
                         self.respond(waiter, RESPONSE_OK, |r| {

@@ -391,14 +391,6 @@ impl ChannelRegistry {
         self.settle_parcels(&mut transition);
     }
 
-    /// Hands the capabilities `value` carries back to its sender, with the
-    /// sender's tokens.
-    pub fn return_parcel(&mut self, value: usize) {
-        let mut transition = Transition::default();
-        transition.returned.push(value);
-        self.settle_parcels(&mut transition);
-    }
-
     /// Ends the capabilities `value` carries, which was dropped unread, as
     /// their owner's exit would: open channels abort.
     pub fn discard_parcel(&mut self, value: usize) -> Transition {

@@ -121,6 +121,11 @@ enum {
   CHIMI_REQUEST_PROCESS_UNMONITOR = 29,
   /* The OK reply carries `queued` and `capacity`. */
   CHIMI_REQUEST_PROCESS_MAILBOX = 30,
+  /* From the body of an incarnation that START_PROCESS began with a
+     `message` (Supervisor.start_handoff): the OK reply hands that message
+     over in `message`, with its carried capabilities, once. ERROR when there
+     is none, or it was already taken. */
+  CHIMI_REQUEST_PROCESS_ARGUMENT = 31,
 };
 
 /* `down` of a RECEIVE reply whose `message` is a notice handle. */
@@ -249,7 +254,11 @@ typedef struct {
   /* RECEIVE: 0 for a message, else a CHIMI_DOWN_* code. */
   uint32_t down;
   /* SEND and START_PROCESS: null, or the exclusive capabilities `message`
-     holds (see ChimiMessageCapabilities). */
+     holds (see ChimiMessageCapabilities). START_PROCESS with a nonzero
+     `message` starts a handoff incarnation: the scheduler owns the message
+     from an OK reply, keeps it for PROCESS_ARGUMENT, and releases it if the
+     incarnation ends without taking it; any other reply leaves it with the
+     caller. */
   const struct ChimiMessageCapabilities *carried;
 } ChimiProcessRequest;
 
