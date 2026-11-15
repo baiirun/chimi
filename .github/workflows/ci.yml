@@ -1,6 +1,12 @@
 # Runs the full test suite off the developer's machine. Implementers run only
 # the tests that cover their change locally; this is the full check that every
-# merge candidate (a wip/* branch) and main must pass.
+# merge candidate (a wip/* branch) and main must pass. A pull request merges
+# on green CI, which replaces scripts/integrate-branch.sh:
+# - `test` builds and tests a fresh checkout of the exact commit, which is the
+#   clean-export check scripts/check-head.sh runs locally, with the same two
+#   cargo commands.
+# - `program-outputs` compares what the example programs print and trace on
+#   the pull request's merge result against its base branch.
 name: ci
 
 on:
@@ -36,3 +42,36 @@ jobs:
         run: cargo check --workspace --all-targets --all-features --quiet
       - name: Clippy
         run: cargo clippy --workspace --all-targets --quiet -- -D warnings -A function-casts-as-integer
+
+  program-outputs:
+    name: program outputs (${{ matrix.os }})
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      # A pull_request run checks out the merge result; its first parent is
+      # the base branch's tip.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Each tree records with its own copy of the script, as
+      # integrate-branch.sh did, so a pull request that changes the script or
+      # adds a program shows up as a difference rather than a broken baseline.
+      # The base tree builds into its own target directory: cargo judges
+      # workspace crates fresh by mtime, and the base worktree's files are
+      # newer than the merge result's checkout, so a shared target directory
+      # would run the base compiler for both recordings.
+      - name: Record outputs on the base branch
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/base-target
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/base" HEAD^1
+          "$RUNNER_TEMP/base/scripts/compare-programs.sh" record "$RUNNER_TEMP/base-outputs"
+      - name: Compare outputs on the merge result
+        run: scripts/compare-programs.sh compare "$RUNNER_TEMP/base-outputs"
