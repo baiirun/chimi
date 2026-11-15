@@ -18,8 +18,12 @@ backend only: `Instant`, `Timestamp`, the structural `Clock` interface, every
 sources with `--clock-start`, virtual deadlock, `Task.timeout`,
 `Task.deadline`, `Timeout`, cancellation scopes, and the clock trace events
 (see [Clock slice](#clock-slice-for-supervised-processes-ts-6ccbc9) and
-[Clock, timeouts, and scopes](#clock-timeouts-and-scopes-chi-201)). Nothing
-else here is implemented yet.
+[Clock, timeouts, and scopes](#clock-timeouts-and-scopes-chi-201)).
+[Failure-set types](#failure-set-types), their projection into type arguments,
+joins, `T4340`, `T4341`, `T4346` for a failure-set value passed where a member
+is missing, and [`std/result`](#stdresult) are implemented on both backends
+(CHI-200; see [Failure-set types as implemented](#failure-set-types-as-implemented-chi-200)).
+Nothing else here is implemented yet.
 Source spelling follows the current kernel and remains free to break.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative.
@@ -659,7 +663,7 @@ projection valid wherever an ordinary type is valid, including type arguments
 of other generic types. This fixes the `T4203` failure the standard library
 map records for `capture`:
 
-<!-- chimi: pending ts-facbbe ts-80cbfb -->
+<!-- chimi: check -->
 ```chimi
 pub enum Result<T, E> {
   Ok(value: T)
@@ -1120,6 +1124,62 @@ program.
 - **Interpolation** of a `Duration` stays `T4325`; write
   `${Duration.to_text(d)}` or `${Debug.render(d)}`.
 
+### Failure-set types as implemented (CHI-200)
+
+- **Syntax.** `|` is a token of its own. A type with `|` is a `Type` node
+  holding a `UnionType` of member `Type`s; after `errors`, `+` is accepted in
+  the same place and the formatter writes it as `|`. `+` in a needs row is
+  unchanged.
+- **Members.** Resolution resolves `Enum.Variant` and `Alias.Enum.Variant` in
+  a type position to the variant. `typing/failure_sets.rs` lowers each member
+  to a failure row, so a failure set and a failure row are one structure: an
+  interned, normalized set of variants and failure-set parameters. A struct
+  member is rejected with `T4340` like `Int`, because `Failure` accepts only
+  enum values today (CHI-217).
+- **One value type per set.** The value projection of a row is canonical: an
+  enum when the row is exactly that enum, the parameter `E` when it is exactly
+  one unrestricted failure-set parameter, and a written set otherwise. So an
+  annotation, a `Failure(error)` binding, and a type argument instantiated
+  from a row compare equal when they denote one set. Displays write sets with
+  `|`, as `fn() -> Text errors FileProblem.Missing | ParseProblem`.
+- **Subtyping and joins.** A set fits every set that includes it. Where the
+  expected side is still being inferred, two failure sets join by union. Two
+  instances of one data type join argument by argument where the parameter is
+  covariant (inferred from the declaration's fields; `List`, `Option`, and
+  `Task` are covariant) and the arguments are failure sets. Inside such an
+  argument two plain enums join too: a projected `E` of one whole enum is
+  indistinguishable from that enum written as an argument. At the top level two
+  plain enums are `T4341`; a `let` annotated with the set mixes them.
+- **Patterns.** A failure-type pattern may name a closed enum, one variant, or
+  a written set of them. A value of a failure-set parameter is an open set: its
+  variant patterns need a catch-all arm. A constructor with a field of an empty
+  failure set (`Err` of `Result.capture` over a call that cannot fail) builds
+  no value, so a `case` need not cover it and an arm for it is unreachable.
+- **Not yet.** A constructor expression has its enum's type, so
+  `StartError.NameTaken` written directly does not fit a parameter typed
+  `StartError.NameTaken`; only a narrowed value, such as a `Failure(...)`
+  binding, does (CHI-218). Joining two arguments for one generic parameter by
+  union (spec "Joins", third case) applies to list elements and case arms, not
+  yet to two call arguments that bind the same failure-set parameter. A set
+  written across lines must keep each `|` at the end of a line, not the start
+  of the next. Of the `Result` helpers in the conventions doc, only `capture`
+  and `get` exist; `map`, `map_error`, `unwrap_or`, `to_option`, `error`,
+  `is_ok`, and `is_err` come later.
+- **Variance.** A data type's argument fits a wider one only where its
+  parameter is covariant; an argument used as a function input (a
+  `Handler<E>` holding `fn(E)`) does not widen. A function value fits where
+  its inputs are at least as wide, so `fn(A | B)` passes for `fn(A)` and
+  `fn(A)` does not pass for `fn(A | B)`.
+- **Runtime identity.** Both backends already identify an enum value by its
+  constructor symbol, which is unique across the program, so matching,
+  equality, and `Debug` tell `HttpError.Timeout` from `Timeout.TimedOut`
+  without a new tag. Derived order compares the variant index only within one
+  enum; a set of several members has no order (`T4301`).
+- **`std/result`** is Chimi source. `capture` matches the operation's outcome;
+  `get` raises the stored error with `Failure(error)`, which makes its `E` a
+  failure set. Causes (CHI-204) will ride outside the value, excluded from
+  equality, as decided.
+
 ### Compiler (`compiler/chimi/src`)
 
 - **Syntax and formatter.** Parse `|` in type positions and after `errors`.
@@ -1323,7 +1383,7 @@ These follow from this contract and are left to the owners of those files:
   the close-failure rule through the `Displaced` and `Cleanup` suppression
   reasons.
 - [Executable kernel](executable-kernel.md): record the value projection into
-  type arguments.
+  type arguments. Done in CHI-200.
 
 ## Open questions
 
