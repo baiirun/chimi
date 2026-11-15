@@ -1,0 +1,15 @@
+// Debug.crash ends the unit of work with a defect carrying its message. It
+// types as any value, so it stands in a branch that must produce an Int, and
+// a branch that is not taken does not crash.
+import std/debug as Debug
+
+fn cents(amount: Int) -> Int {
+  case amount < 0 {
+    True -> Debug.crash("Checkout.cents: amount must not be negative, got ${amount}")
+    False -> amount * 100
+  }
+}
+
+pub fn main() -> Int {
+  cents(2) + cents(-1)
+}

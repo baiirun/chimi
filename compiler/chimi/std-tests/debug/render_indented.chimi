@@ -1,0 +1,22 @@
+// Debug.render_indented puts each field, element, and entry on its own line,
+// indented by two spaces and ended with `,`; an empty list stays on one line.
+// The value is the specification's example.
+import std/debug as Debug
+
+struct Money {
+  cents: Int,
+}
+
+enum Status {
+  Pending
+  Declined(reason: Text)
+}
+
+pub fn main() -> Text {
+  Debug.render_indented({
+    items: [Money(1)],
+    status: Status.Declined("x"),
+    pending: [Status.Pending],
+    empty: [],
+  })
+}

@@ -1,0 +1,43 @@
+// Debug.render writes each kind of value like the literal or declaration that
+// describes it, on one line; equal values render the same. Each rendering is
+// one line of the result.
+import std/debug as Debug
+import std/text as Text
+
+struct Money {
+  cents: Int,
+}
+
+enum PaymentError {
+  GatewayUnavailable
+  Declined(reason: Text)
+  Refused(code: Int, message: Text)
+}
+
+fn checkout(cents: Int) -> Money {
+  Money(cents)
+}
+
+pub fn main() -> Text {
+  let results = [
+    Debug.render(-42),
+    Debug.render("say \"hi\"\n\t\\ \${x}"),
+    Debug.render([True, False]),
+    Debug.render(Money(2500)),
+    Debug.render([
+      PaymentError.GatewayUnavailable,
+      PaymentError.Declined("card"),
+      PaymentError.Refused(51, "funds"),
+    ]),
+    Debug.render([Some(3), None]),
+    Debug.render({ name: "a", cents: 1 }),
+    Debug.render((1, "a", [])),
+    Debug.render([0..3, 0..=2]),
+    Debug.render(checkout),
+    Debug.render(fn(value: Int) { value + 1 }),
+  ]
+  case Debug.render(0..3) == Debug.render(0..=2) {
+    True -> Text.join(results, "\n")
+    False -> "equal ranges rendered differently"
+  }
+}

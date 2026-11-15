@@ -2127,39 +2127,6 @@ impl ProjectTypeChecker {
                 needs: pure.1,
             },
         );
-        for (function, generic) in [
-            (
-                StandardFunction::DebugRender,
-                StandardGeneric::DebugRenderValue,
-            ),
-            (
-                StandardFunction::DebugRenderIndented,
-                StandardGeneric::DebugRenderIndentedValue,
-            ),
-        ] {
-            let value = self.standard_generic_type(generic);
-            let symbol = self.standard_function_symbol(function);
-            self.contracts.insert(
-                symbol,
-                CallableContract {
-                    inputs: vec![value],
-                    success: text,
-                    failures: pure.0,
-                    needs: pure.1,
-                },
-            );
-        }
-        let never = self.builtin_type("Never");
-        let crash = self.standard_function_symbol(StandardFunction::DebugCrash);
-        self.contracts.insert(
-            crash,
-            CallableContract {
-                inputs: vec![text],
-                success: never,
-                failures: pure.0,
-                needs: pure.1,
-            },
-        );
         let list_length = self.standard_function_symbol(StandardFunction::ListLength);
         let any_list_value = self.standard_generic_type(StandardGeneric::ListLengthValue);
         let any_list = self.builtin_type_with_arguments("List", vec![any_list_value]);

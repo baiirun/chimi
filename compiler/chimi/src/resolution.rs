@@ -745,14 +745,6 @@ impl ProjectResolver {
                 vec![StandardGeneric::ListLengthValue],
             ),
             (
-                self.standard_function_symbol(StandardFunction::DebugRender),
-                vec![StandardGeneric::DebugRenderValue],
-            ),
-            (
-                self.standard_function_symbol(StandardFunction::DebugRenderIndented),
-                vec![StandardGeneric::DebugRenderIndentedValue],
-            ),
-            (
                 self.standard_function_symbol(StandardFunction::MapEmpty),
                 vec![StandardGeneric::MapEmptyKey, StandardGeneric::MapEmptyValue],
             ),

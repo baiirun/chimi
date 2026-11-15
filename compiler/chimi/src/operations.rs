@@ -37,7 +37,7 @@ pub(crate) struct Operation {
     pub(crate) class: OperationClass,
     pub(crate) implementation: StandardFunction,
     /// Registered ahead of its module's port: the module is not importable yet
-    /// (`std/map`, `std/json`, `std/debug`) or the operation defects with
+    /// (`std/map`, `std/json`) or the operation defects with
     /// "<id> is not implemented yet". The std-tests coverage check skips it; a
     /// port flips it with [`pure`] once a program reaches the operation.
     pub(crate) porting: bool,
@@ -131,10 +131,10 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     porting("std/json.number_to_int", 1, StandardFunction::JsonNumberToInt),
     porting("std/json.number_to_decimal", 1, StandardFunction::JsonNumberToDecimal),
 
-    // std/debug: the built-in intrinsics.
-    porting("std/debug.render", 1, StandardFunction::DebugRender),
-    porting("std/debug.render_indented", 1, StandardFunction::DebugRenderIndented),
-    porting("std/debug.crash", 1, StandardFunction::DebugCrash),
+    // std/debug
+    pure("std/debug.render", 1, StandardFunction::DebugRender),
+    pure("std/debug.render_indented", 1, StandardFunction::DebugRenderIndented),
+    pure("std/debug.crash", 1, StandardFunction::DebugCrash),
 
     // std/decimal
     porting("std/decimal.of", 2, StandardFunction::DecimalOf),

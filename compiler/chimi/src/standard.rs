@@ -7,7 +7,6 @@ pub(crate) enum StandardModule {
     Task,
     Int,
     Float,
-    Debug,
     Order,
     Range,
     Duration,
@@ -17,7 +16,7 @@ pub(crate) enum StandardModule {
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 13] = [
         Self::Channel,
         Self::Io,
         Self::Json,
@@ -25,7 +24,6 @@ impl StandardModule {
         Self::Task,
         Self::Int,
         Self::Float,
-        Self::Debug,
         Self::Order,
         Self::Range,
         Self::Duration,
@@ -43,7 +41,6 @@ impl StandardModule {
             Self::Task => "std/task",
             Self::Int => "std/int",
             Self::Float => "std/float",
-            Self::Debug => "std/debug",
             Self::Order => "std/order",
             Self::Range => "std/range",
             Self::Duration => "std/duration",
@@ -402,10 +399,7 @@ pub(crate) enum StandardFunction {
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 84] = [
-        Self::DebugRender,
-        Self::DebugRenderIndented,
-        Self::DebugCrash,
+    pub(crate) const ALL: [Self; 81] = [
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -545,9 +539,6 @@ impl StandardFunction {
             | Self::FloatToInt
             | Self::FloatToText
             | Self::FloatParse => Some(StandardModule::Float),
-            Self::DebugRender | Self::DebugRenderIndented | Self::DebugCrash => {
-                Some(StandardModule::Debug)
-            }
             Self::OrderCompare | Self::OrderMin | Self::OrderMax => Some(StandardModule::Order),
             Self::RangeStart | Self::RangeEnd | Self::RangeLength | Self::RangeContains => {
                 Some(StandardModule::Range)
@@ -570,7 +561,10 @@ impl StandardFunction {
             | Self::DurationAbsolute
             | Self::DurationToText
             | Self::DurationParse => Some(StandardModule::Duration),
-            Self::ListFirst
+            Self::DebugRender
+            | Self::DebugRenderIndented
+            | Self::DebugCrash
+            | Self::ListFirst
             | Self::ListLength
             | Self::TextAppend
             | Self::TextEqual
@@ -1183,8 +1177,6 @@ pub(crate) enum StandardGeneric {
     TaskFailures,
     TaskNeeds,
     ChannelValue,
-    DebugRenderValue,
-    DebugRenderIndentedValue,
     OrderCompareValue,
     OrderMinValue,
     OrderMaxValue,
@@ -1206,9 +1198,7 @@ pub(crate) enum StandardGeneric {
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 45] = [
-        Self::DebugRenderValue,
-        Self::DebugRenderIndentedValue,
+    pub(crate) const ALL: [Self; 43] = [
         Self::FileState,
         Self::FileFailures,
         Self::FileNeeds,
@@ -1283,7 +1273,6 @@ impl StandardGeneric {
             Self::TaskFailures => "E",
             Self::TaskNeeds => "R",
             Self::ChannelValue => "T",
-            Self::DebugRenderValue | Self::DebugRenderIndentedValue => "T",
             Self::OrderCompareValue | Self::OrderMinValue | Self::OrderMaxValue => "A",
             Self::ProcessSpecMessage
             | Self::ProcessRegisterMessage

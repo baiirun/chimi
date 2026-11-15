@@ -628,16 +628,20 @@ equally clear but less widespread.
 
 ### Surface
 
-`std/debug` declares two pure native operations:
+`std/debug` declares three pure native operations:
 
 <!-- chimi: pending ep-a6f138 -->
 ```chimi
 pub native fn render<T>(value: T) -> Text
 pub native fn render_indented<T>(value: T) -> Text
+pub native fn crash(message: Text) -> Never
 ```
 
-Both accept any value, never fail, and need nothing. `render` produces one
-line. `render_indented` puts each field, element, and entry on its own line
+`crash` ends the unit of work with a defect carrying `message`, for a broken
+precondition that Chimi source checks ([conventions](standard-library-conventions.md#absence-failure-and-defect)).
+
+`render` and `render_indented` accept any value, never fail, and need
+nothing. `render` produces one line. `render_indented` puts each field, element, and entry on its own line
 with two-space indentation, for assertion diffs. Each part ends with `,`, as
 the formatter writes multi-line literals:
 
