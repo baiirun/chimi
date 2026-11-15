@@ -624,6 +624,7 @@ JSON renders a `Float` with the same text.
 such as money. It is a standard primitive, not a user struct, so its equality
 is numeric rather than representational.
 
+<!-- chimi: check -->
 ```chimi
 import std/decimal as Decimal
 import std/decimal.{Decimal, Rounding}
