@@ -6434,6 +6434,26 @@ static ChimiControl *invoke_process_data(uint32_t intrinsic, ChimiValue **argume
       if (!values[2]) return intrinsic_shape_defect(call_node);
       return success(process_record(names, values, 4));
     }
+    /* A spec record with `handoff` set, as the interpreter builds it. It has no
+       name: Process.register takes only a Process.Spec. */
+    case CHIMI_INTRINSIC_PROCESS_HANDOFF_SPEC: {
+      if (argument_count != 3 || arguments[0]->kind != VALUE_CALLABLE ||
+          arguments[1]->kind != VALUE_INTEGER || arguments[2]->kind != VALUE_DURATION)
+        return intrinsic_shape_defect(call_node);
+      if (arguments[1]->as.integer < 1)
+        return process_range_defect(
+          "Process.handoff_spec: mailbox capacity must be at least 1, got %" PRId64,
+          arguments[1]->as.integer, call_node);
+      if (arguments[2]->as.integer < 0)
+        return process_duration_defect(
+          "Process.handoff_spec: shutdown_within must be at least zero, got %s",
+          arguments[2]->as.integer, call_node);
+      static const char *const names[] = {"body", "capacity", "handoff", "name", "shutdown_within"};
+      ChimiValue *values[] = {arguments[0], arguments[1], boolean_value(true),
+                              standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0), arguments[2]};
+      if (!values[3]) return intrinsic_shape_defect(call_node);
+      return success(process_record(names, values, 5));
+    }
     case CHIMI_INTRINSIC_PROCESS_REGISTER: {
       if (argument_count != 2 || arguments[1]->kind != VALUE_PROCESS_ADDRESS)
         return intrinsic_shape_defect(call_node);
@@ -6501,10 +6521,12 @@ static ChimiValue *managed_value(ValueKind kind, uint64_t supervisor, uint64_t m
   return value;
 }
 
-/* What every incarnation of one spec runs: its body, copied into each new heap. */
+/* What every incarnation of one spec runs: its body, copied into each new heap. A
+   handoff body also takes its start argument, which it asks the scheduler for. */
 typedef struct {
   ChimiRuntime *runtime;
   RuntimeFragment *body;
+  bool handoff;
 } ProcessSpecContext;
 
 /* The largest peak of live payload bytes of any incarnation's heap. */
@@ -6548,10 +6570,29 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
   void *roots[FRAGMENT_ROOTS];
   fragment_copy_into_current(context->body, roots);
   ChimiValue *body = roots[0];
-  ChimiValue *arguments[] = {new_value(VALUE_PROCESS_INBOX)};
+  ChimiValue *arguments[] = {new_value(VALUE_PROCESS_INBOX), NULL};
+  uint32_t argument_count = 1;
+  ChimiControl *control = NULL;
+  if (context->handoff) {
+    /* The start argument travelled as a message: adopting it makes this heap
+       its owner, and the reply moved its capabilities to this incarnation. */
+    ChimiProcessRequest request = {.kind = CHIMI_REQUEST_PROCESS_ARGUMENT};
+    ChimiFiberCommand command = scheduler_request(&request);
+    if (command == CHIMI_FIBER_CANCEL) {
+      if (request.status == CHIMI_RESPONSE_OK) fragment_free((RuntimeFragment *)(uintptr_t)request.message);
+      control = cancelled();
+    } else if (request.status != CHIMI_RESPONSE_OK) {
+      control = defect("Supervisor.start_handoff: the incarnation has no start argument", UINT32_MAX);
+    } else {
+      void *argument_roots[FRAGMENT_ROOTS];
+      fragment_adopt((RuntimeFragment *)(uintptr_t)request.message, argument_roots);
+      arguments[argument_count++] = argument_roots[0];
+    }
+  }
   uint64_t span = runtime->next_span++;
-  ChimiControl *control = invoke(runtime, body->as.callable, arguments, 1, span, UINT32_MAX,
-                                 new_environment(0));
+  if (!control)
+    control = invoke(runtime, body->as.callable, arguments, argument_count, span, UINT32_MAX,
+                     new_environment(0));
   ChimiFiberResult result = {.state = CHIMI_FIBER_SUCCEEDED, .value = CHIMI_PROCESS_END_RETURNED};
   switch (control->kind) {
     case CONTROL_SUCCESS: break;
@@ -6633,7 +6674,12 @@ static ChimiControl *marshal_spec(ChimiRuntime *runtime, const ChimiValue *spec,
   if (fragment_copy(roots, kinds, 1, &copy) != HEAP_OK) return defect(FOREIGN_POINTER_DEFECT, call_node);
   ProcessSpecContext *context = malloc(sizeof(*context));
   if (!context) exhausted_memory();
-  *context = (ProcessSpecContext){.runtime = runtime, .body = copy};
+  ChimiValue *handoff = process_field(spec, "handoff");
+  *context = (ProcessSpecContext){
+    .runtime = runtime,
+    .body = copy,
+    .handoff = handoff && handoff->kind == VALUE_BOOLEAN && handoff->as.boolean,
+  };
   marshal_keep(&marshal->contexts, &marshal->context_count, context);
   uint64_t registered = 0;
   if (name->as.constructed.length == 1 && name->as.constructed.fields[0].value->kind == VALUE_PROCESS_ADDRESS)
@@ -6796,13 +6842,21 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
                                       ", outside the sender's heap (owner %" PRIu64 ")",
                                       fragment_copy_foreign_owner, current_heap->owner),
                       call_node);
+      /* Receivers and Completions in the message travel with it, as through a
+         channel: an accepted message puts them in flight, and the process that
+         receives it owns them. A refused one leaves them with the sender. */
+      CapabilityTransfer carried = {.collect = true};
+      transfer_captures(&carried, message->roots[0]);
+      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
       ChimiProcessRequest request = {
         .kind = CHIMI_REQUEST_PROCESS_SEND,
         .address_kind = arguments[0]->as.address.kind,
         .address = arguments[0]->as.address.target,
         .message = (uint64_t)(uintptr_t)message,
+        .carried = capabilities.count ? &capabilities : NULL,
       };
       ChimiFiberCommand command = scheduler_request(&request);
+      free(carried.carried);
       /* Only an accepted message is the scheduler's; any other reply leaves it here. */
       if (request.status != CHIMI_RESPONSE_OK) fragment_free(message);
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
@@ -6894,6 +6948,56 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
                                      request.membership));
       return start_error(request.status, request.name, "Supervisor.start_process", call_node);
     }
+    case CHIMI_INTRINSIC_SUPERVISOR_START_HANDOFF: {
+      if (argument_count != 3 || !is_kind(arguments, 0, VALUE_SUPERVISOR_RUNNING))
+        return intrinsic_shape_defect(call_node);
+      ProcessMarshal marshal = {0};
+      ChimiProcessSpec spec;
+      ChimiControl *failed = marshal_spec(runtime, arguments[1], &marshal, &spec,
+                                          "Supervisor.start_handoff", call_node);
+      if (failed) {
+        marshal_finish(&marshal, false);
+        return failed;
+      }
+      /* The argument travels like a Process.send message: a copy in the caller's
+         heap whose Receivers and Completions go in flight once the start is
+         accepted. The new incarnation takes it before its body runs. */
+      void *roots[] = {arguments[2]};
+      AllocationKind kinds[] = {ALLOCATION_VALUE};
+      RuntimeFragment *argument = NULL;
+      if (fragment_copy(roots, kinds, 1, &argument) != HEAP_OK) {
+        marshal_finish(&marshal, false);
+        return defect(FOREIGN_POINTER_DEFECT, call_node);
+      }
+      CapabilityTransfer carried = {.collect = true};
+      transfer_captures(&carried, argument->roots[0]);
+      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
+      ChimiProcessRequest request = {
+        .kind = CHIMI_REQUEST_SUPERVISOR_START_PROCESS,
+        .supervisor = arguments[0]->as.managed.supervisor,
+        .restart = CHIMI_RESTART_NEVER,
+        .spec = &spec,
+        .message = (uint64_t)(uintptr_t)argument,
+        .carried = capabilities.count ? &capabilities : NULL,
+      };
+      ChimiFiberCommand command = scheduler_request(&request);
+      free(carried.carried);
+      marshal_finish(&marshal, request.status != CHIMI_RESPONSE_UNSET);
+      /* Only an accepted start keeps the argument; a refused one hands it back. */
+      if (request.status != CHIMI_RESPONSE_OK) fragment_free(argument);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      ChimiValue *fields[] = {arguments[2]};
+      switch (request.status) {
+        case CHIMI_RESPONSE_OK:
+          return success(managed_value(VALUE_MANAGED_PROCESS, arguments[0]->as.managed.supervisor,
+                                       request.membership));
+        case CHIMI_RESPONSE_CAPACITY_REACHED:
+          return failure(standard_value(CHIMI_CONSTRUCTOR_HANDOFF_CAPACITY_REACHED, fields, 1));
+        case CHIMI_RESPONSE_STOPPED:
+          return failure(standard_value(CHIMI_CONSTRUCTOR_HANDOFF_STOPPED, fields, 1));
+      }
+      return defect("Supervisor.start_handoff scheduler request failed", call_node);
+    }
     case CHIMI_INTRINSIC_SUPERVISOR_ADDRESS: {
       if (argument_count != 1 || !is_kind(arguments, 0, VALUE_MANAGED_PROCESS))
         return intrinsic_shape_defect(call_node);
@@ -6955,6 +7059,7 @@ static ChimiControl *invoke_process(ChimiRuntime *runtime, uint32_t intrinsic, C
                                     ChimiEnvironment *environment) {
   switch (intrinsic) {
     case CHIMI_INTRINSIC_PROCESS_SPEC:
+    case CHIMI_INTRINSIC_PROCESS_HANDOFF_SPEC:
     case CHIMI_INTRINSIC_PROCESS_REGISTER:
     case CHIMI_INTRINSIC_SUPERVISOR_PROCESS:
     case CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR:
@@ -9095,6 +9200,8 @@ static const char *channel_operation(uint32_t request_kind) {
     case CHIMI_REQUEST_CHANNEL_CLOSE: return "Channel.close";
     case CHIMI_REQUEST_CHANNEL_ABORT: return "aborting the channel";
     case CHIMI_REQUEST_CHANNEL_RELEASE: return "releasing the channel";
+    case CHIMI_REQUEST_PROCESS_SEND: return "Process.send";
+    case CHIMI_REQUEST_SUPERVISOR_START_PROCESS: return "Supervisor.start_handoff";
     default: return "a channel request";
   }
 }

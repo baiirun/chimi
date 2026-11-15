@@ -1492,8 +1492,8 @@ program.
   `clock_select_committed` (clock kind 8, with the committed `index`) are
   boundary events. A task parked in a select reports `Select.first` as its
   waited operation in a deadlock report.
-- **ABI.** `CHIMI_FIBER_ABI_VERSION` is 10 (`CHIMI_REQUEST_SELECT`, kind 31,
-  and `ChimiSelectSource`) and the native runtime ABI is 27.
+- **ABI.** `CHIMI_FIBER_ABI_VERSION` is 11 (`CHIMI_REQUEST_SELECT`, kind 32,
+  and `ChimiSelectSource`) and the native runtime ABI is 28.
 
 ### Runner
 

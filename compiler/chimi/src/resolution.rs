@@ -615,6 +615,11 @@ impl ProjectResolver {
             (StandardType::ProcessSendError, StandardModule::Process),
             (StandardType::ProcessMonitor, StandardModule::Process),
             (StandardType::ProcessDown, StandardModule::Process),
+            (StandardType::ProcessHandoffSpec, StandardModule::Process),
+            (
+                StandardType::SupervisorHandoffError,
+                StandardModule::Supervisor,
+            ),
             (StandardType::SupervisorMember, StandardModule::Supervisor),
             (StandardType::SupervisorPolicy, StandardModule::Supervisor),
             (StandardType::SupervisorRestarts, StandardModule::Supervisor),
@@ -958,6 +963,31 @@ impl ProjectResolver {
             (
                 function(StandardFunction::ProcessUnmonitor),
                 vec![G::ProcessUnmonitorMessage],
+            ),
+            (
+                function(StandardFunction::ProcessHandoffSpec),
+                vec![
+                    G::ProcessHandoffSpecArgument,
+                    G::ProcessHandoffSpecMessage,
+                    G::ProcessHandoffSpecFailures,
+                    G::ProcessHandoffSpecNeeds,
+                ],
+            ),
+            (
+                function(StandardFunction::SupervisorStartHandoff),
+                vec![
+                    G::SupervisorStartHandoffArgument,
+                    G::SupervisorStartHandoffMessage,
+                    G::SupervisorStartHandoffFailures,
+                ],
+            ),
+            (
+                constructor(StandardConstructor::HandoffCapacityReached),
+                vec![G::SupervisorStartHandoffArgument],
+            ),
+            (
+                constructor(StandardConstructor::HandoffStopped),
+                vec![G::SupervisorStartHandoffArgument],
             ),
             (
                 function(StandardFunction::SupervisorProcess),

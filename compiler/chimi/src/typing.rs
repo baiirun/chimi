@@ -1217,6 +1217,7 @@ impl TypedProject {
             Some(StandardSymbol::Type(
                 StandardType::ProcessAddress
                 | StandardType::ProcessSpec
+                | StandardType::ProcessHandoffSpec
                 | StandardType::ProcessMonitor
                 | StandardType::ProcessDown
                 | StandardType::SupervisorMember
@@ -1228,11 +1229,13 @@ impl TypedProject {
             )) => {
                 return ValueProperties::SHAREABLE;
             }
-            // `Process.SendError<M>` and `Channel.SendError<T>` hand the refused value
-            // back, and `Channel.Receive<T>` holds the received value, so each is what
-            // its argument is.
+            // `Process.SendError<M>`, `Channel.SendError<T>`, and
+            // `Supervisor.HandoffError<A>` hand the refused value back, and
+            // `Channel.Receive<T>` holds the received value, so each is what its
+            // argument is.
             Some(StandardSymbol::Type(
                 StandardType::ProcessSendError
+                | StandardType::SupervisorHandoffError
                 | StandardType::ChannelSendError
                 | StandardType::ChannelReceive,
             )) => {
@@ -2262,7 +2265,9 @@ impl ProjectTypeChecker {
             | StandardConstructor::DownFailed
             | StandardConstructor::DownDefected
             | StandardConstructor::DownStopped
-            | StandardConstructor::DownUnavailable => self.process_constructor_shape(constructor),
+            | StandardConstructor::DownUnavailable
+            | StandardConstructor::HandoffCapacityReached
+            | StandardConstructor::HandoffStopped => self.process_constructor_shape(constructor),
             StandardConstructor::TimeoutTimedOut => self.timeout_constructor_shape(),
             StandardConstructor::DurationParseEmpty
             | StandardConstructor::DurationParseInvalid
@@ -6398,6 +6403,7 @@ impl ProjectTypeChecker {
                     | StandardType::ProcessDown
                     | StandardType::SupervisorRestart
                     | StandardType::SupervisorStartError
+                    | StandardType::SupervisorHandoffError
                     | StandardType::ChannelReceive
                     | StandardType::ChannelError
                     | StandardType::IntParseError
@@ -7863,18 +7869,21 @@ impl ProjectTypeChecker {
                                 .collect::<Vec<_>>();
                             // `E` in `Task<T, E>` is a failure set: a generic
                             // there also denotes the task's failure row.
-                            if matches!(
-                                self.resolved.standard_symbol(symbol),
+                            let failures_index = match self.resolved.standard_symbol(symbol) {
                                 Some(StandardSymbol::Type(
-                                    StandardType::Task
-                                        | StandardType::ProcessSpec
-                                        | StandardType::SelectEvent
-                                ))
-                            ) && let Some(TypeUse::Named {
+                                    StandardType::Task | StandardType::ProcessSpec | StandardType::SelectEvent,
+                                )) => Some(1),
+                                Some(StandardSymbol::Type(StandardType::ProcessHandoffSpec)) => {
+                                    Some(2)
+                                }
+                                _ => None,
+                            };
+                            if let Some(index) = failures_index
+                                && let Some(TypeUse::Named {
                                 semantic_id: failures_id,
                                 path: failures_path,
                                 ..
-                            }) = arguments.get(1)
+                            }) = arguments.get(index)
                                 && let (Some(name), Some(failures)) = (
                                     failures_path.last(),
                                     self.resolved_type_symbol(module_id, *failures_id),

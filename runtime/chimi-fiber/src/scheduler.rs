@@ -86,10 +86,13 @@ pub const REQUEST_SCOPE_CHECK: u32 = 27;
 pub const REQUEST_PROCESS_MONITOR: u32 = 28;
 pub const REQUEST_PROCESS_UNMONITOR: u32 = 29;
 pub const REQUEST_PROCESS_MAILBOX: u32 = 30;
+/// From a handoff incarnation's body: takes the argument its start handed
+/// over, which the incarnation owns from then on.
+pub const REQUEST_PROCESS_ARGUMENT: u32 = 31;
 /// `context` points to `value` `ChimiSelectSource`s. OK with the index of the
 /// first ready source in `value`, or PENDING until one may be ready; reissue
 /// the request after every wake. Consumes nothing (`scheduler/select.rs`).
-pub const REQUEST_SELECT: u32 = 31;
+pub const REQUEST_SELECT: u32 = 32;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -1439,7 +1442,7 @@ impl Scheduler {
             return;
         }
         if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_REMOVE_SUPERVISOR).contains(&kind)
-            || (REQUEST_PROCESS_MONITOR..=REQUEST_PROCESS_MAILBOX).contains(&kind)
+            || (REQUEST_PROCESS_MONITOR..=REQUEST_PROCESS_ARGUMENT).contains(&kind)
         {
             self.handle_process_request(owner, request.cast());
         } else {
