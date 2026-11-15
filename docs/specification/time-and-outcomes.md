@@ -11,8 +11,9 @@ gaps G13, G14, and G25 of the
 type, constructors, conversions, arithmetic, text form, parser, `Duration.zero`,
 derived equality and order, debug rendering, module constants, `T4303` help,
 and `T4348` to `T4350`, on both backends (see
-[Implementation notes](#implementation-notes)). `T4263` for process
-durations waits for `Process.spec`. Of the clock, only `Clock.sleep`, the
+[Implementation notes](#implementation-notes)). `T4263` rejects
+out-of-range process durations that fold to constants (`typing/process.rs`).
+Of the clock, only `Clock.sleep`, the
 root `clock` need, the runner's real and virtual sources, virtual deadlock,
 and the clock trace events are implemented, on the native backend only (see
 [Clock slice](#clock-slice-for-supervised-processes-ts-6ccbc9)). Nothing else
@@ -1105,7 +1106,7 @@ program.
   literals, module constants, `Duration.zero`, `Int` arithmetic, and the
   `std/duration` constructors, conversions, and arithmetic, and reports a
   defect a folded call always raises. `T4348` uses it for constructors whose
-  argument folds; process typing will use it for `T4263`.
+  argument folds; process typing uses it for `T4263`.
 - **Constant `parse`.** `T4349` and `T4350` apply when the argument is a
   `Text` literal or a reference to a module constant whose value folds to
   text. A local `let` bound to a literal is not a module constant and is not
@@ -1207,13 +1208,17 @@ program.
     `--clock=virtual` before `--`. `runtime.c` enters the scheduler through
     `chimi_scheduler_run`, which gained the task and channel release hooks
     of `chimi_scheduler_execute_with_config`. The new fields change the
-    config's layout, so `CHIMI_FIBER_ABI_VERSION` became 5 (it is now 6; the
+    config's layout, so `CHIMI_FIBER_ABI_VERSION` became 5 (it is now 7; the
     lab's OB07 checks the current version).
   - **Virtual deadlock.** The root defects with
     `virtual-time deadlock: every task is parked and no timer is pending:`
     followed by ` task <id> waits on <operation>` for each parked task,
     separated by `;`. The operation is `Task.result`, `Channel.send`,
-    `Channel.receive`, or `a scheduler request`. Under the real clock a root
+    `Channel.receive`, or `a scheduler request`. When a process incarnation
+    has defected during the run, this defect and the generic one below end
+    with `; process incarnation <id> of membership <id> defected: <defect>`
+    for the latest one (with `(the last of <n> process defects)` before the
+    colon when there were several), whatever the trace mode (lab OB08). Under the real clock a root
     with nothing pending stays suspended in the scheduler. The native
     runtime has no asynchronous host operations, so it reports the earlier
     generic deadlock defect and leaves the suspended tasks to process exit.
@@ -1227,6 +1232,13 @@ program.
     with `chimi build` ``.
 - Instant, Timestamp, `now`, `--clock-start`, and the structural `Clock`
   interface fields are not part of this slice.
+- **Supervisor time** (conformance row). Restart windows and
+  `shutdown_within` deadlines are timers on the execution time source, so
+  under the virtual clock they elapse with no real waiting.
+  `process_tests.rs` `supervisor_windows_and_shutdown_deadlines_elapse_under_virtual_time`
+  rolls an hour-long window and forces a stubborn cleanup at an hour-long
+  deadline, at exactly that instant; lab OB06 runs 2m35s of windows through
+  the native runner.
 
 ### Runner
 

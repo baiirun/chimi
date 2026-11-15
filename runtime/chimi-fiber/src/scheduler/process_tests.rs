@@ -1401,6 +1401,47 @@ fn ra03_defects_further_apart_than_the_window_do_not_accumulate() {
     assert!(lab.restarts().iter().all(|(_, attempts)| *attempts == 1));
 }
 
+// time-and-outcomes.md, "Supervisor time": a restart window and a
+// `shutdown_within` deadline both elapse under virtual time. Both are an hour,
+// so a scheduler that waited for real would hang this test instead of passing
+// it. Rejects a window that never rolls under virtual time (the second defect
+// would exceed the limit of 1 and escalate), and a deadline that fires at the
+// wrong instant or not at all (the stubborn cleanup would never end).
+#[test]
+fn supervisor_windows_and_shutdown_deadlines_elapse_under_virtual_time() {
+    let hour = Duration::from_secs(3_600);
+    let mut stubborn = spec_with(&STUBBORN, Some(COUNTER), 64);
+    stubborn.shutdown_within = hour;
+    let mut lab = Lab::new();
+    let root = lab
+        .scheduler
+        .start_supervisor(policy_with(
+            vec![Member::Process(stubborn, Restart::OnDefect)],
+            16,
+            1,
+            hour,
+        ))
+        .unwrap();
+    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.settle();
+    lab.sleep(hour + Duration::from_secs(1));
+    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.settle();
+    assert!(!lab.scheduler.program_terminated());
+    assert!(lab.restarts().iter().all(|(_, attempts)| *attempts == 1));
+    let stopped_at = lab.scheduler.now().as_nanos();
+    let _ = lab.scheduler.stop_supervisor(root);
+    let _ = lab.scheduler.run_until_idle();
+    assert_eq!(
+        timed_terminations(&lab).last(),
+        Some(&(stopped_at + hour.as_nanos() as i64, TerminalCause::Forced))
+    );
+    assert_eq!(
+        lab.scheduler.supervisor_state(root),
+        Some(SupervisorState::Stopped)
+    );
+}
+
 #[test]
 fn ra04_a_restart_exactly_within_after_the_last_is_outside_the_window() {
     let mut lab = Lab::new();
