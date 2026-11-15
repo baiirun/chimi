@@ -319,7 +319,8 @@ expected-output programs:
   without per-type printing code.
 
 When G16 lands, each program converts to `test` declarations in the same
-directory, and the coverage rule carries over.
+directory, and the coverage rule carries over, as
+[testing](testing.md#migrating-the-std-tests-programs) describes.
 
 ## Native bindings for std and vendored modules (G20)
 
@@ -688,6 +689,7 @@ Each kind of value renders like the declaration or literal that describes it:
 | Anonymous function | `<fn>` |
 | Named process address | `<Address counter>` |
 | Direct process address | `<Address direct>` |
+| Test mailbox address ([testing](testing.md#fake-process-addresses)) | `<Address test>` |
 | Std type with a registry render override | `30s` for a `Duration` |
 | Other `native type` | `<Receiver>`, the type's simple name |
 

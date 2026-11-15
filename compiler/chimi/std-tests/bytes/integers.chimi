@@ -1,0 +1,34 @@
+// Bytes.read_int and Bytes.from_int: every layout, sign extension, byte
+// order, reads that would run past either end, and round trips at the edges.
+import std/bytes as Bytes
+import std/bytes.{Bytes, IntLayout}
+import std/debug as Debug
+import std/list as List
+
+pub fn main() -> Text {
+  let data = Bytes.from([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xff, 0xfe, 0x80, 0x00])
+  let edges = [
+    (255, IntLayout.U8), (-128, IntLayout.I8), (127, IntLayout.I8),
+    (65535, IntLayout.U16Le), (-32768, IntLayout.I16Be), (32767, IntLayout.I16Le),
+    (4294967295, IntLayout.U32Be), (-2147483648, IntLayout.I32Le), (2147483647, IntLayout.I32Be),
+    (-9223372036854775808, IntLayout.I64Be), (9223372036854775807, IntLayout.I64Le),
+  ]
+  let results = [
+    Debug.render([Bytes.read_int(data, 8, IntLayout.U8), Bytes.read_int(data, 8, IntLayout.I8), Bytes.read_int(data, 10, IntLayout.I8), Bytes.read_int(data, 0, IntLayout.I8)]),
+    Debug.render([Bytes.read_int(data, 0, IntLayout.U16Be), Bytes.read_int(data, 0, IntLayout.U16Le), Bytes.read_int(data, 8, IntLayout.U16Be), Bytes.read_int(data, 8, IntLayout.I16Be), Bytes.read_int(data, 8, IntLayout.I16Le)]),
+    Debug.render([Bytes.read_int(data, 0, IntLayout.U32Be), Bytes.read_int(data, 0, IntLayout.U32Le), Bytes.read_int(data, 8, IntLayout.U32Be), Bytes.read_int(data, 8, IntLayout.I32Be), Bytes.read_int(data, 8, IntLayout.I32Le)]),
+    Debug.render([Bytes.read_int(data, 0, IntLayout.I64Be), Bytes.read_int(data, 0, IntLayout.I64Le), Bytes.read_int(data, 4, IntLayout.I64Be)]),
+    Debug.render([Bytes.read_int(data, 10, IntLayout.U16Be), Bytes.read_int(data, 11, IntLayout.U16Be), Bytes.read_int(data, 12, IntLayout.U8), Bytes.read_int(data, -1, IntLayout.U8), Bytes.read_int(data, 5, IntLayout.I64Le), Bytes.read_int(Bytes.empty(), 0, IntLayout.U8)]),
+    Debug.render([Bytes.from_int(512, IntLayout.U16Be), Bytes.from_int(512, IntLayout.U16Le), Bytes.from_int(-1, IntLayout.I8), Bytes.from_int(-2, IntLayout.I16Le), Bytes.from_int(0, IntLayout.U8)]),
+    Debug.render([Bytes.from_int(16909060, IntLayout.U32Be), Bytes.from_int(16909060, IntLayout.U32Le), Bytes.from_int(-1, IntLayout.I64Be), Bytes.from_int(1, IntLayout.I64Le)]),
+    Debug.render(List.map(edges, fn(edge) {
+      let (value, layout) = edge
+      Bytes.read_int(Bytes.from_int(value, layout), 0, layout) == Some(value)
+    })),
+    Debug.render(List.map(edges, fn(edge) {
+      let (value, layout) = edge
+      Bytes.from_int(value, layout)
+    })),
+  ]
+  Debug.render(results)
+}

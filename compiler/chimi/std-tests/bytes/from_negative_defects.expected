@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"defect","message":"Bytes.from: element 0 is -1, outside 0..=255"}

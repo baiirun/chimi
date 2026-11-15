@@ -1,0 +1,239 @@
+/// Immutable binary data: file contents, network payloads, hashes, and
+/// encoded text. A `Bytes` is a sequence of bytes, each an `Int` in
+/// `0..=255`; build one with `Bytes.from([0x68, 0x69])` or
+/// `Bytes.from_text("hi")`, and read text back with `Bytes.to_text`.
+///
+/// Positions and lengths count bytes. Equality compares the bytes, and order
+/// is lexicographic by unsigned byte, like `Text`. `Bytes.read_int` and
+/// `Bytes.from_int` read and write fixed-width integers, such as a 16-bit
+/// big-endian length prefix, without adding sized integer types: the value is
+/// always an `Int`, and an `IntLayout` names the width, signedness, and byte
+/// order.
+
+import std/debug as Debug
+
+// 1. Public types.
+
+/// A sequence of bytes. Equatable, ordered, shareable, and allowed in a
+/// constant.
+pub native type Bytes
+
+/// How a fixed-width integer is laid out in bytes: `U` is unsigned and `I`
+/// is two's-complement signed, the number is the width in bits, and `Be` and
+/// `Le` are big-endian (most significant byte first, as network protocols
+/// use) and little-endian. There is no `U64`, because an `Int` holds 64 bits
+/// signed; read a 64-bit unsigned field with `I64Be` or `I64Le` to get its
+/// bits.
+pub enum IntLayout {
+  U8
+  I8
+  U16Be
+  U16Le
+  I16Be
+  I16Le
+  U32Be
+  U32Le
+  I32Be
+  I32Le
+  I64Be
+  I64Le
+}
+
+// 2. Failure types.
+
+/// Failures of `Bytes.to_text`.
+pub enum DecodeError {
+  /// The bytes are not valid UTF-8. `at` is the byte offset where the first
+  /// invalid sequence starts; every byte before it decodes.
+  InvalidUtf8(at: Int)
+}
+
+// 4. Constructors.
+
+/// Returns `Bytes` with no bytes.
+///
+/// Cost: O(1).
+pub fn empty() -> Bytes {
+  from([])
+}
+
+/// Returns the bytes `values` lists, in order, such as
+/// `Bytes.from([0x68, 0x69])`.
+///
+/// Defects when: an element is outside `0..=255`.
+/// Cost: O(n).
+pub native fn from(values: List<Int>) -> Bytes
+
+// 5. Queries and predicates.
+
+/// Returns the number of bytes.
+///
+/// Cost: O(1).
+pub native fn length(bytes: Bytes) -> Int
+
+/// Returns `True` when `bytes` has no bytes.
+///
+/// Cost: O(1).
+pub fn is_empty(bytes: Bytes) -> Bool {
+  length(bytes) == 0
+}
+
+/// Returns the byte at `index` as an `Int` in `0..=255`, or `None` when
+/// `index` is negative or not less than the length.
+///
+/// Cost: O(1).
+pub native fn get(bytes: Bytes, index: Int) -> Option<Int>
+
+/// Returns the offset where `needle` first occurs in `bytes`, or `None`.
+///
+/// Defects when: `needle` is empty.
+/// Cost: O(n × m) in the worst case.
+pub native fn index_of(bytes: Bytes, needle: Bytes) -> Option<Int>
+
+/// Returns `True` when `needle` occurs in `bytes`.
+///
+/// Defects when: `needle` is empty.
+/// Cost: O(n × m) in the worst case.
+pub fn contains(bytes: Bytes, needle: Bytes) -> Bool {
+  case index_of(bytes, needle) {
+    Some(_) -> True
+    None -> False
+  }
+}
+
+/// Returns `True` when `bytes` begins with `prefix`.
+///
+/// Cost: O(m) in the length of `prefix`.
+pub fn starts_with(bytes: Bytes, prefix: Bytes) -> Bool {
+  slice(bytes, 0..length(prefix)) == prefix
+}
+
+/// Returns `True` when `bytes` ends with `suffix`.
+///
+/// Cost: O(m) in the length of `suffix`.
+pub fn ends_with(bytes: Bytes, suffix: Bytes) -> Bool {
+  let end = length(bytes)
+  length(suffix) <= end and slice(bytes, end - length(suffix)..end) == suffix
+}
+
+/// Reads the integer laid out as `layout` that starts at offset `at`, such
+/// as `Bytes.read_int(header, 0, IntLayout.U16Be)` for a big-endian length
+/// prefix. Returns `None` when `at` is negative or the integer would run
+/// past the end, so reading untrusted input needs no separate length check.
+///
+/// Cost: O(1).
+pub fn read_int(bytes: Bytes, at: Int, layout: IntLayout) -> Option<Int> {
+  read_int_code(bytes, at, layout_code(layout))
+}
+
+// 6. Transformations.
+
+/// Returns `bytes` followed by `other`.
+///
+/// Cost: O(n) in the total length.
+pub fn append(bytes: Bytes, other: Bytes) -> Bytes {
+  concat([bytes, other])
+}
+
+/// Returns the bytes of `parts` joined in order. Joining once is linear,
+/// while appending one part at a time copies the growing prefix each time.
+///
+/// Cost: O(n) in the total length.
+pub native fn concat(parts: List<Bytes>) -> Bytes
+
+/// Returns the bytes of `bytes` in `range`, clamped to its length, so a
+/// range past either end never fails.
+///
+/// Cost: O(n) in the length of the result.
+pub native fn slice(bytes: Bytes, range: Range) -> Bytes
+
+/// Returns the bytes before and after the first `separator`, or `None` when
+/// `separator` does not occur. `Bytes.split_once(buffer, crlf)` takes one
+/// line off a buffer.
+///
+/// Defects when: `separator` is empty.
+/// Cost: O(n).
+pub fn split_once(bytes: Bytes, separator: Bytes) -> Option<(Bytes, Bytes)> {
+  case index_of(bytes, separator) {
+    Some(at) -> Some((slice(bytes, 0..at), slice(bytes, at + length(separator)..length(bytes))))
+    None -> None
+  }
+}
+
+// 7. Conversions.
+
+/// Returns the bytes as a list of `Int`s in `0..=255`.
+///
+/// Cost: O(n).
+pub native fn to_list(bytes: Bytes) -> List<Int>
+
+/// Returns the UTF-8 encoding of `text`. Always succeeds, because `Text` is
+/// always valid UTF-8.
+///
+/// Cost: O(n).
+pub native fn from_text(text: Text) -> Bytes
+
+/// Returns the text that `bytes` encodes as UTF-8.
+/// `Bytes.to_text(Bytes.from_text(text))` returns `text`.
+///
+/// Fails with: `DecodeError.InvalidUtf8` at the first byte that does not
+/// begin a valid UTF-8 sequence, or begins one that is cut short.
+/// Cost: O(n).
+pub fn to_text(bytes: Bytes) -> Text {
+  let valid = valid_utf8_length(bytes)
+  case valid == length(bytes) {
+    True -> to_text_lossy(bytes)
+    False -> Failure(DecodeError.InvalidUtf8(valid))
+  }
+}
+
+/// Returns the text that `bytes` encodes as UTF-8, with each invalid
+/// sequence replaced by U+FFFD (`�`). Each maximal invalid run that could
+/// begin a valid sequence becomes one U+FFFD, as Unicode recommends and as
+/// Rust's `String::from_utf8_lossy` and the WHATWG decoder do.
+///
+/// Cost: O(n).
+pub native fn to_text_lossy(bytes: Bytes) -> Text
+
+/// Returns `value` laid out as `layout`, such as
+/// `Bytes.from_int(512, IntLayout.U16Be)` for the bytes `02 00`.
+///
+/// Defects when: `value` does not fit the layout, such as `256` for `U8` or
+/// `-1` for any unsigned layout.
+/// Cost: O(1).
+pub fn from_int(value: Int, layout: IntLayout) -> Bytes {
+  case int_bytes(value, layout_code(layout)) {
+    Some(bytes) -> bytes
+    None -> Debug.crash("Bytes.from_int: ${value} does not fit ${Debug.render(layout)}")
+  }
+}
+
+// 8. Private native core and helpers.
+
+/// The length of the longest prefix of `bytes` that is valid UTF-8.
+native fn valid_utf8_length(bytes: Bytes) -> Int
+
+/// Requires: `code` is a `layout_code`.
+native fn read_int_code(bytes: Bytes, at: Int, code: Int) -> Option<Int>
+
+/// `value` laid out as the layout `code` names, or `None` when it does not
+/// fit. Requires: `code` is a `layout_code`.
+native fn int_bytes(value: Int, code: Int) -> Option<Bytes>
+
+/// The runtime's number for each layout, in declaration order.
+fn layout_code(layout: IntLayout) -> Int {
+  case layout {
+    IntLayout.U8 -> 0
+    IntLayout.I8 -> 1
+    IntLayout.U16Be -> 2
+    IntLayout.U16Le -> 3
+    IntLayout.I16Be -> 4
+    IntLayout.I16Le -> 5
+    IntLayout.U32Be -> 6
+    IntLayout.U32Le -> 7
+    IntLayout.I32Be -> 8
+    IntLayout.I32Le -> 9
+    IntLayout.I64Be -> 10
+    IntLayout.I64Le -> 11
+  }
+}

@@ -1,0 +1,6 @@
+// Bytes.index_of defects on an empty needle, as Text.contains does.
+import std/bytes as Bytes
+
+pub fn main() -> Option<Int> {
+  Bytes.index_of(Bytes.from([1]), Bytes.empty())
+}

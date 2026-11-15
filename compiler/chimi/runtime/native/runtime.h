@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 21
+#define CHIMI_RUNTIME_ABI_VERSION 22
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -187,6 +187,19 @@ enum {
   CHIMI_INTRINSIC_DECIMAL_MULTIPLY_CHECKED,
   CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED,
   CHIMI_INTRINSIC_DECIMAL_TO_FLOAT,
+  /* The native core of std/bytes; contiguous. */
+  CHIMI_INTRINSIC_BYTES_FROM,
+  CHIMI_INTRINSIC_BYTES_LENGTH,
+  CHIMI_INTRINSIC_BYTES_GET,
+  CHIMI_INTRINSIC_BYTES_INDEX_OF,
+  CHIMI_INTRINSIC_BYTES_CONCAT,
+  CHIMI_INTRINSIC_BYTES_SLICE,
+  CHIMI_INTRINSIC_BYTES_TO_LIST,
+  CHIMI_INTRINSIC_BYTES_FROM_TEXT,
+  CHIMI_INTRINSIC_BYTES_TO_TEXT_LOSSY,
+  CHIMI_INTRINSIC_BYTES_VALID_UTF8_LENGTH,
+  CHIMI_INTRINSIC_BYTES_READ_INT_CODE,
+  CHIMI_INTRINSIC_BYTES_INT_BYTES,
 };
 
 enum {
@@ -342,6 +355,8 @@ enum {
   CHIMI_CONSTANT_DECIMAL,
   /* `length` item value ids at `offset`, in ascending order. */
   CHIMI_CONSTANT_SET,
+  /* A `Bytes`: `a` is the id of its lowercase hex text, two digits per byte. */
+  CHIMI_CONSTANT_BYTES,
 };
 
 typedef struct {
@@ -357,6 +372,8 @@ typedef struct {
   uint32_t body;
   uint32_t parameters_offset;
   uint32_t parameters_length;
+  /* One environment slot per local of the body, closures included. */
+  uint32_t local_count;
 } ChimiFunction;
 
 typedef struct {
@@ -406,7 +423,6 @@ extern const ChimiNode CHIMI_NODES[];
 extern const uint32_t CHIMI_NODE_COUNT;
 extern const ChimiSymbol CHIMI_SYMBOLS[];
 extern const uint32_t CHIMI_SYMBOL_COUNT;
-extern const uint32_t CHIMI_LOCAL_SLOT_COUNT;
 extern const uint32_t CHIMI_REQUIREMENT_SLOT_COUNT;
 extern const ChimiFunction CHIMI_FUNCTIONS[];
 extern const uint32_t CHIMI_FUNCTION_COUNT;

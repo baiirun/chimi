@@ -1,0 +1,7 @@
+// Bytes.from defects on an element outside 0..=255, naming its index.
+import std/bytes as Bytes
+import std/bytes.{Bytes}
+
+pub fn main() -> Bytes {
+  Bytes.from([1, 2, 256])
+}

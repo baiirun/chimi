@@ -1,3 +1,4 @@
+mod bytes_operations;
 mod constants;
 mod core_operations;
 mod debug;
@@ -215,7 +216,12 @@ pub enum ExecutionValue {
     /// A `std/decimal.Decimal` in its normalized text, as `Debug.render` writes
     /// it, so equal values are equal outcomes.
     Decimal(String),
+    /// A `std/bytes.Bytes`.
+    Bytes(Vec<u8>),
     Record(Vec<ValueField>),
+    /// A map whose keys are not Text, as its entries in key order. A Text-keyed
+    /// map is a `Record` of its entries, and an empty map is an empty `Record`.
+    Map(Vec<(ExecutionValue, ExecutionValue)>),
     Constructed {
         type_name: String,
         variant_name: Option<String>,
@@ -372,6 +378,8 @@ enum RuntimeValue {
     Duration(i64),
     /// A `std/decimal.Decimal`.
     Decimal(crate::decimal::Decimal),
+    /// A `std/bytes.Bytes`, shared because values are copied on every reference.
+    Bytes(Arc<[u8]>),
     /// A named `std/process.Address`: the `process name` declaration's symbol.
     ProcessAddress(SymbolId),
     /// Fields of records and constructed values are shared like list nodes and
@@ -1685,6 +1693,20 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::DecimalToFloat => {
                 self.invoke_decimal_operation(function, arguments, span, call_node, environment)
             }
+            StandardFunction::BytesFrom
+            | StandardFunction::BytesLength
+            | StandardFunction::BytesGet
+            | StandardFunction::BytesIndexOf
+            | StandardFunction::BytesConcat
+            | StandardFunction::BytesSlice
+            | StandardFunction::BytesToList
+            | StandardFunction::BytesFromText
+            | StandardFunction::BytesToTextLossy
+            | StandardFunction::BytesValidUtf8Length
+            | StandardFunction::BytesReadIntCode
+            | StandardFunction::BytesIntBytes => {
+                self.invoke_bytes_operation(function, arguments, call_node)
+            }
             StandardFunction::IoPath => {
                 let [RuntimeValue::Text(path)] = arguments.as_slice() else {
                     return self.intrinsic_shape_defect(function, call_node);
@@ -2418,6 +2440,7 @@ fn public_value(value: &RuntimeValue) -> ExecutionValue {
         },
         RuntimeValue::Duration(value) => ExecutionValue::Duration(*value),
         RuntimeValue::Decimal(value) => ExecutionValue::Decimal(value.normalized_text()),
+        RuntimeValue::Bytes(value) => ExecutionValue::Bytes(value.to_vec()),
         RuntimeValue::Record(fields) => ExecutionValue::Record(public_fields(fields)),
         RuntimeValue::Constructed {
             type_name,
@@ -2429,22 +2452,28 @@ fn public_value(value: &RuntimeValue) -> ExecutionValue {
             variant_name: variant_name.clone(),
             fields: public_fields(fields),
         },
-        RuntimeValue::Map(map) => ExecutionValue::Record(
-            map.entry_refs()
-                .into_iter()
-                .map(|(key, value)| ValueField {
-                    name: match key {
-                        RuntimeValue::Text(name) => name.clone(),
-                        key => {
-                            let mut name = String::new();
-                            write_json_value(&mut name, &public_value(key));
-                            name
-                        }
-                    },
-                    value: public_value(value),
+        RuntimeValue::Map(map) => {
+            let entries = map.entry_refs();
+            let text_keyed = entries
+                .iter()
+                .map(|(key, value)| match key {
+                    RuntimeValue::Text(name) => Some(ValueField {
+                        name: name.clone(),
+                        value: public_value(value),
+                    }),
+                    _ => None,
                 })
-                .collect(),
-        ),
+                .collect::<Option<Vec<_>>>();
+            match text_keyed {
+                Some(fields) => ExecutionValue::Record(fields),
+                None => ExecutionValue::Map(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| (public_value(key), public_value(value)))
+                        .collect(),
+                ),
+            }
+        }
         RuntimeValue::Set(set) => ExecutionValue::List(
             set.entry_refs()
                 .into_iter()
@@ -2597,9 +2626,26 @@ fn write_json_value(output: &mut String, value: &ExecutionValue) {
                 write_json_string(output, text);
                 output.push('}');
             }
+            // Lowercase hex, two digits per byte.
+            ExecutionValue::Bytes(bytes) => {
+                output.push_str("{\"bytes\":\"");
+                output.push_str(&bytes_operations::hex(bytes));
+                output.push_str("\"}");
+            }
             ExecutionValue::Record(fields) => {
                 output.push('{');
                 push_json_fields(&mut steps, fields, "}");
+            }
+            ExecutionValue::Map(entries) => {
+                output.push_str("{\"map\":[");
+                steps.push(JsonStep::Punctuation("]}"));
+                for (index, (key, value)) in entries.iter().enumerate().rev() {
+                    steps.push(JsonStep::Punctuation("]"));
+                    steps.push(JsonStep::Value(value));
+                    steps.push(JsonStep::Punctuation(","));
+                    steps.push(JsonStep::Value(key));
+                    steps.push(JsonStep::Punctuation(if index > 0 { ",[" } else { "[" }));
+                }
             }
             ExecutionValue::Constructed {
                 type_name,

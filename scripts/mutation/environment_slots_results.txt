@@ -1,0 +1,14 @@
+# mutation run at f3f535fcd04a5525272542c9a7a426c2eb02d7f8
+# environment_slots_mutations.py: 5 mutants against compiler/chimi
+BASELINE ok  [cli -- native_call_environments_do_not_grow_with_other_functions_locals] (83s)
+BASELINE ok  [language -- a_function_literal_with_pattern_parameters_runs_and_captures_on_both_backends] (6s)
+BASELINE ok  [cli -- native_tasks_capture_render_encode_and_send_deeply_nested_values] (2s)
+KILLED       environments keep the program-wide slot count [cli -- native_call_environments_do_not_grow_with_other_functions_locals] (4s)
+KILLED       a closure's environment is sized by nothing [language -- a_function_literal_with_pattern_parameters_runs_and_captures_on_both_backends] (4s)
+KILLED       a function value's calls get no local slots [language -- a_function_literal_with_pattern_parameters_runs_and_captures_on_both_backends] (9s)
+SURVIVED     closure locals are numbered apart from their body [language -- a_function_literal_with_pattern_parameters_runs_and_captures_on_both_backends] (17s)
+KILLED       a task capture skips the environment's locals [cli -- native_tasks_capture_render_encode_and_send_deeply_nested_values] (20s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+EXIT 1
+# The surviving mutant is equivalent (see the list's docstring) and was removed
+# from the list; the other 4 are killed.

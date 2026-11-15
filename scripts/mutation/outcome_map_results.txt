@@ -1,0 +1,11 @@
+# mutation run at cec9c49b4bf72fd5022f4a7eeba8b37106b14b66
+# outcome_map_mutations.py: 6 mutants against compiler/chimi
+BASELINE ok  [language -- map_outcomes_render_their_entries_on_both_backends] (96s)
+KILLED       native writes an empty map as pairs [language -- map_outcomes_render_their_entries_on_both_backends] (11s)
+KILLED       native drops the comma between pairs [language -- map_outcomes_render_their_entries_on_both_backends] (11s)
+KILLED       native writes a pair value before its key [language -- map_outcomes_render_their_entries_on_both_backends] (10s)
+KILLED       interpreter writes pairs in reverse key order [language -- map_outcomes_render_their_entries_on_both_backends] (17s)
+KILLED       interpreter writes a pair value before its key [language -- map_outcomes_render_their_entries_on_both_backends] (12s)
+KILLED       interpreter writes Text-keyed maps as pairs [language -- map_outcomes_render_their_entries_on_both_backends] (23s)
+# result: every mutant killed
+EXIT 0
