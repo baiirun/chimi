@@ -1677,6 +1677,7 @@ fn text_holding_nul_keeps_every_byte_on_both_backends() {
             "import std/debug as Debug\n",
             "import std/json as Json\n",
             "import std/json.{Value}\n",
+            "import std/duration as Duration\n",
             "fn flag(value: Bool) -> Text {\n",
             "  case value {\n",
             "    True -> \"T\"\n",
@@ -1687,6 +1688,12 @@ fn text_holding_nul_keeps_every_byte_on_both_backends() {
             "  case text {\n",
             "    \"a\\u{0}b\" -> \"exact\"\n",
             "    _ -> \"other\"\n",
+            "  }\n",
+            "}\n",
+            "fn duration(text: Text) -> Text {\n",
+            "  case Duration.parse(text) {\n",
+            "    Success(_) -> \"parsed\"\n",
+            "    Failure(_) -> \"rejected\"\n",
             "  }\n",
             "}\n",
             "fn decoded_length(source: Text) -> Int {\n",
@@ -1705,14 +1712,18 @@ fn text_holding_nul_keeps_every_byte_on_both_backends() {
             "    \"${Text.byte_length(joined)}\",\n",
             "    \"${List.length(parts)}\",\n",
             "    Text.replace(joined, \"\\u{0}\", \"-\"),\n",
+            "    Text.replace(\"a\\u{0}b\", \"a\", \"z\"),\n",
+            "    Text.join(Text.split(\"x,\\u{0}y\", \",\"), \"+\"),\n",
             "    \"${Text.byte_length(Text.trim(\" a\\u{0} \"))}\",\n",
             "    flag(text == \"a\\u{0}c\"),\n",
+            "    flag(\"a\" == \"a\\u{0}\"),\n",
             "    flag(Text.contains(text, \"b\")),\n",
             "    flag(Text.starts_with(text, \"a\\u{0}b\")),\n",
             "    flag(Text.ends_with(joined, \"bc\")),\n",
             "    tag(text),\n",
             "    tag(\"a\\u{0}c\"),\n",
             "    Debug.render(text),\n",
+            "    duration(\"1s\\u{0}\"),\n",
             "    Json.encode(Json.text(text)),\n",
             "    \"${decoded_length(\"\\\"x\\\\u0000y\\\"\")}\",\n",
             "    joined,\n",
@@ -1724,7 +1735,8 @@ fn text_holding_nul_keeps_every_byte_on_both_backends() {
         outcome,
         concat!(
             "\"outcome\":\"success\",\"value\":",
-            "\"3|4|2|a-bc|2|F|T|T|T|exact|other|\\\"a\\\\u{0}b\\\"|\\\"a\\\\u0000b\\\"|3|a\\u0000bc\""
+            "\"3|4|2|a-bc|z\\u0000b|x+\\u0000y|2|F|F|T|T|T|exact|other|\\\"a\\\\u{0}b\\\"|rejected|",
+            "\\\"a\\\\u0000b\\\"|3|a\\u0000bc\""
         )
     );
 }
