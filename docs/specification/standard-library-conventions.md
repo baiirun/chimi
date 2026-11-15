@@ -375,7 +375,7 @@ Callbacks receive a tuple only where a function produces tuples, such as
 - Callers handle a whole family with one failure-type pattern, and combine
   families with `|`:
 
-<!-- chimi: pending ts-0ba63e ts-80cbfb -->
+<!-- chimi: check -->
 ```chimi
 import std/int as Int
 import std/int.{ParseError}
@@ -441,7 +441,7 @@ Helpers stay a small, fixed set. Anything with more than one decision is a
 the standard library. `unwrap_or_fail` turns absence into a failure in the
 row, which is how most service code meets a missing record:
 
-<!-- chimi: pending ts-0ba63e ts-80cbfb -->
+<!-- chimi: check -->
 ```chimi
 import std/map as Map
 import std/map.{Map}
