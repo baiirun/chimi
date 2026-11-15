@@ -2543,15 +2543,23 @@ static ChimiValue *map_get_node(MapNode *node, const ChimiValue *key) {
    keys. For ordered types it is the source-level order; for types that are only
    equatable (records, maps, Json.Value) it is an internal total order consistent
    with equality. It mirrors execution/structural.rs. The walk keeps its own work
-   stack on the heap, so nesting depth never costs host stack. */
+   stack, so nesting depth never costs host stack: the first COMPARE_INLINE_STEPS
+   steps live in the caller's frame, which covers comparing scalars and small
+   values without a heap allocation, and deeper walks move to the heap. */
+enum { COMPARE_INLINE_STEPS = 32 };
 typedef struct { const ChimiValue *left; const ChimiValue *right; int decided; } CompareStep;
-typedef struct { CompareStep *steps; size_t length; size_t capacity; } CompareStack;
+typedef struct {
+  CompareStep *steps; size_t length; size_t capacity;
+  CompareStep inline_steps[COMPARE_INLINE_STEPS];
+} CompareStack;
 
 static void compare_push(CompareStack *stack, const ChimiValue *left, const ChimiValue *right, int decided) {
   if (stack->length == stack->capacity) {
-    size_t capacity = stack->capacity ? stack->capacity * 2 : 64;
-    CompareStep *steps = realloc(stack->steps, capacity * sizeof(*steps));
+    size_t capacity = stack->capacity * 2;
+    bool on_heap = stack->steps != stack->inline_steps;
+    CompareStep *steps = realloc(on_heap ? stack->steps : NULL, capacity * sizeof(*steps));
     if (steps == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+    if (!on_heap) memcpy(steps, stack->inline_steps, stack->length * sizeof(*steps));
     stack->steps = steps; stack->capacity = capacity;
   }
   stack->steps[stack->length++] = (CompareStep){left, right, decided};
@@ -2849,7 +2857,8 @@ static uint32_t constructor_ordinal(uint32_t symbol) {
 
 /* Requires: both values have the same equatable type. Returns -1, 0, or 1. */
 static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *right_root) {
-  CompareStack stack = {0}; int order = 0;
+  CompareStack stack; int order = 0;
+  stack.steps = stack.inline_steps; stack.length = 0; stack.capacity = COMPARE_INLINE_STEPS;
   compare_push(&stack, left_root, right_root, 0);
   while (order == 0 && stack.length != 0) {
     CompareStep step = stack.steps[--stack.length];
@@ -2939,7 +2948,7 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
         break;
     }
   }
-  free(stack.steps);
+  if (stack.steps != stack.inline_steps) free(stack.steps);
   return order;
 }
 
