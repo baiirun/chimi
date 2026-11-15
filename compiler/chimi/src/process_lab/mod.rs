@@ -437,7 +437,11 @@ mod tests {
     // scenario, or mixes kinds into one report.
     #[test]
     fn unlocked_failures_fail_the_report_and_locked_scenarios_do_not_run() {
-        let report = run_scenarios(&PROBES, Kind::Core, &Options::default()).unwrap();
+        let below_the_last_stage = Options {
+            through: Stage::U9,
+            ..Options::default()
+        };
+        let report = run_scenarios(&PROBES, Kind::Core, &below_the_last_stage).unwrap();
         assert_eq!(
             report.scenarios,
             [
@@ -459,7 +463,7 @@ mod tests {
         );
         let only = Options {
             scenario: Some(&PROBES[0]),
-            ..Options::default()
+            ..below_the_last_stage
         };
         assert!(
             !run_scenarios(&PROBES, Kind::Static, &only)
