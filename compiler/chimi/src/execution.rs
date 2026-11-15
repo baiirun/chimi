@@ -1752,6 +1752,7 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::ProcessCapacity
             | StandardFunction::ProcessMonitor
             | StandardFunction::ProcessUnmonitor
+            | StandardFunction::ProcessHandoffSpec
             | StandardFunction::SupervisorProcess
             | StandardFunction::SupervisorSupervisor
             | StandardFunction::SupervisorPolicy
@@ -1759,6 +1760,7 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::SupervisorStart
             | StandardFunction::SupervisorStartProcess
             | StandardFunction::SupervisorStartSupervisor
+            | StandardFunction::SupervisorStartHandoff
             | StandardFunction::SupervisorAddress
             | StandardFunction::SupervisorRemoveProcess
             | StandardFunction::SupervisorRemoveSupervisor

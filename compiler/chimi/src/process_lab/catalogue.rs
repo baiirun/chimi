@@ -6,7 +6,7 @@ use super::Kind;
 
 /// The last stage whose scenarios must pass. Each ts-6ccbc9 commit that
 /// completes a stage bumps this in the same commit.
-pub const CURRENT_STAGE: Stage = Stage::U11;
+pub const CURRENT_STAGE: Stage = Stage::U12;
 
 /// An implementation stage from the lab's unlock order.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -23,10 +23,11 @@ pub enum Stage {
     U9,
     U10,
     U11,
+    U12,
 }
 
 impl Stage {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::U0,
         Self::U1,
         Self::U2,
@@ -39,6 +40,7 @@ impl Stage {
         Self::U9,
         Self::U10,
         Self::U11,
+        Self::U12,
     ];
 
     pub fn name(self) -> &'static str {
@@ -55,6 +57,7 @@ impl Stage {
             Self::U9 => "U9",
             Self::U10 => "U10",
             Self::U11 => "U11",
+            Self::U12 => "U12",
         }
     }
 
@@ -157,7 +160,7 @@ const TASK_TERMINAL: &[&str] = &["task_terminal"];
 
 use Stage::*;
 
-pub static SCENARIOS: [Scenario; 141] = [
+pub static SCENARIOS: [Scenario; 152] = [
     // Static: compile-pass.
     fixture("SP01", "static-contract-example", U1),
     fixture("SP02", "spec-inside-using-shareable-provider", U2),
@@ -168,6 +171,7 @@ pub static SCENARIOS: [Scenario; 141] = [
     fixture("SP07", "zero-deadline-and-zero-limit-in-range", U1),
     fixture("SP08", "rendered-send-and-start-contracts", U1),
     fixture("SP09", "same-process-name-in-two-modules", U1),
+    fixture("SP10", "handoff-start-matches-every-handoff-error", U12),
     // Static: compile-fail.
     fixture("SF01", "body-needs-unshareable-provider", U2),
     fixture("SF02", "body-captures-channel-receiver", U2),
@@ -197,6 +201,9 @@ pub static SCENARIOS: [Scenario; 141] = [
     fixture("SF26", "start-case-has-capacity-reached-arm", U1),
     fixture("SF27", "monitor-notice-must-not-fail", U11),
     fixture("SF28", "monitor-notice-is-kept-by-the-monitor", U11),
+    fixture("SF29", "argument-used-after-start-handoff", U12),
+    fixture("SF30", "handoff-body-captures-receiver", U12),
+    fixture("SF31", "handoff-argument-holds-task", U12),
     // Verified Core.
     Scenario::new(
         "CO01",
@@ -241,6 +248,9 @@ pub static SCENARIOS: [Scenario; 141] = [
     fixture("MB16", "unmonitor-removes-queued-notice", U11),
     fixture("MB17", "watcher-end-releases-notices", U11),
     fixture("MB18", "named-monitor-watches-one-incarnation", U11),
+    fixture("MB19", "handoff-argument-belongs-to-the-incarnation", U12),
+    fixture("MB20", "handoff-member-is-never-restarted", U12),
+    fixture("MB21", "stopped-supervisor-hands-the-argument-back", U12),
     // Runtime: routing.
     fixture("RT01", "named-follows-replacement-direct-goes-stale", U6),
     fixture("RT02", "never-member-name-released", U6),
@@ -316,6 +326,10 @@ pub static SCENARIOS: [Scenario; 141] = [
         HEAP_BOUNDARY,
     ),
     fixture("CB08", "provider-closure-per-incarnation", U6),
+    fixture("CB09", "receiver-sent-to-process-outlives-sender", U12),
+    fixture("CB10", "unread-message-aborts-carried-channel", U12),
+    fixture("CB11", "unstarted-handoff-argument-aborts-its-channel", U12),
+    fixture("CB12", "refused-send-hands-the-receiver-back", U12),
     // Heap: memory flatness.
     fixture("MF01", "mailbox-memory-flat-over-uptime", U5).runs(&["10000", "1000000"]),
     fixture("MF02", "memory-flat-over-restarts", U10).runs(&["100", "10000"]),

@@ -119,6 +119,12 @@ pub(crate) enum StandardType {
     ProcessMonitor,
     /// `std/process.Down`: how a monitored incarnation ended.
     ProcessDown,
+    /// `std/process.HandoffSpec<A, M, E>`: a body that takes an argument of type
+    /// `A`, started once by `Supervisor.start_handoff` and never restarted.
+    ProcessHandoffSpec,
+    /// `std/supervisor.HandoffError<A>`: a refused handoff start, which hands
+    /// the argument back.
+    SupervisorHandoffError,
     /// `std/cause.Cause`: the diagnostic record beside a failure, a defect, or a
     /// cancellation.
     Cause,
@@ -143,6 +149,7 @@ impl StandardType {
                 | Self::DurationParseError
                 | Self::ProcessSendError
                 | Self::SupervisorStartError
+                | Self::SupervisorHandoffError
                 | Self::Timeout
         )
     }
@@ -193,6 +200,8 @@ impl StandardType {
             Self::Timeout => "Timeout",
             Self::ProcessMonitor => "Monitor",
             Self::ProcessDown => "Down",
+            Self::ProcessHandoffSpec => "HandoffSpec",
+            Self::SupervisorHandoffError => "HandoffError",
             Self::Cause => "Cause",
         }
     }
@@ -207,6 +216,7 @@ impl StandardType {
             Self::ProcessAddress
             | Self::ProcessInbox
             | Self::ProcessSpec
+            | Self::ProcessHandoffSpec
             | Self::ProcessMonitor
             | Self::SupervisorMember
             | Self::SupervisorPolicy
@@ -245,6 +255,7 @@ impl StandardType {
             | Self::ProcessDown
             | Self::SupervisorRestart
             | Self::SupervisorStartError
+            | Self::SupervisorHandoffError
             | Self::Decimal
             | Self::Bytes
             | Self::Instant
@@ -389,6 +400,8 @@ pub(crate) enum StandardFunction {
     ProcessCapacity,
     ProcessMonitor,
     ProcessUnmonitor,
+    /// `Process.handoff_spec(body, capacity, shutdown_within)`.
+    ProcessHandoffSpec,
     SupervisorProcess,
     SupervisorSupervisor,
     SupervisorPolicy,
@@ -396,6 +409,9 @@ pub(crate) enum StandardFunction {
     SupervisorStart,
     SupervisorStartProcess,
     SupervisorStartSupervisor,
+    /// `Supervisor.start_handoff(running, spec, argument)`: starts one
+    /// never-restarted incarnation that owns `argument`.
+    SupervisorStartHandoff,
     SupervisorAddress,
     SupervisorRemoveProcess,
     SupervisorRemoveSupervisor,
@@ -481,7 +497,7 @@ pub(crate) enum StandardFunction {
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 85] = [
+    pub(crate) const ALL: [Self; 87] = [
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -541,6 +557,7 @@ impl StandardFunction {
         Self::ProcessCapacity,
         Self::ProcessMonitor,
         Self::ProcessUnmonitor,
+        Self::ProcessHandoffSpec,
         Self::SupervisorProcess,
         Self::SupervisorSupervisor,
         Self::SupervisorPolicy,
@@ -548,6 +565,7 @@ impl StandardFunction {
         Self::SupervisorStart,
         Self::SupervisorStartProcess,
         Self::SupervisorStartSupervisor,
+        Self::SupervisorStartHandoff,
         Self::SupervisorAddress,
         Self::SupervisorRemoveProcess,
         Self::SupervisorRemoveSupervisor,
@@ -579,7 +597,8 @@ impl StandardFunction {
             | Self::ProcessQueued
             | Self::ProcessCapacity
             | Self::ProcessMonitor
-            | Self::ProcessUnmonitor => Some(StandardModule::Process),
+            | Self::ProcessUnmonitor
+            | Self::ProcessHandoffSpec => Some(StandardModule::Process),
             Self::SupervisorProcess
             | Self::SupervisorSupervisor
             | Self::SupervisorPolicy
@@ -587,6 +606,7 @@ impl StandardFunction {
             | Self::SupervisorStart
             | Self::SupervisorStartProcess
             | Self::SupervisorStartSupervisor
+            | Self::SupervisorStartHandoff
             | Self::SupervisorAddress
             | Self::SupervisorRemoveProcess
             | Self::SupervisorRemoveSupervisor
@@ -799,6 +819,7 @@ impl StandardFunction {
             Self::ProcessCapacity => "capacity",
             Self::ProcessMonitor => "monitor",
             Self::ProcessUnmonitor => "unmonitor",
+            Self::ProcessHandoffSpec => "handoff_spec",
             Self::SupervisorProcess => "process",
             Self::SupervisorSupervisor => "supervisor",
             Self::SupervisorPolicy => "policy",
@@ -806,6 +827,7 @@ impl StandardFunction {
             Self::SupervisorStart => "start",
             Self::SupervisorStartProcess => "start_process",
             Self::SupervisorStartSupervisor => "start_supervisor",
+            Self::SupervisorStartHandoff => "start_handoff",
             Self::SupervisorAddress => "address",
             Self::SupervisorRemoveProcess => "remove_process",
             Self::SupervisorRemoveSupervisor => "remove_supervisor",
@@ -903,6 +925,7 @@ impl StandardFunction {
                 | Self::SupervisorStart
                 | Self::SupervisorStartProcess
                 | Self::SupervisorStartSupervisor
+                | Self::SupervisorStartHandoff
                 | Self::SupervisorAddress
                 | Self::SupervisorRemoveProcess
                 | Self::SupervisorRemoveSupervisor
@@ -1070,10 +1093,14 @@ pub(crate) enum StandardConstructor {
     DownDefected,
     DownStopped,
     DownUnavailable,
+    /// `HandoffError.CapacityReached(argument: A)`.
+    HandoffCapacityReached,
+    /// `HandoffError.Stopped(argument: A)`.
+    HandoffStopped,
 }
 
 impl StandardConstructor {
-    pub(crate) const ALL: [Self; 49] = [
+    pub(crate) const ALL: [Self; 51] = [
         Self::IntParseEmpty,
         Self::IntParseInvalidDigit,
         Self::IntParseOutOfRange,
@@ -1123,6 +1150,8 @@ impl StandardConstructor {
         Self::DownDefected,
         Self::DownStopped,
         Self::DownUnavailable,
+        Self::HandoffCapacityReached,
+        Self::HandoffStopped,
     ];
 
     pub(crate) const fn type_kind(self) -> StandardType {
@@ -1168,6 +1197,9 @@ impl StandardConstructor {
             | Self::DownDefected
             | Self::DownStopped
             | Self::DownUnavailable => StandardType::ProcessDown,
+            Self::HandoffCapacityReached | Self::HandoffStopped => {
+                StandardType::SupervisorHandoffError
+            }
         }
     }
 
@@ -1203,7 +1235,8 @@ impl StandardConstructor {
             StandardType::ProcessSendError
             | StandardType::ProcessDown
             | StandardType::SupervisorRestart
-            | StandardType::SupervisorStartError => None,
+            | StandardType::SupervisorStartError
+            | StandardType::SupervisorHandoffError => None,
             StandardType::ProcessAddress
             | StandardType::ProcessInbox
             | StandardType::ProcessSpec
@@ -1216,7 +1249,8 @@ impl StandardConstructor {
             | StandardType::Clock
             | StandardType::Instant
             | StandardType::Timestamp
-            | StandardType::ProcessMonitor => None,
+            | StandardType::ProcessMonitor
+            | StandardType::ProcessHandoffSpec => None,
             // Written type-qualified, `Timeout.TimedOut`, as the spec does.
             StandardType::Timeout => None,
             StandardType::Console
@@ -1282,6 +1316,8 @@ impl StandardConstructor {
             Self::DownDefected => "Defected",
             Self::DownStopped => "Stopped",
             Self::DownUnavailable => "Unavailable",
+            Self::HandoffCapacityReached => "CapacityReached",
+            Self::HandoffStopped => "Stopped",
         }
     }
 
@@ -1335,6 +1371,7 @@ impl StandardConstructor {
             | Self::DurationParseOutOfRange => &[],
             Self::ProcessSendFull | Self::ProcessSendUnavailable => &["message"],
             Self::StartNameTaken => &["name"],
+            Self::HandoffCapacityReached | Self::HandoffStopped => &["argument"],
             Self::TimeoutTimedOut => &["limit"],
             Self::RestartNever
             | Self::RestartOnDefect
@@ -1415,10 +1452,18 @@ pub(crate) enum StandardGeneric {
     ProcessMonitorMessage,
     ProcessMonitorTarget,
     ProcessUnmonitorMessage,
+    ProcessHandoffSpecArgument,
+    ProcessHandoffSpecMessage,
+    ProcessHandoffSpecFailures,
+    ProcessHandoffSpecNeeds,
+    /// Also the parameter of the `HandoffError` constructors.
+    SupervisorStartHandoffArgument,
+    SupervisorStartHandoffMessage,
+    SupervisorStartHandoffFailures,
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 35] = [
+    pub(crate) const ALL: [Self; 42] = [
         Self::FileState,
         Self::FileFailures,
         Self::FileNeeds,
@@ -1454,6 +1499,13 @@ impl StandardGeneric {
         Self::ProcessMonitorMessage,
         Self::ProcessMonitorTarget,
         Self::ProcessUnmonitorMessage,
+        Self::ProcessHandoffSpecArgument,
+        Self::ProcessHandoffSpecMessage,
+        Self::ProcessHandoffSpecFailures,
+        Self::ProcessHandoffSpecNeeds,
+        Self::SupervisorStartHandoffArgument,
+        Self::SupervisorStartHandoffMessage,
+        Self::SupervisorStartHandoffFailures,
     ];
 
     /// The name shown in contracts and diagnostics. Names repeat across
@@ -1483,13 +1535,18 @@ impl StandardGeneric {
             | Self::ProcessQueuedMessage
             | Self::ProcessCapacityMessage
             | Self::ProcessMonitorMessage
-            | Self::ProcessUnmonitorMessage => "M",
+            | Self::ProcessUnmonitorMessage
+            | Self::ProcessHandoffSpecMessage
+            | Self::SupervisorStartHandoffMessage => "M",
+            Self::ProcessHandoffSpecArgument | Self::SupervisorStartHandoffArgument => "A",
             Self::ProcessMonitorTarget => "T",
             Self::ProcessSpecFailures
             | Self::ProcessRegisterFailures
             | Self::SupervisorProcessFailures
-            | Self::SupervisorStartProcessFailures => "E",
-            Self::ProcessSpecNeeds => "R",
+            | Self::SupervisorStartProcessFailures
+            | Self::ProcessHandoffSpecFailures
+            | Self::SupervisorStartHandoffFailures => "E",
+            Self::ProcessSpecNeeds | Self::ProcessHandoffSpecNeeds => "R",
             Self::TimeoutValue => "T",
             Self::TimeoutFailures => "E",
             Self::TimeoutNeeds => "R",
@@ -1503,8 +1560,13 @@ impl StandardGeneric {
             | Self::ProcessSpecFailures
             | Self::ProcessRegisterFailures
             | Self::SupervisorProcessFailures
-            | Self::SupervisorStartProcessFailures => StandardGenericKind::FailureSet,
-            Self::FileNeeds | Self::ProcessSpecNeeds | Self::TimeoutNeeds => {
+            | Self::SupervisorStartProcessFailures
+            | Self::ProcessHandoffSpecFailures
+            | Self::SupervisorStartHandoffFailures => StandardGenericKind::FailureSet,
+            Self::FileNeeds
+            | Self::ProcessSpecNeeds
+            | Self::ProcessHandoffSpecNeeds
+            | Self::TimeoutNeeds => {
                 StandardGenericKind::NeedsRow
             }
             _ => StandardGenericKind::Value,
