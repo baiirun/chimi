@@ -334,7 +334,7 @@ pub static SCENARIOS: [Scenario; 132] = [
         U5,
         Form::Check(super::observability_kind::trace_abi_version),
     ),
-    fixture("OB08", "trace-off-root-names-process-defect", U10)
+    fixture("OB08", "trace-off-root-names-process-defect", U5)
         .defects()
         .runs(&["overflow", "divide"]),
     fixture("IP01", "interpreter-rejects-processes", U5).defects(),

@@ -648,7 +648,8 @@ pub unsafe extern "C" fn chimi_scheduler_run(
         violation_context: config.capability_violation_context,
     });
     scheduler.set_trace_sink(config.trace_sink, config.trace_context);
-    scheduler.set_process_defect_report(config.process_defect_report, config.process_defect_context);
+    scheduler
+        .set_process_defect_report(config.process_defect_report, config.process_defect_context);
     let Ok(root) = scheduler.start_root_with_context(entry, config.context) else {
         return defect_outcome(SCHEDULER_DEFECT_CODE);
     };

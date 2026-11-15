@@ -12,10 +12,9 @@ mod release_tests;
 pub use self::clock::{ClockMode, Instant, TimerId};
 pub use self::process::{
     Address, ChimiProcessTermination, IncarnationId, Member, MembershipId, MessageRelease, NameId,
-    Policy, PolicyError, ProcessDefectReport,
-    ProcessError, ProcessEvent, ProcessEventKind, ProcessMetrics, ProcessSpec, Progress, Restart,
-    Restarts, SendFailure, SendOutcome, SendRejected, SpecContextRelease, StartError,
-    SupervisorId, SupervisorState, TerminalCause,
+    Policy, PolicyError, ProcessDefectReport, ProcessError, ProcessEvent, ProcessEventKind,
+    ProcessMetrics, ProcessSpec, Progress, Restart, Restarts, SendFailure, SendOutcome,
+    SendRejected, SpecContextRelease, StartError, SupervisorId, SupervisorState, TerminalCause,
 };
 pub use self::process_abi::{
     ChimiDeadlockWaiter, ChimiProcessRequest, ChimiProcessSpec, ChimiSchedulerConfig,

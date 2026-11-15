@@ -572,7 +572,11 @@ pub(super) enum Receipt {
 impl Scheduler {
     /// Installs the hook that receives every defected incarnation's
     /// termination record, under any trace mode.
-    pub fn set_process_defect_report(&mut self, report: Option<ProcessDefectReport>, context: *mut c_void) {
+    pub fn set_process_defect_report(
+        &mut self,
+        report: Option<ProcessDefectReport>,
+        context: *mut c_void,
+    ) {
         self.kernel.defect_report = report.map(|report| (report, context));
     }
 
