@@ -11,6 +11,7 @@ mod set_operations;
 mod structural;
 mod teardown;
 
+use crate::decimal::decimal_binary;
 use crate::executable::{
     CoreArm, CoreLiteral, CoreOperation, CorePattern, CoreProgram, CoreStep, CoreSymbolKind,
     LegacyCoreProgram,
@@ -212,6 +213,9 @@ pub enum ExecutionValue {
     },
     /// Nanoseconds.
     Duration(i64),
+    /// A `std/decimal.Decimal` in its normalized text, as `Debug.render` writes
+    /// it, so equal values are equal outcomes.
+    Decimal(String),
     Record(Vec<ValueField>),
     Constructed {
         type_name: String,
@@ -367,6 +371,8 @@ enum RuntimeValue {
     },
     /// A `std/duration.Duration`: a signed count of nanoseconds.
     Duration(i64),
+    /// A `std/decimal.Decimal`.
+    Decimal(crate::decimal::Decimal),
     /// A named `std/process.Address`: the `process name` declaration's symbol.
     ProcessAddress(SymbolId),
     /// Fields of records and constructed values are shared like list nodes and
@@ -1003,6 +1009,9 @@ impl<'core> Evaluator<'core> {
                     },
                 },
                 RuntimeValue::Float(value) => Control::Success(RuntimeValue::Float(-value)),
+                RuntimeValue::Decimal(value) => {
+                    Control::Success(RuntimeValue::Decimal(value.negate()))
+                }
                 _ => Control::Defect {
                     message: "verified unary operand is not an integer".to_owned(),
                     node: Some(node_id),
@@ -1579,15 +1588,13 @@ impl<'core> Evaluator<'core> {
             StandardFunction::JsonNumberToDecimal => {
                 self.invoke_json_operation(function, arguments, span, call_node, environment)
             }
-            StandardFunction::DecimalOf
-            | StandardFunction::DecimalParseChecked
+            StandardFunction::DecimalScaled
+            | StandardFunction::DecimalRead
             | StandardFunction::DecimalToText
-            | StandardFunction::DecimalAdd
-            | StandardFunction::DecimalSubtract
-            | StandardFunction::DecimalMultiply
-            | StandardFunction::DecimalNegate
+            | StandardFunction::DecimalAddChecked
+            | StandardFunction::DecimalSubtractChecked
+            | StandardFunction::DecimalMultiplyChecked
             | StandardFunction::DecimalDivideRounded
-            | StandardFunction::DecimalCompare
             | StandardFunction::DecimalToFloat => {
                 self.invoke_decimal_operation(function, arguments, span, call_node, environment)
             }
@@ -2217,6 +2224,12 @@ impl<'core> Evaluator<'core> {
                         Err(message) => defect(message),
                     }
                 }
+                (RuntimeValue::Decimal(left), RuntimeValue::Decimal(right)) => {
+                    match decimal_binary(arithmetic, left, right) {
+                        Ok(value) => Control::Success(RuntimeValue::Decimal(value)),
+                        Err(message) => defect(message),
+                    }
+                }
                 _ => defect("verified binary operands are not numbers".to_owned()),
             };
         }
@@ -2607,6 +2620,7 @@ fn public_value(value: &RuntimeValue) -> ExecutionValue {
             end: *end,
         },
         RuntimeValue::Duration(value) => ExecutionValue::Duration(*value),
+        RuntimeValue::Decimal(value) => ExecutionValue::Decimal(value.normalized_text()),
         RuntimeValue::Record(fields) => ExecutionValue::Record(public_fields(fields)),
         RuntimeValue::Constructed {
             type_name,
@@ -2774,6 +2788,11 @@ fn write_json_value(output: &mut String, value: &ExecutionValue) {
             ExecutionValue::Duration(nanoseconds) => {
                 write!(output, "{{\"duration\":{nanoseconds}}}")
                     .expect("writing JSON to a string cannot fail")
+            }
+            ExecutionValue::Decimal(text) => {
+                output.push_str("{\"decimal\":");
+                write_json_string(output, text);
+                output.push('}');
             }
             ExecutionValue::Record(fields) => {
                 output.push('{');

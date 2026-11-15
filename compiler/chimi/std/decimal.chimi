@@ -1,0 +1,209 @@
+/// Exact base-10 numbers for money and other quantities that `Float` cannot
+/// hold exactly. A `Decimal` is a signed coefficient of at most 38 digits and
+/// a scale from 0 to 38, built with `Decimal.of(1999, 2)` for `19.99`.
+///
+/// `+`, `-`, unary `-`, `*`, and the comparison operators apply to two
+/// `Decimal` operands. `+` and `-` keep the larger scale, and `*` adds the
+/// scales. A result outside 38 digits or scale 38 defects. `/` and `%` are
+/// not operators on `Decimal`, because division needs a result scale and a
+/// rounding mode: use `Decimal.divide`.
+///
+/// Equality and order are numeric, so `Decimal.of(150, 2) == Decimal.of(15, 1)`.
+/// The scale is kept for `Decimal.to_text`, which writes `1.50`; `Debug.render`
+/// writes the normalized `1.5`, because equal values render the same.
+
+import std/debug as Debug
+import std/int as Int
+import std/text as Text
+
+// 1. Public types.
+
+/// An exact decimal number: a coefficient times `10^-scale`.
+pub native type Decimal
+
+/// How `Decimal.divide` rounds a quotient that does not fit its scale.
+pub enum Rounding {
+  /// Drops the extra digits: `2.7` and `-2.7` become `2` and `-2`.
+  TowardZero
+  /// Rounds every inexact quotient away from zero: `2.1` becomes `3`.
+  AwayFromZero
+  /// Rounds toward negative infinity: `-2.1` becomes `-3`.
+  Floor
+  /// Rounds toward positive infinity: `2.1` becomes `3`.
+  Ceiling
+  /// Rounds to the nearest, with ties toward zero: `2.5` becomes `2`.
+  HalfTowardZero
+  /// Rounds to the nearest, with ties away from zero: `2.5` becomes `3`.
+  HalfAwayFromZero
+  /// Rounds to the nearest, with ties to an even last digit: `2.5` becomes
+  /// `2` and `3.5` becomes `4`. Also called banker's rounding.
+  HalfEven
+}
+
+// 2. Failure types.
+
+/// Failures of `Decimal.parse`.
+pub enum ParseError {
+  /// The text is empty.
+  Empty
+  /// The text is not digits with an optional fraction and leading `-`.
+  Invalid
+  /// The number has more than 38 significant digits or more than 38
+  /// fraction digits.
+  OutOfRange
+}
+
+// 3. Constants.
+
+/// The largest scale, and the most significant digits, a `Decimal` holds.
+const largest_scale = 38
+
+// 4. Constructors.
+
+/// Returns `coefficient × 10^-scale`, so `Decimal.of(1999, 2)` is `19.99`.
+///
+/// Defects when: `scale` is outside `0..=38`.
+/// Cost: O(1).
+pub fn of(coefficient: Int, scale: Int) -> Decimal {
+  case scale < 0 or scale > largest_scale {
+    True -> Debug.crash("Decimal.of: scale must be in 0..=38, got ${scale}")
+    False -> scaled(coefficient, scale)
+  }
+}
+
+// 6. Arithmetic.
+
+/// Returns `left + right` at the larger scale, or `None` when the sum needs
+/// more than 38 digits.
+///
+/// Cost: O(1).
+pub native fn add_checked(left: Decimal, right: Decimal) -> Option<Decimal>
+
+/// Returns `left - right` at the larger scale, or `None` when the difference
+/// needs more than 38 digits.
+///
+/// Cost: O(1).
+pub native fn subtract_checked(left: Decimal, right: Decimal) -> Option<Decimal>
+
+/// Returns `left * right` at the sum of the scales, or `None` when the
+/// product needs more than 38 digits or a scale above 38.
+///
+/// Cost: O(1).
+pub native fn multiply_checked(left: Decimal, right: Decimal) -> Option<Decimal>
+
+/// Returns `dividend / divisor` with `scale` fraction digits, rounded with
+/// `rounding`, so `Decimal.divide(Decimal.of(1, 0), Decimal.of(3, 0), 2,
+/// Rounding.HalfEven)` is `0.33`.
+///
+/// Defects when: `divisor` is zero; `scale` is outside `0..=38`; the rounded
+/// quotient needs more than 38 digits.
+/// Cost: O(scale).
+pub fn divide(dividend: Decimal, divisor: Decimal, scale: Int, rounding: Rounding) -> Decimal {
+  case divisor == zero {
+    True -> Debug.crash("Decimal.divide: divisor must not be zero")
+    False -> case divide_checked(dividend, divisor, scale, rounding) {
+      Some(quotient) -> quotient
+      None -> Debug.crash("Decimal.divide: the quotient of ${to_text(dividend)} / ${to_text(divisor)} at scale ${scale} needs more than 38 digits")
+    }
+  }
+}
+
+/// Returns `dividend / divisor` like `Decimal.divide`, or `None` when
+/// `divisor` is zero or the rounded quotient needs more than 38 digits.
+///
+/// Defects when: `scale` is outside `0..=38`.
+/// Cost: O(scale).
+pub fn divide_checked(dividend: Decimal, divisor: Decimal, scale: Int, rounding: Rounding) -> Option<Decimal> {
+  case scale < 0 or scale > largest_scale {
+    True -> Debug.crash("Decimal.divide: scale must be in 0..=38, got ${scale}")
+    False -> divide_rounded(dividend, divisor, scale, rounding_code(rounding))
+  }
+}
+
+// 7. Conversions.
+
+/// Returns `value` with exactly its scale's fraction digits, such as `1.50`
+/// for `Decimal.of(150, 2)` and `-3` for `Decimal.of(-3, 0)`.
+/// `Decimal.parse(Decimal.to_text(value))` returns `value` at the same scale.
+///
+/// Cost: O(1).
+pub native fn to_text(value: Decimal) -> Text
+
+/// Reads a `Decimal` from digits with an optional fraction and an optional
+/// leading `-`, such as `19.99`, `-0.5`, or `007`. The scale is the number of
+/// fraction digits, so `"1.50"` has scale 2. There is no `+`, exponent,
+/// space, or `_`, and both sides of `.` need a digit.
+///
+/// Fails with: `ParseError.Empty` for empty text; `ParseError.OutOfRange`
+/// for more than 38 significant digits or more than 38 fraction digits;
+/// `ParseError.Invalid` for any other text.
+/// Cost: O(n).
+pub fn parse(text: Text) -> Decimal {
+  case read(text) {
+    Some(value) -> value
+    None -> case Text.is_empty(text) {
+      True -> Failure(ParseError.Empty)
+      False -> case is_decimal_text(text) {
+        True -> Failure(ParseError.OutOfRange)
+        False -> Failure(ParseError.Invalid)
+      }
+    }
+  }
+}
+
+/// Returns the `Float` nearest to `value`, with ties to even.
+///
+/// Cost: O(1).
+pub native fn to_float(value: Decimal) -> Float
+
+// 8. Private native core and helpers.
+
+const zero = scaled(0, 0)
+
+/// Requires: `scale` is in `0..=38`.
+native fn scaled(coefficient: Int, scale: Int) -> Decimal
+
+/// The `Decimal` that `text` spells, or `None` when it is not decimal text or
+/// is out of range.
+native fn read(text: Text) -> Option<Decimal>
+
+/// Requires: `scale` is in `0..=38`; `rounding` is a `rounding_code`.
+native fn divide_rounded(dividend: Decimal, divisor: Decimal, scale: Int, rounding: Int) -> Option<Decimal>
+
+/// The runtime's number for each rounding mode, in declaration order.
+fn rounding_code(rounding: Rounding) -> Int {
+  case rounding {
+    Rounding.TowardZero -> 0
+    Rounding.AwayFromZero -> 1
+    Rounding.Floor -> 2
+    Rounding.Ceiling -> 3
+    Rounding.HalfTowardZero -> 4
+    Rounding.HalfAwayFromZero -> 5
+    Rounding.HalfEven -> 6
+  }
+}
+
+/// Whether `text` has the shape `Decimal.parse` reads, whatever its size.
+fn is_decimal_text(text: Text) -> Bool {
+  let unsigned = case Text.strip_prefix(text, "-") {
+    Some(rest) -> rest
+    None -> text
+  }
+  case Text.split_once(unsigned, ".") {
+    Some((whole, fraction)) -> is_digits(whole) and is_digits(fraction)
+    None -> is_digits(unsigned)
+  }
+}
+
+/// Whether `text` is one or more ASCII digits. `Int.parse` reads exactly an
+/// optional `-` and digits, and reports `OutOfRange` only for digits.
+fn is_digits(text: Text) -> Bool {
+  case Text.starts_with(text, "-") {
+    True -> False
+    False -> case Int.parse(text) {
+      Success(_) -> True
+      Failure(Int.ParseError.OutOfRange) -> True
+      Failure(_) -> False
+    }
+  }
+}

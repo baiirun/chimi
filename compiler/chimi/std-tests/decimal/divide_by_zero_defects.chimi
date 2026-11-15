@@ -1,0 +1,9 @@
+// N27: division by zero is a broken precondition, whatever the zero's scale.
+import std/decimal as Decimal
+import std/decimal.{Decimal, Rounding}
+
+pub fn main() -> Decimal {
+  let one = Decimal.of(1, 0)
+  let zero = Decimal.of(0, 2)
+  Decimal.divide(one, zero, 2, Rounding.HalfEven)
+}

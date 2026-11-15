@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"defect","message":"Decimal.divide: divisor must not be zero"}

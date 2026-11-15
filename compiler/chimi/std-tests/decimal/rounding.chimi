@@ -1,0 +1,53 @@
+// Decimal.divide: every rounding mode at a tie and on each side of it, for
+// both signs, and the scale alignment of dividend, divisor, and result.
+import std/debug as Debug
+import std/decimal as Decimal
+import std/decimal.{Decimal, Rounding}
+import std/list as List
+
+const modes = [
+  Rounding.TowardZero,
+  Rounding.AwayFromZero,
+  Rounding.Floor,
+  Rounding.Ceiling,
+  Rounding.HalfTowardZero,
+  Rounding.HalfAwayFromZero,
+  Rounding.HalfEven,
+]
+
+// The quotient `numerator / denominator` at scale 0 under each mode.
+fn by_mode(numerator: Int, denominator: Int) -> Text {
+  let quotients = List.map(modes, fn(mode) {
+    Decimal.to_text(Decimal.divide(Decimal.of(numerator, 0), Decimal.of(denominator, 0), 0, mode))
+  })
+  Debug.render(quotients)
+}
+
+pub fn main() -> Text {
+  let results = [
+    by_mode(5, 2),
+    by_mode(7, 2),
+    by_mode(13, 5),
+    by_mode(12, 5),
+    by_mode(-5, 2),
+    by_mode(-7, 2),
+    by_mode(-13, 5),
+    by_mode(5, -2),
+    // A result scale that the quotient fills exactly.
+    Decimal.to_text(Decimal.divide(Decimal.of(1, 0), Decimal.of(4, 0), 2, Rounding.TowardZero)),
+    Decimal.to_text(Decimal.divide(Decimal.of(1, 0), Decimal.of(3, 0), 4, Rounding.HalfEven)),
+    Decimal.to_text(Decimal.divide(Decimal.of(5997, 2), Decimal.of(4, 0), 2, Rounding.HalfEven)),
+    // The divisor's scale raises the quotient: 1 / 0.001 is 1000.
+    Decimal.to_text(Decimal.divide(Decimal.of(1, 0), Decimal.of(1, 3), 0, Rounding.HalfEven)),
+    // The dividend's scale above the result's: 0.125 and 0.135 to two places.
+    Debug.render([
+      Decimal.divide(Decimal.of(125, 3), Decimal.of(1, 0), 2, Rounding.HalfEven),
+      Decimal.divide(Decimal.of(135, 3), Decimal.of(1, 0), 2, Rounding.HalfEven),
+    ]),
+    Debug.render([
+      Decimal.divide_checked(Decimal.of(1, 0), Decimal.of(0, 0), 2, Rounding.HalfEven),
+      Decimal.divide_checked(Decimal.of(9223372036854775807, 0), Decimal.of(1, 38), 0, Rounding.HalfEven),
+    ]),
+  ]
+  Debug.render(results)
+}

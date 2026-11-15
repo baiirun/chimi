@@ -2264,6 +2264,16 @@ impl ProjectTypeChecker {
         })
     }
 
+    /// `std/decimal.Decimal`, the one library type the operator rules name, when
+    /// the program loads `std/decimal`; no value has the type otherwise.
+    fn decimal_type(&mut self) -> Option<TypeId> {
+        let symbol = self.resolved.loaded_standard_type(StandardType::Decimal)?;
+        Some(self.intern_type(CanonicalType::Named {
+            symbol,
+            arguments: Vec::new(),
+        }))
+    }
+
     fn standard_map_type(&mut self, key: StandardGeneric, value: StandardGeneric) -> TypeId {
         let key = self.standard_generic_type(key);
         let value = self.standard_generic_type(value);
@@ -3618,15 +3628,17 @@ impl ProjectTypeChecker {
                 let float = self.builtin_type("Float");
                 let int = self.builtin_type("Int");
                 let operand_type = self.resolve_inference_type(fact.success);
+                let decimal = self.decimal_type();
                 let known_other = operand_type != int
                     && operand_type != float
+                    && Some(operand_type) != decimal
                     && operand_type != TypeId::new(0)
                     && !matches!(
                         self.types[operand_type.raw() as usize],
                         CanonicalType::InferenceVariable(_)
                     );
-                let success = if operand_type == float {
-                    float
+                let success = if operand_type == float || Some(operand_type) == decimal {
+                    operand_type
                 } else if known_other {
                     let duration = self.standard_named_type(StandardType::Duration, Vec::new());
                     let help = if operand_type == duration {
@@ -3640,7 +3652,7 @@ impl ProjectTypeChecker {
                         "T4303",
                         *range,
                         format!(
-                            "unary `-` needs an `Int` or `Float` operand, found `{found}`{help}"
+                            "unary `-` needs an `Int`, `Float`, or `Decimal` operand, found `{found}`{help}"
                         ),
                     );
                     TypeId::new(0)
@@ -5096,9 +5108,10 @@ impl ProjectTypeChecker {
             )
         };
         let symbol = binary_operator_symbol(operator);
+        let decimal = self.decimal_type();
         if let Some(found) = [left_type, right_type]
             .into_iter()
-            .find(|id| known(self, *id) && *id != int && *id != float)
+            .find(|id| known(self, *id) && *id != int && *id != float && Some(*id) != decimal)
         {
             let duration = self.standard_named_type(StandardType::Duration, Vec::new());
             let is_duration = found == duration;
@@ -5114,7 +5127,23 @@ impl ProjectTypeChecker {
                 module_id,
                 "T4303",
                 range,
-                format!("`{symbol}` needs `Int` or `Float` operands, found `{found}`{help}"),
+                format!(
+                    "`{symbol}` needs `Int`, `Float`, or `Decimal` operands, found `{found}`{help}"
+                ),
+            );
+            return poison;
+        }
+        if matches!(operator, BinaryOperator::Divide | BinaryOperator::Remainder)
+            && decimal.is_some_and(|decimal| left_type == decimal || right_type == decimal)
+        {
+            self.type_error_range(
+                module_id,
+                "T4306",
+                range,
+                format!(
+                    "`{symbol}` is not defined on `Decimal`: division needs a result scale and a \
+                     rounding mode; use `Decimal.divide(dividend, divisor, scale, rounding)`"
+                ),
             );
             return poison;
         }
@@ -5123,13 +5152,20 @@ impl ProjectTypeChecker {
                 self.type_display_name(left_type),
                 self.type_display_name(right_type),
             );
+            let help = if [left_type, right_type]
+                .iter()
+                .all(|id| *id == int || *id == float)
+            {
+                "; convert one side with `Float.from_int` or `Float.to_int`"
+            } else {
+                "; build an exact `Decimal` from an `Int` with `Decimal.of(value, 0)`"
+            };
             self.type_error_range(
                 module_id,
                 "T4302",
                 range,
                 format!(
-                    "`{symbol}` needs operands of one type, found `{left_name}` and `{right_name}`; \
-                     convert one side with `Float.from_int` or `Float.to_int`"
+                    "`{symbol}` needs operands of one type, found `{left_name}` and `{right_name}`{help}"
                 ),
             );
             return poison;

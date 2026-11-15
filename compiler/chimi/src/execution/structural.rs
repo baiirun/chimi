@@ -81,6 +81,8 @@ pub(super) fn structural_order(
             ) => (left_start, left_end).cmp(&(right_start, right_end)),
             // The single nanosecond field: numeric order.
             (RuntimeValue::Duration(left), RuntimeValue::Duration(right)) => left.cmp(right),
+            // Numeric, so `1.50 == 1.5`.
+            (RuntimeValue::Decimal(left), RuntimeValue::Decimal(right)) => left.numeric_cmp(*right),
             (RuntimeValue::ProcessAddress(left), RuntimeValue::ProcessAddress(right)) => {
                 left.cmp(right)
             }
@@ -165,6 +167,7 @@ const fn rank(value: &RuntimeValue) -> u8 {
         RuntimeValue::Range { .. } => 12,
         RuntimeValue::Duration(_) => 13,
         RuntimeValue::ProcessAddress(_) => 14,
+        RuntimeValue::Decimal(_) => 15,
     }
 }
 

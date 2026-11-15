@@ -4,6 +4,7 @@ mod compiler;
 #[cfg(feature = "native-backend")]
 #[doc(hidden)]
 pub mod concurrency_lab;
+mod decimal;
 pub mod diagnostic;
 mod duration;
 mod executable;

@@ -140,17 +140,16 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/debug.render_indented", 1, StandardFunction::DebugRenderIndented),
     pure("std/debug.crash", 1, StandardFunction::DebugCrash),
 
-    // std/decimal
-    porting("std/decimal.of", 2, StandardFunction::DecimalOf),
-    porting("std/decimal.parse_checked", 1, StandardFunction::DecimalParseChecked),
-    porting("std/decimal.to_text", 1, StandardFunction::DecimalToText),
-    porting("std/decimal.add", 2, StandardFunction::DecimalAdd),
-    porting("std/decimal.subtract", 2, StandardFunction::DecimalSubtract),
-    porting("std/decimal.multiply", 2, StandardFunction::DecimalMultiply),
-    porting("std/decimal.negate", 1, StandardFunction::DecimalNegate),
-    porting("std/decimal.divide_rounded", 4, StandardFunction::DecimalDivideRounded),
-    porting("std/decimal.compare", 2, StandardFunction::DecimalCompare),
-    porting("std/decimal.to_float", 1, StandardFunction::DecimalToFloat),
+    // std/decimal: `+`, `-`, `*`, and comparisons are operators, so only the
+    // checked forms and the constructors that validate in Chimi are native.
+    pure("std/decimal.scaled", 2, StandardFunction::DecimalScaled),
+    pure("std/decimal.read", 1, StandardFunction::DecimalRead),
+    pure("std/decimal.to_text", 1, StandardFunction::DecimalToText),
+    pure("std/decimal.add_checked", 2, StandardFunction::DecimalAddChecked),
+    pure("std/decimal.subtract_checked", 2, StandardFunction::DecimalSubtractChecked),
+    pure("std/decimal.multiply_checked", 2, StandardFunction::DecimalMultiplyChecked),
+    pure("std/decimal.divide_rounded", 4, StandardFunction::DecimalDivideRounded),
+    pure("std/decimal.to_float", 1, StandardFunction::DecimalToFloat),
 ];
 
 pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[

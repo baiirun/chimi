@@ -386,15 +386,13 @@ pub(crate) enum StandardFunction {
     SetSize,
     SetReduceItems,
     JsonNumberToDecimal,
-    DecimalOf,
-    DecimalParseChecked,
+    DecimalScaled,
+    DecimalRead,
     DecimalToText,
-    DecimalAdd,
-    DecimalSubtract,
-    DecimalMultiply,
-    DecimalNegate,
+    DecimalAddChecked,
+    DecimalSubtractChecked,
+    DecimalMultiplyChecked,
     DecimalDivideRounded,
-    DecimalCompare,
     DecimalToFloat,
 }
 
@@ -593,15 +591,13 @@ impl StandardFunction {
             | Self::SetSize
             | Self::SetReduceItems
             | Self::JsonNumberToDecimal
-            | Self::DecimalOf
-            | Self::DecimalParseChecked
+            | Self::DecimalScaled
+            | Self::DecimalRead
             | Self::DecimalToText
-            | Self::DecimalAdd
-            | Self::DecimalSubtract
-            | Self::DecimalMultiply
-            | Self::DecimalNegate
+            | Self::DecimalAddChecked
+            | Self::DecimalSubtractChecked
+            | Self::DecimalMultiplyChecked
             | Self::DecimalDivideRounded
-            | Self::DecimalCompare
             | Self::DecimalToFloat => None,
         }
     }
@@ -715,15 +711,13 @@ impl StandardFunction {
             Self::SetAdd => "add",
             Self::SetReduceItems => "reduce_items",
             Self::JsonNumberToDecimal => "number_to_decimal",
-            Self::DecimalOf => "of",
-            Self::DecimalParseChecked => "parse_checked",
+            Self::DecimalScaled => "scaled",
+            Self::DecimalRead => "read",
             Self::DecimalToText => "to_text",
-            Self::DecimalAdd => "add",
-            Self::DecimalSubtract => "subtract",
-            Self::DecimalMultiply => "multiply",
-            Self::DecimalNegate => "negate",
+            Self::DecimalAddChecked => "add_checked",
+            Self::DecimalSubtractChecked => "subtract_checked",
+            Self::DecimalMultiplyChecked => "multiply_checked",
             Self::DecimalDivideRounded => "divide_rounded",
-            Self::DecimalCompare => "compare",
             Self::DecimalToFloat => "to_float",
         }
     }

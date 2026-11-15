@@ -55,6 +55,8 @@ typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN
                VALUE_CHANNEL_COMPLETION, VALUE_TUPLE, VALUE_RANGE,
                /* A `Duration`: nanoseconds in `as.integer`. */
                VALUE_DURATION,
+               /* A `Decimal`: plain data in `as.decimal`, copied as-is. */
+               VALUE_DECIMAL,
                /* Process values (std/process, std/supervisor). Each is plain data that
                   copies as-is: identities the scheduler resolves, never pointers. */
                VALUE_PROCESS_ADDRESS, VALUE_PROCESS_INBOX, VALUE_SUPERVISOR_RUNNING,
@@ -139,6 +141,9 @@ struct ChimiValue {
     struct { uint32_t kind; uint64_t target; } address;
     /* Running: `supervisor`. A managed handle: its supervisor and membership. */
     struct { uint64_t supervisor; uint64_t membership; } managed;
+    /* The magnitude's halves (an `unsigned __int128` member would raise the
+       value's alignment), at most 38 digits; zero is never negative. */
+    struct { uint64_t high; uint64_t low; uint32_t scale; bool negative; } decimal;
   } as;
 };
 
@@ -991,6 +996,7 @@ static void mark_children(void *pointer) {
         case VALUE_BOOLEAN:
         case VALUE_RANGE:
         case VALUE_DURATION:
+        case VALUE_DECIMAL:
         case VALUE_PROCESS_ADDRESS:
         case VALUE_PROCESS_INBOX:
         case VALUE_SUPERVISOR_RUNNING:
@@ -1336,6 +1342,7 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
         case VALUE_BOOLEAN:
         case VALUE_RANGE:
         case VALUE_DURATION:
+        case VALUE_DECIMAL:
         case VALUE_PROCESS_ADDRESS:
         case VALUE_PROCESS_INBOX:
         case VALUE_SUPERVISOR_RUNNING:
@@ -1760,6 +1767,220 @@ static ChimiControl *float_arithmetic(uint32_t operator, double l, double r, int
   }
   return success(float_value(output));
 }
+
+/* std/decimal. It mirrors compiler/chimi/src/decimal.rs value for value and message
+   for message: a sign, a magnitude of at most 38 digits, and a scale from 0 to 38.
+   No operation rounds unless it takes a rounding mode, and none wraps or saturates;
+   a result outside the range makes the function return false. */
+typedef unsigned __int128 DecimalMagnitude;
+typedef struct { bool negative; DecimalMagnitude magnitude; uint32_t scale; } Decimal;
+typedef enum { DECIMAL_REMAINDER_ZERO, DECIMAL_BELOW_HALF, DECIMAL_HALF, DECIMAL_ABOVE_HALF } DecimalRemainder;
+/* The codes `std/decimal.rounding_code` passes, in `Rounding` declaration order. */
+typedef enum { ROUND_TOWARD_ZERO, ROUND_AWAY_FROM_ZERO, ROUND_FLOOR, ROUND_CEILING,
+               ROUND_HALF_TOWARD_ZERO, ROUND_HALF_AWAY_FROM_ZERO, ROUND_HALF_EVEN } DecimalRounding;
+#define DECIMAL_MAX_SCALE 38u
+/* Large enough for a sign, 39 digits, and a point. */
+#define DECIMAL_TEXT_BYTES 48
+
+/* 10^exponent, or false when it exceeds the magnitude type (from 10^39). */
+static bool decimal_power(uint32_t exponent, DecimalMagnitude *output) {
+  if (exponent > DECIMAL_MAX_SCALE) return false;
+  DecimalMagnitude power = 1;
+  for (uint32_t i = 0; i < exponent; ++i) power *= 10;
+  *output = power;
+  return true;
+}
+
+static DecimalMagnitude decimal_max_magnitude(void) {
+  DecimalMagnitude power = 0; decimal_power(DECIMAL_MAX_SCALE, &power); return power - 1;
+}
+
+static bool decimal_make(bool negative, DecimalMagnitude magnitude, uint32_t scale, Decimal *output) {
+  if (magnitude > decimal_max_magnitude() || scale > DECIMAL_MAX_SCALE) return false;
+  *output = (Decimal){negative && magnitude != 0, magnitude, scale};
+  return true;
+}
+
+static Decimal decimal_of(const ChimiValue *value) {
+  return (Decimal){value->as.decimal.negative,
+                   ((DecimalMagnitude)value->as.decimal.high << 64) | value->as.decimal.low,
+                   value->as.decimal.scale};
+}
+
+static ChimiValue *decimal_value(Decimal decimal) {
+  ChimiValue *v = new_value(VALUE_DECIMAL);
+  v->as.decimal.high = (uint64_t)(decimal.magnitude >> 64);
+  v->as.decimal.low = (uint64_t)decimal.magnitude;
+  v->as.decimal.scale = decimal.scale;
+  v->as.decimal.negative = decimal.negative;
+  return v;
+}
+
+static Decimal decimal_negate(Decimal value) {
+  value.negative = !value.negative && value.magnitude != 0;
+  return value;
+}
+
+static bool decimal_add(Decimal left, Decimal right, Decimal *output) {
+  uint32_t scale = left.scale > right.scale ? left.scale : right.scale;
+  DecimalMagnitude left_power = 0, right_power = 0, l = 0, r = 0;
+  decimal_power(scale - left.scale, &left_power); decimal_power(scale - right.scale, &right_power);
+  /* Either aligned magnitude may exceed the range while the sum does not; past the
+     magnitude type it cannot, because the other is at most 38 digits. */
+  if (__builtin_mul_overflow(left.magnitude, left_power, &l) ||
+      __builtin_mul_overflow(right.magnitude, right_power, &r)) return false;
+  if (left.negative == right.negative) {
+    DecimalMagnitude sum = 0;
+    if (__builtin_add_overflow(l, r, &sum)) return false;
+    return decimal_make(left.negative, sum, scale, output);
+  }
+  if (l >= r) return decimal_make(left.negative, l - r, scale, output);
+  return decimal_make(right.negative, r - l, scale, output);
+}
+
+static bool decimal_multiply(Decimal left, Decimal right, Decimal *output) {
+  DecimalMagnitude product = 0;
+  if (__builtin_mul_overflow(left.magnitude, right.magnitude, &product)) return false;
+  return decimal_make(left.negative != right.negative, product, left.scale + right.scale, output);
+}
+
+/* Requires: remainder < denominator. */
+static DecimalRemainder decimal_remainder(DecimalMagnitude remainder, DecimalMagnitude denominator) {
+  if (remainder == 0) return DECIMAL_REMAINDER_ZERO;
+  DecimalMagnitude rest = denominator - remainder;
+  return remainder < rest ? DECIMAL_BELOW_HALF : remainder == rest ? DECIMAL_HALF : DECIMAL_ABOVE_HALF;
+}
+
+/* numerator x 10^shift / denominator, or false once the quotient leaves the
+   magnitude type. Requires: 0 < denominator < 10^38, so the remainder doubled fits. */
+static bool decimal_long_division(DecimalMagnitude numerator, DecimalMagnitude denominator, uint32_t shift,
+                                  DecimalMagnitude *quotient, DecimalRemainder *remainder) {
+  DecimalMagnitude q = numerator / denominator, r = numerator % denominator;
+  for (uint32_t step = 0; step < shift; ++step) {
+    /* r x 10 = digit x denominator + next, without leaving the magnitude type. */
+    DecimalMagnitude digit = 0, next = 0;
+    for (int i = 0; i < 10; ++i) {
+      next += r;
+      if (next >= denominator) { next -= denominator; ++digit; }
+    }
+    if (__builtin_mul_overflow(q, (DecimalMagnitude)10, &q) || __builtin_add_overflow(q, digit, &q)) return false;
+    r = next;
+  }
+  if (q > decimal_max_magnitude()) return false;
+  *quotient = q; *remainder = decimal_remainder(r, denominator);
+  return true;
+}
+
+/* dividend / divisor with `scale` fraction digits, or false when the divisor is
+   zero or the rounded quotient is out of range. Requires: scale <= 38. */
+static bool decimal_divide(Decimal dividend, Decimal divisor, uint32_t scale, DecimalRounding rounding,
+                           Decimal *output) {
+  if (divisor.magnitude == 0) return false;
+  int64_t shift = (int64_t)scale + divisor.scale - dividend.scale;
+  DecimalMagnitude quotient = 0; DecimalRemainder remainder = DECIMAL_REMAINDER_ZERO;
+  if (shift >= 0) {
+    if (!decimal_long_division(dividend.magnitude, divisor.magnitude, (uint32_t)shift, &quotient, &remainder))
+      return false;
+  } else {
+    DecimalMagnitude power = 0, denominator = 0;
+    if (decimal_power((uint32_t)-shift, &power) && !__builtin_mul_overflow(divisor.magnitude, power, &denominator)) {
+      quotient = dividend.magnitude / denominator;
+      remainder = decimal_remainder(dividend.magnitude % denominator, denominator);
+    } else {
+      /* The divisor exceeds the magnitude type, so it is more than twice the dividend. */
+      remainder = dividend.magnitude == 0 ? DECIMAL_REMAINDER_ZERO : DECIMAL_BELOW_HALF;
+    }
+  }
+  bool negative = dividend.negative != divisor.negative, inexact = remainder != DECIMAL_REMAINDER_ZERO, away = false;
+  switch (rounding) {
+    case ROUND_TOWARD_ZERO: away = false; break;
+    case ROUND_AWAY_FROM_ZERO: away = inexact; break;
+    case ROUND_FLOOR: away = negative && inexact; break;
+    case ROUND_CEILING: away = !negative && inexact; break;
+    case ROUND_HALF_TOWARD_ZERO: away = remainder == DECIMAL_ABOVE_HALF; break;
+    case ROUND_HALF_AWAY_FROM_ZERO: away = remainder >= DECIMAL_HALF; break;
+    case ROUND_HALF_EVEN:
+      away = remainder == DECIMAL_ABOVE_HALF || (remainder == DECIMAL_HALF && quotient % 2 == 1); break;
+  }
+  return decimal_make(negative, quotient + (away ? 1 : 0), scale, output);
+}
+
+/* Orders magnitudes, aligning the one with the smaller scale; past the magnitude
+   type the aligned side exceeds any 38-digit magnitude. */
+static int decimal_magnitude_compare(Decimal left, Decimal right) {
+  DecimalMagnitude power = 0, aligned = 0;
+  if (left.scale >= right.scale) {
+    decimal_power(left.scale - right.scale, &power);
+    if (__builtin_mul_overflow(right.magnitude, power, &aligned)) return -1;
+    return (left.magnitude > aligned) - (left.magnitude < aligned);
+  }
+  decimal_power(right.scale - left.scale, &power);
+  if (__builtin_mul_overflow(left.magnitude, power, &aligned)) return 1;
+  return (aligned > right.magnitude) - (aligned < right.magnitude);
+}
+
+/* Numeric order, so 1.50 and 1.5 are equal. Returns -1, 0, or 1. */
+static int decimal_compare(Decimal left, Decimal right) {
+  int left_sign = left.magnitude == 0 ? 0 : left.negative ? -1 : 1;
+  int right_sign = right.magnitude == 0 ? 0 : right.negative ? -1 : 1;
+  if (left_sign != right_sign) return (left_sign > right_sign) - (left_sign < right_sign);
+  return left.negative ? decimal_magnitude_compare(right, left) : decimal_magnitude_compare(left, right);
+}
+
+/* `Decimal.to_text`: exactly `scale` fraction digits. `output` holds DECIMAL_TEXT_BYTES. */
+static void decimal_text(Decimal value, char *output) {
+  char digits[DECIMAL_TEXT_BYTES]; size_t count = 0;
+  DecimalMagnitude magnitude = value.magnitude;
+  do { digits[count++] = (char)('0' + (int)(magnitude % 10)); magnitude /= 10; } while (magnitude != 0);
+  while (count < (size_t)value.scale + 1) digits[count++] = '0';
+  size_t length = 0;
+  if (value.negative) output[length++] = '-';
+  for (size_t index = count; index-- > 0;) {
+    output[length++] = digits[index];
+    if (index == value.scale && index != 0) output[length++] = '.';
+  }
+  output[length] = '\0';
+}
+
+/* The debug form: trailing fraction zeros removed, so equal values render the same. */
+static void decimal_normalized_text(Decimal value, char *output) {
+  while (value.scale > 0 && value.magnitude % 10 == 0) { value.magnitude /= 10; --value.scale; }
+  decimal_text(value, output);
+}
+
+/* Reads -?digits(.digits)?; leading zeros are allowed. False for any other text,
+   and for more than 38 significant or fraction digits. */
+static bool decimal_parse(const char *text, Decimal *output) {
+  bool negative = *text == '-';
+  const char *cursor = negative ? text + 1 : text;
+  DecimalMagnitude magnitude = 0, largest = decimal_max_magnitude();
+  size_t whole = 0, fraction = 0; bool point = false;
+  for (; *cursor; ++cursor) {
+    if (*cursor == '.' && !point) { point = true; continue; }
+    if (*cursor < '0' || *cursor > '9') return false;
+    magnitude = magnitude * 10 + (DecimalMagnitude)(*cursor - '0');
+    if (magnitude > largest) return false;
+    if (point) ++fraction; else ++whole;
+  }
+  if (whole == 0 || (point && fraction == 0) || fraction > DECIMAL_MAX_SCALE) return false;
+  return decimal_make(negative, magnitude, (uint32_t)fraction, output);
+}
+
+/* Applies `+`, `-`, or `*`; typing rejects `/` and `%` on Decimal (T4306). */
+static ChimiControl *decimal_arithmetic(uint32_t operator, Decimal l, Decimal r, int64_t node) {
+  const char *symbol = binary_symbol(operator); Decimal output; bool fits = false;
+  switch (operator) {
+    case CHIMI_BINARY_ADD: fits = decimal_add(l, r, &output); break;
+    case CHIMI_BINARY_SUBTRACT: fits = decimal_add(l, decimal_negate(r), &output); break;
+    case CHIMI_BINARY_MULTIPLY: fits = decimal_multiply(l, r, &output); break;
+    default: return defect(numeric_message("`%s` is not a `Decimal` operator", symbol), node);
+  }
+  if (fits) return success(decimal_value(output));
+  char left_text[DECIMAL_TEXT_BYTES], right_text[DECIMAL_TEXT_BYTES];
+  decimal_text(l, left_text); decimal_text(r, right_text);
+  return defect(numeric_message("decimal overflow in `%s`: %s %s %s needs more than 38 digits or scale 38",
+                                symbol, left_text, symbol, right_text), node);
+}
 static ChimiValue *callable_value(ChimiCallable *raw) { ChimiValue *v = new_value(VALUE_CALLABLE); v->as.callable = raw; return v; }
 static ChimiValue *map_value(MapNode *raw) { ChimiValue *v = new_value(VALUE_MAP); v->as.map = raw; return v; }
 static ChimiValue *json_number_value(const char *raw) { ChimiValue *v = new_value(VALUE_JSON_NUMBER); v->as.json_number = copy_text(raw); return v; }
@@ -1941,6 +2162,7 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
     case VALUE_BOOLEAN:
     case VALUE_RANGE:
     case VALUE_DURATION:
+    case VALUE_DECIMAL:
     case VALUE_JSON_NUMBER:
     case VALUE_TASK:
     case VALUE_CHANNEL_SENDER:
@@ -2326,6 +2548,10 @@ static void json_value(FILE *output, const ChimiValue *root) {
         json_push_fields(&steps, value->as.record.fields, value->as.record.length, true, "}");
         break;
       case VALUE_DURATION: fprintf(output, "{\"duration\":%" PRId64 "}", value->as.integer); break;
+      case VALUE_DECIMAL: {
+        char text[DECIMAL_TEXT_BYTES]; decimal_normalized_text(decimal_of(value), text);
+        fputs("{\"decimal\":", output); json_string(output, text); fputc(0x7d, output); break;
+      }
       case VALUE_RANGE:
         fprintf(output, "{\"range\":{\"start\":%" PRId64 ",\"end\":%" PRId64 "}}",
                 value->as.range.start, value->as.range.end); break;
@@ -2384,6 +2610,7 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
       case VALUE_VOID: break;
       case VALUE_INTEGER:
       case VALUE_DURATION: order = order_of(left->as.integer, right->as.integer); break;
+      case VALUE_DECIMAL: order = decimal_compare(decimal_of(left), decimal_of(right)); break;
       /* Finite, so total; -0.0 and 0.0 are equal. */
       case VALUE_FLOAT: order = (left->as.floating > right->as.floating) - (left->as.floating < right->as.floating); break;
       case VALUE_BOOLEAN: order = order_of(left->as.boolean, right->as.boolean); break;
@@ -3643,6 +3870,10 @@ static void debug_expand(DebugRenderer *renderer, DebugSteps *steps, const Chimi
     }
     /* The registry's render override: the canonical text form. */
     case VALUE_DURATION: duration_text(value->as.integer, scalar); debug_text(buffer, scalar); return;
+    /* Not the `Decimal.to_text` form, which keeps the scale: equal values render the same. */
+    case VALUE_DECIMAL: {
+      char text[DECIMAL_TEXT_BYTES]; decimal_normalized_text(decimal_of(value), text); debug_text(buffer, text); return;
+    }
     case VALUE_RANGE:
       snprintf(scalar, sizeof(scalar), "%" PRId64 "..%" PRId64, value->as.range.start, value->as.range.end);
       debug_text(buffer, scalar); return;
@@ -4365,23 +4596,65 @@ static ChimiControl *invoke_json_operation(ChimiRuntime *runtime, uint32_t intri
   return intrinsic_shape_defect(call_node);
 }
 
-/* The native core of std/decimal; owned by its port. */
+/* `Some(value)` when `fits`, otherwise `None`. */
+static ChimiControl *optional_decimal(bool fits, Decimal value) {
+  if (!fits) return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
+  ChimiValue *fields[] = {decimal_value(value)};
+  return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
+}
+
+/* The native core of std/decimal. Requires: the Chimi wrappers checked the
+   documented preconditions; a broken one is a shape defect, as in the interpreter. */
 static ChimiControl *invoke_decimal_operation(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment) {
-  (void)runtime; (void)arguments; (void)argument_count; (void)span; (void)environment;
+  (void)runtime; (void)span; (void)environment;
+  Decimal output;
   switch (intrinsic) {
-    case CHIMI_INTRINSIC_DECIMAL_OF: return not_implemented_yet("std/decimal.of", call_node);
-    case CHIMI_INTRINSIC_DECIMAL_PARSE_CHECKED: return not_implemented_yet("std/decimal.parse_checked", call_node);
-    case CHIMI_INTRINSIC_DECIMAL_TO_TEXT: return not_implemented_yet("std/decimal.to_text", call_node);
-    case CHIMI_INTRINSIC_DECIMAL_ADD: return not_implemented_yet("std/decimal.add", call_node);
-    case CHIMI_INTRINSIC_DECIMAL_SUBTRACT: return not_implemented_yet("std/decimal.subtract", call_node);
-    case CHIMI_INTRINSIC_DECIMAL_MULTIPLY: return not_implemented_yet("std/decimal.multiply", call_node);
-    case CHIMI_INTRINSIC_DECIMAL_NEGATE: return not_implemented_yet("std/decimal.negate", call_node);
-    case CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED: return not_implemented_yet("std/decimal.divide_rounded", call_node);
-    case CHIMI_INTRINSIC_DECIMAL_COMPARE: return not_implemented_yet("std/decimal.compare", call_node);
-    case CHIMI_INTRINSIC_DECIMAL_TO_FLOAT: return not_implemented_yet("std/decimal.to_float", call_node);
+    case CHIMI_INTRINSIC_DECIMAL_SCALED: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_INTEGER || arguments[1]->kind != VALUE_INTEGER ||
+          arguments[1]->as.integer < 0 || arguments[1]->as.integer > DECIMAL_MAX_SCALE)
+        break;
+      int64_t coefficient = arguments[0]->as.integer;
+      DecimalMagnitude magnitude = coefficient < 0 ? (DecimalMagnitude)(-(coefficient + 1)) + 1 : (DecimalMagnitude)coefficient;
+      decimal_make(coefficient < 0, magnitude, (uint32_t)arguments[1]->as.integer, &output);
+      return success(decimal_value(output));
+    }
+    case CHIMI_INTRINSIC_DECIMAL_READ:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
+      return optional_decimal(decimal_parse(arguments[0]->as.text, &output), output);
+    case CHIMI_INTRINSIC_DECIMAL_TO_TEXT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_DECIMAL) break;
+      char text[DECIMAL_TEXT_BYTES]; decimal_text(decimal_of(arguments[0]), text);
+      return success(text_value(text));
+    }
+    /* The nearest double, ties to even: strtod rounds the exact text correctly. */
+    case CHIMI_INTRINSIC_DECIMAL_TO_FLOAT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_DECIMAL) break;
+      char text[DECIMAL_TEXT_BYTES]; decimal_text(decimal_of(arguments[0]), text);
+      return success(float_value(strtod(text, NULL)));
+    }
+    case CHIMI_INTRINSIC_DECIMAL_ADD_CHECKED:
+    case CHIMI_INTRINSIC_DECIMAL_SUBTRACT_CHECKED:
+    case CHIMI_INTRINSIC_DECIMAL_MULTIPLY_CHECKED: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_DECIMAL || arguments[1]->kind != VALUE_DECIMAL) break;
+      Decimal left = decimal_of(arguments[0]), right = decimal_of(arguments[1]);
+      bool fits = intrinsic == CHIMI_INTRINSIC_DECIMAL_ADD_CHECKED ? decimal_add(left, right, &output)
+                : intrinsic == CHIMI_INTRINSIC_DECIMAL_SUBTRACT_CHECKED ? decimal_add(left, decimal_negate(right), &output)
+                : decimal_multiply(left, right, &output);
+      return optional_decimal(fits, output);
+    }
+    case CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED: {
+      if (argument_count != 4 || arguments[0]->kind != VALUE_DECIMAL || arguments[1]->kind != VALUE_DECIMAL ||
+          arguments[2]->kind != VALUE_INTEGER || arguments[3]->kind != VALUE_INTEGER ||
+          arguments[2]->as.integer < 0 || arguments[2]->as.integer > DECIMAL_MAX_SCALE ||
+          arguments[3]->as.integer < ROUND_TOWARD_ZERO || arguments[3]->as.integer > ROUND_HALF_EVEN)
+        break;
+      bool fits = decimal_divide(decimal_of(arguments[0]), decimal_of(arguments[1]),
+                                 (uint32_t)arguments[2]->as.integer, (DecimalRounding)arguments[3]->as.integer, &output);
+      return optional_decimal(fits, output);
+    }
   }
   return intrinsic_shape_defect(call_node);
 }
@@ -4396,7 +4669,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_set_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic == CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL)
     return invoke_json_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_DECIMAL_OF && intrinsic <= CHIMI_INTRINSIC_DECIMAL_TO_FLOAT)
+  if (intrinsic >= CHIMI_INTRINSIC_DECIMAL_SCALED && intrinsic <= CHIMI_INTRINSIC_DECIMAL_TO_FLOAT)
     return invoke_decimal_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
@@ -4894,6 +5167,10 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
       return list_from_values(items, raw->length);
     }
     case CHIMI_CONSTANT_DURATION: return duration_value(raw->integer);
+    case CHIMI_CONSTANT_DECIMAL: {
+      uint64_t high = ((uint64_t)raw->offset << 32) | raw->length;
+      return decimal_value((Decimal){(raw->a & 0x100) != 0, ((DecimalMagnitude)high << 64) | (uint64_t)raw->integer, raw->a & 0xff});
+    }
     case CHIMI_CONSTANT_PROCESS_ADDRESS: return process_address_value(CHIMI_ADDRESS_NAMED, (uint64_t)raw->a + 1);
     case CHIMI_CONSTANT_RANGE:
       return range_value(constant_values[ids[0]]->as.integer, constant_values[ids[1]]->as.integer);
@@ -5150,6 +5427,7 @@ NODE_WRAPPER(unary, "unary", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiControl *control = RUN(node->a);
   if (control->kind != CONTROL_SUCCESS) { result = control; break; }
   if (control->value->kind == VALUE_FLOAT) { result = success(float_value(-control->value->as.floating)); break; }
+  if (control->value->kind == VALUE_DECIMAL) { result = success(decimal_value(decimal_negate(decimal_of(control->value)))); break; }
   if (control->value->kind != VALUE_INTEGER) { result = defect("verified unary operand is not an integer", node_id); break; }
   if (control->value->as.integer == INT64_MIN) {
     result = defect(numeric_message("integer overflow in unary `-`: -(%" PRId64 ")", INT64_MIN), node_id); break;
@@ -5166,6 +5444,8 @@ NODE_WRAPPER(binary, "binary", {
       result = integer_arithmetic(node->a, left->value->as.integer, right->value->as.integer, node_id);
     else if (left->value->kind == VALUE_FLOAT && right->value->kind == VALUE_FLOAT)
       result = float_arithmetic(node->a, left->value->as.floating, right->value->as.floating, node_id);
+    else if (left->value->kind == VALUE_DECIMAL && right->value->kind == VALUE_DECIMAL)
+      result = decimal_arithmetic(node->a, decimal_of(left->value), decimal_of(right->value), node_id);
     else
       result = defect("verified binary operands are not numbers", node_id);
     break;

@@ -61,6 +61,9 @@ impl Renderer<'_> {
             RuntimeValue::Duration(value) => {
                 self.output.push_str(&crate::duration::to_text(*value));
             }
+            // Not the `Decimal.to_text` form, which keeps the scale: equal
+            // values render the same.
+            RuntimeValue::Decimal(value) => self.output.push_str(&value.normalized_text()),
             RuntimeValue::Tuple(values) => {
                 let parts = values.iter().map(|value| Part { label: None, value });
                 self.composite("", "(", ")", false, parts.collect());

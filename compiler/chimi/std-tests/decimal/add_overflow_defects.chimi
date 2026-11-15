@@ -1,0 +1,8 @@
+// A sum past 38 digits defects like Int overflow.
+import std/decimal as Decimal
+import std/decimal.{Decimal}
+
+pub fn main() -> Decimal {
+  let almost = Decimal.of(9223372036854775807, 0) * Decimal.of(9223372036854775807, 0)
+  almost + almost
+}

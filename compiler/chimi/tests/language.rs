@@ -1550,6 +1550,73 @@ fn arithmetic_on_text_is_rejected_with_a_text_append_hint() {
     );
 }
 
+const DECIMAL_IMPORTS: &str = "import std/decimal as Decimal\nimport std/decimal.{Decimal}\n";
+
+// N26: division needs a scale and a rounding mode, so `/` and `%` are not
+// `Decimal` operators, whichever side the `Decimal` is on.
+#[test]
+fn decimal_division_operators_are_rejected_with_a_divide_hint() {
+    for body in [
+        "Decimal.of(1999, 2) / Decimal.of(4, 0)",
+        "Decimal.of(1999, 2) % Decimal.of(4, 0)",
+        "price(Decimal.of(1, 0)) / Decimal.of(4, 0)",
+    ] {
+        let source = format!(
+            "{DECIMAL_IMPORTS}fn price(value: Decimal) -> Decimal {{ value }}\npub fn main() -> Decimal {{ {body} }}\n"
+        );
+        let messages = check_messages(&source);
+        assert_eq!(messages.len(), 1, "{body}: {messages:?}");
+        assert!(
+            messages[0].starts_with("T4306") && messages[0].contains("Decimal.divide"),
+            "{body}: {messages:?}"
+        );
+    }
+}
+
+// `+ - *`, unary `-`, and comparisons type on two `Decimal`s; an `Int` beside a
+// `Decimal` is not converted, and the hint names `Decimal.of`, not `Float`.
+#[test]
+fn decimal_operators_take_two_decimals() {
+    let source = format!(
+        "{DECIMAL_IMPORTS}pub fn main() -> Bool {{\n  let total = -(Decimal.of(1, 0) + Decimal.of(2, 1) * Decimal.of(3, 0) - Decimal.of(4, 2))\n  total < Decimal.of(0, 0) and total != Decimal.of(5, 1)\n}}\n"
+    );
+    assert_eq!(check_messages(&source), Vec::<String>::new());
+    let messages = check_messages(&format!(
+        "{DECIMAL_IMPORTS}pub fn main() -> Decimal {{ Decimal.of(1, 0) + 1 }}\n"
+    ));
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].starts_with("T4302") && messages[0].contains("Decimal.of(value, 0)"),
+        "{messages:?}"
+    );
+}
+
+// A `Decimal` is plain data: a task's result crosses heaps with its sign,
+// its magnitude past 64 bits, and its scale intact. Native only: the
+// interpreter has no task runtime.
+#[test]
+fn a_decimal_task_result_crosses_heaps_intact() {
+    let scratch = scratch_directory("decimal-task-result");
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        format!(
+            "import std/task as Task\nimport std/task.{{Task}}\n{DECIMAL_IMPORTS}\
+             fn work() -> Decimal {{ Decimal.of(9223372036854775807, 19) * Decimal.of(-9223372036854775807, 19) }}\n\
+             pub fn main() -> Text {{ Decimal.to_text(Task.result(Task.start(work))) }}\n"
+        ),
+    )
+    .unwrap();
+    let outcome = native_outcome(&scratch, &path);
+    assert!(
+        outcome.ends_with(
+            "\"outcome\":\"success\",\"value\":\"-0.85070591730234615847396907784232501249\"}"
+        ),
+        "{outcome}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // N23
 #[test]
 fn float_literal_patterns_are_rejected() {

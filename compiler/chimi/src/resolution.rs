@@ -329,6 +329,12 @@ impl ResolvedProject {
         self.standard_types[&kind]
     }
 
+    /// The symbol of a standard type that only a loaded standard module declares,
+    /// such as `std/decimal.Decimal`, or `None` when the program does not load it.
+    pub(crate) fn loaded_standard_type(&self, kind: StandardType) -> Option<SymbolId> {
+        self.standard_types.get(&kind).copied()
+    }
+
     pub(crate) fn standard_generic(&self, generic: StandardGeneric) -> SymbolId {
         self.standard_generics[&generic]
     }
