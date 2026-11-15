@@ -1,0 +1,20 @@
+// Result.get on an Err fails with the stored error, which joins the caller's
+// failure row like any other failure.
+import std/result as Result
+
+enum Lookup {
+  Missing(id: Int)
+}
+
+fn find(id: Int) -> Int {
+  case id {
+    1 -> 10
+    _ -> Failure(Lookup.Missing(id))
+  }
+}
+
+pub fn main() -> Int {
+  let first = Result.capture(fn() { find(1) })
+  let second = Result.capture(fn() { find(2) })
+  Result.get(first) + Result.get(second)
+}

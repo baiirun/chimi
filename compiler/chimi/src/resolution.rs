@@ -487,7 +487,9 @@ impl ProjectResolver {
 
     /// Whether a loaded module declares the runtime identity `standard`.
     fn declared_in_source(&self, standard: StandardSymbol) -> bool {
-        self.source_identities.values().any(|identity| *identity == standard)
+        self.source_identities
+            .values()
+            .any(|identity| *identity == standard)
     }
 
     fn index_builtins(&mut self) {
@@ -1038,7 +1040,11 @@ impl ProjectResolver {
         );
         self.add_to_namespace(module_index, namespace, &declaration.name, id);
         self.bind_source_identity(module_id, declaration.semantic_id, id);
-        if let Some(signature) = declaration.function.as_ref().filter(|function| function.native) {
+        if let Some(signature) = declaration
+            .function
+            .as_ref()
+            .filter(|function| function.native)
+        {
             self.bind_native_function(module_index, declaration, signature, id);
         }
         if declaration.kind == ModuleDeclarationKind::NativeType {
@@ -1468,7 +1474,11 @@ impl ProjectResolver {
         type_use: &TypeUse,
         generics: &HashMap<String, SymbolId>,
     ) {
-        if let TypeUse::Tuple { elements, .. } = type_use {
+        if let TypeUse::Tuple { elements, .. }
+        | TypeUse::Union {
+            members: elements, ..
+        } = type_use
+        {
             for element in elements {
                 self.resolve_type(module_index, element, generics);
             }
@@ -1523,7 +1533,12 @@ impl ProjectResolver {
                     )
                 }
             } else {
-                self.resolve_qualified_type(module_index, path)
+                match self.resolve_qualified_type(module_index, path) {
+                    ReferenceResolution::Unresolved => self
+                        .resolve_variant_type(module_index, path)
+                        .unwrap_or(ReferenceResolution::Unresolved),
+                    resolution => resolution,
+                }
             };
             let display = path
                 .iter()
@@ -1609,6 +1624,42 @@ impl ProjectResolver {
             .iter()
             .find(|candidate| candidate.name.text == variant.text)
             .map(|candidate| candidate.fields.len())
+    }
+
+    /// Resolves `Enum.Variant` or `Alias.Enum.Variant` in a type position to the
+    /// variant's constructor: a one-member failure-set type
+    /// (`docs/specification/time-and-outcomes.md`, "Failure-set types"). The type
+    /// checker rejects it outside a failure-set position. `None` when the owner is
+    /// not an enum in scope or has no such variant.
+    fn resolve_variant_type(
+        &self,
+        module_index: usize,
+        path: &[Name],
+    ) -> Option<ReferenceResolution> {
+        let (owner_path, variant) = path.split_at(path.len() - 1);
+        let owner = match owner_path {
+            [owner] => resolve_local(
+                self.modules[module_index].types.get(&owner.text),
+                self.modules[module_index].imported_types.get(&owner.text),
+                self.builtin_types.get(&owner.text).copied(),
+            ),
+            [_, _] => self.resolve_qualified_type(module_index, owner_path),
+            _ => return None,
+        };
+        let ReferenceResolution::Resolved(owner) = owner else {
+            return None;
+        };
+        let member = self
+            .type_members
+            .get(&(owner, variant[0].text.clone()))
+            .copied()?;
+        let variant = self.symbols[member.raw() as usize].kind
+            == ProjectSymbolKind::EnumConstructor
+            || matches!(
+                self.standard_symbols.get(&member),
+                Some(StandardSymbol::Constructor(_))
+            );
+        variant.then_some(ReferenceResolution::Resolved(member))
     }
 
     fn resolve_qualified_type(&self, module_index: usize, path: &[Name]) -> ReferenceResolution {

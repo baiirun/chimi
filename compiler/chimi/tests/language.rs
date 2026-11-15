@@ -6966,7 +6966,7 @@ fn a_generic_recovery_subtracts_the_failure_type_from_its_row() {
     assert!(codes.is_empty(), "{codes:?}");
     assert_eq!(
         contract.as_deref(),
-        Some("fn() -> Text errors { FileProblem.Missing, FileProblem.TooLong, ParseProblem }")
+        Some("fn() -> Text errors FileProblem.Missing | FileProblem.TooLong | ParseProblem")
     );
 }
 
@@ -7289,31 +7289,34 @@ fn a_nested_failure_type_pattern_is_rejected() {
     );
 }
 
-// A failure-type pattern can name only a closed enum today; naming one variant
-// as a type teaches the variant pattern instead of a bare resolution error.
+// A failure-type pattern may name one variant, or a written failure set, as well
+// as a closed enum: it matches those members and binds the narrowed set.
 #[test]
-fn a_variant_named_as_a_failure_type_teaches_the_variant_pattern() {
-    let messages = check_messages(&format!(
+fn a_failure_type_pattern_may_name_a_variant_or_a_failure_set() {
+    let program = format!(
         "{FAILURE_KINDS}{}",
         concat!(
-            "pub fn main() -> Text {\n",
-            "  case load(0) {\n",
+            "fn long(error: FileProblem.TooLong) -> Text {\n",
+            "  case error {\n",
+            "    FileProblem.TooLong(_, limit) -> \"long ${limit}\"\n",
+            "  }\n",
+            "}\n",
+            "fn label(choice: Int) -> Text {\n",
+            "  case load(choice) {\n",
             "    Success(text) -> text\n",
-            "    Failure(error: FileProblem.TooLong) -> \"long\"\n",
+            "    Failure(error: FileProblem.TooLong) -> long(error)\n",
+            "    Failure(error: FileProblem.Missing | ParseProblem.Empty) -> \"absent\"\n",
             "    Failure(_) -> \"other\"\n",
             "  }\n",
             "}\n",
+            "pub fn main() -> Text {\n",
+            "  \"${label(0)} ${label(1)} ${label(2)} ${label(3)} ${label(4)}\"\n",
+            "}\n",
         )
-    ));
-    assert_eq!(messages.len(), 1, "{messages:?}");
-    assert!(
-        messages[0].starts_with("E_UNRESOLVED_TYPE "),
-        "{messages:?}"
     );
-    assert!(
-        messages[0].contains("only a closed enum such as `FileProblem`")
-            && messages[0].contains("`Failure(FileProblem.TooLong(_, _) as error)`"),
-        "{messages:?}"
+    assert_eq!(
+        run_both("variant-failure-type", &program),
+        "\"outcome\":\"success\",\"value\":\"absent long 9 other absent loaded\""
     );
 }
 
@@ -10474,4 +10477,316 @@ fn process_standard_enum_values_match_exhaustively() {
         "}\n",
     ));
     assert_eq!(check_codes(&missing), ["T4231"]);
+}
+
+// Failure-set types (docs/specification/time-and-outcomes.md, "Storable outcomes
+// and failure-set types"): the conformance rows Failure-set types, Projection,
+// Joins, and Capture boundary. The boundary row is the std-tests program
+// result/defect_passes_through.
+
+const FAILURE_SET_ENUMS: &str = concat!(
+    "enum HttpError {\n",
+    "  Refused(code: Int)\n",
+    "  Timeout\n",
+    "}\n",
+    "enum Timeout {\n",
+    "  TimedOut\n",
+    "}\n",
+);
+
+#[test]
+fn a_failure_set_parameter_accepts_a_value_of_each_member_enum() {
+    let program = format!(
+        "{FAILURE_SET_ENUMS}{}",
+        concat!(
+            "fn code(error: HttpError | Timeout) -> Int {\n",
+            "  case error {\n",
+            "    HttpError.Refused(code) -> code\n",
+            "    HttpError.Timeout -> 1\n",
+            "    Timeout.TimedOut -> 2\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  code(HttpError.Refused(40)) + code(HttpError.Timeout) + code(Timeout.TimedOut)\n",
+            "}\n",
+        )
+    );
+    assert_eq!(
+        run_both("failure-set-members", &program),
+        "\"outcome\":\"success\",\"value\":43"
+    );
+}
+
+#[test]
+fn values_of_two_enums_in_one_failure_set_keep_their_identity() {
+    // `HttpError.Timeout` and `Timeout.TimedOut` are each their enum's only
+    // payload-free variant; matching and equality must still tell them apart.
+    let program = format!(
+        "import std/debug as Debug\n{FAILURE_SET_ENUMS}{}",
+        concat!(
+            "fn same(left: HttpError | Timeout, right: HttpError | Timeout) -> Bool {\n",
+            "  left == right\n",
+            "}\n",
+            "fn which(error: HttpError | Timeout) -> Text {\n",
+            "  case error {\n",
+            "    Timeout.TimedOut -> \"deadline\"\n",
+            "    HttpError.Timeout -> \"socket\"\n",
+            "    HttpError.Refused(_) -> \"refused\"\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Text {\n",
+            "  let different = Debug.render(same(HttpError.Timeout, Timeout.TimedOut))\n",
+            "  let equal = Debug.render(same(Timeout.TimedOut, Timeout.TimedOut))\n",
+            "  \"${different} ${equal} ${which(HttpError.Timeout)} ${which(Timeout.TimedOut)}\"\n",
+            "}\n",
+        )
+    );
+    assert_eq!(
+        run_both("failure-set-identity", &program),
+        "\"outcome\":\"success\",\"value\":\"False True socket deadline\""
+    );
+}
+
+#[test]
+fn a_case_over_a_closed_failure_set_must_cover_every_member() {
+    let program = format!(
+        "{FAILURE_SET_ENUMS}{}",
+        concat!(
+            "fn code(error: HttpError | Timeout) -> Int {\n",
+            "  case error {\n",
+            "    HttpError.Refused(code) -> code\n",
+            "    HttpError.Timeout -> 1\n",
+            "  }\n",
+            "}\n",
+        )
+    );
+    assert_eq!(check_codes(&program), ["T4231"]);
+}
+
+#[test]
+fn a_failure_set_member_must_be_an_enum_a_variant_a_generic_or_never() {
+    let program = concat!(
+        "enum Problem { Lost }\n",
+        "fn bad(value: Int | Text) -> Int { 0 }\n",
+        "fn record(value: Problem | { code: Int }) -> Int { 0 }\n",
+        "fn fine<E>(operation: fn() -> Int errors E, value: E | Problem | Never) -> Int { 0 }\n",
+    );
+    assert_eq!(check_codes(program), ["T4340", "T4340", "T4340"]);
+}
+
+#[test]
+fn an_errors_row_may_name_single_variants() {
+    let program = concat!(
+        "enum StartError {\n",
+        "  CapacityReached\n",
+        "  NameTaken\n",
+        "  Stopped\n",
+        "}\n",
+        "fn start(operation: fn() -> Int errors StartError.CapacityReached | StartError.NameTaken) -> Int {\n",
+        "  operation()\n",
+        "}\n",
+        "fn taken() -> Int { Failure(StartError.NameTaken) }\n",
+        "fn stopped() -> Int { Failure(StartError.Stopped) }\n",
+        "fn fits() -> Int { start(taken) }\n",
+        "fn outside() -> Int { start(stopped) }\n",
+    );
+    assert_eq!(check_codes(program), ["T4203"]);
+}
+
+#[test]
+fn a_plus_between_failure_row_members_formats_as_a_bar() {
+    let source = "interface Fetch {\n  run: fn() -> Int errors HttpError+Timeout\n  check: fn(HttpError|Timeout) -> Bool\n}\n";
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(
+        !formatted.is_blocked(),
+        "{}",
+        formatted.render_diagnostics()
+    );
+    assert_eq!(
+        formatted.text(),
+        "interface Fetch {\n  run: fn() -> Int errors HttpError | Timeout\n  check: fn(HttpError | Timeout) -> Bool\n}\n"
+    );
+    // `+` still adds needs rows: only a failure row changes spelling.
+    assert_formatter_round_trips(
+        "fn run<R, S>(operation: fn() -> Int needs R + S) -> Int needs R + S {\n  operation()\n}\n",
+    );
+}
+
+const CAPTURE: &str = concat!(
+    "enum Result<T, E> {\n",
+    "  Ok(value: T)\n",
+    "  Err(error: E)\n",
+    "}\n",
+    "fn capture<T, E, R>(operation: fn() -> T errors E needs R) -> Result<T, E> needs R {\n",
+    "  case operation() {\n",
+    "    Success(value) -> Ok(value)\n",
+    "    Failure(error) -> Err(error)\n",
+    "  }\n",
+    "}\n",
+);
+
+#[test]
+fn a_failure_set_generic_projects_into_a_type_argument() {
+    // The specification's `capture`, written in a program: its `E` is both the
+    // operation's failure row and `Result`'s type argument.
+    let program = format!(
+        "{CAPTURE}{}",
+        concat!(
+            "enum PaymentError {\n",
+            "  Declined(reason: Text)\n",
+            "  Offline\n",
+            "}\n",
+            "fn charge(amount: Int) -> Int {\n",
+            "  case amount > 100 {\n",
+            "    True -> Failure(PaymentError.Declined(\"limit\"))\n",
+            "    False -> amount\n",
+            "  }\n",
+            "}\n",
+            "fn first<E>(operation: fn() -> Int errors E) -> E {\n",
+            "  case operation() {\n",
+            "    Success(_) -> first(operation)\n",
+            "    Failure(error) -> error\n",
+            "  }\n",
+            "}\n",
+            "fn reason(result: Result<Int, PaymentError.Declined>) -> Text {\n",
+            "  case result {\n",
+            "    Ok(amount) -> \"charged ${amount}\"\n",
+            "    Err(PaymentError.Declined(reason)) -> reason\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Text {\n",
+            "  let declined = first(fn() { charge(500) })\n",
+            "  let label = case declined {\n",
+            "    PaymentError.Declined(reason) -> reason\n",
+            "  }\n",
+            "  \"${reason(capture(fn() { charge(5) }))} ${reason(capture(fn() { charge(500) }))} ${label}\"\n",
+            "}\n",
+        )
+    );
+    assert_eq!(
+        run_both("failure-set-projection", &program),
+        "\"outcome\":\"success\",\"value\":\"charged 5 limit limit\""
+    );
+}
+
+#[test]
+fn two_captures_with_different_rows_join_as_the_union() {
+    let program = format!(
+        "{CAPTURE}{}",
+        concat!(
+            "enum UserError { Missing }\n",
+            "enum OrderError { Lost }\n",
+            "fn load_user() -> Int { Failure(UserError.Missing) }\n",
+            "fn load_order() -> Int { Failure(OrderError.Lost) }\n",
+            "fn label(result: Result<Int, UserError | OrderError>) -> Text {\n",
+            "  case result {\n",
+            "    Ok(_) -> \"ok\"\n",
+            "    Err(UserError.Missing) -> \"user\"\n",
+            "    Err(OrderError.Lost) -> \"order\"\n",
+            "  }\n",
+            "}\n",
+            "fn labels(results: List<Result<Int, UserError | OrderError>>) -> Text {\n",
+            "  case results {\n",
+            "    [] -> \"\"\n",
+            "    [first, ..rest] -> \"${label(first)} ${labels(rest)}\"\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Text {\n",
+            "  let results = [capture(load_user), capture(load_order), capture(fn() { 1 })]\n",
+            "  labels(results)\n",
+            "}\n",
+        )
+    );
+    assert_eq!(
+        run_both("failure-set-join", &program),
+        "\"outcome\":\"success\",\"value\":\"user order ok \""
+    );
+}
+
+#[test]
+fn two_different_bare_enums_do_not_join() {
+    let program = concat!(
+        "enum HttpError { Timeout }\n",
+        "enum DbError { Lost }\n",
+        "fn mixed() -> List<Int> {\n",
+        "  let values = [HttpError.Timeout, DbError.Lost]\n",
+        "  []\n",
+        "}\n",
+        "fn arms(flag: Bool) -> Int {\n",
+        "  let value = case flag {\n",
+        "    True -> HttpError.Timeout\n",
+        "    False -> DbError.Lost\n",
+        "  }\n",
+        "  0\n",
+        "}\n",
+        "fn annotated() -> List<HttpError | DbError> {\n",
+        "  let first: HttpError | DbError = HttpError.Timeout\n",
+        "  [first, DbError.Lost]\n",
+        "}\n",
+    );
+    assert_eq!(check_codes(program), ["T4341", "T4341"]);
+}
+
+#[test]
+fn a_set_with_a_generic_member_is_open_and_needs_a_catch_all() {
+    let covered = concat!(
+        "enum PaymentError { Declined }\n",
+        "fn label<E>(operation: fn() -> Int errors E, fallback: E) -> Text {\n",
+        "  case fallback {\n",
+        "    PaymentError.Declined -> \"declined\"\n",
+        "    _ -> \"other\"\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_eq!(check_codes(covered), Vec::<String>::new());
+    let uncovered = covered.replace("    _ -> \"other\"\n", "");
+    assert_eq!(check_codes(&uncovered), ["T4231"]);
+}
+
+#[test]
+fn a_failure_set_generic_takes_only_a_failure_set() {
+    // `get` raises its stored error, so its `E` is a failure set; a `Text`
+    // error would leave the caller's failure row without it.
+    let program = format!(
+        "{CAPTURE}{}",
+        concat!(
+            "fn get<T, E>(result: Result<T, E>) -> T {\n",
+            "  case result {\n",
+            "    Ok(value) -> value\n",
+            "    Err(error) -> Failure(error)\n",
+            "  }\n",
+            "}\n",
+            "enum Lookup { Missing }\n",
+            "fn lookup(result: Result<Int, Lookup>) -> Int { get(result) }\n",
+            "fn text(result: Result<Int, Text>) -> Int { get(result) }\n",
+        )
+    );
+    assert_eq!(check_codes(&program), ["T4203"]);
+}
+
+#[test]
+fn a_failure_set_value_passed_where_a_member_is_missing_names_the_missing_variants() {
+    let program = format!(
+        "{FAILURE_SET_ENUMS}{}",
+        concat!(
+            "fn retryable(error: HttpError) -> Bool { True }\n",
+            "fn check(error: HttpError | Timeout) -> Bool {\n",
+            "  retryable(error)\n",
+            "}\n",
+        )
+    );
+    let module = ProjectSource::new(
+        "main",
+        SourceSnapshot::from_text("main.chimi", program.as_str()),
+    )
+    .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let diagnostics = report.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{}", report.render_diagnostics());
+    assert_eq!(diagnostics[0].code(), "T4346");
+    assert!(
+        diagnostics[0].message().contains("`Timeout.TimedOut`"),
+        "{}",
+        diagnostics[0].message()
+    );
 }
