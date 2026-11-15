@@ -4,6 +4,11 @@ a member's own binder, and the conformance check for providers and updates.
 
 Run: scripts/mutation/mutate.py scripts/mutation/generic_member_mutations.py
 Each mutant runs tests/generic_interface_members.rs; it must turn one red.
+
+Not listed: dropping the removal of a polymorphic value's own parameters from
+the inner substitution survives, because no substitution binds a value's own
+parameters today (each declaration's generics are distinct symbols). It stays
+so substitution under a binder cannot capture if that changes.
 """
 
 CRATE = "compiler/chimi"
@@ -39,10 +44,6 @@ MUTATIONS = [
         "                let contract =\n                    self.substitute_call_contract_preserving(contract, &mut inner, &inner_preserved);\n                self.intern_type(CanonicalType::PolymorphicFunction {",
         "                let _ = (&mut inner, &inner_preserved);\n                self.intern_type(CanonicalType::PolymorphicFunction {",
     )]),
-    member("typing: substitution freshens the member's own generics", Y, [(
-        "                    inner.values.remove(parameter);\n",
-        "",
-    )], targets=("generic_interface_members", "language")),
     member("conformance: a generic slot unifies like a plain one", Y, [(
         "            ) => self.generic_member_conformance_error(actual, &parameters, contract),\n            (CanonicalType::Function(actual), CanonicalType::Function(expected)) => {",
         "            ) if false => self.generic_member_conformance_error(actual, &parameters, contract),\n            (CanonicalType::Function(actual), CanonicalType::Function(expected)) => {",
