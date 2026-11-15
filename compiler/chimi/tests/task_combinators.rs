@@ -135,6 +135,29 @@ fn combinators_join_the_rows_of_their_thunks() {
     );
 }
 
+// Rejects a `Task.results` that only works when the program imports
+// `std/result` itself.
+#[test]
+fn task_results_needs_no_import_of_std_result() {
+    let module = ProjectSource::new(
+        "main",
+        SourceSnapshot::from_text(
+            "main.chimi",
+            concat!(
+                "import std/task as Task\n",
+                "fn outcomes() { Task.results([fn() { 1 }]) }\n",
+            ),
+        ),
+    )
+    .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    assert!(report.is_success(), "{}", report.render_diagnostics());
+    assert_eq!(
+        report.contract("main", "outcomes").as_deref(),
+        Some("fn() -> List<Result<Int, Never>>")
+    );
+}
+
 // Rejects a join that keeps only one thunk's failures: the failure a case
 // leaves unmatched must still reach the caller's row.
 #[test]
