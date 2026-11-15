@@ -1238,7 +1238,10 @@ program.
   Terminal trace events do not yet carry a cause identity. A defect cause
   does not hold the parked-stack snapshot. A cancellation cause's summary is
   the fixed text `requested before the next semantic operation`, not its
-  specific reason. The native tests for
+  specific reason. A child task that ends cancelled hands its parent a fresh
+  cancellation, so frames added inside the child are lost, and capability
+  transfer does not walk a cause's payloads (none can reach user code yet).
+  The native tests for
   channel and task transfer run on the native backend only, because the
   interpreter has no channel runtime.
 

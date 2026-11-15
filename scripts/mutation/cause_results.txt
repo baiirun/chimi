@@ -3,4 +3,6 @@
 # cause" survived: no test converted to a named, non-matched value. Added that
 # case to std-tests/cause/chain_scope.chimi, plus three mutants for the
 # review fixes (nested case scope, function-literal barrier, NUL in the root
-# report). Rerun of those four: all killed. Result: 17 of 17 killed.
+# report). Rerun of those four: all killed. A last mutant for the Debug.crash
+# message fix (a message left in the loop's heap) was killed too.
+# Result: 18 of 18 killed.
