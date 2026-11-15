@@ -101,9 +101,12 @@ pub native fn multiply_checked(left: Decimal, right: Decimal) -> Option<Decimal>
 pub fn divide(dividend: Decimal, divisor: Decimal, scale: Int, rounding: Rounding) -> Decimal {
   case divisor == zero {
     True -> Debug.crash("Decimal.divide: divisor must not be zero")
-    False -> case divide_checked(dividend, divisor, scale, rounding) {
-      Some(quotient) -> quotient
-      None -> Debug.crash("Decimal.divide: the quotient of ${to_text(dividend)} / ${to_text(divisor)} at scale ${scale} needs more than 38 digits")
+    False -> case scale < 0 or scale > largest_scale {
+      True -> Debug.crash("Decimal.divide: scale must be in 0..=38, got ${scale}")
+      False -> case divide_rounded(dividend, divisor, scale, rounding_code(rounding)) {
+        Some(quotient) -> quotient
+        None -> Debug.crash("Decimal.divide: the quotient of ${to_text(dividend)} / ${to_text(divisor)} at scale ${scale} needs more than 38 digits")
+      }
     }
   }
 }
@@ -115,7 +118,7 @@ pub fn divide(dividend: Decimal, divisor: Decimal, scale: Int, rounding: Roundin
 /// Cost: O(scale).
 pub fn divide_checked(dividend: Decimal, divisor: Decimal, scale: Int, rounding: Rounding) -> Option<Decimal> {
   case scale < 0 or scale > largest_scale {
-    True -> Debug.crash("Decimal.divide: scale must be in 0..=38, got ${scale}")
+    True -> Debug.crash("Decimal.divide_checked: scale must be in 0..=38, got ${scale}")
     False -> divide_rounded(dividend, divisor, scale, rounding_code(rounding))
   }
 }

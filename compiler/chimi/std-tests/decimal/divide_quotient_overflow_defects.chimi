@@ -1,0 +1,7 @@
+// A quotient that needs more than 38 digits at its scale defects.
+import std/decimal as Decimal
+import std/decimal.{Decimal, Rounding}
+
+pub fn main() -> Decimal {
+  Decimal.divide(Decimal.of(9223372036854775807, 0), Decimal.of(1, 38), 0, Rounding.HalfEven)
+}

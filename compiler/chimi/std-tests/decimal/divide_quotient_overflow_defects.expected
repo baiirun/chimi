@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"defect","message":"Decimal.divide: the quotient of 9223372036854775807 / 0.00000000000000000000000000000000000001 at scale 0 needs more than 38 digits"}

@@ -1,0 +1,7 @@
+// Decimal.divide takes result scales 0 through 38.
+import std/decimal as Decimal
+import std/decimal.{Decimal, Rounding}
+
+pub fn main() -> Decimal {
+  Decimal.divide(Decimal.of(1, 0), Decimal.of(3, 0), 39, Rounding.HalfEven)
+}

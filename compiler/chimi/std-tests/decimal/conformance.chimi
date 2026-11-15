@@ -6,6 +6,9 @@ import std/decimal.{Decimal}
 
 const price = Decimal.of(1999, 2)
 const total = price * Decimal.of(3, 0)
+// A stored constant keeps its scale, so its text keeps the trailing zero.
+const one_fifty_constant = Decimal.of(150, 2)
+const one_fifty_text = Decimal.to_text(Decimal.of(150, 2))
 
 pub fn main() -> Text {
   let one_fifty = Decimal.of(150, 2)
@@ -14,6 +17,8 @@ pub fn main() -> Text {
     // N24: numeric equality, and `to_text` keeps the scale.
     Debug.render(one_fifty == one_five),
     Decimal.to_text(one_fifty),
+    Decimal.to_text(one_fifty_constant),
+    one_fifty_text,
     // N25, from constants and from run-time values.
     Decimal.to_text(total),
     Decimal.to_text(Decimal.of(1999, 2) * Decimal.of(3, 0)),

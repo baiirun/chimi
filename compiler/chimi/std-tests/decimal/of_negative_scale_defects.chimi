@@ -1,0 +1,7 @@
+// A negative scale is outside 0..=38 too.
+import std/decimal as Decimal
+import std/decimal.{Decimal}
+
+pub fn main() -> Decimal {
+  Decimal.of(1, -1)
+}
