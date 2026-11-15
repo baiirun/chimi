@@ -3643,6 +3643,47 @@ fn native_integer_loop_runs_as_direct_passes() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// Guards: tracing keeps an integer loop on the runtime path, so a full trace still
+// shows every pass's operations even though the loop could run as direct passes.
+#[test]
+fn native_traced_integer_loop_reports_every_pass() {
+    let scratch = scratch_directory("native-direct-loop-trace");
+    let executable = build_native(
+        &scratch,
+        "direct-loop-trace",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  loop count = 0 {\n",
+            "    case count >= 5 {\n",
+            "      True -> break count\n",
+            "      False -> count + 1\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "direct-loop-trace", "full");
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":5}\n"
+    );
+    let passes = execution
+        .telemetry
+        .lines()
+        .filter(|line| {
+            line.contains("\"event\":\"operation_started\"")
+                && line.contains("\"operation\":\"match\"")
+        })
+        .count();
+    assert_eq!(passes, 6, "{}", execution.telemetry);
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn native_list_is_a_persistent_vector() {
     let scratch = scratch_directory("native-list-runtime");
