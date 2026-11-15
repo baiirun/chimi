@@ -440,6 +440,10 @@ pub(crate) enum StandardFunction {
     BytesValidUtf8Length,
     BytesReadIntCode,
     BytesIntBytes,
+    // `std/embed`: lowering replaces the path argument with the file's contents
+    // (`text`) or their lowercase hex (`bytes`).
+    EmbedText,
+    EmbedBytes,
 }
 
 impl StandardFunction {
@@ -666,7 +670,9 @@ impl StandardFunction {
             | Self::BytesToTextLossy
             | Self::BytesValidUtf8Length
             | Self::BytesReadIntCode
-            | Self::BytesIntBytes => None,
+            | Self::BytesIntBytes
+            | Self::EmbedText
+            | Self::EmbedBytes => None,
         }
     }
 
@@ -808,6 +814,8 @@ impl StandardFunction {
             Self::BytesValidUtf8Length => "valid_utf8_length",
             Self::BytesReadIntCode => "read_int_code",
             Self::BytesIntBytes => "int_bytes",
+            Self::EmbedText => "text",
+            Self::EmbedBytes => "bytes",
         }
     }
 

@@ -218,6 +218,9 @@ enum {
   CHIMI_INTRINSIC_BYTES_VALID_UTF8_LENGTH,
   CHIMI_INTRINSIC_BYTES_READ_INT_CODE,
   CHIMI_INTRINSIC_BYTES_INT_BYTES,
+  /* std/embed: lowering put the file's contents (text) or their hex (bytes) in the argument. */
+  CHIMI_INTRINSIC_EMBED_TEXT,
+  CHIMI_INTRINSIC_EMBED_BYTES,
 };
 
 enum {

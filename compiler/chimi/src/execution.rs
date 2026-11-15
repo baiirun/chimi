@@ -1717,7 +1717,9 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::BytesToTextLossy
             | StandardFunction::BytesValidUtf8Length
             | StandardFunction::BytesReadIntCode
-            | StandardFunction::BytesIntBytes => {
+            | StandardFunction::BytesIntBytes
+            | StandardFunction::EmbedText
+            | StandardFunction::EmbedBytes => {
                 self.invoke_bytes_operation(function, arguments, call_node)
             }
             StandardFunction::IoPath => {

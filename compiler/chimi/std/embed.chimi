@@ -1,0 +1,25 @@
+/// Files included in the program when it is built, so a single executable
+/// ships its templates, migrations, and static assets. Call `Embed.text` or
+/// `Embed.bytes` in a module constant: `const page = Embed.text("index.html")`.
+///
+/// The path is a text literal relative to the directory of the module that
+/// calls it, with `/` between segments, and stays inside that directory: no
+/// absolute path and no empty, `.`, or `..` segment. The build reads the file,
+/// so the executable needs no file at run time. A call outside a constant's
+/// initializer, or inside a function value in one, is `E5206`; a path that is
+/// not such a literal is `E5207`; a file the build cannot read is `E5208`.
+
+import std/bytes.{Bytes}
+
+// 7. Conversions.
+
+/// Returns the contents of the file at `path`, which must be UTF-8 (`E5209`
+/// otherwise).
+///
+/// Cost: none at run time; the constant holds the text.
+pub native fn text(path: Text) -> Text
+
+/// Returns the contents of the file at `path`.
+///
+/// Cost: none at run time; the constant holds the bytes.
+pub native fn bytes(path: Text) -> Bytes

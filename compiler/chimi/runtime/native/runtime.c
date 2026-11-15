@@ -1744,7 +1744,22 @@ static ChimiValue *integer_value(int64_t raw) { ChimiValue *v = new_value(VALUE_
 static ChimiValue *range_value(int64_t start, int64_t end) {
   ChimiValue *v = new_value(VALUE_RANGE); v->as.range.start = start; v->as.range.end = end; return v;
 }
-static ChimiValue *void_value(void) { return new_value(VALUE_VOID); }
+/* Void, True and False are each one shared value in the static area, because values
+   never change after construction and conditions and effects produce them on almost
+   every pass. Static values are never collected, copied or freed. */
+static ChimiValue *shared_values[3];
+static ChimiValue *shared_value(uint32_t index) {
+  if (!shared_values[index]) {
+    AllocationArea *previous = allocation_target;
+    allocation_target = &static_area;
+    ChimiValue *value = new_value(index == 0 ? VALUE_VOID : VALUE_BOOLEAN);
+    if (index == 2) value->as.boolean = true;
+    allocation_target = previous;
+    shared_values[index] = value;
+  }
+  return shared_values[index];
+}
+static ChimiValue *void_value(void) { return shared_value(0); }
 static char *copy_text(const char *raw) {
   size_t length = strlen(raw);
   char *copy = allocate(length + 1, 1);
@@ -1771,7 +1786,7 @@ static bool text_holds_nul(const ChimiValue *text) {
 static const char *text_find(const char *text, size_t length, const char *needle, size_t width) {
   return memmem(text, length, needle, width);
 }
-static ChimiValue *boolean_value(bool raw) { ChimiValue *v = new_value(VALUE_BOOLEAN); v->as.boolean = raw; return v; }
+static ChimiValue *boolean_value(bool raw) { return shared_value(raw ? 2 : 1); }
 static ChimiValue *float_value(double raw) { ChimiValue *v = new_value(VALUE_FLOAT); v->as.floating = raw; return v; }
 
 /* The numeric model. It mirrors compiler/chimi/src/numeric.rs value for value and
@@ -5029,6 +5044,9 @@ static ChimiControl *invoke_bytes_operation(uint32_t intrinsic, ChimiValue **arg
       }
       return optional_value(bytes_from(raw, width));
     }
+    /* CHIMI_INTRINSIC_EMBED_TEXT and _BYTES never run here: lowering admits them
+       only in module constants, which the build evaluates before emitting program
+       data, so a native program receives their values as constant rows. */
   }
   return intrinsic_shape_defect(call_node);
 }
@@ -7007,7 +7025,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_json_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DECIMAL_SCALED && intrinsic <= CHIMI_INTRINSIC_DECIMAL_TO_FLOAT)
     return invoke_decimal_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_BYTES_INT_BYTES)
+  if (intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_EMBED_BYTES)
     return invoke_bytes_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
@@ -7779,13 +7797,18 @@ NODE_WRAPPER(provision, "provision", {
 })
 
 NODE_WRAPPER(sequence, "sequence", {
+  /* The locals are cloned at the first binding step, so a block that binds nothing
+     (a loop body such as `{ case ... }`) allocates no environment. Steps before that
+     one read the incoming locals, which the clone would have copied unchanged. */
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *last = NULL; bool stopped = false;
-  environment = clone_local_environment(incoming);
   for (uint32_t i = 0; i < node->length; ++i) {
     const ChimiStep *step = &CHIMI_STEPS[node->offset + i]; ChimiControl *control = RUN(step->node);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
     last = control->value;
-    if (step->kind == 0) environment->locals[environment_slot(step->symbol)] = last;
+    if (step->kind == 0) {
+      if (environment == incoming) environment = clone_local_environment(incoming);
+      environment->locals[environment_slot(step->symbol)] = last;
+    }
   } if (!stopped) result = success(last);
 })
 
@@ -7881,7 +7904,12 @@ static bool pattern_binds(uint32_t pattern_id) {
 }
 
 NODE_WRAPPER(match, "match", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; MatchValue *values = allocate(node->length, sizeof(*values)); bool stopped = false;
+  /* Most matches have one or two subjects, so their values live on the C stack. */
+  enum { MATCH_STACK_SUBJECTS = 8 };
+  const ChimiNode *node = &CHIMI_NODES[node_id]; MatchValue stack_values[MATCH_STACK_SUBJECTS];
+  MatchValue *values = node->length <= MATCH_STACK_SUBJECTS ? stack_values
+                                                              : allocate(node->length, sizeof(*values));
+  bool stopped = false;
   for (uint32_t subject = 0; subject < node->length; ++subject) {
     bool contextual = false;
     for (uint32_t arm_index = 0; arm_index < node->b; ++arm_index) {
