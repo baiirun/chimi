@@ -22,6 +22,7 @@ mod constants;
 pub(crate) mod durations;
 pub(crate) mod failure_sets;
 pub(crate) mod process;
+mod select;
 
 mod properties;
 
@@ -1191,7 +1192,9 @@ impl TypedProject {
         visiting: &mut HashSet<TypeId>,
     ) -> ValueProperties {
         match self.resolved.standard_symbol(symbol) {
-            Some(StandardSymbol::Type(StandardType::Task)) => {
+            // An event is task-local like the handle or inbox it may hold
+            // (time-and-outcomes.md, "Events").
+            Some(StandardSymbol::Type(StandardType::Task | StandardType::SelectEvent)) => {
                 return ValueProperties::PARENT_LOCAL;
             }
             Some(StandardSymbol::Type(
@@ -1656,6 +1659,7 @@ impl ProjectTypeChecker {
 
         self.index_process_contracts();
         self.index_clock_contracts();
+        self.index_select_contracts();
         let text = self.builtin_type("Text");
         let int = self.builtin_type("Int");
         let bool_type = self.builtin_type("Bool");
@@ -3353,6 +3357,7 @@ impl ProjectTypeChecker {
                 let callee_symbol = self.expression_value_symbol(module_id, callee);
                 let labelled_order =
                     self.reject_argument_labels(module_id, callee, callee_symbol, arguments);
+                self.reject_empty_event_list(module_id, callee_symbol, arguments);
                 if callee_symbol.is_some_and(|symbol| {
                     self.is_builtin_value(symbol, "Success")
                         || self.is_builtin_value(symbol, "Failure")
@@ -7866,7 +7871,7 @@ impl ProjectTypeChecker {
                             // there also denotes the task's failure row.
                             let failures_index = match self.resolved.standard_symbol(symbol) {
                                 Some(StandardSymbol::Type(
-                                    StandardType::Task | StandardType::ProcessSpec,
+                                    StandardType::Task | StandardType::ProcessSpec | StandardType::SelectEvent,
                                 )) => Some(1),
                                 Some(StandardSymbol::Type(StandardType::ProcessHandoffSpec)) => {
                                     Some(2)

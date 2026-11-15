@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 27
+#define CHIMI_RUNTIME_ABI_VERSION 28
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -146,6 +146,13 @@ enum {
   CHIMI_INTRINSIC_CLOCK_STARTING_AT,
   CHIMI_INTRINSIC_TASK_TIMEOUT,
   CHIMI_INTRINSIC_TASK_DEADLINE,
+  /* std/select. */
+  CHIMI_INTRINSIC_SELECT_RECEIVE,
+  CHIMI_INTRINSIC_SELECT_INBOX,
+  CHIMI_INTRINSIC_SELECT_TASK,
+  CHIMI_INTRINSIC_SELECT_AFTER,
+  CHIMI_INTRINSIC_SELECT_AT,
+  CHIMI_INTRINSIC_SELECT_FIRST,
   /* The process intrinsics follow StandardFunction's declaration order. */
   CHIMI_INTRINSIC_PROCESS_SPEC,
   CHIMI_INTRINSIC_PROCESS_REGISTER,

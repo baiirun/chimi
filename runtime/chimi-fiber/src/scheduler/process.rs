@@ -1151,6 +1151,34 @@ impl Scheduler {
         receipt
     }
 
+    /// The inbox event of a `Select.first` by `task`: `None` when `task` is
+    /// not a process body; else whether a receive would answer at once (a
+    /// message, or a pending shutdown, which a receive reports). When not,
+    /// the next accepted message wakes the task, as a parked receive is woken.
+    pub(super) fn select_inbox(&mut self, task: TaskId) -> Option<bool> {
+        let incarnation = self.incarnation_of(task)?;
+        let record = self
+            .kernel
+            .incarnations
+            .get_mut(&incarnation)
+            .expect("live incarnation");
+        let ready = record.stopping.is_some() || !record.mailbox.is_empty();
+        if !ready {
+            record.receiving = true;
+        }
+        Some(ready)
+    }
+
+    /// Withdraws the wake `select_inbox` registered.
+    pub(super) fn unwatch_inbox(&mut self, task: TaskId) {
+        if let Some(record) = self
+            .incarnation_of(task)
+            .and_then(|incarnation| self.kernel.incarnations.get_mut(&incarnation))
+        {
+            record.receiving = false;
+        }
+    }
+
     /// True when a request from this task must not be answered: its
     /// incarnation was already told it is cancelled and the request is one
     /// that can park, so it waits for the shutdown deadline. Requests that
@@ -1206,6 +1234,7 @@ impl Scheduler {
         if let Some(timer) = record.timer.take() {
             self.cancel_timer(timer);
         }
+        self.clear_select(task);
         let transition = self.channels.cancel_pending(task);
         self.apply_channel_transition(transition);
         if let Some(record) = self
@@ -2284,6 +2313,7 @@ fn interrupted_while_draining(kind: u32) -> bool {
             | super::REQUEST_CHANNEL_SEND
             | super::REQUEST_CHANNEL_RECEIVE
             | super::REQUEST_TIMER_SLEEP_UNTIL
+            | super::REQUEST_SELECT
     )
 }
 
@@ -2295,6 +2325,7 @@ fn can_park(kind: u32) -> bool {
             | super::REQUEST_CHANNEL_SEND
             | super::REQUEST_CHANNEL_RECEIVE
             | super::REQUEST_TIMER_SLEEP_UNTIL
+            | super::REQUEST_SELECT
             | super::REQUEST_SUPERVISOR_REMOVE_PROCESS
             | super::REQUEST_SUPERVISOR_REMOVE_SUPERVISOR
             | super::REQUEST_SUPERVISOR_STOP

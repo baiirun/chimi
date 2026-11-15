@@ -83,7 +83,10 @@ typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INT
    timestamp is `Clock.starting_at`'s: its `inner` reads now, plus `shift`. */
 typedef enum { HOST_PROCESS_UTF8_LINES, HOST_WRITE_LINE, HOST_WRITE_ERROR,
                HOST_CLOCK_NOW, HOST_CLOCK_TIMESTAMP, HOST_CLOCK_SLEEP_UNTIL,
-               HOST_CLOCK_SHIFTED_TIMESTAMP } HostFunction;
+               HOST_CLOCK_SHIFTED_TIMESTAMP,
+               /* A Select timer on a user Clock: its `inner` is the provider's
+                  sleep_until, called with the Instant in `shift`. */
+               HOST_SELECT_SLEEP } HostFunction;
 /* CONTROL_BREAK carries the target loop's state symbol in `node` and its value in `value`.
    Verified programs keep it inside one function, so it never reaches a call or root. */
 typedef enum { CONTROL_SUCCESS, CONTROL_FAILURE, CONTROL_DEFECT, CONTROL_CANCEL, CONTROL_BREAK } ControlKind;
@@ -7439,6 +7442,10 @@ static ChimiControl *invoke_clock_host(ChimiRuntime *runtime, ChimiCallable *cal
         return defect("`Clock.starting_at` clock's timestamp overflows the Timestamp range", call_node);
       return success(timestamp_value(wall));
     }
+    case HOST_SELECT_SLEEP: {
+      ChimiValue *at[] = {instant_value(callable->shift)};
+      return invoke(runtime, callable->inner, at, 1, span, call_node, environment);
+    }
     default: return defect("unknown clock host function", call_node);
   }
 }
@@ -7584,6 +7591,240 @@ static ChimiControl *invoke_clock(ChimiRuntime *runtime, uint32_t intrinsic, Chi
   return defect("unknown standard intrinsic", call_node);
 }
 
+/* std/select (time-and-outcomes.md, "Choosing among events"). An Event is a record
+   that is never shown to source code: `kind` is a SELECT_EVENT_* code, `source` the
+   receiver, inbox, task, Duration, or Instant it waits on, `map` the mapping
+   function (the value itself for a timer), and `clock` the provider a timer
+   snapshotted when it was built, or Void for the execution clock. */
+enum { SELECT_EVENT_RECEIVE = 1, SELECT_EVENT_INBOX, SELECT_EVENT_TASK, SELECT_EVENT_AFTER,
+       SELECT_EVENT_AT };
+
+static ChimiValue *select_event(int64_t kind, ChimiValue *source, ChimiValue *map, ChimiValue *clock) {
+  ChimiValue *value = new_value(VALUE_RECORD);
+  value->as.record.length = 4;
+  value->as.record.fields = allocate(4, sizeof(*value->as.record.fields));
+  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
+  value->as.record.fields[0] = (RuntimeField){"kind", integer_value(kind)};
+  value->as.record.fields[1] = (RuntimeField){"source", source};
+  value->as.record.fields[2] = (RuntimeField){"map", map};
+  value->as.record.fields[3] = (RuntimeField){"clock", clock};
+  return value;
+}
+
+static bool is_host(ChimiValue *value, HostFunction host) {
+  return value && value->kind == VALUE_CALLABLE && value->as.callable->kind == CALL_HOST &&
+         value->as.callable->host == host;
+}
+
+/* True when the provider's `now` and `sleep_until` are the execution clock's, so
+   its timers go straight onto the scheduler's timer queue. `Clock.starting_at`
+   shifts only `timestamp`, so it counts. */
+static bool on_execution_clock(ChimiValue *provider) {
+  if (!provider || provider->kind == VALUE_VOID) return true;
+  if (provider->kind != VALUE_RECORD) return false;
+  return is_host(select_value(provider, "now"), HOST_CLOCK_NOW) &&
+         is_host(select_value(provider, "sleep_until"), HOST_CLOCK_SLEEP_UNTIL);
+}
+
+/* The deadline of a timer event and the `now` it is measured against: the
+   execution clock's (read once per Select.first) or the event's own provider's.
+   NULL on success. */
+static ChimiControl *timer_deadline(ChimiRuntime *runtime, ChimiValue *event, int64_t *now_io,
+                                    int64_t *deadline, uint64_t span, uint32_t call_node,
+                                    ChimiEnvironment *environment) {
+  ChimiValue *source = select_value(event, "source");
+  ChimiValue *provider = select_value(event, "clock");
+  int64_t now = *now_io;
+  if (!on_execution_clock(provider)) {
+    ChimiValue *read = select_value(provider, "now");
+    if (!read || read->kind != VALUE_CALLABLE) return defect("provider has no callable field", call_node);
+    ChimiControl *control = invoke(runtime, read->as.callable, NULL, 0, span, call_node, environment);
+    if (control->kind != CONTROL_SUCCESS) return control;
+    if (control->value->kind != VALUE_INSTANT) return intrinsic_shape_defect(call_node);
+    now = control->value->as.integer;
+  }
+  *now_io = now;
+  if (select_value(event, "kind")->as.integer == SELECT_EVENT_AT) {
+    *deadline = source->as.integer;
+    return NULL;
+  }
+  if (__builtin_add_overflow(now, source->as.integer, deadline)) {
+    char text[32]; duration_text(source->as.integer, text);
+    return defect(numeric_message("`Select.after(%s)` overflows the Instant range", text), call_node);
+  }
+  return NULL;
+}
+
+/* Starts the child that stands for a timer on a user Clock: it runs the provider's
+   `sleep_until(deadline)`, and the select waits for it to end. */
+static ChimiControl *start_user_timer(ChimiRuntime *runtime, ChimiValue *provider, int64_t deadline,
+                                      uint64_t *task, uint64_t span, uint32_t call_node,
+                                      ChimiEnvironment *environment) {
+  ChimiValue *sleep_until = select_value(provider, "sleep_until");
+  if (!sleep_until || sleep_until->kind != VALUE_CALLABLE)
+    return defect("provider has no callable field", call_node);
+  ChimiValue *sleeper = clock_host_value(HOST_SELECT_SLEEP);
+  sleeper->as.callable->inner = sleep_until->as.callable;
+  sleeper->as.callable->shift = deadline;
+  ChimiValue *arguments[] = {sleeper};
+  ChimiControl *started = invoke_intrinsic(runtime, CHIMI_INTRINSIC_TASK_START, arguments, 1, span,
+                                           call_node, environment);
+  if (started->kind != CONTROL_SUCCESS) return started;
+  *task = started->value->as.task;
+  return NULL;
+}
+
+/* Cancels the user-clock timer children except `keep` (an index, or -1). */
+static void cancel_user_timers(ChimiRuntime *runtime, const ChimiSelectSource *sources,
+                               const bool *user_timer, uint32_t count, int64_t keep, uint64_t span,
+                               uint32_t call_node, ChimiEnvironment *environment) {
+  for (uint32_t index = 0; index < count; ++index) {
+    if (!user_timer[index] || (int64_t)index == keep) continue;
+    ChimiValue *arguments[] = {task_value(sources[index].task)};
+    invoke_intrinsic(runtime, CHIMI_INTRINSIC_TASK_CANCEL, arguments, 1, span, call_node, environment);
+  }
+}
+
+/* Takes the committed event's value: its source's own operation, which answers
+   at once because the scheduler reported it ready, nothing else can consume it,
+   and no other task runs before this request (the select's reply woke this task
+   at the front of the run queue). Nothing may be issued between the select and
+   this. A timer's value is its event value. */
+static ChimiControl *select_take(ChimiRuntime *runtime, ChimiValue *event, uint64_t user_timer_task,
+                                 uint64_t span, uint32_t call_node, ChimiEnvironment *environment) {
+  int64_t kind = select_value(event, "kind")->as.integer;
+  ChimiValue *map = select_value(event, "map");
+  ChimiValue *source = select_value(event, "source");
+  uint32_t operation;
+  switch (kind) {
+    case SELECT_EVENT_RECEIVE: operation = CHIMI_INTRINSIC_CHANNEL_RECEIVE; break;
+    case SELECT_EVENT_INBOX: operation = CHIMI_INTRINSIC_PROCESS_RECEIVE; break;
+    case SELECT_EVENT_TASK: operation = CHIMI_INTRINSIC_TASK_RESULT; break;
+    default: {
+      if (!user_timer_task) return success(map);
+      /* Observe the timer child: a cancelled sleep cancels this task, as it would
+         a direct `sleep_until`. */
+      ChimiValue *arguments[] = {task_value(user_timer_task)};
+      ChimiControl *slept = invoke_intrinsic(runtime, CHIMI_INTRINSIC_TASK_RESULT, arguments, 1,
+                                             span, call_node, environment);
+      return slept->kind == CONTROL_SUCCESS ? success(map) : slept;
+    }
+  }
+  ChimiValue *arguments[] = {source};
+  return invoke_intrinsic(runtime, operation, arguments, 1, span, call_node, environment);
+}
+
+/* Maps a taken value with the providers the mapping function snapshotted when
+   the event was built. A timer has no mapping function. */
+static ChimiControl *select_map(ChimiRuntime *runtime, ChimiValue *event, ChimiControl *taken,
+                                uint64_t span, uint32_t call_node) {
+  int64_t kind = select_value(event, "kind")->as.integer;
+  if (taken->kind != CONTROL_SUCCESS || kind == SELECT_EVENT_AFTER || kind == SELECT_EVENT_AT)
+    return taken;
+  ChimiValue *mapped[] = {taken->value};
+  return invoke(runtime, select_value(event, "map")->as.callable, mapped, 1, span, call_node,
+                new_environment(0));
+}
+
+/* Select.first (time-and-outcomes.md, "Semantics of `Select.first`"): one
+   CHIMI_REQUEST_SELECT over every event in list order, reissued after each wake,
+   then the committed event. A user-Clock timer is a child running that clock's
+   `sleep_until`, so it is a task source to the scheduler. */
+static ChimiControl *select_first(ChimiRuntime *runtime, ChimiValue *events, uint64_t span,
+                                  uint32_t call_node, ChimiEnvironment *environment) {
+  uint32_t count = list_length(events);
+  if (count == 0) return defect("`Select.first` needs at least one event", call_node);
+  ChimiSelectSource *sources = calloc(count, sizeof(*sources));
+  bool *user_timer = calloc(count, sizeof(*user_timer));
+  if (!sources || !user_timer) exhausted_memory();
+  ChimiControl *stopped = NULL;
+  bool read_now = false;
+  int64_t now = 0;
+  for (uint32_t index = 0; index < count && !stopped; ++index) {
+    ChimiValue *event = list_get(events, index);
+    ChimiValue *source = select_value(event, "source");
+    ChimiSelectSource *entry = &sources[index];
+    switch (select_value(event, "kind")->as.integer) {
+      case SELECT_EVENT_RECEIVE:
+        *entry = (ChimiSelectSource){.kind = CHIMI_SELECT_RECEIVE,
+                                     .channel = source->as.capability.channel,
+                                     .owner = source->as.capability.owner,
+                                     .token = source->as.capability.token};
+        break;
+      case SELECT_EVENT_INBOX: entry->kind = CHIMI_SELECT_INBOX; break;
+      case SELECT_EVENT_TASK: *entry = (ChimiSelectSource){.kind = CHIMI_SELECT_TASK, .task = source->as.task}; break;
+      default: {
+        /* Every timer measures from the start of this call. */
+        if (!read_now && (stopped = execution_now(&now, call_node))) break;
+        read_now = true;
+        int64_t deadline, measured = now;
+        if ((stopped = timer_deadline(runtime, event, &measured, &deadline, span, call_node, environment)))
+          break;
+        ChimiValue *provider = select_value(event, "clock");
+        if (on_execution_clock(provider)) {
+          *entry = (ChimiSelectSource){.kind = CHIMI_SELECT_TIMER, .deadline = deadline};
+        } else if (deadline <= measured) {
+          /* Already due on its own clock: ready now, in list order. */
+          *entry = (ChimiSelectSource){.kind = CHIMI_SELECT_TIMER, .deadline = INT64_MIN};
+        } else {
+          entry->kind = CHIMI_SELECT_TASK;
+          stopped = start_user_timer(runtime, provider, deadline, &entry->task, span, call_node, environment);
+          user_timer[index] = !stopped;
+        }
+      }
+    }
+  }
+  int64_t committed = -1;
+  while (!stopped) {
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_SELECT, .context = sources, .value = count};
+    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) { stopped = cancelled(); break; }
+    if (request.status == CHIMI_RESPONSE_PENDING) continue;
+    if (request.status != CHIMI_RESPONSE_OK || request.value < 0 || request.value >= count) {
+      stopped = defect("Select.first scheduler request failed", call_node);
+      break;
+    }
+    committed = request.value;
+    break;
+  }
+  ChimiValue *event = committed >= 0 ? list_get(events, (uint32_t)committed) : NULL;
+  ChimiControl *taken = NULL;
+  if (!stopped) {
+    uint64_t timer_task = user_timer[committed] ? sources[committed].task : 0;
+    taken = select_take(runtime, event, timer_task, span, call_node, environment);
+  }
+  /* Only after the take: a cancel reply lets other tasks run first. */
+  if (!stopped || stopped->kind != CONTROL_CANCEL || !chimi_fiber_cancel_is_terminal())
+    cancel_user_timers(runtime, sources, user_timer, count, committed, span, call_node, environment);
+  free(sources);
+  free(user_timer);
+  if (stopped) return stopped;
+  return select_map(runtime, event, taken, span, call_node);
+}
+
+static ChimiControl *invoke_select(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
+                                   uint32_t argument_count, uint64_t span, uint32_t call_node,
+                                   ChimiEnvironment *environment) {
+  ValueKind source_kind;
+  int64_t kind;
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_SELECT_RECEIVE: source_kind = VALUE_CHANNEL_RECEIVER; kind = SELECT_EVENT_RECEIVE; break;
+    case CHIMI_INTRINSIC_SELECT_INBOX: source_kind = VALUE_PROCESS_INBOX; kind = SELECT_EVENT_INBOX; break;
+    case CHIMI_INTRINSIC_SELECT_TASK: source_kind = VALUE_TASK; kind = SELECT_EVENT_TASK; break;
+    case CHIMI_INTRINSIC_SELECT_AFTER: source_kind = VALUE_DURATION; kind = SELECT_EVENT_AFTER; break;
+    case CHIMI_INTRINSIC_SELECT_AT: source_kind = VALUE_INSTANT; kind = SELECT_EVENT_AT; break;
+    case CHIMI_INTRINSIC_SELECT_FIRST:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST) return intrinsic_shape_defect(call_node);
+      return select_first(runtime, arguments[0], span, call_node, environment);
+    default: return defect("unknown standard intrinsic", call_node);
+  }
+  if (argument_count != 2 || arguments[0]->kind != source_kind) return intrinsic_shape_defect(call_node);
+  bool timer = kind == SELECT_EVENT_AFTER || kind == SELECT_EVENT_AT;
+  if (!timer && arguments[1]->kind != VALUE_CALLABLE) return intrinsic_shape_defect(call_node);
+  ChimiValue *clock = NULL;
+  if (timer) clock = environment->requirements[CHIMI_CLOCK_REQUIREMENT_SLOT];
+  return success(select_event(kind, arguments[0], arguments[1], clock ? clock : void_value()));
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
@@ -7605,6 +7846,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
     return invoke_process(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+  if (intrinsic >= CHIMI_INTRINSIC_SELECT_RECEIVE && intrinsic <= CHIMI_INTRINSIC_SELECT_FIRST)
+    return invoke_select(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_CLOCK_NOW && intrinsic <= CHIMI_INTRINSIC_TASK_DEADLINE)
     return invoke_clock(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DEBUG_CRASH && intrinsic <= CHIMI_INTRINSIC_LIST_SET)
@@ -8809,6 +9052,7 @@ static const char *scheduler_event_name(const ChimiSchedulerTraceEvent *event) {
   static const char *clock_names[] = {
     "clock_advanced", "clock_timer_started", "clock_timer_fired",
     "clock_timer_cancelled", "clock_deadlock_waiter", "clock_scope_fired",
+    "clock_select_parked", "clock_select_committed",
   };
   if (event->family == CHIMI_SCHEDULER_TRACE_CHANNEL &&
       event->kind > 0 && event->kind <= sizeof(channel_names) / sizeof(*channel_names))
@@ -8912,7 +9156,9 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
           ",\"waiter_depth\":%" PRIu64 ",\"discard_count\":%" PRIu64,
           event->sequence, event->capacity, event->queue_depth,
           event->waiter_depth, event->discard_count);
-  if (clock)
+  if (clock && event->kind == CHIMI_CLOCK_TRACE_SELECT_COMMITTED)
+    fprintf(output, ",\"time_ns\":%" PRId64 ",\"index\":%" PRIu64, event->time, event->cause);
+  else if (clock)
     fprintf(output, ",\"time_ns\":%" PRId64 ",\"request_kind\":%" PRIu64,
             event->time, event->cause);
   if (process) emit_process_fields(runtime, output, event, true);
@@ -8925,6 +9171,7 @@ static const char *waited_operation(uint32_t request_kind) {
     case CHIMI_REQUEST_TASK_RESULT: return "Task.result";
     case CHIMI_REQUEST_CHANNEL_SEND: return "Channel.send";
     case CHIMI_REQUEST_CHANNEL_RECEIVE: return "Channel.receive";
+    case CHIMI_REQUEST_SELECT: return "Select.first";
     default: return "a scheduler request";
   }
 }

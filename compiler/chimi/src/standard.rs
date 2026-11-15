@@ -11,10 +11,11 @@ pub(crate) enum StandardModule {
     Process,
     Supervisor,
     Clock,
+    Select,
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Channel,
         Self::Io,
         Self::Task,
@@ -26,6 +27,7 @@ impl StandardModule {
         Self::Process,
         Self::Supervisor,
         Self::Clock,
+        Self::Select,
     ];
 
     pub(crate) const fn path(self) -> &'static str {
@@ -41,6 +43,7 @@ impl StandardModule {
             Self::Process => "std/process",
             Self::Supervisor => "std/supervisor",
             Self::Clock => "std/clock",
+            Self::Select => "std/select",
         }
     }
 
@@ -115,6 +118,9 @@ pub(crate) enum StandardType {
     Timestamp,
     /// `std/task.Timeout`: the expected failure of `Task.timeout` and `Task.deadline`.
     Timeout,
+    /// `std/select.Event<A, F>`: one wait that produces an `A` or fails with `F`;
+    /// task-local.
+    SelectEvent,
     /// `std/process.Monitor`: a watch one incarnation set on another.
     ProcessMonitor,
     /// `std/process.Down`: how a monitored incarnation ended.
@@ -198,6 +204,7 @@ impl StandardType {
             Self::Instant => "Instant",
             Self::Timestamp => "Timestamp",
             Self::Timeout => "Timeout",
+            Self::SelectEvent => "Event",
             Self::ProcessMonitor => "Monitor",
             Self::ProcessDown => "Down",
             Self::ProcessHandoffSpec => "HandoffSpec",
@@ -227,6 +234,7 @@ impl StandardType {
                 StandardProperties::Opaque("a process or supervisor capability")
             }
             Self::Task => StandardProperties::Opaque("a `Task` capability"),
+            Self::SelectEvent => StandardProperties::Opaque("a `Select.Event`"),
             Self::ChannelSender | Self::ChannelReceiver | Self::ChannelCompletion => {
                 StandardProperties::Opaque("a channel capability")
             }
@@ -388,6 +396,15 @@ pub(crate) enum StandardFunction {
     TaskTimeout,
     /// `Task.deadline(operation, at)`.
     TaskDeadline,
+    // `std/select`, in `CHIMI_INTRINSIC_SELECT_*` order. Building an event
+    // parks nothing and consumes nothing; `Select.first` waits.
+    SelectReceive,
+    SelectInbox,
+    SelectTask,
+    /// Measures its `Duration` from the start of the `Select.first` call.
+    SelectAfter,
+    SelectAt,
+    SelectFirst,
     ProcessSpec,
     ProcessRegister,
     ProcessReceive,
@@ -497,7 +514,7 @@ pub(crate) enum StandardFunction {
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 87] = [
+    pub(crate) const ALL: [Self; 93] = [
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -585,6 +602,12 @@ impl StandardFunction {
         Self::ClockStartingAt,
         Self::TaskTimeout,
         Self::TaskDeadline,
+        Self::SelectReceive,
+        Self::SelectInbox,
+        Self::SelectTask,
+        Self::SelectAfter,
+        Self::SelectAt,
+        Self::SelectFirst,
     ];
 
     pub(crate) const fn module(self) -> Option<StandardModule> {
@@ -625,6 +648,12 @@ impl StandardFunction {
             | Self::ClockTimestampBetween
             | Self::ClockStartingAt => Some(StandardModule::Clock),
             Self::IoPath => Some(StandardModule::Io),
+            Self::SelectReceive
+            | Self::SelectInbox
+            | Self::SelectTask
+            | Self::SelectAfter
+            | Self::SelectAt
+            | Self::SelectFirst => Some(StandardModule::Select),
             Self::TaskStart
             | Self::TaskResult
             | Self::TaskCancel
@@ -847,6 +876,12 @@ impl StandardFunction {
             Self::ClockStartingAt => "starting_at",
             Self::TaskTimeout => "timeout",
             Self::TaskDeadline => "deadline",
+            Self::SelectReceive => "receive",
+            Self::SelectInbox => "inbox",
+            Self::SelectTask => "task",
+            Self::SelectAfter => "after",
+            Self::SelectAt => "at",
+            Self::SelectFirst => "first",
             Self::DebugCrash => "crash",
             Self::OptionUnwrapOrFail => "unwrap_or_fail",
             Self::TextConcat => "concat",
@@ -958,6 +993,21 @@ impl StandardFunction {
         )
     }
 
+    /// The `std/select` functions. They run only on the native backend, where
+    /// the scheduler can wait on several sources; the interpreter has no task,
+    /// channel, or timer runtime and defects at each of them.
+    pub(crate) const fn is_select_operation(self) -> bool {
+        matches!(
+            self,
+            Self::SelectReceive
+                | Self::SelectInbox
+                | Self::SelectTask
+                | Self::SelectAfter
+                | Self::SelectAt
+                | Self::SelectFirst
+        )
+    }
+
     /// Whether the native runtime runs this function on the fiber scheduler, so
     /// a program that reaches it runs its root as a scheduler task.
     #[cfg(any(
@@ -977,6 +1027,7 @@ impl StandardFunction {
                 | Self::ChannelAbort
                 | Self::ChannelBounded
         ) || self.requires_process_runtime()
+            || self.is_select_operation()
     }
 
     /// The unit of a `Duration` constructor (`Duration.seconds`) or of a whole-unit
@@ -1249,6 +1300,7 @@ impl StandardConstructor {
             | StandardType::Clock
             | StandardType::Instant
             | StandardType::Timestamp
+            | StandardType::SelectEvent
             | StandardType::ProcessMonitor
             | StandardType::ProcessHandoffSpec => None,
             // Written type-qualified, `Timeout.TimedOut`, as the spec does.
@@ -1446,6 +1498,14 @@ pub(crate) enum StandardGeneric {
     TimeoutValue,
     TimeoutFailures,
     TimeoutNeeds,
+    /// The `std/select` functions share these, as the timeouts do: `A`, the
+    /// event's value; `F`, its mapping function's failures; `R`, that
+    /// function's needs; `T`, what the source delivers; `E`, a task's failures.
+    SelectValue,
+    SelectFailures,
+    SelectNeeds,
+    SelectSource,
+    SelectTaskFailures,
     ProcessOwnAddressMessage,
     ProcessQueuedMessage,
     ProcessCapacityMessage,
@@ -1463,7 +1523,7 @@ pub(crate) enum StandardGeneric {
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 42] = [
+    pub(crate) const ALL: [Self; 47] = [
         Self::FileState,
         Self::FileFailures,
         Self::FileNeeds,
@@ -1493,6 +1553,11 @@ impl StandardGeneric {
         Self::TimeoutValue,
         Self::TimeoutFailures,
         Self::TimeoutNeeds,
+        Self::SelectValue,
+        Self::SelectFailures,
+        Self::SelectNeeds,
+        Self::SelectSource,
+        Self::SelectTaskFailures,
         Self::ProcessOwnAddressMessage,
         Self::ProcessQueuedMessage,
         Self::ProcessCapacityMessage,
@@ -1550,6 +1615,11 @@ impl StandardGeneric {
             Self::TimeoutValue => "T",
             Self::TimeoutFailures => "E",
             Self::TimeoutNeeds => "R",
+            Self::SelectValue => "A",
+            Self::SelectFailures => "F",
+            Self::SelectNeeds => "R",
+            Self::SelectSource => "T",
+            Self::SelectTaskFailures => "E",
         }
     }
 
@@ -1561,12 +1631,15 @@ impl StandardGeneric {
             | Self::ProcessRegisterFailures
             | Self::SupervisorProcessFailures
             | Self::SupervisorStartProcessFailures
+            | Self::SelectFailures
+            | Self::SelectTaskFailures
             | Self::ProcessHandoffSpecFailures
             | Self::SupervisorStartHandoffFailures => StandardGenericKind::FailureSet,
             Self::FileNeeds
             | Self::ProcessSpecNeeds
             | Self::ProcessHandoffSpecNeeds
-            | Self::TimeoutNeeds => {
+            | Self::TimeoutNeeds
+            | Self::SelectNeeds => {
                 StandardGenericKind::NeedsRow
             }
             _ => StandardGenericKind::Value,
