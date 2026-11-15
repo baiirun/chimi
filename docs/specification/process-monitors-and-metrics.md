@@ -132,7 +132,9 @@ fn watcher(inbox: Inbox<Message>) -> Void {
 
 `notice` has the type `fn(Down) -> Message`: it turns the end into the
 watcher's own message type, so the notice arrives through the same exhaustive
-`case` as every other message. It may not fail or need providers.
+`case` as every other message. It may not fail or need providers. The monitor
+keeps the notice until it delivers it, so passing a notice moves it, and the
+values it captures, into the monitor, as `Process.send` moves a message.
 
 `Process.Down` says how the watched incarnation ended:
 

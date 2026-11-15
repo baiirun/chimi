@@ -157,7 +157,7 @@ const TASK_TERMINAL: &[&str] = &["task_terminal"];
 
 use Stage::*;
 
-pub static SCENARIOS: [Scenario; 140] = [
+pub static SCENARIOS: [Scenario; 141] = [
     // Static: compile-pass.
     fixture("SP01", "static-contract-example", U1),
     fixture("SP02", "spec-inside-using-shareable-provider", U2),
@@ -196,6 +196,7 @@ pub static SCENARIOS: [Scenario; 140] = [
     fixture("SF25", "start-process-case-omits-stopped", U1),
     fixture("SF26", "start-case-has-capacity-reached-arm", U1),
     fixture("SF27", "monitor-notice-must-not-fail", U11),
+    fixture("SF28", "monitor-notice-is-kept-by-the-monitor", U11),
     // Verified Core.
     Scenario::new(
         "CO01",

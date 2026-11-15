@@ -509,6 +509,7 @@ did for each of its tests.
 | SF25 | U1 | A `start_process` case that omits `Stopped`, matched as `Failure(error) -> case error { ... }`: a `Failure(variant)` arm list that leaves a variant out lets it propagate, so coverage is checked on the failure value | non-exhaustive match (`T4231`) |
 | SF26 | U1 | A `case Supervisor.start(policy)` arm `Failure(Supervisor.StartError.CapacityReached)` | unreachable arm: the variant is absent from the closed row, `T4224` (patterns FP-02) |
 | SF27 | U11 | A `Process.monitor` notice that can return `Failure` | A notice that can fail inside the watcher's receive |
+| SF28 | U11 | The same `Process.monitor` notice, capturing a `Receiver`, passed to two monitors | A notice that stays usable after the monitor took it, handing out a second copy of an exclusive value |
 
 ### Verified Core
 
@@ -1123,7 +1124,7 @@ scenarios pass and `CURRENT_STAGE` names it.
 | U8 | `shutdown_within` deadlines, forced termination, and structured child tasks inside processes | RA07, RR05, RR06, SD02–SD07, CB05 |
 | U9 | Declared and dynamic nested supervisors | SV09, SV10, ES02–ES04 |
 | U10 | `programs/supervised-pool` and the performance harness | FP01, MF02, MF03, PG01–PG10 |
-| U11 | G27: `Process.address`, `queued`, `capacity`, `monitor`, and `unmonitor` ([process monitors and metrics](process-monitors-and-metrics.md), CHI-220), fiber ABI 9 | SF27, MB12–MB18 |
+| U11 | G27: `Process.address`, `queued`, `capacity`, `monitor`, and `unmonitor` ([process monitors and metrics](process-monitors-and-metrics.md), CHI-220), fiber ABI 9 | SF27, SF28, MB12–MB18 |
 
 Two scenarios moved stage (coordinator decisions on `ts-6ccbc9`). MF06
 moved from U3 to U5, because a process program cannot be built natively
@@ -1145,7 +1146,7 @@ changing a contract.
 | Category | Count |
 | --- | ---: |
 | Static compile-pass (SP) | 9 |
-| Static compile-fail (SF) | 27 |
+| Static compile-fail (SF) | 28 |
 | Verified Core (CO) | 4 |
 | Mailbox and delivery (MB) | 18 |
 | Routing (RT) | 8 |
@@ -1159,7 +1160,7 @@ changing a contract.
 | Observability (OB) and backend support (IP) | 9 |
 | Forcing program (FP) | 1 |
 | Performance gates (PG) | 10 |
-| **Total** | **140** |
+| **Total** | **141** |
 
 Four scenarios use C harnesses: RA06, SD04, CB06, and CB07.
 
