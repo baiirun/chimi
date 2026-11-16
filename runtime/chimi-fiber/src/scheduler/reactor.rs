@@ -382,12 +382,13 @@ impl Scheduler {
         }
     }
 
-    /// The idle wait while a registration exists. Under the real clock it
-    /// ends by the earliest timer deadline or after `MAX_REAL_WAIT`; under
-    /// the virtual clock time is held, so it waits for a descriptor or a
-    /// signal only. Wakes the ready
-    /// tasks, then fires the timers due by now, which under the virtual
-    /// clock are only those at the current instant.
+    /// The idle wait while a registration or a child wait exists. Under the
+    /// real clock it ends by the earliest timer deadline or after
+    /// `MAX_REAL_WAIT`; under the virtual clock time is held, so it waits for
+    /// a descriptor or a signal only. Either way it ends by the child
+    /// waiters' `recheck_interval`. Wakes the ready tasks and the child
+    /// waiters whose child exited, then fires the timers due by now, which
+    /// under the virtual clock are only those at the current instant.
     pub(super) fn wait_for_io(&mut self) {
         let timeout = match self.clock.mode() {
             // A timer already due fires without moving time, so it must not
@@ -402,8 +403,13 @@ impl Scheduler {
                 .earliest()
                 .map(|deadline| super::clock::real_wait(self.clock.now(), deadline)),
         };
+        let timeout = match (timeout, self.recheck_interval()) {
+            (Some(timeout), Some(recheck)) => Some(timeout.min(recheck)),
+            (timeout, recheck) => timeout.or(recheck),
+        };
         let woken = self.reactor.wait(timeout, self.signals.wake_fd());
         self.wake_io(woken);
+        self.recheck_children_after_idle();
         self.fire_due_timers();
     }
 

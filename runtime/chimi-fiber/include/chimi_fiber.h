@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 25u
+#define CHIMI_FIBER_ABI_VERSION 26u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -216,6 +216,17 @@ enum {
      oldest that wants it. A cancellation point, withdrawn by a cancellation;
      unlike an IO wait it does not hold virtual time. */
   CHIMI_REQUEST_SIGNAL_WAIT = 45,
+  /* ChimiSchedulerRequest: waits until the child process whose pid is in
+     `value` has exited. OK once it has; the scheduler only looks (waitid
+     with WNOWAIT), so the host reaps it with its own waitpid. PENDING while
+     it runs, so reissue after every wake. ERROR for a pid that is not
+     positive or not an unreaped child. The runner's SIGCHLD handler writes a
+     byte to `signal_fd`, which ends an idle wait at once; without it an
+     idle scheduler still rechecks, from every 10 milliseconds backing off
+     to every second. Like an IO wait it is a host operation in flight, so
+     it holds virtual time. A cancellation point, withdrawn by a
+     cancellation. */
+  CHIMI_REQUEST_CHILD_WAIT = 47,
   /* ChimiSchedulerRequest: no value names task `task` any more, so nothing
      can read its outcome again. Once the task is terminal, now or later, the
      scheduler removes its record and releases its kept result value; a kept

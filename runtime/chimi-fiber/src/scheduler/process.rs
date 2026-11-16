@@ -1203,6 +1203,7 @@ impl Scheduler {
         }
         self.clear_select(task);
         self.clear_io_wait(task);
+        self.clear_child_wait(task);
         self.withdraw_signal_wait(task);
         let transition = self.channels.cancel_pending(task);
         self.apply_channel_transition(transition);
