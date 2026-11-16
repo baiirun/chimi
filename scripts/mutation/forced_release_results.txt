@@ -9,7 +9,6 @@ KILLED       a cancelled combinator cancels its children with requests [task_com
 
 # The survivor removes the sibling cancel on a non-terminal interruption (a
 # timeout scope firing, or a draining body absorbing a child's defect). The
-# scope boundary or the body's end cancels the same children at the same
-# virtual instant, so only the order of trace events changes, and no test pins
-# that order. It is unchanged by CHI-265, which only skips the cancel after a
-# terminal one.
+# unwinding scope or the body's end cancels those children anyway, so the
+# mutant changes only when they are cancelled, which no test observes. CHI-265
+# leaves that path as it was; it only skips the cancel after a terminal one.
