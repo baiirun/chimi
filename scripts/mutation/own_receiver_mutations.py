@@ -24,4 +24,7 @@ MUTATIONS = [
     own("a tap that ended still counts", [(
         "            .filter(|tap| self.channels.get(tap).is_some_and(|tap| !tap.receiver_ended))\n            .chain(",
         "            .chain(")]),
+    own("a closed channel defects instead of refusing", [(
+        "        if channel.lifecycle != Lifecycle::Open {\n            return false;\n        }\n",
+        "")]),
 ]

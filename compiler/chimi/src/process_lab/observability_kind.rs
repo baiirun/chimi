@@ -67,7 +67,7 @@ pub(super) fn trace_abi_version() -> Result<(), String> {
         .ok_or("chimi_fiber.h does not define CHIMI_FIBER_ABI_VERSION")?;
     if header != "25" || chimi_fiber::ABI_VERSION != 25 {
         return Err(format!(
-            "the trace ABI is {} in chimi_fiber.h and {} in chimi-fiber, expected 23",
+            "the trace ABI is {} in chimi_fiber.h and {} in chimi-fiber, expected 25",
             header,
             chimi_fiber::ABI_VERSION
         ));

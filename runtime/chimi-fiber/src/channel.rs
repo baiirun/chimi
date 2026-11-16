@@ -601,9 +601,9 @@ impl ChannelRegistry {
                 .count()
     }
 
-    /// Whether `carried` holds every live receiver of `queue`: its own and
-    /// its taps'. A message on `queue` that carries them could never be
-    /// received, since only those receivers read it.
+    /// Whether `carried` holds every live receiver of the open `queue`: its
+    /// own and its taps'. A message on `queue` that carries them could never
+    /// be received, since only those receivers read it.
     fn carries_every_receiver(&self, queue: ChannelId, carried: &[Carried]) -> bool {
         let carries = |id: ChannelId| {
             carried
@@ -613,6 +613,11 @@ impl ChannelRegistry {
         let Some(channel) = self.channels.get(&queue) else {
             return false;
         };
+        // A closed or aborted channel refuses the send and hands the
+        // capabilities back, so nothing is stranded.
+        if channel.lifecycle != Lifecycle::Open {
+            return false;
+        }
         let mut live = channel
             .taps
             .iter()
@@ -2430,6 +2435,19 @@ mod parcel_tests {
         );
         let (waiting, _) = channels.receive(PARENT, other.receiver).unwrap();
         assert_eq!(waiting, ReceiveResult::Pending);
+    }
+
+    // A closed channel refuses the send and hands the receiver back, as it
+    // always did, so there is nothing to defect over.
+    #[test]
+    fn a_send_carrying_its_own_receiver_on_a_closed_channel_is_refused_as_closed() {
+        let mut channels = registry();
+        let (route, _) = channels.create(PARENT, 1);
+        channels.close(PARENT, route.completion).unwrap();
+        let (result, _) = channels
+            .send_carrying(PARENT, route.sender, MESSAGE, &[carried_receiver(route)])
+            .unwrap();
+        assert_eq!(result, SendResult::Closed(MESSAGE));
     }
 
     // A receiver whose task ended reads nothing, so it does not make the

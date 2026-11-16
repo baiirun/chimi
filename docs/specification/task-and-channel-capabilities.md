@@ -481,7 +481,8 @@ A send that carries every live receiver of the channel it is sent on (its own
 Receiver, and those `Channel.add_receiver` made) also defects, with capability
 violation 9 (fiber ABI 25): once queued, that message could never be received,
 so it would stay in memory until the program ends (CHI-214). A message that
-carries only some of the receivers is still delivered to the others. A cycle
+carries only some of the receivers is still delivered to the others, and a
+send on a closed or aborted channel still returns its usual `SendError`. A cycle
 through two channels, each carrying the other's only receiver, is not
 detected.
 
