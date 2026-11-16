@@ -163,6 +163,7 @@ fn run_with_signal(
         signal_fd,
         injected_signal: 0,
         injected_signal_at: 0,
+        copy_channel_value: None,
     };
     let outcome = unsafe { process_abi::chimi_scheduler_run(&config) };
     (outcome, SEEN.with(|seen| seen.borrow().clone()))
