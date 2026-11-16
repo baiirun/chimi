@@ -26,20 +26,23 @@ Rules:
 - A function MUST show the contract the compiler derived for it: its
   parameter names as written, the inferred parameter and result types, and
   its `errors` and `needs` rows when they are not empty. Its generic
-  parameter list is shown as written.
+  parameter list is shown as written. A clause group's parameters are
+  patterns, so it shows only their types, as `pub fn area(Shape) -> Int`.
 - A struct, enum, interface, native type or `process name` MUST show its
   declaration as written, with its members' own doc comments, since its
   fields, variants and members are its contract. A constant shows its
   declaration; one whose declaration spans lines shows only its name and
-  type, because a long initializer is not its contract.
-- An item's doc comment is the `///` run directly before it, the same rule
-  that makes examples (`testing.md`, "Documentation examples"). It is shown
+  type, because a long initializer is not its contract. Declarations print
+  with `\n` line ends whatever the source uses.
+- An item's doc comment is the `///` run directly before the line it starts,
+  the same rule that makes examples (`testing.md`, "Documentation examples"). It is shown
   as written, examples included, indented four spaces under the signature.
 - The module's summary is a `///` run at the top of the file that a blank
   line separates from what follows, so it documents no item.
 - A module that does not type-check MUST fail with its diagnostics and print
   no documentation, so the output never shows a contract the compiler did not
-  derive. An unknown module fails with `no module`.
+  derive. A project module that cannot be read fails naming the file; a
+  `std/` path the standard tree lacks fails with `no module`.
 - `--json` prints one object, `{"module", "summary", "items": [{"kind",
   "name", "signature", "doc"}]}`, with `null` for a missing summary or doc.
   `kind` is one of `fn`, `struct`, `enum`, `interface`, `const`, `type`,

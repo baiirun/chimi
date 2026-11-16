@@ -10,7 +10,9 @@
 
 use crate::doc_examples::{doc_comment_before, module_comment};
 use crate::json::write_json_string_escaping_controls;
-use crate::semantic::{ModuleDeclaration, ModuleDeclarationKind, SemanticModule};
+use crate::semantic::{
+    ModuleDeclaration, ModuleDeclarationKind, SemanticModule, is_generated_name,
+};
 use crate::syntax::SyntaxNode;
 use crate::typing::TypedProject;
 
@@ -141,12 +143,13 @@ pub(crate) fn document_module(
     let items = module
         .declarations
         .iter()
-        .filter(|declaration| declaration.public && !declaration.test)
+        // Test items are private, so this leaves them out too.
+        .filter(|declaration| declaration.public)
         .map(|declaration| ItemDocumentation {
             kind: kind_name(declaration.kind),
             name: declaration.name.text.clone(),
             signature: signature(typed, module, declaration),
-            doc: doc_comment_before(text, item_line_start(text, declaration)),
+            doc: item_doc(text, item_start(module, declaration)),
         })
         .collect();
     Some(ModuleDocumentation {
@@ -168,11 +171,35 @@ const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {
     }
 }
 
-/// The byte offset where the line holding the declaration's name starts: an
-/// item's keywords and name share its first line.
-fn item_line_start(text: &str, declaration: &ModuleDeclaration) -> usize {
+/// The byte offset where the declaration's own text starts: its item node
+/// without the comments and blank space before it.
+fn item_start(module: &SemanticModule, declaration: &ModuleDeclaration) -> usize {
+    let text = module.source.text();
     let name = declaration.name.range.start() as usize;
-    text[..name].rfind('\n').map_or(0, |newline| newline + 1)
+    let Some(node) = declaration_node(module, declaration) else {
+        return text[..name].rfind('\n').map_or(0, |newline| newline + 1);
+    };
+    let mut start = node.range().start() as usize;
+    loop {
+        let rest = &text[start..name];
+        let trimmed = rest.trim_start();
+        let skipped = rest.len() - trimmed.len();
+        match trimmed.find('\n') {
+            Some(newline) if trimmed.starts_with("//") => start += skipped + newline + 1,
+            _ => return start + skipped,
+        }
+    }
+}
+
+/// The item's doc comment. Only an item that begins its line has one, so the
+/// second of two items on one line does not take the first one's.
+fn item_doc(text: &str, start: usize) -> Option<String> {
+    let line_start = text[..start].rfind('\n').map_or(0, |newline| newline + 1);
+    text[line_start..start]
+        .trim()
+        .is_empty()
+        .then(|| doc_comment_before(text, line_start))
+        .flatten()
 }
 
 fn signature(
@@ -181,13 +208,15 @@ fn signature(
     declaration: &ModuleDeclaration,
 ) -> String {
     let text = module.source.text();
-    let start = item_line_start(text, declaration);
+    let start = item_start(module, declaration);
     let declared = declaration_node(module, declaration)
         .map_or(
             &text[start..declaration.name.range.end() as usize],
             |node| &text[start..(node.range().end() as usize).max(start)],
         )
-        .trim_end();
+        .trim_end()
+        .replace("\r\n", "\n");
+    let declared = declared.as_str();
     match declaration.kind {
         ModuleDeclarationKind::Function => typed
             .contract(&module.path, &declaration.name.text)
@@ -197,7 +226,12 @@ fn signature(
                 let inputs = parameters
                     .zip(&contract.inputs)
                     .map(|(parameter, input)| {
-                        format!("{}: {}", parameter.name.text, typed.format_type(*input))
+                        // A clause group's parameters are patterns, not names.
+                        if is_generated_name(&parameter.name.text) {
+                            typed.format_type(*input)
+                        } else {
+                            format!("{}: {}", parameter.name.text, typed.format_type(*input))
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join(", ");

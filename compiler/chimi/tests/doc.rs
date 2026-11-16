@@ -135,3 +135,54 @@ fn an_unknown_standard_module_fails() {
         "chimi: no module `std/no_such_module`\n"
     );
 }
+
+#[test]
+fn a_clause_group_shows_parameter_types_without_generated_names() {
+    let path = scratch_file(
+        "clauses",
+        "pub enum Shape {\n  Circle(radius: Int)\n  Square(side: Int)\n}\n\
+         \n\
+         /// The area.\n\
+         pub fn area(Circle(radius)) -> Int { radius * radius * 3 }\n\
+         fn area(Square(side)) { side * side }\n",
+    );
+    let output = chimi(&["doc", &path]);
+
+    assert!(output.status.success(), "{output:?}");
+    let text = stdout(&output);
+    assert!(
+        text.contains("\npub fn area(Shape) -> Int\n    The area.\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_second_item_on_a_line_has_its_own_header_and_no_doc() {
+    // The file's first doc run documents `same`, so it is no module summary.
+    let path = scratch_file(
+        "one-line",
+        "/// Returns its argument.\npub fn same<T>(x: T) -> T { x } pub fn one() -> Int { 1 }\n",
+    );
+    let output = chimi(&["doc", &path]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        stdout(&output),
+        "module main\n\npub fn same<T>(x: T) -> T\n    Returns its argument.\n\npub fn one() -> Int\n"
+    );
+}
+
+#[test]
+fn crlf_declarations_print_with_plain_newlines() {
+    let path = scratch_file(
+        "crlf",
+        "/// A point.\r\npub struct Point {\r\n  x: Int\r\n}\r\n",
+    );
+    let output = chimi(&["doc", "--json", &path]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        stdout(&output),
+        "{\"module\":\"main\",\"summary\":null,\"items\":[{\"kind\":\"struct\",\"name\":\"Point\",\"signature\":\"pub struct Point {\\n  x: Int\\n}\",\"doc\":\"A point.\"}]}\n"
+    );
+}

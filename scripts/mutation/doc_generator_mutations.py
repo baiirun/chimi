@@ -20,9 +20,17 @@ MUTATIONS = [
         ".filter(|declaration| declaration.public && !declaration.test)",
         ".filter(|declaration| !declaration.test)",
     )]),
-    mutant("test items are listed", G, [(
-        ".filter(|declaration| declaration.public && !declaration.test)",
-        ".filter(|declaration| declaration.public)",
+    mutant("a clause group prints generated names", G, [(
+        "                        if is_generated_name(&parameter.name.text) {",
+        "                        if false {",
+    )]),
+    mutant("the second item on a line takes the first one's doc", G, [(
+        "        .is_empty()\n        .then(|| doc_comment_before(text, line_start))",
+        "        .len()\n        .ge(&0)\n        .then(|| doc_comment_before(text, line_start))",
+    )]),
+    mutant("declarations keep CRLF", G, [(
+        '        .replace("\\r\\n", "\\n");',
+        '        .replace("\\r\\n", "\\r\\n");',
     )]),
     mutant("a function shows its source header, not its contract", G, [(
         "        ModuleDeclarationKind::Function => typed",
@@ -37,8 +45,8 @@ MUTATIONS = [
         '                        { let _ = parameter; typed.format_type(*input) }',
     )]),
     mutant("a multi-line constant shows its initializer", G, [(
-        "            Some(_) => declared",
-        "            Some(_) if false => declared",
+        '                .split_once(" =")',
+        '                .split_once(" =never")',
     )]),
     mutant("doc text is not indented", G, [(
         '                        output.push_str("    ");',
