@@ -14,8 +14,8 @@ inputs, and the
 exit status, the four `std/test` assertions, `capture_defect`, recorders
 and scripts, fake mailboxes, `T4401`, `T4403`, `std/random` with
 `--seed`, doc-comment examples in `chimi test` and `chimi check`,
-`--trace`, and the `std/` modules' examples through `chimi std test`. Not
-implemented yet: formatting example code. 85 of the 99 std-tests programs are test items; the other 14 stay
+`--trace`, the `std/` modules' examples through `chimi std test`, and
+formatting example code. 85 of the 99 std-tests programs are test items; the other 14 stay
 expected-output programs on purpose (see [Migrating the std-tests
 programs](#migrating-the-std-tests-programs)). The build is tracked
 by CHI-208; the spec was written under CHI-202.
@@ -642,7 +642,10 @@ this section fixes only how an example inside one runs. A fenced ```` ```chimi `
   the top of the block that are `import` items are that module's imports; the
   rest is the test body: statements that end in `Void`, usually an assertion.
 - The formatter formats example code, and `chimi check` type-checks it, so an
-  example cannot drift from the item it documents. The documentation
+  example cannot drift from the item it documents. The formatter formats the
+  code as the module it runs as and writes it back as the imports, one blank
+  line, and the body. It leaves an example that does not parse as written,
+  because `chimi check` and `chimi test` report it. The documentation
   generator (T4) shows it as written.
 - A fenced block with another info string, such as `text`, is not an example.
   A Chimi block that is not meant to run says so with ```` ```chimi fragment ````.

@@ -20,8 +20,117 @@ pub(crate) struct DocExample {
 /// The examples in `text`, in source order.
 pub(crate) fn examples(text: &str) -> Vec<DocExample> {
     let lines: Vec<&str> = text.split('\n').collect();
-    let mut examples = Vec::new();
     let mut counts: Vec<(String, usize)> = Vec::new();
+    example_blocks(&lines)
+        .into_iter()
+        .map(|(item, block)| {
+            let ordinal = match counts.iter_mut().find(|(name, _)| *name == item) {
+                Some((_, count)) => {
+                    *count += 1;
+                    *count
+                }
+                None => {
+                    counts.push((item.clone(), 1));
+                    1
+                }
+            };
+            DocExample {
+                text: example_module(&lines, &block, &format!("{item} example {ordinal}")),
+                item,
+            }
+        })
+        .collect()
+}
+
+/// `text` with the code of each example replaced by `format` applied to it
+/// (testing.md: the formatter formats example code). The code is passed as a
+/// module: the example's imports, then its body inside a `test` item, as it
+/// runs. An example `format` returns `None` for, such as one that does not
+/// parse, keeps its text.
+pub(crate) fn format_examples(text: &str, format: impl Fn(&str) -> Option<String>) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut output: Vec<String> = Vec::with_capacity(lines.len());
+    let mut copied = 0;
+    for (_, block) in example_blocks(&lines) {
+        output.extend(lines[copied..block.code.start].iter().map(|line| (*line).to_owned()));
+        let indent = &lines[block.open][..lines[block.open].len() - lines[block.open].trim_start().len()];
+        let code: Vec<&str> = block
+            .code
+            .clone()
+            .map(|index| doc_content(lines[index]).unwrap_or_default())
+            .collect();
+        match format_example(&code, &format) {
+            Some(formatted) => output.extend(formatted.iter().map(|line| {
+                if line.is_empty() {
+                    format!("{indent}///")
+                } else {
+                    format!("{indent}/// {line}")
+                }
+            })),
+            None => output.extend(lines[block.code.clone()].iter().map(|line| (*line).to_owned())),
+        }
+        copied = block.code.end;
+    }
+    output.extend(lines[copied..].iter().map(|line| (*line).to_owned()));
+    output.join("\n")
+}
+
+const FORMAT_HEADER: &str = "test \"example\" {";
+
+/// One example's code lines, formatted: the imports, a blank line, and the
+/// body, as the example's own module formats them.
+fn format_example(code: &[&str], format: &impl Fn(&str) -> Option<String>) -> Option<Vec<String>> {
+    let body = code
+        .iter()
+        .position(|line| !line.trim().is_empty() && !line.trim_start().starts_with("import "))
+        .unwrap_or(code.len());
+    let mut module = String::new();
+    for line in &code[..body] {
+        module.push_str(line);
+        module.push('\n');
+    }
+    module.push_str(FORMAT_HEADER);
+    module.push('\n');
+    for line in &code[body..] {
+        module.push_str(line);
+        module.push('\n');
+    }
+    module.push_str("}\n");
+    let formatted = format(&module)?;
+    let formatted: Vec<&str> = formatted.trim_end_matches('\n').split('\n').collect();
+    let header = formatted.iter().position(|line| *line == FORMAT_HEADER)?;
+    // A body that closes the test early and declares items of its own is not
+    // one test body; leave it as written.
+    let inside = &formatted[header + 1..formatted.len().saturating_sub(1)];
+    if formatted.last() != Some(&"}")
+        || inside
+            .iter()
+            .any(|line| !line.is_empty() && !line.starts_with("  "))
+    {
+        return None;
+    }
+    let mut lines: Vec<String> = formatted[..header]
+        .iter()
+        .map(|line| (*line).to_owned())
+        .collect();
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    let statements: Vec<String> = formatted[header + 1..formatted.len() - 1]
+        .iter()
+        .map(|line| line.strip_prefix("  ").unwrap_or(line).to_owned())
+        .collect();
+    if !lines.is_empty() && !statements.is_empty() {
+        lines.push(String::new());
+    }
+    lines.extend(statements);
+    Some(lines)
+}
+
+/// Each ```` ```chimi ```` block in a doc comment directly before an item,
+/// with the item's name, in source order.
+fn example_blocks(lines: &[&str]) -> Vec<(String, Block)> {
+    let mut blocks = Vec::new();
     let mut index = 0;
     while index < lines.len() {
         if doc_content(lines[index]).is_none() {
@@ -35,24 +144,11 @@ pub(crate) fn examples(text: &str) -> Vec<DocExample> {
         let Some(item) = lines.get(index).and_then(|line| item_name(line)) else {
             continue;
         };
-        for block in fenced_blocks(&lines, start, index) {
-            let ordinal = match counts.iter_mut().find(|(name, _)| *name == item) {
-                Some((_, count)) => {
-                    *count += 1;
-                    *count
-                }
-                None => {
-                    counts.push((item.clone(), 1));
-                    1
-                }
-            };
-            examples.push(DocExample {
-                text: example_module(&lines, &block, &format!("{item} example {ordinal}")),
-                item: item.clone(),
-            });
+        for block in fenced_blocks(lines, start, index) {
+            blocks.push((item.clone(), block));
         }
     }
-    examples
+    blocks
 }
 
 /// The lines of one ```` ```chimi ```` block: the opening fence, the code, and
