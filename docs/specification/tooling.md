@@ -269,6 +269,9 @@ Rules:
   When a place in the trace is not in the given source, the report still
   prints and a warning on standard error says the source is likely not the
   one the run was built from, since its other locations may be wrong too.
+  This catches a missing module or an offset past a file's end, not a
+  different program whose modules happen to cover the same places: the
+  trace carries no fingerprint of its source.
 - After the tree come the process incarnations that ended other than by
   returning, with their cause and defect message, and the tasks that never
   ended, with the channel a parked task waits on (from the

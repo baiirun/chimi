@@ -21,7 +21,7 @@ MUTATIONS = [
         '            if record.text("schema").is_none() {',
     )]),
     mutant("an outcome after events is dropped", T, [(
-        "                    Some(last) => last.outcome = Some(outcome),",
+        "                    Some(slot) => trace.executions[slot].outcome = Some(outcome),",
         "                    Some(_) => {}",
     )]),
     mutant("a returned process is reported", T, [(
@@ -53,12 +53,12 @@ MUTATIONS = [
         "                if true {",
     )]),
     mutant("succeeded children are shown by default", T, [(
-        "        let shown: &[usize] = if all {",
-        "        let shown: &[usize] = if true {",
+        "        if all {\n            span.children.clone()",
+        "        if true {\n            span.children.clone()",
     )]),
     mutant("--all still folds", T, [(
-        "        let shown: &[usize] = if all {",
-        "        let shown: &[usize] = if false {",
+        "        if all {\n            span.children.clone()",
+        "        if false {\n            span.children.clone()",
     )]),
     mutant("an unfinished span reads as a success", T, [(
         '            None => report.push_str("  (did not finish)"),',
