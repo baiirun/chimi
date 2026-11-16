@@ -29,7 +29,7 @@ def cli(name, file, test, edits):
 
 
 FOREIGN_MARK = (
-    "    if (area->heap != collecting_scope->heap && area->role != AREA_STATIC) collecting_foreign = true;\n"
+    "    if (area->heap != carrier->collecting_scope->heap && area->role != AREA_STATIC) carrier->collecting_foreign = true;\n"
     "    return;\n"
 )
 FOREIGN_COPY = (
@@ -56,8 +56,8 @@ MUTATIONS = [
     lab("a region pass reports and then follows foreign pointers", RUNTIME, "CB06",
         ["the pass followed a foreign pointer"], [(
         FOREIGN_MARK,
-        "    if (area->heap != collecting_scope->heap && area->role != AREA_STATIC) collecting_foreign = true;\n"
-        "    if (area->heap == collecting_scope->heap || area->role == AREA_STATIC) return;\n")]),
+        "    if (area->heap != carrier->collecting_scope->heap && area->role != AREA_STATIC) carrier->collecting_foreign = true;\n"
+        "    if (area->heap == carrier->collecting_scope->heap || area->role == AREA_STATIC) return;\n")]),
     lab("a fragment copy ignores foreign pointers", RUNTIME, "CB06",
         ["a fragment copy accepted a pointer into another heap", "the copy followed a foreign pointer"], [(
         FOREIGN_COPY, "  (void)copy_owns;")]),

@@ -23,7 +23,7 @@ MUTATIONS = [
      "      environment = clone_local_environment(incoming);\n")],
    ["language"], "an_inner_block_binding"),
  m("shared values live in the current area",
-   [("    allocation_target = &static_area;\n    ChimiValue *value = new_value(index == 0 ? VALUE_VOID : VALUE_BOOLEAN);",
+   [("    carrier->fiber.target = &static_area;\n    ChimiValue *value = new_value(index == 0 ? VALUE_VOID : VALUE_BOOLEAN);",
      "    ChimiValue *value = new_value(index == 0 ? VALUE_VOID : VALUE_BOOLEAN);")],
    ["language"], "booleans_stay_booleans"),
  m("the stack array holds one subject fewer than the bound",

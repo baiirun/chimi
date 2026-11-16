@@ -86,12 +86,12 @@ MUTATIONS = [
     # CB07: a foreign pointer defects in the sender and never reaches a mailbox.
     lab("a send skips the foreign-pointer check", RUNTIME, "CB07",
         ["did not defect"], [(
-            "      copy_counting = false;\n      if (status != HEAP_OK)",
-            "      copy_counting = false;\n      if (status != HEAP_OK && false)")]),
+            "      carrier->copy_counting = false;\n      if (status != HEAP_OK)",
+            "      carrier->copy_counting = false;\n      if (status != HEAP_OK && false)")]),
     lab("the defect names only the sender", RUNTIME, "CB07",
         ["does not name both owners"], [(
-            "fragment_copy_foreign_owner, current_heap->owner),",
-            "current_heap->owner, current_heap->owner),")]),
+            "fragment_copy_foreign_owner, carrier->fiber.heap->owner),",
+            "current_heap->owner, carrier->fiber.heap->owner),")]),
     # Adopted messages join the receiver's region, so its heap stays flat.
     lab("received messages join the heap's base area", RUNTIME, "MF01",
         ["process_heap_peak_value_bytes differs", "heap_chunks_live differs"], [(
