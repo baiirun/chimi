@@ -1064,6 +1064,7 @@ impl Scheduler {
     }
 
     pub fn drive(&mut self) {
+        self.remove_released_terminal();
         self.collect_user_signals();
         self.deliver_signal();
         let mut resumes = 0_u32;
@@ -1419,13 +1420,16 @@ impl Scheduler {
     /// once it is terminal, now or later, its record is removed and its kept
     /// result value released. A defect code is kept, because the defect may
     /// still be carrying it to the root. Process bodies have no handle; their
-    /// kernel ends them.
+    /// kernel ends them. A root is released only once it has ended, because
+    /// its runner reads its outcome from the record.
     pub fn release_task(&mut self, task: TaskId) -> Result<(), SchedulerError> {
         let record = self
             .tasks
             .get_mut(&task)
             .ok_or(SchedulerError::UnknownTask(task))?;
-        if record.process.is_some() || record.handle_released {
+        let live_root =
+            record.parent.is_none() && !matches!(record.phase, TaskPhase::Terminal(_));
+        if record.process.is_some() || record.handle_released || live_root {
             return Err(SchedulerError::TaskStillLive(task));
         }
         record.handle_released = true;
@@ -2809,14 +2813,14 @@ mod tests {
         assert_eq!(scheduler.metrics().tasks, 1);
         assert_eq!(released_values(), [42]);
         assert_eq!(
-            scheduler.release_task(root),
-            Ok(()),
-            "a live task's handle can be released"
+            scheduler.release_task(child),
+            Err(SchedulerError::UnknownTask(child)),
+            "a handle is released once"
         );
         assert_eq!(
             scheduler.release_task(root),
             Err(SchedulerError::TaskStillLive(root)),
-            "a handle is released once"
+            "a live root is released only once it has ended"
         );
     }
 
