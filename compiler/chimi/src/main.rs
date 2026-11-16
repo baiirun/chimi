@@ -1,5 +1,5 @@
 use chimi::Compiler;
-use chimi::backend::native::build_application;
+use chimi::backend::native::{build_application, check_build_target};
 use chimi::execution::{ExecutionConfig, ExecutionOutcome};
 use chimi::project::{LoadedProject, StandardTree};
 use std::env;
@@ -12,13 +12,14 @@ const USAGE: &str = concat!(
     "usage: chimi --version | chimi format <path> | chimi doc [--json] <path> | ",
     "chimi doc [--json] --root <project-dir> <module> | chimi doc [--json] std/<module> | ",
     "chimi doc --html <directory> (<path> | --root <project-dir> <module> | std) | ",
+    "chimi trace show [--all] (<trace> | -) [<path> | <directory> | --root <project-dir> <entry-module>] | ",
     "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | chimi inspect <path> <byte-offset> | ",
     "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
     "chimi check [--json] <path> | chimi run <path> [-- <argument>...] | ",
-    "chimi build <path> [-o <executable>] | ",
+    "chimi build <path> [-o <executable>] [--target <triple>] | ",
     "chimi check [--json] --root <project-dir> <entry-module> | chimi run --root ",
     "<project-dir> <entry-module> [-- <argument>...] | chimi build --root <project-dir> <entry-module> ",
-    "[-o <executable>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
+    "[-o <executable>] [--target <triple>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
     "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
     "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] ",
     "[--trace=off|boundaries|full] | ",
@@ -45,6 +46,13 @@ enum Command {
         input: Input,
         output: DiagnosticOutput,
     },
+    /// Reads one run's telemetry after the fact.
+    TraceShow {
+        trace: PathBuf,
+        /// The program the trace came from, to name source locations.
+        source: Option<Input>,
+        all: bool,
+    },
     /// Prints one module's public surface.
     Doc {
         target: DocTarget,
@@ -67,6 +75,8 @@ enum Command {
     Build {
         input: Input,
         output: Option<PathBuf>,
+        /// The target triple; `None` builds for the host.
+        target: Option<String>,
     },
     /// Checks the whole standard tree against the operation registry.
     StdCheck,
@@ -340,6 +350,10 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
         return parse_lint_command(arguments);
     }
 
+    if command == "trace" {
+        return parse_trace_command(arguments);
+    }
+
     if command == "std" {
         return match arguments.next() {
             Some(subcommand) if subcommand == "check" => match arguments.next() {
@@ -465,29 +479,33 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
             }
         };
         if command == "build" {
-            let output = match arguments.next() {
-                None => None,
-                Some(flag) if flag == "-o" => {
-                    let Some(path) = arguments.next() else {
-                        return Err(UsageError {
-                            message: "-o requires an executable path",
-                        });
-                    };
-                    Some(PathBuf::from(path))
-                }
-                Some(_) => {
+            let mut output = None;
+            let mut target = None;
+            while let Some(flag) = arguments.next() {
+                let (slot, message) = if flag == "-o" && output.is_none() {
+                    (&mut output, "-o requires an executable path")
+                } else if flag == "--target" && target.is_none() {
+                    (&mut target, "--target requires a target triple")
+                } else {
                     return Err(UsageError {
                         message: "build received unexpected arguments",
                     });
-                }
+                };
+                let Some(value) = arguments.next() else {
+                    return Err(UsageError { message });
+                };
+                *slot = Some(value);
+            }
+            let Some(target) = target.map(OsString::into_string).transpose().ok() else {
+                return Err(UsageError {
+                    message: "--target must be valid UTF-8",
+                });
             };
-            return if arguments.next().is_none() {
-                Ok(Command::Build { input, output })
-            } else {
-                Err(UsageError {
-                    message: "build received unexpected arguments",
-                })
-            };
+            return Ok(Command::Build {
+                input,
+                output: output.map(PathBuf::from),
+                target,
+            });
         }
         if command == "run" {
             let application_arguments = match arguments.next() {
@@ -598,6 +616,59 @@ fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Comman
     }
 }
 
+/// Parses `chimi trace show [--all] <trace> [<path> | <directory> | --root <project> <entry>]`.
+fn parse_trace_command(arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    let mut arguments = arguments.peekable();
+    if arguments.next().is_none_or(|subcommand| subcommand != "show") {
+        return Err(UsageError {
+            message: "trace requires the show subcommand",
+        });
+    }
+    let all = arguments.next_if(|argument| argument == "--all").is_some();
+    let Some(trace) = arguments.next() else {
+        return Err(UsageError {
+            message: "trace show requires a trace file, or - for standard input",
+        });
+    };
+    let source = match arguments.next() {
+        None => None,
+        Some(flag) if flag == "--root" => {
+            let (Some(root), Some(entry)) = (arguments.next(), arguments.next()) else {
+                return Err(UsageError {
+                    message: "trace show --root requires a project directory and an entry module",
+                });
+            };
+            let Ok(entry) = entry.into_string() else {
+                return Err(UsageError {
+                    message: "trace show module paths must be valid UTF-8",
+                });
+            };
+            Some(Input::Project {
+                root: PathBuf::from(root),
+                entry,
+            })
+        }
+        Some(path) => {
+            let path = PathBuf::from(path);
+            Some(if path.is_dir() {
+                Input::Directory { root: path }
+            } else {
+                Input::File { path }
+            })
+        }
+    };
+    if arguments.next().is_some() {
+        return Err(UsageError {
+            message: "trace show received unexpected arguments",
+        });
+    }
+    Ok(Command::TraceShow {
+        trace: PathBuf::from(trace),
+        source,
+        all,
+    })
+}
+
 /// Parses `chimi lint [--json] (<path> | <directory> | --root <project> <module>)`.
 fn parse_lint_command(arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
     let mut arguments = arguments.peekable();
@@ -665,6 +736,7 @@ fn execute(Invocation { std_dir, command }: Invocation) -> ExitCode {
         Command::Format { path } => format(path),
         Command::Doc { target, output } => doc(target, &standard, output),
         Command::Lint { input, output } => lint(input, &standard, output),
+        Command::TraceShow { trace, source, all } => trace_show(&trace, source, &standard, all),
         Command::Inspect {
             input,
             module_path,
@@ -672,7 +744,11 @@ fn execute(Invocation { std_dir, command }: Invocation) -> ExitCode {
         } => inspect(input, &standard, &module_path, offset),
         Command::Check { input, output } => check(input, &standard, output),
         Command::Run { input, arguments } => run(input, &standard, arguments),
-        Command::Build { input, output } => build(input, &standard, output),
+        Command::Build {
+            input,
+            output,
+            target,
+        } => build(input, &standard, output, target.as_deref()),
         Command::StdCheck => std_check(&standard),
         Command::StdTest { options } => std_test(&standard, options),
         Command::Test { input, options } => test(input, &standard, options),
@@ -699,6 +775,62 @@ fn lint(input: Input, standard: &StandardTree, output: DiagnosticOutput) -> Exit
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+fn trace_show(
+    trace: &std::path::Path,
+    source: Option<Input>,
+    standard: &StandardTree,
+    all: bool,
+) -> ExitCode {
+    let text = if trace.as_os_str() == "-" {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map(|_| text)
+    } else {
+        std::fs::read_to_string(trace)
+    };
+    let text = match text {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("chimi: cannot read {}: {error}", trace.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let with_source = source.is_some();
+    let locator: Box<dyn Fn(u32, u32) -> Option<String>> = match source {
+        None => Box::new(|_, _| None),
+        Some(input) => {
+            let Some(project) = load_project(input, standard) else {
+                return ExitCode::FAILURE;
+            };
+            Box::new(project.source_locator())
+        }
+    };
+    // A place the source cannot name means the source is not the program
+    // the run was built from, so its other locations may be wrong too.
+    let missed = std::cell::Cell::new(false);
+    let locate = |file: u32, offset: u32| {
+        let location = locator(file, offset);
+        missed.set(missed.get() || location.is_none());
+        location
+    };
+    match chimi::render_trace(&text, &locate, all) {
+        Ok(report) => {
+            // A closed pipe, as in `| head`, is not an error.
+            let _ = std::io::Write::write_all(&mut std::io::stdout(), report.as_bytes());
+            if with_source && missed.get() {
+                eprintln!(
+                    "chimi: warning: some places in the trace are not in the given source; \
+                     give the same file, directory or project the run was built from"
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("chimi: {}: {error}", trace.display());
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -912,7 +1044,16 @@ fn outcome_exit_code(outcome: &ExecutionOutcome) -> ExitCode {
     }
 }
 
-fn build(input: Input, standard: &StandardTree, output: Option<PathBuf>) -> ExitCode {
+fn build(
+    input: Input,
+    standard: &StandardTree,
+    output: Option<PathBuf>,
+    target: Option<&str>,
+) -> ExitCode {
+    if let Some(Err(error)) = target.map(check_build_target) {
+        eprintln!("chimi: build failed: {error}");
+        return ExitCode::FAILURE;
+    }
     let output = output.unwrap_or_else(|| default_executable_path(&input));
     let artifact_directory = artifact_directory(&output);
     let Some(project) = load_project(input, standard) else {
@@ -1178,6 +1319,46 @@ mod tests {
     }
 
     #[test]
+    fn parses_trace_show() {
+        assert_eq!(
+            parse_command(arguments(&["trace", "show", "run.jsonl"])),
+            Ok(Command::TraceShow {
+                trace: PathBuf::from("run.jsonl"),
+                source: None,
+                all: false,
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["trace", "show", "--all", "-", "--root", "svc", "app"])),
+            Ok(Command::TraceShow {
+                trace: PathBuf::from("-"),
+                source: Some(Input::Project {
+                    root: PathBuf::from("svc"),
+                    entry: "app".to_owned(),
+                }),
+                all: true,
+            })
+        );
+        for (command, message) in [
+            (&["trace"][..], "trace requires the show subcommand"),
+            (
+                &["trace", "show"][..],
+                "trace show requires a trace file, or - for standard input",
+            ),
+            (
+                &["trace", "show", "a.jsonl", "a.chimi", "b"][..],
+                "trace show received unexpected arguments",
+            ),
+        ] {
+            assert_eq!(
+                parse_command(arguments(command)),
+                Err(UsageError { message }),
+                "{command:?}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_malformed_doc_commands() {
         for (command, message) in [
             (
@@ -1435,8 +1616,50 @@ mod tests {
                     entry: "app/main".to_owned()
                 },
                 output: Some(PathBuf::from("dist/app")),
+                target: None,
             })
         );
+    }
+
+    #[test]
+    fn parses_build_targets() {
+        assert_eq!(
+            parse_command(arguments(&[
+                "build",
+                "app.chimi",
+                "--target",
+                "aarch64-apple-darwin",
+                "-o",
+                "dist/app"
+            ])),
+            Ok(Command::Build {
+                input: Input::File {
+                    path: PathBuf::from("app.chimi")
+                },
+                output: Some(PathBuf::from("dist/app")),
+                target: Some("aarch64-apple-darwin".to_owned()),
+            })
+        );
+        for (command, message) in [
+            (
+                &["build", "app.chimi", "--target"][..],
+                "--target requires a target triple",
+            ),
+            (
+                &["build", "app.chimi", "--target", "a", "--target", "b"][..],
+                "build received unexpected arguments",
+            ),
+            (
+                &["build", "app.chimi", "-o", "a", "-o", "b"][..],
+                "build received unexpected arguments",
+            ),
+        ] {
+            assert_eq!(
+                parse_command(arguments(command)),
+                Err(UsageError { message }),
+                "{command:?}"
+            );
+        }
     }
 
     #[test]
@@ -1448,6 +1671,7 @@ mod tests {
                     path: PathBuf::from("program.chimi")
                 },
                 output: None,
+                target: None,
             })
         );
         assert_eq!(
@@ -1457,6 +1681,7 @@ mod tests {
                     path: PathBuf::from("program.chimi")
                 },
                 output: Some(PathBuf::from("dist/program")),
+                target: None,
             })
         );
         assert_eq!(

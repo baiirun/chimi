@@ -124,6 +124,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "cranelift-object",
+ "target-lexicon",
 ]
 
 [[package]]

@@ -385,6 +385,30 @@ impl LoadedProject {
         output
     }
 
+    /// A lookup of `path:line:column` for an offset in the module with a
+    /// file id, the id a diagnostic or a runtime trace event of this project
+    /// carries. Each module's line index is built once.
+    pub fn source_locator(&self) -> impl Fn(u32, u32) -> Option<String> + use<> {
+        use crate::line_index::{LineIndex, PositionEncoding};
+        let sources: Vec<(String, Arc<str>, LineIndex)> = self
+            .diagnostic_sources()
+            .into_iter()
+            .map(|(_, source)| {
+                let text = Arc::<str>::from(source.text());
+                let index = LineIndex::new(Arc::clone(&text));
+                (source.path().display().to_string(), text, index)
+            })
+            .collect();
+        move |file_id, offset| {
+            let (path, text, index) = sources.get(file_id as usize)?;
+            if offset as usize > text.len() || !text.is_char_boundary(offset as usize) {
+                return None;
+            }
+            let position = index.position(offset, PositionEncoding::Utf16);
+            Some(format!("{path}:{}:{}", position.line + 1, position.character + 1))
+        }
+    }
+
     pub fn render_diagnostics_json(&self, diagnostics: &[Diagnostic]) -> String {
         let sources: Vec<JsonSource> = self
             .diagnostic_sources()
