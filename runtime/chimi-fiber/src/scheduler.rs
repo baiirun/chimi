@@ -8,9 +8,15 @@ mod process_abi;
 mod process_tests;
 #[cfg(test)]
 mod release_tests;
+#[cfg(test)]
+mod select_tests;
 mod scope;
+mod select;
 
 pub use self::clock::{ClockMode, Instant, TimerId};
+pub use self::select::{
+    ChimiSelectSource, SELECT_INBOX, SELECT_RECEIVE, SELECT_TASK, SELECT_TIMER,
+};
 pub use self::scope::{ScopeExit, ScopeId, chimi_fiber_cancel_is_terminal, chimi_fiber_scope_cancel_pending};
 pub use self::process::{
     Address, ChimiProcessTermination, IncarnationId, Member, MembershipId, MessageRelease, NameId,
@@ -80,17 +86,24 @@ pub const REQUEST_SCOPE_CHECK: u32 = 27;
 pub const REQUEST_PROCESS_MONITOR: u32 = 28;
 pub const REQUEST_PROCESS_UNMONITOR: u32 = 29;
 pub const REQUEST_PROCESS_MAILBOX: u32 = 30;
+/// From a handoff incarnation's body: takes the argument its start handed
+/// over, which the incarnation owns from then on.
+pub const REQUEST_PROCESS_ARGUMENT: u32 = 31;
+/// `context` points to `value` `ChimiSelectSource`s. OK with the index of the
+/// first ready source in `value`, or PENDING until one may be ready; reissue
+/// the request after every wake. Consumes nothing (`scheduler/select.rs`).
+pub const REQUEST_SELECT: u32 = 32;
 /// Waits for the first of several children to terminate: `context` points to
 /// `value` task ids, all owned by the caller. Replies like a ready
 /// `REQUEST_TASK_RESULT`, with `task` set to the listed child that terminated
 /// first in termination order; PENDING while none has. The child's outcome is
 /// only reported: a cancelled child does not cancel the caller. A
 /// cancellation point, and a firing scope withdraws it.
-pub const REQUEST_TASK_ANY: u32 = 31;
+pub const REQUEST_TASK_ANY: u32 = 33;
 /// `REQUEST_TASK_ANY` for draining children a combinator already cancelled:
 /// neither a cancellation point nor withdrawn by a scope, so a scope that
 /// fires meanwhile cannot replace the outcome the combinator already chose.
-pub const REQUEST_TASK_DRAIN: u32 = 32;
+pub const REQUEST_TASK_DRAIN: u32 = 34;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -469,6 +482,8 @@ struct Task {
     scopes: Vec<scope::Scope>,
     /// The parent's innermost scope when this task was started.
     started_in_scope: Option<ScopeId>,
+    /// What the task's parked `Select.first` waits on.
+    select: Option<select::SelectWait>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -482,6 +497,11 @@ pub enum ClockEventKind {
     DeadlockWaiter,
     /// A cancellation scope's deadline passed. A boundary event.
     ScopeFired,
+    /// A `Select.first` found nothing ready and parked. A boundary event.
+    SelectParked,
+    /// A `Select.first` committed to the event whose index is
+    /// `request_kind`. A boundary event.
+    SelectCommitted,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -490,7 +510,8 @@ pub struct ClockEvent {
     pub kind: ClockEventKind,
     pub task: Option<TaskId>,
     pub time: Instant,
-    /// For a deadlock waiter: the request kind it is parked on, or 0.
+    /// For a deadlock waiter: the request kind it is parked on, or 0. For a
+    /// select commit: the committed event's index.
     pub request_kind: u32,
 }
 
@@ -1355,6 +1376,7 @@ impl Scheduler {
                 started_in_scope: parent.and_then(|parent| {
                     self.tasks[&parent].scopes.last().map(|entry| entry.id)
                 }),
+                select: None,
             },
         );
         if let Some(parent) = parent {
@@ -1448,6 +1470,10 @@ impl Scheduler {
         let kind = unsafe { (*request.cast::<RequestHeader>()).kind };
         let park = self.tasks[&owner].park;
         let process = self.tasks[&owner].process.is_some();
+        // A running task is no longer parked in a select, whatever it asks
+        // now (a reissued select registers afresh), so a scope refusal or a
+        // lingering park cannot leave its watchers and wake timer behind.
+        self.clear_select(owner);
         if process && self.park_lingers(owner, kind) {
             return;
         }
@@ -1456,7 +1482,7 @@ impl Scheduler {
             return;
         }
         if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_REMOVE_SUPERVISOR).contains(&kind)
-            || (REQUEST_PROCESS_MONITOR..=REQUEST_PROCESS_MAILBOX).contains(&kind)
+            || (REQUEST_PROCESS_MONITOR..=REQUEST_PROCESS_ARGUMENT).contains(&kind)
         {
             self.handle_process_request(owner, request.cast());
         } else {
@@ -1522,6 +1548,7 @@ impl Scheduler {
                 request.status = RESPONSE_OK;
                 let _ = self.wake_front(owner);
             }
+            REQUEST_SELECT => self.handle_select(owner, request),
             REQUEST_TASK_START => {
                 let Some(entry) = request.entry else {
                     request.status = RESPONSE_ERROR;
@@ -1746,6 +1773,7 @@ impl Scheduler {
         if let Some(timer) = record.timer.take() {
             self.cancel_timer(timer);
         }
+        self.clear_select(task);
         self.clear_scopes(task);
         self.unroute_task(task);
 
@@ -1844,6 +1872,10 @@ impl Scheduler {
         if let Some(parent) = parent {
             self.finish_draining(parent);
             self.wake_scope_exit(parent);
+            // A defect instead reaches the parent through containment below.
+            if !outcome.is_defect() {
+                self.wake_selecting_parent(parent, task);
+            }
         }
 
         let waiting_parent = parent.filter(|parent| {

@@ -1,0 +1,3 @@
+@0s supervisor_started supervisor=S1 parent=root
+@0s supervisor_stopped supervisor=S1
+@0s admission_rejected supervisor=S1 reason=stopped

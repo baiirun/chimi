@@ -11,10 +11,11 @@ pub(crate) enum StandardModule {
     Process,
     Supervisor,
     Clock,
+    Select,
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Channel,
         Self::Io,
         Self::Task,
@@ -26,6 +27,7 @@ impl StandardModule {
         Self::Process,
         Self::Supervisor,
         Self::Clock,
+        Self::Select,
     ];
 
     pub(crate) const fn path(self) -> &'static str {
@@ -41,6 +43,7 @@ impl StandardModule {
             Self::Process => "std/process",
             Self::Supervisor => "std/supervisor",
             Self::Clock => "std/clock",
+            Self::Select => "std/select",
         }
     }
 
@@ -115,10 +118,19 @@ pub(crate) enum StandardType {
     Timestamp,
     /// `std/task.Timeout`: the expected failure of `Task.timeout` and `Task.deadline`.
     Timeout,
+    /// `std/select.Event<A, F>`: one wait that produces an `A` or fails with `F`;
+    /// task-local.
+    SelectEvent,
     /// `std/process.Monitor`: a watch one incarnation set on another.
     ProcessMonitor,
     /// `std/process.Down`: how a monitored incarnation ended.
     ProcessDown,
+    /// `std/process.HandoffSpec<A, M, E>`: a body that takes an argument of type
+    /// `A`, started once by `Supervisor.start_handoff` and never restarted.
+    ProcessHandoffSpec,
+    /// `std/supervisor.HandoffError<A>`: a refused handoff start, which hands
+    /// the argument back.
+    SupervisorHandoffError,
     /// `std/cause.Cause`: the diagnostic record beside a failure, a defect, or a
     /// cancellation.
     Cause,
@@ -146,6 +158,7 @@ impl StandardType {
                 | Self::DurationParseError
                 | Self::ProcessSendError
                 | Self::SupervisorStartError
+                | Self::SupervisorHandoffError
                 | Self::Timeout
         )
     }
@@ -194,8 +207,11 @@ impl StandardType {
             Self::Instant => "Instant",
             Self::Timestamp => "Timestamp",
             Self::Timeout => "Timeout",
+            Self::SelectEvent => "Event",
             Self::ProcessMonitor => "Monitor",
             Self::ProcessDown => "Down",
+            Self::ProcessHandoffSpec => "HandoffSpec",
+            Self::SupervisorHandoffError => "HandoffError",
             Self::Cause => "Cause",
             Self::Result => "Result",
         }
@@ -211,6 +227,7 @@ impl StandardType {
             Self::ProcessAddress
             | Self::ProcessInbox
             | Self::ProcessSpec
+            | Self::ProcessHandoffSpec
             | Self::ProcessMonitor
             | Self::SupervisorMember
             | Self::SupervisorPolicy
@@ -221,6 +238,7 @@ impl StandardType {
                 StandardProperties::Opaque("a process or supervisor capability")
             }
             Self::Task => StandardProperties::Opaque("a `Task` capability"),
+            Self::SelectEvent => StandardProperties::Opaque("a `Select.Event`"),
             Self::ChannelSender | Self::ChannelReceiver | Self::ChannelCompletion => {
                 StandardProperties::Opaque("a channel capability")
             }
@@ -249,6 +267,7 @@ impl StandardType {
             | Self::ProcessDown
             | Self::SupervisorRestart
             | Self::SupervisorStartError
+            | Self::SupervisorHandoffError
             | Self::Decimal
             | Self::Bytes
             | Self::Instant
@@ -389,6 +408,15 @@ pub(crate) enum StandardFunction {
     TaskResults,
     /// `Task.race(operations)`: the first outcome after the others drain.
     TaskRace,
+    // `std/select`, in `CHIMI_INTRINSIC_SELECT_*` order. Building an event
+    // parks nothing and consumes nothing; `Select.first` waits.
+    SelectReceive,
+    SelectInbox,
+    SelectTask,
+    /// Measures its `Duration` from the start of the `Select.first` call.
+    SelectAfter,
+    SelectAt,
+    SelectFirst,
     ProcessSpec,
     ProcessRegister,
     ProcessReceive,
@@ -401,6 +429,8 @@ pub(crate) enum StandardFunction {
     ProcessCapacity,
     ProcessMonitor,
     ProcessUnmonitor,
+    /// `Process.handoff_spec(body, capacity, shutdown_within)`.
+    ProcessHandoffSpec,
     SupervisorProcess,
     SupervisorSupervisor,
     SupervisorPolicy,
@@ -408,6 +438,9 @@ pub(crate) enum StandardFunction {
     SupervisorStart,
     SupervisorStartProcess,
     SupervisorStartSupervisor,
+    /// `Supervisor.start_handoff(running, spec, argument)`: starts one
+    /// never-restarted incarnation that owns `argument`.
+    SupervisorStartHandoff,
     SupervisorAddress,
     SupervisorRemoveProcess,
     SupervisorRemoveSupervisor,
@@ -493,7 +526,7 @@ pub(crate) enum StandardFunction {
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 88] = [
+    pub(crate) const ALL: [Self; 96] = [
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -553,6 +586,7 @@ impl StandardFunction {
         Self::ProcessCapacity,
         Self::ProcessMonitor,
         Self::ProcessUnmonitor,
+        Self::ProcessHandoffSpec,
         Self::SupervisorProcess,
         Self::SupervisorSupervisor,
         Self::SupervisorPolicy,
@@ -560,6 +594,7 @@ impl StandardFunction {
         Self::SupervisorStart,
         Self::SupervisorStartProcess,
         Self::SupervisorStartSupervisor,
+        Self::SupervisorStartHandoff,
         Self::SupervisorAddress,
         Self::SupervisorRemoveProcess,
         Self::SupervisorRemoveSupervisor,
@@ -582,6 +617,12 @@ impl StandardFunction {
         Self::TaskAll,
         Self::TaskResults,
         Self::TaskRace,
+        Self::SelectReceive,
+        Self::SelectInbox,
+        Self::SelectTask,
+        Self::SelectAfter,
+        Self::SelectAt,
+        Self::SelectFirst,
     ];
 
     pub(crate) const fn module(self) -> Option<StandardModule> {
@@ -594,7 +635,8 @@ impl StandardFunction {
             | Self::ProcessQueued
             | Self::ProcessCapacity
             | Self::ProcessMonitor
-            | Self::ProcessUnmonitor => Some(StandardModule::Process),
+            | Self::ProcessUnmonitor
+            | Self::ProcessHandoffSpec => Some(StandardModule::Process),
             Self::SupervisorProcess
             | Self::SupervisorSupervisor
             | Self::SupervisorPolicy
@@ -602,6 +644,7 @@ impl StandardFunction {
             | Self::SupervisorStart
             | Self::SupervisorStartProcess
             | Self::SupervisorStartSupervisor
+            | Self::SupervisorStartHandoff
             | Self::SupervisorAddress
             | Self::SupervisorRemoveProcess
             | Self::SupervisorRemoveSupervisor
@@ -620,6 +663,12 @@ impl StandardFunction {
             | Self::ClockTimestampBetween
             | Self::ClockStartingAt => Some(StandardModule::Clock),
             Self::IoPath => Some(StandardModule::Io),
+            Self::SelectReceive
+            | Self::SelectInbox
+            | Self::SelectTask
+            | Self::SelectAfter
+            | Self::SelectAt
+            | Self::SelectFirst => Some(StandardModule::Select),
             Self::TaskStart
             | Self::TaskResult
             | Self::TaskCancel
@@ -817,6 +866,7 @@ impl StandardFunction {
             Self::ProcessCapacity => "capacity",
             Self::ProcessMonitor => "monitor",
             Self::ProcessUnmonitor => "unmonitor",
+            Self::ProcessHandoffSpec => "handoff_spec",
             Self::SupervisorProcess => "process",
             Self::SupervisorSupervisor => "supervisor",
             Self::SupervisorPolicy => "policy",
@@ -824,6 +874,7 @@ impl StandardFunction {
             Self::SupervisorStart => "start",
             Self::SupervisorStartProcess => "start_process",
             Self::SupervisorStartSupervisor => "start_supervisor",
+            Self::SupervisorStartHandoff => "start_handoff",
             Self::SupervisorAddress => "address",
             Self::SupervisorRemoveProcess => "remove_process",
             Self::SupervisorRemoveSupervisor => "remove_supervisor",
@@ -846,6 +897,12 @@ impl StandardFunction {
             Self::TaskAll => "all",
             Self::TaskResults => "results",
             Self::TaskRace => "race",
+            Self::SelectReceive => "receive",
+            Self::SelectInbox => "inbox",
+            Self::SelectTask => "task",
+            Self::SelectAfter => "after",
+            Self::SelectAt => "at",
+            Self::SelectFirst => "first",
             Self::DebugCrash => "crash",
             Self::OptionUnwrapOrFail => "unwrap_or_fail",
             Self::TextConcat => "concat",
@@ -924,6 +981,7 @@ impl StandardFunction {
                 | Self::SupervisorStart
                 | Self::SupervisorStartProcess
                 | Self::SupervisorStartSupervisor
+                | Self::SupervisorStartHandoff
                 | Self::SupervisorAddress
                 | Self::SupervisorRemoveProcess
                 | Self::SupervisorRemoveSupervisor
@@ -956,6 +1014,21 @@ impl StandardFunction {
         )
     }
 
+    /// The `std/select` functions. They run only on the native backend, where
+    /// the scheduler can wait on several sources; the interpreter has no task,
+    /// channel, or timer runtime and defects at each of them.
+    pub(crate) const fn is_select_operation(self) -> bool {
+        matches!(
+            self,
+            Self::SelectReceive
+                | Self::SelectInbox
+                | Self::SelectTask
+                | Self::SelectAfter
+                | Self::SelectAt
+                | Self::SelectFirst
+        )
+    }
+
     /// Whether the native runtime runs this function on the fiber scheduler, so
     /// a program that reaches it runs its root as a scheduler task.
     #[cfg(any(
@@ -978,6 +1051,7 @@ impl StandardFunction {
                 | Self::ChannelAbort
                 | Self::ChannelBounded
         ) || self.requires_process_runtime()
+            || self.is_select_operation()
     }
 
     /// The unit of a `Duration` constructor (`Duration.seconds`) or of a whole-unit
@@ -1098,10 +1172,14 @@ pub(crate) enum StandardConstructor {
     ResultOk,
     /// `std/result.Result.Err(error: E)`.
     ResultErr,
+    /// `HandoffError.CapacityReached(argument: A)`.
+    HandoffCapacityReached,
+    /// `HandoffError.Stopped(argument: A)`.
+    HandoffStopped,
 }
 
 impl StandardConstructor {
-    pub(crate) const ALL: [Self; 51] = [
+    pub(crate) const ALL: [Self; 53] = [
         Self::IntParseEmpty,
         Self::IntParseInvalidDigit,
         Self::IntParseOutOfRange,
@@ -1153,6 +1231,8 @@ impl StandardConstructor {
         Self::DownUnavailable,
         Self::ResultOk,
         Self::ResultErr,
+        Self::HandoffCapacityReached,
+        Self::HandoffStopped,
     ];
 
     pub(crate) const fn type_kind(self) -> StandardType {
@@ -1199,6 +1279,9 @@ impl StandardConstructor {
             | Self::DownDefected
             | Self::DownStopped
             | Self::DownUnavailable => StandardType::ProcessDown,
+            Self::HandoffCapacityReached | Self::HandoffStopped => {
+                StandardType::SupervisorHandoffError
+            }
         }
     }
 
@@ -1234,7 +1317,8 @@ impl StandardConstructor {
             StandardType::ProcessSendError
             | StandardType::ProcessDown
             | StandardType::SupervisorRestart
-            | StandardType::SupervisorStartError => None,
+            | StandardType::SupervisorStartError
+            | StandardType::SupervisorHandoffError => None,
             StandardType::ProcessAddress
             | StandardType::ProcessInbox
             | StandardType::ProcessSpec
@@ -1247,7 +1331,9 @@ impl StandardConstructor {
             | StandardType::Clock
             | StandardType::Instant
             | StandardType::Timestamp
-            | StandardType::ProcessMonitor => None,
+            | StandardType::SelectEvent
+            | StandardType::ProcessMonitor
+            | StandardType::ProcessHandoffSpec => None,
             // Written type-qualified, `Timeout.TimedOut`, as the spec does.
             StandardType::Timeout => None,
             StandardType::Result => None,
@@ -1316,6 +1402,8 @@ impl StandardConstructor {
             Self::DownDefected => "Defected",
             Self::DownStopped => "Stopped",
             Self::DownUnavailable => "Unavailable",
+            Self::HandoffCapacityReached => "CapacityReached",
+            Self::HandoffStopped => "Stopped",
         }
     }
 
@@ -1369,6 +1457,7 @@ impl StandardConstructor {
             | Self::DurationParseOutOfRange => &[],
             Self::ProcessSendFull | Self::ProcessSendUnavailable => &["message"],
             Self::StartNameTaken => &["name"],
+            Self::HandoffCapacityReached | Self::HandoffStopped => &["argument"],
             Self::TimeoutTimedOut => &["limit"],
             Self::ResultOk => &["value"],
             Self::ResultErr => &["error"],
@@ -1448,16 +1537,32 @@ pub(crate) enum StandardGeneric {
     /// `std/result.Result<T, E>`'s parameters, which `Ok` and `Err` take.
     ResultValue,
     ResultError,
+    /// The `std/select` functions share these, as the timeouts do: `A`, the
+    /// event's value; `F`, its mapping function's failures; `R`, that
+    /// function's needs; `T`, what the source delivers; `E`, a task's failures.
+    SelectValue,
+    SelectFailures,
+    SelectNeeds,
+    SelectSource,
+    SelectTaskFailures,
     ProcessOwnAddressMessage,
     ProcessQueuedMessage,
     ProcessCapacityMessage,
     ProcessMonitorMessage,
     ProcessMonitorTarget,
     ProcessUnmonitorMessage,
+    ProcessHandoffSpecArgument,
+    ProcessHandoffSpecMessage,
+    ProcessHandoffSpecFailures,
+    ProcessHandoffSpecNeeds,
+    /// Also the parameter of the `HandoffError` constructors.
+    SupervisorStartHandoffArgument,
+    SupervisorStartHandoffMessage,
+    SupervisorStartHandoffFailures,
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 37] = [
+    pub(crate) const ALL: [Self; 49] = [
         Self::FileState,
         Self::FileFailures,
         Self::FileNeeds,
@@ -1489,12 +1594,24 @@ impl StandardGeneric {
         Self::TimeoutNeeds,
         Self::ResultValue,
         Self::ResultError,
+        Self::SelectValue,
+        Self::SelectFailures,
+        Self::SelectNeeds,
+        Self::SelectSource,
+        Self::SelectTaskFailures,
         Self::ProcessOwnAddressMessage,
         Self::ProcessQueuedMessage,
         Self::ProcessCapacityMessage,
         Self::ProcessMonitorMessage,
         Self::ProcessMonitorTarget,
         Self::ProcessUnmonitorMessage,
+        Self::ProcessHandoffSpecArgument,
+        Self::ProcessHandoffSpecMessage,
+        Self::ProcessHandoffSpecFailures,
+        Self::ProcessHandoffSpecNeeds,
+        Self::SupervisorStartHandoffArgument,
+        Self::SupervisorStartHandoffMessage,
+        Self::SupervisorStartHandoffFailures,
     ];
 
     /// The name shown in contracts and diagnostics. Names repeat across
@@ -1524,18 +1641,28 @@ impl StandardGeneric {
             | Self::ProcessQueuedMessage
             | Self::ProcessCapacityMessage
             | Self::ProcessMonitorMessage
-            | Self::ProcessUnmonitorMessage => "M",
+            | Self::ProcessUnmonitorMessage
+            | Self::ProcessHandoffSpecMessage
+            | Self::SupervisorStartHandoffMessage => "M",
+            Self::ProcessHandoffSpecArgument | Self::SupervisorStartHandoffArgument => "A",
             Self::ProcessMonitorTarget => "T",
             Self::ProcessSpecFailures
             | Self::ProcessRegisterFailures
             | Self::SupervisorProcessFailures
-            | Self::SupervisorStartProcessFailures => "E",
-            Self::ProcessSpecNeeds => "R",
+            | Self::SupervisorStartProcessFailures
+            | Self::ProcessHandoffSpecFailures
+            | Self::SupervisorStartHandoffFailures => "E",
+            Self::ProcessSpecNeeds | Self::ProcessHandoffSpecNeeds => "R",
             Self::TimeoutValue => "T",
             Self::TimeoutFailures => "E",
             Self::TimeoutNeeds => "R",
             Self::ResultValue => "T",
             Self::ResultError => "E",
+            Self::SelectValue => "A",
+            Self::SelectFailures => "F",
+            Self::SelectNeeds => "R",
+            Self::SelectSource => "T",
+            Self::SelectTaskFailures => "E",
         }
     }
 
@@ -1546,8 +1673,16 @@ impl StandardGeneric {
             | Self::ProcessSpecFailures
             | Self::ProcessRegisterFailures
             | Self::SupervisorProcessFailures
-            | Self::SupervisorStartProcessFailures => StandardGenericKind::FailureSet,
-            Self::FileNeeds | Self::ProcessSpecNeeds | Self::TimeoutNeeds => {
+            | Self::SupervisorStartProcessFailures
+            | Self::SelectFailures
+            | Self::SelectTaskFailures
+            | Self::ProcessHandoffSpecFailures
+            | Self::SupervisorStartHandoffFailures => StandardGenericKind::FailureSet,
+            Self::FileNeeds
+            | Self::ProcessSpecNeeds
+            | Self::ProcessHandoffSpecNeeds
+            | Self::TimeoutNeeds
+            | Self::SelectNeeds => {
                 StandardGenericKind::NeedsRow
             }
             _ => StandardGenericKind::Value,

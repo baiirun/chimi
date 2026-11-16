@@ -142,6 +142,7 @@ pub(super) fn is_cancellation_point(kind: u32) -> bool {
             | super::REQUEST_CHANNEL_SEND
             | super::REQUEST_CHANNEL_RECEIVE
             | super::REQUEST_PROCESS_RECEIVE
+            | super::REQUEST_SELECT
             | super::REQUEST_SCOPE_ENTER
             | super::REQUEST_SCOPE_CHECK
             | super::REQUEST_TASK_ANY
@@ -159,6 +160,7 @@ fn is_withdrawable(kind: u32) -> bool {
             | super::REQUEST_CHANNEL_RECEIVE
             | super::REQUEST_PROCESS_RECEIVE
             | super::REQUEST_TASK_ANY
+            | super::REQUEST_SELECT
     )
 }
 

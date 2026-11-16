@@ -137,7 +137,7 @@ impl ProjectTypeChecker {
 
     /// `needs { clock: Clock }` plus `parameters`. A standard function has no body,
     /// so its own symbol stands in for the requirement binding, as for `Clock.sleep`.
-    fn clock_need(
+    pub(super) fn clock_need(
         &mut self,
         function: StandardFunction,
         parameters: Vec<crate::ids::SymbolId>,

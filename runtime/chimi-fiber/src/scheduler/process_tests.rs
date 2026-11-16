@@ -2589,7 +2589,7 @@ fn a_c_root_with_nothing_to_wake_it_defects_with_the_deadlock_code() {
 #[test]
 fn ob07_the_process_abi_layouts_match_the_c_header() {
     use std::mem::{offset_of, size_of};
-    let mut c = [0_usize; 128];
+    let mut c = [0_usize; 160];
     let count = unsafe { chimi_fixture_process_layouts(c.as_mut_ptr()) };
     let rust = [
         size_of::<ChimiProcessRequest>(),
@@ -2604,6 +2604,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiProcessRequest, owner),
         offset_of!(ChimiProcessRequest, policy),
         offset_of!(ChimiProcessRequest, spec),
+        offset_of!(ChimiProcessRequest, carried),
         size_of::<ChimiProcessSpec>(),
         offset_of!(ChimiProcessSpec, context),
         offset_of!(ChimiProcessSpec, mailbox_capacity),
@@ -2678,6 +2679,19 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         size_of::<ChimiMessageCapabilities>(),
         offset_of!(ChimiMessageCapabilities, count),
         VIOLATION_IN_FLIGHT as usize,
+        REQUEST_SELECT as usize,
+        SELECT_RECEIVE as usize,
+        SELECT_INBOX as usize,
+        SELECT_TASK as usize,
+        SELECT_TIMER as usize,
+        size_of::<ChimiSelectSource>(),
+        offset_of!(ChimiSelectSource, channel),
+        offset_of!(ChimiSelectSource, owner),
+        offset_of!(ChimiSelectSource, token),
+        offset_of!(ChimiSelectSource, task),
+        offset_of!(ChimiSelectSource, deadline),
+        ClockEventKind::SelectParked as usize + 1,
+        ClockEventKind::SelectCommitted as usize + 1,
         offset_of!(ChimiProcessRequest, monitor),
         offset_of!(ChimiProcessRequest, queued),
         offset_of!(ChimiProcessRequest, capacity),
@@ -2689,7 +2703,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         REQUEST_TASK_DRAIN as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 10);
+    assert_eq!(crate::chimi_fiber_abi_version(), 12);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------

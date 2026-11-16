@@ -1,0 +1,18 @@
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/task.{Task}
+
+enum Message {
+  Stop
+}
+
+fn serve(inbox: Inbox<Message>, work: Task<Int, Never>) -> Void {
+  Void
+}
+
+const handler = Process.handoff_spec(serve, 4, Duration.seconds(1))
+
+pub fn main() -> Int {
+  0
+}

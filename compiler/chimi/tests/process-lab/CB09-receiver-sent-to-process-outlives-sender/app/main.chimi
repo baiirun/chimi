@@ -1,0 +1,68 @@
+import std/channel as Channel
+import std/channel.{Receive, Receiver, Sender}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Address, Inbox}
+import std/supervisor as Supervisor
+import std/task as Task
+
+// CB09: a Receiver sent in a Process.send message belongs to the process that
+// receives it (CHI-213). A child task owns `data`'s Receiver, sends it to the
+// reader process, and ends before anything is written to the channel. The
+// reader then reads 5 from it and replies with 5. Before, the Receiver stayed
+// with the child: its exit aborted the channel, so main's send failed (-1),
+// or the reader defected on its first receive.
+
+pub enum Message {
+  Read(source: Receiver<Int>, reply: Sender<Int>)
+}
+
+fn take(source: Receiver<Int>) -> Int {
+  let got = Channel.receive(source)
+  case got {
+    Receive.Received(value) -> value
+    Receive.Drained -> 0
+  }
+}
+
+fn read(inbox: Inbox<Message>) -> Void {
+  loop total = 0 {
+    case Process.receive(inbox) {
+      Message.Read(source, reply) -> {
+        let value = take(source)
+        Channel.send(reply, value)
+        total + value
+      }
+    }
+  }
+}
+
+fn hand_over(reader: Address<Message>, source: Receiver<Int>, reply: Sender<Int>) -> Int {
+  case Process.send(reader, Message.Read(source, reply)) {
+    Success(_) -> 0
+    Failure(_) -> -2
+  }
+}
+
+pub fn main() -> Int {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(read, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  let reader = Supervisor.address(managed)
+  let data = Channel.bounded(1)
+  let replies = Channel.bounded(1)
+  let source = data.receiver
+  let reply = replies.sender
+  let child = Task.start(fn() -> Int { hand_over(reader, source, reply) })
+  let handed = Task.result(child)
+  let written = case Channel.send(data.sender, 5) {
+    Success(_) -> 0
+    Failure(_) -> -1
+  }
+  let replied = Channel.receive(replies.receiver)
+  let answer = case replied {
+    Receive.Received(value) -> value
+    Receive.Drained -> -3
+  }
+  Supervisor.stop(root)
+  handed + written + answer
+}

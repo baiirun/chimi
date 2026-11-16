@@ -1,0 +1,77 @@
+import std/channel as Channel
+import std/channel.{Receive, Receiver, Sender}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{HandoffError, Running}
+import std/task as Task
+
+// MB19: the argument of Supervisor.start_handoff belongs to the incarnation it
+// starts. A child task hands `requests`' Receiver to a connection process and
+// ends before anything is written; the process then reads 21 and replies 42.
+// A second start on the full supervisor (capacity 1) is refused with
+// CapacityReached, which hands its Receiver back: main reads 3 from it. Total
+// 45. An argument left with the caller would abort `requests` when the child
+// ended (main's send fails, -100), and a refusal that dropped the argument
+// would abort the second channel (-1000).
+
+pub struct Connection {
+  requests: Receiver<Int>,
+  replies: Sender<Int>,
+}
+
+pub enum Message {
+  Stop
+}
+
+fn serve(inbox: Inbox<Message>, connection: Connection) -> Void {
+  let got = Channel.receive(connection.requests)
+  case got {
+    Receive.Received(value) -> Channel.send(connection.replies, value * 2)
+    Receive.Drained -> Void
+  }
+}
+
+const connection = Process.handoff_spec(serve, 1, Duration.seconds(1))
+
+fn accept(root: Running, accepted: Connection) -> Int {
+  case Supervisor.start_handoff(root, connection, accepted) {
+    Success(_) -> 0
+    Failure(HandoffError.CapacityReached(_)) -> -10
+    Failure(HandoffError.Stopped(_)) -> -20
+  }
+}
+
+fn read(source: Receiver<Int>) -> Int {
+  let got = Channel.receive(source)
+  case got {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1000
+  }
+}
+
+pub fn main() -> Int {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let requests = Channel.bounded(1)
+  let replies = Channel.bounded(1)
+  let accepted = Connection(requests.receiver, replies.sender)
+  let acceptor = Task.start(fn() -> Int { accept(root, accepted) })
+  let started = Task.result(acceptor)
+  let spare = Channel.bounded(1)
+  let refused = case Supervisor.start_handoff(root, connection, Connection(spare.receiver, replies.sender)) {
+    Success(_) -> -10000
+    Failure(HandoffError.CapacityReached(back)) -> {
+      Channel.send(spare.sender, 3)
+      read(back.requests)
+    }
+    Failure(HandoffError.Stopped(_)) -> -20000
+  }
+  let written = case Channel.send(requests.sender, 21) {
+    Success(_) -> 0
+    Failure(_) -> -100
+  }
+  let answer = read(replies.receiver)
+  Supervisor.stop(root)
+  started + refused + written + answer
+}
