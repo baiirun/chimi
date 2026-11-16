@@ -536,9 +536,13 @@ fn format(path: PathBuf) -> ExitCode {
 }
 
 fn check(input: Input, standard: &StandardTree, output: DiagnosticOutput) -> ExitCode {
-    let Some(project) = load_project(input, standard) else {
+    let Some(mut project) = load_project(input, standard) else {
         return ExitCode::FAILURE;
     };
+    if let Err(error) = project.add_doc_examples(standard) {
+        eprintln!("chimi: {error}");
+        return ExitCode::FAILURE;
+    }
     match Compiler::verify_project(project.sources()) {
         Ok(verification) => {
             match output {
@@ -636,16 +640,24 @@ fn build(input: Input, standard: &StandardTree, output: Option<PathBuf>) -> Exit
 fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode {
     use chimi::testing::{Backend, RunOptions, TestSuite, render_json, render_report};
     let artifact_directory = artifact_directory(&default_executable_path(&input)).join("test");
-    let Some(project) = load_project(input, standard) else {
+    let Some(mut project) = load_project(input, standard) else {
         return ExitCode::from(2);
     };
-    let suite = match TestSuite::prepare(project.sources()) {
+    let examples = match project.add_doc_examples(standard) {
+        Ok(examples) => examples,
+        Err(error) => {
+            eprintln!("chimi: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut suite = match TestSuite::prepare(project.sources()) {
         Ok(suite) => suite,
         Err(diagnostics) => {
             eprint!("{}", project.render_diagnostics(&diagnostics));
             return ExitCode::from(2);
         }
     };
+    suite.rename_modules(&examples);
     let selected = suite.select(&options.filters);
     if selected.is_empty() {
         eprintln!("chimi: no test matches the filter");

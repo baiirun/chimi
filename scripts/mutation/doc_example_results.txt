@@ -1,0 +1,15 @@
+# mutation run at 85251741d2e8d2282b67bf6500722f92989edbbc
+# doc_example_mutations.py: 9 mutants against compiler/chimi
+BASELINE ok  [testing -- doc_] (34s)
+BASELINE ok  [testing lib -- doc_] (28s)
+BASELINE ok  [lib -- doc_] (0s)
+KILLED       a fragment block runs [testing -- doc_] (4s)
+KILLED       examples are numbered per file, not per item [testing -- doc_] (4s)
+KILLED       the code shifts one column [testing -- doc_] (4s)
+KILLED       examples report under their own module [testing -- doc_] (11s)
+KILLED       chimi check skips examples [testing -- doc_] (13s)
+KILLED       a doc run before a blank line documents the next item [testing lib -- doc_] (4s)
+KILLED       JSON keeps the example's own offsets [testing -- doc_] (5s)
+KILLED       a bodiless example gets no body [lib -- doc_] (3s)
+KILLED       struct items document nothing [lib -- doc_] (10s)
+# result: every mutant killed
