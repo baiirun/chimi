@@ -178,7 +178,14 @@ carrier where no fiber makes another request, strands the release. The
 simulation build showed this: before its flush drained every carrier's queue,
 a dropped channel's buffered messages outlived it and a fragment-peak test
 failed. Today a flush drains the running carrier's queue first and then any
-other carrier's, in place of that loop.
+other carrier's, in place of that loop. That stand-in
+(`carrier_with_releases`) reads another carrier's queue without a lock, so
+step 3 must replace it, not keep it: two threads popping one queue could lose
+a release or issue it twice. It also hides a missing per-carrier drain, so
+the simulation cannot catch that gap; step 3 needs its own test for it.
+The unlocked `handles_live()` read also assumes that moving a value to
+another carrier synchronises (the hand-off is a scheduler request), which
+step 3 must keep true.
 
 Two tests check this step:
 - `tests/runtime_state.rs` `the_handle_table_counts_across_threads` hands
