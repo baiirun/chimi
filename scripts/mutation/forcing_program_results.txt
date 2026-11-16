@@ -1,0 +1,5 @@
+# mutation run at 8e2d0ece5a9b75930d6d5a4983ddc9dfb17748a6
+# forcing_program_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [lib channel_variants -- result] (201s)
+KILLED       Result answers its source declaration's generics [lib channel_variants -- result] (62s)
+# result: every mutant killed

@@ -4225,6 +4225,35 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
         assert_eq!(codes, ["T4250"]);
     }
 
+    // Regression: receiving a stored `Result` leaves the receiver with its
+    // owner, so a loop may receive results pass after pass. `Ok` and `Err` are
+    // written in the runtime's generics, which the `Result` arguments did not
+    // bind, so every received result looked able to hold the receiver.
+    #[test]
+    fn loop_may_receive_results_from_one_receiver() {
+        let codes = loop_diagnostics(concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Receive, Receiver}\n",
+            "import std/result.{Result}\n",
+            "enum Lost {\n  Gone\n}\n",
+            "fn count(results: Receiver<Result<Int, Lost>>) -> Int {\n",
+            "  loop seen = 0 {\n",
+            "    let next = Channel.receive(results)\n",
+            "    case next {\n",
+            "      Receive.Received(_) -> seen + 1\n",
+            "      Receive.Drained -> break seen\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let results = Channel.bounded(1)\n",
+            "  Channel.close(results.completion)\n",
+            "  count(results.receiver)\n",
+            "}\n",
+        ));
+        assert!(codes.is_empty(), "{codes:?}");
+    }
+
     // Regression: a block whose first item is a call with several arguments is a block,
     // not a record; only a comma at the brace's own nesting level marks a record.
     #[test]

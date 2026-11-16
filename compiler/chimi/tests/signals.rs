@@ -235,3 +235,67 @@ pub fn main() -> Int needs { console: Console, files: FileSystem } {
     assert_eq!(status.signal(), Some(SIGINT), "{status}");
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+/// A scheduled program (it starts a task) whose main reads standard input,
+/// while a ticker task sleeps and prints `ticked`.
+const SCHEDULED_READER: &str = r#"import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/int as Int
+import std/io as IO
+import std/io.{Console, FileSystem}
+import std/task as Task
+
+fn tick() -> Void needs { clock: Clock, console: Console } {
+  Clock.sleep(Duration.milliseconds(1))
+  console.write_line("ticked")
+}
+
+pub fn main() -> Int needs { clock: Clock, console: Console, files: FileSystem } {
+  let ticker = Task.start(tick)
+  console.write_line("reading")
+  let count = case files.process_utf8_lines(IO.path("-"), 0, fn(count: Int, line: Text) { count + 1 }) {
+    Success(count) -> count
+    Failure(_) -> -1
+  }
+  Task.result(ticker)
+  console.write_line(Int.to_text(count))
+  count
+}
+"#;
+
+#[test]
+fn a_task_keeps_running_while_main_waits_for_standard_input() {
+    use std::io::Write;
+    let scratch = scratch_directory("scheduled-reader");
+    let executable = build_native(&scratch, "reader", SCHEDULED_READER);
+    let mut running = Running::start(&executable);
+    assert_eq!(running.next_line(), "reading");
+    // Nothing has been written yet, so main is waiting on its read. Before
+    // the reactor that read blocked the whole scheduler, and the ticker
+    // could not print until input ended.
+    assert_eq!(running.next_line(), "ticked");
+    let mut input = running.child.stdin.take().unwrap();
+    input.write_all(b"one\ntwo\nthree\n").unwrap();
+    drop(input);
+    let (rest, status) = running.finish();
+    assert_eq!(rest, ["3"]);
+    assert!(status.success(), "{status}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn the_first_sigint_cancels_a_scheduled_program_while_it_reads_input() {
+    let scratch = scratch_directory("scheduled-reader-signal");
+    let executable = build_native(&scratch, "reader", SCHEDULED_READER);
+    let mut running = Running::start(&executable);
+    assert_eq!(running.next_line(), "reading");
+    assert_eq!(running.next_line(), "ticked");
+    // Standard input stays open. Before the reactor only a second signal
+    // ended this read.
+    running.signal(SIGINT);
+    let (rest, status) = running.finish();
+    assert!(rest.is_empty(), "{rest:?}");
+    assert_eq!(status.signal(), Some(SIGINT), "{status}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}

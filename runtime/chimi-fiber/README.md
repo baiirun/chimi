@@ -86,6 +86,17 @@ request withdraws the previous registrations. It never consumes anything: the
 host then issues the committed source's own request, which answers at once.
 `clock_select_parked` and `clock_select_committed` are its trace events.
 
+`CHIMI_REQUEST_IO_WAIT` (`scheduler/reactor.rs`) is the IO reactor: a task
+waits until the descriptor in `value` is ready for the `token` interest
+(`CHIMI_IO_READABLE`, `CHIMI_IO_WRITABLE`). It answers OK with the ready
+conditions at once, or registers the task and parks it; as with a select, a
+wake only makes the host ask again. An idle scheduler with registrations
+blocks in one poll(2) over them, the signal pipe, and (under the real clock)
+the earliest timer deadline, and a busy one polls them without blocking
+every 64 resumes. A registration is a host operation in flight, so virtual
+time holds while one exists. The wait is a cancellation point that a
+cancellation or a scope deadline withdraws.
+
 `chimi_scheduler_execute` keeps its earlier behavior.
 `chimi_scheduler_execute_with_config` is `chimi_scheduler_execute` with three
 release hooks: `release_task_value` for every value a task returned except

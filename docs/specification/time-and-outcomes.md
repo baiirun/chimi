@@ -433,7 +433,11 @@ Under the virtual source:
   Such a loop spins forever, as it would on a stopped real clock.
 
 Under the real source, an idle scheduler blocks on the host until the
-earliest timer or a host completion. The real source does not detect
+earliest timer or a host completion. A task waiting on a file descriptor is a host
+operation in flight
+([G21](host-capabilities-and-execution-properties.md#waiting-for-descriptors-g21)):
+under the virtual source time holds until the descriptor is ready or a
+real signal arrives. The real source does not detect
 deadlock, because a host event may still arrive.
 
 Two runs of the same program under the virtual source with the same inputs
@@ -1406,9 +1410,11 @@ program.
     with `; process incarnation <id> of membership <id> defected: <defect>`
     for the latest one (with `(the last of <n> process defects)` before the
     colon when there were several), whatever the trace mode (lab OB08). Under the real clock a root
-    with nothing pending stays suspended in the scheduler. The native
-    runtime has no asynchronous host operations, so it reports the earlier
-    generic deadlock defect and leaves the suspended tasks to process exit.
+    with nothing pending stays suspended in the scheduler. A root with
+    nothing pending has no descriptor wait either (a descriptor wait keeps
+    the scheduler waiting on the host, [G21](host-capabilities-and-execution-properties.md#waiting-for-descriptors-g21)),
+    so the native runtime reports the earlier generic deadlock defect and
+    leaves the suspended tasks to process exit.
   - **Telemetry.** Clock events use the envelope and fields of
     [runner telemetry](supervised-process-conformance.md#runner-telemetry-for-process-and-clock-events).
     `clock_advanced` and `clock_deadlock_waiter` are boundary events.
