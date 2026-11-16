@@ -706,7 +706,7 @@ fn std_test(standard: &StandardTree, options: TestOptions) -> ExitCode {
     };
     match tree.add_standard_doc_examples(standard) {
         Ok(examples) => {
-            let artifact_directory = PathBuf::from("target/chimi/std/test");
+            let artifact_directory = PathBuf::from("target/chimi/std-examples/test");
             run_tests(&tree, &examples, &artifact_directory, standard, options)
         }
         Err(error) => {

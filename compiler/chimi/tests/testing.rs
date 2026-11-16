@@ -1474,5 +1474,10 @@ fn std_test_runs_the_standard_trees_examples() {
     let (status, _, stderr) = run(&["std", "test", "cases.chimi"]);
     assert_eq!(status, Some(2));
     assert!(stderr.contains("std test takes options only"), "{stderr}");
+    for arguments in [&["std", "check", "extra"][..], &["std", "build"]] {
+        let (status, _, stderr) = run(arguments);
+        assert_eq!(status, Some(2));
+        assert!(stderr.contains("std takes one subcommand: check or test"), "{stderr}");
+    }
     std::fs::remove_dir_all(scratch).unwrap();
 }

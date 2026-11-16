@@ -47,11 +47,12 @@ pub enum Suppression {
 /// ```chimi
 /// import std/cause as Cause
 /// import std/int as Int
+/// import std/int.{ParseError}
 /// import std/test as Test
 ///
 /// let port = case fn() { Int.parse("80x") } |> Cause.context("reading the port") {
 ///   Success(value) -> value
-///   Failure(_) -> 8080
+///   Failure(ParseError.InvalidDigit) -> 8080
 /// }
 /// Test.assert_equal(port, 8080)
 /// ```
