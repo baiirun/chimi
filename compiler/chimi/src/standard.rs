@@ -152,6 +152,10 @@ pub(crate) enum StandardType {
     /// `std/result.Result<T, E>`, which `Task.results` builds. Declared only in
     /// source; `std/task` loads `std/result`.
     Result,
+    /// `std/test.Recorder<T>` and `std/test.Script<T>`: test-only handles to
+    /// logs the test execution owns (testing.md, "Recorders and scripted fakes").
+    TestRecorder,
+    TestScript,
     /// A `native type` of a C binding (G20): a handle the runtime owns, whose
     /// release function the binding supplies. Each declaration is its own type.
     BindingHandle,
@@ -234,6 +238,8 @@ impl StandardType {
             Self::BroadcastPublisher | Self::WatchPublisher => "Publisher",
             Self::WatchSubscription => "Subscription",
             Self::Result => "Result",
+            Self::TestRecorder => "Recorder",
+            Self::TestScript => "Script",
             Self::BindingHandle => "Handle",
         }
     }
@@ -259,6 +265,8 @@ impl StandardType {
                 StandardProperties::Opaque("a process or supervisor capability")
             }
             Self::Task => StandardProperties::Opaque("a `Task` capability"),
+            Self::TestRecorder => StandardProperties::Opaque("a `Test.Recorder`"),
+            Self::TestScript => StandardProperties::Opaque("a `Test.Script`"),
             Self::SelectEvent => StandardProperties::Opaque("a `Select.Event`"),
             Self::ChannelSender
             | Self::ChannelReceiver
@@ -571,6 +579,11 @@ pub(crate) enum StandardFunction {
     ResourceScoped,
     // Test-only (testing.md, Defects): T4401 when reachable from `main`.
     TestCaptureDefect,
+    TestRecorder,
+    TestRecord,
+    TestRecorded,
+    TestScript,
+    TestNext,
     /// Every C binding operation (G20). The symbol's binding names which one;
     /// the interpreter cannot call C, so it reports `E5204` instead.
     BindingCall,
@@ -867,8 +880,13 @@ impl StandardFunction {
             | Self::TestAssert
             | Self::TestFail => None,
             Self::ResourceScoped => None,
-            Self::TestCaptureDefect => None,
-            Self::BindingCall => None,
+            Self::TestCaptureDefect
+            | Self::TestRecorder
+            | Self::TestRecord
+            | Self::TestRecorded
+            | Self::TestScript
+            | Self::TestNext
+            | Self::BindingCall => None,
         }
     }
 
@@ -1050,6 +1068,11 @@ impl StandardFunction {
             Self::TestFail => "fail",
             Self::ResourceScoped => "scoped",
             Self::TestCaptureDefect => "capture_defect",
+            Self::TestRecorder => "recorder",
+            Self::TestRecord => "record",
+            Self::TestRecorded => "recorded",
+            Self::TestScript => "script",
+            Self::TestNext => "next",
             Self::BindingCall => "binding",
         }
     }
@@ -1459,6 +1482,8 @@ impl StandardConstructor {
             | StandardType::Decimal
             | StandardType::Bytes
             | StandardType::Cause
+            | StandardType::TestRecorder
+            | StandardType::TestScript
             | StandardType::BindingHandle
             | StandardType::JsonValue
             | StandardType::JsonNumber

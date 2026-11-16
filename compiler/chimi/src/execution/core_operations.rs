@@ -46,6 +46,24 @@ pub(crate) fn comparison_message(heading: &str, actual: &str, expected: &str) ->
 pub(crate) const ASSERT_EQUAL_HEADING: &str = "Test.assert_equal: the values differ";
 pub(crate) const ASSERT_NOT_EQUAL_HEADING: &str = "Test.assert_not_equal: the values are equal";
 
+/// What a `TestLog` handle is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TestLogKind {
+    Recorder,
+    Script,
+}
+
+/// The log behind a `std/test.Recorder` or `Script`. A recorder only grows; a
+/// script only shrinks, counting what it handed out for the exhaustion message.
+#[derive(Debug)]
+pub(crate) struct TestLog {
+    pub(crate) id: u64,
+    pub(crate) kind: TestLogKind,
+    values: std::sync::Mutex<(std::collections::VecDeque<RuntimeValue>, usize)>,
+}
+
+pub(crate) const SCRIPT_EXHAUSTED: &str = "Test.next: script exhausted after";
+
 pub(crate) const CAPTURE_RETURNED_HEADING: &str =
     "Test.capture_defect: the operation returned instead of defecting:";
 pub(crate) const CAPTURE_FAILED_HEADING: &str =
@@ -85,6 +103,59 @@ impl Evaluator<'_> {
             Control::Success(value) => not_a_defect(CAPTURE_RETURNED_HEADING, &value),
             Control::Failure(value, _) => not_a_defect(CAPTURE_FAILED_HEADING, &value),
             other => other,
+        }
+    }
+
+    /// `std/test` recorders and scripts; `runtime.c` keeps the same logs.
+    pub(super) fn invoke_test_log(
+        &mut self,
+        function: StandardFunction,
+        arguments: Vec<RuntimeValue>,
+        call_node: CoreNodeId,
+    ) -> Control {
+        let mut log = |kind, values: std::collections::VecDeque<RuntimeValue>| {
+            let id = self.next_test_log;
+            self.next_test_log += 1;
+            Control::Success(RuntimeValue::TestLog(std::sync::Arc::new(TestLog {
+                id,
+                kind,
+                values: std::sync::Mutex::new((values, 0)),
+            })))
+        };
+        match (function, arguments.as_slice()) {
+            (StandardFunction::TestRecorder, []) => log(TestLogKind::Recorder, Default::default()),
+            (StandardFunction::TestScript, [RuntimeValue::List(replies)]) => {
+                log(TestLogKind::Script, replies.iter().cloned().collect())
+            }
+            (StandardFunction::TestRecord, [RuntimeValue::TestLog(recorder), value])
+                if recorder.kind == TestLogKind::Recorder =>
+            {
+                recorder.values.lock().expect("a test log").0.push_back(value.clone());
+                Control::Success(RuntimeValue::Void)
+            }
+            (StandardFunction::TestRecorded, [RuntimeValue::TestLog(recorder)])
+                if recorder.kind == TestLogKind::Recorder =>
+            {
+                let values = recorder.values.lock().expect("a test log");
+                Control::Success(RuntimeValue::List(values.0.iter().cloned().collect()))
+            }
+            (StandardFunction::TestNext, [RuntimeValue::TestLog(script)])
+                if script.kind == TestLogKind::Script =>
+            {
+                let mut values = script.values.lock().expect("a test log");
+                match values.0.pop_front() {
+                    Some(value) => {
+                        values.1 += 1;
+                        Control::Success(value)
+                    }
+                    None => Control::Defect {
+                        message: format!("{SCRIPT_EXHAUSTED} {} values", values.1),
+                        node: Some(call_node),
+                        cause: None,
+                    },
+                }
+            }
+            _ => self.intrinsic_shape_defect(function, call_node),
         }
     }
 

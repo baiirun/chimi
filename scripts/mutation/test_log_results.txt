@@ -1,0 +1,14 @@
+# mutation run at f409488ed5efcd007e6f4d6bb8a64088151d75b2
+# test_log_mutations.py: 10 mutants against compiler/chimi
+BASELINE ok  [testing] (49s)
+KILLED       native: a record is dropped [testing] (12s)
+KILLED       native: recorded misses the last value [testing] (11s)
+KILLED       native: next repeats its first reply [testing] (12s)
+KILLED       native: an exhausted script returns Void [testing] (12s)
+KILLED       native: a recorder renders as a monitor [testing] (11s)
+KILLED       interpreter: recorded reverses the log [testing] (27s)
+KILLED       interpreter: next does not count its replies [testing] (20s)
+KILLED       assertion set: an exhausted script is a plain defect [testing] (24s)
+KILLED       T4403: a recorded value is never checked [testing] (25s)
+KILLED       T4403: a script is never checked [testing] (16s)
+# result: every mutant killed

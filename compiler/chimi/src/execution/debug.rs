@@ -177,6 +177,11 @@ impl Renderer<'_> {
             }
             // Diagnostic data, read through `Cause.to_text`, like a function's body.
             RuntimeValue::Cause(_) => self.output.push_str("<Cause>"),
+            // A handle to a log that changes; testing.md renders neither's contents.
+            RuntimeValue::TestLog(log) => self.output.push_str(match log.kind {
+                super::core_operations::TestLogKind::Recorder => "<Recorder>",
+                super::core_operations::TestLogKind::Script => "<Script>",
+            }),
         }
     }
 

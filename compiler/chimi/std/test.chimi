@@ -44,3 +44,42 @@ pub native fn fail(message: Text) -> Never
 /// Calls: `operation` once.
 /// Cost: O(1) plus `operation`.
 pub native fn capture_defect<T, F, R>(operation: fn() -> T errors F needs R) -> Text needs R
+
+/// An append-only log of values a fake recorded, owned by the test run. It is
+/// shareable, so a fake running in another task can record into it. It renders
+/// as `<Recorder>` and has no equality.
+pub native type Recorder<T>
+
+/// A queue of replies a scripted fake hands out one at a time. It is shareable
+/// and renders as `<Script>`.
+pub native type Script<T>
+
+/// A new, empty recorder. Test-only (`T4401`).
+///
+/// Cost: O(1).
+pub native fn recorder<T>() -> Recorder<T>
+
+/// Appends `value` to `recorder`. `T` must be shareable (`T4403`), because
+/// `recorded` hands the same value out again. Test-only (`T4401`).
+///
+/// Cost: O(n) in the size of `value`.
+pub native fn record<T>(recorder: Recorder<T>, value: T) -> Void
+
+/// Every value recorded so far, oldest first. Records from several tasks
+/// appear in the order they happened. Test-only (`T4401`).
+///
+/// Cost: O(n) in the size of the recorded values.
+pub native fn recorded<T>(recorder: Recorder<T>) -> List<T>
+
+/// A script that hands out `replies` in order. `T` must be shareable
+/// (`T4403`). Test-only (`T4401`).
+///
+/// Cost: O(n) in the size of `replies`.
+pub native fn script<T>(replies: List<T>) -> Script<T>
+
+/// Removes and returns the script's next reply. Past the last one, the test
+/// fails as an assertion: "script exhausted after N values". Test-only
+/// (`T4401`).
+///
+/// Cost: O(n) in the size of the reply.
+pub native fn next<T>(script: Script<T>) -> T
