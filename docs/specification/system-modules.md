@@ -85,8 +85,9 @@ pub fn normalize(path: Path) -> Path
   `import std/io.{Path}` names `std/path.Path`. At run time a `Path` is its
   text on both backends; equality and order are the text's.
 - Every function works on the text alone and MUST NOT consult the file system.
-- `join` MUST append `part` with exactly one `/` between the two, even when
-  `part` starts with `/`. Joining never replaces the base path, unlike Rust's
+- `join` MUST append `part`, without its leading `/`s, with exactly one `/`
+  between the two, even when `part` starts with `/`; an empty `part` leaves the
+  path as it is, and an empty path gives `part` without its leading `/`s. Joining never replaces the base path, unlike Rust's
   `Path::join` and Python's `/`: a name read from input stays inside the
   directory it was joined to, and `..` is removed only by `normalize`. This is
   Go's `filepath.Join` and Node's `path.join` without their cleaning.

@@ -310,9 +310,13 @@ pub fn temporary_directory<T, E, R>(use: fn(Path) -> T errors E needs R) -> T ne
 /// `using { files: Fs.files_within(root) }`.
 pub fn files_within(root: Path) {
   let inside = Path.normalize(test_root(root))
+  let prefix = case Path.to_text(inside) {
+    "/" -> "/"
+    text -> Text.append(text, "/")
+  }
   let check = fn(path: Path) {
     let normal = Path.normalize(path)
-    let within = normal == inside or Text.starts_with(Path.to_text(normal), Text.append(Path.to_text(inside), "/"))
+    let within = normal == inside or Text.starts_with(Path.to_text(normal), prefix)
     case within and Path.is_absolute(path) {
       True -> normal
       False -> Failure(FsError.PermissionDenied(path))

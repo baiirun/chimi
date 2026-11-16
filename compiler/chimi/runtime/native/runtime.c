@@ -9285,6 +9285,7 @@ static ChimiControl *fs_read(ChimiRuntime *runtime, int64_t handle) {
 }
 
 static ChimiControl *fs_write(ChimiRuntime *runtime, int64_t handle, const ChimiValue *bytes) {
+  if (!fs_get(handle)) return success(fs_status(FS_CLOSED, "file is closed"));
   size_t written = 0;
   while (written < bytes->as.text.length) {
     FsFile *file = fs_get(handle);
@@ -9389,11 +9390,11 @@ static ChimiControl *invoke_fs_operation(ChimiRuntime *runtime, uint32_t intrins
   switch (intrinsic) {
     case CHIMI_INTRINSIC_FS_HOST_OPEN: {
       int fd = open(path, O_RDONLY | O_CLOEXEC);
-      struct stat status;
+      struct stat status = {0};
       if (fd < 0) {
         control = success(fs_errno_status(errno));
       } else if (fstat(fd, &status) != 0 || S_ISDIR(status.st_mode) || fs_register(fd) != 0) {
-        int error = S_ISDIR(status.st_mode) ? EISDIR : errno;
+        int error = errno != 0 && !S_ISDIR(status.st_mode) ? errno : EISDIR;
         (void)close(fd);
         control = success(fs_errno_status(error));
       } else {

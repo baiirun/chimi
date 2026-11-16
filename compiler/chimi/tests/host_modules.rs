@@ -423,6 +423,7 @@ fn a_test_uses_real_files_in_a_temporary_directory_or_a_fake() {
     let source = r#"
 import std/fs as Fs
 import std/fs.{Files, FsError, Kind, WriteMode}
+import std/list as List
 import std/path as Path
 import std/path.{Path}
 import std/result as Result
@@ -462,6 +463,9 @@ test "paths outside the directory are refused" {
       Result.Err(FsError.PermissionDenied(sibling)),
     )
     Fs.create_directories(Path.join(directory, "a/b")) using { files: files }
+    let everything = Fs.files_within(Path.from("/"))
+    Test.assert(List.contains(Fs.list(Path.from("/")) using { files: everything }, "tmp"), "the root lists")
+    Test.assert_equal(Fs.list(directory) using { files: everything }, ["a"])
     Fs.write_text(Path.join(directory, "a/b/c.txt"), "deep") using { files: files }
   })
 }
