@@ -2432,6 +2432,23 @@ mod parcel_tests {
         assert_eq!(waiting, ReceiveResult::Pending);
     }
 
+    // A receiver whose task ended reads nothing, so it does not make the
+    // message receivable.
+    #[test]
+    fn a_send_carrying_its_receiver_is_refused_when_the_other_receiver_ended() {
+        let mut channels = registry();
+        let (route, _) = channels.create(PARENT, 1);
+        let (tap, _) = channels.add_receiver(PARENT, route.receiver).unwrap();
+        channels.transfer_receiver(PARENT, tap, CHILD).unwrap();
+        channels.cleanup_task(CHILD);
+        assert_eq!(
+            channels
+                .send_carrying(PARENT, route.sender, MESSAGE, &[carried_receiver(route)])
+                .map(|_| ()),
+            Err(ChannelError::OwnReceiver(route.sender.channel()))
+        );
+    }
+
     // With a second receiver of the same queue, the message can still be
     // received, so the send goes through.
     #[test]
