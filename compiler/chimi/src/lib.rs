@@ -24,6 +24,7 @@ mod operations;
 #[doc(hidden)]
 pub mod process_lab;
 pub mod project;
+mod random_source;
 mod resolution;
 mod semantic;
 pub mod source;

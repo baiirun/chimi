@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 41
+#define CHIMI_RUNTIME_ABI_VERSION 45
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -62,6 +62,7 @@ enum {
   CHIMI_TYPE_SUPERVISOR_MANAGED_SUPERVISOR,
   CHIMI_TYPE_SUPERVISOR_START_ERROR,
   CHIMI_TYPE_CLOCK,
+  CHIMI_TYPE_RANDOM,
   CHIMI_TYPE_SET,
   CHIMI_TYPE_DECIMAL,
   CHIMI_TYPE_BYTES,
@@ -269,12 +270,14 @@ enum {
   CHIMI_INTRINSIC_RESOURCE_SCOPED,
   /* Test-only; runs its operation in a cancellation scope without a deadline. */
   CHIMI_INTRINSIC_TEST_CAPTURE_DEFECT,
-  /* Test-only recorders and scripts; contiguous, in StandardFunction order. */
+  /* Test-only recorders, scripts and mailboxes; contiguous, in StandardFunction order. */
   CHIMI_INTRINSIC_TEST_RECORDER,
   CHIMI_INTRINSIC_TEST_RECORD,
   CHIMI_INTRINSIC_TEST_RECORDED,
   CHIMI_INTRINSIC_TEST_SCRIPT,
   CHIMI_INTRINSIC_TEST_NEXT,
+  CHIMI_INTRINSIC_TEST_MAILBOX,
+  CHIMI_INTRINSIC_TEST_RECEIVED,
   /* std/path: a Path is its text. */
   CHIMI_INTRINSIC_PATH_FROM,
   CHIMI_INTRINSIC_PATH_TO_TEXT,

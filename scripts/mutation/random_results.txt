@@ -1,0 +1,18 @@
+# mutation run at 05763e3382149c0b71375addda92493566367ab8
+# random_mutations.py: 14 mutants against compiler/chimi
+BASELINE ok  [testing] (19s)
+KILLED       native: the generator shifts by 16 [testing] (12s)
+KILLED       native: the runner's seed is ignored [testing] (12s)
+KILLED       native: the outcome never says a test drew [testing] (12s)
+KILLED       both: the generator rotates by 44 [testing] (14s)
+KILLED       seed: the test's name is not hashed [testing] (22s)
+KILLED       seed: the run seed is ignored [testing] (22s)
+KILLED       interpreter: the configured seed is ignored [testing] (9s)
+KILLED       report: the seed line is never written [testing] (13s)
+KILLED       Random.int: the range start is dropped [testing] (19s)
+KILLED       Random.int: an empty range draws [testing] (18s)
+KILLED       Random.float: 52 bits [testing] (18s)
+KILLED       Random.shuffle: the first item never moves [testing] (18s)
+KILLED       Random.pick: always the first item [testing] (18s)
+KILLED       bits_63: the sign is cleared off by one [testing] (18s)
+# result: every mutant killed

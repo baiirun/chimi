@@ -241,11 +241,12 @@ fn json_records_one_test_per_line_then_the_run() {
         "\"name\":\"charges once\",\"line\":11,\"outcome\":\"failed\",\"kind\":\"assertion\",",
         "\"message\":\"Test.assert_equal: the values differ\",",
         "\"location\":{\"path\":\"cases.chimi\",\"line\":12,\"column\":3},",
-        "\"actual\":\"[\\n  2500,\\n  2500,\\n]\",\"expected\":\"[\\n  2500,\\n]\",\"output\":[]"
+        "\"actual\":\"[\\n  2500,\\n  2500,\\n]\",\"expected\":\"[\\n  2500,\\n]\",\"output\":[],",
+        "\"seed\":0,"
     )));
     assert_eq!(
         lines[2],
-        "{\"schema\":\"chimi.test.v1\",\"event\":\"run_finished\",\"passed\":1,\"failed\":1}"
+        "{\"schema\":\"chimi.test.v1\",\"event\":\"run_finished\",\"passed\":1,\"failed\":1,\"seed\":0}"
     );
 }
 
@@ -818,4 +819,310 @@ fn a_recorder_reachable_from_main_fails_the_build() {
         "{}",
         run.stderr
     );
+}
+
+/// Fake process addresses: a send to a full mailbox is refused, `received`
+/// empties it, and a real process can send to the address.
+const MAILBOXES: &str = r#"import std/clock as Clock
+import std/clock.{Clock}
+import std/debug as Debug
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox, SendError}
+import std/supervisor as Supervisor
+import std/test as Test
+
+enum Message {
+  Ping(number: Int)
+  Note(text: Text, tags: List<Text>)
+}
+
+fn send_all(to: Process.Address<Message>, count: Int) -> Int {
+  loop state = (1, 0) {
+    let (index, refused) = state
+    case index > count {
+      True -> break refused
+      False -> case Process.send(to, Message.Ping(index)) {
+        Success(_) -> (index + 1, refused)
+        Failure(error) -> case error {
+          SendError.Full(Message.Ping(number)) -> (index + 1, refused + number)
+          SendError.Full(_) -> (index + 1, refused + 1000)
+          SendError.Unavailable(_) -> (index + 1, refused + 100)
+        }
+      }
+    }
+  }
+}
+
+fn reporter(to: Process.Address<Message>) -> fn(Inbox<Message>) -> Void {
+  fn(inbox: Inbox<Message>) -> Void {
+    case Process.send(to, Message.Ping(7)) {
+      Success(_) -> Void
+      Failure(_) -> Void
+    }
+  }
+}
+
+fn pause() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(10))
+}
+
+test "a full mailbox refuses and received frees it" {
+  let (address, mailbox) = Test.mailbox(2)
+  Test.assert_equal(send_all(address, 3), 3)
+  Test.assert_equal(Test.received(mailbox), [Message.Ping(1), Message.Ping(2)])
+  Test.assert_equal(Test.received(mailbox), [])
+  Test.assert_equal(send_all(address, 2), 0)
+  Test.assert_equal(Test.received(mailbox), [Message.Ping(1), Message.Ping(2)])
+  let note = Message.Note("held", ["a", "b"])
+  let _ = Process.send(address, note)
+  Test.assert_equal(Test.received(mailbox), [note])
+  Test.assert_equal(Debug.render(address), "<address test>")
+  Test.assert_equal(Debug.render(mailbox), "<Mailbox>")
+}
+
+test "a process sends to a test address" {
+  let (address, mailbox) = Test.mailbox(4)
+  let root = Supervisor.start(Supervisor.policy([], 2, Supervisor.restarts(0, Duration.seconds(1))))
+  let spec = Process.spec(reporter(address), 1, Duration.seconds(1))
+  let _ = Supervisor.start_process(root, spec, Supervisor.Restart.Never)
+  pause()
+  Test.assert_equal(Test.received(mailbox), [Message.Ping(7)])
+}
+
+test "a capacity below one defects" {
+  let (_, mailbox) = Test.mailbox(0)
+  Test.assert_equal(Test.received(mailbox), [])
+}
+"#;
+
+/// Native only, as processes are.
+#[test]
+fn a_test_mailbox_holds_what_is_sent_to_its_address() {
+    let run = chimi_test("mailboxes", MAILBOXES, &[]);
+    assert_eq!(run.status, Some(1), "{}{}", run.stdout, run.stderr);
+    assert!(run.stdout.contains("test main \"a full mailbox refuses and received frees it\" ... ok"), "{}", run.stdout);
+    assert!(run.stdout.contains("test main \"a process sends to a test address\" ... ok"), "{}", run.stdout);
+    assert!(
+        run.stdout.contains("Test.mailbox: the capacity must be at least 1, not 0"),
+        "{}",
+        run.stdout
+    );
+    assert!(run.stdout.contains("2 passed, 1 failed"), "{}", run.stdout);
+}
+
+#[test]
+fn a_test_mailbox_refuses_a_receiver_and_needs_the_native_backend() {
+    let source = concat!(
+        "import std/channel as Channel\n",
+        "import std/channel.{Receiver}\n",
+        "import std/process as Process\n",
+        "import std/test as Test\n",
+        "\n",
+        "enum Message {\n",
+        "  Hand(replies: List<Receiver<Int>>)\n",
+        "}\n",
+        "\n",
+        "test \"hands over a receiver\" {\n",
+        "  let (address, _) = Test.mailbox(1)\n",
+        "  let pair = Channel.bounded(1)\n",
+        "  case Process.send(address, Message.Hand([pair.receiver])) {\n",
+        "    Success(_) -> Void\n",
+        "    Failure(_) -> Void\n",
+        "  }\n",
+        "}\n",
+    );
+    let run = chimi_test("mailbox-receiver", source, &[]);
+    assert_eq!(run.status, Some(1), "{}{}", run.stdout, run.stderr);
+    assert!(
+        run.stdout.contains(
+            "defect at cases.chimi:13:8:\n    Process.send: a test mailbox cannot hold a message with a Receiver or Completion"
+        ),
+        "{}",
+        run.stdout
+    );
+    let run = chimi_test("mailbox-interpreter", source, &["--backend=interpreter"]);
+    assert_eq!(run.status, Some(1), "{}{}", run.stdout, run.stderr);
+    assert!(
+        run.stdout.contains(
+            "defect at cases.chimi:11:22:\n    Test.mailbox requires the native backend, as processes do"
+        ),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn a_mailbox_is_not_an_inbox_and_main_cannot_reach_one() {
+    let source = concat!(
+        "import std/process as Process\n",
+        "import std/process.{Inbox}\n",
+        "import std/test as Test\n",
+        "\n",
+        "enum Message {\n",
+        "  Ping\n",
+        "}\n",
+        "\n",
+        "fn take(inbox: Inbox<Message>) -> Message {\n",
+        "  Process.receive(inbox)\n",
+        "}\n",
+        "\n",
+        "test \"receives from a mailbox\" {\n",
+        "  let (_, mailbox) = Test.mailbox(1)\n",
+        "  let message = take(mailbox)\n",
+        "  Void\n",
+        "}\n",
+    );
+    let run = chimi_test("mailbox-inbox", source, &[]);
+    assert_eq!(run.status, Some(2), "{}", run.stdout);
+    assert!(
+        run.stderr.contains("cases.chimi:15:22: error[T4203] type: call argument has type `Mailbox<_>`, expected `Inbox<Message>`"),
+        "{}",
+        run.stderr
+    );
+    let source = concat!(
+        "import std/test as Test\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  let (_, mailbox) = Test.mailbox(1)\n",
+        "  0\n",
+        "}\n",
+    );
+    let run = chimi("mailbox-main", source, &["run", "cases.chimi"]);
+    assert_eq!(run.status, Some(1), "{}", run.stdout);
+    assert!(
+        run.stderr.contains("error[T4401] execution-setup: `Test.mailbox` is test-only"),
+        "{}",
+        run.stderr
+    );
+}
+
+/// `draws` prints one of each draw; its numbers come from the run seed and its
+/// identity, so the test before it and a filter must not change them.
+const RANDOM: &str = concat!(
+    "import std/debug as Debug\n",
+    "import std/io.{Console}\n",
+    "import std/random as Random\n",
+    "import std/test as Test\n",
+    "\n",
+    "fn show(line: Text) -> Void needs { console: Console } {\n",
+    "  console.write_line(line)\n",
+    "}\n",
+    "\n",
+    "test \"draws first\" {\n",
+    "  show(Debug.render(Random.int(0..1000)))\n",
+    "}\n",
+    "\n",
+    "test \"draws\" {\n",
+    "  show(Debug.render([Random.int(1..=6), Random.int(1..=6), Random.int(-5..5)]))\n",
+    "  show(Debug.render(Random.float()))\n",
+    "  show(Debug.render(Random.pick([\"a\", \"b\", \"c\"])))\n",
+    "  show(Debug.render(Random.shuffle([1, 2, 3, 4, 5])))\n",
+    "}\n",
+    "\n",
+    "test \"fails after a draw\" {\n",
+    "  Test.assert_equal(Random.int(1..=6), 0)\n",
+    "}\n",
+    "\n",
+    "test \"fails without a draw\" {\n",
+    "  Test.assert_equal(1, 0)\n",
+    "}\n",
+);
+
+/// The draws of `draws` at run seed 0, which an independent model of
+/// xoshiro256** seeded through SplitMix64 reproduces.
+const DRAWS_AT_SEED_0: &str = concat!(
+    "test main \"draws\" ... ok\n",
+    "  output:\n",
+    "    [4, 6, 1]\n",
+    "    0.2469708770566883\n",
+    "    Some(\"a\")\n",
+    "    [1, 2, 5, 4, 3]\n",
+);
+
+#[test]
+fn a_test_draws_the_same_numbers_alone_and_among_others_on_both_backends() {
+    let all = both_backends("random-all", RANDOM, &["--show-output"]);
+    assert!(all.stdout.contains(DRAWS_AT_SEED_0), "{}", all.stdout);
+    let alone = both_backends("random-alone", RANDOM, &["--show-output", "--filter=main \"draws\""]);
+    assert_eq!(alone.stdout, format!("{DRAWS_AT_SEED_0}\n1 passed, 0 failed\n"));
+    let reseeded = both_backends("random-reseeded", RANDOM, &["--show-output", "--seed=1"]);
+    assert!(!reseeded.stdout.contains(DRAWS_AT_SEED_0), "{}", reseeded.stdout);
+}
+
+#[test]
+fn a_failure_names_the_seed_only_when_the_test_drew_numbers() {
+    let run = both_backends("random-seed-report", RANDOM, &["--seed=7", "--filter=fails"]);
+    assert_eq!(run.status, Some(1), "{}", run.stderr);
+    let after_draw = run.stdout.split("test main \"fails without a draw\"").collect::<Vec<_>>();
+    assert!(
+        after_draw[0].contains("  random seed: 7; replay with --seed=7\n"),
+        "{}",
+        run.stdout
+    );
+    assert!(!after_draw[1].contains("random seed"), "{}", run.stdout);
+    let json = both_backends("random-seed-json", RANDOM, &["--seed=7", "--json"]);
+    assert!(json.stdout.lines().all(|line| line.contains("\"seed\":7")), "{}", json.stdout);
+}
+
+#[test]
+fn a_provided_random_source_replaces_the_seeded_one_and_an_empty_range_defects() {
+    let source = concat!(
+        "import std/random as Random\n",
+        "import std/test as Test\n",
+        "\n",
+        "test \"uses the provided source\" {\n",
+        "  let fixed = { next_int: fn() -> Int { -9223372036854775805 } }\n",
+        "  let draws = [Random.int(0..10), Random.int(10..=11)] using { random: fixed }\n",
+        "  Test.assert_equal(draws, [3, 11])\n",
+        "  let zero = { next_int: fn() -> Int { 0 } }\n",
+        "  Test.assert_equal(Random.float() using { random: zero }, 0.0)\n",
+        "  Test.assert_equal(Random.pick([]) using { random: zero }, None)\n",
+        "  Test.assert_equal(Random.shuffle([1, 2]) using { random: zero }, [2, 1])\n",
+        "  let lowest = { next_int: fn() -> Int { 1024 } }\n",
+        "  Test.assert_equal(Random.float() using { random: lowest }, 0.00000000000000011102230246251565)\n",
+        "}\n",
+        "\n",
+        "test \"defects on an empty range\" {\n",
+        "  let roll = Random.int(3..3)\n",
+        "  Void\n",
+        "}\n",
+    );
+    let run = both_backends("random-provided", source, &[]);
+    assert_eq!(run.status, Some(1), "{}", run.stderr);
+    assert!(run.stdout.contains("test main \"uses the provided source\" ... ok\n"), "{}", run.stdout);
+    assert!(run.stdout.contains("    Random.int: the range 3..3 is empty\n"), "{}", run.stdout);
+}
+
+#[test]
+fn main_gets_a_random_source_only_under_the_name_random() {
+    let source = concat!(
+        "import std/debug as Debug\n",
+        "import std/io.{Console}\n",
+        "import std/random as Random\n",
+        "\n",
+        "pub fn main() -> Int needs { console: Console } {\n",
+        "  let roll = Random.int(1..=6)\n",
+        "  console.write_line(Debug.render(roll >= 1 and roll <= 6))\n",
+        "  0\n",
+        "}\n",
+    );
+    let scratch = scratch_directory("random-main");
+    std::fs::write(scratch.join("cases.chimi"), source).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", "cases.chimi", "-o", "program"])
+        .output()
+        .expect("run chimi build");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let program = Command::new(scratch.join("program")).output().expect("run the program");
+    assert_eq!(String::from_utf8_lossy(&program.stdout), "True\n");
+    std::fs::remove_dir_all(scratch).unwrap();
+    let renamed = source.replace(
+        "pub fn main() -> Int needs { console: Console } {\n",
+        "import std/random.{Random}\n\nfn roll() -> Int needs { dice: Random } {\n  dice.next_int()\n}\n\npub fn main() -> Int needs { console: Console } {\n  let rolled = roll()\n",
+    );
+    let run = chimi("random-main-renamed", &renamed, &["build", "cases.chimi", "-o", "program"]);
+    assert_eq!(run.status, Some(1), "{}", run.stdout);
+    assert!(run.stderr.contains("error[E5002]"), "{}", run.stderr);
 }

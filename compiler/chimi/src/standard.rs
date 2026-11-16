@@ -109,6 +109,9 @@ pub(crate) enum StandardType {
     SupervisorStartError,
     /// `std/clock.Clock`: the time provider the runner binds to a root `clock` need.
     Clock,
+    /// `std/random.Random`: the random source the runner binds to a root
+    /// `random` need; declared in Chimi source, unlike `Clock`.
+    Random,
     // `native type`s that only the embedded standard tree declares
     // (`operations.rs`); no built-in module synthesizes them.
     /// `std/set.Set<T>`.
@@ -156,6 +159,9 @@ pub(crate) enum StandardType {
     /// logs the test execution owns (testing.md, "Recorders and scripted fakes").
     TestRecorder,
     TestScript,
+    /// `std/test.Mailbox<M>`: the receiving end of a fake process address
+    /// (testing.md, "Fake process addresses").
+    TestMailbox,
     /// `std/env.Environment`: the capability to read environment variables and
     /// the working directory; the runner closes `main`'s `environment` need.
     Environment,
@@ -223,6 +229,7 @@ impl StandardType {
             Self::SupervisorManagedSupervisor => "ManagedSupervisor",
             Self::SupervisorStartError => "StartError",
             Self::Clock => "Clock",
+            Self::Random => "Random",
             Self::Set => "Set",
             Self::Decimal => "Decimal",
             Self::Bytes => "Bytes",
@@ -240,6 +247,7 @@ impl StandardType {
             Self::Result => "Result",
             Self::TestRecorder => "Recorder",
             Self::TestScript => "Script",
+            Self::TestMailbox => "Mailbox",
             Self::Environment => "Environment",
         }
     }
@@ -248,7 +256,11 @@ impl StandardType {
     /// Its private representation grants neither silently.
     pub(crate) const fn properties(self) -> StandardProperties {
         match self {
-            Self::Console | Self::FileSystem | Self::Clock | Self::Environment => {
+            Self::Console
+            | Self::FileSystem
+            | Self::Clock
+            | Self::Random
+            | Self::Environment => {
                 StandardProperties::Opaque("a provider")
             }
             Self::ProcessAddress
@@ -267,6 +279,7 @@ impl StandardType {
             Self::Task => StandardProperties::Opaque("a `Task` capability"),
             Self::TestRecorder => StandardProperties::Opaque("a `Test.Recorder`"),
             Self::TestScript => StandardProperties::Opaque("a `Test.Script`"),
+            Self::TestMailbox => StandardProperties::Opaque("a `Test.Mailbox`"),
             Self::SelectEvent => StandardProperties::Opaque("a `Select.Event`"),
             Self::ChannelSender
             | Self::ChannelReceiver
@@ -583,6 +596,8 @@ pub(crate) enum StandardFunction {
     TestRecorded,
     TestScript,
     TestNext,
+    TestMailbox,
+    TestReceived,
     // `std/path`: a `Path` is its text at run time on both backends.
     PathFrom,
     PathToText,
@@ -887,7 +902,9 @@ impl StandardFunction {
             | Self::TestRecord
             | Self::TestRecorded
             | Self::TestScript
-            | Self::TestNext => None,
+            | Self::TestNext
+            | Self::TestMailbox
+            | Self::TestReceived => None,
             Self::PathFrom | Self::PathToText => None,
             Self::EnvHostVariables | Self::EnvHostCurrentDirectory => None,
         }
@@ -1076,6 +1093,8 @@ impl StandardFunction {
             Self::TestRecorded => "recorded",
             Self::TestScript => "script",
             Self::TestNext => "next",
+            Self::TestMailbox => "mailbox",
+            Self::TestReceived => "received",
             Self::PathFrom => "from",
             Self::PathToText => "to_text",
             Self::EnvHostVariables => "host_variables",
@@ -1470,6 +1489,7 @@ impl StandardConstructor {
             | StandardType::SupervisorManagedProcess
             | StandardType::SupervisorManagedSupervisor
             | StandardType::Clock
+            | StandardType::Random
             | StandardType::Environment
             | StandardType::Instant
             | StandardType::Timestamp
@@ -1490,6 +1510,7 @@ impl StandardConstructor {
             | StandardType::Cause
             | StandardType::TestRecorder
             | StandardType::TestScript
+            | StandardType::TestMailbox
             | StandardType::JsonValue
             | StandardType::JsonNumber
             | StandardType::DecodeError

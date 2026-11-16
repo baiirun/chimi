@@ -59,7 +59,9 @@ pub(crate) enum RuntimeIdentity {
     Constructor(StandardConstructor),
     /// A `native type`: opaque in source, represented by the runtime.
     NativeType(StandardType),
-    /// An interface the runner may provide (`RUNNER_PROVIDERS`).
+    /// An `interface` written in source that the runner provides at the root,
+    /// as `std/random.Random`, or that a runner provider builds
+    /// (`RUNNER_PROVIDERS`), as `std/env.Environment`.
     Interface(StandardType),
 }
 
@@ -293,6 +295,8 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     test_only("std/test.recorded", 1, StandardFunction::TestRecorded),
     test_only("std/test.script", 1, StandardFunction::TestScript),
     test_only("std/test.next", 1, StandardFunction::TestNext),
+    test_only("std/test.mailbox", 1, StandardFunction::TestMailbox),
+    test_only("std/test.received", 1, StandardFunction::TestReceived),
     pure("std/path.from", 1, StandardFunction::PathFrom),
     pure("std/path.to_text", 1, StandardFunction::PathToText),
     host("std/env.host_variables", 0, StandardFunction::EnvHostVariables),
@@ -343,6 +347,7 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     known_constructor("std/option.Option.None", StandardConstructor::OptionNone),
     known_constructor("std/option.Option.Some", StandardConstructor::OptionSome),
     known_type("std/order.Ordering", StandardType::Ordering),
+    known_interface("std/random.Random", StandardType::Random),
     known_constructor("std/order.Ordering.Less", StandardConstructor::OrderingLess),
     known_constructor(
         "std/order.Ordering.Equal",
@@ -378,6 +383,7 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     known_constructor("std/result.Result.Err", StandardConstructor::ResultErr),
     native_type("std/test.Recorder", StandardType::TestRecorder),
     native_type("std/test.Script", StandardType::TestScript),
+    native_type("std/test.Mailbox", StandardType::TestMailbox),
     known_type("std/json.Value", StandardType::JsonValue),
     known_constructor("std/json.Value.Null", StandardConstructor::JsonNull),
     known_constructor("std/json.Value.Boolean", StandardConstructor::JsonBoolean),
