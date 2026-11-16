@@ -26,6 +26,8 @@ const USAGE: &str = concat!(
 enum Input {
     File { path: PathBuf },
     Project { root: PathBuf, entry: String },
+    /// Every module under `root` (`chimi test <directory>` only).
+    Directory { root: PathBuf },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -158,8 +160,11 @@ fn parse_test_command(arguments: impl Iterator<Item = OsString>) -> Result<Comma
         } else if input.is_some() {
             return usage("test takes one source path or project root");
         } else {
-            input = Some(Input::File {
-                path: PathBuf::from(argument),
+            let path = PathBuf::from(argument);
+            input = Some(if path.is_dir() {
+                Input::Directory { root: path }
+            } else {
+                Input::File { path }
             });
         }
     }
@@ -686,6 +691,15 @@ fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode
 fn default_executable_path(input: &Input) -> PathBuf {
     let name = match input {
         Input::File { path } => path.file_stem().and_then(|name| name.to_str()),
+        Input::Directory { root } => {
+            let root = root.canonicalize().unwrap_or_else(|_| root.clone());
+            return PathBuf::from(
+                root.file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("chimi-program"),
+            );
+        }
         Input::Project { entry, .. } => entry.rsplit('/').next(),
     }
     .filter(|name| !name.is_empty())
@@ -705,6 +719,7 @@ fn load_project(input: Input, standard: &StandardTree) -> Option<LoadedProject> 
     let loaded = match input {
         Input::File { path } => LoadedProject::single_file(path, standard),
         Input::Project { root, entry } => LoadedProject::load(root, entry, standard),
+        Input::Directory { root } => LoadedProject::load_directory(root, standard),
     };
     match loaded {
         Ok(project) => Some(project),

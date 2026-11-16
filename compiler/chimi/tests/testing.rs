@@ -1126,3 +1126,105 @@ fn main_gets_a_random_source_only_under_the_name_random() {
     assert_eq!(run.status, Some(1), "{}", run.stdout);
     assert!(run.stderr.contains("error[E5002]"), "{}", run.stderr);
 }
+
+/// `chimi test <directory>` runs every module under it, reported in module path
+/// order, and skips hidden directories and `target`, where builds write.
+#[test]
+fn a_directory_input_runs_every_module_under_it() {
+    let scratch = scratch_directory("directory-input");
+    let write = |path: &str, text: &str| {
+        let path = scratch.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        "app/shapes.chimi",
+        "pub fn area(width: Int, height: Int) -> Int {\n  width * height\n}\n",
+    );
+    write(
+        "app/shapes_test.chimi",
+        concat!(
+            "import app/shapes as Shapes\n",
+            "import std/test as Test\n",
+            "\n",
+            "test \"a rectangle\" {\n",
+            "  Test.assert_equal(Shapes.area(2, 3), 6)\n",
+            "}\n",
+        ),
+    );
+    write(
+        "lib/text_test.chimi",
+        concat!(
+            "import std/test as Test\n",
+            "\n",
+            "test \"adds\" {\n",
+            "  Test.assert_equal(1 + 1, 2)\n",
+            "}\n",
+        ),
+    );
+    write("aardvark.chimi", "import std/test as Test\n\ntest \"first\" {\n  Test.assert(True, \"holds\")\n}\n");
+    write(".hidden/broken.chimi", "this is not chimi\n");
+    write("target/broken.chimi", "this is not chimi\n");
+    write(".broken.chimi", "this is not chimi\n");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(scratch.join("app"), scratch.join("alias")).unwrap();
+        std::os::unix::fs::symlink(scratch.join("aardvark.chimi"), scratch.join("link.chimi")).unwrap();
+    }
+    for backend in ["--backend=native", "--backend=interpreter"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .args(["test", ".", backend])
+            .output()
+            .expect("run chimi");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{backend}: {stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            stdout,
+            concat!(
+                "test aardvark \"first\" ... ok\n",
+                "test app/shapes_test \"a rectangle\" ... ok\n",
+                "test lib/text_test \"adds\" ... ok\n",
+                "\n",
+                "3 passed, 0 failed\n",
+            ),
+            "{backend}"
+        );
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn a_directory_without_modules_or_with_a_bad_name_fails_the_run() {
+    let scratch = scratch_directory("directory-errors");
+    std::fs::create_dir_all(scratch.join("empty/.hidden")).unwrap();
+    std::fs::write(scratch.join("empty/.hidden/a.chimi"), "").unwrap();
+    std::fs::create_dir_all(scratch.join("named")).unwrap();
+    std::fs::write(scratch.join("named/my-test.chimi"), "").unwrap();
+    let run = |directory: &str| {
+        Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .args(["test", directory])
+            .output()
+            .expect("run chimi")
+    };
+    let empty = run("empty");
+    assert_eq!(empty.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&empty.stderr),
+        "chimi: no .chimi modules under empty\n"
+    );
+    let named = run("named/");
+    assert_eq!(named.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&named.stderr).contains("my-test"),
+        "{}",
+        String::from_utf8_lossy(&named.stderr)
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
