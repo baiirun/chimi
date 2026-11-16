@@ -432,6 +432,7 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     binding("std/exec.native_wait", 1, "exec", "chimi_exec_wait", false),
     binding("std/exec.native_terminate", 1, "exec", "chimi_exec_terminate", false),
     binding("std/exec.native_kill", 1, "exec", "chimi_exec_kill", false),
+    binding("std/exec.native_stop", 2, "exec", "chimi_exec_stop", false),
     binding("std/exec.native_release", 1, "exec", "chimi_exec_release", false),
     binding("std/exec.native_read", 1, "exec", "chimi_exec_read", false),
     binding("std/exec.native_write", 2, "exec", "chimi_exec_write", false),

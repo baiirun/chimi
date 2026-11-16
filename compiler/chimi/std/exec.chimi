@@ -33,6 +33,8 @@
 /// child runs in real time.
 
 import std/debug as Debug
+import std/duration as Duration
+import std/duration.{Duration}
 import std/list as List
 import std/map as Map
 import std/map.{Map}
@@ -69,6 +71,7 @@ pub struct Command {
   stdin: Stdio,
   stdout: Stdio,
   stderr: Stdio,
+  stop_within: Duration,
 }
 
 /// Where a child's standard stream goes.
@@ -129,7 +132,7 @@ pub enum ExecError {
 ///
 /// Cost: O(1).
 pub fn command(program: Text, arguments: List<Text>) -> Command {
-  Command(program, arguments, [], True, None, Stdio.Inherit, Stdio.Inherit, Stdio.Inherit)
+  Command(program, arguments, [], True, None, Stdio.Inherit, Stdio.Inherit, Stdio.Inherit, Duration.seconds(5))
 }
 
 /// The command with the environment variable `name` set to `value`, over
@@ -147,6 +150,7 @@ pub fn variable(command: Command, name: Text, value: Text) -> Command {
     command.stdin,
     command.stdout,
     command.stderr,
+    command.stop_within,
   )
 }
 
@@ -165,6 +169,7 @@ pub fn environment(command: Command, variables: Map<Text, Text>) -> Command {
     command.stdin,
     command.stdout,
     command.stderr,
+    command.stop_within,
   )
 }
 
@@ -182,6 +187,7 @@ pub fn directory(command: Command, path: Path) -> Command {
     command.stdin,
     command.stdout,
     command.stderr,
+    command.stop_within,
   )
 }
 
@@ -198,6 +204,7 @@ pub fn stdin(command: Command, stdio: Stdio) -> Command {
     stdio,
     command.stdout,
     command.stderr,
+    command.stop_within,
   )
 }
 
@@ -214,6 +221,7 @@ pub fn stdout(command: Command, stdio: Stdio) -> Command {
     command.stdin,
     stdio,
     command.stderr,
+    command.stop_within,
   )
 }
 
@@ -230,6 +238,33 @@ pub fn stderr(command: Command, stdio: Stdio) -> Command {
     command.stdin,
     command.stdout,
     stdio,
+    command.stop_within,
+  )
+}
+
+/// The command with `duration` as the time its child has to exit after
+/// SIGTERM when its `Exec.start` ends while it runs, before SIGKILL. It is
+/// 5 seconds unless set; zero sends SIGKILL at once. It is real time, as the
+/// child runs in, under the virtual clock too. A time under a millisecond
+/// counts as zero.
+///
+/// Defects when: `duration` is negative.
+/// Cost: O(1).
+pub fn stop_within(command: Command, duration: Duration) -> Command {
+  case duration < Duration.zero {
+    True -> Debug.crash("Exec: stop_within must not be negative, got ${Duration.to_text(duration)}")
+    False -> Void
+  }
+  Command(
+    command.program,
+    command.arguments,
+    command.variables,
+    command.inherits_environment,
+    command.directory,
+    command.stdin,
+    command.stdout,
+    command.stderr,
+    duration,
   )
 }
 
@@ -250,9 +285,11 @@ pub fn arguments(command: Command) -> List<Text> {
 // 4. Running commands.
 
 /// Starts `command`, hands the running child to `use`, and returns what `use`
-/// returns. When `use` returns or fails, a child still running is killed and
-/// reaped. A child's own children are not: a program that starts others
-/// and leaves them running leaves them to outlive it.
+/// returns. When `use` returns or fails, a child still running is asked to
+/// stop with SIGTERM, given the command's `Exec.stop_within` time (5 seconds)
+/// to exit, then killed with SIGKILL, and reaped; other tasks run meanwhile.
+/// A child's own children are not stopped: a program that starts others and
+/// leaves them running leaves them to outlive it.
 ///
 /// Calls: `use` once, with the child, unless the command cannot start.
 /// Fails with: `ExecError.NotFound`, `PermissionDenied`, `InvalidDirectory`
@@ -580,10 +617,13 @@ fn host_start(command: Command) -> Child {
     fn() { native_terminate(process) },
     fn() { native_kill(process) },
     fn() {
-      native_release(process)
+      // Closed first: input's end is the gentlest stop, and a child flushing
+      // output on SIGTERM must not wait on a reader that is gone.
       close_pipe(input_pipe)
       close_pipe(output_pipe)
       close_pipe(errors_pipe)
+      native_stop(process, Duration.to_milliseconds(command.stop_within))
+      native_release(process)
     },
     Option.map(input_pipe, fn(pipe) {
       fn(_program) { host_writer(command, pipe) }
@@ -618,6 +658,7 @@ native fn native_close_pipe(pipe: Pipe) -> Void
 native fn native_wait(process: Process) -> Result<(Int, Int), (Int, Text)>
 native fn native_terminate(process: Process) -> Void
 native fn native_kill(process: Process) -> Void
+native fn native_stop(process: Process, milliseconds: Int) -> Void
 native fn native_release(process: Process) -> Void
 native fn native_allow_real_commands() -> Void
 
