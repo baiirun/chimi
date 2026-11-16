@@ -25,7 +25,7 @@ MUTATIONS = [
     exec_test("the parent keeps the child's ends", EXEC, [
         ("    if (ends[fd][1] >= 0) close(ends[fd][1]);\n", "")]),
     exec_test("the parent's end blocks", EXEC, [
-        ("fcntl(ends[0], F_SETFL, flags | O_NONBLOCK) != 0", "fcntl(ends[0], F_SETFL, flags) != 0")]),
+        ("fcntl(ends[0], F_SETFL, flags | O_NONBLOCK) == 0", "fcntl(ends[0], F_SETFL, flags) == 0")]),
     exec_test("a write to a gone reader raises SIGPIPE", EXEC, [
         ("  pthread_sigmask(SIG_BLOCK, &pipe_signal, &previous);\n", "  pthread_sigmask(SIG_BLOCK, NULL, &previous);\n")]),
     exec_test("a broken pipe is Failed", EXEC, [

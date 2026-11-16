@@ -95,7 +95,6 @@ pub struct Child {
   error_output: Option<fn(Text) -> Reader<ExecError>>,
 }
 
-
 /// How a child ended.
 pub enum Status {
   /// It exited with this code; 0 means success by convention.
@@ -286,7 +285,7 @@ pub fn run(command: Command) -> Status needs {
 /// Fails with: `ExecError.NotFound`, `PermissionDenied`, `InvalidDirectory`
 /// or `Failed` when the command cannot start or a read fails.
 /// Cost: O(n) in the bytes written, all held in memory.
-pub fn capture(command: Command) -> { status: Status, output: Bytes, error_output: Bytes } needs {
+pub fn capture(command: Command) -> { status: Status, output: Bytes, error_output: Bytes }needs {
   commands: Commands
 } {
   let piped = stderr(stdout(stdin(command, Stdio.Null), Stdio.Pipe), Stdio.Pipe)
@@ -294,7 +293,9 @@ pub fn capture(command: Command) -> { status: Status, output: Bytes, error_outpu
     let written = read_in_task(output(child))
     let failed = read_in_task(error_output(child))
     let status = wait(child)
-    { status: status, output: Task.result(written), error_output: Task.result(failed) }
+    {
+      status: status, output: Task.result(written), error_output: Task.result(failed)
+    }
   })
 }
 
