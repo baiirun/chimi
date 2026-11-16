@@ -1144,7 +1144,7 @@ mod tests {
         let fixture = Fixture::new("inlay");
         let app = fixture.write(
             "app.chimi",
-            "pub fn main() -> Int {\n  let items = [1, 2]\n  let total: Int = 3\n  let pair = (total, \"x\")\n  let broken = missing()\n  let wrapped = [missing()]\n  let open = fn(a) { a }\n  let generic = same\n  let double = fn(a: Int) { a * 2 }\n  total\n}\n\nfn same<T>(value: T) -> T { value }\n",
+            "pub fn main() -> Int {\n  let items = [1, 2]\n  let total: Int = 3\n  let pair = (total, \"x\")\n  let broken = missing()\n  let wrapped = [missing()]\n  let open = fn(a) { 1 }\n  let generic = same\n  let double = fn(a: Int) { a * 2 }\n  total\n}\n\nfn same<T>(value: T) -> T { value }\n",
         );
         let project = ProjectConfig::new(fixture.root(), "app").unwrap();
         let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
@@ -1209,7 +1209,7 @@ mod tests {
         // A type parameter shares its function's id, not its doc.
         assert!(
             workspace
-                .hover(&lib, at(5, 12))
+                .hover(&lib, at(5, 22))
                 .is_none_or(|hover| !hover.markdown.contains("Adds one."))
         );
         let declared = workspace.hover(&lib, at(1, 8));
