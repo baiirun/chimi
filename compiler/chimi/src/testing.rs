@@ -737,7 +737,7 @@ fn render_failure(output: &mut String, failure: &TestFailure) {
             }
         } else if actual.contains('\n') || expected.contains('\n') {
             output.push_str("  diff:\n");
-            indent(output, &line_diff(expected, actual), 4);
+            indent(output, &line_diff(actual, expected), 4);
         }
     }
 }
@@ -748,12 +748,13 @@ fn indent(output: &mut String, text: &str, width: usize) {
     }
 }
 
-/// A line diff from `expected` to `actual`: `-` for a line only `expected` has,
-/// `+` for one only `actual` has, two spaces for a shared line. It aligns the
-/// longest common subsequence of lines, so equal lines stay unmarked.
-fn line_diff(expected: &str, actual: &str) -> String {
-    let left = expected.lines().collect::<Vec<_>>();
-    let right = actual.lines().collect::<Vec<_>>();
+/// A line diff of `actual` against `expected`, as testing.md's example shows:
+/// `-` for a line only `actual` has, `+` for one only `expected` has, two
+/// spaces for a shared line. It aligns the longest common subsequence of
+/// lines, so equal lines stay unmarked.
+fn line_diff(actual: &str, expected: &str) -> String {
+    let left = actual.lines().collect::<Vec<_>>();
+    let right = expected.lines().collect::<Vec<_>>();
     let mut lengths = vec![vec![0_usize; right.len() + 1]; left.len() + 1];
     for i in (0..left.len()).rev() {
         for j in (0..right.len()).rev() {
@@ -873,8 +874,8 @@ mod tests {
     #[test]
     fn line_diff_marks_only_the_lines_that_differ() {
         assert_eq!(
-            line_diff("[\n  2500,\n]", "[\n  2500,\n  2500,\n]"),
-            "  [\n    2500,\n+   2500,\n  ]\n"
+            line_diff("[\n  2500,\n  2500,\n]", "[\n  2500,\n]"),
+            "  [\n    2500,\n-   2500,\n  ]\n"
         );
         assert_eq!(line_diff("a\nb", "a\nc"), "  a\n- b\n+ c\n");
     }
