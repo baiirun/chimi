@@ -1,0 +1,344 @@
+/// Byte streams: one shape for reading and writing bytes in bounded chunks,
+/// which files, pipes, sockets, and bodies all hand out, so that copying,
+/// limits, and closing are written once.
+///
+/// A `Reader<E>` gives chunks until it ends; a `Writer<E>` takes chunks until it
+/// is closed. `E` is what their operations fail with. Streams between tasks are
+/// built on a bounded channel, so a producer waits while the reader is behind
+/// (backpressure), and stopping a reader makes the producer's next write fail
+/// with `StreamError.Closed`.
+///
+/// ```text
+/// let body = Stream.produce(4, fn(out) {
+///   Stream.write(out, Bytes.from_text("hello, "))
+///   Stream.write(out, Bytes.from_text("world"))
+/// })
+/// Stream.read_all(body, 1024)
+/// ```
+///
+/// Tie a stream to the code that uses it with `Resource.scoped`, releasing it
+/// with `Stream.stop` (a reader) or `Stream.close` (a writer).
+
+import std/bytes as Bytes
+import std/bytes.{Bytes}
+import std/channel as Channel
+import std/channel.{ChannelError, Receive, SendError}
+import std/list as List
+import std/result as Result
+import std/task as Task
+
+// 1. Public types.
+
+/// Why a stream operation failed.
+pub enum StreamError {
+  /// The other side is gone: a write after the reader stopped, or after the
+  /// writer was closed.
+  Closed
+  /// The stream ended early, so the chunks may be incomplete: the writer's
+  /// task ended without closing it, or the reader was stopped.
+  Aborted
+  /// `read_all` found more than `limit` bytes.
+  TooLarge(limit: Int)
+}
+
+/// Gives chunks of bytes until it ends. Build one with `Stream.reader`,
+/// `Stream.pipe`, `Stream.produce`, or `Stream.from_bytes`.
+pub struct Reader<E> {
+  pull: fn(Pull) -> Option<Bytes> errors E,
+}
+
+/// Takes chunks of bytes until it is closed. Build one with `Stream.writer` or
+/// `Stream.pipe`.
+pub struct Writer<E> {
+  push: fn(Push) -> Void errors E,
+}
+
+// One function per stream keeps the state it closes over (a channel end, which
+// only one closure may hold) in one place.
+enum Pull {
+  Next
+  Stop
+}
+
+enum Push {
+  Chunk(bytes: Bytes)
+  Finish
+}
+
+// What a produced stream's channel carries: the body's failure travels behind
+// its chunks, so the reader sees every chunk written before it.
+enum Item<E> {
+  Data(bytes: Bytes)
+  Failed(error: E)
+}
+
+// 2. Constructors.
+
+/// A reader whose chunks come from `next`, which returns `None` once the
+/// stream has ended, and which `stop` ends early. For host streams and fakes.
+/// An empty chunk from `next` is skipped. `next` and `stop` keep the rest of
+/// the reading rules themselves: `stop` may be called again, and `next` after
+/// `stop` should fail.
+///
+/// Cost: O(1).
+pub fn reader<E>(next: fn() -> Option<Bytes> errors E, stop: fn() -> Void) -> Reader<E> {
+  Reader(fn(request) {
+    case request {
+      Pull.Next -> next_chunk(next)
+      Pull.Stop -> {
+        stop()
+        None
+      }
+    }
+  })
+}
+
+/// A writer that hands each chunk to `write` and finishes with `close`. For
+/// host streams and fakes.
+///
+/// Cost: O(1).
+pub fn writer<E>(write: fn(Bytes) -> Void errors E, close: fn() -> Void errors E) -> Writer<E> {
+  Writer(fn(request) {
+    case request {
+      Push.Chunk(bytes) -> write(bytes)
+      Push.Finish -> close()
+    }
+  })
+}
+
+/// A connected writer and reader, buffering at most `capacity` chunks between
+/// them: a write waits while the buffer is full. The reader ends once the
+/// writer is closed and every chunk is read. If the writer's task ends without
+/// closing it, the reader fails with `StreamError.Aborted`, and chunks not yet
+/// read are lost; use `produce` when a reader must see a writer's failure.
+///
+/// Fails with: nothing. A capacity below 0 is a defect.
+/// Cost: O(1).
+pub fn pipe(capacity: Int) -> (Writer<StreamError>, Reader<StreamError>) {
+  let made = Channel.bounded(capacity)
+  let sender = made.sender
+  let receiver = made.receiver
+  let completion = made.completion
+  (
+    Writer(fn(request) {
+      push_chunk(sender, completion, request)
+    }),
+    Reader(fn(request) { pull_chunk(receiver, request) }),
+  )
+}
+
+/// A reader of the chunks `body` writes, which runs in a child task of the
+/// caller with at most `capacity` chunks waiting to be read. The writer is
+/// closed when `body` returns. If `body` fails, the reader fails with that
+/// failure after the chunks written before it, unless `body` closed the
+/// writer first. Stopping the reader makes `body`'s next write fail with
+/// `StreamError.Closed`.
+///
+/// Calls: `body` once, in a new child task.
+/// Cost: O(1) plus the task.
+pub fn produce<E, R>(capacity: Int, body: fn(Writer<StreamError>) -> Void errors E needs R) -> Reader<E | StreamError> {
+  let made = Channel.bounded(capacity)
+  let sender = made.sender
+  let receiver = made.receiver
+  let completion = made.completion
+  let out = Writer(fn(request) {
+    push_item(sender, completion, request)
+  })
+  let _producer = Task.start(fn() {
+    case write_all(body, out) {
+      Success(_) -> Void
+      Failure(error) -> {
+        send_quietly(sender, Item.Failed(error))
+        close_quietly(out)
+      }
+    }
+  })
+  Reader(fn(request) { pull_item(receiver, request) })
+}
+
+/// A reader of `bytes` as one chunk. An empty `bytes` gives no chunk.
+///
+/// Cost: O(1).
+pub fn from_bytes(bytes: Bytes) -> Reader<StreamError> {
+  let (out, chunks) = pipe(1)
+  case Bytes.is_empty(bytes) {
+    True -> Void
+    False -> write(out, bytes)
+  }
+  close(out)
+  chunks
+}
+
+// 3. Reading and writing.
+
+/// The next chunk, or `None` once the stream has ended. A chunk is never
+/// empty.
+///
+/// Fails with: what the reader fails with.
+/// Cost: one chunk.
+pub fn read<E>(reader: Reader<E>) -> Option<Bytes> {
+  reader.pull(Pull.Next)
+}
+
+/// Ends the reader early: a later read fails with `StreamError.Aborted`, and a
+/// producer's next write fails with `StreamError.Closed`. Stopping again does
+/// nothing.
+///
+/// Cost: O(1).
+pub fn stop<E>(reader: Reader<E>) -> Void {
+  let _ = Result.capture(fn() { reader.pull(Pull.Stop) })
+  Void
+}
+
+/// Writes `bytes` as one chunk, waiting while the reader is behind. An empty
+/// `bytes` writes nothing.
+///
+/// Fails with: what the writer fails with; `StreamError.Closed` from a pipe
+/// whose reader stopped or whose writer was closed.
+/// Cost: one chunk.
+pub fn write<E>(writer: Writer<E>, bytes: Bytes) -> Void {
+  case Bytes.is_empty(bytes) {
+    True -> Void
+    False -> writer.push(Push.Chunk(bytes))
+  }
+}
+
+/// Closes the writer: the reader ends once it has read every chunk.
+///
+/// Fails with: what the writer fails with.
+/// Cost: O(1).
+pub fn close<E>(writer: Writer<E>) -> Void {
+  writer.push(Push.Finish)
+}
+
+/// Every remaining byte of `reader`, as long as there are at most `limit` of
+/// them. Past `limit` it stops the reader and fails, so a large or endless
+/// stream cannot fill memory.
+///
+/// Fails with: `StreamError.TooLarge(limit)`; what the reader fails with.
+/// Cost: O(n) in the bytes read.
+pub fn read_all<E>(reader: Reader<E>, limit: Int) -> Bytes {
+  let parts = loop state = ([], 0) {
+    let (parts, size) = state
+    let next = read(reader)
+    case next {
+      None -> break parts
+      Some(chunk) -> {
+        let size = size + Bytes.length(chunk)
+        case size > limit {
+          True -> {
+            stop(reader)
+            Failure(StreamError.TooLarge(limit))
+          }
+          False -> (List.push(parts, chunk), size)
+        }
+      }
+    }
+  }
+  Bytes.concat(parts)
+}
+
+/// Writes every remaining chunk of `reader` to `writer`, and returns how many
+/// bytes it copied. It does not close `writer`.
+///
+/// Fails with: what the reader or the writer fails with.
+/// Cost: O(n) in the bytes copied.
+pub fn copy<E, F>(reader: Reader<E>, writer: Writer<F>) -> Int {
+  loop copied = 0 {
+    let next = read(reader)
+    case next {
+      None -> break copied
+      Some(chunk) -> {
+        write(writer, chunk)
+        copied + Bytes.length(chunk)
+      }
+    }
+  }
+}
+
+// 4. Channel ends.
+
+fn write_all<E, R>(body: fn(Writer<StreamError>) -> Void errors E needs R, out: Writer<StreamError>) -> Void {
+  body(out)
+  close(out)
+}
+
+fn push_chunk(sender: Channel.Sender<Bytes>, completion: Channel.Completion<Bytes>, request: Push) -> Void {
+  case request {
+    Push.Chunk(bytes) -> case Channel.send(sender, bytes) {
+      Success(_) -> Void
+      Failure(SendError.Closed(_)) -> Failure(StreamError.Closed)
+      Failure(SendError.Aborted(_)) -> Failure(StreamError.Closed)
+    }
+    Push.Finish -> Channel.close(completion)
+  }
+}
+
+fn pull_chunk(receiver: Channel.Receiver<Bytes>, request: Pull) -> Option<Bytes> {
+  case request {
+    Pull.Next -> case Channel.receive(receiver) {
+      Success(Receive.Received(bytes)) -> Some(bytes)
+      Success(Receive.Drained) -> None
+      Failure(ChannelError.Aborted) -> Failure(StreamError.Aborted)
+    }
+    Pull.Stop -> {
+      Channel.abort(receiver)
+      None
+    }
+  }
+}
+
+fn push_item<E>(sender: Channel.Sender<Item<E>>, completion: Channel.Completion<Item<E>>, request: Push) -> Void {
+  case request {
+    Push.Chunk(bytes) -> case Channel.send(sender, Item.Data(bytes)) {
+      Success(_) -> Void
+      Failure(SendError.Closed(_)) -> Failure(StreamError.Closed)
+      Failure(SendError.Aborted(_)) -> Failure(StreamError.Closed)
+    }
+    Push.Finish -> Channel.close(completion)
+  }
+}
+
+fn pull_item<E>(receiver: Channel.Receiver<Item<E>>, request: Pull) -> Option<Bytes> {
+  case request {
+    Pull.Next -> case Channel.receive(receiver) {
+      Success(Receive.Received(Item.Data(bytes))) -> Some(bytes)
+      Success(Receive.Received(Item.Failed(error))) -> Failure(error)
+      Success(Receive.Drained) -> None
+      Failure(ChannelError.Aborted) -> Failure(StreamError.Aborted)
+    }
+    Pull.Stop -> {
+      Channel.abort(receiver)
+      None
+    }
+  }
+}
+
+// The reader stopped or the channel is gone; the body's failure has nowhere
+// left to go.
+fn send_quietly<E>(sender: Channel.Sender<Item<E>>, item: Item<E>) -> Void {
+  case Channel.send(sender, item) {
+    Success(_) -> Void
+    Failure(_) -> Void
+  }
+}
+
+fn close_quietly(writer: Writer<StreamError>) -> Void {
+  case close(writer) {
+    Success(_) -> Void
+    Failure(_) -> Void
+  }
+}
+
+fn next_chunk<E>(next: fn() -> Option<Bytes> errors E) -> Option<Bytes> {
+  loop skipped = 0 {
+    let chunk = next()
+    case chunk {
+      None -> break None
+      Some(bytes) -> case Bytes.is_empty(bytes) {
+        True -> skipped + 1
+        False -> break Some(bytes)
+      }
+    }
+  }
+}

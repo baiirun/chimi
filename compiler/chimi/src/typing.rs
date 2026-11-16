@@ -2784,6 +2784,7 @@ impl ProjectTypeChecker {
         body_modules: &HashSet<ModuleId>,
     ) -> TypedProject {
         let order = self.resolved.dependency_order.clone();
+        self.settle_type_parameter_kinds(&order, declaration_modules);
         for module_id in order
             .iter()
             .filter(|module_id| declaration_modules.contains(module_id))
@@ -2888,6 +2889,59 @@ impl ProjectTypeChecker {
             )
         });
         typed
+    }
+
+    /// Checks the type declarations until their parameters' kinds stop
+    /// changing, keeping no diagnostics, so that a signature or a type that
+    /// names a type declared below it sees which of its parameters are failure
+    /// sets. The declaration pass that follows checks them again in source
+    /// order and reports.
+    fn settle_type_parameter_kinds(
+        &mut self,
+        order: &[ModuleId],
+        declaration_modules: &HashSet<ModuleId>,
+    ) {
+        let types = order
+            .iter()
+            .filter(|module_id| declaration_modules.contains(module_id))
+            .flat_map(|module_id| {
+                self.resolved.semantic.modules[module_id.raw() as usize]
+                    .declarations
+                    .iter()
+                    .filter(|declaration| {
+                        matches!(
+                            declaration.kind,
+                            ModuleDeclarationKind::Struct
+                                | ModuleDeclarationKind::Enum
+                                | ModuleDeclarationKind::Interface
+                                | ModuleDeclarationKind::NativeType
+                        )
+                    })
+                    .map(|declaration| (*module_id, declaration.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let diagnostics = self.diagnostics.len();
+        let warnings = self.warnings.len();
+        let property_checks = self.property_checks.len();
+        let map_keys = self.written_map_keys.as_ref().map_or(0, Vec::len);
+        // Each round settles at least one more link of a chain of types that
+        // name each other, so as many rounds as there are types suffice.
+        for _ in 0..=types.len() {
+            let before = self.generic_kinds.clone();
+            for (module_id, declaration) in &types {
+                self.check_declaration(*module_id, declaration);
+            }
+            if self.generic_kinds == before {
+                break;
+            }
+        }
+        self.diagnostics.truncate(diagnostics);
+        self.warnings.truncate(warnings);
+        self.property_checks.truncate(property_checks);
+        if let Some(keys) = self.written_map_keys.as_mut() {
+            keys.truncate(map_keys);
+        }
     }
 
     fn check_declaration(&mut self, module_id: ModuleId, declaration: &ModuleDeclaration) {
@@ -8277,6 +8331,12 @@ impl ProjectTypeChecker {
                                 }
                                 _ => None,
                             };
+                            // A user type's failure-set parameter, as `E` in a
+                            // struct with a field `fn() -> T errors E`, makes a
+                            // generic written in its place a failure set too.
+                            if failures_index.is_none() {
+                                self.constrain_failure_set_arguments(module_id, symbol, arguments);
+                            }
                             if let Some(index) = failures_index
                                 && let Some(TypeUse::Named {
                                     semantic_id: failures_id,
@@ -9904,7 +9964,12 @@ impl ProjectTypeChecker {
             CanonicalType::Generic(parameter) => {
                 if let Some(type_id) = substitution.values.get(&parameter).copied() {
                     type_id
-                } else if self.generic_kinds.get(&parameter) == Some(&GenericKind::FailureSet) {
+                } else if matches!(
+                    self.generic_kinds.get(&parameter),
+                    Some(GenericKind::FailureSet | GenericKind::FailureRow)
+                ) {
+                    // A struct's failure-row parameter bound by a constructor
+                    // argument, as `E` of `Box(fail)`, is the set it bound.
                     if let Some(failures) = substitution.failures.get(&parameter).copied() {
                         self.failure_set_argument_type(failures)
                     } else {
@@ -10050,10 +10115,21 @@ impl ProjectTypeChecker {
             exclusions: Vec::new(),
         })];
         for parameter in row.parameters {
+            // A failure-set parameter bound only as a type argument, as `E` of
+            // `Reader<E>` read from a field, stands for that argument's set.
+            let from_value = match substitution.failures.get(&parameter) {
+                Some(_) => None,
+                None => substitution
+                    .values
+                    .get(&parameter)
+                    .copied()
+                    .and_then(|type_id| self.failure_row_for_type(type_id)),
+            };
             let replacement = substitution
                 .failures
                 .get(&parameter)
                 .copied()
+                .or(from_value)
                 .unwrap_or_else(|| {
                     self.intern_failure_row(FailureRow {
                         variants: Vec::new(),
@@ -10918,6 +10994,34 @@ impl ProjectTypeChecker {
             entries,
             parameters,
         })
+    }
+
+    fn constrain_failure_set_arguments(
+        &mut self,
+        module_id: ModuleId,
+        symbol: SymbolId,
+        arguments: &[TypeUse],
+    ) {
+        let parameters = self.named_type_generic_parameters(symbol);
+        for (parameter, argument) in parameters.iter().zip(arguments) {
+            if !matches!(
+                self.generic_kinds.get(parameter),
+                Some(GenericKind::FailureSet | GenericKind::FailureRow)
+            ) {
+                continue;
+            }
+            if let TypeUse::Named {
+                semantic_id,
+                path,
+                ..
+            } = argument
+                && let (Some(name), Some(generic)) =
+                    (path.last(), self.resolved_type_symbol(module_id, *semantic_id))
+                && self.resolved.symbol(generic).kind == ProjectSymbolKind::GenericParameter
+            {
+                self.constrain_generic(module_id, generic, GenericKind::FailureRow, name);
+            }
+        }
     }
 
     fn constrain_generic(

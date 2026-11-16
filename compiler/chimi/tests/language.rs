@@ -11986,3 +11986,52 @@ fn direct_loops_over_other_states_agree_with_the_interpreter() {
     );
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":57");
 }
+
+// Rejects a failure-set parameter that is lost when it passes through a struct's
+// type argument: `call` reads `E` from `Box<E>`, so `main` fails with `Oops`
+// whether the box is built directly or annotated, or `Box` is declared after
+// `call` or after a type that holds it, and is not left open.
+#[test]
+fn a_failure_set_type_argument_carries_its_failures_through_a_field_call() {
+    let program = |construction: &str| {
+        format!(
+            concat!(
+                "pub enum Oops {{\n  Bad\n}}\n\n",
+                "pub struct Box<E> {{\n  run: fn() -> Int errors E,\n}}\n\n",
+                "fn call<E>(boxed: Box<E>) -> Int {{\n  boxed.run()\n}}\n\n",
+                "fn fail() -> Int {{\n  Failure(Oops.Bad)\n}}\n\n",
+                "pub fn main() -> Int {{\n{}\n}}\n",
+            ),
+            construction
+        )
+    };
+    let expected = "\"outcome\":\"expected_failure\",\"error\":{\"type\":\"Oops\",\"variant\":\"Bad\",\"fields\":{}}";
+    assert_eq!(
+        run_both("failure-set-argument-direct", &program("  call(Box(fail))")),
+        expected
+    );
+    assert_eq!(
+        run_both(
+            "failure-set-argument-annotated",
+            &program("  let boxed: Box<Oops> = Box(fail)\n  call(boxed)"),
+        ),
+        expected
+    );
+    let declared_after = concat!(
+        "pub enum Oops {\n  Bad\n}\n\n",
+        "fn call<E>(boxed: Box<E>) -> Int {\n  boxed.run()\n}\n\n",
+        "pub struct Box<E> {\n  run: fn() -> Int errors E,\n}\n\n",
+        "fn fail() -> Int {\n  Failure(Oops.Bad)\n}\n\n",
+        "pub fn main() -> Int {\n  call(Box(fail))\n}\n",
+    );
+    assert_eq!(run_both("failure-set-argument-declared-after", declared_after), expected);
+    let nested_after = concat!(
+        "pub enum Oops {\n  Bad\n}\n\n",
+        "fn call<E>(outer: Outer<E>) -> Int {\n  outer.inner.run()\n}\n\n",
+        "pub struct Outer<E> {\n  inner: Box<E>,\n}\n\n",
+        "pub struct Box<E> {\n  run: fn() -> Int errors E,\n}\n\n",
+        "fn fail() -> Int {\n  Failure(Oops.Bad)\n}\n\n",
+        "pub fn main() -> Int {\n  call(Outer(Box(fail)))\n}\n",
+    );
+    assert_eq!(run_both("failure-set-argument-nested-after", nested_after), expected);
+}
