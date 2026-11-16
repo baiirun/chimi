@@ -11,7 +11,7 @@ RUNTIME = "runtime/native/runtime.c"
 
 
 def variant(name, edits):
-    return dict(name=name, file=RUNTIME, edits=edits, targets=["test:channel_variants"], filter="managed")
+    return dict(name=name, file=RUNTIME, edits=edits, targets=["channel_variants"], filter="managed")
 
 
 MUTATIONS = [
