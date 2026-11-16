@@ -11473,6 +11473,208 @@ fn comparisons_past_the_inline_compare_steps_agree_with_the_interpreter() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[true,false,true,true,false]", "{outcome}");
 }
 
+// Guards: bump allocation (CHI-219). A loop pass's values are moved out of the
+// region's chunks at the pass boundary, so every kind of value a state can keep
+// must read back the same after many passes: shared records in a list and a map,
+// a list window whose vector was compacted during the pass, a nested loop's
+// result, and a text too large for a chunk.
+#[test]
+fn values_kept_across_bump_allocated_passes_agree_with_the_interpreter() {
+    let outcome = run_both(
+        "bump-allocated-survivors",
+        concat!(
+            "import std/list as List\n",
+            "import std/map as Map\n",
+            "import std/map.{Map}\n",
+            "import std/text as Text\n",
+            "struct Entry {\n",
+            "  id: Int,\n",
+            "  tags: List<Int>,\n",
+            "}\n",
+            "struct Index {\n",
+            "  count: Int,\n",
+            "  entries: List<Entry>,\n",
+            "  by_id: Map<Int, Entry>,\n",
+            "}\n",
+            "fn grow(index: Index) -> Index {\n",
+            "  let entry = Entry(index.count, [index.count, index.count * 2])\n",
+            "  Index(index.count + 1, List.push(index.entries, entry), Map.put(index.by_id, index.count, entry))\n",
+            "}\n",
+            "fn shared() -> Int {\n",
+            "  let index = loop index = Index(0, [], Map.empty()) {\n",
+            "    case index.count >= 300 {\n",
+            "      True -> break index\n",
+            "      False -> grow(index)\n",
+            "    }\n",
+            "  }\n",
+            "  let same = case List.get(index.entries, 150) == Map.get(index.by_id, 150) {\n",
+            "    True -> 1\n",
+            "    False -> 0\n",
+            "  }\n",
+            "  List.length(index.entries) + Map.size(index.by_id) + same\n",
+            "}\n",
+            "struct Rounds {\n",
+            "  round: Int,\n",
+            "  kept: List<List<Int>>,\n",
+            "}\n",
+            "fn windows(round: Int) -> List<List<Int>> {\n",
+            "  let big = List.map(List.repeat(round, 1000), fn(n: Int) -> Int { n + 1 })\n",
+            "  let middle = List.slice(big, 0..400)\n",
+            "  let small = List.slice(middle, 100..200)\n",
+            "  [middle, small]\n",
+            "}\n",
+            "fn compacted() -> Int {\n",
+            "  let kept = loop state = Rounds(0, [[0]]) {\n",
+            "    case state.round >= 50 {\n",
+            "      True -> break state.kept\n",
+            "      False -> Rounds(state.round + 1, windows(state.round))\n",
+            "    }\n",
+            "  }\n",
+            "  List.reduce(List.concat(kept), 0, fn(sum: Int, n: Int) -> Int { sum + n })\n",
+            "}\n",
+            "fn inner(limit: Int) -> List<Int> {\n",
+            "  loop state = [limit] {\n",
+            "    case List.length(state) >= limit {\n",
+            "      True -> break state\n",
+            "      False -> List.push(state, List.length(state) * limit)\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "fn nested() -> Int {\n",
+            "  let kept = loop state = [[0]] {\n",
+            "    case List.length(state) >= 30 {\n",
+            "      True -> break state\n",
+            "      False -> List.push(state, inner(List.length(state)))\n",
+            "    }\n",
+            "  }\n",
+            "  List.reduce(List.concat(kept), 0, fn(sum: Int, n: Int) -> Int { sum + n })\n",
+            "}\n",
+            "fn large() -> Int {\n",
+            "  let text = loop text = \"\" {\n",
+            "    case Text.byte_length(text) >= 20000 {\n",
+            "      True -> break text\n",
+            "      False -> Text.append(text, \"abcdefghij\")\n",
+            "    }\n",
+            "  }\n",
+            "  Text.byte_length(text)\n",
+            "}\n",
+            "pub fn main() -> List<Int> { [shared(), compacted(), nested(), large()] }\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":[601,25000,90770,20000]",
+        "{outcome}"
+    );
+}
+
+// Guards: a task result is copied into the pass that reads it, outside the
+// region's chunks, and keeps pointing at the right values once a state that holds
+// it crosses many bump-allocated pass boundaries (CHI-219). Native only: the
+// interpreter has no task runtime.
+#[test]
+fn task_results_kept_across_bump_allocated_passes_stay_intact() {
+    let scratch = scratch_directory("bump-task-results");
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        concat!(
+            "import std/list as List\n",
+            "import std/task as Task\n",
+            "fn build(seed: Int) -> List<Int> { [seed, seed + 1, seed + 2] }\n",
+            "pub fn main() -> Int {\n",
+            "  let kept = loop state = [[0]] {\n",
+            "    case List.length(state) >= 40 {\n",
+            "      True -> break state\n",
+            "      False -> {\n",
+            "        let count = List.length(state)\n",
+            "        let pair = [count, count * 1000]\n",
+            "        let result = Task.result(Task.start(fn() -> List<Int> { build(count) }))\n",
+            "        List.push(state, List.append(result, pair))\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "  List.reduce(List.concat(kept), 0, fn(sum: Int, n: Int) -> Int { sum + n })\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let outcome = native_outcome(&scratch, &path);
+    // Each pass adds build(count) (3 * count + 3) and the pair (1001 * count) for
+    // count 1 through 39: 1004 * 780 + 3 * 39.
+    assert!(
+        outcome.ends_with("\"outcome\":\"success\",\"value\":783237}"),
+        "{outcome}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Guards: a loop region switches between bumping a pass's allocations into its
+// chunks and linking them, by how much of the last pass survived (CHI-219). Here
+// the phases alternate every 40 passes between keeping all a pass builds and
+// keeping almost none of it, so values made in either mode are kept and read in
+// the other.
+#[test]
+fn values_kept_across_linked_and_bumped_passes_agree_with_the_interpreter() {
+    let outcome = run_both(
+        "bump-mode-switch",
+        concat!(
+            "import std/list as List\n",
+            "struct State {\n",
+            "  count: Int,\n",
+            "  kept: List<List<Int>>,\n",
+            "  scratch: Int,\n",
+            "}\n",
+            "fn keep(state: State) -> State {\n",
+            "  let n = state.count\n",
+            "  State(n + 1, List.push(state.kept, [n, n * 3, n * 7]), state.scratch)\n",
+            "}\n",
+            "fn churn(state: State) -> State {\n",
+            "  let garbage = List.map(List.repeat(state.count, 60), fn(x: Int) -> Int { x + 1 })\n",
+            "  State(state.count + 1, state.kept, state.scratch + List.length(garbage))\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let final = loop state = State(0, [], 0) {\n",
+            "    case state.count >= 400 {\n",
+            "      True -> break state\n",
+            "      False -> case (state.count / 40) % 2 {\n",
+            "        0 -> keep(state)\n",
+            "        _ -> churn(state)\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "  let total = List.reduce(List.concat(final.kept), 0, fn(sum: Int, n: Int) -> Int { sum + n })\n",
+            "  total + final.scratch\n",
+            "}\n",
+        ),
+    );
+    // Kept passes add 11 * n for n in the five kept phases; each churn pass adds 60.
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":406900");
+}
+
+// Guards: a crash message built inside a loop pass is allocated in the pass's
+// young chunk, and the defect leaves the region, so the message must not live in
+// the chunk the region frees (CHI-219 review).
+#[test]
+fn a_crash_message_built_inside_a_loop_survives_the_loop() {
+    let outcome = run_both(
+        "bump-crash-message",
+        concat!(
+            "import std/debug as Debug\n",
+            "import std/text as Text\n",
+            "pub fn main() -> Int {\n",
+            "  loop n = 0 {\n",
+            "    case n >= 3 {\n",
+            "      True -> Debug.crash(Text.append(\"boom-\", \"message-in-chunk\"))\n",
+            "      False -> n + 1\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(defect_message(&outcome), "boom-message-in-chunk", "{outcome}");
+}
+
 // Guards: a match reads every subject, both when its subjects fit the runtime's
 // stack array (up to eight) and when they do not (nine).
 #[test]
