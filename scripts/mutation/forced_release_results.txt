@@ -1,0 +1,15 @@
+# mutation run at c7a8f72e1c57a7009345b56a492f68f8b6d9abb4
+# forced_release_mutations.py: 5 mutants against compiler/chimi
+KILLED       a forced combinator cancels its children with requests [task_release -- a_forced_body_frees] (12s)
+SURVIVED     an interrupted combinator never cancels its children [task_combinators task_release] (18s)
+KILLED       only a forced combinator cancels its children [task_combinators task_release] (13s)
+KILLED       a forced body asks for its address to remember a defect [task_release -- a_forced_body_frees] (16s)
+KILLED       a cancelled combinator cancels its children with requests [task_combinators -- task_cancel_of_a_task_waiting_in_a_combinator] (13s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+
+# The survivor removes the sibling cancel on a non-terminal interruption (a
+# timeout scope firing, or a draining body absorbing a child's defect). The
+# scope boundary or the body's end cancels the same children at the same
+# virtual instant, so only the order of trace events changes, and no test pins
+# that order. It is unchanged by CHI-265, which only skips the cancel after a
+# terminal one.
