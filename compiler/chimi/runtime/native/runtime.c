@@ -9199,8 +9199,10 @@ static ChimiControl *run_combinator(ChimiRuntime *runtime, uint32_t intrinsic, C
     if (interrupted) {
       /* A child defect reaches here only when this task absorbs it (a process
          body that is shutting down); the siblings stop now, not when the body
-         ends. */
-      cancel_live_children(&children);
+         ends. A forced body issues no request: the scheduler ends its children
+         with it, and a park now would abandon its fiber and heap (CHI-265). */
+      if (!(interrupted->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()))
+        cancel_live_children(&children);
       combinator_children_free(&children);
       return interrupted;
     }
