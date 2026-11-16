@@ -369,6 +369,19 @@ fn the_signal_option_takes_the_three_signals_under_the_virtual_clock_only() {
         String::from_utf8_lossy(&unknown.stderr).contains("INT, TERM, HUP, USR1 or USR2"),
         "{unknown:?}"
     );
+    // The option repeats, up to 64 std/signal signals.
+    let repeated = |count: usize| {
+        let mut command = Command::new(&executable);
+        command.args(["--chimi-runner", "--clock=virtual"]);
+        for _ in 0..count {
+            command.arg("--signal=HUP@1s");
+        }
+        output_within(command.arg("--"), Duration::from_secs(30))
+    };
+    assert_eq!(repeated(64).status.code(), Some(0));
+    let too_many = repeated(65);
+    assert_eq!(too_many.status.code(), Some(64));
+    assert!(String::from_utf8_lossy(&too_many.stderr).contains("at most 64"));
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
@@ -531,8 +544,10 @@ fn a_program_without_signals_is_ended_by_a_hangup() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
-// SIGTERM while main waits for SIGHUP cancels the wait and drains; a second
-// SIGTERM after a reload still ends the program at once.
+// SIGTERM after a reload, while main waits for SIGHUP again, cancels the wait
+// and drains, and the program dies by SIGTERM. That the second stop signal
+// ends a program at once is tests/signals.rs's; std/signal leaves that path
+// alone.
 #[test]
 fn stop_signals_keep_their_meaning_after_a_hangup() {
     let scratch = scratch_directory("stop");
@@ -578,6 +593,22 @@ fn the_interpreter_needs_the_native_runtime_to_wait() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("Signal.next requires the native runtime"),
+        "{stdout}"
+    );
+    // An empty list defects with the native runtime's message.
+    std::fs::write(
+        &program,
+        format!("{IMPORTS}\npub fn main() -> Text needs {{ signals: Signals }} {{\n  waited([])\n}}\n"),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("run")
+        .arg(&program)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Signal.next needs at least one signal to wait for"),
         "{stdout}"
     );
     std::fs::remove_dir_all(scratch).unwrap();

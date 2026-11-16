@@ -20,7 +20,6 @@ CARGO_TEST_ARGS = ["--release"]
 
 SIGNAL = "../../runtime/chimi-fiber/src/scheduler/signal.rs"
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
-PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 RUNTIME = "runtime/native/runtime.c"
 OPERATIONS = "src/operations.rs"
 MODULE = "std/signal.chimi"
