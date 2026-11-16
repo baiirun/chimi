@@ -80,6 +80,12 @@ pub(in crate::scheduler) struct MonitorRecord {
     handle: u64,
 }
 
+impl MonitorRecord {
+    pub(in crate::scheduler) fn handle(&self) -> u64 {
+        self.handle
+    }
+}
+
 impl Scheduler {
     /// Watches the incarnation `target` resolves to now. Ensures: the notice
     /// handle is owned by the record, or by `Down::Unavailable`'s notice when

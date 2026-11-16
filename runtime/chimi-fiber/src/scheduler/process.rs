@@ -2299,6 +2299,41 @@ impl Scheduler {
     }
 }
 
+impl Scheduler {
+    /// Releases what the incarnations that outlived `tear_down_processes`
+    /// still hold: an unread argument, every queued message and notice, and
+    /// the handle of every monitor left. They never reach
+    /// `incarnation_finished`, which would release these, so without this
+    /// they would stay allocated until the process exits. No known program
+    /// leaves a survivor (a draining owner waits on supervisors teardown also
+    /// ends), so this guards the memory report rather than a seen leak.
+    pub(super) fn release_surviving_incarnations(&mut self) {
+        let survivors: Vec<_> = self.kernel.incarnations.keys().copied().collect();
+        for incarnation in survivors {
+            let record = self
+                .kernel
+                .incarnations
+                .get_mut(&incarnation)
+                .expect("listed survivor");
+            let argument = record.argument.take();
+            let mailbox = std::mem::take(&mut record.mailbox);
+            record.notices = 0;
+            if let Some(argument) = argument {
+                self.discard_message(argument);
+            }
+            for entry in mailbox {
+                match entry {
+                    Entry::Message(message) => self.discard_message(message),
+                    Entry::Notice(_) => self.release_message(entry.handle()),
+                }
+            }
+        }
+        for record in std::mem::take(&mut self.kernel.monitors).into_values() {
+            self.release_message(record.handle());
+        }
+    }
+}
+
 impl TerminalCause {
     pub(super) fn code(self) -> u64 {
         match self {

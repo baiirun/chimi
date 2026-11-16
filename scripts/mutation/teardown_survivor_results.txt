@@ -1,0 +1,8 @@
+# teardown_survivor_mutations.py: 5 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- releasing_survivors] (9s)
+KILLED       queued messages stay held [lib -- releasing_survivors] (3s)
+KILLED       queued notices stay held [lib -- releasing_survivors] (3s)
+KILLED       monitor records stay held [lib -- releasing_survivors] (4s)
+KILLED       monitor records are released but kept, so teardown releases them again [lib -- releasing_survivors] (8s)
+KILLED       the mailbox is copied, not taken, so teardown releases it again [lib -- releasing_survivors] (7s)
+# result: every mutant killed
