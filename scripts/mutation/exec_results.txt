@@ -1,0 +1,15 @@
+# mutation run at fe461b11ec2013cdf142ba9af761acde308d3a0b
+# exec_mutations.py: 10 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- child] (11s)
+KILLED       a check reaps the child [lib -- child] (5s)
+KILLED       a running child answers at once [lib -- child] (33s)
+TIMEOUT      a non-child parks instead of failing [lib -- child] (600s)
+KILLED       a busy run never rechecks [lib -- child] (10s)
+KILLED       the SIGCHLD pipe byte does not end an idle wait [lib -- child] (7s)
+TIMEOUT      an idle wait never rechecks [lib -- child] (600s)
+KILLED       a child wait does not hold virtual time [lib -- child] (7s)
+KILLED       a firing scope does not withdraw a child wait [lib -- child] (34s)
+TIMEOUT      the recheck backstop waits forever [lib -- child] (600s)
+# rerun after adding a_child_wait_is_a_cancellation_point:
+KILLED       a child wait is not a cancellation point [lib -- child] (7s)
+# result: every mutant killed (3 by TIMEOUT: the test hangs without the recheck)

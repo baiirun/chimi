@@ -32,6 +32,8 @@ use super::{
 /// The `std/signal` signal codes, 1 to `USER_SIGNAL_CODES`; code `n` is
 /// latch bit `n - 1`.
 const USER_SIGNAL_CODES: u32 = 3;
+/// The latch bits of the `std/signal` codes.
+const USER_SIGNAL_MASK: u32 = (1 << USER_SIGNAL_CODES) - 1;
 
 /// A task parked in `REQUEST_SIGNAL_WAIT`.
 struct SignalWaiter {
@@ -144,7 +146,7 @@ impl Scheduler {
     }
 
     fn latch_user_signals(&mut self, bits: u32) {
-        let bits = bits & ((1 << USER_SIGNAL_CODES) - 1);
+        let bits = bits & USER_SIGNAL_MASK;
         let now = self.clock.now();
         for code in 1..=USER_SIGNAL_CODES {
             if bits & (1 << (code - 1)) != 0 {
@@ -349,7 +351,10 @@ impl Scheduler {
 /// code outside 1 to `USER_SIGNAL_CODES`.
 fn wait_codes(value: i64) -> Option<Vec<u32>> {
     let bytes = value.to_le_bytes();
-    let count = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+    let count = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
     let (codes, rest) = bytes.split_at(count);
     let valid = |code: &u8| (1..=USER_SIGNAL_CODES).contains(&u32::from(*code));
     if codes.is_empty() || rest.iter().any(|byte| *byte != 0) || !codes.iter().all(valid) {
