@@ -460,7 +460,7 @@ impl TypeFormatter<'_> {
         id
     }
 
-    fn format_contract_result(&self, contract: &CallableContract) -> String {
+    pub(crate) fn format_contract_result(&self, contract: &CallableContract) -> String {
         let mut result = self.format_type(contract.success);
         let failures = &self.failure_rows[contract.failures.raw() as usize];
         if !failures.variants.is_empty() || !failures.parameters.is_empty() {
@@ -772,6 +772,12 @@ impl TypedProject {
 
     pub(crate) fn format_function_contract(&self, contract: &CallableContract) -> String {
         self.formatter().format_function_contract(contract)
+    }
+
+    /// A contract's result: its success type, then `errors` and `needs` rows
+    /// when they are not empty.
+    pub(crate) fn format_contract_result(&self, contract: &CallableContract) -> String {
+        self.formatter().format_contract_result(contract)
     }
 
     pub(crate) fn format_type(&self, id: TypeId) -> String {

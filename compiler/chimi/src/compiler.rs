@@ -342,6 +342,12 @@ impl TypeReport {
     pub fn render_diagnostics(&self) -> String {
         render_project_diagnostics(&self.typed.resolved, &self.typed.diagnostics)
     }
+
+    /// The public surface of `module_path` (`chimi doc`), or `None` when the
+    /// project has no such module.
+    pub fn documentation(&self, module_path: &str) -> Option<crate::ModuleDocumentation> {
+        crate::doc::document_module(&self.typed, module_path)
+    }
 }
 
 fn value_property_report(typed: &TypedProject, type_id: TypeId) -> ValuePropertyReport {

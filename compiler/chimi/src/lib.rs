@@ -5,6 +5,7 @@ mod compiler;
 #[doc(hidden)]
 pub mod concurrency_lab;
 mod decimal;
+mod doc;
 mod doc_examples;
 pub mod diagnostic;
 mod duration;
@@ -41,6 +42,7 @@ pub use compiler::{
     IncrementalTypeReport, ModuleDiagnostics, NameReport, ProjectPathError, ProjectSource,
     ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport, ValuePropertyStatus,
 };
+pub use doc::{ItemDocumentation, ModuleDocumentation};
 pub use formatter::FormatReport;
 pub use inspection::{
     CallableInspection, ClausePosition, InspectedToken, InspectionError, InspectionReport,
