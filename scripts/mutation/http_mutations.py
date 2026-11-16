@@ -149,9 +149,9 @@ MUTATIONS = [
            "    let length = chunk_length(refuse_controls(line))",
            "    let length = chunk_length(line)"),
     # Reading.
-    mutant("a head found in one read is not limited",
-           "    (_, Some(at)) -> case at > limit {",
-           "    (_, Some(at)) -> case False {"),
+    mutant("the search in one read reaches past the limit",
+           "  case (limit < 0, find_unread(cursor, needle, limit + width)) {",
+           "  case (limit < 0, find_unread(cursor, needle, limit + width + 1)) {"),
     mutant("a head that never ends in one read is not limited",
            "    (_, None) -> case unread(cursor) >= limit + width {",
            "    (_, None) -> case False {"),

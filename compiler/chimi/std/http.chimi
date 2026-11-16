@@ -693,10 +693,9 @@ fn read_until(reader: Reader<NetError>, cursor: Cursor, needle: Bytes, limit: In
   let width = Bytes.length(needle)
   case (limit < 0, find_unread(cursor, needle, limit + width)) {
     (True, _) -> Failure(too_long)
-    (_, Some(at)) -> case at > limit {
-      True -> Failure(too_long)
-      False -> (Bytes.slice(cursor.bytes, cursor.at..(cursor.at + at)), Cursor(cursor.bytes, cursor.at + at + width))
-    }
+    // The search reaches only `limit + width` bytes, so a needle it finds
+    // starts within the limit.
+    (_, Some(at)) -> (Bytes.slice(cursor.bytes, cursor.at..(cursor.at + at)), Cursor(cursor.bytes, cursor.at + at + width))
     (_, None) -> case unread(cursor) >= limit + width {
       True -> Failure(too_long)
       False -> collect_until(reader, rest_of(cursor), needle, limit, too_long)

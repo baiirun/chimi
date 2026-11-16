@@ -433,6 +433,7 @@ test "hosts and transfer codings" {
 
 test "versions" {
   after("GET /health HTTP/x\r\nHost: x\r\n\r\n") |> Test.assert_equal(bad("bad request line"))
+  after("GET /health HTTP/a.b\r\nHost: x\r\n\r\n") |> Test.assert_equal(bad("bad request line"))
   after("GET /health HTTP/3.0\r\nHost: x\r\n\r\n") |> Test.assert_equal(refused(505, "HTTP Version Not Supported", "http version not supported"))
   exchange("GET /health HTTP/1.2\r\nHost: x\r\n\r\n") |> Test.assert_equal(ok("ok"))
 }
@@ -462,6 +463,11 @@ test "a head that never ends is 431 however it arrives" {
   let long = refused(431, "Request Header Fields Too Large", "request header fields too large")
   exchange("GET /health HTTP/1.1\r\nHost: x\r\nX: ${Text.repeat("a", 70000)}") |> Test.assert_equal(long)
   trickle(List.repeat(Text.repeat("a", 1000), 70)) |> Test.assert_equal(long)
+  // The limit counts the head without its blank line, inclusively.
+  let prefix = "GET /health HTTP/1.1\r\nHost: x\r\nX: "
+  let fill = fn(size) { Text.concat([prefix, Text.repeat("a", size - Text.byte_length(prefix)), "\r\n\r\n"]) }
+  exchange(fill(65536)) |> Test.assert_equal(ok("ok"))
+  exchange(fill(65537)) |> Test.assert_equal(long)
 }
 
 test "empty lines before a request are skipped" {
