@@ -175,16 +175,28 @@ fn time_functions_surface_the_clock_need() {
     );
     for (function, contract) in [
         ("Clock.now", "fn() -> Instant needs { clock: Clock }"),
-        ("Clock.timestamp", "fn() -> Timestamp needs { clock: Clock }"),
-        ("Clock.since", "fn(Instant) -> Duration needs { clock: Clock }"),
-        ("Clock.sleep_until", "fn(Instant) -> Void needs { clock: Clock }"),
+        (
+            "Clock.timestamp",
+            "fn() -> Timestamp needs { clock: Clock }",
+        ),
+        (
+            "Clock.since",
+            "fn(Instant) -> Duration needs { clock: Clock }",
+        ),
+        (
+            "Clock.sleep_until",
+            "fn(Instant) -> Void needs { clock: Clock }",
+        ),
         ("Clock.add", "fn(Instant, Duration) -> Instant"),
         ("Clock.between", "fn(Instant, Instant) -> Duration"),
         ("Clock.starting_at", "fn(Clock, Timestamp) -> Clock"),
         ("Clock.timestamp_to_text", "fn(Timestamp) -> Text"),
         ("Clock.unix_nanoseconds", "fn(Timestamp) -> Int"),
         ("Clock.from_unix_nanoseconds", "fn(Int) -> Timestamp"),
-        ("Clock.timestamp_between", "fn(Timestamp, Timestamp) -> Duration"),
+        (
+            "Clock.timestamp_between",
+            "fn(Timestamp, Timestamp) -> Duration",
+        ),
     ] {
         assert_eq!(
             report.standard_contract(function).as_deref(),
@@ -238,13 +250,25 @@ fn virtual_sleepers_wake_in_deadline_order_and_since_is_exact() {
     );
     let scratch = scratch_directory("virtual-order");
     let executable = build_native(&scratch, "virtual-order", &body);
-    let first = run(&executable, &scratch, "order-1", "boundaries", &["--clock=virtual"]);
+    let first = run(
+        &executable,
+        &scratch,
+        "order-1",
+        "boundaries",
+        &["--clock=virtual"],
+    );
     assert_eq!(first.outcome, success("2505"));
     assert_eq!(
         clock_advances(&first.telemetry),
         [2_000_000_000, 5_000_000_000]
     );
-    let second = run(&executable, &scratch, "order-2", "boundaries", &["--clock=virtual"]);
+    let second = run(
+        &executable,
+        &scratch,
+        "order-2",
+        "boundaries",
+        &["--clock=virtual"],
+    );
     assert_eq!(second.outcome, first.outcome);
     assert_eq!(
         terminals(&second.telemetry),
@@ -283,19 +307,26 @@ fn starting_at_pins_the_timestamp_and_leaves_now_alone() {
     );
     let scratch = scratch_directory("starting-at");
     let executable = build_native(&scratch, "starting-at", body);
-    let default = run(&executable, &scratch, "default", "off", &["--clock=virtual"]);
+    let default = run(
+        &executable,
+        &scratch,
+        "default",
+        "off",
+        &["--clock=virtual"],
+    );
     assert_eq!(
         default.outcome,
-        success(
-            "\"2025-11-10T09:30:01.25Z 1s | 1970-01-01T00:00:02Z 1s | 2000000000 | 0s\""
-        )
+        success("\"2025-11-10T09:30:01.25Z 1s | 1970-01-01T00:00:02Z 1s | 2000000000 | 0s\"")
     );
     let started = run(
         &executable,
         &scratch,
         "started",
         "off",
-        &["--clock=virtual", "--clock-start=2026-11-10T09:30:00.25+01:00"],
+        &[
+            "--clock=virtual",
+            "--clock-start=2026-11-10T09:30:00.25+01:00",
+        ],
     );
     assert_eq!(
         started.outcome,
@@ -306,11 +337,31 @@ fn starting_at_pins_the_timestamp_and_leaves_now_alone() {
     let real_only = "--clock-start requires --clock=virtual";
     let malformed = "--clock-start requires an RFC 3339 timestamp";
     for (name, runner, reason) in [
-        ("real", &["--clock-start=2026-11-10T09:30:00Z"][..], real_only),
-        ("hour", &["--clock=virtual", "--clock-start=2026-11-10T25:30:00Z"][..], malformed),
-        ("leap", &["--clock=virtual", "--clock-start=2026-12-31T23:59:60Z"][..], malformed),
-        ("late", &["--clock=virtual", "--clock-start=2263-01-01T00:00:00Z"][..], malformed),
-        ("early", &["--clock=virtual", "--clock-start=1677-12-31T00:00:00Z"][..], malformed),
+        (
+            "real",
+            &["--clock-start=2026-11-10T09:30:00Z"][..],
+            real_only,
+        ),
+        (
+            "hour",
+            &["--clock=virtual", "--clock-start=2026-11-10T25:30:00Z"][..],
+            malformed,
+        ),
+        (
+            "leap",
+            &["--clock=virtual", "--clock-start=2026-12-31T23:59:60Z"][..],
+            malformed,
+        ),
+        (
+            "late",
+            &["--clock=virtual", "--clock-start=2263-01-01T00:00:00Z"][..],
+            malformed,
+        ),
+        (
+            "early",
+            &["--clock=virtual", "--clock-start=1677-12-31T00:00:00Z"][..],
+            malformed,
+        ),
     ] {
         let rejected = run(&executable, &scratch, name, "off", runner);
         assert_eq!(rejected.process.status.code(), Some(64), "{name}");
@@ -325,7 +376,12 @@ fn starting_at_pins_the_timestamp_and_leaves_now_alone() {
         "off",
         &["--clock=virtual", "--clock-start=1678-01-01T00:00:00Z"],
     );
-    assert_eq!(earliest.process.status.code(), Some(0), "{}", earliest.outcome);
+    assert_eq!(
+        earliest.process.status.code(),
+        Some(0),
+        "{}",
+        earliest.outcome
+    );
     std::fs::remove_dir_all(scratch).unwrap();
 }
 

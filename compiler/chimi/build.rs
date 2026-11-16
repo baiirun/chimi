@@ -59,8 +59,7 @@ fn embed_standard_tree() {
     let mut files = Vec::new();
     collect_standard_files(root, &mut files);
     files.sort();
-    let mut generated =
-        String::from("pub(crate) const EMBEDDED_MODULES: &[(&str, &str)] = &[\n");
+    let mut generated = String::from("pub(crate) const EMBEDDED_MODULES: &[(&str, &str)] = &[\n");
     for file in &files {
         let relative = file
             .strip_prefix(root)
@@ -94,7 +93,10 @@ fn collect_standard_files(directory: &Path, files: &mut Vec<PathBuf>) {
         if path.is_dir() {
             println!("cargo:rerun-if-changed={}", path.display());
             collect_standard_files(&path, files);
-        } else if path.extension().is_some_and(|extension| extension == "chimi") {
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "chimi")
+        {
             println!("cargo:rerun-if-changed={}", path.display());
             files.push(path);
         }

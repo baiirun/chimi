@@ -17,8 +17,8 @@
 
 use super::clock::Instant;
 use super::{
-    ChannelId, Receiver, Scheduler, SchedulerRequest, TaskId, TaskPhase, RESPONSE_ERROR,
-    RESPONSE_OK, RESPONSE_PENDING,
+    ChannelId, RESPONSE_ERROR, RESPONSE_OK, RESPONSE_PENDING, Receiver, Scheduler,
+    SchedulerRequest, TaskId, TaskPhase,
 };
 
 /// A receive event on a channel: `channel`, `owner` and `token` are the
@@ -137,12 +137,8 @@ impl Scheduler {
                         Poll::Waiting
                     }
                     Err(error) => {
-                        let _ = self.channel_violation::<()>(
-                            owner,
-                            error,
-                            super::REQUEST_SELECT,
-                            None,
-                        );
+                        let _ =
+                            self.channel_violation::<()>(owner, error, super::REQUEST_SELECT, None);
                         Poll::Violation
                     }
                 }

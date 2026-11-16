@@ -54,7 +54,11 @@ fn run_virtual(name: &str, body: &str) -> Run {
         .arg(&executable)
         .output()
         .expect("build native retry program");
-    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
     let telemetry_path = scratch.join("telemetry.jsonl");
     let outcome_path = scratch.join("outcome.jsonl");
     Command::new(&executable)
@@ -83,7 +87,10 @@ fn run_virtual(name: &str, body: &str) -> Run {
             nanoseconds / 1_000_000
         })
         .collect();
-    Run { outcome, advances_ms }
+    Run {
+        outcome,
+        advances_ms,
+    }
 }
 
 fn failure(variant: &str, at_ms: i64) -> String {
@@ -107,7 +114,11 @@ fn type_project(source: &str) -> chimi::TypeReport {
 }
 
 fn codes(report: &chimi::TypeReport) -> Vec<String> {
-    report.diagnostics().iter().map(|diagnostic| diagnostic.code().to_owned()).collect()
+    report
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code().to_owned())
+        .collect()
 }
 
 // ----- Running -------------------------------------------------------------
@@ -197,7 +208,11 @@ fn a_defect_is_not_retried() {
             "}\n",
         ),
     );
-    assert!(run.outcome.contains("\"outcome\":\"defect\""), "{}", run.outcome);
+    assert!(
+        run.outcome.contains("\"outcome\":\"defect\""),
+        "{}",
+        run.outcome
+    );
     assert!(run.advances_ms.is_empty(), "{:?}", run.advances_ms);
 }
 
@@ -220,7 +235,8 @@ fn cancellation_is_not_retried() {
         ),
     );
     assert!(
-        run.outcome.contains("\"type\":\"Timeout\",\"variant\":\"TimedOut\""),
+        run.outcome
+            .contains("\"type\":\"Timeout\",\"variant\":\"TimedOut\""),
         "{}",
         run.outcome
     );
@@ -324,5 +340,10 @@ fn a_constant_attempt_count_below_one_is_rejected() {
         "  ]\n",
         "}\n",
     ));
-    assert_eq!(codes(&report), ["T4347", "T4347", "T4347"], "{}", report.render_diagnostics());
+    assert_eq!(
+        codes(&report),
+        ["T4347", "T4347", "T4347"],
+        "{}",
+        report.render_diagnostics()
+    );
 }

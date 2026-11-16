@@ -4341,7 +4341,7 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
                 "test \"needs a store\" {\n  let value = read()\n  Void\n}\n",
                 "T4400",
             ),
-                    // The plan closes the clock only under the name `clock`, and no file
+            // The plan closes the clock only under the name `clock`, and no file
             // system at all.
             (
                 "fn wait() -> Void needs { other: Clock } {\n  Void\n}\n\n\

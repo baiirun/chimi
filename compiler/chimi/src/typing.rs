@@ -8003,7 +8003,9 @@ impl ProjectTypeChecker {
         match &self.types[self.resolve_inference_type(type_id).raw() as usize] {
             CanonicalType::Generic(symbol) => generics.contains(symbol),
             CanonicalType::Named { arguments, .. } => arguments.iter().copied().any(mentions),
-            CanonicalType::FailureSetValue(row) => self.failure_row_mentions_generics(*row, generics),
+            CanonicalType::FailureSetValue(row) => {
+                self.failure_row_mentions_generics(*row, generics)
+            }
             CanonicalType::Function(contract)
             | CanonicalType::PolymorphicFunction { contract, .. } => contract_mentions(contract),
             CanonicalType::Record(fields) => fields.iter().any(|field| mentions(field.type_id)),
@@ -8014,8 +8016,13 @@ impl ProjectTypeChecker {
 
     fn failure_row_mentions_generics(&self, row: FailureRowId, generics: &[SymbolId]) -> bool {
         let row = &self.failure_rows[row.raw() as usize];
-        row.parameters.iter().any(|parameter| generics.contains(parameter))
-            || row.exclusions.iter().any(|exclusion| generics.contains(&exclusion.parameter))
+        row.parameters
+            .iter()
+            .any(|parameter| generics.contains(parameter))
+            || row
+                .exclusions
+                .iter()
+                .any(|exclusion| generics.contains(&exclusion.parameter))
             || row.variant_arguments.iter().any(|arguments| {
                 arguments
                     .arguments
@@ -8026,7 +8033,9 @@ impl ProjectTypeChecker {
 
     fn needs_row_mentions_generics(&self, row: NeedsRowId, generics: &[SymbolId]) -> bool {
         let row = &self.needs_rows[row.raw() as usize];
-        row.parameters.iter().any(|parameter| generics.contains(parameter))
+        row.parameters
+            .iter()
+            .any(|parameter| generics.contains(parameter))
             || row
                 .entries
                 .iter()
@@ -8067,7 +8076,9 @@ impl ProjectTypeChecker {
                 (true, true) => true,
                 (true, false) | (false, true) => false,
                 (false, false) => actual_lists.iter().all(|actual| {
-                    expected_lists.iter().any(|expected| agree(actual, expected))
+                    expected_lists
+                        .iter()
+                        .any(|expected| agree(actual, expected))
                 }),
             }
         };
@@ -8145,7 +8156,9 @@ impl ProjectTypeChecker {
                             // there also denotes the task's failure row.
                             let failures_index = match self.resolved.standard_symbol(symbol) {
                                 Some(StandardSymbol::Type(
-                                    StandardType::Task | StandardType::ProcessSpec | StandardType::SelectEvent,
+                                    StandardType::Task
+                                    | StandardType::ProcessSpec
+                                    | StandardType::SelectEvent,
                                 )) => Some(1),
                                 Some(StandardSymbol::Type(StandardType::ProcessHandoffSpec)) => {
                                     Some(2)
@@ -8154,10 +8167,10 @@ impl ProjectTypeChecker {
                             };
                             if let Some(index) = failures_index
                                 && let Some(TypeUse::Named {
-                                semantic_id: failures_id,
-                                path: failures_path,
-                                ..
-                            }) = arguments.get(index)
+                                    semantic_id: failures_id,
+                                    path: failures_path,
+                                    ..
+                                }) = arguments.get(index)
                                 && let (Some(name), Some(failures)) = (
                                     failures_path.last(),
                                     self.resolved_type_symbol(module_id, *failures_id),
@@ -9829,16 +9842,14 @@ impl ProjectTypeChecker {
                 // Every generic the contract mentions that `inner` leaves open
                 // is kept, the value's own parameters among them.
                 let mut inner_preserved = preserved.to_vec();
-                inner_preserved.extend(
-                    mentioned
-                        .into_iter()
-                        .filter(|generic| {
-                            !inner.values.contains_key(generic)
-                                && !inner.failures.contains_key(generic)
-                        }),
+                inner_preserved.extend(mentioned.into_iter().filter(|generic| {
+                    !inner.values.contains_key(generic) && !inner.failures.contains_key(generic)
+                }));
+                let contract = self.substitute_call_contract_preserving(
+                    contract,
+                    &mut inner,
+                    &inner_preserved,
                 );
-                let contract =
-                    self.substitute_call_contract_preserving(contract, &mut inner, &inner_preserved);
                 self.intern_type(CanonicalType::PolymorphicFunction {
                     parameters,
                     contract,

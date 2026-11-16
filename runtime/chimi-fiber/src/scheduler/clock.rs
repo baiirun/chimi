@@ -80,12 +80,18 @@ impl Clock {
 
     /// Waits until `deadline`: virtual time jumps there (never backwards) and
     /// real time sleeps the thread. Returns true when virtual time moved.
-    pub(super) fn wait_until(&mut self, deadline: Instant) -> bool {
+    /// Under the real clock a signal written to `wake_fd` ends the wait
+    /// early.
+    pub(super) fn wait_until(&mut self, deadline: Instant, wake_fd: Option<i32>) -> bool {
         match self {
             Self::Real { .. } => {
                 let now = self.now();
                 if deadline > now {
-                    std::thread::sleep(Duration::from_nanos((deadline.0 - now.0) as u64));
+                    let wait = Duration::from_nanos((deadline.0 - now.0) as u64);
+                    match wake_fd {
+                        Some(fd) => super::signal::wait_readable(fd, Some(wait)),
+                        None => std::thread::sleep(wait),
+                    }
                 }
                 false
             }
@@ -118,6 +124,8 @@ pub(super) enum TimerTarget {
     Wake(TaskId),
     /// Forces an incarnation whose cleanup has not finished by its deadline.
     ShutdownDeadline(IncarnationId),
+    /// Delivers an injected signal (`Scheduler::inject_signal_at`).
+    Signal(i32),
     /// Fires a task's cancellation scope.
     ScopeDeadline(TaskId, super::ScopeId),
 }
@@ -144,7 +152,10 @@ impl TimerQueue {
     }
 
     pub(super) fn earliest(&self) -> Option<Instant> {
-        self.by_deadline.keys().next().map(|(deadline, _)| *deadline)
+        self.by_deadline
+            .keys()
+            .next()
+            .map(|(deadline, _)| *deadline)
     }
 
     /// Removes and returns the earliest timer whose deadline is at or before

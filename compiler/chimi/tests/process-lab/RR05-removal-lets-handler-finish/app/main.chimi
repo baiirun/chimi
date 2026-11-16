@@ -1,0 +1,62 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// RR05: the body handles `Nap` by sleeping for 1 s, then reporting 1. Main
+// removes it while it sleeps. Removal drains before it cancels (G22): the
+// sleep finishes, the handler reports 1 at 1s, and the next `receive` finds
+// the mailbox empty, so the body ends `cancelled` then, well inside its 5 s
+// deadline. A removal that interrupted the sleep would end the body at 1ms
+// with nothing reported. Main then puts 9 on the report channel itself;
+// it reads the handler's 1 first (outcome 1).
+
+pub enum Message {
+  Nap(report: Sender<Int>)
+}
+
+fn napping(inbox: Inbox<Message>) -> Void needs {
+  clock: Clock
+} {
+  loop naps = 0 {
+    case Process.receive(inbox) {
+      Message.Nap(report) -> {
+        Clock.sleep(Duration.seconds(1))
+        Channel.send(report, 1)
+        naps + 1
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs {
+  clock: Clock
+} {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn received(value: Receive<Int>) -> Int {
+  case value {
+    Receive.Received(number) -> number
+    Receive.Drained -> 0
+  }
+}
+
+pub fn main() -> Int needs {
+  clock: Clock
+} {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(napping, 1, Duration.seconds(5)), Supervisor.Restart.Never)
+  let reports = Channel.bounded(2)
+  Process.send(Supervisor.address(managed), Message.Nap(reports.sender))
+  settle()
+  Supervisor.remove_process(root, managed)
+  Channel.send(reports.sender, 9)
+  let first = received(Channel.receive(reports.receiver))
+  Supervisor.stop(root)
+  first
+}

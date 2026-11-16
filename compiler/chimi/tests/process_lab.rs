@@ -157,7 +157,7 @@ fn malformed_arguments_are_usage_errors() {
     for arguments in [
         &[][..],
         &["sideways"],
-        &["static", "--through", "U13"],
+        &["static", "--through", "U14"],
         &["--scenario", "XX99"],
         &["heap", "--backend", "bytecode"],
         &["static", "core", "static"],

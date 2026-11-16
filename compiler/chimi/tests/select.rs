@@ -112,7 +112,9 @@ fn wait_bounded(mut child: std::process::Child, scratch: &Path) -> Output {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    child.wait_with_output().expect("collect select program output")
+    child
+        .wait_with_output()
+        .expect("collect select program output")
 }
 
 fn success(value: &str) -> String {
@@ -531,7 +533,12 @@ fn a_user_clock_timer_does_not_break_the_commit() {
         ),
         "boundaries",
     );
-    assert_eq!(result.outcome, success("7"), "{}", String::from_utf8_lossy(&result.process.stderr));
+    assert_eq!(
+        result.outcome,
+        success("7"),
+        "{}",
+        String::from_utf8_lossy(&result.process.stderr)
+    );
     // The losing 10 s timer child was cancelled: time steps from 1 s
     // straight to the 21 s sleep, never stopping at 11 s.
     assert_eq!(clock_advances(&result.telemetry), [SECOND, 21 * SECOND]);
@@ -563,7 +570,12 @@ fn a_due_user_clock_timer_keeps_list_order() {
         ),
         "off",
     );
-    assert_eq!(result.outcome, success("115"), "{}", String::from_utf8_lossy(&result.process.stderr));
+    assert_eq!(
+        result.outcome,
+        success("115"),
+        "{}",
+        String::from_utf8_lossy(&result.process.stderr)
+    );
 }
 
 // A parked select wakes when a value is queued on a buffered channel.
@@ -585,7 +597,12 @@ fn a_buffered_send_wakes_a_parked_select() {
         ),
         "off",
     );
-    assert_eq!(result.outcome, success("4"), "{}", String::from_utf8_lossy(&result.process.stderr));
+    assert_eq!(
+        result.outcome,
+        success("4"),
+        "{}",
+        String::from_utf8_lossy(&result.process.stderr)
+    );
 }
 
 // A timeout withdraws a parked select instead of waiting for it.
@@ -611,7 +628,12 @@ fn a_timeout_withdraws_a_parked_select() {
         ),
         "off",
     );
-    assert_eq!(result.outcome, success("101"), "{}", String::from_utf8_lossy(&result.process.stderr));
+    assert_eq!(
+        result.outcome,
+        success("101"),
+        "{}",
+        String::from_utf8_lossy(&result.process.stderr)
+    );
 }
 
 // ----- Mixed events ---------------------------------------------------------
@@ -757,7 +779,11 @@ fn an_event_is_task_local() {
         "  Task.result(task)\n",
         "}\n",
     ));
-    assert_eq!(captured, ["T4240"], "a started task cannot capture an event");
+    assert_eq!(
+        captured,
+        ["T4240"],
+        "a started task cannot capture an event"
+    );
     let sent = type_codes(concat!(
         "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
         "  let channel = Channel.bounded(1)\n",

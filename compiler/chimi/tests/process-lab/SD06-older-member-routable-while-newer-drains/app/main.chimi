@@ -9,11 +9,13 @@ import std/supervisor as Supervisor
 
 // SD06: the declared member `counter` is the oldest, so `stop` ends it last.
 // Main queues `Forward(1, report)` on the newest member and calls `stop`
-// before it runs. `stop` first removes routing for the whole subtree, then
-// stops the newest member, which drains the request and sends `Add(1)` to
-// `counter`. `counter` is still running, but already unrouted, so the send
-// returns `Unavailable` and the newest reports 3. Routing removed member by
-// member would still route to `counter` here, accept the send, and report 1.
+// before it runs. Shutdown is ordered (G22): `stop` closes the supervisor to
+// new members, then stops one member at a time, newest first, and each
+// member is unrouted only when its own turn comes. The newest member drains
+// the request and sends `Add(1)` to `counter`, which stops after it and is
+// still routable, so the send is accepted and the newest reports 1; `counter`
+// then drains it. Routing removed for the whole subtree first would make the
+// send `Unavailable` and report 3.
 
 pub enum CounterMessage {
   Add(amount: Int)
@@ -51,7 +53,9 @@ fn forwarding(inbox: Inbox<ForwarderMessage>) -> Void {
   }
 }
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
@@ -62,10 +66,12 @@ fn received(value: Receive<Int>) -> Int {
   }
 }
 
-pub fn main() -> Int needs { clock: Clock } {
+pub fn main() -> Int needs {
+  clock: Clock
+} {
   let member = Process.spec(counting, 1, Duration.seconds(1))
-    |> Process.register(counter)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(counter)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let root = Supervisor.start(Supervisor.policy([member], 2, Supervisor.restarts(0, Duration.seconds(30))))
   let newest = Supervisor.start_process(root, Process.spec(forwarding, 1, Duration.seconds(1)), Supervisor.Restart.Never)
   let reports = Channel.bounded(1)

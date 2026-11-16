@@ -78,14 +78,34 @@ const fn runtime(id: &'static str, arity: usize, implementation: StandardFunctio
 }
 
 pub(crate) const OPERATIONS: &[Operation] = &[
-    pure("std/option.unwrap_or_fail", 2, StandardFunction::OptionUnwrapOrFail),
+    pure(
+        "std/option.unwrap_or_fail",
+        2,
+        StandardFunction::OptionUnwrapOrFail,
+    ),
     pure("std/int.parse", 1, StandardFunction::IntParse),
     pure("std/int.to_text", 1, StandardFunction::IntToText),
     pure("std/int.add_checked", 2, StandardFunction::IntAddChecked),
-    pure("std/int.subtract_checked", 2, StandardFunction::IntSubtractChecked),
-    pure("std/int.multiply_checked", 2, StandardFunction::IntMultiplyChecked),
-    pure("std/int.divide_checked", 2, StandardFunction::IntDivideChecked),
-    pure("std/int.remainder_checked", 2, StandardFunction::IntRemainderChecked),
+    pure(
+        "std/int.subtract_checked",
+        2,
+        StandardFunction::IntSubtractChecked,
+    ),
+    pure(
+        "std/int.multiply_checked",
+        2,
+        StandardFunction::IntMultiplyChecked,
+    ),
+    pure(
+        "std/int.divide_checked",
+        2,
+        StandardFunction::IntDivideChecked,
+    ),
+    pure(
+        "std/int.remainder_checked",
+        2,
+        StandardFunction::IntRemainderChecked,
+    ),
     pure("std/int.modulo", 2, StandardFunction::IntModulo),
     // Native rather than `concat([text, other])`: appending in a loop is the
     // common way to build text, and the list would be one allocation per step.
@@ -113,37 +133,65 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/map.put", 3, StandardFunction::MapPut),
     pure("std/map.remove", 2, StandardFunction::MapRemove),
     pure("std/map.size", 1, StandardFunction::MapSize),
-    pure("std/map.reduce_entries", 3, StandardFunction::MapReduceEntries),
+    pure(
+        "std/map.reduce_entries",
+        3,
+        StandardFunction::MapReduceEntries,
+    ),
     pure("std/set.empty", 0, StandardFunction::SetEmpty),
     pure("std/set.contains", 2, StandardFunction::SetContains),
     pure("std/set.add", 2, StandardFunction::SetAdd),
     pure("std/set.remove", 2, StandardFunction::SetRemove),
     pure("std/set.size", 1, StandardFunction::SetSize),
     pure("std/set.reduce_items", 3, StandardFunction::SetReduceItems),
-
     // std/json: `boolean`, `text`, `array`, and `object` are Chimi.
     pure("std/json.decode", 1, StandardFunction::JsonDecode),
     pure("std/json.encode", 1, StandardFunction::JsonEncode),
     pure("std/json.int", 1, StandardFunction::JsonInt),
-    pure("std/json.number_to_int", 1, StandardFunction::JsonNumberToInt),
-    pure("std/json.number_to_decimal", 1, StandardFunction::JsonNumberToDecimal),
-
+    pure(
+        "std/json.number_to_int",
+        1,
+        StandardFunction::JsonNumberToInt,
+    ),
+    pure(
+        "std/json.number_to_decimal",
+        1,
+        StandardFunction::JsonNumberToDecimal,
+    ),
     // std/debug
     pure("std/debug.render", 1, StandardFunction::DebugRender),
-    pure("std/debug.render_indented", 1, StandardFunction::DebugRenderIndented),
+    pure(
+        "std/debug.render_indented",
+        1,
+        StandardFunction::DebugRenderIndented,
+    ),
     pure("std/debug.crash", 1, StandardFunction::DebugCrash),
-
     // std/decimal: `+`, `-`, `*`, and comparisons are operators, so only the
     // checked forms and the constructors that validate in Chimi are native.
     pure("std/decimal.scaled", 2, StandardFunction::DecimalScaled),
     pure("std/decimal.read", 1, StandardFunction::DecimalRead),
     pure("std/decimal.to_text", 1, StandardFunction::DecimalToText),
-    pure("std/decimal.add_checked", 2, StandardFunction::DecimalAddChecked),
-    pure("std/decimal.subtract_checked", 2, StandardFunction::DecimalSubtractChecked),
-    pure("std/decimal.multiply_checked", 2, StandardFunction::DecimalMultiplyChecked),
-    pure("std/decimal.divide_rounded", 4, StandardFunction::DecimalDivideRounded),
+    pure(
+        "std/decimal.add_checked",
+        2,
+        StandardFunction::DecimalAddChecked,
+    ),
+    pure(
+        "std/decimal.subtract_checked",
+        2,
+        StandardFunction::DecimalSubtractChecked,
+    ),
+    pure(
+        "std/decimal.multiply_checked",
+        2,
+        StandardFunction::DecimalMultiplyChecked,
+    ),
+    pure(
+        "std/decimal.divide_rounded",
+        4,
+        StandardFunction::DecimalDivideRounded,
+    ),
     pure("std/decimal.to_float", 1, StandardFunction::DecimalToFloat),
-
     // std/bytes: the Chimi wrappers pass an `IntLayout` as its private code.
     pure("std/bytes.from", 1, StandardFunction::BytesFrom),
     pure("std/bytes.length", 1, StandardFunction::BytesLength),
@@ -153,15 +201,25 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/bytes.slice", 2, StandardFunction::BytesSlice),
     pure("std/bytes.to_list", 1, StandardFunction::BytesToList),
     pure("std/bytes.from_text", 1, StandardFunction::BytesFromText),
-    pure("std/bytes.to_text_lossy", 1, StandardFunction::BytesToTextLossy),
-    pure("std/bytes.valid_utf8_length", 1, StandardFunction::BytesValidUtf8Length),
-    pure("std/bytes.read_int_code", 3, StandardFunction::BytesReadIntCode),
+    pure(
+        "std/bytes.to_text_lossy",
+        1,
+        StandardFunction::BytesToTextLossy,
+    ),
+    pure(
+        "std/bytes.valid_utf8_length",
+        1,
+        StandardFunction::BytesValidUtf8Length,
+    ),
+    pure(
+        "std/bytes.read_int_code",
+        3,
+        StandardFunction::BytesReadIntCode,
+    ),
     pure("std/bytes.int_bytes", 2, StandardFunction::BytesIntBytes),
-
     // std/embed: build-time only; see `CoreLowerer::embed`.
     pure("std/embed.text", 1, StandardFunction::EmbedText),
     pure("std/embed.bytes", 1, StandardFunction::EmbedBytes),
-
     // std/cause: `kind` and `reason` map a private code to their enums in source.
     pure("std/cause.context", 2, StandardFunction::CauseContext),
     pure("std/cause.of", 1, StandardFunction::CauseOf),
@@ -170,11 +228,23 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/cause.frames", 1, StandardFunction::CauseFrames),
     pure("std/cause.caused_by", 1, StandardFunction::CauseCausedBy),
     pure("std/cause.suppressed", 1, StandardFunction::CauseSuppressed),
-    pure("std/cause.reason_code", 1, StandardFunction::CauseReasonCode),
+    pure(
+        "std/cause.reason_code",
+        1,
+        StandardFunction::CauseReasonCode,
+    ),
     pure("std/cause.to_text", 1, StandardFunction::CauseToText),
     // std/test: assertions defect at their own call (testing.md, Assertions).
-    pure("std/test.assert_equal", 2, StandardFunction::TestAssertEqual),
-    pure("std/test.assert_not_equal", 2, StandardFunction::TestAssertNotEqual),
+    pure(
+        "std/test.assert_equal",
+        2,
+        StandardFunction::TestAssertEqual,
+    ),
+    pure(
+        "std/test.assert_not_equal",
+        2,
+        StandardFunction::TestAssertNotEqual,
+    ),
     pure("std/test.assert", 2, StandardFunction::TestAssert),
     pure("std/test.fail", 1, StandardFunction::TestFail),
     // std/resource
@@ -187,10 +257,19 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     known_constructor("std/option.Option.Some", StandardConstructor::OptionSome),
     known_type("std/order.Ordering", StandardType::Ordering),
     known_constructor("std/order.Ordering.Less", StandardConstructor::OrderingLess),
-    known_constructor("std/order.Ordering.Equal", StandardConstructor::OrderingEqual),
-    known_constructor("std/order.Ordering.Greater", StandardConstructor::OrderingGreater),
+    known_constructor(
+        "std/order.Ordering.Equal",
+        StandardConstructor::OrderingEqual,
+    ),
+    known_constructor(
+        "std/order.Ordering.Greater",
+        StandardConstructor::OrderingGreater,
+    ),
     known_type("std/int.ParseError", StandardType::IntParseError),
-    known_constructor("std/int.ParseError.Empty", StandardConstructor::IntParseEmpty),
+    known_constructor(
+        "std/int.ParseError.Empty",
+        StandardConstructor::IntParseEmpty,
+    ),
     known_constructor(
         "std/int.ParseError.InvalidDigit",
         StandardConstructor::IntParseInvalidDigit,
@@ -217,7 +296,10 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
         "std/json.DecodeError.InvalidJson",
         StandardConstructor::DecodeInvalidJson,
     ),
-    known_type("std/json.ConversionError", StandardType::JsonConversionError),
+    known_type(
+        "std/json.ConversionError",
+        StandardType::JsonConversionError,
+    ),
     known_constructor(
         "std/json.ConversionError.NotInteger",
         StandardConstructor::JsonNotInteger,
@@ -380,7 +462,10 @@ pub(crate) fn verify_tree(sources: Vec<ProjectSource>) -> StandardTreeVerificati
     // A stated requirement names a function of a module the tree holds; its
     // generic is checked when the function's contract is lowered.
     for stated in STATED_REQUIREMENTS {
-        let module = stated.function.split_once('.').map_or(stated.function, |(module, _)| module);
+        let module = stated
+            .function
+            .split_once('.')
+            .map_or(stated.function, |(module, _)| module);
         if !modules.contains(module) {
             continue;
         }
@@ -391,11 +476,17 @@ pub(crate) fn verify_tree(sources: Vec<ProjectSource>) -> StandardTreeVerificati
             })
         });
         if !declared {
-            mismatches.push(format!("stated requirement names {}, which is not declared", stated.function));
+            mismatches.push(format!(
+                "stated requirement names {}, which is not declared",
+                stated.function
+            ));
         }
     }
     for entry in RUNTIME_KNOWN {
-        let module = entry.id.split_once('.').map_or(entry.id, |(module, _)| module);
+        let module = entry
+            .id
+            .split_once('.')
+            .map_or(entry.id, |(module, _)| module);
         if !modules.contains(module) {
             continue;
         }
@@ -409,7 +500,10 @@ pub(crate) fn verify_tree(sources: Vec<ProjectSource>) -> StandardTreeVerificati
             symbol.module_id.is_some() && resolved.standard_symbol(symbol.id) == Some(identity)
         });
         if !declared {
-            mismatches.push(format!("runtime-known {} is not declared in source", entry.id));
+            mismatches.push(format!(
+                "runtime-known {} is not declared in source",
+                entry.id
+            ));
         }
     }
     StandardTreeVerification {

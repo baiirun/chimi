@@ -21,7 +21,10 @@ fn programs() -> Vec<PathBuf> {
         let module = module.unwrap().path();
         for entry in std::fs::read_dir(&module).unwrap() {
             let path = entry.unwrap().path();
-            if path.extension().is_some_and(|extension| extension == "chimi") {
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "chimi")
+            {
                 programs.push(path);
             }
         }
@@ -198,7 +201,11 @@ fn module(path: &str, text: &str) -> ProjectSource {
 // Conformance: the former built-in qualifiers are modules a program imports.
 #[test]
 fn list_text_and_int_are_unresolved_without_an_import() {
-    for call in ["List.length([1])", "Text.append(\"a\", \"b\")", "Int.to_text(1)"] {
+    for call in [
+        "List.length([1])",
+        "Text.append(\"a\", \"b\")",
+        "Int.to_text(1)",
+    ] {
         let source = format!("pub fn main() {{ {call} }}\n");
         assert_eq!(
             diagnostic_codes(vec![module("main", &source)]),
@@ -213,7 +220,10 @@ fn list_text_and_int_are_unresolved_without_an_import() {
 #[test]
 fn a_workspace_module_under_std_is_rejected() {
     let codes = diagnostic_codes(vec![
-        module("main", "import std/list as List\npub fn main() -> Int { List.length([1]) }\n"),
+        module(
+            "main",
+            "import std/list as List\npub fn main() -> Int { List.length([1]) }\n",
+        ),
         module("std/list", "pub fn length(list: List<Int>) -> Int { 0 }\n"),
     ]);
     assert_eq!(codes, ["N3102"]);
@@ -295,7 +305,9 @@ fn a_standard_function_requirement_is_reported_at_the_call() {
     assert_eq!(diagnostics.len(), 1, "{}", report.render_diagnostics());
     assert_eq!(diagnostics[0].code(), "T4301");
     assert!(
-        diagnostics[0].message().starts_with("`List.sort` needs `T` to be ordered"),
+        diagnostics[0]
+            .message()
+            .starts_with("`List.sort` needs `T` to be ordered"),
         "{}",
         diagnostics[0].message()
     );
@@ -326,13 +338,22 @@ fn transitive_standard_imports_are_loaded() {
 #[test]
 fn map_and_set_state_their_key_requirements_at_the_call() {
     let ordered = |function: &str, generic: &str| {
-        Some(("T4301", format!("`{function}` needs `{generic}` to be ordered")))
+        Some((
+            "T4301",
+            format!("`{function}` needs `{generic}` to be ordered"),
+        ))
     };
     let equatable = |function: &str, generic: &str| {
-        Some(("T4300", format!("`{function}` needs `{generic}` to be equatable")))
+        Some((
+            "T4300",
+            format!("`{function}` needs `{generic}` to be equatable"),
+        ))
     };
     let cases = [
-        ("Map.keys(Map.put(Map.empty(), { a: 1 }, 2))", ordered("Map.keys", "K")),
+        (
+            "Map.keys(Map.put(Map.empty(), { a: 1 }, 2))",
+            ordered("Map.keys", "K"),
+        ),
         (
             "Map.reduce(Map.put(Map.empty(), { a: 1 }, 2), 0, fn(total, _key, value) { total + value })",
             ordered("Map.reduce", "K"),
@@ -346,8 +367,14 @@ fn map_and_set_state_their_key_requirements_at_the_call() {
             None,
         ),
         ("Map.from([(fn() { 1 }, 2)])", equatable("Map.from", "K")),
-        ("Map.values(Map.put(Map.empty(), { a: 1 }, 2))", ordered("Map.values", "K")),
-        ("Map.entries(Map.put(Map.empty(), { a: 1 }, 2))", ordered("Map.entries", "K")),
+        (
+            "Map.values(Map.put(Map.empty(), { a: 1 }, 2))",
+            ordered("Map.values", "K"),
+        ),
+        (
+            "Map.entries(Map.put(Map.empty(), { a: 1 }, 2))",
+            ordered("Map.entries", "K"),
+        ),
         (
             "Map.map_values(Map.put(Map.empty(), { a: 1 }, 2), fn(value) { value + 1 })",
             ordered("Map.map_values", "K"),
@@ -360,7 +387,10 @@ fn map_and_set_state_their_key_requirements_at_the_call() {
             "Map.each(Map.put(Map.empty(), { a: 1 }, 2), fn(_key, _value) { Void })",
             ordered("Map.each", "K"),
         ),
-        ("Set.to_list(Set.add(Set.empty(), { a: 1 }))", ordered("Set.to_list", "T")),
+        (
+            "Set.to_list(Set.add(Set.empty(), { a: 1 }))",
+            ordered("Set.to_list", "T"),
+        ),
         (
             "Set.filter(Set.add(Set.empty(), { a: 1 }), fn(_item) { True })",
             ordered("Set.filter", "T"),
@@ -383,7 +413,12 @@ fn map_and_set_state_their_key_requirements_at_the_call() {
         let found = report
             .diagnostics()
             .iter()
-            .map(|diagnostic| (diagnostic.code().to_owned(), diagnostic.message().to_owned()))
+            .map(|diagnostic| {
+                (
+                    diagnostic.code().to_owned(),
+                    diagnostic.message().to_owned(),
+                )
+            })
             .collect::<Vec<_>>();
         match expected {
             None => assert!(found.is_empty(), "{call}: {found:?}"),
