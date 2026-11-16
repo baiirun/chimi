@@ -149,6 +149,9 @@ pub(crate) enum StandardType {
     /// `std/watch.Subscription<T>`: receives a watch's latest unseen value;
     /// exclusive, like a Receiver.
     WatchSubscription,
+    /// `std/result.Result<T, E>`, which `Task.results` builds. Declared only in
+    /// source; `std/task` loads `std/result`.
+    Result,
 }
 
 impl StandardType {
@@ -227,6 +230,7 @@ impl StandardType {
             Self::Cause => "Cause",
             Self::BroadcastPublisher | Self::WatchPublisher => "Publisher",
             Self::WatchSubscription => "Subscription",
+            Self::Result => "Result",
         }
     }
 
@@ -288,7 +292,8 @@ impl StandardType {
             | Self::Bytes
             | Self::Instant
             | Self::Timestamp
-            | Self::Timeout => StandardProperties::Structural,
+            | Self::Timeout
+            | Self::Result => StandardProperties::Structural,
             Self::Cause => StandardProperties::Opaque(
                 "a `Cause`, diagnostic data that equality and order never read",
             ),
@@ -416,6 +421,13 @@ pub(crate) enum StandardFunction {
     TaskTimeout,
     /// `Task.deadline(operation, at)`.
     TaskDeadline,
+    /// `Task.all(operations)`: every success in input order, or the first
+    /// expected failure after the other children drain.
+    TaskAll,
+    /// `Task.results(operations)`: every outcome as a `Result`, in input order.
+    TaskResults,
+    /// `Task.race(operations)`: the first outcome after the others drain.
+    TaskRace,
     // `std/select`, in `CHIMI_INTRINSIC_SELECT_*` order. Building an event
     // parks nothing and consumes nothing; `Select.first` waits.
     SelectReceive,
@@ -557,7 +569,7 @@ pub(crate) enum StandardFunction {
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 102] = [
+    pub(crate) const ALL: [Self; 105] = [
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -645,6 +657,9 @@ impl StandardFunction {
         Self::ClockStartingAt,
         Self::TaskTimeout,
         Self::TaskDeadline,
+        Self::TaskAll,
+        Self::TaskResults,
+        Self::TaskRace,
         Self::SelectReceive,
         Self::SelectInbox,
         Self::SelectTask,
@@ -719,7 +734,10 @@ impl StandardFunction {
             | Self::TaskResult
             | Self::TaskCancel
             | Self::TaskTimeout
-            | Self::TaskDeadline => Some(StandardModule::Task),
+            | Self::TaskDeadline
+            | Self::TaskAll
+            | Self::TaskResults
+            | Self::TaskRace => Some(StandardModule::Task),
             Self::ChannelSend
             | Self::ChannelReceive
             | Self::ChannelClose
@@ -943,6 +961,9 @@ impl StandardFunction {
             Self::ClockStartingAt => "starting_at",
             Self::TaskTimeout => "timeout",
             Self::TaskDeadline => "deadline",
+            Self::TaskAll => "all",
+            Self::TaskResults => "results",
+            Self::TaskRace => "race",
             Self::SelectReceive => "receive",
             Self::SelectInbox => "inbox",
             Self::SelectTask => "task",
@@ -1118,6 +1139,9 @@ impl StandardFunction {
             Self::TaskStart
                 | Self::TaskResult
                 | Self::TaskCancel
+                | Self::TaskAll
+                | Self::TaskResults
+                | Self::TaskRace
                 | Self::ChannelSend
                 | Self::ChannelReceive
                 | Self::ChannelClose
@@ -1242,6 +1266,10 @@ pub(crate) enum StandardConstructor {
     DownDefected,
     DownStopped,
     DownUnavailable,
+    /// `std/result.Result.Ok(value: T)`.
+    ResultOk,
+    /// `std/result.Result.Err(error: E)`.
+    ResultErr,
     /// `HandoffError.CapacityReached(argument: A)`.
     HandoffCapacityReached,
     /// `HandoffError.Stopped(argument: A)`.
@@ -1249,7 +1277,7 @@ pub(crate) enum StandardConstructor {
 }
 
 impl StandardConstructor {
-    pub(crate) const ALL: [Self; 51] = [
+    pub(crate) const ALL: [Self; 53] = [
         Self::IntParseEmpty,
         Self::IntParseInvalidDigit,
         Self::IntParseOutOfRange,
@@ -1299,6 +1327,8 @@ impl StandardConstructor {
         Self::DownDefected,
         Self::DownStopped,
         Self::DownUnavailable,
+        Self::ResultOk,
+        Self::ResultErr,
         Self::HandoffCapacityReached,
         Self::HandoffStopped,
     ];
@@ -1341,6 +1371,7 @@ impl StandardConstructor {
                 StandardType::SupervisorStartError
             }
             Self::TimeoutTimedOut => StandardType::Timeout,
+            Self::ResultOk | Self::ResultErr => StandardType::Result,
             Self::DownReturned
             | Self::DownFailed
             | Self::DownDefected
@@ -1407,6 +1438,7 @@ impl StandardConstructor {
             | StandardType::ProcessHandoffSpec => None,
             // Written type-qualified, `Timeout.TimedOut`, as the spec does.
             StandardType::Timeout => None,
+            StandardType::Result => None,
             StandardType::Console
             | StandardType::FileSystem
             | StandardType::Map
@@ -1465,6 +1497,8 @@ impl StandardConstructor {
             Self::StartNameTaken => "NameTaken",
             Self::StartStopped => "Stopped",
             Self::TimeoutTimedOut => "TimedOut",
+            Self::ResultOk => "Ok",
+            Self::ResultErr => "Err",
             Self::DownReturned => "Returned",
             Self::DownFailed => "Failed",
             Self::DownDefected => "Defected",
@@ -1527,6 +1561,8 @@ impl StandardConstructor {
             Self::StartNameTaken => &["name"],
             Self::HandoffCapacityReached | Self::HandoffStopped => &["argument"],
             Self::TimeoutTimedOut => &["limit"],
+            Self::ResultOk => &["value"],
+            Self::ResultErr => &["error"],
             Self::RestartNever
             | Self::RestartOnDefect
             | Self::StartCapacityReached
@@ -1595,11 +1631,14 @@ pub(crate) enum StandardGeneric {
     SupervisorStartProcessFailures,
     SupervisorAddressMessage,
     SupervisorRemoveMessage,
-    /// `Task.timeout` and `Task.deadline` share these: each call instantiates
-    /// them afresh.
+    /// `Task.timeout`, `Task.deadline`, `Task.all`, `Task.results`, and
+    /// `Task.race` share these: each call instantiates them afresh.
     TimeoutValue,
     TimeoutFailures,
     TimeoutNeeds,
+    /// `std/result.Result<T, E>`'s parameters, which `Ok` and `Err` take.
+    ResultValue,
+    ResultError,
     /// The `std/select` functions share these, as the timeouts do: `A`, the
     /// event's value; `F`, its mapping function's failures; `R`, that
     /// function's needs; `T`, what the source delivers; `E`, a task's failures.
@@ -1625,7 +1664,7 @@ pub(crate) enum StandardGeneric {
 }
 
 impl StandardGeneric {
-    pub(crate) const ALL: [Self; 47] = [
+    pub(crate) const ALL: [Self; 49] = [
         Self::FileState,
         Self::FileFailures,
         Self::FileNeeds,
@@ -1655,6 +1694,8 @@ impl StandardGeneric {
         Self::TimeoutValue,
         Self::TimeoutFailures,
         Self::TimeoutNeeds,
+        Self::ResultValue,
+        Self::ResultError,
         Self::SelectValue,
         Self::SelectFailures,
         Self::SelectNeeds,
@@ -1717,6 +1758,8 @@ impl StandardGeneric {
             Self::TimeoutValue => "T",
             Self::TimeoutFailures => "E",
             Self::TimeoutNeeds => "R",
+            Self::ResultValue => "T",
+            Self::ResultError => "E",
             Self::SelectValue => "A",
             Self::SelectFailures => "F",
             Self::SelectNeeds => "R",

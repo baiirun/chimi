@@ -1195,6 +1195,7 @@ impl Scheduler {
     pub(super) fn disarm_wake_sources(&mut self, task: TaskId) {
         let record = self.tasks.get_mut(&task).expect("parked task");
         record.waiting_on = None;
+        record.waiting_any.clear();
         if let Some(timer) = record.timer.take() {
             self.cancel_timer(timer);
         }

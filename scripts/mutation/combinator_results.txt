@@ -1,0 +1,20 @@
+# mutation run at de8107bd2616ba43960f9299cde0b748caa2bb02
+# combinator_mutations.py: 16 mutants against compiler/chimi
+BASELINE ok  [task_combinators] (53s)
+KILLED       the last child to terminate is first [task_combinators] (7s)
+KILLED       a terminating child does not wake its waiting parent [task_combinators] (7s)
+KILLED       the losers are not cancelled [task_combinators] (13s)
+KILLED       the losers are neither cancelled nor drained [task_combinators] (12s)
+KILLED       Task.race waits for every child [task_combinators] (12s)
+KILLED       Task.results stops at the first failure [task_combinators] (12s)
+KILLED       successes land in finishing order [task_combinators] (12s)
+KILLED       sibling failures are dropped [task_combinators] (12s)
+KILLED       a sibling cause has no reason [task_combinators] (12s)
+KILLED       a stored Err loses its cause [task_combinators] (12s)
+KILLED       an empty race parks instead of defecting [task_combinators] (12s)
+KILLED       a function join keeps only the left failures [task_combinators] (24s)
+KILLED       function types never join [task_combinators] (15s)
+KILLED       T4345 is never reported [task_combinators] (16s)
+KILLED       std/task does not load std/result [task_combinators] (21s)
+KILLED       a combinator's thunks skip the transfer check [task_combinators] (23s)
+# result: every mutant killed
