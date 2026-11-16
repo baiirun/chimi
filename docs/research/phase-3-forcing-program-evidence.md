@@ -13,7 +13,7 @@ that two open questions can be decided from real code:
 Neither question is decided here, and the program adds no sugar. Every
 excerpt below is from
 [`programs/checkout-service`](../../programs/checkout-service/README.md),
-which builds and runs on main, with its contracts as `chimi inspect` prints
+which builds and runs with this change, with its contracts as `chimi inspect` prints
 them.
 
 ## The program

@@ -136,7 +136,13 @@ def tests_run(output: str) -> int:
 
 
 def build_failed(output: str) -> bool:
-    return "error[E" in output or "could not compile" in output or "error: linking" in output
+    # Rust's own codes are E0xxx; a test's output can quote Chimi diagnostics
+    # such as error[E5005], which say nothing about the build.
+    return (
+        re.search(r"error\[E0\d{3}\]", output) is not None
+        or "could not compile" in output
+        or "error: linking" in output
+    )
 
 
 # How a command reports that the mutated source did not build: cargo's own

@@ -503,7 +503,7 @@ fn an_exclusive_value_cannot_be_published() {
 // A `Result` is what its arguments are, though `Ok` and `Err` are written in
 // the runtime's own generics: one that holds a Receiver is exclusive and
 // `T4244`, and one that holds plain data is published freely. Rejects a
-// `Result` whose arguments are never read, which hid the Receiver and left
+// `Result` walk that never bound its arguments, which hid the Receiver and left
 // only the run-time backstop.
 #[test]
 fn a_result_is_as_shareable_as_its_arguments() {

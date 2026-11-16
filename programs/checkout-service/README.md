@@ -41,8 +41,10 @@ The run prints `expected.stdout` exactly, and its outcome record is
   attempt times out and the 800 ms order deadline ends it.
 - Order 6 fails because the express carrier answers first with `NoRoute`;
   `Task.race` takes the first child to finish, failed or not (CHI-245).
-- Order 7 arrives while the workers are paused and waits until they resume. The settings close before the queue, so each worker drops its drained watch from its select and keeps serving.
+- Order 7 arrives while the workers are paused and waits until they resume.
   Its fraud service is unreachable, so it goes on for review and succeeds.
+- The settings close before the queue, so each worker drops its drained
+  watch from its select and keeps serving until the queue drains.
 - The audit counts 2 completed and 5 rejected orders, and the heartbeats the
   idle workers sent while paused.
 
