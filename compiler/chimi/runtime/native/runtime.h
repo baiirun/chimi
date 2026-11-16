@@ -5,7 +5,7 @@
 
 #include "chimi_binding.h"
 
-#define CHIMI_RUNTIME_ABI_VERSION 46
+#define CHIMI_RUNTIME_ABI_VERSION 48
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -282,6 +282,12 @@ enum {
   CHIMI_INTRINSIC_TEST_RECEIVED,
   /* Every C binding operation; the callee symbol's `binding` names which. */
   CHIMI_INTRINSIC_BINDING_CALL,
+  /* std/path: a Path is its text. */
+  CHIMI_INTRINSIC_PATH_FROM,
+  CHIMI_INTRINSIC_PATH_TO_TEXT,
+  /* std/env's host core. */
+  CHIMI_INTRINSIC_ENV_HOST_VARIABLES,
+  CHIMI_INTRINSIC_ENV_HOST_CURRENT_DIRECTORY,
 };
 
 enum {

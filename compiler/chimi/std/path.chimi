@@ -1,0 +1,236 @@
+/// File-system paths as values. A `Path` is text the operating system reads
+/// as a path; it is its own type so a path is never mixed up with other text,
+/// and `std/fs`, `std/env`, and `std/io` all take and give the same `Path`.
+///
+/// Every function here works on the text alone and never asks the file
+/// system, so `Path.normalize("a/link/..")` is `a` even when `link` is a
+/// symbolic link elsewhere. Paths use POSIX rules (macOS and Linux): `/` is
+/// the only separator, and a path that starts with `/` is absolute.
+///
+/// ```text
+/// let config = Path.join(Path.from("/etc/app"), "config.toml")
+/// Path.extension(config)   // Some("toml")
+/// Path.parent(config)      // Some(Path("/etc/app"))
+/// ```
+
+import std/list as List
+import std/option as Option
+import std/text as Text
+
+// 1. Public types.
+
+/// A path, absolute (`/etc/hosts`) or relative to the working directory
+/// (`notes/today.md`). Equatable, ordered, and shareable; two paths are equal
+/// when their text is, so normalize both to compare spellings.
+pub native type Path
+
+// 4. Constructors.
+
+/// Returns the path `text` spells. Any text is a path, including the empty
+/// text; opening one that names no file fails where it is opened.
+///
+/// Cost: O(1).
+pub native fn from(text: Text) -> Path
+
+/// Returns `part` appended to `path` with one `/` between them, so
+/// `join(from("a/"), "/b")` is `a/b`. `part` is always appended, even when it
+/// starts with `/`: joining never replaces a path, so a name read from input
+/// stays inside the directory it was joined to (normalize to remove `..`).
+///
+/// Cost: O(n).
+pub fn join(path: Path, part: Text) -> Path {
+  let base = to_text(path)
+  let tail = trim_leading_separators(part)
+  case (base, tail) {
+    ("", _) -> from(tail)
+    (_, "") -> path
+    _ -> case Text.ends_with(base, "/") {
+      True -> from(Text.append(base, tail))
+      False -> from(Text.concat([base, "/", tail]))
+    }
+  }
+}
+
+// 5. Queries and predicates.
+
+/// Returns the text of `path`.
+///
+/// Cost: O(1).
+pub native fn to_text(path: Path) -> Text
+
+/// Returns `True` when `path` starts with `/`.
+///
+/// Cost: O(1).
+pub fn is_absolute(path: Path) -> Bool {
+  Text.starts_with(to_text(path), "/")
+}
+
+/// Returns the components of `path` in order. An absolute path starts with
+/// `"/"`; empty components and `.` are left out, so `/usr//./bin` is
+/// `["/", "usr", "bin"]` and `.` is `[]`.
+///
+/// Cost: O(n).
+pub fn parts(path: Path) -> List<Text> {
+  let names = names(to_text(path))
+  case is_absolute(path) {
+    True -> List.append(["/"], names)
+    False -> names
+  }
+}
+
+/// Returns the last component of `path`, or `None` when it has none or the
+/// last one is `..`: `name(from("logs/app.log"))` is `Some("app.log")`, and a
+/// trailing `/` is ignored.
+///
+/// Cost: O(n).
+pub fn name(path: Path) -> Option<Text> {
+  case List.last(names(to_text(path))) {
+    Some("..") -> None
+    other -> other
+  }
+}
+
+/// Returns `name` without its extension: `report` for `report.tar.gz`'s
+/// `report.tar`. A name that starts with its only `.`, such as `.bashrc`, is
+/// all stem.
+///
+/// Cost: O(n).
+pub fn stem(path: Path) -> Option<Text> {
+  Option.map(name(path), fn(name) {
+    case split_extension(name) {
+      Some((stem, _)) -> stem
+      None -> name
+    }
+  })
+}
+
+/// Returns the text after the last `.` of `name`, or `None` when there is
+/// none, nothing follows it, or the name starts with its only `.`:
+/// `Some("gz")` for `report.tar.gz`, `None` for `.bashrc` and `notes.`.
+///
+/// Cost: O(n).
+pub fn extension(path: Path) -> Option<Text> {
+  Option.and_then(name(path), fn(name) {
+    case split_extension(name) {
+      Some((_, "")) -> None
+      Some((_, extension)) -> Some(extension)
+      None -> None
+    }
+  })
+}
+
+/// Returns the path without its last component, or `None` when there is no
+/// component to remove: `/etc` for `/etc/hosts`, `/` for `/etc`, `.` for a
+/// single relative name, and `None` for `/`, `.`, and the empty path.
+///
+/// Cost: O(n).
+pub fn parent(path: Path) -> Option<Path> {
+  let absolute = is_absolute(path)
+  case (names(to_text(path)), absolute) {
+    ([], _) -> None
+    ([_], True) -> Some(from("/"))
+    ([_], False) -> Some(from("."))
+    ([..most, _], True) -> Some(from(Text.append("/", Text.join(most, "/"))))
+    ([..most, _], False) -> Some(from(Text.join(most, "/")))
+  }
+}
+
+// 6. Transformations.
+
+/// Returns `path` with its extension replaced by `extension`, or added when
+/// it has none; an empty `extension` removes it. A path with no `name` is
+/// returned unchanged.
+///
+/// Cost: O(n).
+pub fn replace_extension(path: Path, extension: Text) -> Path {
+  case (name(path), stem(path)) {
+    (Some(name), Some(stem)) -> {
+      let renamed = case extension {
+        "" -> stem
+        _ -> Text.concat([stem, ".", extension])
+      }
+      let trimmed = trim_trailing_separators(to_text(path))
+      let directory = Option.unwrap_or(Text.strip_suffix(trimmed, name), "")
+      from(Text.append(directory, renamed))
+    }
+    _ -> path
+  }
+}
+
+/// Returns the shortest path that names the same place by text alone, as Go's
+/// `filepath.Clean` does: repeated `/` and `.` components are removed, and a
+/// `..` removes the name before it. A `..` at the start of a relative path
+/// stays, one directly under `/` is dropped, and the empty path becomes `.`.
+///
+/// Because it reads only the text, normalizing past a symbolic link can name
+/// a different file than the operating system would.
+///
+/// Cost: O(n).
+pub fn normalize(path: Path) -> Path {
+  let absolute = is_absolute(path)
+  let kept = loop (remaining, kept) = (names(to_text(path)), []) {
+    case remaining {
+      [] -> break kept
+      ["..", ..rest] -> case (List.last(kept), absolute) {
+        (Some(".."), _) -> (rest, List.push(kept, ".."))
+        (Some(_), _) -> (rest, List.take(kept, List.length(kept) - 1))
+        (None, True) -> (rest, kept)
+        (None, False) -> (rest, List.push(kept, ".."))
+      }
+      [name, ..rest] -> (rest, List.push(kept, name))
+    }
+  }
+  let body = Text.join(kept, "/")
+  case (absolute, body) {
+    (True, _) -> from(Text.append("/", body))
+    (False, "") -> from(".")
+    (False, _) -> from(body)
+  }
+}
+
+// 8. Private helpers.
+
+// The components of `text` other than empty ones and `.`.
+fn names(text: Text) -> List<Text> {
+  List.filter(Text.split(text, "/"), fn(part) {
+    case part {
+      "" -> False
+      "." -> False
+      _ -> True
+    }
+  })
+}
+
+fn trim_leading_separators(text: Text) -> Text {
+  loop rest = text {
+    case Text.strip_prefix(rest, "/") {
+      Some(shorter) -> shorter
+      None -> break rest
+    }
+  }
+}
+
+// `text` without trailing `/` and `.` components, so it ends with its `name`.
+fn trim_trailing_separators(text: Text) -> Text {
+  loop rest = text {
+    case Text.strip_suffix(rest, "/") {
+      Some(shorter) -> shorter
+      None -> case Text.strip_suffix(rest, "/.") {
+        Some(shorter) -> shorter
+        None -> break rest
+      }
+    }
+  }
+}
+
+// The text before and after the last `.` of `name`, unless the only `.` is
+// its first character (a hidden file's name, all stem) or it is `..`.
+fn split_extension(name: Text) -> Option<(Text, Text)> {
+  case Text.split(name, ".") {
+    [_] -> None
+    ["", _] -> None
+    ["", "", ""] -> None
+    [..most, last] -> Some((Text.join(most, "."), last))
+    [] -> None
+  }
+}
