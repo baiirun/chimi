@@ -346,6 +346,7 @@ fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request
         Task.timeout(fn() {
           write_response(writer, refusal_response(refusal), now(), False, 1, False)
         }, bounds.write)
+        linger(reader, writer)
         break Void
       }
       Next.Arrived(request, keep_alive, minor, rest) -> {
@@ -356,11 +357,37 @@ fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request
         }, bounds.write)
         case keep {
           True -> rest
-          False -> break Void
+          False -> {
+            linger(reader, writer)
+            break Void
+          }
         }
       }
     }
   }
+}
+
+// After a closing answer, stops writing and drops what the client still
+// sends, for up to 2 s, before the connection closes. Closing with unread
+// input would make the client's system answer with a reset, which can throw
+// away the answer before the client reads it (RFC 9112 section 9.6; Go waits
+// 500 ms, nginx up to 5 s).
+fn linger(reader: Reader<NetError>, writer: Writer<NetError>) -> Void needs {
+  clock: Clock
+} {
+  let _ = Result.capture(fn() {
+    Stream.close(writer)
+    Task.timeout(fn() {
+      loop more = True {
+        let chunk = Stream.read(reader)
+        case chunk {
+          Some(_) -> True
+          None -> break Void
+        }
+      }
+    }, Duration.seconds(2))
+  })
+  Void
 }
 
 fn answer<E, R>(request: Request, handle: fn(Request) -> Response errors E needs R) -> Response needs R {

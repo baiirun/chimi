@@ -691,6 +691,26 @@ test "a client that never reads is dropped after a minute" {
   Clock.since(start) |> Test.assert_equal(Duration.seconds(60))
 }
 
+test "a closing answer stops writing, then drops what the client still sends for up to 2 s" {
+  let (client, server) = Net.pair(64)
+  let start = Clock.now()
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, handle) })
+  Stream.write(Net.writer(client), Bytes.from_text("GET /bye HTTP/1.1\r\nHost: x\r\n\r\n"))
+  let answer = undated(Stream.read_all(Net.reader(client), 1024))
+  Stream.write(Net.writer(client), Bytes.from_text("more than the server reads"))
+  Task.result(serving)
+  Clock.since(start) |> Test.assert_equal(Duration.seconds(2))
+  answer |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-length: 3\r\nconnection: close\r\n\r\nbye")
+  let (other, end) = Net.pair(64)
+  let again = Clock.now()
+  let closing = Task.start(fn() { Http.serve_connection(end, Http.defaults, handle) })
+  Stream.write(Net.writer(other), Bytes.from_text("GET /bye HTTP/1.1\r\nHost: x\r\n\r\n"))
+  let _ = Stream.read_all(Net.reader(other), 1024)
+  Stream.close(Net.writer(other))
+  Task.result(closing)
+  Clock.since(again) |> Test.assert_equal(Duration.zero)
+}
+
 test "a handler's defect closes the connection" {
   let (client, server) = Net.pair(8)
   Stream.write(Net.writer(client), Bytes.from_text("GET /crash HTTP/1.1\r\nHost: x\r\n\r\n"))
@@ -731,5 +751,5 @@ test "failed accepts are retried" {
 "#,
         "virtual",
     );
-    assert_passed(&run, 3);
+    assert_passed(&run, 4);
 }
