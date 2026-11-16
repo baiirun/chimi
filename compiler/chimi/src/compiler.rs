@@ -349,6 +349,18 @@ impl TypeReport {
         crate::doc::document_module(&self.typed, module_path)
     }
 
+    /// The documentation of every module `include` accepts, in module order.
+    pub fn documentation_of(&self, include: impl Fn(&str) -> bool) -> Vec<crate::ModuleDocumentation> {
+        self.typed
+            .resolved
+            .semantic
+            .modules
+            .iter()
+            .filter(|module| include(&module.path))
+            .filter_map(|module| crate::doc::document_module(&self.typed, &module.path))
+            .collect()
+    }
+
     /// The symbol named at `offset` in `module_path`, with every place its
     /// name is written.
     pub fn occurrences(&self, module_path: &str, offset: usize) -> Option<crate::SymbolOccurrences> {

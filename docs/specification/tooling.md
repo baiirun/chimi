@@ -1,9 +1,11 @@
 # Tooling
 
 Status: implemented in part (Phase 9). This page is the contract for the
-commands that sit around the compiler: the documentation generator, the linter and editor
-references, rename, completion, inlay types and hover
-documentation now, and more editor features, cross-compilation and debugging as they land.
+commands that sit around the compiler: the documentation generator and its
+static pages, the linter, the post-mortem trace viewer, the `--target` flag
+of `chimi build`, and editor references, rename, completion, inlay types and
+hover documentation now, and more editor features and building for other
+targets as they land.
 The formatter, `chimi check` and `chimi test` keep their own pages
 (`testing.md` for the runner and doc-comment examples).
 
@@ -18,6 +20,10 @@ inference.
 chimi doc [--json] <path>                      the `main` module of one file
 chimi doc [--json] --root <project> <module>   a module of a project
 chimi doc [--json] std/<module>                a module of the standard tree
+chimi doc --html <directory> <path>            static pages for a file's modules
+chimi doc --html <directory> --root <project> <module>
+                                               static pages for a project
+chimi doc --html <directory> std               static pages for the standard tree
 ```
 
 Rules:
@@ -36,7 +42,7 @@ Rules:
   type, because a long initializer is not its contract. Declarations print
   with `\n` line ends whatever the source uses.
 - An item's doc comment is the `///` run directly before the line it starts,
-  the same rule that makes examples (`testing.md`, "Documentation examples"). It is shown
+  or before plain `//` lines directly above it, the same rule that makes examples (`testing.md`, "Documentation examples"). It is shown
   as written, examples included, indented four spaces under the signature.
 - The module's summary is a `///` run at the top of the file that a blank
   line separates from what follows, so it documents no item.
@@ -49,14 +55,30 @@ Rules:
   `kind` is one of `fn`, `struct`, `enum`, `interface`, `const`, `type`,
   `process name`.
 
-Not yet: one item by name (`chimi doc std/option unwrap_or`), and writing a
-whole project's documentation as static pages, which comes with the second
-documentation part.
+- `--html <directory>` MUST write static pages into the directory, creating
+  it: `index.html`, which lists the modules in path order with the first
+  paragraph of each summary, and one page per module at its module path, as
+  `lib/geo.html`, showing what the terminal form shows. For a file or a
+  project the modules are the project's own ones that the entry module
+  reaches, never `std/`; for `std` they are every module of the standard
+  tree, and naming one `std/` module is a usage error. Links between pages are relative, and each page
+  carries its own styles, so the directory can be opened from disk or served
+  as it is. Nothing is printed, and nothing is written when the project does
+  not type-check.
+- On a page, doc comments are read as a small part of Markdown: blank lines
+  separate paragraphs, `- ` lines make a list (an indented line continues an
+  entry), fences make a code block (closed by a fence at least as
+  long), and backticks mark inline code. Anything
+  else shows as written, and all text is HTML-escaped.
+
+Not yet: one item by name (`chimi doc std/option unwrap_or`), links from a
+type in a signature to its declaration, and search.
 
 Implementation: `compiler/chimi/src/doc.rs` builds the documentation from the
-type report (`TypeReport::documentation`); doc-comment lines are read by
-`doc_examples.rs`. Tests: `compiler/chimi/tests/doc.rs` and the fixture
-`tests/fixtures/doc-project`.
+type report (`TypeReport::documentation`, and `TypeReport::documentation_of`
+for many modules); doc-comment lines are read by `doc_examples.rs`, and
+`doc_site.rs` renders the pages. Tests: `compiler/chimi/tests/doc.rs`, the
+fixture `tests/fixtures/doc-project`, and the unit tests in `doc_site.rs`.
 
 ## Linting: `chimi lint`
 
@@ -91,6 +113,7 @@ Rules:
 | `unused-import` | a module alias no code in the module uses, as `Alias.member` or `Alias.Type`, and a member import (`import m.{Name}`) the module never names, alone or as `Name.Variant` |
 | `unused-private` | a private function or constant nothing references; a runner provider (`host`) the runner binds by name is exempt |
 | `unused-binding` | a `let` binding or a pattern binding (in `case`, a destructuring `let`, a clause head) that its scope never reads |
+| `missing-doc` | a public item with no `///` doc comment, which `chimi doc`, hover and completion would show with no explanation; `main` is exempt, since the entry point is the program, not an API |
 
 Parameters are never reported, because a callback or a fake often ignores
 one its type requires, as in Go and Gleam.
@@ -101,9 +124,12 @@ other, or a chain only dead code uses, all count as used. Private structs,
 enums, interfaces and `process name` items, and unused `needs` entries, are
 not checked yet. When a module alias and a member import share a name, as
 `import std/clock as Clock` with `import std/clock.{Clock}`, a qualified path
-such as `Clock.Instant` uses the alias, as the compiler resolves it. A missing doc comment on a
-public item, suggested fixes, and showing findings in the editor come with
-the second linting part.
+such as `Clock.Instant` uses the alias, as the compiler resolves it.
+Suggested fixes (code actions) are not offered yet.
+
+In the editor, the language server MUST publish the same findings for the
+project's own modules as warnings beside the compiler's diagnostics, and
+none while the project has errors.
 
 Implementation: `compiler/chimi/src/lint.rs` (`TypeReport::lint`), over the
 name resolution, which records each local binding's name range. Tests:
@@ -201,3 +227,98 @@ Implementation: `compiler/chimi/src/hints.rs`
 `compiler/chimi/src/doc.rs`, and `Workspace::inlay_hints` and
 `Workspace::hover`. Tests: the workspace unit tests and
 `compiler/chimi-lsp/tests/protocol.rs`.
+
+## Post-mortem traces: `chimi trace show`
+
+Purpose: answer "what went wrong in that run" from the telemetry a run
+already wrote (`runtime-output-channels.md`), without rerunning it or reading
+raw JSON Lines.
+
+```text
+chimi trace show [--all] <trace> [<path> | <directory> | --root <project> <entry>]
+chimi trace show [--all] - ...                 the trace on standard input
+```
+
+Rules:
+
+- The trace is `chimi.runtime.v1` JSON Lines: a run's telemetry, optionally
+  followed by its outcome record (`cat telemetry.jsonl outcome.jsonl`), or a
+  `chimi test --trace` file. Any other record, or a line that is not a JSON
+  object, MUST fail naming its line, and print nothing.
+- For each `execution_id`, in the order first seen, the report MUST give the
+  outcome (`none recorded` without one; a failure's message and cause when
+  the record has them), the number of events, and the computation tree.
+  An outcome record belongs to the execution whose event came just before
+  it.
+- In the tree, each operation shows its kind, its source location and its
+  outcome when that is not success. An operation that did not succeed and
+  none of whose children failed is marked `<- started here`, since that is
+  where the failure began; one that started but never completed says
+  `(did not finish)`. A dependency call shows as
+  `dependency <requirement>.<method>`.
+- By default only operations that did not succeed are listed, with each
+  parent's succeeded children folded into a count, so the failure path
+  stays readable in a long run. `--all` lists every operation.
+- Indentation stops growing 24 levels deep, and deeper lines carry
+  `[depth N]`, so a deep recursion in the program gives a report linear in
+  the trace's size. The tree is walked without recursion, so no depth
+  overflows the viewer.
+- With the program's source (the same file, directory or project and entry
+  the run was built from; a directory for `chimi test <directory>` traces),
+  a location is `path:line:column`; without it, `file <id> at <offset>`.
+  The source is loaded only to name places, so it need not type-check.
+  When a place in the trace is not in the given source, the report still
+  prints and a warning on standard error says the source is likely not the
+  one the run was built from, since its other locations may be wrong too.
+  This catches a missing module or an offset past a file's end, not a
+  different program whose modules happen to cover the same places: the
+  trace carries no fingerprint of its source.
+- After the tree come the process incarnations that ended other than by
+  returning, with their cause and defect message, and the tasks that never
+  ended, with the channel a parked task waits on (from the
+  `channel_receive_parked` or `channel_send_parked` event after its
+  `task_parked`): the usual reasons a concurrent run stops or hangs.
+
+Not yet: timing (the telemetry carries none), channel and clock event
+detail, linking a process's spans to its entry in the process list, telling
+apart two runs concatenated under the same `--execution-id` (their events
+merge), and a browsable or interactive view. A REPL waits on Byron's
+decision.
+
+Implementation: `compiler/chimi/src/trace_view.rs` (`render_trace`) and
+`LoadedProject::source_locator`. Tests: `compiler/chimi/tests/trace_show.rs`.
+
+## Cross-compilation: `chimi build --target`
+
+Purpose: name the platform a build is for, so that building for another
+platform than the one running `chimi` is one flag once it is supported.
+
+```text
+chimi build <path> [-o <executable>] [--target <triple>]
+chimi build --root <project> <entry> [-o <executable>] [--target <triple>]
+```
+
+Rules:
+
+- `<triple>` is a target triple, as `x86_64-unknown-linux-gnu` or
+  `aarch64-apple-darwin`, in the spelling Rust and LLVM use. Two triples
+  name the same target when their architecture, operating system,
+  environment and object format agree: the vendor is ignored, as are
+  `darwin` against `macosx` and a macOS version, so `x86_64-linux-gnu`,
+  `x86_64-pc-linux-gnu`, `arm64-apple-darwin` and `aarch64-apple-macosx14.0`
+  name the hosts they look like. A partial triple, such as `x86_64` alone,
+  names a bare-metal target and is refused as another target.
+- The host's triple MUST build exactly as a build without `--target`.
+- Any other target MUST fail with exit status 1 before compiling anything,
+  naming the target, what building for it needs (the Chimi runtime compiled
+  for it, and a linker and C library for it) and the host it can build for.
+  A string that is not a target triple fails naming the host as an example.
+- `-o` and `--target` may come in either order, each at most once.
+
+Not yet: building for another target. That needs a runtime pack per target
+(the C runtime and fiber library built for it) and a linker and C library for
+it, such as clang with lld and a sysroot, and Cranelift's code generators for
+the other architectures, which this build leaves out.
+
+Implementation: `check_build_target` in `compiler/chimi/src/backend/native.rs`
+and `chimi build` in `main.rs`. Tests: `compiler/chimi/tests/build_target.rs`.

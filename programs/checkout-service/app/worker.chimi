@@ -18,10 +18,12 @@ import std/watch as Watch
 // it does on a broadcast. While paused it stops taking orders but still
 // follows the settings; while idle it sends a heartbeat every second.
 
+/// The service settings a worker follows.
 pub struct Settings {
   paused: Bool,
 }
 
+/// What a worker reports on the broadcast.
 pub enum Event {
   Completed(worker: Text, order: Int, cents: Int)
   Rejected(worker: Text, order: Int)
@@ -36,18 +38,22 @@ pub struct Outcome {
   result: Result<Receipt, StockError | FraudError.Flagged | PaymentError | ShippingError | Timeout>,
 }
 
+/// Settings that pause or resume the workers.
 pub fn settings(paused: Bool) -> Settings {
   Settings(paused)
 }
 
+/// The order an outcome is for.
 pub fn order(outcome: Outcome) -> Int {
   outcome.order
 }
 
+/// How long the checkout took.
 pub fn took(outcome: Outcome) -> Duration {
   outcome.took
 }
 
+/// The receipt, or the failure that ended the checkout.
 pub fn result(outcome: Outcome) -> Result<Receipt, StockError | FraudError.Flagged | PaymentError | ShippingError | Timeout> {
   outcome.result
 }

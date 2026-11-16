@@ -9,6 +9,7 @@ use crate::workspace::{
     DiagnosticOrigin, DocumentPath, DocumentVersion, EditorDiagnostic, FileDiagnostics, LineRange,
     ProjectConfig, Workspace,
 };
+use chimi::diagnostic::Severity;
 use chimi::line_index::{LinePosition, PositionEncoding};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::notification::{
@@ -426,7 +427,10 @@ fn diagnostic(diagnostic: EditorDiagnostic) -> Diagnostic {
     };
     Diagnostic {
         range: range(diagnostic.range),
-        severity: Some(DiagnosticSeverity::ERROR),
+        severity: Some(match diagnostic.severity {
+            Severity::Error => DiagnosticSeverity::ERROR,
+            Severity::Warning => DiagnosticSeverity::WARNING,
+        }),
         code,
         source: Some("chimi".to_owned()),
         message: diagnostic.message,

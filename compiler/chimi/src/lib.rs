@@ -6,6 +6,7 @@ mod compiler;
 pub mod concurrency_lab;
 mod decimal;
 mod doc;
+mod doc_site;
 mod doc_examples;
 pub mod diagnostic;
 mod duration;
@@ -37,6 +38,7 @@ mod standard;
 mod standard_tree;
 mod syntax;
 pub mod testing;
+mod trace_view;
 mod typing;
 
 pub use backend::{BackendOperationProfile, BackendProfile, BackendProgram, BackendValueProfile};
@@ -46,6 +48,8 @@ pub use compiler::{
     ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport, ValuePropertyStatus,
 };
 pub use doc::{ItemDocumentation, ModuleDocumentation};
+pub use doc_site::{DocPage, render_site};
+pub use trace_view::{Locate, TraceError, render_trace};
 pub use formatter::FormatReport;
 pub use hints::TypeHint;
 pub use inspection::{

@@ -142,6 +142,7 @@ pub(crate) fn document_module(
         .iter()
         .find(|module| module.path == module_path)?;
     let text = module.source.text();
+    let nodes = ItemNodes::new(module);
     let items = module
         .declarations
         .iter()
@@ -150,8 +151,8 @@ pub(crate) fn document_module(
         .map(|declaration| ItemDocumentation {
             kind: kind_name(declaration.kind),
             name: declaration.name.text.clone(),
-            signature: signature(typed, module, declaration),
-            doc: item_doc(text, item_start(module, declaration)),
+            signature: signature(typed, &nodes, declaration),
+            doc: nodes.doc(declaration),
         })
         .collect();
     Some(ModuleDocumentation {
@@ -216,10 +217,11 @@ pub(crate) fn doc_comment_at(typed: &TypedProject, module_path: &str, offset: us
         .declarations
         .iter()
         .find(|declaration| declaration.semantic_id == semantic_id)?;
-    item_doc(declaring.source.text(), item_start(declaring, declaration))
+    ItemNodes::new(declaring).doc(declaration)
 }
 
-const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {
+
+pub(crate) const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {
     match kind {
         ModuleDeclarationKind::Struct => "struct",
         ModuleDeclarationKind::Enum => "enum",
@@ -231,25 +233,6 @@ const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {
     }
 }
 
-/// The byte offset where the declaration's own text starts: its item node
-/// without the comments and blank space before it.
-fn item_start(module: &SemanticModule, declaration: &ModuleDeclaration) -> usize {
-    let text = module.source.text();
-    let name = declaration.name.range.start() as usize;
-    let Some(node) = declaration_node(module, declaration) else {
-        return text[..name].rfind('\n').map_or(0, |newline| newline + 1);
-    };
-    let mut start = node.range().start() as usize;
-    loop {
-        let rest = &text[start..name];
-        let trimmed = rest.trim_start();
-        let skipped = rest.len() - trimmed.len();
-        match trimmed.find('\n') {
-            Some(newline) if trimmed.starts_with("//") => start += skipped + newline + 1,
-            _ => return start + skipped,
-        }
-    }
-}
 
 /// The item's doc comment. Only an item that begins its line has one, so the
 /// second of two items on one line does not take the first one's.
@@ -262,14 +245,12 @@ fn item_doc(text: &str, start: usize) -> Option<String> {
         .flatten()
 }
 
-fn signature(
-    typed: &TypedProject,
-    module: &SemanticModule,
-    declaration: &ModuleDeclaration,
-) -> String {
+fn signature(typed: &TypedProject, nodes: &ItemNodes<'_>, declaration: &ModuleDeclaration) -> String {
+    let module = nodes.module;
     let text = module.source.text();
-    let start = item_start(module, declaration);
-    let declared = declaration_node(module, declaration)
+    let start = nodes.item_start(declaration);
+    let declared = nodes
+        .node(declaration)
         .map_or(
             &text[start..declaration.name.range.end() as usize],
             |node| &text[start..(node.range().end() as usize).max(start)],
@@ -315,17 +296,54 @@ fn signature(
 }
 
 /// The module item whose range holds the declaration's name.
-fn declaration_node<'tree>(
+/// A module's top-level syntax nodes in source order, gathered once so each
+/// declaration's node is a binary search rather than a scan.
+pub(crate) struct ItemNodes<'tree> {
     module: &'tree SemanticModule,
-    declaration: &ModuleDeclaration,
-) -> Option<SyntaxNode<'tree>> {
-    let name = declaration.name.range;
-    module
-        .syntax
-        .root()
-        .child_nodes()
-        .into_iter()
-        .find(|node| node.range().start() <= name.start() && name.end() <= node.range().end())
+    nodes: Vec<SyntaxNode<'tree>>,
+}
+
+impl<'tree> ItemNodes<'tree> {
+    pub(crate) fn new(module: &'tree SemanticModule) -> Self {
+        Self {
+            module,
+            nodes: module.syntax.root().child_nodes(),
+        }
+    }
+
+    /// The `///` doc comment of `declaration`, if it has one.
+    pub(crate) fn doc(&self, declaration: &ModuleDeclaration) -> Option<String> {
+        item_doc(self.module.source.text(), self.item_start(declaration))
+    }
+
+    fn node(&self, declaration: &ModuleDeclaration) -> Option<SyntaxNode<'tree>> {
+        let name = declaration.name.range;
+        let after = self
+            .nodes
+            .partition_point(|node| node.range().start() <= name.start());
+        let node = self.nodes.get(after.checked_sub(1)?)?.clone();
+        (name.end() <= node.range().end()).then_some(node)
+    }
+
+    /// The byte offset where the declaration's own text starts: its item node
+    /// without the comments and blank space before it.
+    fn item_start(&self, declaration: &ModuleDeclaration) -> usize {
+        let text = self.module.source.text();
+        let name = declaration.name.range.start() as usize;
+        let Some(node) = self.node(declaration) else {
+            return text[..name].rfind('\n').map_or(0, |newline| newline + 1);
+        };
+        let mut start = node.range().start() as usize;
+        loop {
+            let rest = &text[start..name];
+            let trimmed = rest.trim_start();
+            let skipped = rest.len() - trimmed.len();
+            match trimmed.find('\n') {
+                Some(newline) if trimmed.starts_with("//") => start += skipped + newline + 1,
+                _ => return start + skipped,
+            }
+        }
+    }
 }
 
 /// `pub fn name<T>` from a function declaration: everything before the

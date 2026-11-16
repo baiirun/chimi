@@ -6,11 +6,11 @@ order 5: failed in 800ms, timed out after 800ms
 order 6: failed in 70ms, no route with express
 order 7: ok in 75ms, hold 7003, ch-7, express, 1 of 2 notices
 cause of order 2: expected failure StockError.OutOfStock("sold-out") (app/fakes.chimi:25)
-  context: checking order 2 (app/checkout.chimi:201)
-cause of order 3: expected failure FraudError.Flagged(95) (app/checkout.chimi:126)
-  context: checking order 3 (app/checkout.chimi:201)
+  context: checking order 2 (app/checkout.chimi:220)
+cause of order 3: expected failure FraudError.Flagged(95) (app/checkout.chimi:145)
+  context: checking order 3 (app/checkout.chimi:220)
 cause of order 4: expected failure PaymentError.Declined("card refused") (app/fakes.chimi:59)
-  context: charging order 4 (app/checkout.chimi:203)
-cause of order 5: expected failure Timeout.TimedOut(800ms) (app/checkout.chimi:220)
+  context: charging order 4 (app/checkout.chimi:222)
+cause of order 5: expected failure Timeout.TimedOut(800ms) (app/checkout.chimi:239)
 cause of order 6: expected failure ShippingError.NoRoute("express") (app/fakes.chimi:85)
 audit: 2 completed, 5 rejected, 4 heartbeats, 4000 cents taken

@@ -6,8 +6,11 @@ This is the normative contract for the Phase 6c system modules of the
 [language completion plan](../plans/language-completion-plan.md) (CHI-209):
 the modules a command-line tool or a service uses to reach its operating
 system. It covers runner-provided capabilities, `std/path`, `std/env`,
-`std/fs`, and `std/signal` (CHI-246 to CHI-249). `std/exec`, `std/terminal`,
-and `std/cli` (CHI-250 to CHI-252) add their sections as they land.
+`std/fs`, and `std/signal` (CHI-246 to CHI-249), and `std/exec` (CHI-250) as
+far as it has landed: starting, waiting for and stopping programs. Its pipes
+and captured output, and the cleanup of children at exit, come next.
+`std/terminal` and `std/cli` (CHI-251, CHI-252) add their sections as they
+land.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 modules follow the [standard library conventions](standard-library-conventions.md)
@@ -38,6 +41,7 @@ Each one has a **fixed need name**, listed with it in the registry
 | `std/fs.Files` | `files` | `std/fs.host` |
 | `std/signal.Signals` | `signals` | `std/signal.host` |
 | `std/net.Network` | `network` | `std/net.system` ([network modules](network-modules.md#stdnet)) |
+| `std/exec.Commands` | `commands` | `std/exec.system` |
 
 Rules:
 
@@ -270,6 +274,92 @@ pub fn next(wanted: List<Signal>) -> Signal
   defects there, saying it requires the native runtime. A test supplies a fake
   `{ next: fn(wanted) { ... } }` with `using`, on both backends.
 
+## std/exec
+
+```text
+pub interface Commands {
+  start: fn(Command) -> Child errors ExecError
+}
+pub struct Command { ... }                 // built with the functions below
+pub enum Stdio { Inherit, Null }
+pub struct Child { ... }                   // wait, terminate, kill, release
+pub enum Status { Exited(code: Int), Signaled(signal: Int) }
+pub enum ExecError {
+  NotFound(program: Text), PermissionDenied(program: Text),
+  InvalidDirectory(path: Path), Closed(program: Text),
+  Failed(program: Text, message: Text),
+}
+
+pub fn command(program: Text, arguments: List<Text>) -> Command
+pub fn variable(command: Command, name: Text, value: Text) -> Command
+pub fn environment(command: Command, variables: Map<Text, Text>) -> Command
+pub fn directory(command: Command, path: Path) -> Command
+pub fn stdin(command: Command, stdio: Stdio) -> Command   // and stdout, stderr
+pub fn program(command: Command) -> Text
+pub fn arguments(command: Command) -> List<Text>
+
+// needs { commands: Commands }
+pub fn start(command: Command, use: fn(Child) -> T) -> T
+pub fn run(command: Command) -> Status
+
+pub fn wait(child: Child) -> Status
+pub fn terminate(child: Child) -> Void
+pub fn kill(child: Child) -> Void
+pub fn succeeded(status: Status) -> Bool
+pub fn child(wait, terminate, kill, release) -> Child  // for fakes
+pub fn host_for_tests() -> Commands                      // test-only
+```
+
+- A `Command` is a value; building one MUST start nothing. `command` inherits
+  the parent's environment, working directory and standard streams.
+  `variable` sets one variable over what the command inherits, and a later
+  value for a name wins; `environment` replaces the inherited environment
+  with exactly its map. A variable name that is empty or holds `=`, or any
+  text holding U+0000, is a defect when the command starts.
+- There is no shell. The arguments MUST reach the program exactly as given. A
+  program name without a `/` is looked up on the parent's `PATH` (on
+  `/usr/bin:/bin` when it is unset or empty), before the child is created, so
+  `NotFound` and `PermissionDenied` are reported by the start itself; a
+  directory on `PATH` named like the program is passed over. A name with a
+  `/` is found from the parent's working directory, even when `directory`
+  gives the child another. A working directory that does not exist, is not a
+  directory or cannot be entered is `InvalidDirectory`, also reported by the
+  start. A file the kernel cannot run (no `#!` line, wrong format) is
+  `Failed`, and `Failed` carries only the operating system's words.
+- `start(command, use)` is the only way to hold a `Child`: when `use` returns,
+  fails or is cancelled, a child still running MUST be killed with SIGKILL and
+  reaped, so no child and no zombie outlives the `start` that made it. A
+  `Child` used after that answers `Closed` from `wait`. The child's own
+  children are not stopped: a program that leaves its children running when
+  it dies leaves them to outlive the `start` (process groups are decided
+  with the graceful release in part 4).
+- `wait` MUST let other tasks run while the child runs, and MUST return the
+  same `Status` when asked again. It is a cancellation point. A nonzero exit
+  is a `Status`, never an `ExecError`. `terminate` sends SIGTERM and `kill`
+  SIGKILL; both do nothing once the child has been waited for, so a signal
+  never reaches a reused process number.
+- The child starts with an empty signal mask and the actions `exec` leaves.
+  A signal the runtime handles is back at its default action in the child:
+  SIGINT and SIGTERM always, and SIGHUP, SIGUSR1 and SIGUSR2 when the program
+  needs `signals`, even if the program itself inherited one as ignored (as
+  Go's `os/exec` does for signals a program has asked for). Any other signal
+  the program inherited as ignored stays ignored, so a program without
+  `signals` run under `nohup` passes SIGHUP's on. The child stays in the parent's process group,
+  and no file the runtime opens for itself (the telemetry, outcome, profile
+  and memory reports) stays open in it.
+- On the native backend `std/exec` is a binding package
+  (`runtime/native/bindings/exec`). It spawns with `posix_spawn` and waits
+  with `chimi_binding_wait_child` (binding ABI 2), which issues
+  `CHIMI_REQUEST_CHILD_WAIT`: the scheduler only looks at the child (`waitid`
+  with `WNOWAIT`) and the binding reaps it. The runner's SIGCHLD handler,
+  installed before the first spawn, wakes an idle scheduler through the stop
+  signals' pipe. A task waiting for a child is a host operation in flight, so
+  it holds virtual time.
+- The interpreter cannot call C bindings: the runner's provider and
+  `host_for_tests` defect there (`E5204`). A test supplies a fake with
+  `using`, built with `Exec.child`, on both backends; `program` and
+  `arguments` let a fake check what it was asked to run.
+
 ## Decisions
 
 - **Interfaces in source, fixed need names, private providers.** The advisor
@@ -301,6 +391,12 @@ pub fn next(wanted: List<Signal>) -> Signal
   program that asked for it, and a program that did not ask keeps the
   behavior `nohup` and process managers expect. Whether an unwatched SIGHUP
   should drain like SIGTERM is left open; the familiar default stands.
+- **`std/exec` as a binding with a scheduler wait.** Starting a child is a
+  posix_spawn call and its pipes are descriptors, which the binding API
+  already serves; the one new primitive is the child-exit wait, which only
+  looks at the child, so a waiter cancelled between its wake and its retry
+  loses no exit status. Scoped-only children follow `Resource.scoped`, and
+  the names avoid `with_` as the conventions ask.
 - **`join` appends.** Replacing on an absolute part is a known source of
   path-traversal bugs, and Chimi prefers the rule a reader can predict.
 
@@ -324,3 +420,11 @@ pub fn next(wanted: List<Signal>) -> Signal
 | Real SIGHUPs reload a waiting service; the handlers cover all three signals from the first line; without `signals` SIGHUP ends the program | `tests/std_signal.rs` `a_service_reloads_on_each_hangup`, `a_program_that_needs_signals_survives_them_from_its_first_line`, `a_program_without_signals_is_ended_by_a_hangup` |
 | The interpreter defects on a wait; a fake on both backends; `T4400` without one | `tests/std_signal.rs` `the_interpreter_needs_the_native_runtime_to_wait`, `a_test_supplies_signals_as_a_fake` |
 | `temporary_directory` is removed after the test; `files_within` refuses paths outside it and relative ones; a fake; `T4400` without one; `T4401` from `main` | `tests/host_modules.rs` `a_test_uses_real_files_in_a_temporary_directory_or_a_fake` |
+| A status for an exit code or a signal; arguments pass unchanged; a second `wait` answers the same | `tests/std_exec.rs` `a_child_reports_how_it_ended` |
+| `NotFound`, `PermissionDenied` and `InvalidDirectory` before the child starts; `PATH` lookup; variables and a replaced environment; a working directory; `Stdio.Null`; a relative program with another working directory; `Failed` for a file the kernel cannot run | `tests/std_exec.rs` `a_command_that_cannot_start_fails_with_its_reason` |
+| A directory on `PATH` named like the program is passed over | `tests/std_exec.rs` `a_directory_on_path_is_not_the_program` |
+| Other tasks run while one waits for a child, and the exit wakes the wait without waiting for a recheck; two tasks waiting for one child both get its status | `tests/std_exec.rs` `a_child_wait_lets_other_tasks_run_and_ends_at_the_exit`, `a_child_is_stopped_and_never_outlives_its_start` |
+| `kill` and `terminate`; a child left running, or whose wait was cancelled, is killed and reaped when its `start` ends; `Closed` after release | `tests/std_exec.rs` `a_child_is_stopped_and_never_outlives_its_start` |
+| A child wait holds virtual time | `tests/std_exec.rs` `a_child_wait_holds_virtual_time`; the scheduler side in `runtime/chimi-fiber/src/scheduler/child_tests.rs` |
+| A child keeps SIGHUP ignored when the parent inherited it ignored | `tests/std_exec.rs` `a_child_keeps_the_signals_its_parent_ignores` |
+| A fake on both backends; the runner closes `commands` on `main`; `T4401` from `main`; `T4400` without one; the interpreter defects | `tests/std_exec.rs` `a_fake_stands_in_for_real_programs_on_both_backends`, `main_gets_real_programs_by_declaring_the_need_and_nothing_else_does`, `the_interpreter_cannot_start_real_programs` |
