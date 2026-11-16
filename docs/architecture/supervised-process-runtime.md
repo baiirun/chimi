@@ -939,7 +939,8 @@ The prototype does not model:
 - a scheduler on more than one thread.
 
 The scheduler now covers the first three (RA07, SD05, SV10, and SV05).
-Neither the prototype nor the scheduler runs on more than one thread.
+Neither the prototype nor the scheduler runs on more than one thread. The
+plan for that is [parallel-scheduler.md](parallel-scheduler.md) (R4, CHI-267).
 
 The heap invariant (no pointer into another heap) already holds for tasks,
 so child tasks should compose: each child gets its own heap, and its result
