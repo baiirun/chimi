@@ -450,7 +450,10 @@ enum { REGION_FULL_MIN_GROWTH = 4 * 1024 };
 static RuntimeHeap main_heap = {.owner = 1, .base = {.role = AREA_BASE, .heap = &main_heap}};
 static uint64_t next_heap_owner = 2;
 static AllocationArea static_area = {.role = AREA_STATIC};
-static uint64_t next_mark_epoch = 1;
+/* Epochs are unique across the process, not per carrier or per heap, so an
+   allocation that moves between heaps or carriers can never carry a stale epoch
+   that a later pass reuses (parallel-scheduler.md, "Runtime state by owner"). */
+static _Atomic uint64_t next_mark_epoch = 1;
 
 /* The operation profile (--profile-file): per Core node, how often it was evaluated
    and what it allocated itself, not counting the nodes it ran. NULL unless profiling,
@@ -1840,8 +1843,8 @@ static void sweep_survivors(AllocationScope *scope) {
    value in another heap or in a fragment. */
 static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **value,
                                          ChimiControl **control, bool full, bool ending) {
-  carrier->collecting_epoch = next_mark_epoch++;
-  if (next_mark_epoch == 0) {
+  carrier->collecting_epoch = atomic_fetch_add_explicit(&next_mark_epoch, 1, memory_order_relaxed);
+  if (carrier->collecting_epoch == UINT64_MAX) {
     fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); exit(70);
   }
   flush_young_counts(scope);
@@ -2377,7 +2380,9 @@ static ChimiValue *range_value(int64_t start, int64_t end) {
 }
 /* Void, True and False are each one shared value in the static area, because values
    never change after construction and conditions and effects produce them on almost
-   every pass. Static values are never collected, copied or freed. */
+   every pass. Static values are never collected, copied or freed. decode_constants
+   creates all three at startup, before any carrier runs, so the static area is never
+   appended to while fibers run. */
 static ChimiValue *shared_values[3];
 static ChimiValue *shared_value(uint32_t index) {
   if (!shared_values[index]) {
@@ -10901,6 +10906,7 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
 }
 
 static void decode_constants(void) {
+  for (uint32_t index = 0; index < 3; ++index) (void)shared_value(index);
   AllocationArea *previous = carrier->fiber.target;
   carrier->fiber.target = &static_area;
   constant_values = allocate(CHIMI_CONSTANT_VALUE_COUNT, sizeof(*constant_values));
