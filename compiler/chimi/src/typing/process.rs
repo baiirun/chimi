@@ -167,6 +167,38 @@ impl ProjectTypeChecker {
             pure_contract(vec![inbox, monitor], void),
         ));
 
+        // Process.handoff_spec: fn<A, M, E, R>(fn(Inbox<M>, A) -> Void errors E needs R,
+        //   Int, Duration) -> HandoffSpec<A, M, E> needs R
+        let argument = self.standard_generic_type(G::ProcessHandoffSpecArgument);
+        let message = self.standard_generic_type(G::ProcessHandoffSpecMessage);
+        let failures = self.standard_generic_type(G::ProcessHandoffSpecFailures);
+        let body_failures = self.parameter_failure_row(G::ProcessHandoffSpecFailures);
+        let needs = self.intern_needs_row(NeedsRow {
+            entries: Vec::new(),
+            parameters: vec![self.resolved.standard_generic(G::ProcessHandoffSpecNeeds)],
+        });
+        let inbox = named(self, StandardType::ProcessInbox, vec![message]);
+        let body = self.intern_type(CanonicalType::Function(CallableContract {
+            inputs: vec![inbox, argument],
+            success: void,
+            failures: body_failures,
+            needs,
+        }));
+        let handoff = named(
+            self,
+            StandardType::ProcessHandoffSpec,
+            vec![argument, message, failures],
+        );
+        contracts.push((
+            F::ProcessHandoffSpec,
+            CallableContract {
+                inputs: vec![body, int, duration],
+                success: handoff,
+                failures: pure.0,
+                needs,
+            },
+        ));
+
         let message = self.standard_generic_type(G::SupervisorProcessMessage);
         let failures = self.standard_generic_type(G::SupervisorProcessFailures);
         let spec = named(self, StandardType::ProcessSpec, vec![message, failures]);
@@ -215,6 +247,44 @@ impl ProjectTypeChecker {
                 inputs: vec![running, policy, restart],
                 success: managed_supervisor,
                 failures: start_failures,
+                needs: pure.1,
+            },
+        ));
+
+        // Supervisor.start_handoff: fn<A, M, E>(Running, HandoffSpec<A, M, E>, A)
+        //   -> ManagedProcess<M> errors HandoffError<A>
+        let argument = self.standard_generic_type(G::SupervisorStartHandoffArgument);
+        let message = self.standard_generic_type(G::SupervisorStartHandoffMessage);
+        let failures = self.standard_generic_type(G::SupervisorStartHandoffFailures);
+        let handoff = named(
+            self,
+            StandardType::ProcessHandoffSpec,
+            vec![argument, message, failures],
+        );
+        let managed = named(self, StandardType::SupervisorManagedProcess, vec![message]);
+        let handoff_variants = [
+            StandardConstructor::HandoffCapacityReached,
+            StandardConstructor::HandoffStopped,
+        ]
+        .map(|constructor| self.standard_constructor_symbol(constructor));
+        let handoff_failures = self.intern_failure_row(FailureRow {
+            variants: handoff_variants.to_vec(),
+            variant_arguments: handoff_variants
+                .into_iter()
+                .map(|variant| FailureVariantArguments {
+                    variant,
+                    arguments: vec![argument],
+                })
+                .collect(),
+            parameters: Vec::new(),
+            exclusions: Vec::new(),
+        });
+        contracts.push((
+            F::SupervisorStartHandoff,
+            CallableContract {
+                inputs: vec![running, handoff, argument],
+                success: managed,
+                failures: handoff_failures,
                 needs: pure.1,
             },
         ));
@@ -296,6 +366,14 @@ impl ProjectTypeChecker {
                 Vec::new(),
                 self.standard_named_type(StandardType::ProcessDown, Vec::new()),
             ),
+            StandardConstructor::HandoffCapacityReached | StandardConstructor::HandoffStopped => {
+                let argument =
+                    self.standard_generic_type(StandardGeneric::SupervisorStartHandoffArgument);
+                (
+                    vec![argument],
+                    self.standard_named_type(StandardType::SupervisorHandoffError, vec![argument]),
+                )
+            }
             StandardConstructor::StartCapacityReached | StandardConstructor::StartStopped => (
                 Vec::new(),
                 self.standard_named_type(StandardType::SupervisorStartError, Vec::new()),
@@ -462,28 +540,36 @@ impl Checker<'_> {
         };
         let argument = |index: usize| arguments.get(index).map(|argument| &argument.value);
         match function {
-            StandardFunction::ProcessSpec => {
-                if let (Some(body), Some(fact)) = (
-                    argument(0),
-                    self.typed
-                        .expression_facts
-                        .get(&(module_id, call.semantic_id())),
-                ) && let Some(message) =
-                    self.type_argument(fact.success, StandardType::ProcessSpec)
-                {
-                    self.check_transferable(module_id, body.range(), message, "this process body");
-                }
-                if let (Some(body), Some(fact)) = (
-                    argument(0),
-                    self.typed
-                        .expression_facts
-                        .get(&(module_id, call.semantic_id())),
-                ) && let Some(failure) = self
-                    .type_arguments(fact.success, StandardType::ProcessSpec)
-                    .get(1)
-                    .copied()
-                {
-                    self.check_failure_stays_local(module_id, body.range(), failure);
+            StandardFunction::ProcessSpec | StandardFunction::ProcessHandoffSpec => {
+                // `Spec<M, E>`, or `HandoffSpec<A, M, E>` whose argument `A` moves
+                // into the incarnation as a message does.
+                let (kind, first) = match function {
+                    StandardFunction::ProcessSpec => (StandardType::ProcessSpec, 0),
+                    _ => (StandardType::ProcessHandoffSpec, 1),
+                };
+                let spec = self
+                    .typed
+                    .expression_facts
+                    .get(&(module_id, call.semantic_id()))
+                    .map(|fact| self.type_arguments(fact.success, kind).to_vec())
+                    .unwrap_or_default();
+                if let Some(body) = argument(0) {
+                    if first == 1
+                        && let Some(start) = spec.first().copied()
+                    {
+                        self.check_start_argument_transferable(module_id, body.range(), start);
+                    }
+                    if let Some(message) = spec.get(first).copied() {
+                        self.check_transferable(
+                            module_id,
+                            body.range(),
+                            message,
+                            "this process body",
+                        );
+                    }
+                    if let Some(failure) = spec.get(first + 1).copied() {
+                        self.check_failure_stays_local(module_id, body.range(), failure);
+                    }
                 }
                 if let Some(capacity) = argument(1)
                     && let Some(value) = integer_literal(capacity)
@@ -680,6 +766,29 @@ impl Checker<'_> {
                 "the message type `{found}` of {subject} is not transferable, but every \
                  message moves to another process; it holds a task-local value such as a \
                  `Task` or a `Process.Inbox`"
+            ),
+        ));
+    }
+
+    /// `T4261` when a handoff body's start argument type is never transferable.
+    fn check_start_argument_transferable(
+        &mut self,
+        module_id: ModuleId,
+        range: TextRange,
+        argument: TypeId,
+    ) {
+        if self.typed.value_properties(argument).transferable != PropertyDerivation::Never {
+            return;
+        }
+        let found = self.typed.format_type(argument);
+        self.diagnostics.push(self.error(
+            module_id,
+            "T4261",
+            range,
+            format!(
+                "the start argument type `{found}` of this handoff body is not transferable, \
+                 but `Supervisor.start_handoff` moves the argument into the new process; it \
+                 holds a task-local value such as a `Task` or a `Process.Inbox`"
             ),
         ));
     }

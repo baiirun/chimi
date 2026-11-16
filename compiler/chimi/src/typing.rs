@@ -22,6 +22,7 @@ mod constants;
 pub(crate) mod durations;
 pub(crate) mod failure_sets;
 pub(crate) mod process;
+mod select;
 
 mod properties;
 
@@ -874,6 +875,109 @@ impl TypedProject {
         }
     }
 
+    /// Checks each `test` item's inferred contract against the test root: its
+    /// success type is `Void` (or `Never`, `T4402`), and the test provider plan
+    /// closes every need its body leaves open (`T4400`). The failure row is
+    /// unrestricted: an escaping failure fails the test at run time.
+    fn validate_test_roots(&mut self) {
+        let tests = self
+            .resolved
+            .semantic
+            .modules
+            .iter()
+            .flat_map(|module| {
+                module
+                    .declarations
+                    .iter()
+                    .filter(|declaration| declaration.test)
+                    .map(move |declaration| (module, declaration))
+            })
+            .filter_map(|(module, declaration)| {
+                let symbol = self.resolved.symbols.iter().find(|symbol| {
+                    symbol.module_id == Some(module.id)
+                        && symbol.semantic_id == Some(declaration.semantic_id)
+                        && symbol.kind == ProjectSymbolKind::Function
+                })?;
+                let body_range = declaration.body.as_ref()?.range();
+                Some((
+                    module.source.file_id(),
+                    declaration.name.range,
+                    body_range,
+                    symbol.id,
+                ))
+            })
+            .collect::<Vec<_>>();
+        for (file_id, name_range, body_range, symbol) in tests {
+            let Some(contract) = self.contracts.get(&symbol).cloned() else {
+                continue;
+            };
+            let success = self.resolve_type_id(contract.success);
+            let ends_in_void = match &self.types[success.raw() as usize] {
+                CanonicalType::Named { symbol, arguments } => {
+                    let symbol = self.resolved.symbol(*symbol);
+                    arguments.is_empty()
+                        && symbol.kind == ProjectSymbolKind::BuiltinType
+                        && matches!(symbol.name.as_str(), "Void" | "Never")
+                }
+                // An earlier error already explains an unknown body type.
+                CanonicalType::Poison | CanonicalType::InferenceVariable(_) => true,
+                _ => false,
+            };
+            if !ends_in_void {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Type,
+                    "T4402",
+                    file_id,
+                    body_range,
+                    format!(
+                        "a test body must end in `Void`, but this one ends in `{}`; check the \
+                         value with an assertion such as `Test.assert_equal(actual, expected)`",
+                        self.format_type(success)
+                    ),
+                ));
+            }
+            let row = self.needs_rows[contract.needs.raw() as usize].clone();
+            let unclosed = row
+                .entries
+                .into_iter()
+                .filter(|need| !need.explained && !self.test_plan_closes(need))
+                .collect::<Vec<_>>();
+            for need in unclosed {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Type,
+                    "T4400",
+                    file_id,
+                    name_range,
+                    format!(
+                        "this test needs {}: {}, which a test does not provide; supply it \
+                         inside the test with `using {{ {}: ... }}`",
+                        need.lexical_name,
+                        self.format_type(need.interface),
+                        need.lexical_name
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// Whether the test provider plan closes this need: `clock: Clock` under the
+    /// virtual source and a captured `Console` under any name, as on `main`.
+    /// Unlike `main`, a test gets no `FileSystem`.
+    fn test_plan_closes(&self, need: &Need) -> bool {
+        let CanonicalType::Named { symbol, arguments } = &self.types[need.interface.raw() as usize]
+        else {
+            return false;
+        };
+        if !arguments.is_empty() {
+            return false;
+        }
+        match self.resolved.standard_symbol(*symbol) {
+            Some(StandardSymbol::Type(StandardType::Console)) => true,
+            Some(StandardSymbol::Type(StandardType::Clock)) => need.lexical_name == "clock",
+            _ => false,
+        }
+    }
+
     /// Whether the runner's provider plan closes this need on `main`: the
     /// native `Console` and `FileSystem` under any name, and the execution
     /// clock provider for `clock: Clock` (std/clock), whose need name is fixed.
@@ -1191,7 +1295,9 @@ impl TypedProject {
         visiting: &mut HashSet<TypeId>,
     ) -> ValueProperties {
         match self.resolved.standard_symbol(symbol) {
-            Some(StandardSymbol::Type(StandardType::Task)) => {
+            // An event is task-local like the handle or inbox it may hold
+            // (time-and-outcomes.md, "Events").
+            Some(StandardSymbol::Type(StandardType::Task | StandardType::SelectEvent)) => {
                 return ValueProperties::PARENT_LOCAL;
             }
             Some(StandardSymbol::Type(
@@ -1214,6 +1320,7 @@ impl TypedProject {
             Some(StandardSymbol::Type(
                 StandardType::ProcessAddress
                 | StandardType::ProcessSpec
+                | StandardType::ProcessHandoffSpec
                 | StandardType::ProcessMonitor
                 | StandardType::ProcessDown
                 | StandardType::SupervisorMember
@@ -1225,11 +1332,13 @@ impl TypedProject {
             )) => {
                 return ValueProperties::SHAREABLE;
             }
-            // `Process.SendError<M>` and `Channel.SendError<T>` hand the refused value
-            // back, and `Channel.Receive<T>` holds the received value, so each is what
-            // its argument is.
+            // `Process.SendError<M>`, `Channel.SendError<T>`, and
+            // `Supervisor.HandoffError<A>` hand the refused value back, and
+            // `Channel.Receive<T>` holds the received value, so each is what its
+            // argument is.
             Some(StandardSymbol::Type(
                 StandardType::ProcessSendError
+                | StandardType::SupervisorHandoffError
                 | StandardType::ChannelSendError
                 | StandardType::ChannelReceive,
             )) => {
@@ -1653,6 +1762,7 @@ impl ProjectTypeChecker {
 
         self.index_process_contracts();
         self.index_clock_contracts();
+        self.index_select_contracts();
         let text = self.builtin_type("Text");
         let int = self.builtin_type("Int");
         let bool_type = self.builtin_type("Bool");
@@ -2258,7 +2368,9 @@ impl ProjectTypeChecker {
             | StandardConstructor::DownFailed
             | StandardConstructor::DownDefected
             | StandardConstructor::DownStopped
-            | StandardConstructor::DownUnavailable => self.process_constructor_shape(constructor),
+            | StandardConstructor::DownUnavailable
+            | StandardConstructor::HandoffCapacityReached
+            | StandardConstructor::HandoffStopped => self.process_constructor_shape(constructor),
             StandardConstructor::TimeoutTimedOut => self.timeout_constructor_shape(),
             StandardConstructor::DurationParseEmpty
             | StandardConstructor::DurationParseInvalid
@@ -2648,6 +2760,7 @@ impl ProjectTypeChecker {
         typed.expression_value_properties = capability_report.expression_properties;
         typed.diagnostics.extend(capability_report.diagnostics);
         typed.validate_closed_roots();
+        typed.validate_test_roots();
         typed.diagnostics.sort_by_key(|diagnostic| {
             (
                 diagnostic_phase_order(diagnostic.stage()),
@@ -3348,6 +3461,7 @@ impl ProjectTypeChecker {
                 let callee_symbol = self.expression_value_symbol(module_id, callee);
                 let labelled_order =
                     self.reject_argument_labels(module_id, callee, callee_symbol, arguments);
+                self.reject_empty_event_list(module_id, callee_symbol, arguments);
                 if callee_symbol.is_some_and(|symbol| {
                     self.is_builtin_value(symbol, "Success")
                         || self.is_builtin_value(symbol, "Failure")
@@ -6393,6 +6507,7 @@ impl ProjectTypeChecker {
                     | StandardType::ProcessDown
                     | StandardType::SupervisorRestart
                     | StandardType::SupervisorStartError
+                    | StandardType::SupervisorHandoffError
                     | StandardType::ChannelReceive
                     | StandardType::ChannelError
                     | StandardType::IntParseError
@@ -7893,16 +8008,21 @@ impl ProjectTypeChecker {
                                 .collect::<Vec<_>>();
                             // `E` in `Task<T, E>` is a failure set: a generic
                             // there also denotes the task's failure row.
-                            if matches!(
-                                self.resolved.standard_symbol(symbol),
+                            let failures_index = match self.resolved.standard_symbol(symbol) {
                                 Some(StandardSymbol::Type(
-                                    StandardType::Task | StandardType::ProcessSpec
-                                ))
-                            ) && let Some(TypeUse::Named {
+                                    StandardType::Task | StandardType::ProcessSpec | StandardType::SelectEvent,
+                                )) => Some(1),
+                                Some(StandardSymbol::Type(StandardType::ProcessHandoffSpec)) => {
+                                    Some(2)
+                                }
+                                _ => None,
+                            };
+                            if let Some(index) = failures_index
+                                && let Some(TypeUse::Named {
                                 semantic_id: failures_id,
                                 path: failures_path,
                                 ..
-                            }) = arguments.get(1)
+                            }) = arguments.get(index)
                                 && let (Some(name), Some(failures)) = (
                                     failures_path.last(),
                                     self.resolved_type_symbol(module_id, *failures_id),

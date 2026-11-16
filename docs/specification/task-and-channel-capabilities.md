@@ -168,9 +168,9 @@ crosses a task boundary. The compiler follows this through a function body
   the subject carries into its patterns. A later use of a moved binding is
   `T4241`; moving a binding bound outside a loop from inside the loop is
   `T4250`.
-- `Channel.send`, `Process.send`, `Task.start`, a `using` provider, and
-  `Supervisor.remove_process` and `remove_supervisor` transfer every binding
-  their operand carries.
+- `Channel.send`, `Process.send`, `Supervisor.start_handoff`'s argument,
+  `Task.start`, a `using` provider, and `Supervisor.remove_process` and
+  `remove_supervisor` transfer every binding their operand carries.
 - Passing a binding to a call whose result cannot embed it does not move it.
   `Channel.receive(r)`, or a helper `next(r) -> Int`, may run on every pass of a
   loop. A value that is built and then dropped, never bound or transferred,
@@ -211,6 +211,23 @@ native runtime (ts-f4e749):
   so the child's cleanup leaves them open. Only that task can read the result,
   because a task handle is parent-local. A parent that never reads the result
   still owns them, and its own exit cleans them up.
+- **Sent to a process.** A `Process.send` message follows the channel rule
+  (CHI-213). An accepted message puts its capabilities in flight, and the
+  incarnation whose receive takes it owns them. A refused send
+  (`SendError.Full(message)` or `Unavailable(message)`) leaves them with the
+  sender, and a message still queued when the incarnation ends is discarded:
+  its open channels abort.
+- **Handed to a new process.** `Supervisor.start_handoff`'s argument travels
+  the same way. An accepted start puts its capabilities in flight, and the new
+  incarnation owns them once its body starts. A refused start
+  (`HandoffError.CapacityReached(argument)` or `Stopped(argument)`) leaves them
+  with the caller, and an incarnation that ends before its body starts
+  discards the argument.
+
+Only Receivers and Completions carry an owner token. A `ManagedProcess` or
+`ManagedSupervisor` inside a sent value moves by the static rule alone: the
+runtime does not track which task holds the handle, and a task that ends
+holding one leaves the membership running.
 
 `Channel.SendError<T>` has the concurrent properties of `T`, as
 `Channel.Receive<T>` does, so the checker treats a refused exclusive value as
@@ -336,9 +353,6 @@ Not yet covered:
 
 - the interpreter has no bounded-channel runtime (`Channel.bounded` defects with
   "requires the bounded Channel runtime"), so these routes run natively only;
-- a Receiver or Completion sent in a `Process.send` message keeps its sender
-  as owner: the incarnation that receives it defects on first use. Inbox
-  delivery does not yet follow the channel hand-back rule below (CHI-213);
 - a violation emits no dedicated trace event; the trace shows only the
   defected task's cancellation and terminal events.
 

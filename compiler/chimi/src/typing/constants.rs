@@ -353,6 +353,14 @@ fn unrepresentable_part(
                     "a `{}` is a runtime capability",
                     typed.resolved.symbol(*symbol).name
                 ))
+            } else if let Some(StandardSymbol::Type(
+                StandardType::ProcessSpec | StandardType::ProcessHandoffSpec,
+            )) = typed.resolved.standard_symbol(*symbol)
+            {
+                // A spec holds its body, a capacity, and a duration. Its type
+                // arguments name the message, start argument, and failure types
+                // the body handles, not values the spec stores.
+                None
             } else {
                 named_unrepresentable_part(typed, *symbol, arguments, generics, visiting)
             }

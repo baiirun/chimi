@@ -1,0 +1,41 @@
+import std/channel as Channel
+import std/channel.{Receiver}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// CHI-213: a message a process never reads ends the capabilities it carries as
+// their owner's exit would. Main sends `data`'s Receiver to a process that
+// never receives, then removes the process, which discards its mailbox. The
+// open Receiver then aborts its channel, so main's send fails with Aborted
+// (1). Before, the Receiver stayed with main and the send was accepted (0); a
+// runtime that forgot the in-flight Receiver would leave the channel open with
+// no owner, and the send would be accepted too.
+
+pub enum Message {
+  Keep(source: Receiver<Int>)
+}
+
+fn idle(inbox: Inbox<Message>) -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.seconds(60))
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(idle, 1, Duration.seconds(1)), Supervisor.Restart.Never)
+  let data = Channel.bounded(1)
+  let sent = case Process.send(Supervisor.address(managed), Message.Keep(data.receiver)) {
+    Success(_) -> 0
+    Failure(_) -> 10
+  }
+  Supervisor.remove_process(root, managed)
+  let written = case Channel.send(data.sender, 5) {
+    Success(_) -> 0
+    Failure(_) -> 1
+  }
+  Supervisor.stop(root)
+  sent + written
+}
