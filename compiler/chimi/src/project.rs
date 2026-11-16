@@ -8,10 +8,13 @@ use std::collections::HashMap;
 use std::fmt::{self, Write};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct LoadedProject {
     modules: Vec<ProjectSource>,
+    /// Each doc example module's path and the module it documents.
+    examples: Vec<(String, String)>,
 }
 
 /// Where a build reads `std/` modules from: the tree embedded in the compiler,
@@ -167,7 +170,10 @@ impl LoadedProject {
                     crate::standard_tree::standard_source(path).expect("listed module is embedded")
                 })
                 .collect();
-            return Ok(Self { modules });
+            return Ok(Self {
+            modules,
+            examples: Vec::new(),
+        });
         };
         let mut modules = Vec::new();
         for module_path in standard_module_paths(directory)? {
@@ -177,7 +183,10 @@ impl LoadedProject {
             modules.push(module);
         }
         standard.add_imported_modules(&mut modules)?;
-        Ok(Self { modules })
+        Ok(Self {
+            modules,
+            examples: Vec::new(),
+        })
     }
 
     pub fn single_file(
@@ -194,7 +203,10 @@ impl LoadedProject {
             .expect("the reserved single-file module path is valid");
         let mut modules = vec![module];
         standard.add_imported_modules(&mut modules)?;
-        Ok(Self { modules })
+        Ok(Self {
+            modules,
+            examples: Vec::new(),
+        })
     }
 
     pub fn load(
@@ -239,7 +251,10 @@ impl LoadedProject {
         loader.load_module(&entry_module)?;
         let mut modules = loader.modules;
         standard.add_imported_modules(&mut modules)?;
-        Ok(Self { modules })
+        Ok(Self {
+            modules,
+            examples: Vec::new(),
+        })
     }
 
     /// Every module under `root`, as `chimi test <directory>` reads it: each
@@ -283,7 +298,46 @@ impl LoadedProject {
         }
         let mut modules = loader.modules;
         standard.add_imported_modules(&mut modules)?;
-        Ok(Self { modules })
+        Ok(Self {
+            modules,
+            examples: Vec::new(),
+        })
+    }
+
+    /// Adds a test module for each example in the doc comments of this
+    /// project's own modules (testing.md, "Documentation examples"), with the
+    /// standard modules the examples import. Returns each example module's path
+    /// and the documented module's, so the runner can report an example under
+    /// the module it documents. An example module is the documented module's
+    /// path plus `__example_<n>`; its source keeps the documented file's path,
+    /// so diagnostics name the doc comment's line.
+    pub fn add_doc_examples(
+        &mut self,
+        standard: &StandardTree,
+    ) -> Result<Vec<(String, String)>, ProjectLoadError> {
+        let mut added = Vec::new();
+        let documented: Vec<ProjectSource> = self
+            .modules
+            .iter()
+            .filter(|module| !module.module_path().starts_with("std/"))
+            .cloned()
+            .collect();
+        for module in documented {
+            for (index, example) in crate::doc_examples::examples(module.source().text())
+                .into_iter()
+                .enumerate()
+            {
+                let path = format!("{}/__example_{}", module.module_path(), index + 1);
+                let source = SourceSnapshot::from_text(module.source().path(), example.text);
+                let source = ProjectSource::parsed(path.clone(), source)
+                    .map_err(ProjectLoadError::InvalidModule)?;
+                self.modules.push(source);
+                added.push((path, module.module_path().to_owned()));
+            }
+        }
+        standard.add_imported_modules(&mut self.modules)?;
+        self.examples.extend(added.iter().cloned());
+        Ok(added)
     }
 
     pub fn sources(&self) -> Vec<ProjectSource> {
@@ -312,7 +366,32 @@ impl LoadedProject {
     }
 
     pub fn render_diagnostics_json(&self, diagnostics: &[Diagnostic]) -> String {
-        let sources = self.diagnostic_sources();
+        let sources: Vec<JsonSource> = self
+            .diagnostic_sources()
+            .into_iter()
+            .map(|(module_path, source)| {
+                let documented = self
+                    .examples
+                    .iter()
+                    .find(|(example, _)| *example == module_path)
+                    .and_then(|(_, documented)| {
+                        self.modules
+                            .iter()
+                            .find(|module| module.module_path() == documented)
+                    })
+                    .map(|module| {
+                        (
+                            module.module_path().to_owned(),
+                            Arc::<str>::from(module.source().text()),
+                        )
+                    });
+                JsonSource {
+                    module_path,
+                    source,
+                    documented,
+                }
+            })
+            .collect();
         let mut output = String::from("{\"schema\":\"chimi.diagnostics.v1\",\"diagnostics\":[");
         for (index, diagnostic) in diagnostics.iter().enumerate() {
             if index > 0 {
@@ -365,7 +444,7 @@ impl LoadedProject {
 fn write_json_diagnostic(
     output: &mut String,
     diagnostic: &Diagnostic,
-    sources: &[(String, SourceSnapshot)],
+    sources: &[JsonSource],
 ) {
     output.push_str("{\"stage\":");
     write_json_string(output, &diagnostic.stage().to_string());
@@ -402,26 +481,57 @@ fn write_json_diagnostic(
     output.push_str("]}");
 }
 
+/// A diagnostic source as JSON names it. A doc example module is reported as
+/// the module it documents, with offsets into that module's own text.
+struct JsonSource {
+    module_path: String,
+    source: SourceSnapshot,
+    documented: Option<(String, Arc<str>)>,
+}
+
 fn write_json_span(
     output: &mut String,
     file_id: FileId,
     range: TextRange,
-    sources: &[(String, SourceSnapshot)],
+    sources: &[JsonSource],
 ) {
-    let (module_path, source) = sources
+    let json = sources
         .get(file_id.raw() as usize)
         .expect("diagnostic file ID belongs to the loaded project");
+    let (module_path, start, end) = match &json.documented {
+        Some((documented, text)) => (
+            documented.as_str(),
+            same_place(json.source.text(), range.start(), text),
+            same_place(json.source.text(), range.end(), text),
+        ),
+        None => (json.module_path.as_str(), range.start(), range.end()),
+    };
     output.push_str("{\"module\":");
     write_json_string(output, module_path);
     output.push_str(",\"path\":");
-    write_json_string(output, &source.path().to_string_lossy());
-    write!(
-        output,
-        ",\"start\":{},\"end\":{}}}",
-        range.start(),
-        range.end()
-    )
-    .expect("writing JSON to a string cannot fail");
+    write_json_string(output, &json.source.path().to_string_lossy());
+    write!(output, ",\"start\":{start},\"end\":{end}}}")
+        .expect("writing JSON to a string cannot fail");
+}
+
+/// The byte offset in `target` at the line and byte column `offset` has in
+/// `text`, clamped to the end of that line. A doc example module keeps its
+/// documented file's lines and the columns of its code.
+fn same_place(text: &str, offset: u32, target: &str) -> u32 {
+    let offset = (offset as usize).min(text.len());
+    let line = text[..offset].matches('\n').count();
+    let column = offset - text[..offset].rfind('\n').map_or(0, |newline| newline + 1);
+    let line_start = match line.checked_sub(1) {
+        None => 0,
+        Some(previous) => target
+            .match_indices('\n')
+            .nth(previous)
+            .map_or(target.len(), |(newline, _)| newline + 1),
+    };
+    let line_end = target[line_start..]
+        .find('\n')
+        .map_or(target.len(), |newline| line_start + newline);
+    (line_start + column).min(line_end) as u32
 }
 
 /// Supplies module text during project loading, so editors can substitute

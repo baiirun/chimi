@@ -12,9 +12,10 @@ builds drop them), the `chimi test` runner on both backends with the human
 report, `--json`, filters, jobs, the time limit, the clock options, directory
 inputs, and the
 exit status, the four `std/test` assertions, `capture_defect`, recorders
-and scripts, fake mailboxes, `T4401`, `T4403`, and `std/random` with
-`--seed`. Not implemented yet: `--trace`, doc-comment examples,
-and the std-tests migration. The build is tracked
+and scripts, fake mailboxes, `T4401`, `T4403`, `std/random` with
+`--seed`, and doc-comment examples in `chimi test` and `chimi check`. Not
+implemented yet: `--trace`, formatting example code, examples in `std/`
+modules, and the std-tests migration. The build is tracked
 by CHI-208; the spec was written under CHI-202.
 
 Four choices here touched questions only Byron could settle: the test

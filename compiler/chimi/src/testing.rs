@@ -259,6 +259,16 @@ pub struct TestSuite {
 }
 
 impl TestSuite {
+    /// Reports each test in `renamed`'s first module (a doc example's own
+    /// module) under its second, the module the example documents.
+    pub fn rename_modules(&mut self, renamed: &[(String, String)]) {
+        for case in &mut self.cases {
+            if let Some((_, documented)) = renamed.iter().find(|(path, _)| *path == case.module) {
+                case.module.clone_from(documented);
+            }
+        }
+    }
+
     /// Type-checks the project and lowers every test item to one program.
     ///
     /// Ensures: `Err` holds the project's diagnostics, or `E5009` when it has
