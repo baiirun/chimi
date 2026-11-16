@@ -1,8 +1,10 @@
-# managed_copy_mutations.py: 5 mutants against compiler/chimi
-BASELINE ok  [channel_variants -- managed] (74s)
-KILLED       managed handles are not counted [channel_variants -- managed] (10s)
-KILLED       broadcast publishes a managed handle [channel_variants -- managed] (11s)
+# mutation run at 70888c50c3437cd8dcafc48ab5ca5411de916ce6
+# managed_copy_mutations.py: 6 mutants against compiler/chimi
+BASELINE ok  [channel_variants -- managed] (28s)
+KILLED       managed handles are not counted [channel_variants -- managed] (11s)
+KILLED       broadcast publishes a managed handle [channel_variants -- managed] (10s)
+KILLED       a watch publishes a managed handle [channel_variants -- managed] (11s)
 KILLED       an ordinary channel refuses a managed handle too [channel_variants -- managed] (12s)
-KILLED       a watch starts with a managed handle [channel_variants -- managed] (12s)
-KILLED       a second remove keeps the generic message [channel_variants -- managed] (11s)
+KILLED       a watch starts with a managed handle [channel_variants -- managed] (11s)
+KILLED       a second remove keeps the generic message [channel_variants -- managed] (12s)
 # result: every mutant killed
