@@ -2,7 +2,7 @@
 // both signs, and the scale alignment of dividend, divisor, and result.
 import std/debug as Debug
 import std/decimal as Decimal
-import std/decimal.{Decimal, Rounding}
+import std/decimal.{Rounding}
 import std/list as List
 import std/test as Test
 

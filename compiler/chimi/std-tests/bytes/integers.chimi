@@ -1,7 +1,7 @@
 // Bytes.read_int and Bytes.from_int: every layout, sign extension, byte
 // order, reads that would run past either end, and round trips at the edges.
 import std/bytes as Bytes
-import std/bytes.{Bytes, IntLayout}
+import std/bytes.{IntLayout}
 import std/debug as Debug
 import std/list as List
 import std/test as Test

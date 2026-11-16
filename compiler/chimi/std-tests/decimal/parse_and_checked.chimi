@@ -3,7 +3,7 @@
 // through to_text; the checked forms at the 38-digit and scale-38 edges.
 import std/debug as Debug
 import std/decimal as Decimal
-import std/decimal.{Decimal, ParseError}
+import std/decimal.{ParseError}
 import std/test as Test
 
 fn parsed(text: Text) -> Text {

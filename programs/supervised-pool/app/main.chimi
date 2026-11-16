@@ -57,7 +57,7 @@ pub fn main() -> PoolResult needs {
 } {
   let pool = Supervisor.policy([], 3, Supervisor.restarts(2, Duration.seconds(30)))
   let root = Supervisor.start(pool)
-  let a = Supervisor.start_process(
+  let _a = Supervisor.start_process(
     root,
     Process.spec(worker, 8, Duration.seconds(1))
     |> Process.register(worker_a),
