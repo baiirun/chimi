@@ -1,0 +1,24 @@
+# mutation run at 2fa7f7b42ee3af00763be7d370bfe63ab4ac1938
+# g21_mutations.py: 11 mutants against compiler/chimi
+BASELINE ok  [cargo test --quiet -p chimi-fiber --lib -- a_descriptor_wait_holds_virtual_time] (11s)
+BASELINE ok  [cargo test --quiet -p chimi-fiber --lib -- a_ready_descriptor_wakes_its_waiter_even_when_other_tasks_never_idle] (0s)
+BASELINE ok  [cargo test --quiet -p chimi-fiber --lib -- a_parked_wait_lets_other_tasks_run_and_wakes_when_the_descriptor_turns_ready] (0s)
+BASELINE ok  [cargo test --quiet -p chimi-fiber --lib -- the_first_signal_cancels_a_root_parked_in_a_descriptor_wait] (0s)
+BASELINE ok  [cargo test --quiet -p chimi-fiber --lib -- a_timeout_scope_withdraws_a_parked_wait] (0s)
+BASELINE ok  [cargo test --quiet -p chimi-fiber --lib -- a_ready_descriptor_answers_at_once] (0s)
+BASELINE ok  [cargo test --quiet -p chimi-fiber --lib -- a_deadline_already_due_fires_during_a_virtual_clock_wait] (0s)
+BASELINE ok  [signals -- a_task_keeps_running_while_main_waits_for_standard_input] (48s)
+BASELINE ok  [signals -- the_first_sigint_cancels_a_scheduled_program_while_it_reads_input] (1s)
+KILLED       virtual time jumps past a descriptor wait [cargo test --quiet -p chimi-fiber --lib -- a_descriptor_wait_holds_virtual_time] (3s)
+TIMEOUT      a busy scheduler never polls its waits [cargo test --quiet -p chimi-fiber --lib -- a_ready_descriptor_wakes_its_waiter_even_when_other_tasks_never_idle] (90s)
+TIMEOUT      the real-clock idle wait ignores timers [cargo test --quiet -p chimi-fiber --lib -- a_parked_wait_lets_other_tasks_run_and_wakes_when_the_descriptor_turns_ready] (90s)
+TIMEOUT      the idle wait leaves out the signal pipe [cargo test --quiet -p chimi-fiber --lib -- the_first_signal_cancels_a_root_parked_in_a_descriptor_wait] (90s)
+TIMEOUT      a terminal task keeps its registration [cargo test --quiet -p chimi-fiber --lib -- the_first_signal_cancels_a_root_parked_in_a_descriptor_wait] (90s)
+TIMEOUT      a timeout scope cannot withdraw a descriptor wait [cargo test --quiet -p chimi-fiber --lib -- a_timeout_scope_withdraws_a_parked_wait] (90s)
+TIMEOUT      any interest bits are accepted [cargo test --quiet -p chimi-fiber --lib -- a_ready_descriptor_answers_at_once] (90s)
+KILLED       a closed descriptor counts as ready [cargo test --quiet -p chimi-fiber --lib -- a_ready_descriptor_answers_at_once] (3s)
+TIMEOUT      a due timer waits behind a virtual-clock descriptor wait [cargo test --quiet -p chimi-fiber --lib -- a_deadline_already_due_fires_during_a_virtual_clock_wait] (90s)
+TIMEOUT      a scheduled read blocks the scheduler [signals -- a_task_keeps_running_while_main_waits_for_standard_input] (90s)
+KILLED       a cancelled wait reads as a failure [signals -- the_first_sigint_cancels_a_scheduled_program_while_it_reads_input] (9s)
+# result: every mutant killed
+exit 0
