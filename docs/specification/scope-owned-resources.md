@@ -215,7 +215,7 @@ with that call's span.
   stamped with the child's start, so it counts as gained when the child was
   started.
 - **ABI.** `CHIMI_FIBER_ABI_VERSION` 13 and native runtime ABI 31 added these
-  requests; the channel variants moved them to 14 and 32.
+  requests; the channel variants moved them to 15 and 33.
 - **Not covered yet.** A supervisor started inside a scope is not stopped
   when the scope is cancelled (CHI-237).
 - **Causes.** The outcome that loses under the order above is not yet

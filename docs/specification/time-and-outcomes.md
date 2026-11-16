@@ -1505,7 +1505,7 @@ program.
   waited operation in a deadlock report.
 - **ABI.** `CHIMI_FIBER_ABI_VERSION` 11 added `CHIMI_REQUEST_SELECT` (kind 32)
   and `ChimiSelectSource`, with native runtime ABI 28. The channel variants
-  moved them to 14 and 32.
+  moved them to 15 and 33.
 
 ### Runner
 
