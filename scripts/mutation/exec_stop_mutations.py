@@ -26,13 +26,13 @@ def exec_test(name, file, edits):
 
 MUTATIONS = [
     exec_test("no SIGTERM first", EXEC, [
-        ("    kill(child->pid, SIGTERM);\n    ended = await_exit_until", "    ended = await_exit_until")]),
+        ("    kill(child->pid, SIGTERM);\n    waited = await_exit_until", "    waited = await_exit_until")]),
     exec_test("no SIGKILL after the time", EXEC, [
-        ("    kill(child->pid, SIGKILL);\n    await_exit(call);", "    await_exit(call);")]),
+        ("    kill(child->pid, SIGKILL);\n    if (waited == STOP_CANCELLED)", "    if (waited == STOP_CANCELLED)")]),
     exec_test("the deadline is ignored", EXEC, [
-        ("    if (monotonic_ms() >= deadline) return false;\n", "")]),
+        ("    if (monotonic_ms() >= deadline) return STOP_DEADLINE;\n", "")]),
     exec_test("the stop blocks the scheduler", EXEC, [
-        ("    if (chimi_binding_wait(call, CHIMI_BINDING_NO_HANDLE, ticker, CHIMI_BINDING_READABLE) != CHIMI_BINDING_READY)\n      return false;",
+        ("    if (chimi_binding_wait(call, CHIMI_BINDING_NO_HANDLE, ticker, CHIMI_BINDING_READABLE) != CHIMI_BINDING_READY)\n      return STOP_CANCELLED;",
          "    usleep(STOP_TICK_MS * 1000);")]),
     exec_test("the stop waits again after a cancel", EXEC, [
         ("    if (waited == STOP_CANCELLED) return chimi_binding_cancelled(call);\n", "")]),
