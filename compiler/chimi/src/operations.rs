@@ -72,6 +72,16 @@ const fn pure(id: &'static str, arity: usize, implementation: StandardFunction) 
     }
 }
 
+const fn runtime(id: &'static str, arity: usize, implementation: StandardFunction) -> Operation {
+    Operation {
+        id,
+        arity,
+        class: OperationClass::Runtime,
+        implementation,
+        test_only: false,
+    }
+}
+
 const fn test_only(id: &'static str, arity: usize, implementation: StandardFunction) -> Operation {
     Operation {
         id,
@@ -194,6 +204,8 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/test.assert_not_equal", 2, StandardFunction::TestAssertNotEqual),
     pure("std/test.assert", 2, StandardFunction::TestAssert),
     pure("std/test.fail", 1, StandardFunction::TestFail),
+    // std/resource
+    runtime("std/resource.scoped", 3, StandardFunction::ResourceScoped),
     test_only("std/test.capture_defect", 1, StandardFunction::TestCaptureDefect),
 ];
 

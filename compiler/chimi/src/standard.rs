@@ -517,6 +517,9 @@ pub(crate) enum StandardFunction {
     TestAssertNotEqual,
     TestAssert,
     TestFail,
+    /// `std/resource.scoped`: acquire, use, and release with release masked
+    /// against cancellation.
+    ResourceScoped,
     // Test-only (testing.md, Defects): T4401 when reachable from `main`.
     TestCaptureDefect,
 }
@@ -786,7 +789,8 @@ impl StandardFunction {
             | Self::TestAssertEqual
             | Self::TestAssertNotEqual
             | Self::TestAssert
-            | Self::TestFail
+            | Self::TestFail => None,
+            | Self::ResourceScoped => None,
             | Self::TestCaptureDefect => None,
         }
     }
@@ -957,6 +961,7 @@ impl StandardFunction {
             Self::TestAssertNotEqual => "assert_not_equal",
             Self::TestAssert => "assert",
             Self::TestFail => "fail",
+            Self::ResourceScoped => "scoped",
             Self::TestCaptureDefect => "capture_defect",
         }
     }
