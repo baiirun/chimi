@@ -552,6 +552,8 @@ pub(crate) enum StandardFunction {
     /// `std/resource.scoped`: acquire, use, and release with release masked
     /// against cancellation.
     ResourceScoped,
+    // Test-only (testing.md, Defects): T4401 when reachable from `main`.
+    TestCaptureDefect,
 }
 
 impl StandardFunction {
@@ -839,6 +841,7 @@ impl StandardFunction {
             | Self::TestAssert
             | Self::TestFail => None,
             Self::ResourceScoped => None,
+            Self::TestCaptureDefect => None,
         }
     }
 
@@ -1016,6 +1019,7 @@ impl StandardFunction {
             Self::TestAssert => "assert",
             Self::TestFail => "fail",
             Self::ResourceScoped => "scoped",
+            Self::TestCaptureDefect => "capture_defect",
         }
     }
 

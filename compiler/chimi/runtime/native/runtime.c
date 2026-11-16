@@ -5585,6 +5585,74 @@ static ChimiControl *invoke_assertion(uint32_t intrinsic, ChimiValue **arguments
   return intrinsic_shape_defect(call_node);
 }
 
+static bool is_assertion_call(int64_t node) {
+  uint32_t low = 0, high = CHIMI_ASSERTION_NODE_COUNT;
+  while (low < high) {
+    uint32_t middle = low + (high - low) / 2;
+    if ((int64_t)CHIMI_ASSERTION_NODES[middle] < node) low = middle + 1;
+    else high = middle;
+  }
+  return low < CHIMI_ASSERTION_NODE_COUNT && (int64_t)CHIMI_ASSERTION_NODES[low] == node;
+}
+
+static ChimiControl *capture_outcome_defect(const char *heading, const ChimiValue *value,
+                                            uint32_t call_node) {
+  TextBuffer buffer = {0};
+  buffer_bytes(&buffer, heading, strlen(heading));
+  buffer_char(&buffer, '\n');
+  ChimiValue *rendering = debug_render(value, true);
+  buffer_bytes(&buffer, rendering->as.text.bytes, rendering->as.text.length);
+  buffer_char(&buffer, '\0');
+  return defect(buffer.data, call_node);
+}
+
+/* Test.capture_defect, as invoke_capture_defect in execution/core_operations.rs.
+   Under the scheduler the operation runs in a scope without a deadline; after a
+   captured defect, the scope's children are cancelled and leaving it drains
+   them. A cancellation from outside passes through, as through Task.timeout. */
+static ChimiControl *capture_defect(ChimiRuntime *runtime, ChimiValue **arguments,
+                                    uint32_t argument_count, uint64_t span, uint32_t call_node,
+                                    ChimiEnvironment *environment) {
+  if (argument_count != 1 || arguments[0]->kind != VALUE_CALLABLE)
+    return intrinsic_shape_defect(call_node);
+  ChimiSchedulerRequest enter = {.kind = CHIMI_REQUEST_SCOPE_ENTER, .value = INT64_MAX};
+  if (CHIMI_REQUIRES_SCHEDULER) {
+    if (scheduler_request(&enter) == CHIMI_FIBER_CANCEL) return cancelled();
+    if (enter.status != CHIMI_RESPONSE_OK)
+      return defect("Test.capture_defect scheduler request failed", call_node);
+  }
+  ChimiControl *control = invoke(runtime, arguments[0]->as.callable, NULL, 0, span, call_node, environment);
+  if (control->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()) return control;
+  bool captured = control->kind == CONTROL_DEFECT && !is_assertion_call(control->node);
+  if (CHIMI_REQUIRES_SCHEDULER) {
+    if (captured) {
+      ChimiSchedulerRequest cancel = {.kind = CHIMI_REQUEST_SCOPE_CANCEL, .token = enter.token};
+      if (scheduler_request(&cancel) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (cancel.status != CHIMI_RESPONSE_OK)
+        return defect("Test.capture_defect scheduler request failed", call_node);
+    }
+    for (;;) {
+      /* A captured defect discards the operation's values, so the capabilities
+         it gained in the scope are aborted, as after a cancellation. */
+      ChimiSchedulerRequest exit = {.kind = CHIMI_REQUEST_SCOPE_EXIT, .token = enter.token,
+                                    .value = captured};
+      if (scheduler_request(&exit) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (exit.status == CHIMI_RESPONSE_PENDING) continue;
+      if (exit.status != CHIMI_RESPONSE_OK)
+        return defect("Test.capture_defect scheduler request failed", call_node);
+      break;
+    }
+  }
+  if (captured) return success(text_value(control->message));
+  if (control->kind == CONTROL_SUCCESS)
+    return capture_outcome_defect("Test.capture_defect: the operation returned instead of defecting:",
+                                  control->value, call_node);
+  if (control->kind == CONTROL_FAILURE)
+    return capture_outcome_defect("Test.capture_defect: the operation failed with an expected "
+                                  "failure instead of defecting:", control->value, call_node);
+  return control;
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
@@ -8393,6 +8461,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_assertion(intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_RESOURCE_SCOPED)
     return resource_scoped(runtime, arguments, argument_count, span, call_node, environment);
+  if (intrinsic == CHIMI_INTRINSIC_TEST_CAPTURE_DEFECT)
+    return capture_defect(runtime, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)

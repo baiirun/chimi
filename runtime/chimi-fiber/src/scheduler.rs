@@ -115,6 +115,11 @@ pub const REQUEST_CHANNEL_WATCH: u32 = 38;
 /// `channel`: a broadcast or watch. OK with a new subscription receiver in
 /// `channel`, `owner`, `token`.
 pub const REQUEST_CHANNEL_SUBSCRIBE: u32 = 39;
+/// Cancels the live children of the scope whose id is `token` (and of the
+/// scopes nested in it) without cancelling the caller; leaving the scope then
+/// waits for them to drain. ERROR when the task is not inside it. Never a
+/// cancellation point.
+pub const REQUEST_SCOPE_CANCEL: u32 = 41;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -1671,6 +1676,15 @@ impl Scheduler {
             }
             REQUEST_SCOPE_CHECK => {
                 request.status = RESPONSE_OK;
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_SCOPE_CANCEL => {
+                request.status =
+                    if self.cancel_scope_children(owner, ScopeId::from_raw(request.token)) {
+                        RESPONSE_OK
+                    } else {
+                        RESPONSE_ERROR
+                    };
                 let _ = self.wake_front(owner);
             }
             REQUEST_SELECT => self.handle_select(owner, request),
