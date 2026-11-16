@@ -2,7 +2,7 @@
 //! the reference interpreter. `runtime.c` implements the same operations for the
 //! native backend, and the `std-tests` programs run on both and must agree.
 
-use super::{Control, Evaluator, RuntimeValue};
+use super::{Control, Evaluator, RuntimeValue, debug};
 use crate::ids::CoreNodeId;
 use crate::standard::{StandardConstructor, StandardFunction};
 
@@ -32,7 +32,59 @@ pub(super) fn clamp_range(start: i64, end: i64, length: usize) -> std::ops::Rang
     start..clamp(end).max(start)
 }
 
+/// The defect message of a failed `Test.assert_equal` or `Test.assert_not_equal`.
+/// `chimi test` reads the two renderings back from it, so it must match
+/// `assertion_message` in `runtime.c` byte for byte.
+pub(crate) fn comparison_message(heading: &str, actual: &str, expected: &str) -> String {
+    format!("{heading}\nactual:\n{actual}\nexpected:\n{expected}")
+}
+
+pub(crate) const ASSERT_EQUAL_HEADING: &str = "Test.assert_equal: the values differ";
+pub(crate) const ASSERT_NOT_EQUAL_HEADING: &str = "Test.assert_not_equal: the values are equal";
+
 impl Evaluator<'_> {
+    /// `std/test`: each assertion defects at `call_node`, the caller's call.
+    pub(super) fn invoke_assertion(
+        &self,
+        function: StandardFunction,
+        arguments: Vec<RuntimeValue>,
+        call_node: CoreNodeId,
+    ) -> Control {
+        let defect = |message: String| Control::Defect {
+            message,
+            node: Some(call_node),
+            cause: None,
+        };
+        match (function, arguments.as_slice()) {
+            (
+                StandardFunction::TestAssertEqual | StandardFunction::TestAssertNotEqual,
+                [actual, expected],
+            ) => {
+                let equal = self.structural_order(actual, expected).is_eq();
+                let wanted = function == StandardFunction::TestAssertEqual;
+                if equal == wanted {
+                    return Control::Success(RuntimeValue::Void);
+                }
+                let heading = if wanted {
+                    ASSERT_EQUAL_HEADING
+                } else {
+                    ASSERT_NOT_EQUAL_HEADING
+                };
+                defect(comparison_message(
+                    heading,
+                    &debug::render(self.core, actual, true),
+                    &debug::render(self.core, expected, true),
+                ))
+            }
+            (StandardFunction::TestAssert, [RuntimeValue::Boolean(true), _]) => {
+                Control::Success(RuntimeValue::Void)
+            }
+            (StandardFunction::TestAssert, [RuntimeValue::Boolean(false), RuntimeValue::Text(message)])
+            | (StandardFunction::TestFail, [RuntimeValue::Text(message)]) => defect(message.clone()),
+            _ => self.intrinsic_shape_defect(function, call_node),
+        }
+    }
+
     /// Requires: `function` is one of the operations this module implements.
     pub(super) fn invoke_core_operation(
         &self,

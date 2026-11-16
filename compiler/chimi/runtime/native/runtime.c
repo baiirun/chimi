@@ -5134,6 +5134,44 @@ static ChimiControl *invoke_bytes_operation(uint32_t intrinsic, ChimiValue **arg
   return intrinsic_shape_defect(call_node);
 }
 
+/* std/test. A comparison's message is "<heading>\nactual:\n<render>\nexpected:\n<render>",
+   byte for byte as `comparison_message` in execution/core_operations.rs, because
+   `chimi test` reads the two renderings back from it. */
+static ChimiValue *debug_render(const ChimiValue *value, bool indented);
+
+static ChimiControl *invoke_assertion(uint32_t intrinsic, ChimiValue **arguments,
+                                      uint32_t argument_count, uint32_t call_node) {
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_TEST_ASSERT_EQUAL:
+    case CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL: {
+      if (argument_count != 2) break;
+      bool wanted = intrinsic == CHIMI_INTRINSIC_TEST_ASSERT_EQUAL;
+      if ((chimi_value_compare(arguments[0], arguments[1]) == 0) == wanted)
+        return success(void_value());
+      TextBuffer buffer = {0};
+      const char *heading = wanted ? "Test.assert_equal: the values differ"
+                                    : "Test.assert_not_equal: the values are equal";
+      buffer_bytes(&buffer, heading, strlen(heading));
+      buffer_bytes(&buffer, "\nactual:\n", 9);
+      ChimiValue *actual = debug_render(arguments[0], true);
+      buffer_bytes(&buffer, actual->as.text.bytes, actual->as.text.length);
+      buffer_bytes(&buffer, "\nexpected:\n", 11);
+      ChimiValue *expected = debug_render(arguments[1], true);
+      buffer_bytes(&buffer, expected->as.text.bytes, expected->as.text.length);
+      buffer_char(&buffer, '\0');
+      return defect(buffer.data, call_node);
+    }
+    case CHIMI_INTRINSIC_TEST_ASSERT:
+      if (argument_count != 2 || arguments[0]->kind != VALUE_BOOLEAN || arguments[1]->kind != VALUE_TEXT) break;
+      if (arguments[0]->as.boolean) return success(void_value());
+      return defect(copy_text(arguments[1]->as.text.bytes), call_node);
+    case CHIMI_INTRINSIC_TEST_FAIL:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
+      return defect(copy_text(arguments[0]->as.text.bytes), call_node);
+  }
+  return intrinsic_shape_defect(call_node);
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
@@ -7842,6 +7880,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_bytes_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_CAUSE_CONTEXT && intrinsic <= CHIMI_INTRINSIC_CAUSE_TO_TEXT)
     return invoke_cause_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+  if (intrinsic >= CHIMI_INTRINSIC_TEST_ASSERT_EQUAL && intrinsic <= CHIMI_INTRINSIC_TEST_FAIL)
+    return invoke_assertion(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
@@ -8903,7 +8943,14 @@ static void print_outcome(FILE *output, const ChimiControl *control) {
     case CONTROL_SUCCESS:
       fputs("\"outcome\":\"success\",\"value\":", output); json_value(output, control->value); break;
     case CONTROL_FAILURE:
-      fputs("\"outcome\":\"expected_failure\",\"error\":", output); json_value(output, control->value); break;
+      fputs("\"outcome\":\"expected_failure\",\"error\":", output); json_value(output, control->value);
+      /* A test build also writes the debug rendering `chimi test` reports. */
+      if (CHIMI_TEST_COUNT > 0) {
+        ChimiValue *rendered = debug_render(control->value, true);
+        fputs(",\"rendering\":", output);
+        json_string(output, rendered->as.text.bytes);
+      }
+      break;
     case CONTROL_DEFECT:
       fputs("\"outcome\":\"defect\",\"message\":", output); json_string(output, control->message);
       if (control->node < 0) fputs(",\"core_node_id\":null,\"origin_id\":null", output);
@@ -9435,6 +9482,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     .next_span = 2,
   };
   uint32_t benchmark_repeats = 0;
+  int64_t test_index = -1;
   bool clock_start_given = false;
   const char *telemetry_path = NULL;
   const char *outcome_path = NULL;
@@ -9460,6 +9508,16 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     else if (strncmp(argv[index], "--profile-file=", 15) == 0) profile_path = argv[index] + 15;
     else if (strncmp(argv[index], "--execution-id=", 15) == 0) runtime.execution_id = argv[index] + 15;
     else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = true;
+    else if (strncmp(argv[index], "--test=", 7) == 0) {
+      errno = 0;
+      char *end = NULL;
+      unsigned long value = strtoul(argv[index] + 7, &end, 10);
+      if (errno == ERANGE || end == argv[index] + 7 || *end != '\0' || value >= CHIMI_TEST_COUNT) {
+        fprintf(stderr, "--test requires a test index below %u\n", CHIMI_TEST_COUNT);
+        return 64;
+      }
+      test_index = (int64_t)value;
+    }
     else if (strcmp(argv[index], "--clock=real") == 0) runtime.virtual_clock = false;
     else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;
     else if (strncmp(argv[index], "--clock-start=", 14) == 0) {
@@ -9538,7 +9596,12 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   }
   uint32_t entry_node = 0;
   const ChimiFunction *entry_function = NULL;
-  for (uint32_t i = 0; i < CHIMI_FUNCTION_COUNT; ++i)
+  if (test_index >= 0) {
+    entry_function = &CHIMI_FUNCTIONS[CHIMI_TEST_FUNCTIONS[test_index]];
+    entry_node = entry_function->body;
+    entry = CHIMI_NODE_FUNCTIONS[entry_node];
+  }
+  for (uint32_t i = 0; entry_function == NULL && i < CHIMI_FUNCTION_COUNT; ++i)
     if (CHIMI_NODE_FUNCTIONS[CHIMI_FUNCTIONS[i].body] == entry) {
       entry_node = CHIMI_FUNCTIONS[i].body;
       entry_function = &CHIMI_FUNCTIONS[i];

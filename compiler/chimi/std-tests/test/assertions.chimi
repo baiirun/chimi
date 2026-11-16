@@ -1,0 +1,22 @@
+// The std/test assertions return Void when they hold. A failed comparison
+// defects with both values in the indented debug format, which `chimi test`
+// reads back for its report; the message is the same on both backends.
+import std/test as Test
+
+struct Money {
+  cents: Int
+}
+
+fn checked(amount: Int) -> Int {
+  case amount < 0 {
+    True -> Test.fail("checked: amount must not be negative")
+    False -> amount
+  }
+}
+
+pub fn main() -> Void {
+  Test.assert(checked(1) == 1, "one is one")
+  Test.assert_not_equal(Money(1), Money(2))
+  Test.assert_equal([Money(1)], [Money(1)])
+  Test.assert_equal([Money(checked(1))], [Money(2)])
+}

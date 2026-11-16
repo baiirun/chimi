@@ -940,7 +940,15 @@ impl TypedProject {
             let unclosed = row
                 .entries
                 .into_iter()
-                .filter(|need| !need.explained && !self.test_plan_closes(need))
+                .filter(|need| {
+                    // A need whose interface did not resolve already has its error.
+                    !need.explained
+                        && !matches!(
+                            self.types[self.resolve_type_id(need.interface).raw() as usize],
+                            CanonicalType::Poison
+                        )
+                        && !self.test_plan_closes(need)
+                })
                 .collect::<Vec<_>>();
             for need in unclosed {
                 self.diagnostics.push(Diagnostic::error(

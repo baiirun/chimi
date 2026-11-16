@@ -39,6 +39,19 @@ impl BackendProgram {
         Self { core }
     }
 
+    pub(crate) const fn core(&self) -> &CoreProgram {
+        &self.core
+    }
+
+    /// The same program with `entry`, a lowered function with no parameters, as
+    /// its root: how the interpreter runs one test of a test build.
+    pub(crate) fn with_entry(&self, entry: crate::ids::SymbolId) -> Self {
+        let mut core = self.core.clone();
+        core.entry = entry;
+        core.computation = core.symbol(entry).name.clone();
+        Self { core }
+    }
+
     pub fn profile(&self) -> BackendProfile {
         BackendProfile::from_core(&self.core)
     }
