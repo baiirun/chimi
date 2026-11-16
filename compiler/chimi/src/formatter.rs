@@ -601,8 +601,11 @@ fn needs_space(previous: Option<TokenKind>, current: TokenKind, line: &str) -> b
     }
     // A type argument list's `>` is written tight, so the word after it, as in
     // `fn(T) -> Option<U> errors E`, needs its own space.
+    // A record type's `}` before a signature's `errors` or `needs`, as in
+    // `-> { status: Status } needs { ... }`, needs one too.
     (word_kind(previous) || previous == TokenKind::Greater) && word_kind(current)
         || matches!(previous, TokenKind::RightParen | TokenKind::RightBracket)
+        || previous == TokenKind::RightBrace && matches!(current, TokenKind::Errors | TokenKind::Needs)
 }
 
 const fn word_kind(kind: TokenKind) -> bool {
@@ -846,6 +849,16 @@ mod tests {
         assert!(!formatted.is_blocked());
         assert!(formatted.text().starts_with("/// ```chimi\n/// let x = add(1, 2)\n/// ```\n"));
         assert!(formatted.text().contains("/// let a=1\n/// }\n/// fn g()->Int{2}\n"));
+    }
+
+    /// A record return type keeps a space before the signature's `needs`.
+    #[test]
+    fn a_record_return_type_is_spaced_from_needs() {
+        let source = "fn f() -> { a: Int } needs { x: X } {\n  { a: 1 }\n}\n";
+        let formatted = format(source);
+        assert!(!formatted.is_blocked());
+        assert!(formatted.text().starts_with("fn f() -> { a: Int } needs {"), "{}", formatted.text());
+        assert_eq!(format(formatted.text()).text(), formatted.text());
     }
 
     #[test]

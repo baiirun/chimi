@@ -1,0 +1,20 @@
+# mutation run at 6d0ba030ab34664daa1964d18293b1986dec9594
+# exec_pipe_mutations.py: 14 mutants against compiler/chimi
+BASELINE ok  [std_exec] (47s)
+KILLED       pipe ends reach other children [std_exec] (106s)
+KILLED       the parent keeps the child's ends [std_exec] (44s)
+KILLED       a write to a gone reader raises SIGPIPE [std_exec] (47s)
+KILLED       a broken pipe is Failed [std_exec] (47s)
+KILLED       the end of output is a failure [std_exec] (57s)
+KILLED       stdin and stdout pipes swap ends [std_exec] (51s)
+KILLED       a fake read after a stop is Failed [std_exec] (52s)
+KILLED       release leaves the pipes open [std_exec] (49s)
+KILLED       capture inherits stdin [std_exec] (47s)
+KILLED       capture swaps its streams [std_exec] (47s)
+KILLED       capture reads output to its end first [std_exec] (105s)
+KILLED       a fake input's Closed reads as Closed [std_exec] (47s)
+KILLED       a fake's error output is its output [std_exec] (47s)
+# rerun at 81b8bce41da9ed44d011cbc5760aecf8245579f0 after the verifier's fixes (the stale mutant's text moved; the sibling test was rewritten):
+KILLED       pipe ends reach other children [std_exec] (107s)
+KILLED       the parent's end blocks [std_exec] (104s)
+# result: every mutant killed
