@@ -212,8 +212,8 @@ fn piped_streams_are_not_terminals() {
 
 // Rejects a provider that misses a terminal, reads another stream's
 // descriptor, or swaps columns and rows: the probe runs on a pseudo-terminal
-// sized 100 columns by 30 rows, with stdin left a pipe, so only output and
-// error output are terminals. python3's pty module makes the terminal on
+// sized 100 columns by 30 rows, with stdin a pipe and error output
+// /dev/null, so only output is a terminal. python3's pty module makes the terminal on
 // Linux and macOS alike.
 #[test]
 fn a_pseudo_terminal_is_one_and_has_its_size() {
@@ -225,6 +225,8 @@ pid, fd = pty.fork()
 if pid == 0:
     fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
     os.dup2(read_end, 0)
+    null = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(null, 2)
     os.execv(sys.argv[1], [sys.argv[1]])
 os.close(write_end)
 out = b""
@@ -246,7 +248,7 @@ sys.stdout.write(out.decode().replace("\r\n", "\n"))
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "[False, True, True]\nSome({ columns: 100, rows: 30 })\n"
+        "[False, True, False]\nSome({ columns: 100, rows: 30 })\n"
     );
 }
 
