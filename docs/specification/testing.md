@@ -13,9 +13,9 @@ report, `--json`, filters, jobs, the time limit, the clock options, directory
 inputs, and the
 exit status, the four `std/test` assertions, `capture_defect`, recorders
 and scripts, fake mailboxes, `T4401`, `T4403`, `std/random` with
-`--seed`, doc-comment examples in `chimi test` and `chimi check`, and
-`--trace`. Not implemented yet: formatting example code, examples in `std/`
-modules. 85 of the 99 std-tests programs are test items; the other 14 stay
+`--seed`, doc-comment examples in `chimi test` and `chimi check`,
+`--trace`, and the `std/` modules' examples through `chimi std test`. Not
+implemented yet: formatting example code. 85 of the 99 std-tests programs are test items; the other 14 stay
 expected-output programs on purpose (see [Migrating the std-tests
 programs](#migrating-the-std-tests-programs)). The build is tracked
 by CHI-208; the spec was written under CHI-202.
@@ -662,6 +662,14 @@ pub fn unwrap_or<T>(option: Option<T>, fallback: T) -> T {
   ...
 }
 ```
+
+The standard tree's own examples run with `chimi std test`, which takes the
+`chimi test` options and no path. `chimi test` on a project does not run
+them. Each is reported under the module it documents, as `std/option
+"unwrap_or example 1"`. Because `std/` module paths belong to the compiler,
+the example's own module is named `example/<module>/__example_<n>`. The
+standard library's Rust integration test runs `chimi std test` on both
+backends and fails when an example fails on either.
 
 Markdown documents outside source keep the existing harness
 (`tests/doc_examples.rs`), whose annotations check and run them. Byron

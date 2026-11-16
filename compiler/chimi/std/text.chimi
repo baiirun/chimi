@@ -23,6 +23,14 @@ pub native fn append(text: Text, other: Text) -> Text
 /// Returns the texts of `parts` joined in order, with `separator` between
 /// each two.
 ///
+/// ```chimi
+/// import std/text as Text
+/// import std/test as Test
+///
+/// Test.assert_equal(Text.join(["a", "b", "c"], ", "), "a, b, c")
+/// Test.assert_equal(Text.join([], ", "), "")
+/// ```
+///
 /// Cost: O(n) in the total length.
 pub fn join(parts: List<Text>, separator: Text) -> Text {
   case parts {
@@ -54,6 +62,15 @@ pub fn repeat(text: Text, count: Int) -> Text {
 /// is `"aba7"`.
 ///
 /// Defects when: `fill` is empty.
+///
+/// ```chimi
+/// import std/text as Text
+/// import std/test as Test
+///
+/// Test.assert_equal(Text.pad_start("7", 3, "0"), "007")
+/// Test.assert_equal(Text.pad_start("1234", 3, "0"), "1234")
+/// ```
+///
 /// Cost: O(n) in the result length.
 pub fn pad_start(text: Text, width: Int, fill: Text) -> Text {
   append(padding("Text.pad_start", grapheme_count(text), width, fill), text)

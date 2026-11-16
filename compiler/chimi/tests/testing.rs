@@ -1427,3 +1427,52 @@ fn trace_writes_one_telemetry_file_per_test_on_both_backends() {
     assert!(stderr.contains("--trace must be off, boundaries, or full"), "{stderr}");
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+/// `chimi std test` runs the standard tree's doc-comment examples, reported
+/// under the module they document, and takes no input path.
+#[test]
+fn std_test_runs_the_standard_trees_examples() {
+    let scratch = scratch_directory("std-test");
+    let std = scratch.join("std");
+    let copy = Command::new("cp")
+        .arg("-R")
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/std"))
+        .arg(&std)
+        .status()
+        .expect("copy std");
+    assert!(copy.success());
+    let option = std.join("option.chimi");
+    let text = std::fs::read_to_string(&option).unwrap();
+    let broken = text.replacen(
+        "Test.assert_equal(Option.unwrap_or(None, 7), 7)",
+        "Test.assert_equal(Option.unwrap_or(None, 7), 8)",
+        1,
+    );
+    assert_ne!(text, broken, "the option example to break is there");
+    std::fs::write(&option, broken).unwrap();
+    let run = |arguments: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .arg("--std-dir")
+            .arg(&std)
+            .args(arguments)
+            .output()
+            .expect("run chimi");
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
+        )
+    };
+    for backend in ["--backend=native", "--backend=interpreter"] {
+        let (status, stdout, stderr) = run(&["std", "test", backend]);
+        assert_eq!(status, Some(1), "{stdout}{stderr}");
+        assert!(stdout.contains("test std/option \"unwrap_or example 1\" ... FAILED"), "{stdout}");
+        assert!(stdout.contains("test std/option \"map example 1\" ... ok"), "{stdout}");
+        assert!(stdout.contains("test std/cause \"context example 1\" ... ok"), "{stdout}");
+    }
+    let (status, _, stderr) = run(&["std", "test", "cases.chimi"]);
+    assert_eq!(status, Some(2));
+    assert!(stderr.contains("std test takes options only"), "{stderr}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}

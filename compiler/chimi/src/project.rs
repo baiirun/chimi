@@ -315,11 +315,28 @@ impl LoadedProject {
         &mut self,
         standard: &StandardTree,
     ) -> Result<Vec<(String, String)>, ProjectLoadError> {
+        self.add_examples_of(standard, false)
+    }
+
+    /// Like [`Self::add_doc_examples`], but for the `std/` modules only
+    /// (`chimi std test`).
+    pub fn add_standard_doc_examples(
+        &mut self,
+        standard: &StandardTree,
+    ) -> Result<Vec<(String, String)>, ProjectLoadError> {
+        self.add_examples_of(standard, true)
+    }
+
+    fn add_examples_of(
+        &mut self,
+        standard: &StandardTree,
+        standard_modules: bool,
+    ) -> Result<Vec<(String, String)>, ProjectLoadError> {
         let mut added = Vec::new();
         let documented: Vec<ProjectSource> = self
             .modules
             .iter()
-            .filter(|module| !module.module_path().starts_with("std/"))
+            .filter(|module| module.module_path().starts_with("std/") == standard_modules)
             .cloned()
             .collect();
         for module in documented {
@@ -327,7 +344,10 @@ impl LoadedProject {
                 .into_iter()
                 .enumerate()
             {
-                let path = format!("{}/__example_{}", module.module_path(), index + 1);
+                // `std/` paths are reserved for the standard tree (`N3102`),
+                // so a standard module's examples live under `example/`.
+                let prefix = if standard_modules { "example/" } else { "" };
+                let path = format!("{prefix}{}/__example_{}", module.module_path(), index + 1);
                 let source = SourceSnapshot::from_text(module.source().path(), example.text);
                 let source = ProjectSource::parsed(path.clone(), source)
                     .map_err(ProjectLoadError::InvalidModule)?;

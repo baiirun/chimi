@@ -37,6 +37,13 @@ pub native fn from(text: Text) -> Path
 /// starts with `/`: joining never replaces a path, so a name read from input
 /// stays inside the directory it was joined to (normalize to remove `..`).
 ///
+/// ```chimi
+/// import std/path as Path
+/// import std/test as Test
+///
+/// Test.assert_equal(Path.to_text(Path.join(Path.from("logs"), "app.log")), "logs/app.log")
+/// ```
+///
 /// Cost: O(n).
 pub fn join(path: Path, part: Text) -> Path {
   let base = to_text(path)
@@ -107,6 +114,14 @@ pub fn stem(path: Path) -> Option<Text> {
 /// Returns the text after the last `.` of `name`, or `None` when there is
 /// none, nothing follows it, or the name starts with its only `.`:
 /// `Some("gz")` for `report.tar.gz`, `None` for `.bashrc` and `notes.`.
+///
+/// ```chimi
+/// import std/path as Path
+/// import std/test as Test
+///
+/// Test.assert_equal(Path.extension(Path.from("logs/app.log")), Some("log"))
+/// Test.assert_equal(Path.extension(Path.from("Makefile")), None)
+/// ```
 ///
 /// Cost: O(n).
 pub fn extension(path: Path) -> Option<Text> {

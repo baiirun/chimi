@@ -33,6 +33,14 @@ pub fn sum(numbers: List<Int>) -> Int {
 
 /// Returns `left + right`, or `None` when the exact sum does not fit in `Int`.
 ///
+/// ```chimi
+/// import std/int as Int
+/// import std/test as Test
+///
+/// Test.assert_equal(Int.add_checked(2, 3), Some(5))
+/// Test.assert_equal(Int.add_checked(9223372036854775807, 1), None)
+/// ```
+///
 /// Cost: O(1).
 pub native fn add_checked(left: Int, right: Int) -> Option<Int>
 
@@ -78,6 +86,13 @@ pub native fn to_text(value: Int) -> Text
 /// Reads an `Int` from decimal digits with an optional leading `-`, and
 /// nothing else: no `+`, spaces, or `_`.
 /// `Int.parse(Int.to_text(value))` returns `value`.
+///
+/// ```chimi
+/// import std/int as Int
+/// import std/test as Test
+///
+/// Test.assert_equal(Int.parse("-125"), -125)
+/// ```
 ///
 /// Fails with: `ParseError.Empty` for empty text; `ParseError.InvalidDigit`
 /// when a character is not a digit; `ParseError.OutOfRange` when the number

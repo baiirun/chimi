@@ -19,8 +19,8 @@ const USAGE: &str = concat!(
     "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
     "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] ",
     "[--trace=off|boundaries|full] | ",
-    "chimi std check; a compiler developer may put ",
-    "--std-dir <directory> before inspect, check, run, build, test, or std check"
+    "chimi std check | chimi std test [<test option>...]; a compiler developer may put ",
+    "--std-dir <directory> before inspect, check, run, build, test, std check, or std test"
 );
 
 #[derive(Debug, Eq, PartialEq)]
@@ -57,6 +57,10 @@ enum Command {
     },
     /// Checks the whole standard tree against the operation registry.
     StdCheck,
+    /// Runs the doc-comment examples of the standard tree as tests.
+    StdTest {
+        options: TestOptions,
+    },
     Test {
         input: Input,
         options: TestOptions,
@@ -97,6 +101,30 @@ impl Default for TestOptions {
 
 /// Parses `chimi test [<path> | --root <project> <module>] [options]`.
 fn parse_test_command(arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    let (input, options) = parse_test_arguments(arguments)?;
+    let Some(input) = input else {
+        return Err(UsageError {
+            message: "test requires a source path or project root",
+        });
+    };
+    Ok(Command::Test { input, options })
+}
+
+/// Parses `chimi std test [options]`: the `chimi test` options, no input.
+fn parse_std_test_command(
+    arguments: impl Iterator<Item = OsString>,
+) -> Result<Command, UsageError> {
+    match parse_test_arguments(arguments)? {
+        (None, options) => Ok(Command::StdTest { options }),
+        (Some(_), _) => Err(UsageError {
+            message: "std test takes options only; it runs the standard tree's examples",
+        }),
+    }
+}
+
+fn parse_test_arguments(
+    arguments: impl Iterator<Item = OsString>,
+) -> Result<(Option<Input>, TestOptions), UsageError> {
     let usage = |message| Err(UsageError { message });
     let mut options = TestOptions::default();
     let mut input = None;
@@ -185,10 +213,7 @@ fn parse_test_command(arguments: impl Iterator<Item = OsString>) -> Result<Comma
     if options.clock_start.is_some() && options.backend == chimi::testing::Backend::Interpreter {
         return usage("--clock-start requires --backend=native");
     }
-    let Some(input) = input else {
-        return usage("test requires a source path or project root");
-    };
-    Ok(Command::Test { input, options })
+    Ok((input, options))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -273,10 +298,16 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
     }
 
     if command == "std" {
-        return match (arguments.next(), arguments.next()) {
-            (Some(subcommand), None) if subcommand == "check" => Ok(Command::StdCheck),
+        return match arguments.next() {
+            Some(subcommand) if subcommand == "check" => match arguments.next() {
+                None => Ok(Command::StdCheck),
+                Some(_) => Err(UsageError {
+                    message: "std takes one subcommand: check or test",
+                }),
+            },
+            Some(subcommand) if subcommand == "test" => parse_std_test_command(arguments),
             _ => Err(UsageError {
-                message: "std takes one subcommand: check",
+                message: "std takes one subcommand: check or test",
             }),
         };
     }
@@ -481,6 +512,7 @@ fn execute(Invocation { std_dir, command }: Invocation) -> ExitCode {
         Command::Run { input, arguments } => run(input, &standard, arguments),
         Command::Build { input, output } => build(input, &standard, output),
         Command::StdCheck => std_check(&standard),
+        Command::StdTest { options } => std_test(&standard, options),
         Command::Test { input, options } => test(input, &standard, options),
     }
 }
@@ -649,18 +681,49 @@ fn build(input: Input, standard: &StandardTree, output: Option<PathBuf>) -> Exit
 /// `chimi test`: exits 0 when every selected test passed, 1 when one failed,
 /// and 2 when the run could not start (testing.md, Exit status).
 fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode {
-    use chimi::testing::{Backend, RunOptions, TestSuite, TraceOutput, render_json, render_report};
     let artifact_directory = artifact_directory(&default_executable_path(&input)).join("test");
     let Some(mut project) = load_project(input, standard) else {
         return ExitCode::from(2);
     };
-    let examples = match project.add_doc_examples(standard) {
-        Ok(examples) => examples,
+    match project.add_doc_examples(standard) {
+        Ok(examples) => run_tests(&project, &examples, &artifact_directory, standard, options),
+        Err(error) => {
+            eprintln!("chimi: {error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `chimi std test`: the standard tree's doc-comment examples, run as
+/// `chimi test` runs a project's.
+fn std_test(standard: &StandardTree, options: TestOptions) -> ExitCode {
+    let mut tree = match LoadedProject::standard_tree(standard) {
+        Ok(tree) => tree,
         Err(error) => {
             eprintln!("chimi: {error}");
             return ExitCode::from(2);
         }
     };
+    match tree.add_standard_doc_examples(standard) {
+        Ok(examples) => {
+            let artifact_directory = PathBuf::from("target/chimi/std/test");
+            run_tests(&tree, &examples, &artifact_directory, standard, options)
+        }
+        Err(error) => {
+            eprintln!("chimi: {error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run_tests(
+    project: &LoadedProject,
+    examples: &[(String, String)],
+    artifact_directory: &std::path::Path,
+    standard: &StandardTree,
+    options: TestOptions,
+) -> ExitCode {
+    use chimi::testing::{Backend, RunOptions, TestSuite, TraceOutput, render_json, render_report};
     let mut suite = match TestSuite::prepare(project.sources()) {
         Ok(suite) => suite,
         Err(diagnostics) => {
@@ -668,7 +731,7 @@ fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode
             return ExitCode::from(2);
         }
     };
-    suite.rename_modules(&examples);
+    suite.rename_modules(examples);
     let selected = suite.select(&options.filters);
     if selected.is_empty() {
         eprintln!("chimi: no test matches the filter");
