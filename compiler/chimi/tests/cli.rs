@@ -290,6 +290,48 @@ fn build_links_a_runnable_executable_and_reports_its_artifacts() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// testing.md: `chimi build` drops test items before lowering, so appending
+// tests to a module changes nothing in the executable.
+#[test]
+fn build_output_is_identical_with_and_without_test_items() {
+    let scratch = scratch_directory("build-without-tests");
+    let program = concat!(
+        "import std/debug as Debug\n\n",
+        "fn double(value: Int) -> Int {\n  value * 2\n}\n\n",
+        "pub fn main() -> Int {\n  double(21)\n}\n",
+    );
+    let with_tests = format!(
+        "{program}\ntest \"doubles\" {{\n  let rendered = Debug.render(double(2))\n  Void\n}}\n"
+    );
+    let mut executables = Vec::new();
+    for (name, text) in [("plain", program.to_owned()), ("tested", with_tests)] {
+        let source = scratch.join(format!("{name}.chimi"));
+        std::fs::write(&source, text).unwrap();
+        // One file name for both: macOS signs an executable with its name.
+        std::fs::create_dir_all(scratch.join(name)).unwrap();
+        let executable = scratch.join(name).join("program");
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .arg("build")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .expect("build Chimi source");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        executables.push(std::fs::read(executable).unwrap());
+    }
+    assert!(
+        executables[0] == executables[1],
+        "test items changed the executable"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 /// A copy of the embedded standard tree in `directory`, for `--std-dir`.
 fn copy_standard_tree(directory: &Path) {
     std::fs::create_dir_all(directory).unwrap();
@@ -3944,9 +3986,15 @@ fn native_per_owner_heaps_meet_the_prototype_heap_contracts() {
             .output()
             .expect("compile native heap test")
     };
-    let sanitized = compile(&["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]);
+    // A checking build frees every young chunk at its pass boundary, so a pointer
+    // kept across one fails as a use after free.
+    let sanitized = compile(&[
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-DCHIMI_POISON_YOUNG_CHUNKS",
+    ]);
     if !sanitized.status.success() {
-        let plain = compile(&[]);
+        let plain = compile(&["-DCHIMI_POISON_YOUNG_CHUNKS"]);
         assert!(
             plain.status.success(),
             "{}",
@@ -4430,6 +4478,53 @@ fn memory_report_over_rounds(name: &str, source: &str, runner: &[&str], rounds: 
     let report = std::fs::read_to_string(memory_report).unwrap();
     std::fs::remove_dir_all(scratch).unwrap();
     report
+}
+
+// Guards: a pass's young chunk allocations are counted at its boundary, while a
+// child task's heap is freed in the middle of the pass. The peak footprint must
+// still count both at once: here the 1000 pushes still live in the pass while
+// the child maps a 20000-element list (CHI-219 review).
+#[test]
+fn native_peak_footprint_counts_a_pass_and_a_child_task_together() {
+    let source = |pushes: usize| {
+        format!(
+            concat!(
+                "import std/list as List\n",
+                "import std/task as Task\n",
+                "fn heavy(seed: Int) -> Int {{\n",
+                "  List.length(List.map(List.repeat(seed, 20000), fn(n: Int) -> Int {{ n + 1 }}))\n",
+                "}}\n",
+                "fn build(n: Int, acc: List<Int>) -> List<Int> {{\n",
+                "  case n <= 0 {{\n",
+                "    True -> acc\n",
+                "    False -> build(n - 1, List.push(acc, n))\n",
+                "  }}\n",
+                "}}\n",
+                "pub fn main() -> Int {{\n",
+                "  loop s = 0 {{\n",
+                "    case s >= 50000 {{\n",
+                "      True -> break s\n",
+                "      False -> {{\n",
+                "        let big = build({pushes}, [])\n",
+                "        let r = Task.result(Task.start(fn() -> Int {{ heavy(s) }}))\n",
+                "        s + r + List.length(big)\n",
+                "      }}\n",
+                "    }}\n",
+                "  }}\n",
+                "}}\n",
+            ),
+            pushes = pushes
+        )
+    };
+    let alone = memory_report_over_rounds("peak-child-alone", &source(1), &[], 0);
+    let together = memory_report_over_rounds("peak-child-together", &source(1000), &[], 0);
+    let alone_peak = json_u64_field(&alone, "peak_footprint_bytes");
+    let together_peak = json_u64_field(&together, "peak_footprint_bytes");
+    // The pushes alone keep about as much live as the child does.
+    assert!(
+        together_peak > alone_peak * 3 / 2,
+        "peak footprint {together_peak} with the pushes, {alone_peak} without"
+    );
 }
 
 fn assert_flat_fragment_peak(small: &str, large: &str) {
@@ -5254,6 +5349,59 @@ fn native_backstop_a_stale_capability_whose_owner_has_ended_defects() {
         "channel capability violation: task 1 cannot use the Receiver of channel 1 \
          in Channel.receive: the task it was handed to has ended"
     );
+}
+
+// A root task that overflows its guarded fiber stack while inside a loop region
+// ends with the "Task stack overflow" defect. The region's scope lived in the
+// root's abandoned frames, and building the defect allocated through it, so
+// before the fix the program crashed with SIGSEGV instead. Recursing 20,000
+// calls deep overflows the 1 MiB root stack whatever a frame costs, and the
+// Task in the loop is what puts main on a fiber.
+#[test]
+fn native_a_root_overflowing_inside_a_loop_ends_with_a_stack_overflow_defect() {
+    let scratch = scratch_directory("native-root-overflow-in-loop");
+    let executable = build_native(
+        &scratch,
+        "root-overflow",
+        concat!(
+            "import std/list as List\n",
+            "import std/task as Task\n",
+            "fn build(n: Int, acc: List<Int>) -> List<Int> {\n",
+            "  case n {\n",
+            "    0 -> acc\n",
+            "    _ -> build(n - 1, List.push(acc, n))\n",
+            "  }\n",
+            "}\n",
+            "struct Round { left: Int, total: Int }\n",
+            "pub fn main() -> Int {\n",
+            "  loop state = Round(2, 0) {\n",
+            "    case state.left {\n",
+            "      0 -> break state.total\n",
+            "      _ -> {\n",
+            "        let items = build(20000, [])\n",
+            "        let child = Task.start(fn() -> Int { List.length(items) })\n",
+            "        Round(state.left - 1, state.total + Task.result(child))\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "root-overflow", "off");
+    assert_eq!(
+        execution.process.status.code(),
+        Some(70),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert!(
+        execution
+            .outcome
+            .contains(r#""outcome":"defect","message":"Task stack overflow""#),
+        "{}",
+        execution.outcome
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
 }
 
 // E18 across tasks and channels on native, where each task runs on a 64 KiB fiber

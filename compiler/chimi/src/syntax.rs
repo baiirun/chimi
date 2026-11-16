@@ -272,6 +272,9 @@ pub(crate) enum NodeKind {
     /// `[pub] process name <identifier>: <Message>`. `process` and `name` are
     /// contextual words, recognised only at module item position.
     ProcessNameDeclaration,
+    /// `test "<name>" { <block> }`. `test` is a contextual word, recognised only at
+    /// module item position when a text literal follows it.
+    TestDeclaration,
     /// A text literal with `${...}` interpolations: text chunk tokens around
     /// `InterpolationOpen` expression `InterpolationClose` groups.
     InterpolatedText,
@@ -347,6 +350,7 @@ impl NodeKind {
             Self::LetBinding => "let_binding",
             Self::ConstDeclaration => "const_declaration",
             Self::ProcessNameDeclaration => "process_name_declaration",
+            Self::TestDeclaration => "test_declaration",
             Self::InterpolatedText => "interpolated_text",
             Self::UsingExpression => "using_expression",
             Self::OrExpression => "or_expression",
@@ -1415,6 +1419,9 @@ impl<'source> Parser<'source> {
                 TokenKind::Identifier if self.process_name_starts_at(self.position) => {
                     self.parse_process_name_declaration()
                 }
+                TokenKind::Identifier if self.test_starts_at(self.position) => {
+                    self.parse_test_declaration()
+                }
                 TokenKind::Fn if self.fn_starts_declaration() => self.parse_declaration(),
                 TokenKind::Identifier if self.native_declaration_starts_at(self.position) => {
                     self.parse_declaration()
@@ -1503,6 +1510,7 @@ impl<'source> Parser<'source> {
             Some((NodeKind::FunctionDeclaration, TokenKind::Fn)) => self.parse_function(),
             Some((NodeKind::ConstDeclaration, TokenKind::Const)) => self.parse_const_declaration(),
             Some((NodeKind::ProcessNameDeclaration, _)) => self.parse_process_name_declaration(),
+            Some((NodeKind::TestDeclaration, _)) => self.parse_test_declaration(),
             Some((NodeKind::NativeTypeDeclaration, _)) => self.parse_native_type(),
             _ => self.error_and_bump(
                 "expected `struct`, `enum`, `interface`, `fn`, `const`, or `process name` after \
@@ -1533,6 +1541,9 @@ impl<'source> Parser<'source> {
             }
             TokenKind::Identifier if self.process_name_starts_at(index) => {
                 Some((NodeKind::ProcessNameDeclaration, TokenKind::Identifier))
+            }
+            TokenKind::Identifier if self.test_starts_at(index) => {
+                Some((NodeKind::TestDeclaration, TokenKind::Identifier))
             }
             _ => None,
         }
@@ -2092,6 +2103,33 @@ impl<'source> Parser<'source> {
         self.expect(TokenKind::Identifier);
         self.expect(TokenKind::Colon);
         self.parse_type();
+        self.finish();
+    }
+
+    /// Whether `test` followed by a text literal starts at significant token
+    /// `index`. Anything else keeps `test` an ordinary identifier.
+    fn test_starts_at(&self, index: usize) -> bool {
+        self.kind_at(index) == TokenKind::Identifier
+            && self
+                .significant
+                .get(index)
+                .is_some_and(|raw| &*self.tokens[*raw].text == "test")
+            && matches!(
+                self.kind_at(index + 1),
+                TokenKind::Text | TokenKind::TextStart
+            )
+    }
+
+    /// Parses `[pub] test "<name>" { <block> }`.
+    /// Requires: `test_starts_at` holds after the optional `pub`. Ensures: an
+    /// interpolated name is still parsed, so lowering can report it.
+    fn parse_test_declaration(&mut self) {
+        self.start(NodeKind::TestDeclaration);
+        self.parse_visibility();
+        self.expect(TokenKind::Identifier);
+        self.parse_primary();
+        self.skip_newlines();
+        self.parse_block();
         self.finish();
     }
 

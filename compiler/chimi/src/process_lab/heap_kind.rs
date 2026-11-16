@@ -186,7 +186,11 @@ fn run_harness(
             .output()
             .map_err(|error| format!("run cc: {error}"))
     };
-    let sanitized = compile(&["-fsanitize=address,undefined", "-fno-omit-frame-pointer"])?;
+    let sanitized = compile(&[
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-DCHIMI_POISON_YOUNG_CHUNKS",
+    ])?;
     let mut note = None;
     if !sanitized.status.success() {
         note = Some(format!(

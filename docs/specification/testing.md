@@ -7,8 +7,10 @@ This is the contract for test declarations, the `chimi test` runner,
 runnable documentation examples. It covers T1 and G16 of the
 [language completion plan](../plans/language-completion-plan.md) and the
 testing row of the [standard library map](../plans/standard-library-map.md).
-Nothing here is implemented. The build is tracked by CHI-208; the spec was
-written under CHI-202.
+Test declarations are implemented: they parse, format, and type-check
+(`N3120`, `L2120`, `L2121`, `T4400`, `T4402`), and builds drop them. The
+runner, `std/test`, and the rest are not implemented yet. The build is tracked
+by CHI-208; the spec was written under CHI-202.
 
 Four choices here touched questions only Byron could settle: the test
 declaration form, stateful fakes and mutation, a built-in assertion form, and
@@ -123,8 +125,8 @@ test "<name>" { <block> }
   ([decision](../decisions.md), 2026-11-12). It is read as a keyword only at
   module item position when a text literal follows it, so `test` stays usable
   as an identifier everywhere else.
-- The name is a plain text literal, without interpolation. It MUST be unique
-  within its module (`N3120`). It is the test's name in reports and filters.
+- The name is a plain text literal, without interpolation (`L2121`). It MUST
+  be unique within its module (`N3120`). It is the test's name in reports and filters.
 - A test item takes no visibility modifier (`L2120`) and is not a value. Code
   cannot reference, call, or import a test.
 - A test MAY appear in any module, including a module that also declares
@@ -633,6 +635,7 @@ Codes are provisional until the runner lands. This specification claims
 | --- | --- |
 | `N3120` | two tests in one module have the same name |
 | `L2120` | a test item has a visibility modifier |
+| `L2121` | a test name is an interpolated text literal |
 | `T4400` | a test body needs something the test provider plan does not close and no `using` supplies |
 | `T4401` | a test-only `std/test` operation is reachable from a program's `main` |
 | `T4402` | a test body's success type is not `Void` |

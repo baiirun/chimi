@@ -1,0 +1,16 @@
+// Schedules are plain data: two built the same way are equal, and a different
+// count, wait, or shape is not.
+import std/debug as Debug
+import std/duration as Duration
+import std/schedule as Schedule
+
+pub fn main() -> Text {
+  let second = Duration.seconds(1)
+  Debug.render([
+    Schedule.fixed(3, second) == Schedule.fixed(3, Duration.milliseconds(1000)),
+    Schedule.fixed(3, second) == Schedule.fixed(4, second),
+    Schedule.fixed(3, second) == Schedule.fixed(3, Duration.seconds(2)),
+    Schedule.immediate(3) == Schedule.fixed(3, Duration.zero),
+    Schedule.exponential(3, second, second) == Schedule.exponential(3, second, second),
+  ])
+}

@@ -782,6 +782,21 @@ mod tests {
     }
 
     #[test]
+    fn test_items_format_like_functions_without_parameters() {
+        let report =
+            format("fn double(v:Int)->Int{v*2}\ntest   \"doubles\"{let test=double(2)\nVoid}\n");
+        assert!(!report.is_blocked(), "{}", report.render_diagnostics());
+        assert_eq!(
+            report.text(),
+            concat!(
+                "fn double(v: Int) -> Int {\n  v * 2\n}\n\n",
+                "test \"doubles\" {\n  let test = double(2)\n  Void\n}\n",
+            )
+        );
+        assert!(!format(report.text()).is_changed());
+    }
+
+    #[test]
     fn malformed_source_is_returned_byte_for_byte_with_syntax_diagnostics() {
         let source = "pub fn main() {\n  Answer(value 42)\n}\n";
         let report = format(source);

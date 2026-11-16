@@ -1,0 +1,7 @@
+# mutation run at 8e385d5d678122311206c0b02501329148cd311e
+# root_overflow_mutations.py: 3 mutants against compiler/chimi
+BASELINE ok  [cli -- native_a_root_overflowing_inside_a_loop_ends_with_a_stack_overflow_defect] (79s)
+KILLED       the root's abandoned regions stay open [cli -- native_a_root_overflowing_inside_a_loop_ends_with_a_stack_overflow_defect] (10s)
+KILLED       only a root that succeeded drops its regions [cli -- native_a_root_overflowing_inside_a_loop_ends_with_a_stack_overflow_defect] (10s)
+KILLED       only a root that defected drops its regions [cli -- native_a_root_overflowing_inside_a_loop_ends_with_a_stack_overflow_defect] (10s)
+# result: every mutant killed
