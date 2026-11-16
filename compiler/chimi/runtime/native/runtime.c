@@ -2715,14 +2715,19 @@ static ChimiFiberCommand flush_channel_releases(void) {
 }
 
 /* Every scheduler request goes through here. A fiber resumes only by returning from
-   its request, so restoring the caller's heap here switches heaps on every resume.
+   its request, so restoring the caller's heap and allocation target here switches
+   both on every resume: another fiber that ran meanwhile may have changed them, or
+   overflowed its stack while a copy had the target set, leaving it pointing into an
+   area that fiber's end destroyed. Each fiber entry starts with no target.
    Pending channel releases go first; if the task is cancelled meanwhile, `request`
    is not issued and keeps status CHIMI_RESPONSE_UNSET. */
 static ChimiFiberCommand scheduler_request(void *request) {
   RuntimeHeap *heap = current_heap;
+  AllocationArea *target = allocation_target;
   ChimiFiberCommand command = flush_channel_releases();
   if (command != CHIMI_FIBER_CANCEL) command = chimi_fiber_request(request, NULL);
   current_heap = heap;
+  allocation_target = target;
   return command;
 }
 
@@ -6606,6 +6611,7 @@ static ChimiFiberResult child_task_result(ChimiControl *control) {
 
 static ChimiFiberResult chimi_task_entry(void *raw_context) {
   ChimiTaskContext *context = raw_context;
+  allocation_target = NULL;
   if (context->entry) {
     current_heap = &main_heap;
     return task_fiber_result(context->entry(context->runtime, context->environment, context->span));
@@ -7808,6 +7814,7 @@ static char *take_process_defect(uint64_t incarnation) {
    is external so a built executable shows that it links the process kernel (MF06). */
 ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
   ProcessSpecContext *context = raw_context;
+  allocation_target = NULL;
   ChimiRuntime *runtime = context->runtime;
   RuntimeHeap *heap = heap_create();
   current_heap = heap;
