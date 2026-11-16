@@ -1,0 +1,33 @@
+import std/cli as Cli
+import std/cli.{CliError, Exit}
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
+import std/text as Text
+
+const verbose = Cli.flag("verbose", "v", "Say more")
+const quiet = Cli.flag("quiet", "q", "Say less")
+const max = Cli.option("max", "m", "Stop after N", Cli.int)
+const output = Cli.option("output", "", "Where to write", Cli.path)
+const name = Cli.argument("name", "Who", Cli.text)
+const files = Cli.rest("file", "Files to read", Cli.path)
+const tool = Cli.command("tool", "A tool", [Cli.arg(verbose), Cli.arg(quiet), Cli.arg(max), Cli.arg(output), Cli.arg(name), Cli.arg(files)])
+
+fn usage_error(arguments: List<Text>) -> CliError {
+  case Result.capture(fn() { Cli.parse(tool, arguments) }) {
+    Err(Exit.Usage(error, _)) -> error
+    _ -> Test.fail("expected a usage failure for ${Text.join(arguments, " ")}")
+  }
+}
+
+test "wrong arguments fail with what was wrong" {
+  Test.assert_equal(usage_error(["--nope", "x"]), CliError.UnknownOption("--nope"))
+  Test.assert_equal(usage_error(["-z", "x"]), CliError.UnknownOption("-z"))
+  Test.assert_equal(usage_error(["x", "--max"]), CliError.MissingValue("--max"))
+  Test.assert_equal(usage_error(["x", "-vm"]), CliError.MissingValue("-m"))
+  Test.assert_equal(usage_error(["--verbose=yes", "x"]), CliError.UnexpectedValue("--verbose", "yes"))
+  Test.assert_equal(usage_error(["--max", "lots", "x"]), CliError.InvalidValue("--max", "lots", "int"))
+  Test.assert_equal(usage_error(["--max=", "x"]), CliError.InvalidValue("--max", "", "int"))
+  Test.assert_equal(usage_error([]), CliError.MissingArgument("name"))
+  Test.assert_equal(usage_error(["--version", "x"]), CliError.UnknownOption("--version"))
+}

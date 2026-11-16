@@ -1,0 +1,10 @@
+import std/cli as Cli
+import std/test as Test
+
+const own = Cli.flag("version", "V", "Print mine")
+const tool = Cli.command("tool", "A tool", [Cli.arg(own)])
+
+test "a command without a version may declare its own --version" {
+  Test.assert_equal(Cli.get(Cli.parse(tool, ["--version"]), own), True)
+  Test.assert_equal(Cli.get(Cli.parse(tool, ["-V"]), own), True)
+}

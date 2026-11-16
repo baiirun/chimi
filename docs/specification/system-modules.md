@@ -7,8 +7,7 @@ This is the normative contract for the Phase 6c system modules of the
 the modules a command-line tool or a service uses to reach its operating
 system. It covers runner-provided capabilities, `std/path`, `std/env`,
 `std/fs`, and `std/signal` (CHI-246 to CHI-249), `std/exec` (CHI-250) and
-`std/terminal` (CHI-251). `std/cli` (CHI-252) adds its section when it
-lands.
+`std/terminal` (CHI-251), and `std/cli` (CHI-252).
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 modules follow the [standard library conventions](standard-library-conventions.md)
@@ -137,9 +136,9 @@ pub fn current_directory() -> Path              needs { environment: Environment
   shared by the whole process, Chimi has no mutation, and a child process gets
   its own variables from `std/exec`.
 - Program arguments stay `main`'s `List<Text>` parameter. Ending with a chosen
-  exit status belongs to the program entry contract, decided with `std/cli`
-  (CHI-252), not to this module: an immediate exit would skip
-  `Resource.scoped` releases and the supervisor drain.
+  exit status is `main` returning or failing with a `std/cli.Exit`
+  ([std/cli](#stdcli)), not a function of this module: an immediate exit
+  would skip `Resource.scoped` releases and the supervisor drain.
 
 ## std/fs
 
@@ -452,6 +451,113 @@ pub fn strip(text: Text) -> Text
 - Not in this module: 256 and RGB colors, `FORCE_COLOR`, visible width,
   cursor and screen control, raw mode, line editing, and resize events.
 
+## std/cli
+
+```text
+pub struct Handle<T>
+pub struct Arg
+pub struct Command
+pub struct Parsed
+pub enum Exit { Code(code: Int), Help(text: Text), Usage(error: CliError, message: Text) }
+pub enum CliError {
+  UnknownOption(option: Text), MissingValue(option: Text),
+  UnexpectedValue(option: Text, value: Text),
+  InvalidValue(name: Text, value: Text, expected: Text),
+  MissingArgument(name: Text), UnexpectedArgument(value: Text)
+}
+
+pub const text   // { name: "text", read: fn(Text) -> Option<Text> }
+pub const int    // { name: "int", read: fn(Text) -> Option<Int> }
+pub const path   // { name: "path", read: fn(Text) -> Option<Path> }
+
+pub fn flag(long: Text, short: Text, help: Text) -> Handle<Bool>
+pub fn option<T>(long: Text, short: Text, help: Text, parser: { name: Text, read: fn(Text) -> Option<T> }) -> Handle<Option<T>>
+pub fn argument<T>(name: Text, help: Text, parser: …) -> Handle<T>
+pub fn rest<T>(name: Text, help: Text, parser: …) -> Handle<List<T>>
+pub fn arg<T>(handle: Handle<T>) -> Arg
+pub fn command(name: Text, summary: Text, args: List<Arg>) -> Command
+pub fn version(command: Command, version: Text) -> Command
+pub fn parse(command: Command, arguments: List<Text>) -> Parsed  // fails with Exit
+pub fn get<T>(parsed: Parsed, handle: Handle<T>) -> T
+pub fn usage(command: Command) -> Text
+```
+
+A program declares each flag, option and positional argument as a typed
+handle, usually as a top-level `const`, lists them in a `command`, parses
+`main`'s arguments, and reads each value with its handle, so a value's type
+comes from its declaration and no name is looked up by text.
+
+<!-- chimi: fragment -->
+```chimi
+const verbose = Cli.flag("verbose", "v", "Print each step")
+const count = Cli.option("count", "n", "How many times", Cli.int)
+const name = Cli.argument("name", "Who to greet", Cli.text)
+const greet = Cli.command("greet", "Greet someone", [Cli.arg(verbose), Cli.arg(count), Cli.arg(name)])
+
+pub fn main(arguments: List<Text>) -> Exit needs { console: Console } {
+  let parsed = Cli.parse(greet, arguments)
+  console.write_line("hello ${Cli.get(parsed, name)}")
+  Exit.Code(0)
+}
+```
+
+Parsing follows getopt and the GNU long-option conventions:
+
+- `parse` MUST accept `--long value`, `--long=value`, `-s value`, `-svalue`,
+  and clusters of short flags that may end in one short option (`-vm3`). A
+  repeated option MUST keep its last value. A flag MUST refuse a value
+  (`--verbose=yes`, `UnexpectedValue`).
+- A word after `--` MUST be a positional, and so MUST `-`, and a word whose
+  second character is a digit or `.` (`-5`), since a short name is a letter.
+  An option that takes a value MUST take the next word as it is, even when it
+  starts with `-`.
+- Positionals MUST fill the declared `argument`s in order, then a `rest`,
+  which takes every remaining one. A positional past them is
+  `UnexpectedArgument`; a missing `argument` is `MissingArgument`.
+- A value its parser refuses MUST be `InvalidValue`, naming `--long` for an
+  option and `<name>` for a positional, with the parser's name as `expected`.
+- `--help` or `-h` anywhere before `--`, or `h` in a cluster of short flags,
+  MUST fail with `Exit.Help(usage)`, even after an earlier error in the
+  arguments. `--version` MUST fail with `Exit.Help("name version")` when the
+  command has a version; otherwise it is an ordinary option, which the
+  command may declare.
+- Any other wrong arguments MUST fail with `Exit.Usage(error, message)`,
+  where `message` is `name: what was wrong`, the synopsis, and a line
+  pointing at `--help`.
+- `command` MUST defect when two args share a long name or short letter, one
+  declares `help` or `h`, or a positional follows a `rest`. `version` MUST
+  defect when the command declares `--version`. `flag` and `option` MUST
+  defect on a long name that is empty, starts with `-` or holds `=`, or a
+  short name that is not empty or one ASCII letter. `get` MUST defect on a
+  handle whose name the parsed command does not declare; handles are told
+  apart by name and kind, so an option and a positional may share a name.
+- `usage` lists the summary, the synopsis, the positionals, and the options
+  with `--help` and `--version` last, in two aligned columns.
+
+### Ending a program with Exit
+
+`main` MAY return `Exit`, or fail with one, as `parse` does. The runner MUST
+apply it after `main` has ended, which is after `main`'s releases and the
+supervisor drain, and after the outcome record:
+
+- `Code(n)` exits `n`, which MUST be 0 to 255; outside that the runner
+  writes a message to standard error and exits 70, the defect status.
+- `Help(text)` writes `text` and a newline to standard output and exits 0.
+- `Usage(_, message)` writes `message` and a newline to standard error and
+  exits 2, the status getopt-based tools use for bad usage.
+- A failed write of either exits 74.
+
+The outcome record is unchanged: an `Exit` failure is still an
+`expected_failure` there. A defect or cancellation is not an `Exit` and keeps
+its own status. The runner recognizes the type by the compiler's marker on
+`std/cli`'s `Exit` constructors (runtime ABI 55), not by name, so a user type
+named `Exit` is an ordinary value. `chimi run` applies it the same way, after
+its event lines.
+
+- Not in this module: subcommands, defaults from environment variables,
+  options that collect every value, negatable flags (`--no-x`), abbreviated
+  long options, and shell completion.
+
 ## Decisions
 
 - **Interfaces in source, fixed need names, private providers.** The advisor
@@ -494,6 +600,12 @@ pub fn strip(text: Text) -> Text
   it. `uses_color` takes `environment` as a second need instead of the
   provider reading `NO_COLOR` itself, so the signature shows the environment
   read and the environment fake controls it.
+- **Typed handles for `std/cli`** (Byron's choice). A handle carries its
+  value's type, so `Cli.get(parsed, count)` is an `Option<Int>` with no
+  lookup by name and no cast, as clap's derive and Swift's ArgumentParser
+  give, without macros. The usage and help errors are an `Exit` value that
+  `main` ends with, rather than an `exit()` call, so releases and the drain
+  still run first.
 - **`join` appends.** Replacing on an absolute part is a known source of
   path-traversal bugs, and Chimi prefers the rule a reader can predict.
 
@@ -517,6 +629,8 @@ pub fn strip(text: Text) -> Text
 | Real SIGHUPs reload a waiting service; the handlers cover all three signals from the first line; without `signals` SIGHUP ends the program | `tests/std_signal.rs` `a_service_reloads_on_each_hangup`, `a_program_that_needs_signals_survives_them_from_its_first_line`, `a_program_without_signals_is_ended_by_a_hangup` |
 | The interpreter defects on a wait; a fake on both backends; `T4400` without one | `tests/std_signal.rs` `the_interpreter_needs_the_native_runtime_to_wait`, `a_test_supplies_signals_as_a_fake` |
 | `temporary_directory` is removed after the test; `files_within` refuses paths outside it and relative ones; a fake; `T4400` without one; `T4401` from `main` | `tests/host_modules.rs` `a_test_uses_real_files_in_a_temporary_directory_or_a_fake` |
+| Option forms, clusters, the last repeat, `--`, dash words, positionals and rest, every `CliError`, help and version anywhere, the usage layout, and each declaration defect, on both backends | `std-tests/cli/` (one test per file) |
+| `Help` to standard output with 0, `Usage` to standard error with 2, `Code(n)`, a code outside 0 to 255 as 70, after `main`'s releases, natively and with `chimi run` | `tests/std_cli.rs` |
 | A status for an exit code or a signal; arguments pass unchanged; a second `wait` answers the same | `tests/std_exec.rs` `a_child_reports_how_it_ended` |
 | `NotFound`, `PermissionDenied` and `InvalidDirectory` before the child starts; `PATH` lookup; variables and a replaced environment; a working directory; `Stdio.Null`; a relative program with another working directory; `Failed` for a file the kernel cannot run | `tests/std_exec.rs` `a_command_that_cannot_start_fails_with_its_reason` |
 | A directory on `PATH` named like the program is passed over | `tests/std_exec.rs` `a_directory_on_path_is_not_the_program` |

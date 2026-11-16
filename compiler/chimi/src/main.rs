@@ -1044,15 +1044,18 @@ fn exit_code(report: &ExecutionReport) -> ExitCode {
                 ExitCode::from(70)
             }
         },
-        Some(ProgramExit::Help(text)) => {
-            println!("{text}");
-            ExitCode::SUCCESS
-        }
-        Some(ProgramExit::Usage(message)) => {
-            eprintln!("{message}");
-            ExitCode::from(2)
-        }
+        Some(ProgramExit::Help(text)) => shown(&mut std::io::stdout(), text, 0),
+        Some(ProgramExit::Usage(message)) => shown(&mut std::io::stderr(), message, 2),
         None => outcome_exit_code(&report.outcome),
+    }
+}
+
+/// Writes `text` and a newline to `stream` and exits `status`, or 74 when the
+/// write fails, as the native runner does.
+fn shown(stream: &mut dyn std::io::Write, text: &str, status: u8) -> ExitCode {
+    match writeln!(stream, "{text}").and_then(|()| stream.flush()) {
+        Ok(()) => ExitCode::from(status),
+        Err(_) => ExitCode::from(74),
     }
 }
 
