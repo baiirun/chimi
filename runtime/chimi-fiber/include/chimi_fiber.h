@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 20u
+#define CHIMI_FIBER_ABI_VERSION 21u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -194,10 +194,19 @@ enum {
      operation in flight: virtual time does not advance while one exists, so
      under the virtual clock no timeout or shutdown deadline fires during it
      (a real signal still ends it).
-     Closing a descriptor a task waits on is a host bug. Kinds 36 to 39 are
-     the channel-variant requests, 41 cancels a scope, and 42 and 43 are
-     the task combinators'. */
+     `channel` is 0 or a nonzero key naming the host resource the
+     descriptor belongs to, for CHIMI_REQUEST_IO_WITHDRAW. Closing a
+     descriptor a task waits on without withdrawing first is a host bug.
+     After a failed poll(2) every waiter wakes with its wait answered
+     ERROR. Kinds 36 to 39 are the channel-variant requests, 41 cancels a
+     scope, 42 and 43 are the task combinators', and 44 withdraws IO
+     waits. */
   CHIMI_REQUEST_IO_WAIT = 48,
+  /* ChimiSchedulerRequest: wakes every task whose IO wait names the
+     resource key in `channel` (nonzero), so each reissues its wait; issue
+     it before closing that resource's descriptors. OK with the number woken
+     in `value`; ERROR for key 0. Never parks, and not a cancellation point. */
+  CHIMI_REQUEST_IO_WITHDRAW = 44,
 };
 
 /* Interest and ready conditions of CHIMI_REQUEST_IO_WAIT. HANGUP and ERROR

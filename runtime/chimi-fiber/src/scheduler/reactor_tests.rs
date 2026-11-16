@@ -433,3 +433,109 @@ fn a_ready_descriptor_wakes_its_waiter_even_when_other_tasks_never_idle() {
     assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
     assert_eq!(seen, [i64::from(IO_READABLE)]);
 }
+
+/// Waits on `fd` for `resource` until woken once: the status of the reissue
+/// after the first wake, or of the first answer when it does not park.
+fn wait_once(fd: i32, interest: u32, resource: u64) -> i64 {
+    let mut request = blank(REQUEST_IO_WAIT);
+    request.value = i64::from(fd);
+    request.token = u64::from(interest);
+    request.channel = resource;
+    if !issue(&mut request) {
+        return -100;
+    }
+    match request.status {
+        RESPONSE_PENDING => {}
+        RESPONSE_OK => return request.value,
+        status => return -i64::from(status),
+    }
+    // Woken: ask again, as a host does.
+    request.value = i64::from(fd);
+    if !issue(&mut request) {
+        return -100;
+    }
+    match request.status {
+        RESPONSE_OK => request.value,
+        status => -i64::from(status),
+    }
+}
+
+fn withdraw(resource: u64) -> (u32, i64) {
+    let mut request = blank(REQUEST_IO_WITHDRAW);
+    request.channel = resource;
+    call(&mut request);
+    (request.status, request.value)
+}
+
+unsafe extern "C" fn wait_on_resource(context: *mut c_void) -> ChimiFiberResult {
+    let fd = (context as usize >> 8) as i32;
+    let resource = (context as usize & 0xff) as u64;
+    let answer = wait_once(fd, IO_READABLE, resource);
+    note(resource as i64 * 1000 + answer);
+    succeeded(0)
+}
+
+unsafe extern "C" fn withdraw_one_resource(_context: *mut c_void) -> ChimiFiberResult {
+    let (first, first_write) = pipe();
+    let (second, second_write) = pipe();
+    let a = start(wait_on_resource, ((first as usize) << 8 | 7) as *mut c_void);
+    let b = start(
+        wait_on_resource,
+        ((second as usize) << 8 | 8) as *mut c_void,
+    );
+    sleep(2_000_000);
+    note(i64::from(withdraw(0).0));
+    let (status, woken) = withdraw(7);
+    note(i64::from(status));
+    note(woken);
+    // A wakes and reissues on a descriptor still empty, so it parks again;
+    // then write to let it finish, and to B, which the withdraw left parked.
+    sleep(2_000_000);
+    write_byte(first_write);
+    write_byte(second_write);
+    result(a);
+    result(b);
+    for fd in [first, first_write, second, second_write] {
+        close(fd);
+    }
+    succeeded(0)
+}
+
+#[test]
+fn a_withdraw_wakes_only_the_waits_on_its_resource() {
+    let (outcome, seen) = run(withdraw_one_resource, process_abi::CLOCK_REAL);
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    let readable = i64::from(IO_READABLE);
+    assert_eq!(
+        seen[..3],
+        [i64::from(RESPONSE_ERROR), i64::from(RESPONSE_OK), 1]
+    );
+    // A's wake came from the withdraw, so its reissue parked again until the
+    // write (still pending when it returned); B's came from its descriptor.
+    let mut waiters = seen[3..].to_vec();
+    waiters.sort();
+    assert_eq!(
+        waiters,
+        [7000 - i64::from(RESPONSE_PENDING), 8000 + readable]
+    );
+}
+
+unsafe extern "C" fn wait_through_a_failed_poll(_context: *mut c_void) -> ChimiFiberResult {
+    let (read, write) = pipe();
+    reactor::FAIL_NEXT_POLL.with(|fail| fail.set(true));
+    // The scheduler goes idle, its poll fails, and the reissue answers ERROR.
+    note(wait_once(read, IO_READABLE, 0));
+    // The failure is spent: the next wait works.
+    write_byte(write);
+    note(wait_once(read, IO_READABLE, 0));
+    close(read);
+    close(write);
+    succeeded(0)
+}
+
+#[test]
+fn a_failed_poll_fails_the_waits_in_flight_instead_of_spinning() {
+    let (outcome, seen) = run(wait_through_a_failed_poll, process_abi::CLOCK_REAL);
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_eq!(seen, [-i64::from(RESPONSE_ERROR), i64::from(IO_READABLE)]);
+}
