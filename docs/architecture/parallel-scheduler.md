@@ -3,8 +3,9 @@
 ## Status
 
 Design note. Ticket: CHI-267. It records what running Chimi on more than one
-thread would take, so that later work does not close the door on it. Step 1
-(the carrier struct) is done; programs still run on one thread.
+thread would take, so that later work does not close the door on it. Steps 1
+(the carrier struct) and 2 (the shared handle table) are done; programs still
+run on one thread.
 
 ## Why
 
@@ -42,8 +43,9 @@ is an implementation limit, not a language one.
 3. **Virtual time and transcripts.** The virtual clock and the lab's event
    transcripts rely on one global order of events. Tests compare that order
    exactly.
-4. **Handle counts.** Task and channel handle counts are plain integers, and
-   their releases go through one queue that the current fiber flushes.
+4. **Handle counts.** Step 2 made them one locked table with a release
+   queue per carrier ("Handle counts" below). The queue is still flushed only
+   by a fiber's next request on that carrier.
 
 ## Recommended shape
 
@@ -100,10 +102,8 @@ function-local static, so new state gets an owner when it is added.
     move with a heap, so a per-carrier counter could repeat an epoch a stale
     header still holds and treat a dead allocation as marked. It becomes a
     per-heap counter, not a per-carrier one.
-  - The handle-count table and its release queue (`channel_endpoints`,
-    `released_channels`). A handle copied on one carrier can be freed on
-    another, so splitting the table would miscount; step 2 replaces it with
-    per-carrier deltas or owner-routed messages.
+  - The handle-count table (`handle_table`, "Handle counts" below). Its
+    release queue is carrier state (`released_handles`).
   - Tables whose ids travel inside values: binding handles, open files, test
     mailboxes, process defects.
   - The operation profile's rows (`profile_rows`), allocated once at startup
@@ -135,12 +135,66 @@ Rules for the steps that run more than one carrier:
   maximum for the peaks. A sum of per-carrier peaks is not the process's
   peak either, so decide what the peak fields mean before step 3 changes the
   numbers.
-- Before step 3, add a test build in which every resume switches to a second
-  carrier with fresh scratch and caches. It is the only check that would
-  catch a field filed as carrier state that must in fact follow the fiber.
+- Run the carrier simulation build (`CHIMI_CARRIER_SIMULATION`, "Handle
+  counts") over the suite before each step that moves state. Every fiber
+  resumes on the other of two carriers from the one it parked on, each with
+  its own scratch and caches. It is the only check that catches a field filed as carrier state
+  that must in fact follow the fiber.
 - The lazily created shared values (`shared_values`, the module constants) are
   a race once two carriers can create them; create them before the carriers
   start.
+
+## Handle counts
+
+Every live Sender, Receiver, Completion and Task value counts as one reference
+to its channel or task (`runtime.c`, "Channel release"). A handle copied on
+one carrier can be freed on another, since a fiber migrates with its heap, so
+only the total count means anything. Step 2 keeps one table for every carrier:
+
+- `channel_endpoint_retain` and `channel_endpoint_drop` take the table's lock.
+  A copy is counted when it is made, before any scheduler request can move it
+  to another carrier, so a drop can never see a count that a retain elsewhere
+  has not reached yet. The freers' "any handle at all" shortcut reads the count
+  without the lock: a value being freed was counted before it got there.
+- A key whose count reaches zero is queued on the carrier that dropped it,
+  after the lock is released. The next request of a fiber on that carrier
+  issues the release (`flush_channel_releases`, which reads `carrier` again on
+  every pass because each pass parks).
+- Step 4 may stripe the table by key hash. Striping by owner would miscount
+  once a fiber migrates.
+
+Per-carrier counts were rejected because only their sum is meaningful, and
+summing needs a snapshot across carriers. Plus-or-minus-one messages to an
+owner carrier were rejected because they can arrive out of order. A drop
+applied before the matching retain shows a false zero and releases a live
+channel. A drop that finds no entry is ignored, so the late retain then leaves
+a count that never falls. Weighted reference counts avoid both problems, but
+they put a weight in every handle value and need a path for when a weight can
+no longer be split.
+
+Step 3 must also drain a carrier's release queue from its own loop before it
+idles and when it stops. Otherwise a zero reached in a release hook, on a
+carrier where no fiber makes another request, strands the release. The
+simulation build showed this: before its flush drained every carrier's queue,
+a dropped channel's buffered messages outlived it and a fragment-peak test
+failed. Today a flush drains the running carrier's queue first and then any
+other carrier's, in place of that loop. That stand-in
+(`carrier_with_releases`) reads another carrier's queue without a lock, so
+step 3 must replace it, not keep it: two threads popping one queue could lose
+a release or issue it twice. It also hides a missing per-carrier drain, so
+the simulation cannot catch that gap; step 3 needs its own test for it.
+The unlocked `handles_live()` read also assumes that moving a value to
+another carrier synchronises (the hand-off is a scheduler request), which
+step 3 must keep true.
+
+Two tests check this step:
+- `tests/runtime_state.rs` `the_handle_table_counts_across_threads` hands
+  references from one thread to another under ThreadSanitizer.
+- The `CHIMI_CARRIER_SIMULATION` test build resumes every fiber on the other
+  of two carriers from the one it parked on
+  (`CHIMI_TEST_RUNTIME_DEFINES=-DCHIMI_CARRIER_SIMULATION` with a debug
+  compiler). The whole `chimi` suite passes under it, except the test that
+  checks the prebuilt runtime is used, which a test build never uses.
 
 ## Alternatives considered
 
@@ -158,8 +212,9 @@ Rules for the steps that run more than one carrier:
 1. Move `runtime.c`'s per-fiber and per-carrier statics into one carrier
    struct, with no behavior change. Done (CHI-267); the list is under
    "Runtime state by owner".
-2. Make handle counts and release queues per carrier, with cross-carrier
-   releases sent as messages.
+2. Make the handle-count table safe for every carrier, with a release queue
+   per carrier. Done: one locked table rather than per-carrier counts or
+   messages ("Handle counts").
 3. Split `Scheduler` into a carrier loop plus shared kernel state behind a
    lock, and run N carriers with work stealing turned off. Measure.
 4. Shard the kernel and the channel registry by owner, and add stealing.
