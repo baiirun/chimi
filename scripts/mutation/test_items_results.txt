@@ -1,0 +1,12 @@
+# test_items_mutations.py, 2026-11-15
+First run (db48c23): 6 of 8 killed. "the test plan closes nothing" survived because
+no test accepted a clock or console need; the parser mutant is equivalent on valid
+programs and was dropped from the list. After bd60333 added those cases:
+KILLED       lowering: duplicate test names are allowed
+KILLED       lowering: `pub` on a test is ignored
+KILLED       typing: any success type passes T4402
+KILLED       typing: a test body may not end in Never
+KILLED       typing: the test plan closes every need
+KILLED       typing: the test plan closes nothing
+KILLED       typing: the test plan closes a clock under any name
+KILLED       build: tests are kept in a program
