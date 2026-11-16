@@ -183,6 +183,12 @@ values it captures, into the monitor, as `Process.send` moves a message.
   Notices already queued drain like messages.
 - When the watcher ends by any route, its monitors end with it, and queued
   notices are discarded unread like messages.
+- A `Receiver` or `Completion` that `notice` captures moves into the monitor,
+  as one in a `Process.send` message moves into the mailbox: it is in flight
+  from `monitor` until the `receive` that runs the notice, which gives it back
+  to the watcher. A notice dropped unread (by `unmonitor`, by the watcher's
+  end, or because the watcher's mailbox no longer accepts) ends what it
+  carries, so an open channel it held aborts (lab CB13, CB14; CHI-227).
 
 ### Unmonitor
 

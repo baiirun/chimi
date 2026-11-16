@@ -1,0 +1,7 @@
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- heap --scenario CB13] (40s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- heap --scenario CB14] (0s)
+KILLED       a notice's capabilities stay with the watcher [cargo run --quiet --bin chimi-process-lab -- heap --scenario CB13] (6s)
+KILLED       the host sends no capabilities with a notice [cargo run --quiet --bin chimi-process-lab -- heap --scenario CB13] (11s)
+KILLED       unmonitoring a pending monitor keeps its capabilities in flight [cargo run --quiet --bin chimi-process-lab -- heap --scenario CB13] (11s)
+KILLED       a received notice keeps its capabilities in flight [cargo run --quiet --bin chimi-process-lab -- heap --scenario CB14] (7s)
+# result: every mutant killed

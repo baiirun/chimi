@@ -1154,8 +1154,10 @@ impl Scheduler {
                 }
             },
         };
-        if let Receipt::Message(message) = receipt {
-            self.channels.deliver_parcel(message as usize, task);
+        match receipt {
+            Receipt::Message(message) => self.channels.deliver_parcel(message as usize, task),
+            Receipt::Notice(notice) => self.channels.deliver_parcel(notice.handle as usize, task),
+            _ => {}
         }
         receipt
     }
@@ -1508,7 +1510,7 @@ impl Scheduler {
         for entry in record.mailbox {
             match entry {
                 Entry::Message(message) => self.discard_message(message),
-                Entry::Notice(_) => self.release_message(entry.handle()),
+                Entry::Notice(_) => self.discard_message(entry.handle()),
             }
         }
         let membership = record.membership;
@@ -1561,7 +1563,7 @@ impl Scheduler {
 
     /// Releases an accepted message that no receive will read, ending the
     /// capabilities it carries as their owner's exit would.
-    fn discard_message(&mut self, message: u64) {
+    pub(super) fn discard_message(&mut self, message: u64) {
         let transition = self.channels.discard_parcel(message as usize);
         self.apply_channel_transition(transition);
         self.release_message(message);
@@ -2324,12 +2326,12 @@ impl Scheduler {
             for entry in mailbox {
                 match entry {
                     Entry::Message(message) => self.discard_message(message),
-                    Entry::Notice(_) => self.release_message(entry.handle()),
+                    Entry::Notice(_) => self.discard_message(entry.handle()),
                 }
             }
         }
         for record in std::mem::take(&mut self.kernel.monitors).into_values() {
-            self.release_message(record.handle());
+            self.discard_message(record.handle());
         }
     }
 }

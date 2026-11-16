@@ -142,7 +142,7 @@ impl Scheduler {
         {
             let record = self.kernel.monitors.remove(&monitor).expect("checked");
             self.unlink(&record, monitor);
-            self.release_message(record.handle);
+            self.discard_message(record.handle);
             return;
         }
         let Some(record) = self.kernel.incarnations.get_mut(&watcher) else {
@@ -154,7 +154,7 @@ impl Scheduler {
             .position(|entry| matches!(entry, Entry::Notice(notice) if notice.monitor == monitor));
         if let Some(Entry::Notice(notice)) = queued.and_then(|index| record.mailbox.remove(index)) {
             record.notices -= 1;
-            self.release_message(notice.handle);
+            self.discard_message(notice.handle);
         }
     }
 
@@ -191,7 +191,7 @@ impl Scheduler {
         for monitor in watching {
             if let Some(record) = self.kernel.monitors.remove(&monitor) {
                 self.unlink(&record, monitor);
-                self.release_message(record.handle);
+                self.discard_message(record.handle);
             }
         }
     }
@@ -205,7 +205,7 @@ impl Scheduler {
             .get_mut(&watcher)
             .filter(|record| record.accepting)
         else {
-            self.release_message(notice.handle);
+            self.discard_message(notice.handle);
             return;
         };
         record.mailbox.push_back(Entry::Notice(notice));
