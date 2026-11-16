@@ -851,7 +851,7 @@ on every run.
 | SD05 | fixture | 0 | - | `task_terminal` | - |
 | SG01 | fixture | 143 | - | `clock_signal_received` | `--signal=TERM@1500ms` |
 | SG02 | fixture | 130 | - | `clock_signal_received` | `--signal=INT@2s` |
-| SG03 | fixture | 0 | - | - | `--signal=TERM@10s` |
+| SG03 | fixture | 0 | - | `clock_signal_received` | `--signal=TERM@10s` |
 | FP02 | fixture | 143 | - | `clock_signal_received` | `--signal=TERM@1500ms` |
 
 ## Forcing program

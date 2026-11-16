@@ -291,6 +291,11 @@ impl Scheduler {
             task: owner,
             park: self.tasks[&owner].park,
         };
+        if self.request_awaits_own_shutdown(owner, &input) {
+            // It could finish only after the caller's own incarnation ends.
+            self.respond_cancel(waiter, super::RESPONSE_CANCELLED);
+            return;
+        }
         match input.kind {
             super::REQUEST_PROCESS_SELF => match self.self_address(owner) {
                 Ok(incarnation) => self.respond(waiter, RESPONSE_OK, |r| {
@@ -629,7 +634,6 @@ impl Scheduler {
             if !root_done {
                 continue;
             }
-            self.retire_signal_timer();
             self.shutdown_processes();
             if !self.has_blocked_plans() && self.runnable.is_empty() {
                 break;

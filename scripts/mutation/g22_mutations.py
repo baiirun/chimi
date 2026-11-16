@@ -8,9 +8,8 @@ Results: scripts/mutation/g22_results.txt.
 CRATE = "compiler/chimi"
 
 PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
-SCOPE = "../../runtime/chimi-fiber/src/scheduler/scope.rs"
-SIGNAL = "../../runtime/chimi-fiber/src/scheduler/signal.rs"
 PROCESS_ABI = "../../runtime/chimi-fiber/src/scheduler/process_abi.rs"
+SIGNAL = "../../runtime/chimi-fiber/src/scheduler/signal.rs"
 RUNTIME_C = "runtime/native/runtime.c"
 
 
@@ -45,29 +44,34 @@ MUTATIONS = [
     dict(name="a body that never ran is left to run", file=PROCESS,
          edits=[("            TaskPhase::Runnable if !task_record.ran || forced => {",
                  "            TaskPhase::Runnable if forced => {")],
-         **lab("RR02")),
+         **fiber("a_body_stopped_before_its_first_run_is_cancelled_without_running")),
     dict(name="a self-stop is not interrupted", file=PROCESS,
          edits=[("            .filter(|waiting| *waiting != task || !forced)",
                  "            .filter(|_| false)")],
          **lab("SD08")),
+    dict(name="a self-stop made during the drain waits for the deadline", file=PROCESS_ABI,
+         edits=[("        if self.request_awaits_own_shutdown(owner, &input) {",
+                 "        if false && self.request_awaits_own_shutdown(owner, &input) {")],
+         **fiber("a_stop_of_its_own_root_made_during_the_drain_is_answered_with_cancellation")),
     dict(name="a draining body's receive is not woken", file=PROCESS,
          edits=[("            TaskPhase::Parked if receiving => {\n                self.disarm_wake_sources(task);\n                let _ = self.wake_front(task);\n            }\n",
                  "")],
-         **lab("MB08")),
+         **fiber("mb08_removal_drains_messages_accepted_before_it_then_cancels")),
     dict(name="stop unroutes every member first", file=PROCESS,
          edits=[("            supervision.state = SupervisorState::Stopping;\n        }\n    }",
                  "            supervision.state = SupervisorState::Stopping;\n        }\n        for record in self.kernel.incarnations.values_mut() {\n            record.accepting = false;\n        }\n    }")],
          **lab("SD06")),
-    dict(name="a drain silences timeout scopes", file=SCOPE,
-         edits=[("        let forced = self.is_forced(task);\n        let record = self.tasks.get_mut(&task).expect(\"live task\");",
-                 "        let forced = self.is_forced(task) || self.stopping(task).is_some();\n        let record = self.tasks.get_mut(&task).expect(\"live task\");")],
+    dict(name="a drain silences timeout scopes", file=PROCESS,
+         edits=[("self.stopping(task).is_some_and(|stopping| stopping.forced)",
+                 "self.stopping(task).is_some()")],
          **lab("SD12")),
     dict(name="a signal does not cancel the root", file=SIGNAL,
          edits=[("            self.begin_terminal(root, TaskOutcome::Cancelled, false);",
                  "            let _ = root;")],
          **lab("SG02")),
-    dict(name="a signal timer outlives the root", file=PROCESS_ABI,
-         edits=[("            self.retire_signal_timer();\n", "")],
+    dict(name="a signal timer outlives the root", file=SIGNAL,
+         edits=[("        self.signals.timer = None;\n        if self.retire_signals_after_root() {\n            return;\n        }\n",
+                 "        self.signals.timer = None;\n")],
          **lab("SG03")),
     dict(name="an idle service reports a deadlock", file=SIGNAL,
          edits=[("            && self.has_running_supervisor()\n",

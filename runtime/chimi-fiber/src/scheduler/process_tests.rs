@@ -3014,7 +3014,14 @@ fn a_draining_body_receives_a_channel_value_sent_during_its_drain() {
 /// Parks bare until the host wakes it, then waits on the supervisor in its
 /// context and records the reply.
 unsafe extern "C" fn parks_then_waits(context: *mut c_void) -> ChimiFiberResult {
-    unsafe { chimi_fiber_park(ptr::null()) };
+    let resumed = unsafe { chimi_fiber_park(ptr::null()) };
+    log(|log| {
+        log.outcomes.push(if resumed == ChimiFiberCommand::Cancel {
+            RESPONSE_CANCELLED
+        } else {
+            RESPONSE_OK
+        })
+    });
     let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_WAIT);
     request.supervisor = context as u64;
     process_call(&mut request);
@@ -3042,8 +3049,12 @@ fn an_incarnation_running_when_shutdown_begins_is_not_cancelled_at_its_next_park
     lab.scheduler.wake(task).expect("host wake");
     assert_eq!(lab.scheduler.stop_supervisor(root), Ok(Progress::Pending));
     let _ = lab.scheduler.run_until_idle();
-    // The wait on the other supervisor is served and outlives the drain.
-    assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_FORCED]);
+    // The body resumes from its park without a cancellation, and the wait
+    // on the other supervisor is served and outlives the drain.
+    assert_eq!(
+        log(|log| log.outcomes.clone()),
+        [RESPONSE_OK, RESPONSE_FORCED]
+    );
     assert_eq!(
         timed_terminations(&lab),
         [(5_000_000_000, TerminalCause::Forced)]
@@ -4186,4 +4197,72 @@ fn tearing_down_with_an_owner_draining_under_an_escalating_root_finishes_the_own
     assert!(lab.lifecycle().contains(&ProcessEventKind::Removed {
         membership: managed
     }));
+}
+
+/// Sleeps 1 s before it would receive anything, and logs that it woke.
+unsafe extern "C" fn sleeps_before_receiving(_context: *mut c_void) -> ChimiFiberResult {
+    let status = sleep_until(1_000_000_000);
+    log(|log| log.outcomes.push(status));
+    ended(PROCESS_END_RETURNED)
+}
+
+// A body stopped before its first run has nothing in flight to drain, so it
+// is cancelled at once: none of its code runs and time does not move.
+#[test]
+fn a_body_stopped_before_its_first_run_is_cancelled_without_running() {
+    let mut lab = Lab::new();
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("root");
+    lab.scheduler
+        .start_process(
+            root,
+            process_spec(sleeps_before_receiving, ptr::null_mut()),
+            Restart::Never,
+        )
+        .expect("admitted");
+    let _ = lab.scheduler.stop_supervisor(root);
+    let _ = lab.scheduler.run_until_idle();
+    assert_eq!(timed_terminations(&lab), [(0, TerminalCause::Cancelled)]);
+    assert!(
+        log(|log| log.outcomes.clone()).is_empty(),
+        "the body never ran"
+    );
+}
+
+/// Sleeps 1 s, then stops the supervisor named by its context and logs the
+/// reply.
+unsafe extern "C" fn sleeps_then_stops(context: *mut c_void) -> ChimiFiberResult {
+    sleep_until(1_000_000_000);
+    let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_STOP);
+    request.supervisor = context as u64;
+    process_call(&mut request);
+    log(|log| log.outcomes.push(request.status));
+    ended(PROCESS_END_RETURNED)
+}
+
+// A draining body that stops its own root asks for something that can finish
+// only after the body ends, so the stop is answered with cancellation at
+// once, as a stop already parked when the drain began is (SD08), and the body
+// ends `cancelled` at 1 s instead of waiting for its 5 s deadline.
+#[test]
+fn a_stop_of_its_own_root_made_during_the_drain_is_answered_with_cancellation() {
+    let mut lab = Lab::new();
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("root");
+    let spec = process_spec(sleeps_then_stops, root.get() as usize as *mut c_void);
+    lab.scheduler
+        .start_process(root, spec, Restart::Never)
+        .expect("admitted");
+    lab.scheduler.drive();
+    assert_eq!(lab.scheduler.stop_supervisor(root), Ok(Progress::Pending));
+    let _ = lab.scheduler.run_until_idle();
+    assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_CANCELLED]);
+    assert_eq!(
+        timed_terminations(&lab),
+        [(1_000_000_000, TerminalCause::Cancelled)]
+    );
 }

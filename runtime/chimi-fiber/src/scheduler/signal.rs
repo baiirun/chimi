@@ -74,16 +74,11 @@ impl Scheduler {
         self.signals.root = Some(root);
     }
 
-    /// The root has ended, so a signal still to come changes nothing; an
-    /// injected one must not move virtual time.
-    pub(super) fn retire_signal_timer(&mut self) {
-        if let Some(timer) = self.signals.timer.take() {
-            self.timers.cancel(timer);
-        }
-    }
-
     pub(super) fn fire_signal(&mut self, signal: i32) {
         self.signals.timer = None;
+        if self.retire_signals_after_root() {
+            return;
+        }
         self.signals.injected = signal;
         if let Some(word) = self.signals.word {
             // SAFETY: as in `Signals::pending`. The runner reads it after the
@@ -95,6 +90,9 @@ impl Scheduler {
 
     /// Cancels the root once, at the first signal. Called between resumes.
     pub(super) fn deliver_signal(&mut self) {
+        if self.retire_signals_after_root() {
+            return;
+        }
         let Some(signal) = self.signals.pending() else {
             return;
         };
@@ -113,12 +111,7 @@ impl Scheduler {
             time: now,
             request_kind: u32::try_from(signal).unwrap_or(0),
         });
-        if matches!(
-            self.tasks.get(&root).map(|record| record.phase),
-            Some(TaskPhase::Runnable | TaskPhase::Parked)
-        ) {
-            self.begin_terminal(root, TaskOutcome::Cancelled, false);
-        }
+        self.begin_terminal(root, TaskOutcome::Cancelled, false);
     }
 
     /// True when a stalled real-clock run should wait for a signal instead
@@ -130,6 +123,29 @@ impl Scheduler {
             && self.signals.wake_fd.is_some()
             && self.signals.root.is_some()
             && self.has_running_supervisor()
+    }
+
+    /// Once the root has ended, no signal is delivered: a pending injected
+    /// signal is retired so it never moves virtual time, and the runner
+    /// reports the root's own outcome. Returns true when signals are over.
+    fn retire_signals_after_root(&mut self) -> bool {
+        if self.signals.delivered {
+            return true;
+        }
+        let Some(root) = self.signals.root else {
+            return false;
+        };
+        if matches!(
+            self.tasks.get(&root).map(|record| record.phase),
+            Some(TaskPhase::Runnable | TaskPhase::Parked)
+        ) {
+            return false;
+        }
+        self.signals.delivered = true;
+        if let Some(timer) = self.signals.timer.take() {
+            self.timers.cancel(timer);
+        }
+        true
     }
 
     /// Blocks until the runner's handler writes to the wake pipe.

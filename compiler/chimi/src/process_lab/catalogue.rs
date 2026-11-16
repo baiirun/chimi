@@ -329,7 +329,8 @@ pub static SCENARIOS: [Scenario; 149] = [
         .signalled(&["--signal=INT@2s"], 130)
         .with_events(&["clock_signal_received"]),
     fixture("SG03", "signal-after-main-ends-changes-nothing", U12)
-        .signalled(&["--signal=TERM@10s"], 0),
+        .signalled(&["--signal=TERM@10s"], 0)
+        .with_events(&["clock_signal_received"]),
     // Heap: copy-boundary safety.
     fixture("CB01", "message-survives-sender-reclamation", U5),
     fixture("CB02", "copy-preserves-sharing", U5),

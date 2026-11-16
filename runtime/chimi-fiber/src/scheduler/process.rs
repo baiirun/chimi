@@ -1848,11 +1848,61 @@ impl Scheduler {
 
     /// The incarnation's task and its descendant tasks that are parked in a
     /// supervisor operation that cannot finish before this incarnation
-    /// ends: `stop` or `wait` on a supervisor above it, or the removal of
-    /// its own membership or of a supervisor above it.
+    /// ends (see `waits_on_own_shutdown`).
     fn tasks_awaiting_own_shutdown(&self, incarnation: IncarnationId) -> Vec<TaskId> {
         let Some(record) = self.kernel.incarnations.get(&incarnation) else {
             return Vec::new();
+        };
+        let mut found = Vec::new();
+        let mut pending = vec![record.task];
+        while let Some(task) = pending.pop() {
+            let Some(task_record) = self.tasks.get(&task) else {
+                continue;
+            };
+            pending.extend(task_record.children.iter().copied());
+            if task_record.phase != TaskPhase::Parked || task_record.request.is_null() {
+                continue;
+            }
+            // SAFETY: a recorded request stays valid while its task is
+            // parked, and every request starts with `RequestHeader`.
+            let kind = unsafe { (*task_record.request.cast::<RequestHeader>()).kind };
+            if !is_supervisor_wait(kind) {
+                continue;
+            }
+            // SAFETY: supervisor requests are `ChimiProcessRequest`s.
+            let request = unsafe { &*task_record.request.cast::<ChimiProcessRequest>() };
+            if self.waits_on_own_shutdown(incarnation, request) {
+                found.push(task);
+            }
+        }
+        found
+    }
+
+    /// True when `request`, made by a task of `incarnation` that is shutting
+    /// down, could finish only after `incarnation` ends: `stop` or `wait` on
+    /// a supervisor above it, or the removal of its own membership or of a
+    /// supervisor above it. Such a request is answered with cancellation.
+    pub(super) fn request_awaits_own_shutdown(
+        &self,
+        task: TaskId,
+        request: &ChimiProcessRequest,
+    ) -> bool {
+        self.incarnation_of(task).is_some_and(|incarnation| {
+            self.kernel
+                .incarnations
+                .get(&incarnation)
+                .is_some_and(|record| record.stopping.is_some())
+                && self.waits_on_own_shutdown(incarnation, request)
+        })
+    }
+
+    fn waits_on_own_shutdown(
+        &self,
+        incarnation: IncarnationId,
+        request: &ChimiProcessRequest,
+    ) -> bool {
+        let Some(record) = self.kernel.incarnations.get(&incarnation) else {
+            return false;
         };
         let mut memberships = vec![record.membership];
         let mut supervisors = Vec::new();
@@ -1869,38 +1919,16 @@ impl Scheduler {
                     parent
                 });
         }
-        let mut found = Vec::new();
-        let mut pending = vec![record.task];
-        while let Some(task) = pending.pop() {
-            let Some(task_record) = self.tasks.get(&task) else {
-                continue;
-            };
-            pending.extend(task_record.children.iter().copied());
-            if task_record.phase != TaskPhase::Parked || task_record.request.is_null() {
-                continue;
+        match request.kind {
+            super::REQUEST_SUPERVISOR_STOP | super::REQUEST_SUPERVISOR_WAIT => {
+                supervisors.contains(&SupervisorId::from_raw(request.supervisor))
             }
-            // SAFETY: a recorded request stays valid while its task is
-            // parked, and every request starts with `RequestHeader`.
-            let kind = unsafe { (*task_record.request.cast::<RequestHeader>()).kind };
-            let waits_on_self = match kind {
-                super::REQUEST_SUPERVISOR_STOP | super::REQUEST_SUPERVISOR_WAIT => {
-                    // SAFETY: supervisor requests are `ChimiProcessRequest`s.
-                    let request = unsafe { &*task_record.request.cast::<ChimiProcessRequest>() };
-                    supervisors.contains(&SupervisorId::from_raw(request.supervisor))
-                }
-                super::REQUEST_SUPERVISOR_REMOVE_PROCESS
-                | super::REQUEST_SUPERVISOR_REMOVE_SUPERVISOR => {
-                    // SAFETY: as above.
-                    let request = unsafe { &*task_record.request.cast::<ChimiProcessRequest>() };
-                    memberships.contains(&MembershipId::from_raw(request.membership))
-                }
-                _ => false,
-            };
-            if waits_on_self {
-                found.push(task);
+            super::REQUEST_SUPERVISOR_REMOVE_PROCESS
+            | super::REQUEST_SUPERVISOR_REMOVE_SUPERVISOR => {
+                memberships.contains(&MembershipId::from_raw(request.membership))
             }
+            _ => false,
         }
-        found
     }
 
     /// The shutdown deadline passed: answer the pending call with a forced
@@ -2181,4 +2209,15 @@ fn set_status(request: *mut c_void, status: u32, when: bool) {
         // fiber is parked, and every request starts with `RequestHeader`.
         unsafe { (*request.cast::<RequestHeader>()).status = status };
     }
+}
+
+/// The supervisor operations that can wait on their caller's own shutdown.
+fn is_supervisor_wait(kind: u32) -> bool {
+    matches!(
+        kind,
+        super::REQUEST_SUPERVISOR_STOP
+            | super::REQUEST_SUPERVISOR_WAIT
+            | super::REQUEST_SUPERVISOR_REMOVE_PROCESS
+            | super::REQUEST_SUPERVISOR_REMOVE_SUPERVISOR
+    )
 }
