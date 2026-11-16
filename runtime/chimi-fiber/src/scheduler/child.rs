@@ -7,31 +7,30 @@
 //! between the wake and its reissue therefore loses no exit status, and
 //! another task can still reap the child later.
 //!
-//! The runner's SIGCHLD handler sets `CHILD_EXITED_SIGNAL_BIT` in the
-//! `std/signal` word and writes to the wake pipe. Between resumes the
-//! scheduler takes that bit and checks every waiter; it wakes the ones whose
-//! child has exited (or is not a child at all), and those reissue to get the
-//! answer. SIGCHLD carries no pid and coalesces, so one bit checks them all.
+//! The scheduler checks every waiter after each idle wait and every
+//! `IO_POLL_INTERVAL` resumes of a busy run; it wakes the ones whose child
+//! has exited (or is not a child at all), and those reissue to get the
+//! answer. The runner's SIGCHLD handler writes a byte to the wake pipe, so an
+//! idle wait ends when a child exits. SIGCHLD carries no pid and coalesces,
+//! so one byte checks them all.
 //!
 //! Invariants:
 //! - A task has at most one child wait, and only while it is parked on the
 //!   request. Any other request, a cancellation, or its end removes it.
 //! - A child wait is a host operation in flight: virtual time does not
 //!   advance while one exists, because a child runs in real time.
-//! - The idle wait rechecks the waiters at least every `recheck_interval`,
-//!   so a SIGCHLD that never arrives (no handler installed, or another
-//!   library reaped first) delays a wake but never loses it.
+//! - An idle wait also ends by `recheck_interval`, so a SIGCHLD that never
+//!   arrives (no handler installed, or another library's handler) delays a
+//!   wake but never loses it. The interval starts at `FIRST_RECHECK` when a
+//!   task parks and doubles after each recheck that wakes nobody, up to
+//!   `MAX_REAL_WAIT`: a missed exit is found within about the time already
+//!   waited, and a long wait costs about one `waitid` a second.
 
 use super::{RESPONSE_ERROR, RESPONSE_OK, RESPONSE_PENDING, Scheduler, SchedulerRequest, TaskId};
 use std::time::Duration;
 
-/// The bit the runner's SIGCHLD handler sets in the `std/signal` word. It is
-/// above the `std/signal` codes, so it never reaches their latch.
-pub const CHILD_EXITED_SIGNAL_BIT: u32 = 1 << 8;
-
-/// The longest an idle scheduler waits before rechecking child waiters when
-/// no SIGCHLD source is connected.
-const UNSIGNALED_RECHECK: Duration = Duration::from_millis(10);
+/// The first idle recheck's interval after a task parks.
+const FIRST_RECHECK: Duration = Duration::from_millis(10);
 
 /// A task parked in `REQUEST_CHILD_WAIT`.
 struct ChildWaiter {
@@ -43,6 +42,8 @@ struct ChildWaiter {
 pub(super) struct Children {
     /// Parked waiters, oldest first.
     waiters: Vec<ChildWaiter>,
+    /// The next idle recheck's interval.
+    recheck: Duration,
 }
 
 impl Children {
@@ -84,6 +85,7 @@ impl Scheduler {
             }
             Check::Running => {
                 self.children.waiters.push(ChildWaiter { task: owner, pid });
+                self.children.recheck = FIRST_RECHECK;
                 request.status = RESPONSE_PENDING;
             }
         }
@@ -113,17 +115,20 @@ impl Scheduler {
         }
     }
 
-    /// How long an idle wait may block before rechecking child waiters:
-    /// with a SIGCHLD source the handler's pipe write ends the wait, so the
-    /// recheck is only a backstop.
-    pub(super) fn recheck_interval(&self) -> Option<Duration> {
-        if self.children.is_empty() {
-            None
-        } else if self.signals.has_user_source() {
-            Some(super::clock::MAX_REAL_WAIT)
-        } else {
-            Some(UNSIGNALED_RECHECK)
+    /// Rechecks after an idle wait, and backs the next one off when it found
+    /// no exit.
+    pub(super) fn recheck_children_after_idle(&mut self) {
+        let before = self.children.waiters.len();
+        self.recheck_children();
+        if before != 0 && self.children.waiters.len() == before {
+            self.children.recheck = (self.children.recheck * 2).min(super::clock::MAX_REAL_WAIT);
         }
+    }
+
+    /// How long an idle wait may block before rechecking child waiters, or
+    /// none while there are none.
+    pub(super) fn recheck_interval(&self) -> Option<Duration> {
+        (!self.children.is_empty()).then_some(self.children.recheck)
     }
 }
 

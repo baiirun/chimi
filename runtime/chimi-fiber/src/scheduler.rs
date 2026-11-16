@@ -21,7 +21,6 @@ mod select_tests;
 mod signal;
 
 use self::clock::{Clock, TimerQueue, TimerTarget};
-pub use self::child::CHILD_EXITED_SIGNAL_BIT;
 pub use self::clock::{ClockMode, Instant, TimerId};
 pub use self::reactor::{IO_ERROR, IO_HANGUP, IO_READABLE, IO_WRITABLE};
 use self::process::ProcessKernel;

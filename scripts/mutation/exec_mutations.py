@@ -3,9 +3,10 @@
 Not listed, as equivalent: dropping any one of the redundant withdrawals
 (`handle_request`, a task's end, `disarm_wake_sources`): each path that leaves
 a wait passes through at least two of them, so one alone changes nothing a
-test can see. Also equivalent: the recheck every `IO_POLL_INTERVAL` resumes
-of a busy scheduler (a busy program reaches an idle wait or the SIGCHLD bit
-soon enough; it only shortens a wake's latency).
+test can see. Also equivalent: the guard that answers ERROR for a pid of 0 or
+less without calling `waitid` (`waitid(P_PID, 0 or -1)` fails the same way on
+Linux and macOS), and the recheck backoff's growth and reset (they only change
+how often an idle wait rechecks, never whether it does).
 
 Run: scripts/mutation/mutate.py scripts/mutation/exec_mutations.py
 """
@@ -33,13 +34,14 @@ MUTATIONS = [
     lab("a non-child parks instead of failing", CHILD, [
         ("                return Check::Unknown;\n            }\n            // With WNOHANG",
          "                return Check::Running;\n            }\n            // With WNOHANG")]),
-    lab("pid 0 is checked as a pid", CHILD, [
-        ("let check = if pid > 0 { sys::check(pid) } else { Check::Unknown };",
-         "let check = sys::check(pid);")]),
-    lab("the SIGCHLD bit is ignored", SIGNAL, [
-        ("        if bits & super::CHILD_EXITED_SIGNAL_BIT != 0 {\n            self.recheck_children();\n        }\n", "")]),
+    lab("a busy run never rechecks", SCHEDULER, [
+        ("                    self.poll_io_now();\n                }\n                self.recheck_children();\n",
+         "                    self.poll_io_now();\n                }\n")]),
+    lab("the SIGCHLD pipe byte does not end an idle wait", REACTOR, [
+        ("let woken = self.reactor.wait(timeout, self.signals.wake_fd());",
+         "let woken = self.reactor.wait(timeout, None);")]),
     lab("an idle wait never rechecks", REACTOR, [
-        ("        self.wake_io(woken);\n        self.recheck_children();\n", "        self.wake_io(woken);\n")]),
+        ("        self.wake_io(woken);\n        self.recheck_children_after_idle();\n", "        self.wake_io(woken);\n")]),
     lab("a child wait does not hold virtual time", SCHEDULER, [
         ("if !self.reactor.is_empty() || !self.children.is_empty() {", "if !self.reactor.is_empty() {")]),
     lab("a child wait is not a cancellation point", SCOPE, [
@@ -49,7 +51,5 @@ MUTATIONS = [
         ("            | super::REQUEST_SIGNAL_WAIT\n            | super::REQUEST_CHILD_WAIT\n    )",
          "            | super::REQUEST_SIGNAL_WAIT\n    )")]),
     lab("the recheck backstop waits forever", CHILD, [
-        ("        } else {\n            Some(UNSIGNALED_RECHECK)\n        }", "        } else {\n            None\n        }")]),
-    lab("with a SIGCHLD source the backstop is the fast one", CHILD, [
-        ("            Some(super::clock::MAX_REAL_WAIT)\n", "            Some(UNSIGNALED_RECHECK)\n")]),
+        ("(!self.children.is_empty()).then_some(self.children.recheck)", "None")]),
 ]

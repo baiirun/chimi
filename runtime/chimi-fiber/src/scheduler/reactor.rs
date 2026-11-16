@@ -409,7 +409,7 @@ impl Scheduler {
         };
         let woken = self.reactor.wait(timeout, self.signals.wake_fd());
         self.wake_io(woken);
-        self.recheck_children();
+        self.recheck_children_after_idle();
         self.fire_due_timers();
     }
 

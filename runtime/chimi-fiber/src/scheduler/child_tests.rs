@@ -1,18 +1,19 @@
 //! `CHIMI_REQUEST_CHILD_WAIT` through the request ABI: a wait answers at once
 //! for an exited child without reaping it, parks while the child runs and
-//! other tasks go on, holds virtual time, wakes on the SIGCHLD bit, and is
+//! other tasks go on, holds virtual time, wakes on the SIGCHLD pipe byte or a
+//! busy scheduler's recheck, and is
 //! withdrawn by a timeout scope.
 
 use super::*;
 use crate::{ChimiFiberResult, chimi_fiber_request};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::process::{Child, Command};
 use std::ptr;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant as RealInstant};
 
 thread_local! {
     static SEEN: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
+    static WOKEN: Cell<bool> = const { Cell::new(false) };
 }
 
 fn note(value: i64) {
@@ -135,14 +136,13 @@ fn run(
     clock_mode: u32,
     context: *mut c_void,
 ) -> (SchedulerOutcome, Vec<i64>) {
-    run_with_signal(entry, clock_mode, context, ptr::null_mut(), -1)
+    run_with_signal(entry, clock_mode, context, -1)
 }
 
 fn run_with_signal(
     entry: ChimiFiberEntry,
     clock_mode: u32,
     context: *mut c_void,
-    user_signals: *mut u32,
     signal_fd: i32,
 ) -> (SchedulerOutcome, Vec<i64>) {
     SEEN.with(|seen| seen.borrow_mut().clear());
@@ -171,7 +171,7 @@ fn run_with_signal(
         injected_signal: 0,
         injected_signal_at: 0,
         copy_channel_value: None,
-        user_signals,
+        user_signals: ptr::null_mut(),
         injected_user_signals: std::ptr::null(),
         injected_user_signal_count: 0,
     };
@@ -240,7 +240,7 @@ unsafe extern "C" fn wait_while_a_sibling_runs(context: *mut c_void) -> ChimiFib
 #[test]
 fn a_running_child_parks_the_wait_while_other_tasks_run_and_its_exit_wakes_it() {
     // No SIGCHLD source is connected: the idle recheck finds the exit.
-    let child = shell("sleep 0.2");
+    let child = shell("exec sleep 0.2");
     let (outcome, seen) = run(
         wait_while_a_sibling_runs,
         process_abi::CLOCK_REAL,
@@ -269,7 +269,7 @@ unsafe extern "C" fn wait_beside_a_sleeper(context: *mut c_void) -> ChimiFiberRe
 
 #[test]
 fn a_child_wait_holds_virtual_time() {
-    let child = shell("sleep 0.05");
+    let child = shell("exec sleep 0.05");
     let (outcome, seen) = run(
         wait_beside_a_sleeper,
         process_abi::CLOCK_VIRTUAL,
@@ -287,52 +287,101 @@ unsafe extern "C" fn wait_and_time_it(context: *mut c_void) -> ChimiFiberResult 
     succeeded(0)
 }
 
-#[test]
-fn the_sigchld_bit_wakes_an_idle_wait_before_the_backstop_recheck() {
-    let child = shell("sleep 0.05");
-    let (read, write) = pipe();
-    let word = Box::leak(Box::new(AtomicU32::new(0)));
-    let word_address = word as *const AtomicU32 as usize;
-    // Plays the runner's SIGCHLD handler, once the child has exited.
-    let pid = child.id();
-    let handler = std::thread::spawn(move || {
-        loop {
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    pid,
-                    &mut info,
-                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-                )
-            };
-            if unsafe { info.si_pid() } != 0 {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
+/// Blocks until `pid` has exited, without reaping it.
+fn await_exit(pid: u32) {
+    loop {
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        unsafe { libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        if unsafe { info.si_pid() } != 0 {
+            return;
         }
-        let word = unsafe { &*(word_address as *const AtomicU32) };
-        word.fetch_or(CHILD_EXITED_SIGNAL_BIT, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn the_sigchld_pipe_byte_ends_an_idle_wait_before_the_backed_off_recheck() {
+    // Without the byte the rechecks back off (10, 20, 40 ms ...) and the
+    // first one after the exit at 1.5 s comes at about 2.27 s.
+    let child = shell("exec sleep 1.5");
+    let (read, write) = pipe();
+    let pid = child.id();
+    // Plays the runner's SIGCHLD handler.
+    let handler = std::thread::spawn(move || {
+        await_exit(pid);
         assert_eq!(unsafe { libc::write(write, b"x".as_ptr().cast(), 1) }, 1);
     });
     let (outcome, seen) = run_with_signal(
         wait_and_time_it,
         process_abi::CLOCK_REAL,
         pid_context(&child),
-        word.as_ptr(),
         read,
     );
     handler.join().unwrap();
     assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
     assert_eq!(seen[0], i64::from(RESPONSE_OK));
-    // With a SIGCHLD source the backstop recheck waits a whole second.
-    assert!(seen[1] < 800, "woken after {} ms", seen[1]);
-    assert_eq!(word.load(Ordering::SeqCst), 0, "the scheduler took the bit");
+    assert!(seen[1] < 2100, "woken after {} ms", seen[1]);
     assert!(reap(child).success());
     unsafe {
         libc::close(read);
         libc::close(write);
     }
+}
+
+unsafe extern "C" fn finish_at_once(_context: *mut c_void) -> ChimiFiberResult {
+    succeeded(0)
+}
+
+unsafe extern "C" fn wait_and_flag(context: *mut c_void) -> ChimiFiberResult {
+    let status = wait_child(context as usize as i64).unwrap_or(0);
+    WOKEN.with(|woken| woken.set(true));
+    succeeded(i64::from(status))
+}
+
+unsafe extern "C" fn stay_busy_beside_a_waiter(context: *mut c_void) -> ChimiFiberResult {
+    let waiter = start(wait_and_flag, context);
+    let started = RealInstant::now();
+    // Starting and awaiting a task never leaves the run queue empty, so the
+    // scheduler never goes idle while this loops.
+    while !WOKEN.with(Cell::get) && started.elapsed() < Duration::from_secs(5) {
+        result(start(finish_at_once, ptr::null_mut()));
+    }
+    note(i64::from(WOKEN.with(Cell::get)));
+    result(waiter);
+    succeeded(0)
+}
+
+#[test]
+fn a_busy_scheduler_still_wakes_a_waiter_whose_child_exited() {
+    WOKEN.with(|woken| woken.set(false));
+    let child = shell("exec sleep 0.05");
+    let (outcome, seen) = run(
+        stay_busy_beside_a_waiter,
+        process_abi::CLOCK_REAL,
+        pid_context(&child),
+    );
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_eq!(seen, [1], "the waiter woke while the scheduler was busy");
+    assert!(reap(child).success());
+}
+
+#[test]
+fn a_child_reaped_by_someone_else_while_waited_on_is_an_error() {
+    let child = shell("exec sleep 0.05");
+    let pid = child.id();
+    let reaper = std::thread::spawn(move || {
+        let mut status = 0;
+        unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) }
+    });
+    let (outcome, seen) = run(wait_for_one, process_abi::CLOCK_REAL, pid_context(&child));
+    assert_eq!(reaper.join().unwrap(), pid as libc::pid_t);
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_eq!(seen, [i64::from(RESPONSE_ERROR)]);
+    std::mem::forget(child);
+}
+
+unsafe extern "C" fn wait_for_one(context: *mut c_void) -> ChimiFiberResult {
+    note(i64::from(wait_child(context as usize as i64).unwrap_or(0)));
+    succeeded(0)
 }
 
 unsafe extern "C" fn time_out_a_child_wait(context: *mut c_void) -> ChimiFiberResult {
@@ -350,7 +399,7 @@ unsafe extern "C" fn time_out_a_child_wait(context: *mut c_void) -> ChimiFiberRe
 
 #[test]
 fn a_timeout_scope_withdraws_a_parked_child_wait() {
-    let mut child = shell("sleep 30");
+    let mut child = shell("exec sleep 30");
     let (outcome, seen) = run(
         time_out_a_child_wait,
         process_abi::CLOCK_REAL,
@@ -387,7 +436,7 @@ unsafe extern "C" fn cancel_a_waiter_then_sleep(context: *mut c_void) -> ChimiFi
 
 #[test]
 fn a_cancelled_waiter_stops_holding_virtual_time() {
-    let child = shell("sleep 0.5");
+    let child = shell("exec sleep 0.5");
     let (outcome, seen) = run(
         cancel_a_waiter_then_sleep,
         process_abi::CLOCK_VIRTUAL,

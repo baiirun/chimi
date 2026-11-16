@@ -422,7 +422,6 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       CHIMI_REQUEST_IO_WITHDRAW,
       CHIMI_REQUEST_SIGNAL_WAIT,
       CHIMI_REQUEST_CHILD_WAIT,
-      CHIMI_CHILD_EXITED_SIGNAL_BIT,
       CHIMI_IO_READABLE,
       CHIMI_IO_WRITABLE,
       CHIMI_IO_HANGUP,
