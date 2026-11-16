@@ -1946,11 +1946,14 @@ fn sd01_stop_runs_newest_dynamic_first_then_declared_in_reverse_and_frees_unread
     lab.scheduler
         .start_process(root, spec(None, 8), Restart::Never)
         .unwrap();
-    // Queued before any body runs, so nothing receives it.
+    // COUNTER drains its mailbox during the stop, returns at `Return`, and
+    // never reads the message queued behind it.
+    lab.deliver(named(COUNTER), Msg::Return);
     let unread = message(Msg::Add(9));
     lab.scheduler.process_send(named(COUNTER), unread).unwrap();
     let memberships: Vec<_> = lab.started().into_iter().map(|(m, _)| m).collect();
     lab.scheduler.stop_supervisor(root).unwrap();
+    let _ = lab.scheduler.run_until_idle();
     let order: Vec<_> = lab.terminations().into_iter().map(|(m, _)| m).collect();
     assert_eq!(order, memberships.iter().rev().copied().collect::<Vec<_>>());
     assert!(
@@ -2538,6 +2541,7 @@ fn run_c(entry: ChimiFiberEntry, trace_mode: u32) -> (SchedulerOutcome, Vec<Sche
         signal_fd: -1,
         injected_signal: 0,
         injected_signal_at: 0,
+        copy_channel_value: None,
     };
     let outcome = unsafe { chimi_scheduler_run(&config) };
     (outcome, events)
@@ -2704,6 +2708,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiSchedulerConfig, signal_fd),
         offset_of!(ChimiSchedulerConfig, injected_signal),
         offset_of!(ChimiSchedulerConfig, injected_signal_at),
+        offset_of!(ChimiSchedulerConfig, copy_channel_value),
         size_of::<ChimiProcessTermination>(),
         offset_of!(ChimiProcessTermination, incarnation),
         offset_of!(ChimiProcessTermination, cause),
@@ -2756,9 +2761,16 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         REQUEST_PROCESS_MONITOR as usize,
         REQUEST_PROCESS_MAILBOX as usize,
         Down::Unavailable.code() as usize,
+        REQUEST_CHANNEL_ADD_RECEIVER as usize,
+        REQUEST_CHANNEL_BROADCAST as usize,
+        REQUEST_CHANNEL_WATCH as usize,
+        REQUEST_CHANNEL_SUBSCRIBE as usize,
+        VIOLATION_PUBLISHED_CAPABILITY as usize,
+        VIOLATION_WRONG_KIND as usize,
+        REQUEST_SCOPE_CANCEL as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 14);
+    assert_eq!(crate::chimi_fiber_abi_version(), 18);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------
@@ -4221,8 +4233,9 @@ unsafe extern "C" fn sleeps_before_receiving(_context: *mut c_void) -> ChimiFibe
     ended(PROCESS_END_RETURNED)
 }
 
-// A body stopped before its first run has nothing in flight to drain, so it
-// is cancelled at once: none of its code runs and time does not move.
+// A body stopped before its first run, with nothing in its mailbox, has
+// nothing in flight to drain, so it is cancelled at once: none of its code
+// runs and time does not move.
 #[test]
 fn a_body_stopped_before_its_first_run_is_cancelled_without_running() {
     let mut lab = Lab::new();
@@ -4244,6 +4257,24 @@ fn a_body_stopped_before_its_first_run_is_cancelled_without_running() {
         log(|log| log.outcomes.clone()).is_empty(),
         "the body never ran"
     );
+}
+
+// Messages a process accepted before its first run are work: a stop that
+// arrives before the body runs still lets it drain them (CHI-243).
+#[test]
+fn a_body_stopped_before_its_first_run_still_drains_the_messages_it_accepted() {
+    let mut lab = Lab::new();
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![counter_member(COUNTER)], 0))
+        .expect("root");
+    lab.deliver(named(COUNTER), Msg::Add(1));
+    lab.deliver(named(COUNTER), Msg::Add(2));
+    let _ = lab.scheduler.stop_supervisor(root);
+    let _ = lab.scheduler.run_until_idle();
+    let counter = lab.started()[0].1;
+    assert_eq!(adds_of(counter), [1, 2]);
+    assert_eq!(timed_terminations(&lab), [(0, TerminalCause::Cancelled)]);
 }
 
 /// Sleeps 1 s, then stops the supervisor named by its context and logs the

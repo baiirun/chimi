@@ -303,8 +303,9 @@ in these steps:
    supervisor is kept on the incarnation, because a stop forgets membership
    records before the incarnation ends.
 4. The body itself:
-   - A body that has not run yet is cancelled before its first run and
-     ends `cancelled`.
+   - A body that has not run yet and has an empty mailbox is cancelled
+     before its first run and ends `cancelled`. One with accepted messages
+     or monitor notices runs and drains them like any other body (CHI-243).
    - A body parked in `receive` is woken. `receive` returns the messages
      accepted before shutdown, oldest first, and then `Cancelled` on every
      call.

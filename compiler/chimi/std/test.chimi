@@ -1,4 +1,4 @@
-/// Assertions for `test "name" { ... }` items. Each one returns `Void` when it
+/// Assertions and test-only operations for `test "name" { ... }` items. Each one returns `Void` when it
 /// holds, and otherwise ends the test with a failure that `chimi test` reports
 /// with the assertion's location and both values in the debug format.
 ///
@@ -30,3 +30,17 @@ pub native fn assert(condition: Bool, message: Text) -> Void
 ///
 /// Cost: O(1).
 pub native fn fail(message: Text) -> Never
+
+/// Runs `operation` and returns the message of the defect it raised, so a
+/// test can check a precondition:
+/// `Test.capture_defect(fn() { checkout(0) }) |> Test.assert_equal(message)`.
+/// Tasks the operation started are cancelled and drained first.
+///
+/// When `operation` succeeds or fails with an expected failure, the test
+/// fails, naming what happened instead. An assertion failure inside
+/// `operation` is not captured: it ends the test as usual. Test-only: a
+/// program whose `main` reaches it does not build (`T4401`).
+///
+/// Calls: `operation` once.
+/// Cost: O(1) plus `operation`.
+pub native fn capture_defect<T, F, R>(operation: fn() -> T errors F needs R) -> Text needs R

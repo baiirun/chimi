@@ -917,6 +917,8 @@ struct Evaluator<'core> {
     constant_evaluation: Option<constants::ConstantEvaluation>,
     application_stdout: String,
     application_stderr: String,
+    /// `CoreProgram::assertion_calls`, computed on the first `capture_defect`.
+    assertion_calls: std::cell::OnceCell<std::collections::HashSet<u32>>,
 }
 
 impl<'core> Evaluator<'core> {
@@ -940,6 +942,7 @@ impl<'core> Evaluator<'core> {
             constant_evaluation: None,
             application_stdout: String::new(),
             application_stderr: String::new(),
+            assertion_calls: std::cell::OnceCell::new(),
         }
     }
 
@@ -1802,7 +1805,8 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::SelectTask
             | StandardFunction::SelectAfter
             | StandardFunction::SelectAt
-            | StandardFunction::SelectFirst => Control::Defect {
+            | StandardFunction::SelectFirst
+            | StandardFunction::SelectWatch => Control::Defect {
                 message: format!(
                     "Select.{} requires the native runtime; build the program with `chimi build`",
                     function.name()
@@ -1814,6 +1818,9 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::TestAssertNotEqual
             | StandardFunction::TestAssert
             | StandardFunction::TestFail => self.invoke_assertion(function, arguments, call_node),
+            StandardFunction::TestCaptureDefect => {
+                self.invoke_capture_defect(arguments, span, call_node, environment)
+            }
             StandardFunction::DebugCrash
             | StandardFunction::OptionUnwrapOrFail
             | StandardFunction::TextConcat
@@ -2142,6 +2149,24 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::ChannelBounded => Control::Defect {
                 message: format!(
                     "standard function {} requires the bounded Channel runtime",
+                    function.name()
+                ),
+                node: Some(call_node),
+                cause: None,
+            },
+            StandardFunction::ChannelAddReceiver
+            | StandardFunction::BroadcastBounded
+            | StandardFunction::BroadcastPublish
+            | StandardFunction::BroadcastSubscribe
+            | StandardFunction::WatchStartingWith
+            | StandardFunction::WatchPublish
+            | StandardFunction::WatchSubscribe
+            | StandardFunction::WatchReceive => Control::Defect {
+                message: format!(
+                    "{}.{} requires the bounded Channel runtime; build the program with `chimi build`",
+                    function
+                        .module()
+                        .map_or_else(String::new, |module| module.qualifier()),
                     function.name()
                 ),
                 node: Some(call_node),

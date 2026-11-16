@@ -2046,6 +2046,24 @@ static void fragment_copy_into_current(const RuntimeFragment *fragment, void **r
     allocation_graph_inconsistent();
 }
 
+/* A second detached copy of an unadopted fragment, for another broadcast or watch
+   subscription. O(fragment). */
+static RuntimeFragment *fragment_duplicate(const RuntimeFragment *source) {
+  RuntimeFragment *fragment = small_block_take(sizeof(*fragment));
+  fragment->area.role = AREA_FRAGMENT;
+  fragment->root_count = source->root_count;
+  ++heap_totals.live_fragments;
+  footprint_add(sizeof(*fragment));
+  fragment_footprint_add(sizeof(*fragment));
+  AllocationKind kinds[FRAGMENT_ROOTS];
+  for (uint32_t index = 0; index < source->root_count; ++index)
+    kinds[index] = allocation_header(source->roots[index])->kind;
+  FragmentCopy copy = {.source_area = &source->area, .target = &fragment->area};
+  if (copy_graph(&copy, source->roots, kinds, source->root_count, fragment->roots) != HEAP_OK)
+    allocation_graph_inconsistent();
+  return fragment;
+}
+
 /* Discards an unadopted fragment, for example a message handed back to its sender. */
 static void fragment_free(RuntimeFragment *fragment) {
   heap_totals.fragment_footprint_bytes -= fragment_footprint(fragment);
@@ -2632,6 +2650,22 @@ static ChimiValue *channel_bundle_value(uint64_t channel, uint64_t owner, uint64
   };
   value->as.record.fields[2] = (RuntimeField){
     "sender", channel_capability_value(VALUE_CHANNEL_SENDER, channel, 0, 0)
+  };
+  return value;
+}
+
+/* The `{ completion, publisher }` record of a broadcast or watch: its publisher is a
+   Sender of the hub's id. */
+static ChimiValue *publisher_bundle_value(uint64_t channel, uint64_t owner, uint64_t token) {
+  ChimiValue *value = new_value(VALUE_RECORD);
+  value->as.record.length = 2;
+  value->as.record.fields = allocate(2, sizeof(*value->as.record.fields));
+  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
+  value->as.record.fields[0] = (RuntimeField){
+    "completion", channel_capability_value(VALUE_CHANNEL_COMPLETION, channel, owner, token)
+  };
+  value->as.record.fields[1] = (RuntimeField){
+    "publisher", channel_capability_value(VALUE_CHANNEL_SENDER, channel, 0, 0)
   };
   return value;
 }
@@ -5551,6 +5585,74 @@ static ChimiControl *invoke_assertion(uint32_t intrinsic, ChimiValue **arguments
   return intrinsic_shape_defect(call_node);
 }
 
+static bool is_assertion_call(int64_t node) {
+  uint32_t low = 0, high = CHIMI_ASSERTION_NODE_COUNT;
+  while (low < high) {
+    uint32_t middle = low + (high - low) / 2;
+    if ((int64_t)CHIMI_ASSERTION_NODES[middle] < node) low = middle + 1;
+    else high = middle;
+  }
+  return low < CHIMI_ASSERTION_NODE_COUNT && (int64_t)CHIMI_ASSERTION_NODES[low] == node;
+}
+
+static ChimiControl *capture_outcome_defect(const char *heading, const ChimiValue *value,
+                                            uint32_t call_node) {
+  TextBuffer buffer = {0};
+  buffer_bytes(&buffer, heading, strlen(heading));
+  buffer_char(&buffer, '\n');
+  ChimiValue *rendering = debug_render(value, true);
+  buffer_bytes(&buffer, rendering->as.text.bytes, rendering->as.text.length);
+  buffer_char(&buffer, '\0');
+  return defect(buffer.data, call_node);
+}
+
+/* Test.capture_defect, as invoke_capture_defect in execution/core_operations.rs.
+   Under the scheduler the operation runs in a scope without a deadline; after a
+   captured defect, the scope's children are cancelled and leaving it drains
+   them. A cancellation from outside passes through, as through Task.timeout. */
+static ChimiControl *capture_defect(ChimiRuntime *runtime, ChimiValue **arguments,
+                                    uint32_t argument_count, uint64_t span, uint32_t call_node,
+                                    ChimiEnvironment *environment) {
+  if (argument_count != 1 || arguments[0]->kind != VALUE_CALLABLE)
+    return intrinsic_shape_defect(call_node);
+  ChimiSchedulerRequest enter = {.kind = CHIMI_REQUEST_SCOPE_ENTER, .value = INT64_MAX};
+  if (CHIMI_REQUIRES_SCHEDULER) {
+    if (scheduler_request(&enter) == CHIMI_FIBER_CANCEL) return cancelled();
+    if (enter.status != CHIMI_RESPONSE_OK)
+      return defect("Test.capture_defect scheduler request failed", call_node);
+  }
+  ChimiControl *control = invoke(runtime, arguments[0]->as.callable, NULL, 0, span, call_node, environment);
+  if (control->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()) return control;
+  bool captured = control->kind == CONTROL_DEFECT && !is_assertion_call(control->node);
+  if (CHIMI_REQUIRES_SCHEDULER) {
+    if (captured) {
+      ChimiSchedulerRequest cancel = {.kind = CHIMI_REQUEST_SCOPE_CANCEL, .token = enter.token};
+      if (scheduler_request(&cancel) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (cancel.status != CHIMI_RESPONSE_OK)
+        return defect("Test.capture_defect scheduler request failed", call_node);
+    }
+    for (;;) {
+      /* A captured defect discards the operation's values, so the capabilities
+         it gained in the scope are aborted, as after a cancellation. */
+      ChimiSchedulerRequest exit = {.kind = CHIMI_REQUEST_SCOPE_EXIT, .token = enter.token,
+                                    .value = captured};
+      if (scheduler_request(&exit) == CHIMI_FIBER_CANCEL) return cancelled();
+      if (exit.status == CHIMI_RESPONSE_PENDING) continue;
+      if (exit.status != CHIMI_RESPONSE_OK)
+        return defect("Test.capture_defect scheduler request failed", call_node);
+      break;
+    }
+  }
+  if (captured) return success(text_value(control->message));
+  if (control->kind == CONTROL_SUCCESS)
+    return capture_outcome_defect("Test.capture_defect: the operation returned instead of defecting:",
+                                  control->value, call_node);
+  if (control->kind == CONTROL_FAILURE)
+    return capture_outcome_defect("Test.capture_defect: the operation failed with an expected "
+                                  "failure instead of defecting:", control->value, call_node);
+  return control;
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
@@ -5883,6 +5985,11 @@ static void release_task_word(void *context, int64_t word) {
 static void release_channel_word(void *context, int64_t word) {
   (void)context;
   fragment_free((RuntimeFragment *)(intptr_t)word);
+}
+
+static int64_t copy_channel_word(void *context, int64_t word) {
+  (void)context;
+  return (int64_t)(intptr_t)fragment_duplicate((RuntimeFragment *)(intptr_t)word);
 }
 
 /* A child the scheduler ends before its entry runs never adopts its captures. */
@@ -8314,6 +8421,8 @@ static ChimiControl *invoke_select(ChimiRuntime *runtime, uint32_t intrinsic, Ch
   int64_t kind;
   switch (intrinsic) {
     case CHIMI_INTRINSIC_SELECT_RECEIVE: source_kind = VALUE_CHANNEL_RECEIVER; kind = SELECT_EVENT_RECEIVE; break;
+    /* A watch subscription is a receiver: its event is a receive event. */
+    case CHIMI_INTRINSIC_SELECT_WATCH: source_kind = VALUE_CHANNEL_RECEIVER; kind = SELECT_EVENT_RECEIVE; break;
     case CHIMI_INTRINSIC_SELECT_INBOX: source_kind = VALUE_PROCESS_INBOX; kind = SELECT_EVENT_INBOX; break;
     case CHIMI_INTRINSIC_SELECT_TASK: source_kind = VALUE_TASK; kind = SELECT_EVENT_TASK; break;
     case CHIMI_INTRINSIC_SELECT_AFTER: source_kind = VALUE_DURATION; kind = SELECT_EVENT_AFTER; break;
@@ -8352,11 +8461,14 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_assertion(intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_RESOURCE_SCOPED)
     return resource_scoped(runtime, arguments, argument_count, span, call_node, environment);
+  if (intrinsic == CHIMI_INTRINSIC_TEST_CAPTURE_DEFECT)
+    return capture_defect(runtime, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
     return invoke_process(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_SELECT_RECEIVE && intrinsic <= CHIMI_INTRINSIC_SELECT_FIRST)
+  if ((intrinsic >= CHIMI_INTRINSIC_SELECT_RECEIVE && intrinsic <= CHIMI_INTRINSIC_SELECT_FIRST) ||
+      intrinsic == CHIMI_INTRINSIC_SELECT_WATCH)
     return invoke_select(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_CLOCK_NOW && intrinsic <= CHIMI_INTRINSIC_TASK_DEADLINE)
     return invoke_clock(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
@@ -8587,6 +8699,89 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
         ? success(channel_bundle_value(request.channel, request.owner, request.token))
         : defect("Channel.bounded scheduler request failed", call_node);
     }
+    case CHIMI_INTRINSIC_CHANNEL_ADD_RECEIVER: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_CHANNEL_RECEIVER)
+        return intrinsic_shape_defect(call_node);
+      RuntimeCapability capability = arguments[0]->as.capability;
+      ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_CHANNEL_ADD_RECEIVER,
+        .channel = capability.channel,
+        .owner = capability.owner,
+        .token = capability.token,
+      };
+      ChimiFiberCommand command = scheduler_request(&request);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      return request.status == CHIMI_RESPONSE_OK
+        ? success(channel_capability_value(VALUE_CHANNEL_RECEIVER, request.channel,
+                                           request.owner, request.token))
+        : defect("Channel.add_receiver scheduler request failed", call_node);
+    }
+    case CHIMI_INTRINSIC_BROADCAST_SUBSCRIBE:
+    case CHIMI_INTRINSIC_WATCH_SUBSCRIBE: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_CHANNEL_SENDER)
+        return intrinsic_shape_defect(call_node);
+      ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_CHANNEL_SUBSCRIBE,
+        .channel = arguments[0]->as.capability.channel,
+      };
+      ChimiFiberCommand command = scheduler_request(&request);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      return request.status == CHIMI_RESPONSE_OK
+        ? success(channel_capability_value(VALUE_CHANNEL_RECEIVER, request.channel,
+                                           request.owner, request.token))
+        : defect("subscribe scheduler request failed", call_node);
+    }
+    case CHIMI_INTRINSIC_BROADCAST_BOUNDED: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER)
+        return intrinsic_shape_defect(call_node);
+      if (arguments[0]->as.integer < 1)
+        return defect(numeric_message("`Broadcast.bounded(%" PRId64 ")` needs a positive capacity",
+                                      arguments[0]->as.integer),
+                      call_node);
+      ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_CHANNEL_BROADCAST,
+        .value = arguments[0]->as.integer,
+      };
+      ChimiFiberCommand command = scheduler_request(&request);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      return request.status == CHIMI_RESPONSE_OK
+        ? success(publisher_bundle_value(request.channel, request.owner, request.token))
+        : defect("Broadcast.bounded scheduler request failed", call_node);
+    }
+    case CHIMI_INTRINSIC_WATCH_STARTING_WITH: {
+      if (argument_count != 1) return intrinsic_shape_defect(call_node);
+      void *roots[] = {arguments[0]};
+      AllocationKind kinds[] = {ALLOCATION_VALUE};
+      RuntimeFragment *initial = NULL;
+      if (fragment_copy(roots, kinds, 1, &initial) != HEAP_OK)
+        return defect(FOREIGN_POINTER_DEFECT, call_node);
+      CapabilityTransfer carried = {.collect = true};
+      transfer_captures(&carried, initial->roots[0]);
+      size_t carried_count = carried.carried_count;
+      free(carried.carried);
+      if (carried_count) {
+        fragment_free(initial);
+        return defect("channel capability violation: Watch.starting_with cannot hold a value "
+                      "with a Receiver or Completion, because every subscriber gets a copy",
+                      call_node);
+      }
+      ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_CHANNEL_WATCH,
+        .value = (int64_t)(intptr_t)initial,
+      };
+      ChimiFiberCommand command = scheduler_request(&request);
+      /* The scheduler takes the initial value only with an OK reply. */
+      if (request.status != CHIMI_RESPONSE_OK) fragment_free(initial);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      return request.status == CHIMI_RESPONSE_OK
+        ? success(publisher_bundle_value(request.channel, request.owner, request.token))
+        : defect("Watch.starting_with scheduler request failed", call_node);
+    }
+    case CHIMI_INTRINSIC_BROADCAST_PUBLISH:
+    case CHIMI_INTRINSIC_WATCH_PUBLISH:
+    /* A publisher is a Sender of its broadcast or watch: the scheduler
+       publishes a send to one, and defects the task if the message carries a
+       Receiver or Completion, which every subscriber's copy would duplicate. */
     case CHIMI_INTRINSIC_CHANNEL_SEND: {
       if (argument_count != 2 || arguments[0]->kind != VALUE_CHANNEL_SENDER)
         return intrinsic_shape_defect(call_node);
@@ -8628,7 +8823,10 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
         carried.carried = NULL;
         if (command == CHIMI_FIBER_CANCEL) return cancelled();
         if (request.status == CHIMI_RESPONSE_PENDING) continue;
-        if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
+        if (request.status == CHIMI_RESPONSE_OK)
+          return success(intrinsic == CHIMI_INTRINSIC_BROADCAST_PUBLISH
+                           ? integer_value(request.value)
+                           : void_value());
         ChimiValue *fields[] = {arguments[1]};
         if (request.status == CHIMI_RESPONSE_CLOSED)
           return failure(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED, fields, 1));
@@ -8637,6 +8835,9 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
         return defect("Channel.send scheduler request failed", call_node);
       }
     }
+    /* A watch subscription is a receiver of a queue that keeps only the
+       latest value. */
+    case CHIMI_INTRINSIC_WATCH_RECEIVE:
     case CHIMI_INTRINSIC_CHANNEL_RECEIVE: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_CHANNEL_RECEIVER)
         return intrinsic_shape_defect(call_node);
@@ -9717,6 +9918,8 @@ static const char *channel_operation(uint32_t request_kind) {
     case CHIMI_REQUEST_CHANNEL_CLOSE: return "Channel.close";
     case CHIMI_REQUEST_CHANNEL_ABORT: return "aborting the channel";
     case CHIMI_REQUEST_CHANNEL_RELEASE: return "releasing the channel";
+    case CHIMI_REQUEST_CHANNEL_ADD_RECEIVER: return "Channel.add_receiver";
+    case CHIMI_REQUEST_CHANNEL_SUBSCRIBE: return "subscribe";
     case CHIMI_REQUEST_PROCESS_SEND: return "Process.send";
     case CHIMI_REQUEST_SUPERVISOR_START_PROCESS: return "Supervisor.start_handoff";
     default: return "a channel request";
@@ -9780,6 +9983,18 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
       snprintf(text, sizeof(text),
                "channel capability violation: task %" PRIu64 " used channel %" PRIu64
                " after it was released", violation->task, violation->channel);
+      break;
+    case CHIMI_VIOLATION_PUBLISHED_CAPABILITY:
+      snprintf(text, sizeof(text),
+               "channel capability violation: task %" PRIu64 " cannot publish a value holding a "
+               "Receiver or Completion on channel %" PRIu64 ", because every subscriber gets a copy",
+               violation->task, violation->channel);
+      break;
+    case CHIMI_VIOLATION_WRONG_KIND:
+      snprintf(text, sizeof(text),
+               "channel capability violation: task %" PRIu64 " cannot use channel %" PRIu64
+               " in %s: that operation does not apply to this kind of channel",
+               violation->task, violation->channel, channel_operation(violation->request_kind));
       break;
     default:
       snprintf(text, sizeof(text),
@@ -9980,6 +10195,7 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
 #endif
     .release_task_value = release_task_word,
     .release_channel_value = release_channel_word,
+    .copy_channel_value = copy_channel_word,
     .release_task_context = release_task_context,
 #if CHIMI_PROCESS_KERNEL
     .release_message = release_message_word,

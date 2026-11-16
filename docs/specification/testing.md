@@ -10,8 +10,8 @@ testing row of the [standard library map](../plans/standard-library-map.md).
 Implemented: test declarations (they parse, format, and type-check, and
 builds drop them), the `chimi test` runner on both backends with the human
 report, `--json`, filters, jobs, the time limit, the clock options, and the
-exit status, and the four `std/test` assertions. Not implemented yet:
-`capture_defect` and `T4401`, recorders and scripts, `std/random` and
+exit status, the four `std/test` assertions, `capture_defect`, and `T4401`.
+Not implemented yet: recorders and scripts, `std/random` and
 `--seed`, fake mailboxes, `--trace`, directory inputs, doc-comment examples,
 and the std-tests migration. The build is tracked
 by CHI-208; the spec was written under CHI-202.

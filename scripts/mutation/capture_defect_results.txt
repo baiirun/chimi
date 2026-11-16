@@ -1,0 +1,16 @@
+# mutation run at d5798321ecb9c5eec8035d75fa12f1aa4bb841ac
+# capture_defect_mutations.py: 12 mutants against compiler/chimi
+BASELINE ok  [testing] (11s)
+KILLED       native: an inner assertion is captured [testing] (11s)
+KILLED       native: the operation's tasks are not cancelled [testing] (12s)
+KILLED       native: a success is returned as the message [testing] (12s)
+KILLED       native: an expected failure escapes [testing] (12s)
+KILLED       native: the node search misses the last entry [testing] (12s)
+KILLED       interpreter: an inner assertion is captured [testing] (16s)
+KILLED       interpreter: a success is returned [testing] (9s)
+KILLED       assertion set: capture_defect's own failure is a plain defect [testing] (25s)
+KILLED       T4401: never reported [testing] (26s)
+KILLED       T4401: the path loses its callers [testing] (21s)
+KILLED       scheduler: a scope cancel leaves the children running [testing] (18s)
+KILLED       scheduler: a scope without a deadline still gets a timer [testing] (7s)
+# result: every mutant killed

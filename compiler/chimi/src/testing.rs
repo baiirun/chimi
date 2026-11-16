@@ -11,12 +11,11 @@
 use crate::backend::BackendProgram;
 use crate::compiler::{ProjectSource, resolve_project_sources};
 use crate::diagnostic::Diagnostic;
-use crate::executable::{CoreOperation, CoreProgram, lower, seal_tests};
+use crate::executable::{lower, seal_tests};
 use crate::execution::core_operations::{ASSERT_EQUAL_HEADING, ASSERT_NOT_EQUAL_HEADING};
 use crate::execution::{ExecutionConfig, ExecutionOutcome};
 use crate::json::write_json_string;
 use crate::line_index::{LineIndex, PositionEncoding};
-use crate::standard::{StandardFunction, StandardSymbol};
 use crate::typing::check_project;
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -311,7 +310,7 @@ impl TestSuite {
                 }
             })
             .collect();
-        let assertion_calls = assertion_calls(&core);
+        let assertion_calls = core.assertion_calls();
         Ok(Self {
             program: BackendProgram::new(core),
             cases,
@@ -636,26 +635,6 @@ fn comparison(message: &str) -> Option<(String, String)> {
     // followed by a value, and text is quoted.
     let (actual, expected) = rest.split_once("\nexpected:\n")?;
     Some((actual.to_owned(), expected.to_owned()))
-}
-
-fn assertion_calls(core: &CoreProgram) -> HashSet<u32> {
-    let assertion = |node: crate::ids::CoreNodeId| match core.nodes[node.raw() as usize].operation {
-        CoreOperation::Reference(symbol) => matches!(
-            core.symbol(symbol).standard,
-            Some(StandardSymbol::Function(
-                StandardFunction::TestAssertEqual
-                    | StandardFunction::TestAssertNotEqual
-                    | StandardFunction::TestAssert
-                    | StandardFunction::TestFail
-            ))
-        ),
-        _ => false,
-    };
-    core.nodes
-        .iter()
-        .filter(|node| matches!(&node.operation, CoreOperation::Call { callee, .. } if assertion(*callee)))
-        .map(|node| node.id.raw())
-        .collect()
 }
 
 /// Runs `run` over `selected` on up to `jobs` threads; results keep `selected` order.
