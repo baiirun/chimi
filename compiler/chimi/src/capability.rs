@@ -131,6 +131,27 @@ impl FlowValue {
         }
     }
 
+    /// Lowers each of this value's transferability and shareability that its
+    /// type leaves to the value (a type holding functions) to `other`'s,
+    /// keeping its capability class, carries and borrows. A property the type
+    /// settles, as for an `Address`, stays as the type says.
+    fn take_sharing_of(&mut self, other: &Self) {
+        let mut properties = self.properties;
+        if properties.transferable == PropertyDerivation::ValueDependent {
+            properties.transferable = properties.transferable.combine(other.properties.transferable);
+        }
+        if properties.shareable == PropertyDerivation::ValueDependent {
+            properties.shareable = properties.shareable.combine(other.properties.shareable);
+        }
+        if properties.transferable == PropertyDerivation::Never && self.blocked_by.is_none() {
+            self.blocked_by = other.blocked_by.clone();
+        }
+        if properties.shareable == PropertyDerivation::Never && self.unshared_by.is_none() {
+            self.unshared_by = other.unshared_by.clone();
+        }
+        self.properties = properties;
+    }
+
     fn combine(mut self, mut other: Self) -> Self {
         self.carries.append(&mut other.carries);
         self.borrows.append(&mut other.borrows);
@@ -341,6 +362,24 @@ impl CapabilityChecker<'_> {
                     self.type_value(module_id, expression)
                 }
             }
+            // A qualified constructor or function, such as `Ask.Done` or
+            // `List.map`, names a declaration as a bare name does; it reads no
+            // field of its receiver, which is a module or type name.
+            ModuleExpression::Select { .. }
+                if self
+                    .expression_binding_symbol(module_id, expression)
+                    .is_some_and(|symbol| {
+                        matches!(
+                            self.typed.resolved.symbol(symbol).kind,
+                            ProjectSymbolKind::Function
+                                | ProjectSymbolKind::StructConstructor
+                                | ProjectSymbolKind::EnumConstructor
+                                | ProjectSymbolKind::BuiltinValue
+                        )
+                    }) =>
+            {
+                FlowValue::shareable()
+            }
             ModuleExpression::Select {
                 receiver: receiver_expression,
                 ..
@@ -497,6 +536,7 @@ impl CapabilityChecker<'_> {
                     result.carries = callee_value.carries;
                 }
                 let result_type = self.expression_type(module_id, expression);
+                let constructs = self.is_constructor(module_id, callee);
                 for (argument, value) in &arguments {
                     let embeds = match (result_type, self.expression_type(module_id, argument)) {
                         (Some(result_type), Some(argument_type)) => {
@@ -509,6 +549,13 @@ impl CapabilityChecker<'_> {
                             result.carries.extend(value.carries.iter().copied());
                         }
                         result.borrows.extend(value.borrows.iter().copied());
+                        // A constructor holds its arguments, so a closure argument
+                        // keeps what its captures make it: `Conn(fn() { child })`
+                        // is no more shareable than the closure. Other calls are
+                        // not followed, and their result may hold none of it.
+                        if constructs {
+                            result.take_sharing_of(value);
+                        }
                     }
                 }
                 if let Some(StandardFunction::SelectReceive | StandardFunction::SelectWatch) =
@@ -1187,6 +1234,32 @@ impl CapabilityChecker<'_> {
         self.expression_properties
             .insert((module_id, expression.semantic_id()), value.properties);
         value
+    }
+
+    /// Whether `callee` holds its arguments as they are: a struct or enum
+    /// constructor, declared in the program or by a standard module, such as
+    /// `Conn`, `Ask.Return` or `Some`, or the prelude's `Success` or `Failure`,
+    /// whose value is its argument.
+    fn is_constructor(&self, module_id: ModuleId, callee: &ModuleExpression) -> bool {
+        self.expression_binding_symbol(module_id, callee)
+            .is_some_and(|symbol| {
+                let declared = self.typed.resolved.symbol(symbol);
+                match declared.kind {
+                    ProjectSymbolKind::StructConstructor | ProjectSymbolKind::EnumConstructor => {
+                        true
+                    }
+                    ProjectSymbolKind::BuiltinValue => match self
+                        .typed
+                        .resolved
+                        .standard_symbol(symbol)
+                    {
+                        Some(StandardSymbol::Constructor(_)) => true,
+                        Some(_) => false,
+                        None => matches!(declared.name.as_str(), "Success" | "Failure"),
+                    },
+                    _ => false,
+                }
+            })
     }
 
     fn standard_function(

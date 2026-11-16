@@ -715,9 +715,7 @@ fn give_back(asks: Channel.Sender<Ask>, connection: Connection, limit: Duration)
   }
 }
 
-// Sends `ask` to the keeper, and gives it back when the keeper is gone. Both
-// sends go through a parameter: the checker counts a payload built in place,
-// such as `Ask.Done`, as task-local because the type holds functions.
+// Sends `ask` to the keeper, and gives it back when the keeper is gone.
 fn tell(asks: Channel.Sender<Ask>, ask: Ask) -> Option<Ask> {
   case Channel.send(asks, ask) {
     Success(_) -> None

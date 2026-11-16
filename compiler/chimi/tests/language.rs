@@ -10015,6 +10015,98 @@ fn process_program(declarations: &str) -> String {
     format!("{PROCESS_PRELUDE}{declarations}pub fn main() -> Int {{\n  0\n}}\n")
 }
 
+// Rejects a checker that judges a qualified constructor such as `Ask.Done` by
+// the receiver it is written on, the type name, instead of as a declaration:
+// a fieldless variant of an enum whose other variant holds functions is
+// sendable, bound first or built in place (CHI-270). A task handle is still
+// refused.
+#[test]
+fn a_qualified_constructor_is_a_declaration_not_a_field_read() {
+    let program = |send: &str| {
+        format!(
+            concat!(
+                "import std/channel as Channel\n",
+                "import std/task as Task\n",
+                "pub struct Conn {{\n  run: fn(Int) -> Int,\n}}\n",
+                "enum Ask {{\n  Return(connection: Conn)\n  Done\n}}\n",
+                "enum Hold {{\n  Task(running: Task.Task<Int, Never>)\n}}\n",
+                "pub fn main() -> Int {{\n",
+                "  let made = Channel.bounded(4)\n",
+                "  let asks = made.sender\n",
+                "{}",
+                "  0\n",
+                "}}\n",
+            ),
+            send
+        )
+    };
+    assert!(check_codes(&program("  Channel.send(asks, Ask.Done)\n")).is_empty());
+    assert!(
+        check_codes(&program("  let ask = Ask.Done\n  Channel.send(asks, ask)\n")).is_empty()
+    );
+    assert_eq!(
+        check_codes(&program(concat!(
+            "  let running = Task.start(fn() { 1 })\n",
+            "  let tasks = Channel.bounded(1)\n",
+            "  Channel.send(tasks.sender, running)\n",
+        ))),
+        ["T4243"]
+    );
+    assert!(check_codes(&program("  Channel.send(asks, Task.start)\n")).is_empty());
+    assert_eq!(
+        check_codes(&program(concat!(
+            "  let running = Task.start(fn() { 1 })\n",
+            "  let holds = Channel.bounded(1)\n",
+            "  Channel.send(holds.sender, Hold.Task(running))\n",
+        ))),
+        ["T4243"]
+    );
+}
+
+// A constructor call keeps what its closure argument captures: wrapping a
+// closure that holds a task handle in a struct or an enum variant does not let
+// the handle cross a task boundary, while a closure with no captures still may.
+#[test]
+fn a_constructor_holding_a_closure_is_no_more_shareable_than_the_closure() {
+    let program = |send: &str| {
+        format!(
+            concat!(
+                "import std/channel as Channel\n",
+                "import std/option as Option\n",
+                "import std/task as Task\n",
+                "pub struct Conn {{\n  run: fn() -> Int,\n}}\n",
+                "pub struct Tagged {{\n  run: fn() -> Int,\n  tag: Int,\n}}\n",
+                "enum Ask {{\n  Return(connection: Conn)\n}}\n",
+                "pub fn main() -> Int {{\n",
+                "  let child = Task.start(fn() {{ 1 }})\n",
+                "{}",
+                "  0\n",
+                "}}\n",
+            ),
+            send
+        )
+    };
+    let holds = "fn() {\n    let _ = child\n    1\n  }";
+    for send in [
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Conn({holds}))\n"),
+        format!("  let made = Channel.bounded(1)\n  let conn = Conn({holds})\n  Channel.send(made.sender, conn)\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Ask.Return(Conn({holds})))\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Tagged({holds}, 1))\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Some({holds}))\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Success({holds}))\n"),
+    ] {
+        assert_eq!(check_codes(&program(&send)), ["T4243"], "{send}");
+    }
+    // A call other than a constructor is not followed: `Option.map` runs its
+    // callback and does not keep it, so its result is judged by its type.
+    for send in [
+        "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Conn(fn() { 1 }))\n".to_owned(),
+        "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Option.map(Some(1), fn(x: Int) -> Int {\n    let _ = child\n    x\n  }))\n".to_owned(),
+    ] {
+        assert!(check_codes(&program(&send)).is_empty(), "{send}");
+    }
+}
+
 // Rejects a Core verifier that counts a handoff body closure's own parameters
 // and locals as captures: this body captures only `step`, a shareable
 // function, but binds an inbox and a task handle of its own, which a nested
