@@ -294,9 +294,35 @@ test "a connection returned while the pool closes is closed" {
   Task.result(outer)
   Test.recorded(calls) |> Test.assert_equal([Call.Connected("app.db"), Call.Began, Call.Committed, Call.Reset, Call.Closed])
 }
+
+test "statements waiting when the pool closes fail at once" {
+  let outcomes = Test.recorder()
+  let start = Clock.now()
+  let outer = Task.start(fn() {
+    Sql.open(recording(Test.recorder()), "app.db", fn(db) {
+      let _ = Task.start(fn() { Task.all(List.repeat(fn() { hold(db, 50) }, 10)) })
+      let ask = fn(delay) {
+        Task.start(fn() {
+          Clock.sleep(Duration.seconds(delay))
+          let outcome = failed(fn() { Sql.execute(db, "late", []) })
+          Test.record(outcomes, (outcome, Clock.since(start)))
+        })
+      }
+      let _ = ask(1)
+      let _ = ask(3)
+      Clock.sleep(Duration.seconds(2))
+      Void
+    })
+  })
+  Task.result(outer)
+  Test.recorded(outcomes) |> Test.assert_equal([
+    (Some(SqlError.PoolClosed), Duration.seconds(2)),
+    (Some(SqlError.PoolClosed), Duration.seconds(3)),
+  ])
+}
 "#,
     );
-    assert_passed(&run, 3);
+    assert_passed(&run, 4);
 }
 
 // Rejects a transaction that commits after a failure, leaves one open after

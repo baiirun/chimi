@@ -319,8 +319,11 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
 - After every use the pool resets the connection (rolling back anything left
   open) within 5 s before it is reused, however its use ended. A connection
   whose reset fails or times out is closed instead, and the next statement
-  opens a new one; a driver whose connection cannot be trusted after a use
-  was cut off mid-statement fails its reset. A failed connect
+  opens a new one. A driver whose connection cannot be trusted after a
+  statement was cut off mid-way fails every later call on it with
+  `ConnectionLost`, including `reset`; inside a transaction the outer body
+  may still run `ROLLBACK TO SAVEPOINT` and further statements on that
+  connection before its reset. A failed connect
   frees its place.
 - The pool can be shared by every task the body starts. The pool's state is
   owned by one task, and other tasks reach it through a channel.

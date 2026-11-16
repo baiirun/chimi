@@ -534,10 +534,12 @@ enum Ask {
 }
 
 // What a borrower is given: an idle connection, or a slot in which to open a
-// new one itself, so a slow connect never holds up the keeper.
+// new one itself, so a slow connect never holds up the keeper; or, once the
+// pool is closing, no slot at all.
 enum Grant {
   Idle(connection: Connection)
   Permit
+  Refused
 }
 
 // The keeper's receiver, held in a struct so that each pass reads a fresh
@@ -573,6 +575,7 @@ fn keep(keeper: Keeper, size: Int) -> Void {
       }
       Receive.Received(Ask.Close) -> {
         List.each(pool.idle, fn(connection) { connection.close() })
+        List.each(pool.waiting, refuse)
         break shut(keeper, pool.held)
       }
       Receive.Received(Ask.Take(reply)) -> serve_waiting(Pool(pool.idle, pool.held, List.push(pool.waiting, reply)), size)
@@ -582,9 +585,9 @@ fn keep(keeper: Keeper, size: Int) -> Void {
   }
 }
 
-// Closes the pool once `Ask.Close` came: waiting borrowers are dropped,
-// which fails their waits with `SqlError.PoolClosed`, and each connection
-// that comes back is closed, until no borrower holds a slot.
+// Closes the pool once `Ask.Close` came and its waiting borrowers were
+// refused: a borrower that asks now is refused too, and each connection that
+// comes back is closed, until no borrower holds a slot.
 fn shut(keeper: Keeper, held: Int) -> Void {
   loop left = held {
     case left <= 0 {
@@ -602,7 +605,11 @@ fn shut(keeper: Keeper, held: Int) -> Void {
             left
           }
           Receive.Received(Ask.Done) -> left - 1
-          Receive.Received(_) -> left
+          Receive.Received(Ask.Take(reply)) -> {
+            refuse(reply)
+            left
+          }
+          Receive.Received(Ask.Close) -> left
         }
       }
     }
@@ -619,7 +626,7 @@ fn serve_waiting(pool: Pool, size: Int) -> Pool {
       ([waiter, ..rest], [connection, ..idle], _) -> case offer(waiter, Grant.Idle(connection)) {
         None -> Pool(idle, state.held + 1, rest)
         Some(Grant.Idle(back)) -> Pool(List.append([back], idle), state.held, rest)
-        Some(Grant.Permit) -> Pool(idle, state.held, rest)
+        Some(_) -> Pool(idle, state.held, rest)
       }
       ([waiter, ..rest], [], True) -> case offer(waiter, Grant.Permit) {
         None -> Pool([], state.held + 1, rest)
@@ -662,6 +669,7 @@ fn take(asks: Channel.Sender<Ask>, wait: Duration) -> Grant {
         Err(_) -> Receive.Drained
       }
       case granted {
+        Receive.Received(Grant.Refused) -> Failure(SqlError.PoolClosed)
         Receive.Received(grant) -> grant
         Receive.Drained -> Failure(SqlError.PoolClosed)
       }
@@ -678,6 +686,7 @@ fn opened(grant: Grant, driver: Driver, target: Text) -> Connection {
   case grant {
     Grant.Idle(connection) -> connection
     Grant.Permit -> driver.connect(target)
+    Grant.Refused -> Failure(SqlError.PoolClosed)
   }
 }
 
@@ -702,6 +711,13 @@ fn tell(asks: Channel.Sender<Ask>, ask: Ask) -> Option<Ask> {
     Failure(Channel.SendError.Aborted(back)) -> Some(back)
     Failure(Channel.SendError.Closed(back)) -> Some(back)
   }
+}
+
+// Tells a waiting borrower that the pool is closing; one that stopped waiting
+// needs no answer.
+fn refuse(waiter: Channel.Sender<Grant>) -> Void {
+  let _ = offer(waiter, Grant.Refused)
+  Void
 }
 
 // Offers `grant` to a waiting borrower, and gives it back when the borrower
