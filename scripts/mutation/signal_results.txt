@@ -1,0 +1,16 @@
+std/signal (CHI-249) mutation results, 2026-11-16.
+
+First run (19 mutants at 70cee8b): 13 killed, 1 timed out, 5 survived.
+- "the last listed pending signal wins" survived: no test had two listed
+  signals pending at once. Added the_first_listed_pending_signal_is_returned.
+- "an empty wait parks" survived: the runtime defects on an empty list before
+  it asks the scheduler, so the scheduler's check was unreachable from Chimi.
+  Added the fiber unit test a_wait_lists_codes_one_per_byte_up_to_a_zero.
+- Three survivors were equivalent and are dropped from the list, with the
+  reasons in signal_mutations.py: withdrawing a waiter its scope refused, the
+  extra collection after every resume, and the handler's pipe write.
+
+Second run (the two new tests and the timeout, at b22fde6): all killed.
+"a latched signal wakes nobody" kills by hanging the tests (TIMEOUT).
+
+Final list: 16 mutants, all killed (one by timeout).

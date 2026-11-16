@@ -171,6 +171,9 @@ pub(crate) enum StandardType {
     /// `std/fs.Files`: the capability to read and change the file system; the
     /// runner closes `main`'s `files` need.
     Files,
+    /// `std/signal.Signals`: the capability to wait for SIGHUP, SIGUSR1 and
+    /// SIGUSR2; the runner closes `main`'s `signals` need.
+    Signals,
     /// `std/net.Network`: the capability to open sockets; the runner closes
     /// `main`'s `network` need.
     Network,
@@ -260,6 +263,7 @@ impl StandardType {
             Self::BindingHandle => "Handle",
             Self::Environment => "Environment",
             Self::Files => "Files",
+            Self::Signals => "Signals",
             Self::Network => "Network",
         }
     }
@@ -274,6 +278,7 @@ impl StandardType {
             | Self::Random
             | Self::Environment
             | Self::Files
+            | Self::Signals
             | Self::Network => {
                 StandardProperties::Opaque("a provider")
             }
@@ -637,6 +642,9 @@ pub(crate) enum StandardFunction {
     FsHostIsDirectory,
     FsHostTemporaryDirectory,
     FsTestRoot,
+    // `std/signal`'s host core, which only its runner provider calls.
+    SignalHostInstall,
+    SignalHostWait,
 }
 
 impl StandardFunction {
@@ -954,6 +962,7 @@ impl StandardFunction {
             | Self::FsHostIsDirectory
             | Self::FsHostTemporaryDirectory
             | Self::FsTestRoot => None,
+            Self::SignalHostInstall | Self::SignalHostWait => None,
         }
     }
 
@@ -1160,6 +1169,8 @@ impl StandardFunction {
             Self::FsHostIsDirectory => "host_is_directory",
             Self::FsHostTemporaryDirectory => "host_temporary_directory",
             Self::FsTestRoot => "test_root",
+            Self::SignalHostInstall => "host_install",
+            Self::SignalHostWait => "host_wait",
         }
     }
 
@@ -1267,6 +1278,8 @@ impl StandardFunction {
                 | Self::ChannelAbort
                 | Self::ChannelBounded
                 | Self::BindingCall
+                | Self::SignalHostInstall
+                | Self::SignalHostWait
         ) || self.requires_process_runtime()
             || self.is_select_operation()
             || self.is_channel_variant()
@@ -1554,6 +1567,7 @@ impl StandardConstructor {
             | StandardType::Random
             | StandardType::Environment
             | StandardType::Files
+            | StandardType::Signals
             | StandardType::Network
             | StandardType::Instant
             | StandardType::Timestamp

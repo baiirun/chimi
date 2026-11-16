@@ -442,6 +442,8 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     test_only("std/fs.host_is_directory", 1, StandardFunction::FsHostIsDirectory),
     test_only("std/fs.host_temporary_directory", 0, StandardFunction::FsHostTemporaryDirectory),
     test_only("std/fs.test_root", 1, StandardFunction::FsTestRoot),
+    host("std/signal.host_install", 0, StandardFunction::SignalHostInstall),
+    host("std/signal.host_wait", 1, StandardFunction::SignalHostWait),
 ];
 
 /// A capability the runner closes on `main` with a provider written in the
@@ -466,6 +468,11 @@ pub(crate) const RUNNER_PROVIDERS: &[RunnerProvider] = &[
         interface: StandardType::Files,
         need: "files",
         provider: "std/fs.host",
+    },
+    RunnerProvider {
+        interface: StandardType::Signals,
+        need: "signals",
+        provider: "std/signal.host",
     },
     RunnerProvider {
         interface: StandardType::Network,
@@ -530,6 +537,7 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     native_type("std/path.Path", StandardType::Path),
     known_interface("std/env.Environment", StandardType::Environment),
     known_interface("std/fs.Files", StandardType::Files),
+    known_interface("std/signal.Signals", StandardType::Signals),
     native_type("std/json.Number", StandardType::JsonNumber),
     native_type("std/cause.Cause", StandardType::Cause),
     native_type("std/binding_probe.Pipe", StandardType::BindingHandle),
