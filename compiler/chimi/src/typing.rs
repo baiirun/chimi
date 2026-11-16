@@ -248,7 +248,7 @@ pub(crate) enum PropertyDerivation {
 }
 
 impl PropertyDerivation {
-    fn combine(self, other: Self) -> Self {
+    pub(crate) fn combine(self, other: Self) -> Self {
         match (self, other) {
             (Self::Never, _) | (_, Self::Never) => Self::Never,
             (Self::ValueDependent, _) | (_, Self::ValueDependent) => Self::ValueDependent,
