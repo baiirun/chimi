@@ -659,7 +659,10 @@ fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode
     if options.json {
         print!("{}", render_json(&suite, &selected, &results));
     } else {
-        print!("{}", render_report(&suite, &selected, &results, options.show_output));
+        print!(
+            "{}",
+            render_report(&suite, &selected, &results, options.show_output)
+        );
     }
     if results.iter().all(|result| result.failure.is_none()) {
         ExitCode::SUCCESS

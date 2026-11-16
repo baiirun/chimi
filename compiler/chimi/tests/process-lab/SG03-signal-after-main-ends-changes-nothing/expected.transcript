@@ -1,0 +1,4 @@
+@0s supervisor_started supervisor=S1 parent=root
+@0s process_started supervisor=S1 membership=M1 incarnation=I1
+@1s process_terminated membership=M1 incarnation=I1 cause=cancelled
+@1s supervisor_stopped supervisor=S1

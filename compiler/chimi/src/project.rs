@@ -118,7 +118,10 @@ fn standard_module_paths(directory: &Path) -> Result<Vec<String>, ProjectLoadErr
             let path = entry.map_err(|source| read_error(&current, source))?.path();
             if path.is_dir() {
                 pending.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "chimi") {
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "chimi")
+            {
                 let relative = path
                     .strip_prefix(directory)
                     .expect("walked paths are inside the directory")
