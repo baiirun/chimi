@@ -15,15 +15,20 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
     Notification as _, PublishDiagnostics,
 };
-use lsp_types::request::{Formatting, GotoDefinition, HoverRequest, Request as _};
+use lsp_types::request::{
+    Completion, Formatting, GotoDefinition, HoverRequest, InlayHintRequest, References, Rename,
+    Request as _,
+};
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, Diagnostic,
+    DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams, Documentation,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString, Position,
-    PositionEncodingKind, PublishDiagnosticsParams, Range, SaveOptions, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, TextEdit, Uri,
+    InitializeParams, InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, Location,
+    MarkupContent, MarkupKind, NumberOrString, Position, PositionEncodingKind,
+    PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, SaveOptions,
+    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Uri, WorkspaceEdit,
 };
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -53,6 +58,13 @@ pub fn run(connection: &Connection) -> ServerResult<()> {
         document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
+        references_provider: Some(lsp_types::OneOf::Left(true)),
+        rename_provider: Some(lsp_types::OneOf::Left(true)),
+        inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec![".".to_owned()]),
+            ..CompletionOptions::default()
+        }),
         ..ServerCapabilities::default()
     };
     connection.initialize_finish(
@@ -142,12 +154,116 @@ impl Server<'_> {
                     });
                 Response::new_ok(id, location)
             }
+            InlayHintRequest::METHOD => {
+                let (id, params) = request.extract::<InlayHintParams>(InlayHintRequest::METHOD)?;
+                let hints = document(&params.text_document.uri)
+                    .and_then(|path| {
+                        self.workspace.inlay_hints(
+                            &path,
+                            params.range.start.line,
+                            params.range.end.line,
+                        )
+                    })
+                    .map(|hints| {
+                        hints
+                            .into_iter()
+                            .map(|hint| InlayHint {
+                                position: Position::new(
+                                    hint.position.line,
+                                    hint.position.character,
+                                ),
+                                label: InlayHintLabel::String(hint.label),
+                                kind: Some(InlayHintKind::TYPE),
+                                text_edits: None,
+                                tooltip: None,
+                                padding_left: None,
+                                padding_right: None,
+                                data: None,
+                            })
+                            .collect::<Vec<_>>()
+                    });
+                Response::new_ok(id, hints)
+            }
+            Completion::METHOD => {
+                let (id, params) = request.extract::<CompletionParams>(Completion::METHOD)?;
+                let at = params.text_document_position;
+                let items = document(&at.text_document.uri)
+                    .and_then(|path| self.workspace.completion(&path, line_position(at.position)))
+                    .map(|items| items.into_iter().map(completion_item).collect::<Vec<_>>());
+                Response::new_ok(id, items)
+            }
+            References::METHOD => {
+                let (id, params) = request.extract::<ReferenceParams>(References::METHOD)?;
+                let at = params.text_document_position;
+                let locations = document(&at.text_document.uri).and_then(|path| {
+                    self.workspace.references(
+                        &path,
+                        line_position(at.position),
+                        params.context.include_declaration,
+                    )
+                });
+                Response::new_ok(
+                    id,
+                    locations.map(|ranges| {
+                        ranges
+                            .into_iter()
+                            .map(|target| Location {
+                                uri: file_uri(target.path.as_path()),
+                                range: range(target.range),
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+            }
+            Rename::METHOD => {
+                let (id, params) = request.extract::<RenameParams>(Rename::METHOD)?;
+                let at = params.text_document_position;
+                let Some(path) = document(&at.text_document.uri) else {
+                    return self.respond(Response::new_ok(id, None::<WorkspaceEdit>));
+                };
+                match self
+                    .workspace
+                    .rename(&path, line_position(at.position), &params.new_name)
+                {
+                    Ok(files) => Response::new_ok(
+                        id,
+                        WorkspaceEdit {
+                            changes: Some(
+                                files
+                                    .into_iter()
+                                    .map(|(path, replacements)| {
+                                        (
+                                            file_uri(path.as_path()),
+                                            replacements
+                                                .into_iter()
+                                                .map(|replacement| TextEdit {
+                                                    range: range(replacement.range),
+                                                    new_text: replacement.text,
+                                                })
+                                                .collect(),
+                                        )
+                                    })
+                                    .collect(),
+                            ),
+                            ..WorkspaceEdit::default()
+                        },
+                    ),
+                    Err(error) => {
+                        Response::new_err(id, ErrorCode::RequestFailed as i32, error.to_string())
+                    }
+                }
+            }
             _ => Response::new_err(
                 request.id,
                 ErrorCode::MethodNotFound as i32,
                 format!("unsupported request `{}`", request.method),
             ),
         };
+        self.connection.sender.send(response.into())?;
+        Ok(())
+    }
+
+    fn respond(&self, response: Response) -> ServerResult<()> {
         self.connection.sender.send(response.into())?;
         Ok(())
     }
@@ -336,5 +452,29 @@ const fn position(position: LinePosition) -> Position {
     Position {
         line: position.line,
         character: position.character,
+    }
+}
+
+fn completion_item(completion: crate::workspace::Completion) -> CompletionItem {
+    let kind = match completion.kind {
+        "fn" => CompletionItemKind::FUNCTION,
+        "struct" => CompletionItemKind::STRUCT,
+        "enum" => CompletionItemKind::ENUM,
+        "interface" => CompletionItemKind::INTERFACE,
+        "const" => CompletionItemKind::CONSTANT,
+        "process name" => CompletionItemKind::VARIABLE,
+        _ => CompletionItemKind::CLASS,
+    };
+    CompletionItem {
+        label: completion.label,
+        kind: Some(kind),
+        detail: Some(completion.detail),
+        documentation: completion.documentation.map(|value| {
+            Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            })
+        }),
+        ..CompletionItem::default()
     }
 }

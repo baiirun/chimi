@@ -1,8 +1,9 @@
 # Tooling
 
 Status: implemented in part (Phase 9). This page is the contract for the
-commands that sit around the compiler: the documentation generator and the linter now, and
-editor features, cross-compilation and debugging as they land.
+commands that sit around the compiler: the documentation generator, the linter and editor
+references, rename, completion, inlay types and hover
+documentation now, and more editor features, cross-compilation and debugging as they land.
 The formatter, `chimi check` and `chimi test` keep their own pages
 (`testing.md` for the runner and doc-comment examples).
 
@@ -108,3 +109,95 @@ Implementation: `compiler/chimi/src/lint.rs` (`TypeReport::lint`), over the
 name resolution, which records each local binding's name range. Tests:
 `compiler/chimi/tests/lint.rs`, which also keeps the standard tree and the
 example programs lint-clean.
+
+## Editor: find references and rename
+
+Purpose: let an editor list every place a symbol is written and rename it
+everywhere, across the modules of the project that owns the file. The
+language server (`chimi-lsp`) answers `textDocument/references` and
+`textDocument/rename` from the latest analysis of that project, including
+unsaved edits.
+
+Rules:
+
+- The symbol is the one whose name is under the cursor, at a reference or
+  at a declaration. A struct's type and its constructor are one symbol, as
+  are a type and a value declared by one item.
+- Its occurrences MUST be its declaration (a local's binding, an item's
+  name, every clause head of a multi-clause function, a field or variant
+  name), every reference that resolves to it, every member import of it
+  (`import lib.{Point}`), and for a struct every constructor call that builds
+  it. Each occurrence covers only the name: in `Lib.total`, only `total`.
+- References MUST leave the declaration out when the editor asks for that.
+- A rename MUST cover every occurrence, and MUST be refused when:
+  - the symbol is a standard or built-in one, or a module alias;
+  - the new name is not an identifier, or changes the leading case, since
+    case decides whether a name is a type or a value;
+  - the renamed project would have more errors than before, which catches a
+    collision with another name in scope;
+  - in the renamed project the symbol would not be written at exactly the
+    renamed places, which catches a shadowing that still type-checks, such
+    as a parameter renamed to the name of a constant its function reads.
+- A refused rename is an error reply that says why, never a partial edit.
+
+Not yet covered: renaming a struct field or an enum variant through its uses,
+because field accesses are resolved by the type checker, not by name
+resolution.
+
+Implementation: `compiler/chimi/src/occurrences.rs`
+(`IncrementalTypeReport::occurrences`), `Workspace::references` and
+`Workspace::rename` in `compiler/chimi-lsp/src/workspace.rs`. Tests: the
+workspace unit tests and `compiler/chimi-lsp/tests/protocol.rs`.
+
+## Editor: completion
+
+Purpose: after a module alias and a dot, offer the names the imported module
+makes public, so its surface is visible without leaving the file. The
+language server answers `textDocument/completion`, triggered by `.`.
+
+Rules:
+
+- After `Alias.`, or `Alias.` and the start of a name, where `Alias` is a
+  module alias of the file (`import lib as Lib`), the items MUST be the
+  module's public items in source order: their names, kinds, the signatures
+  `chimi doc` prints (a function's with its derived contract) and their `///`
+  doc comments as Markdown. The editor filters them by what is typed.
+- The alias MUST be looked up in the file's latest analysis, so a `Lib.`
+  that does not parse yet still completes.
+- After anything else the answer MUST be empty. A path such as
+  `point.Lib.` is not an alias, and `Lib.` inside a comment or a text
+  literal, closed or still being typed, is not code.
+
+Not yet covered: names in scope where no alias comes first (locals, the
+module's own items and imported members), and a struct's fields after a
+value and a dot, which needs the value's type.
+
+Implementation: `IncrementalTypeReport::alias_members` (in
+`compiler/chimi/src/doc.rs`) and `Workspace::completion`. Tests: the
+workspace unit tests and `compiler/chimi-lsp/tests/protocol.rs`.
+
+## Editor: inlay types and documentation on hover
+
+Purpose: show what the compiler inferred where the source leaves it out,
+and an item's documentation where it is used.
+
+Rules:
+
+- `textDocument/inlayHint` MUST give, for each `let` that does not state a
+  type, the inferred type after the binding's name, as `: List<Int>`, for
+  the lines the editor asks about. An annotated `let` gets none.
+- A binding whose type is not fully inferred, because of a type error or an
+  unsolved type, MUST get no hint: a wrong type misleads more than none.
+- Hover MUST add the item's `///` doc comment under the contract or type it
+  shows, after a rule, at a reference to the item in any module and at its
+  declaration. An item without a doc comment shows only its contract.
+
+Not yet covered: hints for pattern bindings (a destructuring `let`, a `case`
+arm) and for parameters of anonymous functions, and doc comments of fields
+and variants.
+
+Implementation: `compiler/chimi/src/hints.rs`
+(`IncrementalTypeReport::let_type_hints`), `doc_comment_at` in
+`compiler/chimi/src/doc.rs`, and `Workspace::inlay_hints` and
+`Workspace::hover`. Tests: the workspace unit tests and
+`compiler/chimi-lsp/tests/protocol.rs`.

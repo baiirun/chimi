@@ -56,6 +56,7 @@ struct Run {
 /// rows, `select two` two rows, `fail` a constraint failure, and any other
 /// statement changes as many rows as it has parameters.
 const PRELUDE: &str = r#"import std/bytes as Bytes
+import std/channel as Channel
 import std/clock as Clock
 import std/clock.{Clock}
 import std/debug as Debug
@@ -132,7 +133,7 @@ fn rows_are_read_by_column_name_with_typed_accessors() {
         r#"
 test "each kind of column" {
   let calls = Test.recorder()
-  Sql.open(recording(calls), "app.db", fn(db) {
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
     let row = Sql.one(db, "select one", [])
     Sql.int(row, "id") |> Test.assert_equal(7)
     Sql.text(row, "name") |> Test.assert_equal("Ada")
@@ -150,7 +151,7 @@ test "each kind of column" {
 
 test "reading the wrong thing fails" {
   let calls = Test.recorder()
-  Sql.open(recording(calls), "app.db", fn(db) {
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
     let row = Sql.one(db, "select one", [])
     failed(fn() { Sql.int(row, "missing") }) |> Test.assert_equal(Some(SqlError.NoColumn("missing")))
     failed(fn() { Sql.int(row, "name") }) |> Test.assert_equal(Some(SqlError.WrongType("name", "Int", "Text")))
@@ -161,7 +162,7 @@ test "reading the wrong thing fails" {
 
 test "one and first count rows" {
   let calls = Test.recorder()
-  Sql.open(recording(calls), "app.db", fn(db) {
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
     failed(fn() { Sql.one(db, "select none", []) }) |> Test.assert_equal(Some(SqlError.NoRows))
     failed(fn() { Sql.one(db, "select two", []) }) |> Test.assert_equal(Some(SqlError.ManyRows))
     Sql.first(db, "select none", []) |> Test.assert_equal(None)
@@ -184,7 +185,7 @@ fn a_pool_opens_connections_lazily_reuses_them_and_closes_them() {
         r#"
 test "one connection serves statements in turn, and closing closes it" {
   let calls = Test.recorder()
-  let affected = Sql.open(recording(calls), "app.db", fn(db) {
+  let affected = Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
     let first = Sql.execute(db, "insert ?", [Value.Int(1), Value.Text("x")])
     let second = Sql.execute(db, "update", [])
     first + second
@@ -195,7 +196,7 @@ test "one connection serves statements in turn, and closing closes it" {
 
 test "tasks share the pool" {
   let calls = Test.recorder()
-  let total = Sql.open(recording(calls), "app.db", fn(db) {
+  let total = Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
     let a = Task.start(fn() { Sql.execute(db, "a", [Value.Int(1)]) })
     let b = Task.start(fn() { Sql.execute(db, "b", [Value.Int(1), Value.Int(2)]) })
     Task.result(a) + Task.result(b)
@@ -212,7 +213,7 @@ test "a connection whose reset fails is closed, and the next statement opens ano
       _ -> Sql.done()
     }
   })
-  Sql.open(driver, "app.db", fn(db) {
+  Sql.open(driver, "app.db", Sql.defaults, fn(db) {
     let _ = Sql.execute(db, "a", [])
     Sql.execute(db, "b", [])
   })
@@ -226,7 +227,7 @@ test "a failed connect frees its slot" {
       _ -> Sql.done()
     }
   })
-  let outcomes = Sql.open(driver, "app.db", fn(db) {
+  let outcomes = Sql.open(driver, "app.db", Sql.defaults, fn(db) {
     List.map(List.repeat(Void, 12), fn(_) { failed(fn() { Sql.execute(db, "a", []) }) })
   })
   outcomes |> Test.assert_equal(List.repeat(Some(SqlError.ConnectFailed("refused")), 12))
@@ -234,7 +235,7 @@ test "a failed connect frees its slot" {
 
 test "a pool used after it closed fails" {
   let calls = Test.recorder()
-  let escaped = Sql.open(recording(calls), "app.db", fn(db) { db })
+  let escaped = Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) { db })
   failed(fn() { Sql.execute(escaped, "a", []) }) |> Test.assert_equal(Some(SqlError.PoolClosed))
 }
 "#,
@@ -261,7 +262,7 @@ fn later(db: Database, seconds: Int, sql: Text) -> Int needs { clock: Clock } {
 
 test "the eleventh statement waits for a connection to come free" {
   let calls = Test.recorder()
-  Sql.open(recording(calls), "app.db", fn(db) {
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
     let start = Clock.now()
     let holders = Task.start(fn() { Task.all(List.repeat(fn() { hold(db, 10) }, 10)) })
     Clock.sleep(Duration.seconds(1))
@@ -282,7 +283,7 @@ test "a statement that waits too long fails" {
       _ -> reply
     }
   })
-  Sql.open(driver, "app.db", fn(db) {
+  Sql.open(driver, "app.db", Sql.defaults, fn(db) {
     let holders = Task.start(fn() { Task.all(List.repeat(fn() { hold(db, 40) }, 10)) })
     Clock.sleep(Duration.seconds(1))
     let start = Clock.now()
@@ -305,9 +306,51 @@ test "a statement that waits too long fails" {
   (opened, closed) |> Test.assert_equal((11, 11))
 }
 
+test "a pool applies the settings it is given" {
+  let calls = Test.recorder()
+  Sql.open(recording(calls), "app.db", { ..Sql.defaults, max_connections: 2, wait_timeout: Duration.seconds(3) }, fn(db) {
+    let holders = Task.start(fn() { Task.all(List.repeat(fn() { hold(db, 10) }, 2)) })
+    Clock.sleep(Duration.seconds(1))
+    let start = Clock.now()
+    failed(fn() { Sql.execute(db, "late", []) }) |> Test.assert_equal(Some(SqlError.PoolTimedOut(Duration.seconds(3))))
+    Clock.since(start) |> Test.assert_equal(Duration.seconds(3))
+    List.length(Task.result(holders)) |> Test.assert_equal(2)
+  })
+  List.count(Test.recorded(calls), fn(call) { call == Call.Connected("app.db") }) |> Test.assert_equal(2)
+}
+
+test "a reset slower than its timeout drops the connection" {
+  let calls = Test.recorder()
+  // A reset that never finishes: it waits on a channel nothing sends to.
+  let never = Channel.bounded(1)
+  let stuck = never.receiver
+  let driver = Sql.driver(fn(target) {
+    Test.record(calls, Call.Connected(target))
+    Sql.connection(fn(_, _) { Sql.done() }, fn() { Void }, fn() { Void }, fn() { Void }, fn() {
+      let _ = Result.capture(fn() { Channel.receive(stuck) })
+      Void
+    }, fn() { Void })
+  })
+  let start = Clock.now()
+  Sql.open(driver, "app.db", { ..Sql.defaults, reset_timeout: Duration.seconds(1) }, fn(db) {
+    let _ = Sql.execute(db, "a", [])
+    Sql.execute(db, "b", [])
+  })
+  Clock.since(start) |> Test.assert_equal(Duration.seconds(2))
+  let _ = never.sender
+  List.count(Test.recorded(calls), fn(call) { call == Call.Connected("app.db") }) |> Test.assert_equal(2)
+}
+
+test "settings that cannot work are a defect" {
+  Test.capture_defect(fn() { Sql.open(recording(Test.recorder()), "app.db", { ..Sql.defaults, max_connections: 0 }, fn(_) { Void }) })
+    |> Test.assert_equal("Sql: max_connections, wait_timeout and reset_timeout must be positive")
+  Test.capture_defect(fn() { Sql.open(recording(Test.recorder()), "app.db", { ..Sql.defaults, wait_timeout: Duration.zero }, fn(_) { Void }) })
+    |> Test.assert_equal("Sql: max_connections, wait_timeout and reset_timeout must be positive")
+}
+
 test "waiting statements are served in the order they asked" {
   let calls = Test.recorder()
-  Sql.open(recording(calls), "app.db", fn(db) {
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
     let holders = Task.start(fn() { Task.all(List.repeat(fn() { hold(db, 10) }, 10)) })
     let first = Task.start(fn() { later(db, 1, "first") })
     let second = Task.start(fn() { later(db, 2, "second") })
@@ -322,7 +365,7 @@ test "waiting statements are served in the order they asked" {
 test "closing waits at most 30 s for connections tasks still hold" {
   let start = Clock.now()
   let outer = Task.start(fn() {
-    Sql.open(recording(Test.recorder()), "app.db", fn(db) {
+    Sql.open(recording(Test.recorder()), "app.db", Sql.defaults, fn(db) {
       let _ = Task.start(fn() { hold(db, 1000) })
       Clock.sleep(Duration.seconds(1))
       Void
@@ -334,7 +377,7 @@ test "closing waits at most 30 s for connections tasks still hold" {
 test "a connection returned while the pool closes is closed" {
   let calls = Test.recorder()
   let outer = Task.start(fn() {
-    Sql.open(recording(calls), "app.db", fn(db) {
+    Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
       let _ = Task.start(fn() { hold(db, 5) })
       Clock.sleep(Duration.seconds(1))
       Void
@@ -348,7 +391,7 @@ test "statements waiting when the pool closes fail at once" {
   let outcomes = Test.recorder()
   let start = Clock.now()
   let outer = Task.start(fn() {
-    Sql.open(recording(Test.recorder()), "app.db", fn(db) {
+    Sql.open(recording(Test.recorder()), "app.db", Sql.defaults, fn(db) {
       let _ = Task.start(fn() { Task.all(List.repeat(fn() { hold(db, 50) }, 10)) })
       let ask = fn(delay) {
         Task.start(fn() {
@@ -371,7 +414,7 @@ test "statements waiting when the pool closes fail at once" {
 }
 "#,
     );
-    assert_passed(&run, 6);
+    assert_passed(&run, 9);
 }
 
 // Rejects a transaction that commits after a failure, leaves one open after
@@ -384,7 +427,7 @@ fn a_transaction_commits_or_rolls_back_however_its_body_ends() {
         r#"
 test "success commits" {
   let calls = Test.recorder()
-  let result = Sql.open(recording(calls), "app.db", fn(db) {
+  let result = Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
     Sql.transaction(db, fn(tx) {
       let a = Sql.execute(tx, "a", [Value.Int(1)])
       let b = Sql.execute(tx, "b", [Value.Int(1)])
@@ -398,7 +441,7 @@ test "success commits" {
 test "a failure rolls back and is the outcome" {
   let calls = Test.recorder()
   let outcome = Result.capture(fn() {
-    Sql.open(recording(calls), "app.db", fn(db) {
+    Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
       Sql.transaction(db, fn(tx) {
         let _ = Sql.execute(tx, "a", [])
         Failure(Oops.Oops)
@@ -408,20 +451,20 @@ test "a failure rolls back and is the outcome" {
   outcome |> Test.assert_equal(Err(Oops.Oops))
   Test.recorded(calls) |> Test.assert_equal([Call.Connected("app.db"), Call.Began, ran("a"), Call.RolledBack, Call.Reset, Call.Closed])
   let failed = Test.recorder()
-  Result.capture(fn() { Sql.open(recording(failed), "app.db", fn(db) { Sql.transaction(db, fn(tx) { Sql.execute(tx, "fail", []) }) }) })
+  Result.capture(fn() { Sql.open(recording(failed), "app.db", Sql.defaults, fn(db) { Sql.transaction(db, fn(tx) { Sql.execute(tx, "fail", []) }) }) })
     |> Test.assert_equal(Err(SqlError.ConstraintFailed("users_email_key", "duplicate")))
 }
 
 test "a defect or a cancellation leaves no transaction open" {
   let calls = Test.recorder()
   Test.capture_defect(fn() {
-    Sql.open(recording(calls), "app.db", fn(db) { Sql.transaction(db, fn(_) { Debug.crash("boom") }) })
+    Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) { Sql.transaction(db, fn(_) { Debug.crash("boom") }) })
   }) |> Test.assert_equal("boom")
   Test.recorded(calls) |> Test.assert_equal([Call.Connected("app.db"), Call.Began, Call.Reset, Call.Closed])
   let cancelled = Test.recorder()
   let timed = Result.capture(fn() {
     Task.timeout(fn() {
-      Sql.open(recording(cancelled), "app.db", fn(db) {
+      Sql.open(recording(cancelled), "app.db", Sql.defaults, fn(db) {
         Sql.transaction(db, fn(_) { Clock.sleep(Duration.seconds(100)) })
       })
     }, Duration.seconds(1))
@@ -443,13 +486,13 @@ test "a failed commit is the outcome" {
       _ -> Sql.done()
     }
   })
-  Result.capture(fn() { Sql.open(driver, "app.db", fn(db) { Sql.transaction(db, fn(tx) { Sql.execute(tx, "a", []) }) }) })
+  Result.capture(fn() { Sql.open(driver, "app.db", Sql.defaults, fn(db) { Sql.transaction(db, fn(tx) { Sql.execute(tx, "a", []) }) }) })
     |> Test.assert_equal(Err(SqlError.Conflict("serialization")))
 }
 
 test "a transaction inside one is a savepoint" {
   let calls = Test.recorder()
-  Sql.open(recording(calls), "app.db", fn(db) {
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
     Sql.transaction(db, fn(tx) {
       let _ = Sql.execute(tx, "a", [])
       let inner = Result.capture(fn() { Sql.transaction(tx, fn(nested) { Sql.execute(nested, "fail", []) }) })
@@ -466,7 +509,7 @@ test "a transaction inside one is a savepoint" {
 }
 test "a savepoint cut off by a timeout the outer body survives is undone" {
   let calls = Test.recorder()
-  Sql.open(recording(calls), "app.db", fn(db) {
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
     Sql.transaction(db, fn(tx) {
       let _ = Sql.execute(tx, "a", [])
       let _ = Result.capture(fn() {
@@ -495,7 +538,7 @@ test "a savepoint's failure stays its failure when the rollback fails" {
       _ -> Sql.done()
     }
   })
-  Sql.open(driver, "app.db", fn(db) {
+  Sql.open(driver, "app.db", Sql.defaults, fn(db) {
     Sql.transaction(db, fn(tx) {
       failed(fn() { Sql.transaction(tx, fn(nested) { Sql.execute(nested, "fail", []) }) })
     })

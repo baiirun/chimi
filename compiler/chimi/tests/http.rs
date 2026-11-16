@@ -62,6 +62,7 @@ import std/clock as Clock
 import std/clock.{Clock}
 import std/debug as Debug
 import std/duration as Duration
+import std/duration.{Duration}
 import std/http as Http
 import std/http.{Method, Request, Response}
 import std/list as List
@@ -104,7 +105,18 @@ fn handle(request: Request) -> Response {
 
 fn exchange(raw: Text) -> Text {
   let (client, server) = Net.pair(64)
-  let serving = Task.start(fn() { Http.serve_connection(server, handle) })
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, handle) })
+  Stream.write(Net.writer(client), Bytes.from_text(raw))
+  Stream.close(Net.writer(client))
+  let answer = Stream.read_all(Net.reader(client), 33554432)
+  Task.result(serving)
+  Bytes.to_text(answer)
+}
+
+// `exchange` with settings other than the defaults.
+fn exchange_with(settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration }, raw: Text) -> Text {
+  let (client, server) = Net.pair(64)
+  let serving = Task.start(fn() { Http.serve_connection(server, settings, handle) })
   Stream.write(Net.writer(client), Bytes.from_text(raw))
   Stream.close(Net.writer(client))
   let answer = Stream.read_all(Net.reader(client), 33554432)
@@ -116,7 +128,7 @@ fn exchange(raw: Text) -> Text {
 // if the server closes the connection.
 fn exchange_open(raw: Text) -> Text {
   let (client, server) = Net.pair(64)
-  let serving = Task.start(fn() { Http.serve_connection(server, handle) })
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, handle) })
   Stream.write(Net.writer(client), Bytes.from_text(raw))
   let answer = Stream.read_all(Net.reader(client), 1048576)
   Task.result(serving)
@@ -128,7 +140,7 @@ fn exchange_open(raw: Text) -> Text {
 // closed the connection are dropped, as a refused client's would be.
 fn trickle(pieces: List<Text>) -> Text {
   let (client, server) = Net.pair(4096)
-  let serving = Task.start(fn() { Http.serve_connection(server, handle) })
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, handle) })
   let _ = Result.capture(fn() {
     List.each(pieces, fn(piece) { Stream.write(Net.writer(client), Bytes.from_text(piece)) })
     Stream.close(Net.writer(client))
@@ -316,6 +328,33 @@ test "an idle client is closed after a minute" {
   Clock.since(start) |> Test.assert_equal(Duration.seconds(60))
 }
 
+test "a server applies the settings it is given" {
+  let (client, server) = Net.pair(64)
+  let settings = { ..Http.defaults, max_headers: 1, request_timeout: Duration.seconds(5) }
+  let serving = Task.start(fn() { Http.serve_connection(server, settings, handle) })
+  let start = Clock.now()
+  Stream.write(Net.writer(client), Bytes.from_text("GET /health HTTP/1.1\r\nHost: x\r\n\r\n"))
+  let first = Stream.read_all(Net.reader(client), 1048576)
+  Task.result(serving)
+  Bytes.to_text(first) |> Test.assert_equal(ok("ok"))
+  Clock.since(start) |> Test.assert_equal(Duration.seconds(5))
+  exchange_with(settings, "GET /health HTTP/1.1\r\nHost: x\r\nX-A: 1\r\n\r\n")
+    |> Test.assert_equal(refused(431, "Request Header Fields Too Large", "request header fields too large"))
+  exchange_with({ ..Http.defaults, max_body_bytes: 3 }, "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nabcd")
+    |> Test.assert_equal(refused(413, "Content Too Large", "content too large"))
+  exchange_with({ ..Http.defaults, max_head_bytes: 20 }, "GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
+    |> Test.assert_equal(refused(431, "Request Header Fields Too Large", "request header fields too large"))
+}
+
+test "settings that cannot work are a defect" {
+  let (_, server) = Net.pair(64)
+  Test.capture_defect(fn() { Http.serve_connection(server, { ..Http.defaults, max_headers: 0 }, handle) })
+    |> Test.assert_equal("Http: max_head_bytes and max_headers must be positive, and max_body_bytes not negative")
+  let (_, other) = Net.pair(64)
+  Test.capture_defect(fn() { Http.serve_connection(other, { ..Http.defaults, write_timeout: Duration.zero }, handle) })
+    |> Test.assert_equal("Http: request_timeout and write_timeout must be positive")
+}
+
 test "a status outside 200 to 599 is a defect" {
   Test.capture_defect(fn() { Http.text(600, "x") }) |> Test.assert_equal("Http: the status 600 is outside 200 to 599")
   Test.capture_defect(fn() { Http.text(101, "x") }) |> Test.assert_equal("Http: the status 101 is outside 200 to 599")
@@ -342,7 +381,7 @@ test "a handler can be tested without a connection" {
 "#,
         "virtual",
     );
-    assert_passed(&run, 5);
+    assert_passed(&run, 7);
 }
 
 // Rejects a server that serves one client at a time or never stops: two
@@ -363,7 +402,7 @@ fn get(port: Int, path: Text) -> Text needs { network: Network } {
 fn run_server() -> Text needs { network: Network, clock: Clock } {
   let listener = Net.listen("127.0.0.1", 0)
   let port = Net.port(Net.listener_address(listener))
-  let server = Task.start(fn() { Http.serve(listener, handle) })
+  let server = Task.start(fn() { Http.serve(listener, Http.defaults, handle) })
   // The first client holds its connection open without a request while the
   // second is answered.
   let idle = Net.connect("127.0.0.1", port)
@@ -495,7 +534,7 @@ test "absolute and asterisk targets" {
 
 test "100-continue waits for the client and is HTTP/1.1 only" {
   let (client, server) = Net.pair(64)
-  let serving = Task.start(fn() { Http.serve_connection(server, handle) })
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, handle) })
   Stream.write(Net.writer(client), Bytes.from_text("POST /echo HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 2\r\n\r\n"))
   Stream.read(Net.reader(client)) |> Test.assert_equal(Some(Bytes.from_text("HTTP/1.1 100 Continue\r\n\r\n")))
   Stream.write(Net.writer(client), Bytes.from_text("hi"))
@@ -545,7 +584,7 @@ fn slow_clients_and_failed_accepts_do_not_stop_the_server_and_a_defect_closes_it
 test "a client that never reads is dropped after a minute" {
   let (client, server) = Net.pair(8)
   let start = Clock.now()
-  let serving = Task.start(fn() { Http.serve_connection(server, handle) })
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, handle) })
   Stream.write(Net.writer(client), Bytes.from_text(Text.repeat("GET /health HTTP/1.1\r\nHost: x\r\n\r\n", 50)))
   Task.result(serving)
   Clock.since(start) |> Test.assert_equal(Duration.seconds(60))
@@ -555,7 +594,7 @@ test "a handler's defect closes the connection" {
   let (client, server) = Net.pair(8)
   Stream.write(Net.writer(client), Bytes.from_text("GET /crash HTTP/1.1\r\nHost: x\r\n\r\n"))
   Stream.close(Net.writer(client))
-  Test.capture_defect(fn() { Http.serve_connection(server, handle) }) |> Test.assert_equal("boom")
+  Test.capture_defect(fn() { Http.serve_connection(server, Http.defaults, handle) }) |> Test.assert_equal("boom")
   Stream.read_all(Net.reader(client), 1024) |> Test.assert_equal(Bytes.empty())
 }
 
@@ -581,7 +620,7 @@ test "failed accepts are retried" {
   Stream.write(script, Bytes.from([1]))
   Stream.write(script, Bytes.from([2]))
   let start = Clock.now()
-  let serving = Task.start(fn() { Http.serve(flaky(server, plan), handle) })
+  let serving = Task.start(fn() { Http.serve(flaky(server, plan), Http.defaults, handle) })
   let answer = Bytes.to_text(Stream.read_all(Net.reader(client), 1024))
   Stream.close(script)
   Task.result(serving)

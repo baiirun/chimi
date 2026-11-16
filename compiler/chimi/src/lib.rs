@@ -16,12 +16,14 @@ mod formatter;
 #[doc(hidden)]
 pub mod frontend_benchmark;
 mod graphemes;
+mod hints;
 mod ids;
 mod inspection;
 mod json;
 mod lint;
 pub mod line_index;
 mod numeric;
+mod occurrences;
 mod operations;
 #[cfg(feature = "native-backend")]
 #[doc(hidden)]
@@ -45,8 +47,10 @@ pub use compiler::{
 };
 pub use doc::{ItemDocumentation, ModuleDocumentation};
 pub use formatter::FormatReport;
+pub use hints::TypeHint;
 pub use inspection::{
     CallableInspection, ClausePosition, InspectedToken, InspectionError, InspectionReport,
     NeedInspection, ReferenceInspection, SymbolInspection, SyntaxFrame, ValuePropertyInspection,
 };
+pub use occurrences::{Occurrence, SymbolOccurrences};
 pub use operations::StandardTreeVerification;

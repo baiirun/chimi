@@ -65,6 +65,37 @@ impl IncrementalTypeReport {
         inspect(&self.types.typed, module_path, offset)
     }
 
+    /// The symbol whose name is at `offset` in `module_path`, with its
+    /// declaration and every reference in the project (find references and
+    /// rename), from this report's retained snapshot.
+    pub fn occurrences(&self, module_path: &str, offset: usize) -> Option<crate::SymbolOccurrences> {
+        crate::occurrences::occurrences_at(&self.types.typed, module_path, offset)
+    }
+
+    /// The public surface of the module that `alias` names in `module_path`
+    /// (`import lib as Lib`), for completing `Lib.` at `offset`. `None` when
+    /// `alias` is not a module alias there, or `offset` is inside a comment
+    /// or a text literal.
+    pub fn alias_members(
+        &self,
+        module_path: &str,
+        alias: &str,
+        offset: usize,
+    ) -> Option<crate::ModuleDocumentation> {
+        crate::doc::alias_members(&self.types.typed, module_path, alias, offset)
+    }
+
+    /// The inferred type of each `let` in `module_path` that states none,
+    /// to show after the binding's name.
+    pub fn let_type_hints(&self, module_path: &str) -> Vec<crate::TypeHint> {
+        crate::hints::let_type_hints(&self.types.typed, module_path)
+    }
+
+    /// The `///` doc comment of the item named at `offset` in `module_path`.
+    pub fn doc_comment_at(&self, module_path: &str, offset: usize) -> Option<String> {
+        crate::doc::doc_comment_at(&self.types.typed, module_path, offset)
+    }
+
     /// Groups this report's diagnostics by owning module.
     ///
     /// Ensures: exactly one entry per analyzed module in module-path order,

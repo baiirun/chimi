@@ -9,11 +9,13 @@
 //! are left out.
 
 use crate::doc_examples::{doc_comment_before, module_comment};
+use crate::occurrences::symbol_at;
+use crate::resolution::ProjectSymbolKind;
 use crate::json::write_json_string_escaping_controls;
 use crate::semantic::{
-    ModuleDeclaration, ModuleDeclarationKind, SemanticModule, is_generated_name,
+    ImportBinding, ModuleDeclaration, ModuleDeclarationKind, SemanticModule, is_generated_name,
 };
-use crate::syntax::SyntaxNode;
+use crate::syntax::{SyntaxNode, is_comment_or_text_at};
 use crate::typing::TypedProject;
 
 /// The public surface of one module.
@@ -157,6 +159,64 @@ pub(crate) fn document_module(
         summary: module_comment(text),
         items,
     })
+}
+
+/// The public surface of the module that `alias` names in `module_path`,
+/// unless `offset` is inside a comment or a text literal there.
+pub(crate) fn alias_members(
+    typed: &TypedProject,
+    module_path: &str,
+    alias: &str,
+    offset: usize,
+) -> Option<ModuleDocumentation> {
+    let module = typed
+        .resolved
+        .semantic
+        .modules
+        .iter()
+        .find(|module| module.path == module_path)?;
+    if is_comment_or_text_at(&module.source, offset) {
+        return None;
+    }
+    let imported = module.imports.iter().find_map(|import| match &import.binding {
+        ImportBinding::Alias(name) if name.text == alias => Some(import.path.as_str()),
+        _ => None,
+    })?;
+    document_module(typed, imported)
+}
+
+/// The `///` doc comment of the item named at `offset` in `module_path`, at
+/// a reference to it or at its declaration, in any module.
+pub(crate) fn doc_comment_at(typed: &TypedProject, module_path: &str, offset: usize) -> Option<String> {
+    let resolved = &typed.resolved;
+    let module = resolved
+        .semantic
+        .modules
+        .iter()
+        .find(|module| module.path == module_path)?;
+    let symbol = resolved.symbol(symbol_at(resolved, module, offset)?);
+    // A type parameter or a local shares its function's semantic id, but has
+    // no doc comment of its own.
+    if !matches!(
+        symbol.kind,
+        ProjectSymbolKind::Struct
+            | ProjectSymbolKind::StructConstructor
+            | ProjectSymbolKind::Enum
+            | ProjectSymbolKind::Interface
+            | ProjectSymbolKind::NativeType
+            | ProjectSymbolKind::Function
+            | ProjectSymbolKind::Constant
+            | ProjectSymbolKind::ProcessName
+    ) {
+        return None;
+    }
+    let declaring = &resolved.semantic.modules[symbol.module_id?.raw() as usize];
+    let semantic_id = symbol.semantic_id?;
+    let declaration = declaring
+        .declarations
+        .iter()
+        .find(|declaration| declaration.semantic_id == semantic_id)?;
+    item_doc(declaring.source.text(), item_start(declaring, declaration))
 }
 
 const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {
