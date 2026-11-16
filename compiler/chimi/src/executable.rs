@@ -38,6 +38,9 @@ pub(crate) struct LegacyCoreProgram {
 pub(crate) struct CoreProgram {
     pub(crate) computation: String,
     pub(crate) entry: SymbolId,
+    /// A test build's `test` items in module path then declaration order; empty for
+    /// a program. `entry` is the first of them.
+    pub(crate) tests: Vec<SymbolId>,
     type_count: usize,
     pub(crate) symbols: Vec<CoreSymbol>,
     pub(crate) functions: Vec<CoreFunction>,
@@ -652,6 +655,7 @@ pub(crate) struct LegacyVerifiedRoot {
 pub(crate) struct VerifiedRoot {
     pub(crate) typed: Arc<TypedProject>,
     pub(crate) entry: SymbolId,
+    tests: Vec<SymbolId>,
     reachable_declarations: Vec<SymbolId>,
     origins: Vec<Origin>,
 }
@@ -787,10 +791,75 @@ pub(crate) fn seal_entry(
         )]);
     }
 
-    let reachable = collect_reachable_program(&typed, entry)?;
+    let reachable = collect_reachable_program(&typed, &[entry])?;
     Ok(VerifiedRoot {
         typed,
         entry,
+        tests: Vec::new(),
+        reachable_declarations: reachable.declarations,
+        origins: reachable.origins,
+    })
+}
+
+/// Seals a test build: every `test` item of the project is a root, in module
+/// path then declaration order, and the program's `main`, if any, is not.
+///
+/// Ensures: `Err` with the project's diagnostics when typing failed, and `E5009`
+/// when the project declares no test.
+pub(crate) fn seal_tests(
+    typed: impl Into<Arc<TypedProject>>,
+) -> Result<VerifiedRoot, Vec<Diagnostic>> {
+    let typed = typed.into();
+    if !typed.diagnostics.is_empty() {
+        return Err(typed.diagnostics.clone());
+    }
+    let mut modules = typed.resolved.semantic.modules.iter().collect::<Vec<_>>();
+    modules.sort_by(|left, right| left.path.cmp(&right.path));
+    let tests = modules
+        .into_iter()
+        .flat_map(|module| {
+            module
+                .declarations
+                .iter()
+                .filter(|declaration| declaration.test)
+                .map(move |declaration| (module.id, declaration.semantic_id))
+        })
+        .map(|(module_id, semantic_id)| {
+            typed
+                .resolved
+                .symbols
+                .iter()
+                .find(|symbol| {
+                    symbol.kind == crate::resolution::ProjectSymbolKind::Function
+                        && symbol.module_id == Some(module_id)
+                        && symbol.semantic_id == Some(semantic_id)
+                })
+                .map(|symbol| symbol.id)
+                .expect("resolved test item has a symbol")
+        })
+        .collect::<Vec<_>>();
+    let Some(&entry) = tests.first() else {
+        let (file_id, length) = typed
+            .resolved
+            .semantic
+            .modules
+            .first()
+            .map_or((FileId::new(0), 0), |module| {
+                (module.source.file_id(), module.source.text().len())
+            });
+        return Err(vec![Diagnostic::error(
+            DiagnosticStage::ExecutionSetup,
+            "E5009",
+            file_id,
+            TextRange::empty(length),
+            "no tests found; declare one with `test \"name\" { ... }`",
+        )]);
+    };
+    let reachable = collect_reachable_program(&typed, &tests)?;
+    Ok(VerifiedRoot {
+        typed,
+        entry,
+        tests,
         reachable_declarations: reachable.declarations,
         origins: reachable.origins,
     })
@@ -829,7 +898,7 @@ struct ReachabilityState {
 
 fn collect_reachable_program(
     typed: &TypedProject,
-    entry: SymbolId,
+    roots: &[SymbolId],
 ) -> Result<ReachableProgram, Vec<Diagnostic>> {
     let mut references = HashMap::<(FileId, SemanticId), Vec<_>>::new();
     for reference in &typed.resolved.references {
@@ -850,7 +919,7 @@ fn collect_reachable_program(
         .filter(|symbol| symbol.kind == ProjectSymbolKind::Constant)
         .map(|symbol| symbol.id);
     let mut state = ReachabilityState {
-        queue: std::iter::once(entry).chain(constants).collect(),
+        queue: roots.iter().copied().chain(constants).collect(),
         ..ReachabilityState::default()
     };
     while let Some(symbol_id) = state.queue.pop_front() {
@@ -1282,6 +1351,7 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
     let core = CoreProgram {
         computation,
         entry: root.entry,
+        tests: root.tests,
         type_count: root.typed.types.len(),
         symbols,
         functions,

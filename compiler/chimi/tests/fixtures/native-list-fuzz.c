@@ -37,6 +37,8 @@ const uint32_t CHIMI_CLOCK_REQUIREMENT_SLOT = 0;
 const uint32_t CHIMI_REQUIREMENT_SLOT_COUNT = 1;
 const ChimiFunction CHIMI_FUNCTIONS[] = {{0}};
 const uint32_t CHIMI_FUNCTION_COUNT = 0;
+const uint32_t CHIMI_TEST_FUNCTIONS[] = {0};
+const uint32_t CHIMI_TEST_COUNT = 0;
 const ChimiConstructor CHIMI_CONSTRUCTORS[] = {{0}};
 const ChimiNamedNode CHIMI_NAMED_NODES[] = {{0}};
 const ChimiStep CHIMI_STEPS[] = {{0}};
@@ -133,15 +135,24 @@ static void check_all(const Version *versions) {
   for (int slot = 0; slot < VERSIONS; ++slot) check(&versions[slot], slot);
 }
 
+/* A pass boundary may move the versions, so each one is read back from the root. */
+static void reload_versions(Version *versions, const ChimiValue *root) {
+  for (int slot = 0; slot < VERSIONS; ++slot) versions[slot].list = list_get(root, slot);
+}
+
 static void collect_and_check_all(AllocationScope *scope, Version *versions) {
-  allocation_scope_collect(scope, all_versions(versions), NULL);
+  ChimiValue *root = all_versions(versions);
+  allocation_scope_collect(scope, &root, NULL);
+  reload_versions(versions, root);
   check_all(versions);
 }
 
 /* Ends the nested scope as a loop does: a full sweep rooted at every version, after
    which the survivors join the enclosing scope. */
 static void leave_nested(AllocationScope *nested, Version *versions) {
-  allocation_scope_end(nested, NULL, success(all_versions(versions)));
+  ChimiControl *control = success(all_versions(versions));
+  allocation_scope_end(nested, NULL, &control);
+  reload_versions(versions, control->value);
   check_all(versions);
 }
 

@@ -1,0 +1,32 @@
+/// Assertions for `test "name" { ... }` items. Each one returns `Void` when it
+/// holds, and otherwise ends the test with a failure that `chimi test` reports
+/// with the assertion's location and both values in the debug format.
+///
+/// A failed assertion is a defect, not an expected failure, so it works inside
+/// a fake's method and code under test cannot recover from it. Assertions are
+/// ordinary functions, so a program may also use them to check an invariant.
+
+/// Fails unless `actual == expected`, with the same structural equality the
+/// program uses. The actual value comes first, so a pipeline reads in the
+/// order the work happens: `parse("12") |> Test.assert_equal(12)`.
+///
+/// Cost: O(n) in the size of both values.
+pub native fn assert_equal<T>(actual: T, expected: T) -> Void
+
+/// Fails when `actual == expected`, and shows both values.
+///
+/// Cost: O(n) in the size of both values.
+pub native fn assert_not_equal<T>(actual: T, expected: T) -> Void
+
+/// Fails with `message` unless `condition` holds, as in
+/// `Test.assert(count > 3, "count is above 3")`. The message says what was
+/// being checked.
+///
+/// Cost: O(1).
+pub native fn assert(condition: Bool, message: Text) -> Void
+
+/// Fails the test with `message`, as in a fake method that must not be
+/// called. It never returns.
+///
+/// Cost: O(1).
+pub native fn fail(message: Text) -> Never

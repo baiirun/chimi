@@ -62,7 +62,7 @@ pub(super) fn trace_abi_version() -> Result<(), String> {
         .find_map(|line| line.strip_prefix("#define CHIMI_FIBER_ABI_VERSION "))
         .map(|value| value.trim().trim_end_matches('u'))
         .ok_or("chimi_fiber.h does not define CHIMI_FIBER_ABI_VERSION")?;
-    if header != "12" || chimi_fiber::ABI_VERSION != 12 {
+    if header != "13" || chimi_fiber::ABI_VERSION != 13 {
         return Err(format!(
             "the trace ABI is {} in chimi_fiber.h and {} in chimi-fiber, expected 12",
             header,

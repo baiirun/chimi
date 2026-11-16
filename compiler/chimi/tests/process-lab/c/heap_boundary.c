@@ -45,6 +45,8 @@ const uint32_t CHIMI_CLOCK_REQUIREMENT_SLOT = 0;
 const uint32_t CHIMI_REQUIREMENT_SLOT_COUNT = 1;
 const ChimiFunction CHIMI_FUNCTIONS[] = {{0}};
 const uint32_t CHIMI_FUNCTION_COUNT = 0;
+const uint32_t CHIMI_TEST_FUNCTIONS[] = {0};
+const uint32_t CHIMI_TEST_COUNT = 0;
 const ChimiConstructor CHIMI_CONSTRUCTORS[] = {{0}};
 const ChimiNamedNode CHIMI_NAMED_NODES[] = {{0}};
 const ChimiStep CHIMI_STEPS[] = {{0}};
@@ -148,7 +150,7 @@ static BoundaryWork cross_into_foreign_values(uint32_t size) {
   allocation_scope_begin(&region);
   ChimiValue *state = triple(integer_value(2), foreign_text, foreign);
   (void)triple(integer_value(3), integer_value(4), integer_value(5)); /* garbage */
-  CHECK(allocation_scope_collect(&region, state, NULL) == HEAP_FOREIGN_POINTER,
+  CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_FOREIGN_POINTER,
         "a region pass accepted a pointer into another heap");
   work.pass_scanned = region.scanned_allocations;
   allocation_scope_end(&region, NULL, NULL);

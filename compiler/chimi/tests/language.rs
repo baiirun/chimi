@@ -11172,7 +11172,8 @@ fn a_callback_for_a_narrower_failure_set_does_not_fit_a_wider_one() {
         fn run_ab(f: fn(A | B) -> Text) -> Text { f(B.XB) }\n\
         fn run_handler(h: Handler<A | B>) -> Text { (h.run)(B.XB) }\n\
         pub fn main() -> Text { \"${run_ab(takes_a)} ${run_handler(Handler(takes_a))}\" }\n";
-    assert_eq!(check_codes(rejected), ["T4203", "T4203"]);
+    // Both name the variant the callback cannot take (`T4346`).
+    assert_eq!(check_codes(rejected), ["T4346", "T4346"]);
 
     let accepted = "enum A { XA }\nenum B { XB }\n\
         fn takes_either(value: A | B) -> Text {\n  case value {\n    A.XA -> \"a\"\n    B.XB -> \"b\"\n  }\n}\n\
@@ -11181,6 +11182,82 @@ fn a_callback_for_a_narrower_failure_set_does_not_fit_a_wider_one() {
     assert_eq!(run_both("callback_wider_input", accepted),
         "\"outcome\":\"success\",\"value\":\"a\""
     );
+}
+
+#[test]
+fn a_generic_function_does_not_take_a_callback_for_a_narrower_failure_set() {
+    // The same rule through a generic callee, whose arguments are matched
+    // against its instantiated parameters: `run_ab` hands its callback a `B`,
+    // so neither a `fn(A)` nor a `Handler<A>` may stand in. Before the fix both
+    // type-checked and then hit a no-matching-arm defect.
+    let prelude = "enum A { XA }\nenum B { XB }\nstruct Handler<E> { run: fn(E) -> Text }\n\
+        fn takes_a(a: A) -> Text {\n  case a {\n    A.XA -> \"a\"\n  }\n}\n";
+    let callback = format!(
+        "{prelude}fn run_ab<T>(f: fn(A | B) -> T) -> T {{ f(B.XB) }}\n\
+         pub fn main() -> Text {{ run_ab(takes_a) }}\n"
+    );
+    assert_eq!(check_codes(&callback), ["T4346"]);
+    let handler = format!(
+        "{prelude}fn run_h<T>(h: Handler<A | B>, x: T) -> Text {{ (h.run)(B.XB) }}\n\
+         pub fn main() -> Text {{ run_h(Handler(takes_a), 1) }}\n"
+    );
+    assert_eq!(check_codes(&handler), ["T4346"]);
+}
+
+#[test]
+fn a_type_argument_used_only_as_an_input_takes_a_wider_set() {
+    // `Handler<E>` only takes `E` in, so a handler of `A | B` serves where a
+    // handler of `A` is expected, through a plain call and a generic one.
+    let program = "enum A { XA }\nenum B { XB }\nstruct Handler<E> { run: fn(E) -> Text }\n\
+        fn either(value: A | B) -> Text {\n  case value {\n    A.XA -> \"a\"\n    B.XB -> \"b\"\n  }\n}\n\
+        fn run_a(h: Handler<A>) -> Text { (h.run)(A.XA) }\n\
+        fn run_generic<T>(h: Handler<A>, x: T) -> Text { (h.run)(A.XA) }\n\
+        pub fn main() -> Text {\n  let h: Handler<A | B> = Handler(either)\n  \"${run_a(h)}${run_generic(h, 1)}\"\n}\n";
+    assert_eq!(
+        run_both("contravariant_handler", program),
+        "\"outcome\":\"success\",\"value\":\"aa\""
+    );
+}
+
+#[test]
+fn a_type_argument_used_as_input_and_output_takes_only_its_own_set() {
+    // `Codec<E>` takes `E` in and hands one back, so a codec of `A | B` must
+    // not pass for a codec of `A`: its result may be a `B`.
+    let program = "enum A { XA }\nenum B { XB }\nstruct Codec<E> { run: fn(E) -> E }\n\
+        fn widen(value: A | B) -> A | B { B.XB }\n\
+        fn run_a(codec: Codec<A>) -> Int {\n  case (codec.run)(A.XA) {\n    A.XA -> 1\n  }\n}\n\
+        fn run_generic<T>(codec: Codec<A>, x: T) -> Int {\n  case (codec.run)(A.XA) {\n    A.XA -> 1\n  }\n}\n\
+        pub fn main() -> Int {\n  let codec: Codec<A | B> = Codec(widen)\n  run_a(codec) + run_generic(codec, 1)\n}\n";
+    assert_eq!(check_codes(program), ["T4203", "T4203"]);
+}
+
+#[test]
+fn a_generic_failure_enum_fits_only_at_its_own_type_arguments() {
+    // `W<Text>.Bad` and `W<Int>.Bad` are different failures: a callback over
+    // `W<Int>` must not take an operation's `W<Text>`, whichever argument the
+    // call matches first. Both used to type-check and then defect adding 1 to
+    // a text.
+    let prelude = "enum W<T> { Bad(x: T) }\n\
+        fn fail_text() -> Int {\n  let w: W<Text> = W.Bad(\"hello\")\n  Failure(w)\n}\n\
+        fn plus(e: W<Int>) -> Int {\n  case e {\n    W.Bad(x) -> x + 1\n  }\n}\n";
+    let operation_first = format!(
+        "{prelude}fn run<T, E>(op: fn() -> T errors E, f: fn(E) -> Int) -> Int {{\n  case op() {{\n    Success(_) -> 0\n    Failure(e) -> f(e)\n  }}\n}}\n\
+         pub fn main() -> Int {{ run(fail_text, plus) }}\n"
+    );
+    assert_eq!(check_codes(&operation_first), ["T4203"]);
+    let callback_first = format!(
+        "{prelude}fn run<T, E>(f: fn(E) -> Int, op: fn() -> T errors E) -> Int {{\n  case op() {{\n    Success(_) -> 0\n    Failure(e) -> f(e)\n  }}\n}}\n\
+         pub fn main() -> Int {{ run(plus, fail_text) }}\n"
+    );
+    assert_eq!(check_codes(&callback_first), ["T4203"]);
+    // An operation that raises the variant at two argument lists holds both;
+    // a callback over one of them must not take it.
+    let mixed = format!(
+        "{prelude}fn fail_either(n: Int) -> Int {{\n  case n > 0 {{\n    True -> {{\n      let w: W<Int> = W.Bad(1)\n      Failure(w)\n    }}\n    False -> fail_text()\n  }}\n}}\n\
+         fn run<T, E>(op: fn() -> T errors E, f: fn(E) -> Int) -> Int {{\n  case op() {{\n    Success(_) -> 0\n    Failure(e) -> f(e)\n  }}\n}}\n\
+         pub fn main() -> Int {{ run(fn() {{ fail_either(0) }}, plus) }}\n"
+    );
+    assert_eq!(check_codes(&mixed), ["T4203"]);
 }
 
 #[test]
@@ -11471,6 +11548,208 @@ fn comparisons_past_the_inline_compare_steps_agree_with_the_interpreter() {
     );
     let outcome = run_both("compare-past-inline-steps", &source);
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[true,false,true,true,false]", "{outcome}");
+}
+
+// Guards: bump allocation (CHI-219). A loop pass's values are moved out of the
+// region's chunks at the pass boundary, so every kind of value a state can keep
+// must read back the same after many passes: shared records in a list and a map,
+// a list window whose vector was compacted during the pass, a nested loop's
+// result, and a text too large for a chunk.
+#[test]
+fn values_kept_across_bump_allocated_passes_agree_with_the_interpreter() {
+    let outcome = run_both(
+        "bump-allocated-survivors",
+        concat!(
+            "import std/list as List\n",
+            "import std/map as Map\n",
+            "import std/map.{Map}\n",
+            "import std/text as Text\n",
+            "struct Entry {\n",
+            "  id: Int,\n",
+            "  tags: List<Int>,\n",
+            "}\n",
+            "struct Index {\n",
+            "  count: Int,\n",
+            "  entries: List<Entry>,\n",
+            "  by_id: Map<Int, Entry>,\n",
+            "}\n",
+            "fn grow(index: Index) -> Index {\n",
+            "  let entry = Entry(index.count, [index.count, index.count * 2])\n",
+            "  Index(index.count + 1, List.push(index.entries, entry), Map.put(index.by_id, index.count, entry))\n",
+            "}\n",
+            "fn shared() -> Int {\n",
+            "  let index = loop index = Index(0, [], Map.empty()) {\n",
+            "    case index.count >= 300 {\n",
+            "      True -> break index\n",
+            "      False -> grow(index)\n",
+            "    }\n",
+            "  }\n",
+            "  let same = case List.get(index.entries, 150) == Map.get(index.by_id, 150) {\n",
+            "    True -> 1\n",
+            "    False -> 0\n",
+            "  }\n",
+            "  List.length(index.entries) + Map.size(index.by_id) + same\n",
+            "}\n",
+            "struct Rounds {\n",
+            "  round: Int,\n",
+            "  kept: List<List<Int>>,\n",
+            "}\n",
+            "fn windows(round: Int) -> List<List<Int>> {\n",
+            "  let big = List.map(List.repeat(round, 1000), fn(n: Int) -> Int { n + 1 })\n",
+            "  let middle = List.slice(big, 0..400)\n",
+            "  let small = List.slice(middle, 100..200)\n",
+            "  [middle, small]\n",
+            "}\n",
+            "fn compacted() -> Int {\n",
+            "  let kept = loop state = Rounds(0, [[0]]) {\n",
+            "    case state.round >= 50 {\n",
+            "      True -> break state.kept\n",
+            "      False -> Rounds(state.round + 1, windows(state.round))\n",
+            "    }\n",
+            "  }\n",
+            "  List.reduce(List.concat(kept), 0, fn(sum: Int, n: Int) -> Int { sum + n })\n",
+            "}\n",
+            "fn inner(limit: Int) -> List<Int> {\n",
+            "  loop state = [limit] {\n",
+            "    case List.length(state) >= limit {\n",
+            "      True -> break state\n",
+            "      False -> List.push(state, List.length(state) * limit)\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "fn nested() -> Int {\n",
+            "  let kept = loop state = [[0]] {\n",
+            "    case List.length(state) >= 30 {\n",
+            "      True -> break state\n",
+            "      False -> List.push(state, inner(List.length(state)))\n",
+            "    }\n",
+            "  }\n",
+            "  List.reduce(List.concat(kept), 0, fn(sum: Int, n: Int) -> Int { sum + n })\n",
+            "}\n",
+            "fn large() -> Int {\n",
+            "  let text = loop text = \"\" {\n",
+            "    case Text.byte_length(text) >= 20000 {\n",
+            "      True -> break text\n",
+            "      False -> Text.append(text, \"abcdefghij\")\n",
+            "    }\n",
+            "  }\n",
+            "  Text.byte_length(text)\n",
+            "}\n",
+            "pub fn main() -> List<Int> { [shared(), compacted(), nested(), large()] }\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":[601,25000,90770,20000]",
+        "{outcome}"
+    );
+}
+
+// Guards: a task result is copied into the pass that reads it, outside the
+// region's chunks, and keeps pointing at the right values once a state that holds
+// it crosses many bump-allocated pass boundaries (CHI-219). Native only: the
+// interpreter has no task runtime.
+#[test]
+fn task_results_kept_across_bump_allocated_passes_stay_intact() {
+    let scratch = scratch_directory("bump-task-results");
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        concat!(
+            "import std/list as List\n",
+            "import std/task as Task\n",
+            "fn build(seed: Int) -> List<Int> { [seed, seed + 1, seed + 2] }\n",
+            "pub fn main() -> Int {\n",
+            "  let kept = loop state = [[0]] {\n",
+            "    case List.length(state) >= 40 {\n",
+            "      True -> break state\n",
+            "      False -> {\n",
+            "        let count = List.length(state)\n",
+            "        let pair = [count, count * 1000]\n",
+            "        let result = Task.result(Task.start(fn() -> List<Int> { build(count) }))\n",
+            "        List.push(state, List.append(result, pair))\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "  List.reduce(List.concat(kept), 0, fn(sum: Int, n: Int) -> Int { sum + n })\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let outcome = native_outcome(&scratch, &path);
+    // Each pass adds build(count) (3 * count + 3) and the pair (1001 * count) for
+    // count 1 through 39: 1004 * 780 + 3 * 39.
+    assert!(
+        outcome.ends_with("\"outcome\":\"success\",\"value\":783237}"),
+        "{outcome}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// Guards: a loop region switches between bumping a pass's allocations into its
+// chunks and linking them, by how much of the last pass survived (CHI-219). Here
+// the phases alternate every 40 passes between keeping all a pass builds and
+// keeping almost none of it, so values made in either mode are kept and read in
+// the other.
+#[test]
+fn values_kept_across_linked_and_bumped_passes_agree_with_the_interpreter() {
+    let outcome = run_both(
+        "bump-mode-switch",
+        concat!(
+            "import std/list as List\n",
+            "struct State {\n",
+            "  count: Int,\n",
+            "  kept: List<List<Int>>,\n",
+            "  scratch: Int,\n",
+            "}\n",
+            "fn keep(state: State) -> State {\n",
+            "  let n = state.count\n",
+            "  State(n + 1, List.push(state.kept, [n, n * 3, n * 7]), state.scratch)\n",
+            "}\n",
+            "fn churn(state: State) -> State {\n",
+            "  let garbage = List.map(List.repeat(state.count, 60), fn(x: Int) -> Int { x + 1 })\n",
+            "  State(state.count + 1, state.kept, state.scratch + List.length(garbage))\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let final = loop state = State(0, [], 0) {\n",
+            "    case state.count >= 400 {\n",
+            "      True -> break state\n",
+            "      False -> case (state.count / 40) % 2 {\n",
+            "        0 -> keep(state)\n",
+            "        _ -> churn(state)\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "  let total = List.reduce(List.concat(final.kept), 0, fn(sum: Int, n: Int) -> Int { sum + n })\n",
+            "  total + final.scratch\n",
+            "}\n",
+        ),
+    );
+    // Kept passes add 11 * n for n in the five kept phases; each churn pass adds 60.
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":406900");
+}
+
+// Guards: a crash message built inside a loop pass is allocated in the pass's
+// young chunk, and the defect leaves the region, so the message must not live in
+// the chunk the region frees (CHI-219 review).
+#[test]
+fn a_crash_message_built_inside_a_loop_survives_the_loop() {
+    let outcome = run_both(
+        "bump-crash-message",
+        concat!(
+            "import std/debug as Debug\n",
+            "import std/text as Text\n",
+            "pub fn main() -> Int {\n",
+            "  loop n = 0 {\n",
+            "    case n >= 3 {\n",
+            "      True -> Debug.crash(Text.append(\"boom-\", \"message-in-chunk\"))\n",
+            "      False -> n + 1\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(defect_message(&outcome), "boom-message-in-chunk", "{outcome}");
 }
 
 // Guards: a match reads every subject, both when its subjects fit the runtime's

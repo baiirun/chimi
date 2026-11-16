@@ -16,8 +16,10 @@ use crate::ids::{ModuleId, SymbolId};
 use crate::numeric::{self, ArithmeticOperator};
 use crate::resolution::{Namespace, ProjectSymbolKind, ReferenceResolution};
 use crate::semantic::{
-    Literal, ModuleBlockItem, ModuleExpression, UnaryOperator, interpolated_expressions,
+    CallArgument, Literal, ModuleBlockItem, ModuleExpression, UnaryOperator,
+    interpolated_expressions,
 };
+use crate::standard_tree;
 use crate::standard::{
     DurationUnitRole, StandardConstant, StandardFunction, StandardModule, StandardSymbol,
 };
@@ -190,6 +192,23 @@ impl<'typed> ConstantEvaluator<'typed> {
             ModuleExpression::Group { expression, .. } => self.value_symbol(module_id, expression),
             _ => None,
         }
+    }
+
+    /// Whether `callee` names a `std/schedule` constructor, each of which takes
+    /// the total number of attempts first.
+    fn is_schedule_constructor(&self, module_id: ModuleId, callee: &ModuleExpression) -> bool {
+        let Some(symbol) = self.value_symbol(module_id, callee) else {
+            return false;
+        };
+        let symbol = self.typed.resolved.symbol(symbol);
+        let Some(owner) = symbol.module_id else {
+            return false;
+        };
+        let module = &self.typed.resolved.semantic.modules[owner.raw() as usize];
+        symbol.kind == ProjectSymbolKind::Function
+            && module.path == "std/schedule"
+            && standard_tree::is_standard(&module.path, &module.source)
+            && matches!(symbol.name.as_str(), "immediate" | "fixed" | "exponential")
     }
 
     fn is_constant_reference(&self, module_id: ModuleId, expression: &ModuleExpression) -> bool {
@@ -371,6 +390,38 @@ impl Checker<'_> {
             )
     }
 
+    /// `T4347`: a `std/schedule` constructor whose attempt count is known at
+    /// build time and below 1, which always defects.
+    fn check_schedule_attempts(
+        &mut self,
+        module_id: ModuleId,
+        call: &ModuleExpression,
+        arguments: &[CallArgument],
+    ) {
+        let Some(first) = arguments.first() else {
+            return;
+        };
+        let Ok(Folded::Int(attempts)) = self.evaluator.fold(module_id, &first.value) else {
+            return;
+        };
+        if attempts >= 1 {
+            return;
+        }
+        let file_id = self.evaluator.typed.resolved.semantic.modules[module_id.raw() as usize]
+            .source
+            .file_id();
+        self.errors.push(Diagnostic::error(
+            DiagnosticStage::Type,
+            "T4347",
+            file_id,
+            call.range(),
+            format!(
+                "a schedule needs at least 1 attempt, counting the first, but this one has \
+                 {attempts}; this call always defects"
+            ),
+        ));
+    }
+
     fn check_call(&mut self, module_id: ModuleId, call: &ModuleExpression) {
         let ModuleExpression::Call {
             callee, arguments, ..
@@ -391,6 +442,10 @@ impl Checker<'_> {
                 "`Task.race` of an empty list has no operation to win, so this call always \
                  defects",
             ));
+            return;
+        }
+        if self.evaluator.is_schedule_constructor(module_id, callee) {
+            self.check_schedule_attempts(module_id, call, arguments);
             return;
         }
         let Some(function) = self.evaluator.duration_function(module_id, callee) else {

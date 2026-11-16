@@ -952,11 +952,14 @@ Schedule.delay:       fn(Schedule, Int) -> Option<Duration>
 
 - The first argument is the total number of attempts, including the first
   one. A value below 1 MUST defect at the call that receives it. The compiler
-  rejects a literal below 1 (`T4347`).
+  rejects a literal or module constant below 1 (`T4347`).
 - `Schedule.fixed(n, delay)` waits `delay` between attempts.
 - `Schedule.exponential(n, first, limit)` waits `first` before the second
   attempt and doubles each time, never exceeding `limit`. The computation MUST
-  stop doubling at `limit` and MUST NOT overflow.
+  stop doubling at `limit` and MUST NOT overflow. A `first` above `limit`
+  waits `limit` every time.
+- A negative wait MUST defect at the constructor that receives it, as an
+  attempt count below 1 does.
 - `Schedule.delay(schedule, attempt)` returns the wait before attempt
   `attempt + 1`, or `None` once `attempt` reached the total.
 - `Schedule` is a closed enum with derived equality, so tests can compare
@@ -982,7 +985,10 @@ change their result. A program that means to retry every failure writes
 
 The operation's failure set MUST be a subset of the predicate's domain
 (`T4346`). Failures outside the predicate cannot be classified, so they are a
-type error rather than a silent rethrow.
+type error rather than a silent rethrow. `Policy<E>` uses `E` only as a
+function input, so it is contravariant: a `Policy<HttpError | Timeout>` serves
+an operation that fails only with `HttpError`, and a `fn(_) { True }`
+predicate takes the operation's whole set.
 
 `Retry.run` is ordinary Chimi:
 
