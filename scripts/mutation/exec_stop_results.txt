@@ -1,0 +1,13 @@
+# mutation run at 5170c0ad386151829a5dbd6fecef75491d6a9d18
+# exec_stop_mutations.py: 9 mutants against compiler/chimi
+BASELINE ok  [std_exec] (130s)
+KILLED       no SIGTERM first [std_exec] (59s)
+KILLED       no SIGKILL after the time [std_exec] (109s)
+KILLED       the deadline is ignored [std_exec] (110s)
+KILLED       the stop blocks the scheduler [std_exec] (55s)
+KILLED       the start does not stop its child [std_exec] (55s)
+KILLED       the pipes close after the stop [std_exec] (58s)
+KILLED       stop_within is not kept [std_exec] (57s)
+KILLED       a negative stop_within is kept [std_exec] (53s)
+KILLED       the backstop leaves the child [std_exec] (82s)
+# result: every mutant killed
