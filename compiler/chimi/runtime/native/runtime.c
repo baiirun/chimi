@@ -5722,7 +5722,12 @@ static int input_next(ChimiRuntime *runtime, ByteInput *input) {
   if (input->start < input->end) return input->bytes[input->start++];
   for (;;) {
     if (runtime->cancel) return INPUT_CANCELLED;
-    if (CHIMI_REQUIRES_SCHEDULER && !wait_readable(input->fd)) return INPUT_CANCELLED;
+    if (CHIMI_REQUIRES_SCHEDULER) {
+      if (!wait_readable(input->fd)) return INPUT_CANCELLED;
+      /* Another task reading "-" may have refilled the shared buffer while this
+         one waited; reading over it would lose those bytes. */
+      if (input->start < input->end) return input->bytes[input->start++];
+    }
     errno = 0;
     ssize_t count = read(input->fd, input->bytes, input->capacity);
     if (count > 0) {
@@ -5761,7 +5766,12 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
     file_input.fd = open(path, O_RDONLY | O_CLOEXEC);
     if (file_input.fd < 0)
       return host_file_message(CHIMI_CONSTRUCTOR_FILE_OPEN, path, strerror(errno));
-    file_input.bytes = allocate(INPUT_BUFFER_BYTES, 1);
+    /* Freed below, so a loop over many files does not keep a buffer for each. */
+    file_input.bytes = malloc(INPUT_BUFFER_BYTES);
+    if (!file_input.bytes) {
+      close(file_input.fd);
+      return host_file_message(CHIMI_CONSTRUCTOR_FILE_OPEN, path, strerror(ENOMEM));
+    }
     input = &file_input;
   }
   unsigned char *line = allocate((size_t)runtime->max_line_bytes + 1, 1);
@@ -5818,6 +5828,7 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
     }
     line[length++] = (unsigned char)byte;
   }
+  free(file_input.bytes);
   if (owns_file && close(file_input.fd) != 0 &&
       (control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE)) {
     control = host_file_message(CHIMI_CONSTRUCTOR_FILE_CLOSE, path, strerror(errno));

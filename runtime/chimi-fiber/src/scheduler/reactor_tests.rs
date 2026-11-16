@@ -273,8 +273,7 @@ unsafe extern "C" fn time_out_a_wait(_context: *mut c_void) -> ChimiFiberResult 
     exit.value = 1;
     call(&mut exit);
     note(exit.value);
-    // The withdrawn registration is gone: a later ready wait still answers,
-    // and the run ends instead of polling a stale descriptor.
+    // The descriptor still works for a later wait.
     write_byte(write);
     note(wait_io(read, IO_READABLE).unwrap_or(0));
     close(read);

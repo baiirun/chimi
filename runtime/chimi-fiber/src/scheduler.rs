@@ -830,14 +830,16 @@ impl Scheduler {
     pub fn run_until_idle(&mut self) -> Idle {
         loop {
             self.drive();
+            // The host must be able to end the operations it began, so they
+            // return before the scheduler blocks in a descriptor wait.
+            if self.host_operations > 0 {
+                return Idle::AwaitingHost;
+            }
             // A descriptor wait is a host operation in flight: it holds
             // virtual time, and no parked task is stuck while one exists.
             if !self.reactor.is_empty() {
                 self.wait_for_io();
                 continue;
-            }
-            if self.host_operations > 0 {
-                return Idle::AwaitingHost;
             }
             let Some(deadline) = self.timers.earliest() else {
                 break;
@@ -996,7 +998,7 @@ impl Scheduler {
             self.run(task);
             self.deliver_signal();
             resumes += 1;
-            if resumes % reactor::IO_POLL_INTERVAL == 0 && !self.reactor.is_empty() {
+            if resumes.is_multiple_of(reactor::IO_POLL_INTERVAL) && !self.reactor.is_empty() {
                 self.poll_io_now();
             }
         }

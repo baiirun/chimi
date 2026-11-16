@@ -170,7 +170,9 @@ enum {
      write right after it finds the descriptor as reported. ERROR for a
      negative or closed descriptor, the signal pipe, or another interest.
      A cancellation point, withdrawn by a cancellation. A wait is a host
-     operation in flight: virtual time does not advance while one exists.
+     operation in flight: virtual time does not advance while one exists, so
+     under the virtual clock no timeout or shutdown deadline fires during it
+     (a real signal still ends it).
      Closing a descriptor a task waits on is a host bug. Kinds 36 to 39 are
      the channel-variant requests; 40 to 47 are left for the task
      combinators. */
