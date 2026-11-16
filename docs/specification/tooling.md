@@ -2,9 +2,10 @@
 
 Status: implemented in part (Phase 9). This page is the contract for the
 commands that sit around the compiler: the documentation generator and its
-static pages, the linter, the post-mortem trace viewer, and editor
-references, rename, completion, inlay types and hover documentation now, and
-more editor features and cross-compilation as they land.
+static pages, the linter, the post-mortem trace viewer, the `--target` flag
+of `chimi build`, and editor references, rename, completion, inlay types and
+hover documentation now, and more editor features and building for other
+targets as they land.
 The formatter, `chimi check` and `chimi test` keep their own pages
 (`testing.md` for the runner and doc-comment examples).
 
@@ -286,3 +287,38 @@ decision.
 
 Implementation: `compiler/chimi/src/trace_view.rs` (`render_trace`) and
 `LoadedProject::source_locator`. Tests: `compiler/chimi/tests/trace_show.rs`.
+
+## Cross-compilation: `chimi build --target`
+
+Purpose: name the platform a build is for, so that building for another
+platform than the one running `chimi` is one flag once it is supported.
+
+```text
+chimi build <path> [-o <executable>] [--target <triple>]
+chimi build --root <project> <entry> [-o <executable>] [--target <triple>]
+```
+
+Rules:
+
+- `<triple>` is a target triple, as `x86_64-unknown-linux-gnu` or
+  `aarch64-apple-darwin`, in the spelling Rust and LLVM use. Two triples
+  name the same target when their architecture, operating system,
+  environment and object format agree: the vendor is ignored, as are
+  `darwin` against `macosx` and a macOS version, so `x86_64-linux-gnu`,
+  `x86_64-pc-linux-gnu`, `arm64-apple-darwin` and `aarch64-apple-macosx14.0`
+  name the hosts they look like. A partial triple, such as `x86_64` alone,
+  names a bare-metal target and is refused as another target.
+- The host's triple MUST build exactly as a build without `--target`.
+- Any other target MUST fail with exit status 1 before compiling anything,
+  naming the target, what building for it needs (the Chimi runtime compiled
+  for it, and a linker and C library for it) and the host it can build for.
+  A string that is not a target triple fails naming the host as an example.
+- `-o` and `--target` may come in either order, each at most once.
+
+Not yet: building for another target. That needs a runtime pack per target
+(the C runtime and fiber library built for it) and a linker and C library for
+it, such as clang with lld and a sysroot, and Cranelift's code generators for
+the other architectures, which this build leaves out.
+
+Implementation: `check_build_target` in `compiler/chimi/src/backend/native.rs`
+and `chimi build` in `main.rs`. Tests: `compiler/chimi/tests/build_target.rs`.
