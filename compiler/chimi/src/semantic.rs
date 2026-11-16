@@ -2481,9 +2481,11 @@ impl ProjectLowerer {
         for token in node.child_tokens() {
             let text = token.text();
             let chunk = match token.kind() {
-                TokenKind::TextStart => &text[1..],
+                TokenKind::TextStart => text.strip_prefix('"').unwrap_or(text),
                 TokenKind::TextMiddle => text,
-                TokenKind::TextEnd => &text[..text.len() - 1],
+                // The parser supplies an empty end when the literal is left
+                // open, which the lexer has already reported.
+                TokenKind::TextEnd => text.strip_suffix('"').unwrap_or(text),
                 _ => continue,
             };
             if !chunk.is_empty() {

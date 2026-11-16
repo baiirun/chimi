@@ -4338,6 +4338,9 @@ fn interpolation_rejects_empty_unclosed_and_non_text_parts() {
     assert!(codes("\"ok: ${\"${1}\"}\"").is_empty());
     // An interpolation must close on its own line, even inside a delimited expression.
     assert!(codes("\"sum: ${Text.append(\"a\",\n\"b\")}\"").contains(&"S1101".to_owned()));
+    // Text left open after an interpolation, as while the closing quote is
+    // still being typed, is a syntax error, not a crash.
+    assert!(codes("\"${state} tail").contains(&"S1001".to_owned()));
 }
 
 // G9: a text pattern is a literal and cannot interpolate; the whole pattern is one
