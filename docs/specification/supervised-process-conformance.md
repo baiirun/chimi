@@ -1185,7 +1185,7 @@ scenarios pass and `CURRENT_STAGE` names it.
 | U9 | Declared and dynamic nested supervisors | SV09, SV10, ES02–ES04 |
 | U10 | `programs/supervised-pool` and the performance harness | FP01, MF02, MF03, PG01–PG10 |
 | U11 | G27: `Process.address`, `queued`, `capacity`, `monitor`, and `unmonitor` ([process monitors and metrics](process-monitors-and-metrics.md), CHI-220), fiber ABI 9 | SF27, SF28, MB12–MB18 |
-| U12 | G28 and CHI-213: capabilities in a `Process.send` message move to the receiving incarnation, and `Process.handoff_spec` and `Supervisor.start_handoff` start a one-shot process that owns its argument, fiber ABI 10 | SP10, SF29–SF31, MB19–MB21, CB09–CB14 (CB13 and CB14 from CHI-227) |
+| U12 | G28, CHI-213 and CHI-227: capabilities in a `Process.send` message move to the receiving incarnation, and `Process.handoff_spec` and `Supervisor.start_handoff` start a one-shot process that owns its argument, fiber ABI 10 | SP10, SF29–SF31, MB19–MB21, CB09–CB14 |
 | U13 | G22: drain before cancel, ordered shutdown, SIGINT and SIGTERM, the exit status after a signal, and `--signal` ([application lifecycle](application-lifecycle.md)), fiber ABI 14, runtime ABI 32. RR05 and SD06 move here because their rule changed | MB22, RR05, SD06, SD10–SD13, SG01–SG03, FP02 |
 
 Two scenarios moved stage (coordinator decisions on `ts-6ccbc9`). MF06
@@ -1218,12 +1218,12 @@ changing a contract.
 | Removal races (RR) | 6 |
 | Shutdown and forced termination (SD) | 13 |
 | Signals (SG) | 3 |
-| Copy-boundary safety (CB) | 12 |
+| Copy-boundary safety (CB) | 14 |
 | Memory flatness (MF) | 6 |
 | Observability (OB) and backend support (IP) | 9 |
 | Forcing program (FP) | 2 |
 | Performance gates (PG) | 10 |
-| **Total** | **161** |
+| **Total** | **163** |
 
 Four scenarios use C harnesses: RA06, SD04, CB06, and CB07.
 
