@@ -1,0 +1,7 @@
+# mutation run at 4a77f05dc129c8de36851ab2d998f9fb0776efb0
+# own_receiver_mutations.py: 3 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- parcel_tests] (6s)
+KILLED       a send carrying its own receiver goes through [lib -- parcel_tests] (3s)
+KILLED       the other receivers of the queue are ignored [lib -- parcel_tests] (3s)
+KILLED       a tap that ended still counts [lib -- parcel_tests] (5s)
+# result: every mutant killed
