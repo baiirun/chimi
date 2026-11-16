@@ -3,8 +3,9 @@
 ## Status
 
 Design note. Ticket: CHI-267. It records what running Chimi on more than one
-thread would take, so that later work does not close the door on it. Step 1
-(the carrier struct) is done; programs still run on one thread.
+thread would take, so that later work does not close the door on it. Steps 1
+(the carrier struct) and 2 (the shared handle table) are done; programs still
+run on one thread.
 
 ## Why
 
@@ -42,8 +43,9 @@ is an implementation limit, not a language one.
 3. **Virtual time and transcripts.** The virtual clock and the lab's event
    transcripts rely on one global order of events. Tests compare that order
    exactly.
-4. **Handle counts.** Task and channel handle counts are plain integers, and
-   their releases go through one queue that the current fiber flushes.
+4. **Handle counts.** Step 2 made them one locked table with a release
+   queue per carrier ("Handle counts" below). The queue is still flushed only
+   by a fiber's next request on that carrier.
 
 ## Recommended shape
 
@@ -69,8 +71,8 @@ owner heaps.
   fiber means moving its heap's ownership, which is one pointer.
 - **Determinism stays available.** `--clock=virtual` and the lab run with one
   carrier, so transcripts stay exact. Parallel runs would promise outcomes,
-  not interleavings; before step 3, check every spec rule that names an order
-  across owners and decide whether it survives parallel runs.
+  not interleavings. "Ordering rules under several carriers" checks every
+  spec rule that names an order across owners.
 
 ## Runtime state by owner
 
@@ -100,10 +102,8 @@ function-local static, so new state gets an owner when it is added.
     move with a heap, so a per-carrier counter could repeat an epoch a stale
     header still holds and treat a dead allocation as marked. It becomes a
     per-heap counter, not a per-carrier one.
-  - The handle-count table and its release queue (`channel_endpoints`,
-    `released_channels`). A handle copied on one carrier can be freed on
-    another, so splitting the table would miscount; step 2 replaces it with
-    per-carrier deltas or owner-routed messages.
+  - The handle-count table (`handle_table`, "Handle counts" below). Its
+    release queue is carrier state (`released_handles`).
   - Tables whose ids travel inside values: binding handles, open files, test
     mailboxes, process defects.
   - The operation profile's rows (`profile_rows`), allocated once at startup
@@ -135,12 +135,66 @@ Rules for the steps that run more than one carrier:
   maximum for the peaks. A sum of per-carrier peaks is not the process's
   peak either, so decide what the peak fields mean before step 3 changes the
   numbers.
-- Before step 3, add a test build in which every resume switches to a second
-  carrier with fresh scratch and caches. It is the only check that would
-  catch a field filed as carrier state that must in fact follow the fiber.
+- Run the carrier simulation build (`CHIMI_CARRIER_SIMULATION`, "Handle
+  counts") over the suite before each step that moves state. Every fiber
+  resumes on the other of two carriers from the one it parked on, each with
+  its own scratch and caches. It is the only check that catches a field filed as carrier state
+  that must in fact follow the fiber.
 - The lazily created shared values (`shared_values`, the module constants) are
   a race once two carriers can create them; create them before the carriers
   start.
+
+## Handle counts
+
+Every live Sender, Receiver, Completion and Task value counts as one reference
+to its channel or task (`runtime.c`, "Channel release"). A handle copied on
+one carrier can be freed on another, since a fiber migrates with its heap, so
+only the total count means anything. Step 2 keeps one table for every carrier:
+
+- `channel_endpoint_retain` and `channel_endpoint_drop` take the table's lock.
+  A copy is counted when it is made, before any scheduler request can move it
+  to another carrier, so a drop can never see a count that a retain elsewhere
+  has not reached yet. The freers' "any handle at all" shortcut reads the count
+  without the lock: a value being freed was counted before it got there.
+- A key whose count reaches zero is queued on the carrier that dropped it,
+  after the lock is released. The next request of a fiber on that carrier
+  issues the release (`flush_channel_releases`, which reads `carrier` again on
+  every pass because each pass parks).
+- Step 4 may stripe the table by key hash. Striping by owner would miscount
+  once a fiber migrates.
+
+Per-carrier counts were rejected because only their sum is meaningful, and
+summing needs a snapshot across carriers. Plus-or-minus-one messages to an
+owner carrier were rejected because they can arrive out of order. A drop
+applied before the matching retain shows a false zero and releases a live
+channel. A drop that finds no entry is ignored, so the late retain then leaves
+a count that never falls. Weighted reference counts avoid both problems, but
+they put a weight in every handle value and need a path for when a weight can
+no longer be split.
+
+Step 3 must also drain a carrier's release queue from its own loop before it
+idles and when it stops. Otherwise a zero reached in a release hook, on a
+carrier where no fiber makes another request, strands the release. The
+simulation build showed this: before its flush drained every carrier's queue,
+a dropped channel's buffered messages outlived it and a fragment-peak test
+failed. Today a flush drains the running carrier's queue first and then any
+other carrier's, in place of that loop. That stand-in
+(`carrier_with_releases`) reads another carrier's queue without a lock, so
+step 3 must replace it, not keep it: two threads popping one queue could lose
+a release or issue it twice. It also hides a missing per-carrier drain, so
+the simulation cannot catch that gap; step 3 needs its own test for it.
+The unlocked `handles_live()` read also assumes that moving a value to
+another carrier synchronises (the hand-off is a scheduler request), which
+step 3 must keep true.
+
+Two tests check this step:
+- `tests/runtime_state.rs` `the_handle_table_counts_across_threads` hands
+  references from one thread to another under ThreadSanitizer.
+- The `CHIMI_CARRIER_SIMULATION` test build resumes every fiber on the other
+  of two carriers from the one it parked on
+  (`CHIMI_TEST_RUNTIME_DEFINES=-DCHIMI_CARRIER_SIMULATION` with a debug
+  compiler). The whole `chimi` suite passes under it, except the test that
+  checks the prebuilt runtime is used, which a test build never uses.
 
 ## Alternatives considered
 
@@ -153,15 +207,78 @@ Rules for the steps that run more than one carrier:
   single-thread design already, for reasons that only get stronger with
   threads.
 
+## Ordering rules under several carriers
+
+The spec promises some orders across owners. Before step 3, each was checked
+against parallel runs. A rule that a lock or a single owner can keep survives.
+A rule that says "before any other task runs" cannot, since another carrier
+is running tasks at the same moment.
+
+- **Kept by the one owner of a queue.** These rules hold under parallel runs
+  as long as each queue changes only under its lock:
+  - mailbox delivery is strict FIFO in acceptance order across senders
+    (process-execution-and-mailboxes.md), and a monitor notice comes after
+    every message already accepted (process-monitors-and-metrics.md);
+  - parked channel receivers are served in the order they parked, a parked
+    plain receive before a select, and parked publishes are accepted in
+    order (task-and-channel-capabilities.md);
+  - a select commits the first ready source in list order
+    (time-and-outcomes.md);
+  - a supervisor stops its members one at a time in reverse order
+    (supervisor-policy-and-lifecycle.md);
+  - a pool serves waiting statements in the order they asked
+    (network-modules.md);
+  - recorder values come in the order the records linearized (testing.md).
+- **Kept by running supervisor decisions under the kernel lock.** A
+  supervisor decision runs "between fiber resumes": a defect, its
+  termination, the restart charge and the replacement's creation happen in
+  one step (supervised-process-conformance.md, "Determinism obligations").
+  With several carriers, that step must run under the kernel lock, with no
+  process of that supervisor running in between. The note's risk list
+  already places a supervisor's record on one carrier.
+- **Does not survive, and must change in step 3.**
+  - Select commit (task-and-channel-capabilities.md, "Select commit"). After
+    a select answers with a ready receiver, the host's receive is "served
+    before any other task runs" by putting the task at the front of the run
+    queue. On another carrier, a second receiver of the same queue could take
+    the value in between. Step 3 must make the commit atomic: the select's
+    answer either takes the value, or reserves it for that task until its
+    receive. The observable rule ("the other source keeps its value") stays
+    the same.
+  - IO wait order (host-capabilities-and-execution-properties.md, "Order").
+    "An OK answer resumes the task before any other task runs" becomes "on
+    its carrier". That is enough, because the wait is level-triggered and a
+    host that finds the descriptor drained waits again, as it already does
+    when another OS process drains it. "Tasks ready together wake in the
+    order they began waiting" holds per carrier only.
+- **Exact interleavings stay single-carrier.** The lab's determinism
+  obligations ("One carrier thread. The ready queue is FIFO.") and every
+  `--clock=virtual` run keep one carrier, so transcripts stay exact. A
+  program under the real clock on several carriers is promised outcomes, not
+  an interleaving. Real IO already makes real-clock interleavings depend on
+  timing.
+
+No rule needed a language decision. Each one either survives as written or
+keeps its observable meaning through a different mechanism.
+
 ## Order of work
 
 1. Move `runtime.c`'s per-fiber and per-carrier statics into one carrier
    struct, with no behavior change. Done (CHI-267); the list is under
    "Runtime state by owner".
-2. Make handle counts and release queues per carrier, with cross-carrier
-   releases sent as messages.
+2. Make the handle-count table safe for every carrier, with a release queue
+   per carrier. Done: one locked table rather than per-carrier counts or
+   messages ("Handle counts").
 3. Split `Scheduler` into a carrier loop plus shared kernel state behind a
-   lock, and run N carriers with work stealing turned off. Measure.
+   lock, and run N carriers with work stealing turned off. Measure. This
+   step also has to:
+   - make the select commit atomic ("Ordering rules under several
+     carriers");
+   - have each carrier loop drain its own release queue, replacing
+     `carrier_with_releases`;
+   - turn `carrier` into the accessor;
+   - make `next_mark_epoch` per heap;
+   - create the lazily created shared values before the carriers start.
 4. Shard the kernel and the channel registry by owner, and add stealing.
 5. Publish multi-core baselines next to the single-thread ones (R2).
 
