@@ -979,10 +979,9 @@ test "other tasks run while a child is stopped" {
     );
 }
 
-// Rejects a stop that waits again after a stop signal ends `main` while main
-// itself is stopping a child: the unwinding task would park, and the runner
-// would report a scheduler defect (exit 70) instead of ending by the signal.
-// The child is gone either way.
+// Rejects a stop that a stop signal turns into a scheduler defect (exit 70)
+// when it arrives while `main` itself is stopping a child: the program ends
+// by the signal once the stop is done, and the child is gone.
 #[test]
 fn a_stop_signal_during_a_stop_ends_the_program_by_it() {
     use std::os::unix::process::ExitStatusExt;
