@@ -1780,6 +1780,19 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::ClockStartingAt
             | StandardFunction::TaskTimeout
             | StandardFunction::TaskDeadline => self.invoke_process(function, arguments, call_node),
+            StandardFunction::SelectReceive
+            | StandardFunction::SelectInbox
+            | StandardFunction::SelectTask
+            | StandardFunction::SelectAfter
+            | StandardFunction::SelectAt
+            | StandardFunction::SelectFirst => Control::Defect {
+                message: format!(
+                    "Select.{} requires the native runtime; build the program with `chimi build`",
+                    function.name()
+                ),
+                node: Some(call_node),
+                cause: None,
+            },
             StandardFunction::DebugCrash
             | StandardFunction::OptionUnwrapOrFail
             | StandardFunction::TextConcat
