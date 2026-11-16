@@ -4932,6 +4932,24 @@ impl ProjectTypeChecker {
             );
             return MatchPattern::Wildcard;
         }
+        // A variant raised at two type arguments has no one type for its fields.
+        if let CanonicalType::FailureSetValue(failures) =
+            self.types[self.resolve_inference_type(expected).raw() as usize]
+            && self.variant_raised_at_several_arguments(failures, constructor)
+        {
+            self.type_error_range(
+                module_id,
+                "T4230",
+                range,
+                format!(
+                    "pattern `{}` cannot bind its fields: the subject may hold this variant at \
+                     more than one type argument, so a field has no one type; raise one type \
+                     argument, or bind the whole error",
+                    self.resolved.symbol(constructor).name
+                ),
+            );
+            return MatchPattern::Wildcard;
+        }
         let Some(inputs) = self.instantiate_pattern_constructor(constructor, expected) else {
             if context.clause_head {
                 let constructed = self
@@ -4991,6 +5009,33 @@ impl ProjectTypeChecker {
             tag: MatchTag::EnumVariant(constructor),
             fields,
         }
+    }
+
+    /// Whether `failures` holds `variant` at two argument lists that disagree,
+    /// as a row that raised both `W<Int>.Bad` and `W<Text>.Bad` does; poison
+    /// (an argument the variant does not mention) agrees with any type.
+    fn variant_raised_at_several_arguments(&self, failures: FailureRowId, variant: SymbolId) -> bool {
+        let lists = self.failure_rows[failures.raw() as usize]
+            .variant_arguments
+            .iter()
+            .filter(|arguments| arguments.variant == variant)
+            .map(|arguments| {
+                arguments
+                    .arguments
+                    .iter()
+                    .map(|argument| self.resolve_inference_type(*argument))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let poison = TypeId::new(0);
+        lists.iter().any(|left| {
+            lists.iter().any(|right| {
+                left.len() != right.len()
+                    || left.iter().zip(right).any(|(left, right)| {
+                        left != right && *left != poison && *right != poison
+                    })
+            })
+        })
     }
 
     fn instantiate_pattern_constructor(
@@ -7323,11 +7368,30 @@ impl ProjectTypeChecker {
                 arguments,
             }));
         }
+        // Variants raised at different type arguments, as `W<Int>.Bad` and
+        // `W<Text>.Bad`, have no one enum type: the declaration's `W<T>` would
+        // let a payload of either pass as the other. The set keeps them apart.
+        if self.raised_at_known_arguments(&row) {
+            return Some(self.intern_type(CanonicalType::FailureSetValue(failures)));
+        }
         let owner = self.resolved.symbol(*owner);
         self.declaration_types
             .get(&(owner.module_id?, owner.semantic_id?))
             .copied()
             .or_else(|| Some(self.intern_type(CanonicalType::FailureSetValue(failures))))
+    }
+
+    /// Whether some raised variant of `row` records a type argument, so a
+    /// failed merge means the variants disagree rather than that nothing is
+    /// known.
+    fn raised_at_known_arguments(&self, row: &FailureRow) -> bool {
+        row.variant_arguments.iter().any(|candidate| {
+            row.variants.contains(&candidate.variant)
+                && candidate
+                    .arguments
+                    .iter()
+                    .any(|argument| self.resolve_inference_type(*argument) != TypeId::new(0))
+        })
     }
 
     /// The one argument list every raised variant of `row` agrees on, position by
@@ -8131,7 +8195,9 @@ impl ProjectTypeChecker {
                     })
                 }
             }
-            TypeUse::Union { members, .. } => self.lower_failure_set_type(module_id, members),
+            TypeUse::Union { members, .. } => {
+                self.lower_failure_set_type(module_id, members, generics)
+            }
             TypeUse::Tuple { elements, .. } => {
                 let elements = elements
                     .iter()
