@@ -5,8 +5,8 @@ use super::bindings::{BINDING_HEADER, BindingPackage, packages_for};
 use super::direct_loop::{Pass, direct_loops, emit_pass};
 use super::program_data::{render_program_data, requires_process_runtime};
 use super::runtime_archive_key::{
-    BindingArchiveInputs, RUNTIME_C_COMPILER, RUNTIME_C_FLAGS, RuntimeArchiveInputs,
-    binding_archive_key, runtime_archive_key, runtime_c_flags,
+    BindingArchiveInputs, RUNTIME_C_COMPILER, RuntimeArchiveInputs, binding_archive_key,
+    binding_package_flags, compile_binding_archive, runtime_archive_key, runtime_c_flags,
 };
 use crate::executable::{CoreOperation, CoreProgram};
 use crate::json::write_json_string;
@@ -412,8 +412,9 @@ fn build_to_path(
     })
 }
 
-/// Compiles `package` into its own archive in the project cache, keyed by its
-/// sources and flags, and materializes it in `output_directory`.
+/// Materializes `package`'s archive in `output_directory`: the one `build.rs`
+/// prebuilt when its key matches, otherwise one compiled into the project
+/// cache, keyed by its sources and flags.
 fn build_binding_archive(
     package: &BindingPackage,
     output_directory: &Path,
@@ -424,42 +425,27 @@ fn build_binding_archive(
     let archive_path = output_directory.join(&archive_name);
     let key = binding_archive_key(&BindingArchiveInputs {
         package: package.name,
+        package_flags: binding_package_flags(package.name),
         target_triple: env!("CHIMI_RUNTIME_TARGET"),
         compiler_identity: cc,
         binding_header: BINDING_HEADER.as_bytes(),
         sources: &package.files,
     });
-    cache.materialize(&key, "a", &archive_path, &archive_name, |temporary| {
-        let directory = output_directory.join(format!("binding-{}", package.name));
-        std::fs::create_dir_all(&directory)
-            .map_err(|error| format!("create binding package directory: {error}"))?;
-        for (name, text) in &package.files {
-            std::fs::write(directory.join(name), text)
-                .map_err(|error| format!("write binding source {name}: {error}"))?;
-        }
-        let mut objects = Vec::new();
-        for source in package.sources() {
-            let object = directory.join(format!("{source}.o"));
-            run(
-                Command::new(RUNTIME_C_COMPILER)
-                    .args(RUNTIME_C_FLAGS)
-                    .arg("-I")
-                    .arg(output_directory)
-                    .arg("-I")
-                    .arg(&directory)
-                    .arg("-c")
-                    .arg(directory.join(source))
-                    .arg("-o")
-                    .arg(&object),
-                "compile native binding package",
-            )?;
-            objects.push(object);
-        }
-        run(
-            Command::new("ar").arg("rcs").arg(temporary).args(&objects),
-            "archive native binding package",
-        )
-    })?;
+    if let Some(archive) = prebuilt_binding_archive(package.name, &key) {
+        std::fs::write(&archive_path, archive)
+            .map_err(|error| format!("materialize prebuilt binding package: {error}"))?;
+        cache.record_prebuilt(&archive_name);
+    } else {
+        cache.materialize(&key, "a", &archive_path, &archive_name, |temporary| {
+            compile_binding_archive(
+                package.name,
+                &package.files,
+                output_directory,
+                &output_directory.join(format!("binding-{}", package.name)),
+                temporary,
+            )
+        })?;
+    }
     Ok(LinkedBindingPackage {
         name: package.name.to_owned(),
         archive_path,
@@ -469,6 +455,19 @@ fn build_binding_archive(
             .map(|library| (*library).to_owned())
             .collect(),
     })
+}
+
+// Written by `build.rs`: `(package, key, archive)` of each binding package it
+// prebuilt; empty when it prebuilt none.
+include!(concat!(env!("OUT_DIR"), "/prebuilt_bindings.rs"));
+
+/// The archive `build.rs` compiled for `package`, when it was compiled from
+/// exactly the inputs `key` names; otherwise `None`.
+fn prebuilt_binding_archive(package: &str, key: &str) -> Option<&'static [u8]> {
+    PREBUILT_BINDINGS
+        .iter()
+        .find(|(name, prebuilt_key, _)| *name == package && *prebuilt_key == key)
+        .map(|(_, _, archive)| *archive)
 }
 
 const RUNTIME_SOURCE: &str = include_str!("../../runtime/native/runtime.c");

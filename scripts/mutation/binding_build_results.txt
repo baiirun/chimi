@@ -1,0 +1,11 @@
+# mutation run at 6c21d9983c74ace71d2e0ec08ff89a8ab982971f
+# binding_build_mutations.py: 7 mutants against compiler/chimi
+BASELINE ok  [lib bindings] (42s)
+KILLED       the key ignores a package's flags [lib bindings] (39s)
+KILLED       two sources may share an object [lib bindings] (38s)
+KILLED       a package's flags are not passed to the compiler [lib bindings] (42s)
+KILLED       a package's include directories are not made absolute [lib bindings] (41s)
+KILLED       sources in subdirectories are not embedded [lib bindings] (43s)
+KILLED       a prebuilt archive is used whatever its key [lib bindings] (36s)
+KILLED       prebuilt binding archives are never used [lib bindings] (29s)
+# result: every mutant killed
