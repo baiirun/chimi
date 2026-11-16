@@ -378,7 +378,7 @@ fn linger(reader: Reader<NetError>, writer: Writer<NetError>) -> Void needs {
   let _ = Result.capture(fn() {
     Stream.close(writer)
     Task.timeout(fn() {
-      loop more = True {
+      loop _more = True {
         let chunk = Stream.read(reader)
         case chunk {
           Some(_) -> True
