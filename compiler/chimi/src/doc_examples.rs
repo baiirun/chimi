@@ -141,28 +141,41 @@ fn example_blocks(lines: &[&str]) -> Vec<(String, Block)> {
         while index < lines.len() && doc_content(lines[index]).is_some() {
             index += 1;
         }
+        let end = index;
+        // Plain `//` lines may separate the doc comment from its item.
+        while lines
+            .get(index)
+            .is_some_and(|line| doc_content(line).is_none() && line.trim_start().starts_with("//"))
+        {
+            index += 1;
+        }
         let Some(item) = lines.get(index).and_then(|line| item_name(line)) else {
             continue;
         };
-        for block in fenced_blocks(lines, start, index) {
+        for block in fenced_blocks(lines, start, end) {
             blocks.push((item.clone(), block));
         }
     }
     blocks
 }
 
-/// The doc comment directly before the item whose first line starts at byte
-/// `item_line`: its `///` lines with the markers removed, or `None` when the
-/// line before the item is not a doc comment.
+/// The doc comment before the item whose first line starts at byte
+/// `item_line`: its `///` lines with the markers removed, or `None` when no
+/// doc comment is there. Plain `//` lines between the doc comment and the
+/// item are skipped, as rustdoc does. Reads backwards from the item, so the
+/// cost is the comment's length, not the file's.
 pub(crate) fn doc_comment_before(text: &str, item_line: usize) -> Option<String> {
-    let before: Vec<&str> = text[..item_line].split('\n').collect();
-    // `before` ends with the empty text after the item line's preceding newline.
-    let lines = &before[..before.len().saturating_sub(1)];
-    let first = lines
-        .iter()
-        .rposition(|line| doc_content(line).is_none())
-        .map_or(0, |index| index + 1);
-    doc_text(&lines[first..])
+    // The first piece is the empty text after the newline before the item.
+    let mut lines = text[..item_line].rsplit('\n').skip(1).peekable();
+    while lines
+        .peek()
+        .is_some_and(|line| doc_content(line).is_none() && line.trim_start().starts_with("//"))
+    {
+        lines.next();
+    }
+    let mut doc: Vec<&str> = lines.map_while(|line| doc_content(line).map(|_| line)).collect();
+    doc.reverse();
+    doc_text(&doc)
 }
 
 /// The module's own doc comment: a `///` run before the first item that a
@@ -298,7 +311,7 @@ fn code_line(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::examples;
+    use super::{doc_comment_before, examples};
 
     #[test]
     fn an_example_keeps_the_documented_layout() {
@@ -374,6 +387,18 @@ mod tests {
         assert!(found[2].text.contains("    import std/test as Test\ntest \"Point example 1\" {Void }"), "{}", found[2].text);
         assert!(found[0].text.contains("test \"run example 1\" {\n    first\n}"));
         assert!(found[1].text.contains("test \"run example 2\" {\n    second\n}"));
+    }
+
+    #[test]
+    fn a_plain_comment_may_separate_an_example_from_its_item() {
+        let text = "/// ```chimi\n/// 1\n/// ```\n// note\npub fn noted() -> Int {\n  1\n}\n";
+        let found = examples(text);
+        let names: Vec<&str> = found.iter().map(|example| example.item.as_str()).collect();
+        assert_eq!(names, ["noted"]);
+        assert_eq!(
+            doc_comment_before(text, text.find("pub fn").unwrap()).as_deref(),
+            Some("```chimi\n1\n```")
+        );
     }
 
     #[test]

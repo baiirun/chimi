@@ -8,6 +8,7 @@
 //! A name that starts with `_` is unused on purpose, so no rule reports it.
 
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
+use crate::doc::{ItemNodes, kind_name};
 use crate::ids::SymbolId;
 use crate::operations::RUNNER_PROVIDERS;
 use crate::resolution::{Namespace, ProjectSymbolKind, ReferenceResolution, ResolvedProject};
@@ -20,6 +21,8 @@ pub(crate) const UNUSED_IMPORT: &str = "unused-import";
 pub(crate) const UNUSED_PRIVATE: &str = "unused-private";
 /// A `let` or pattern binding its scope never reads.
 pub(crate) const UNUSED_BINDING: &str = "unused-binding";
+/// A public item with no `///` doc comment.
+pub(crate) const MISSING_DOC: &str = "missing-doc";
 
 /// The findings for every module `include` accepts, in module order, then
 /// source order.
@@ -33,6 +36,7 @@ pub(crate) fn lint(resolved: &ResolvedProject, include: impl Fn(&str) -> bool) -
         let mut module_findings = unused_imports(resolved, module);
         module_findings.extend(unused_private_items(resolved, module, &used));
         module_findings.extend(unused_bindings(resolved, module, &used));
+        module_findings.extend(missing_docs(module));
         module_findings.sort_by_key(|diagnostic| diagnostic.range().start());
         findings.extend(module_findings);
     }
@@ -211,6 +215,34 @@ fn unused_bindings(
                     symbol.name, symbol.name
                 ),
             ))
+        })
+        .collect()
+}
+
+/// A public item a reader of `chimi doc` would see with no explanation.
+/// `main` is exempt: the entry point is the program, not an API.
+fn missing_docs(module: &SemanticModule) -> Vec<Diagnostic> {
+    let nodes = ItemNodes::new(module);
+    module
+        .declarations
+        .iter()
+        .filter(|declaration| {
+            declaration.public
+                && declaration.name.text != "main"
+                && !is_intentionally_unused(&declaration.name.text)
+                && nodes.doc(declaration).is_none()
+        })
+        .map(|declaration| {
+            finding(
+                module,
+                MISSING_DOC,
+                declaration.name.range,
+                format!(
+                    "the public {} {} has no doc comment; add a `///` line saying what it is for",
+                    kind_name(declaration.kind),
+                    declaration.name.text
+                ),
+            )
         })
         .collect()
 }

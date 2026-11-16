@@ -631,8 +631,8 @@ Fields are added, never renamed, within `v1`.
 
 ## Documentation examples
 
-Doc comments are `///` lines directly before an item, as `std/` already
-writes them. The documentation generator (T4) owns the rest of their form;
+Doc comments are `///` lines directly before an item, or before plain `//`
+lines directly above it, as `std/` already writes them. The documentation generator (T4) owns the rest of their form;
 this section fixes only how an example inside one runs. A fenced ```` ```chimi ```` block in a doc comment is an
 **example**:
 
