@@ -2753,6 +2753,9 @@ typedef struct {
   ChimiCarriedCapability *carried;
   size_t carried_count;
   size_t carried_capacity;
+  /* Managed process and supervisor handles met while collecting. Each has one
+     owner, so a value a broadcast or watch would copy must not hold one. */
+  size_t managed_count;
 } CapabilityTransfer;
 
 /* Visited-set slots examined by every capture transfer so far; the memory report's
@@ -2852,6 +2855,12 @@ static bool transfer_captured_capability(CapabilityTransfer *transfer, ChimiValu
 }
 
 /* Queues a value's parts, or transfers it when it is a capability the child takes. */
+/* The defect for publishing a managed handle where every subscriber would get a copy:
+   a handle has one owner, so two copies would both look valid. */
+#define MANAGED_COPY_DEFECT(function)                                                    \
+  "channel capability violation: " function " cannot hold a managed process or "         \
+  "supervisor handle, because every subscriber gets a copy"
+
 static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *value) {
   switch (value->kind) {
     case VALUE_CHANNEL_RECEIVER:
@@ -2894,13 +2903,15 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
     case VALUE_PROCESS_ADDRESS:
     case VALUE_PROCESS_INBOX:
     case VALUE_SUPERVISOR_RUNNING:
-    case VALUE_MANAGED_PROCESS:
-    case VALUE_MANAGED_SUPERVISOR:
     case VALUE_PROCESS_MONITOR:
     case VALUE_TEST_RECORDER:
     case VALUE_TEST_SCRIPT:
     case VALUE_TEST_MAILBOX: return true;
     case VALUE_NATIVE_HANDLE: return true;
+    case VALUE_MANAGED_PROCESS:
+    case VALUE_MANAGED_SUPERVISOR:
+      if (transfer->collect) ++transfer->managed_count;
+      return true;
   }
   return false;
 }
@@ -8278,7 +8289,11 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
         return defect(numeric_message("%s: the handle belongs to supervisor %" PRIu64 ", not supervisor %" PRIu64,
                                       function, request.owner, arguments[0]->as.managed.supervisor),
                       call_node);
-      return defect(numeric_message("%s scheduler request failed", function), call_node);
+      return defect(numeric_message("%s: the handle names no current member of supervisor %" PRIu64
+                                    "; it was removed already, through this handle or a copy of it, "
+                                    "or the supervisor has stopped",
+                                    function, arguments[0]->as.managed.supervisor),
+                    call_node);
     }
     case CHIMI_INTRINSIC_SUPERVISOR_STOP:
     case CHIMI_INTRINSIC_SUPERVISOR_WAIT: {
@@ -10126,10 +10141,12 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       transfer_captures(&carried, initial->roots[0]);
       size_t carried_count = carried.carried_count;
       free(carried.carried);
-      if (carried_count) {
+      if (carried_count || carried.managed_count) {
         fragment_free(initial);
-        return defect("channel capability violation: Watch.starting_with cannot hold a value "
-                      "with a Receiver or Completion, because every subscriber gets a copy",
+        return defect(carried_count
+                        ? "channel capability violation: Watch.starting_with cannot hold a value "
+                          "with a Receiver or Completion, because every subscriber gets a copy"
+                        : MANAGED_COPY_DEFECT("Watch.starting_with"),
                       call_node);
       }
       ChimiSchedulerRequest request = {
@@ -10166,6 +10183,14 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
          before anything can receive them. */
       CapabilityTransfer carried = {.collect = true};
       transfer_captures(&carried, message->roots[0]);
+      if (carried.managed_count && intrinsic != CHIMI_INTRINSIC_CHANNEL_SEND) {
+        free(carried.carried);
+        fragment_free(message);
+        return defect(intrinsic == CHIMI_INTRINSIC_BROADCAST_PUBLISH
+                        ? MANAGED_COPY_DEFECT("Broadcast.publish")
+                        : MANAGED_COPY_DEFECT("Watch.publish"),
+                      call_node);
+      }
       ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
       bool first = true;
       for (;;) {
