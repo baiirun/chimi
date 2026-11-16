@@ -319,20 +319,31 @@ pub fn host_for_tests() -> Commands                      // test-only
 - There is no shell. The arguments MUST reach the program exactly as given. A
   program name without a `/` is looked up on the parent's `PATH` (on
   `/usr/bin:/bin` when it is unset), before the child is created, so
-  `NotFound` and `PermissionDenied` are reported by the start itself; a name
-  with a `/` is used as given, from the parent's working directory.
+  `NotFound` and `PermissionDenied` are reported by the start itself; a
+  directory on `PATH` named like the program is passed over. A name with a
+  `/` is found from the parent's working directory, even when `directory`
+  gives the child another. A working directory that does not exist, is not a
+  directory or cannot be entered is `InvalidDirectory`, also reported by the
+  start. A file the kernel cannot run (no `#!` line, wrong format) is
+  `Failed`, and `Failed` carries only the operating system's words.
 - `start(command, use)` is the only way to hold a `Child`: when `use` returns,
   fails or is cancelled, a child still running MUST be killed with SIGKILL and
   reaped, so no child and no zombie outlives the `start` that made it. A
-  `Child` used after that answers `Closed` from `wait`.
+  `Child` used after that answers `Closed` from `wait`. The child's own
+  children are not stopped: a program that leaves its children running when
+  it dies leaves them to outlive the `start` (process groups are decided
+  with the graceful release in part 4).
 - `wait` MUST let other tasks run while the child runs, and MUST return the
   same `Status` when asked again. It is a cancellation point. A nonzero exit
   is a `Status`, never an `ExecError`. `terminate` sends SIGTERM and `kill`
   SIGKILL; both do nothing once the child has been waited for, so a signal
   never reaches a reused process number.
-- The child starts with the default action and an unblocked mask for SIGINT,
-  SIGTERM, SIGHUP, SIGUSR1, SIGUSR2, SIGPIPE and SIGCHLD, whatever the parent
-  set for itself, and stays in the parent's process group.
+- The child starts with an empty signal mask and the actions `exec` leaves:
+  the runtime's own handlers reset to the default, and a signal the parent
+  inherited as ignored stays ignored, so a program run under `nohup` passes
+  that on, as a shell does. The child stays in the parent's process group,
+  and no file the runtime opens for itself (the telemetry, outcome, profile
+  and memory reports) stays open in it.
 - On the native backend `std/exec` is a binding package
   (`runtime/native/bindings/exec`). It spawns with `posix_spawn` and waits
   with `chimi_binding_wait_child` (binding ABI 2), which issues
@@ -407,8 +418,10 @@ pub fn host_for_tests() -> Commands                      // test-only
 | The interpreter defects on a wait; a fake on both backends; `T4400` without one | `tests/std_signal.rs` `the_interpreter_needs_the_native_runtime_to_wait`, `a_test_supplies_signals_as_a_fake` |
 | `temporary_directory` is removed after the test; `files_within` refuses paths outside it and relative ones; a fake; `T4400` without one; `T4401` from `main` | `tests/host_modules.rs` `a_test_uses_real_files_in_a_temporary_directory_or_a_fake` |
 | A status for an exit code or a signal; arguments pass unchanged; a second `wait` answers the same | `tests/std_exec.rs` `a_child_reports_how_it_ended` |
-| `NotFound`, `PermissionDenied` and `InvalidDirectory` before the child starts; `PATH` lookup; variables and a replaced environment; a working directory; `Stdio.Null` | `tests/std_exec.rs` `a_command_that_cannot_start_fails_with_its_reason` |
+| `NotFound`, `PermissionDenied` and `InvalidDirectory` before the child starts; `PATH` lookup; variables and a replaced environment; a working directory; `Stdio.Null`; a relative program with another working directory; `Failed` for a file the kernel cannot run | `tests/std_exec.rs` `a_command_that_cannot_start_fails_with_its_reason` |
+| A directory on `PATH` named like the program is passed over | `tests/std_exec.rs` `a_directory_on_path_is_not_the_program` |
+| Other tasks run while one waits for a child, and the exit wakes the wait without waiting for a recheck; two tasks waiting for one child both get its status | `tests/std_exec.rs` `a_child_wait_lets_other_tasks_run_and_ends_at_the_exit`, `a_child_is_stopped_and_never_outlives_its_start` |
 | `kill` and `terminate`; a child left running, or whose wait was cancelled, is killed and reaped when its `start` ends; `Closed` after release | `tests/std_exec.rs` `a_child_is_stopped_and_never_outlives_its_start` |
 | A child wait holds virtual time | `tests/std_exec.rs` `a_child_wait_holds_virtual_time`; the scheduler side in `runtime/chimi-fiber/src/scheduler/child_tests.rs` |
-| A child gets default signal actions when the parent ignores SIGHUP | `tests/std_exec.rs` `a_child_gets_default_signal_actions_whatever_the_parent_ignores` |
+| A child keeps SIGHUP ignored when the parent inherited it ignored | `tests/std_exec.rs` `a_child_keeps_the_signals_its_parent_ignores` |
 | A fake on both backends; the runner closes `commands` on `main`; `T4401` from `main`; `T4400` without one; the interpreter defects | `tests/std_exec.rs` `a_fake_stands_in_for_real_programs_on_both_backends`, `main_gets_real_programs_by_declaring_the_need_and_nothing_else_does`, `the_interpreter_cannot_start_real_programs` |
