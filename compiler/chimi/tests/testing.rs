@@ -1126,3 +1126,69 @@ fn main_gets_a_random_source_only_under_the_name_random() {
     assert_eq!(run.status, Some(1), "{}", run.stdout);
     assert!(run.stderr.contains("error[E5002]"), "{}", run.stderr);
 }
+
+/// `chimi test <directory>` runs every module under it, reported in module path
+/// order, and skips hidden directories and `target`, where builds write.
+#[test]
+fn a_directory_input_runs_every_module_under_it() {
+    let scratch = scratch_directory("directory-input");
+    let write = |path: &str, text: &str| {
+        let path = scratch.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        "app/shapes.chimi",
+        "pub fn area(width: Int, height: Int) -> Int {\n  width * height\n}\n",
+    );
+    write(
+        "app/shapes_test.chimi",
+        concat!(
+            "import app/shapes as Shapes\n",
+            "import std/test as Test\n",
+            "\n",
+            "test \"a rectangle\" {\n",
+            "  Test.assert_equal(Shapes.area(2, 3), 6)\n",
+            "}\n",
+        ),
+    );
+    write(
+        "lib/text_test.chimi",
+        concat!(
+            "import std/test as Test\n",
+            "\n",
+            "test \"adds\" {\n",
+            "  Test.assert_equal(1 + 1, 2)\n",
+            "}\n",
+        ),
+    );
+    write("aardvark.chimi", "import std/test as Test\n\ntest \"first\" {\n  Test.assert(True, \"holds\")\n}\n");
+    write(".hidden/broken.chimi", "this is not chimi\n");
+    write("target/broken.chimi", "this is not chimi\n");
+    for backend in ["--backend=native", "--backend=interpreter"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .args(["test", ".", backend])
+            .output()
+            .expect("run chimi");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{backend}: {stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            stdout,
+            concat!(
+                "test aardvark \"first\" ... ok\n",
+                "test app/shapes_test \"a rectangle\" ... ok\n",
+                "test lib/text_test \"adds\" ... ok\n",
+                "\n",
+                "3 passed, 0 failed\n",
+            ),
+            "{backend}"
+        );
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}

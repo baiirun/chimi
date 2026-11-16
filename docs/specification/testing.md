@@ -9,10 +9,11 @@ runnable documentation examples. It covers T1 and G16 of the
 testing row of the [standard library map](../plans/standard-library-map.md).
 Implemented: test declarations (they parse, format, and type-check, and
 builds drop them), the `chimi test` runner on both backends with the human
-report, `--json`, filters, jobs, the time limit, the clock options, and the
+report, `--json`, filters, jobs, the time limit, the clock options, directory
+inputs, and the
 exit status, the four `std/test` assertions, `capture_defect`, recorders
 and scripts, fake mailboxes, `T4401`, `T4403`, and `std/random` with
-`--seed`. Not implemented yet: `--trace`, directory inputs, doc-comment examples,
+`--seed`. Not implemented yet: `--trace`, doc-comment examples,
 and the std-tests migration. The build is tracked
 by CHI-208; the spec was written under CHI-202.
 
@@ -536,8 +537,11 @@ the code a fake address:
 chimi test [<path> | --root <project> <module>] [options]
 ```
 
-`<path>` is a source file or a directory. A directory, or a project root,
-means every module under it. Options:
+`<path>` is a source file or a directory. A directory means every module
+under it: each `.chimi` file is a module named by its path from the
+directory, as `app/checkout` for `app/checkout.chimi`. Hidden directories and
+`target`, where builds write, are skipped. `--root <project> <module>` runs
+the tests in that module and the modules it imports. Options:
 
 | Option | Meaning |
 | --- | --- |

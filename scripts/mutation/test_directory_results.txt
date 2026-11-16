@@ -1,0 +1,8 @@
+# mutation run at 3a9cf9e345b458c5a7bb8c1a81b5b0a465bbce90
+# test_directory_mutations.py: 5 mutants against compiler/chimi
+KILLED       target is walked [testing -- a_directory_input] (11s)
+KILLED       hidden directories are walked [testing -- a_directory_input] (3s)
+KILLED       subdirectories are never walked [testing -- a_directory_input] (19s)
+KILLED       only the first module loads [testing -- a_directory_input] (19s)
+KILLED       a directory is read as a file [testing -- a_directory_input] (3s)
+# result: every mutant killed

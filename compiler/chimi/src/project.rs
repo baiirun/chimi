@@ -107,17 +107,34 @@ fn read_standard_module(
 /// The module path of each `.chimi` file under `directory`, as `std/list` for
 /// `list.chimi`, in ascending order.
 fn standard_module_paths(directory: &Path) -> Result<Vec<String>, ProjectLoadError> {
-    let read_error = |path: &Path, source| ProjectLoadError::ReadStandardDirectory {
-        path: path.to_owned(),
-        source,
-    };
+    let paths = module_paths_under(directory, |_| true).map_err(|source| {
+        ProjectLoadError::ReadStandardDirectory {
+            path: directory.to_owned(),
+            source,
+        }
+    })?;
+    Ok(paths.into_iter().map(|path| format!("std/{path}")).collect())
+}
+
+/// The path from `directory` of each `.chimi` file under it, without the
+/// extension and joined with `/`, in ascending order. It descends only into
+/// subdirectories whose name `descend` accepts.
+fn module_paths_under(
+    directory: &Path,
+    descend: impl Fn(&str) -> bool,
+) -> std::io::Result<Vec<String>> {
     let mut paths = Vec::new();
     let mut pending = vec![directory.to_owned()];
     while let Some(current) = pending.pop() {
-        for entry in std::fs::read_dir(&current).map_err(|source| read_error(&current, source))? {
-            let path = entry.map_err(|source| read_error(&current, source))?.path();
+        for entry in std::fs::read_dir(&current)? {
+            let path = entry?.path();
             if path.is_dir() {
-                pending.push(path);
+                if path
+                    .file_name()
+                    .is_some_and(|name| descend(&name.to_string_lossy()))
+                {
+                    pending.push(path);
+                }
             } else if path
                 .extension()
                 .is_some_and(|extension| extension == "chimi")
@@ -126,12 +143,13 @@ fn standard_module_paths(directory: &Path) -> Result<Vec<String>, ProjectLoadErr
                     .strip_prefix(directory)
                     .expect("walked paths are inside the directory")
                     .with_extension("");
-                let module_path = relative
-                    .components()
-                    .map(|component| component.as_os_str().to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join("/");
-                paths.push(format!("std/{module_path}"));
+                paths.push(
+                    relative
+                        .components()
+                        .map(|component| component.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                );
             }
         }
     }
@@ -219,6 +237,47 @@ impl LoadedProject {
             modules: Vec::new(),
         };
         loader.load_module(&entry_module)?;
+        let mut modules = loader.modules;
+        standard.add_imported_modules(&mut modules)?;
+        Ok(Self { modules })
+    }
+
+    /// Every module under `root`, as `chimi test <directory>` reads it: each
+    /// `.chimi` file is a module named by its path from `root`, loaded with its
+    /// imports. Directories whose names start with `.`, and `target`, where
+    /// builds write, are skipped.
+    pub fn load_directory(
+        root: impl AsRef<Path>,
+        standard: &StandardTree,
+    ) -> Result<Self, ProjectLoadError> {
+        let requested_root = root.as_ref();
+        let root = requested_root
+            .canonicalize()
+            .map_err(|source| ProjectLoadError::ReadRoot {
+                path: requested_root.to_owned(),
+                source,
+            })?;
+        if !root.is_dir() {
+            return Err(ProjectLoadError::RootNotDirectory { path: root });
+        }
+        let module_paths = module_paths_under(&root, |name| {
+            !name.starts_with('.') && name != "target"
+        })
+        .map_err(|source| ProjectLoadError::ReadRoot {
+            path: requested_root.to_owned(),
+            source,
+        })?;
+        let mut loader = Loader {
+            root,
+            reader: &FileSystemReader,
+            states: HashMap::new(),
+            files: HashMap::new(),
+            stack: Vec::new(),
+            modules: Vec::new(),
+        };
+        for module_path in &module_paths {
+            loader.load_module(module_path)?;
+        }
         let mut modules = loader.modules;
         standard.add_imported_modules(&mut modules)?;
         Ok(Self { modules })
