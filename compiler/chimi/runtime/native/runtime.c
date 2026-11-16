@@ -78,7 +78,9 @@ typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN
                /* A `std/bytes.Bytes` in `as.text`, which holds any bytes. */
                VALUE_BYTES,
                /* A `std/cause.Cause` in `as.record`: the CAUSE_* fields, unnamed. */
-               VALUE_CAUSE } ValueKind;
+               VALUE_CAUSE,
+               /* A `std/test.Recorder` or `Script`: its TestLog id in `as.address.target`. */
+               VALUE_TEST_RECORDER, VALUE_TEST_SCRIPT } ValueKind;
 /* CALL_CONSTRUCTOR is a constructor with fields named as a value; calling it constructs. */
 typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC,
                CALL_CONSTRUCTOR } CallableKind;
@@ -1379,7 +1381,9 @@ static void mark_children(void *pointer) {
         case VALUE_SUPERVISOR_RUNNING:
         case VALUE_MANAGED_PROCESS:
         case VALUE_MANAGED_SUPERVISOR:
-        case VALUE_PROCESS_MONITOR: break;
+        case VALUE_PROCESS_MONITOR:
+        case VALUE_TEST_RECORDER:
+        case VALUE_TEST_SCRIPT: break;
       }
       break;
     }
@@ -1909,7 +1913,9 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
         case VALUE_SUPERVISOR_RUNNING:
         case VALUE_MANAGED_PROCESS:
         case VALUE_MANAGED_SUPERVISOR:
-        case VALUE_PROCESS_MONITOR: break;
+        case VALUE_PROCESS_MONITOR:
+        case VALUE_TEST_RECORDER:
+        case VALUE_TEST_SCRIPT: break;
       }
       break;
     }
@@ -2867,7 +2873,9 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
     case VALUE_SUPERVISOR_RUNNING:
     case VALUE_MANAGED_PROCESS:
     case VALUE_MANAGED_SUPERVISOR:
-    case VALUE_PROCESS_MONITOR: return true;
+    case VALUE_PROCESS_MONITOR:
+    case VALUE_TEST_RECORDER:
+    case VALUE_TEST_SCRIPT: return true;
   }
   return false;
 }
@@ -3330,6 +3338,8 @@ static void json_value(FILE *output, const ChimiValue *root) {
       case VALUE_MANAGED_SUPERVISOR:
         fputs("{\"type\":\"ManagedSupervisor\",\"fields\":{}}", output); break;
       case VALUE_PROCESS_MONITOR: fputs("{\"type\":\"Monitor\",\"fields\":{}}", output); break;
+      case VALUE_TEST_RECORDER: fputs("{\"type\":\"Recorder\",\"fields\":{}}", output); break;
+      case VALUE_TEST_SCRIPT: fputs("{\"type\":\"Script\",\"fields\":{}}", output); break;
       case VALUE_CAUSE: fputs("{\"type\":\"Cause\",\"fields\":{}}", output); break;
     }
   }
@@ -3426,7 +3436,7 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
       case VALUE_MANAGED_SUPERVISOR: case VALUE_CAUSE:
         order = order_of((int64_t)(uintptr_t)left, (int64_t)(uintptr_t)right); break;
       /* Routing kind, then the name or incarnation it routes to. */
-      case VALUE_PROCESS_MONITOR:
+      case VALUE_PROCESS_MONITOR: case VALUE_TEST_RECORDER: case VALUE_TEST_SCRIPT:
         order = order_of((int64_t)left->as.address.target, (int64_t)right->as.address.target); break;
       case VALUE_PROCESS_ADDRESS:
         order = order_of(left->as.address.kind, right->as.address.kind);
@@ -5653,6 +5663,103 @@ static ChimiControl *capture_defect(ChimiRuntime *runtime, ChimiValue **argument
   return control;
 }
 
+/* A std/test Recorder or Script, as TestLog in execution/core_operations.rs. The
+   value is plain data (its id in `as.address.target`); the log lives here, outside
+   every heap, so a value in it is one detached fragment. A Recorder copies each
+   fragment out on every `recorded`; a Script hands each out once, by adoption. */
+typedef struct {
+  ValueKind kind;
+  RuntimeFragment **values;
+  uint32_t length, capacity, taken;
+} TestLog;
+static TestLog *test_logs;
+static uint64_t test_log_count;
+
+static ChimiValue *new_test_log(ValueKind kind) {
+  if (test_log_count % 16 == 0) {
+    test_logs = realloc(test_logs, (size_t)(test_log_count + 16) * sizeof(*test_logs));
+    if (!test_logs) abort();
+  }
+  test_logs[test_log_count] = (TestLog){.kind = kind};
+  ChimiValue *value = new_value(kind);
+  value->as.address.target = ++test_log_count;
+  return value;
+}
+
+static TestLog *test_log(const ChimiValue *value) {
+  uint64_t id = value->as.address.target;
+  if (id == 0 || id > test_log_count || test_logs[id - 1].kind != value->kind) abort();
+  return &test_logs[id - 1];
+}
+
+/* NULL, with the defect in `*failure`, when `value` reaches outside this heap. */
+static bool test_log_push(TestLog *log, ChimiValue *value, const char *operation, uint32_t call_node,
+                          ChimiControl **failure) {
+  void *roots[] = {value};
+  AllocationKind kinds[] = {ALLOCATION_VALUE};
+  RuntimeFragment *fragment = NULL;
+  if (fragment_copy(roots, kinds, 1, &fragment) != HEAP_OK) {
+    *failure = defect(numeric_message("%s: the value points into owner %" PRIu64
+                                      ", outside the caller's heap (owner %" PRIu64 ")",
+                                      operation, fragment_copy_foreign_owner, current_heap->owner),
+                      call_node);
+    return false;
+  }
+  if (log->length == log->capacity) {
+    log->capacity = log->capacity ? log->capacity * 2 : 8;
+    log->values = realloc(log->values, log->capacity * sizeof(*log->values));
+    if (!log->values) abort();
+  }
+  log->values[log->length++] = fragment;
+  return true;
+}
+
+static ChimiControl *invoke_test_log(uint32_t intrinsic, ChimiValue **arguments,
+                                     uint32_t argument_count, uint32_t call_node) {
+  ChimiControl *failure = NULL;
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_TEST_RECORDER:
+      if (argument_count != 0) break;
+      return success(new_test_log(VALUE_TEST_RECORDER));
+    case CHIMI_INTRINSIC_TEST_SCRIPT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST) break;
+      ChimiValue *script = new_test_log(VALUE_TEST_SCRIPT);
+      for (uint32_t index = 0; index < list_length(arguments[0]); ++index)
+        if (!test_log_push(test_log(script), list_get(arguments[0], index), "Test.script", call_node, &failure))
+          return failure;
+      return success(script);
+    }
+    case CHIMI_INTRINSIC_TEST_RECORD:
+      if (argument_count != 2 || arguments[0]->kind != VALUE_TEST_RECORDER) break;
+      if (!test_log_push(test_log(arguments[0]), arguments[1], "Test.record", call_node, &failure))
+        return failure;
+      return success(void_value());
+    case CHIMI_INTRINSIC_TEST_RECORDED: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEST_RECORDER) break;
+      TestLog *log = test_log(arguments[0]);
+      ChimiValue **values = malloc((log->length ? log->length : 1) * sizeof(*values));
+      if (!values) abort();
+      for (uint32_t index = 0; index < log->length; ++index)
+        fragment_copy_into_current(log->values[index], (void **)&values[index]);
+      ChimiValue *list = list_from_values(values, log->length);
+      free(values);
+      return success(list);
+    }
+    case CHIMI_INTRINSIC_TEST_NEXT: {
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEST_SCRIPT) break;
+      TestLog *log = test_log(arguments[0]);
+      if (log->taken == log->length)
+        return defect(numeric_message("Test.next: script exhausted after %" PRIu32 " values", log->taken),
+                      call_node);
+      void *root = NULL;
+      fragment_adopt(log->values[log->taken], &root);
+      log->values[log->taken++] = NULL;
+      return success(root);
+    }
+  }
+  return intrinsic_shape_defect(call_node);
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
@@ -6516,6 +6623,8 @@ static void debug_expand(DebugRenderer *renderer, DebugSteps *steps, const Chimi
     case VALUE_MANAGED_PROCESS: debug_text(buffer, "<ManagedProcess>"); return;
     case VALUE_MANAGED_SUPERVISOR: debug_text(buffer, "<ManagedSupervisor>"); return;
     case VALUE_PROCESS_MONITOR: debug_text(buffer, "<Monitor>"); return;
+    case VALUE_TEST_RECORDER: debug_text(buffer, "<Recorder>"); return;
+    case VALUE_TEST_SCRIPT: debug_text(buffer, "<Script>"); return;
   }
 }
 
@@ -8463,6 +8572,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return resource_scoped(runtime, arguments, argument_count, span, call_node, environment);
   if (intrinsic == CHIMI_INTRINSIC_TEST_CAPTURE_DEFECT)
     return capture_defect(runtime, arguments, argument_count, span, call_node, environment);
+  if (intrinsic >= CHIMI_INTRINSIC_TEST_RECORDER && intrinsic <= CHIMI_INTRINSIC_TEST_NEXT)
+    return invoke_test_log(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)

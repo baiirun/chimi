@@ -61,8 +61,8 @@ impl CoreProgram {
     }
 
     /// The ids of the call nodes whose callee is a `std/test` operation that
-    /// fails the test as an assertion: the four assertions, and
-    /// `capture_defect` when its operation did not defect. The runner reports a
+    /// fails the test as an assertion: the four assertions, `next` on an
+    /// exhausted script, and `capture_defect` when its operation did not defect. The runner reports a
     /// defect at one of these as an assertion, and `capture_defect` lets one
     /// through instead of capturing it (testing.md, "Defects"). Program data
     /// gives the native runtime the same set (`CHIMI_ASSERTION_NODES`).
@@ -76,6 +76,7 @@ impl CoreProgram {
                         | StandardFunction::TestAssert
                         | StandardFunction::TestFail
                         | StandardFunction::TestCaptureDefect
+                        | StandardFunction::TestNext
                 ))
             ),
             _ => false,

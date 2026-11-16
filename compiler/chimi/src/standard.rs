@@ -149,6 +149,10 @@ pub(crate) enum StandardType {
     /// `std/watch.Subscription<T>`: receives a watch's latest unseen value;
     /// exclusive, like a Receiver.
     WatchSubscription,
+    /// `std/test.Recorder<T>` and `std/test.Script<T>`: test-only handles to
+    /// logs the test execution owns (testing.md, "Recorders and scripted fakes").
+    TestRecorder,
+    TestScript,
 }
 
 impl StandardType {
@@ -227,6 +231,8 @@ impl StandardType {
             Self::Cause => "Cause",
             Self::BroadcastPublisher | Self::WatchPublisher => "Publisher",
             Self::WatchSubscription => "Subscription",
+            Self::TestRecorder => "Recorder",
+            Self::TestScript => "Script",
         }
     }
 
@@ -251,6 +257,8 @@ impl StandardType {
                 StandardProperties::Opaque("a process or supervisor capability")
             }
             Self::Task => StandardProperties::Opaque("a `Task` capability"),
+            Self::TestRecorder => StandardProperties::Opaque("a `Test.Recorder`"),
+            Self::TestScript => StandardProperties::Opaque("a `Test.Script`"),
             Self::SelectEvent => StandardProperties::Opaque("a `Select.Event`"),
             Self::ChannelSender
             | Self::ChannelReceiver
@@ -554,6 +562,11 @@ pub(crate) enum StandardFunction {
     ResourceScoped,
     // Test-only (testing.md, Defects): T4401 when reachable from `main`.
     TestCaptureDefect,
+    TestRecorder,
+    TestRecord,
+    TestRecorded,
+    TestScript,
+    TestNext,
 }
 
 impl StandardFunction {
@@ -841,7 +854,12 @@ impl StandardFunction {
             | Self::TestAssert
             | Self::TestFail => None,
             Self::ResourceScoped => None,
-            Self::TestCaptureDefect => None,
+            Self::TestCaptureDefect
+            | Self::TestRecorder
+            | Self::TestRecord
+            | Self::TestRecorded
+            | Self::TestScript
+            | Self::TestNext => None,
         }
     }
 
@@ -1020,6 +1038,11 @@ impl StandardFunction {
             Self::TestFail => "fail",
             Self::ResourceScoped => "scoped",
             Self::TestCaptureDefect => "capture_defect",
+            Self::TestRecorder => "recorder",
+            Self::TestRecord => "record",
+            Self::TestRecorded => "recorded",
+            Self::TestScript => "script",
+            Self::TestNext => "next",
         }
     }
 
@@ -1416,6 +1439,8 @@ impl StandardConstructor {
             | StandardType::Decimal
             | StandardType::Bytes
             | StandardType::Cause
+            | StandardType::TestRecorder
+            | StandardType::TestScript
             | StandardType::JsonValue
             | StandardType::JsonNumber
             | StandardType::DecodeError

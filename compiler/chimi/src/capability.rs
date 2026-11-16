@@ -373,6 +373,16 @@ impl CapabilityChecker<'_> {
                     .collect::<Vec<_>>();
                 let standard = self.standard_function(module_id, callee);
                 match standard {
+                    Some(StandardFunction::TestRecord) => {
+                        if let Some((argument, value)) = arguments.get(1) {
+                            self.check_test_log_value(module_id, "Test.record", argument, value);
+                        }
+                    }
+                    Some(StandardFunction::TestScript) => {
+                        if let Some((argument, replies)) = arguments.first() {
+                            self.check_test_log_value(module_id, "Test.script", argument, replies);
+                        }
+                    }
                     Some(StandardFunction::TaskStart) => {
                         if let Some((argument, thunk)) = arguments.first() {
                             self.check_task_transfer(module_id, argument, thunk, environment);
@@ -831,6 +841,33 @@ impl CapabilityChecker<'_> {
         self.transfer_carried(payload, argument.range(), boundary, environment);
     }
 
+    /// `T4403`: a recorder hands its values out again, to any task, and a script
+    /// is a shareable handle any task may take from, so both keep shareable
+    /// values only. (testing.md allows a script any transferable value; moving an
+    /// exclusive one through a script is not built yet.)
+    fn check_test_log_value(
+        &mut self,
+        module_id: ModuleId,
+        operation: &str,
+        argument: &ModuleExpression,
+        value: &FlowValue,
+    ) {
+        if value.properties.shareable != PropertyDerivation::Never {
+            return;
+        }
+        self.diagnostics.push(Diagnostic::error(
+            DiagnosticStage::Type,
+            "T4403",
+            self.file_id(module_id),
+            argument.range(),
+            format!(
+                "{operation} keeps its values for any task to read, so they must be shareable, \
+                 but {} is not shareable",
+                value.unshared_by.as_deref().unwrap_or("this value")
+            ),
+        ));
+    }
+
     /// `Broadcast.publish`, `Watch.publish` and `Watch.starting_with`: every
     /// subscription gets its own copy of the value, so it must be shareable.
     ///
@@ -1137,7 +1174,7 @@ impl CapabilityChecker<'_> {
         let symbol = self.expression_binding_symbol(module_id, expression)?;
         match self.typed.resolved.standard_symbol(symbol) {
             Some(StandardSymbol::Function(function)) => Some(function),
-            _ => None,
+            _ => self.typed.resolved.native_operation(symbol),
         }
     }
 

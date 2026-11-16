@@ -416,6 +416,9 @@ enum RuntimeValue {
     Callable(RuntimeCallable),
     /// A `std/cause.Cause`.
     Cause(Arc<Cause>),
+    /// A `std/test.Recorder` or `std/test.Script`: a handle to a log the test
+    /// execution owns. The handle never changes; its log does.
+    TestLog(Arc<core_operations::TestLog>),
 }
 
 thread_local! {
@@ -919,6 +922,9 @@ struct Evaluator<'core> {
     application_stderr: String,
     /// `CoreProgram::assertion_calls`, computed on the first `capture_defect`.
     assertion_calls: std::cell::OnceCell<std::collections::HashSet<u32>>,
+    /// The id the next recorder or script takes, from 1 in creation order, as
+    /// the native runtime numbers them, so both order handles alike.
+    next_test_log: u64,
 }
 
 impl<'core> Evaluator<'core> {
@@ -943,6 +949,7 @@ impl<'core> Evaluator<'core> {
             application_stdout: String::new(),
             application_stderr: String::new(),
             assertion_calls: std::cell::OnceCell::new(),
+            next_test_log: 1,
         }
     }
 
@@ -1821,6 +1828,11 @@ impl<'core> Evaluator<'core> {
             StandardFunction::TestCaptureDefect => {
                 self.invoke_capture_defect(arguments, span, call_node, environment)
             }
+            StandardFunction::TestRecorder
+            | StandardFunction::TestRecord
+            | StandardFunction::TestRecorded
+            | StandardFunction::TestScript
+            | StandardFunction::TestNext => self.invoke_test_log(function, arguments, call_node),
             StandardFunction::DebugCrash
             | StandardFunction::OptionUnwrapOrFail
             | StandardFunction::TextConcat
@@ -2787,6 +2799,15 @@ fn public_value(value: &RuntimeValue) -> ExecutionValue {
         // Diagnostic data: its public form names only what it is.
         RuntimeValue::Cause(_) => ExecutionValue::Constructed {
             type_name: "Cause".to_owned(),
+            variant_name: None,
+            fields: Vec::new(),
+        },
+        RuntimeValue::TestLog(log) => ExecutionValue::Constructed {
+            type_name: match log.kind {
+                core_operations::TestLogKind::Recorder => "Recorder",
+                core_operations::TestLogKind::Script => "Script",
+            }
+            .to_owned(),
             variant_name: None,
             fields: Vec::new(),
         },

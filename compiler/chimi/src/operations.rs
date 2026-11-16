@@ -277,6 +277,11 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     // std/resource
     runtime("std/resource.scoped", 3, StandardFunction::ResourceScoped),
     test_only("std/test.capture_defect", 1, StandardFunction::TestCaptureDefect),
+    test_only("std/test.recorder", 0, StandardFunction::TestRecorder),
+    test_only("std/test.record", 2, StandardFunction::TestRecord),
+    test_only("std/test.recorded", 1, StandardFunction::TestRecorded),
+    test_only("std/test.script", 1, StandardFunction::TestScript),
+    test_only("std/test.next", 1, StandardFunction::TestNext),
 ];
 
 pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
@@ -312,6 +317,8 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     native_type("std/bytes.Bytes", StandardType::Bytes),
     native_type("std/json.Number", StandardType::JsonNumber),
     native_type("std/cause.Cause", StandardType::Cause),
+    native_type("std/test.Recorder", StandardType::TestRecorder),
+    native_type("std/test.Script", StandardType::TestScript),
     known_type("std/json.Value", StandardType::JsonValue),
     known_constructor("std/json.Value.Null", StandardConstructor::JsonNull),
     known_constructor("std/json.Value.Boolean", StandardConstructor::JsonBoolean),
