@@ -2,7 +2,8 @@
 
 Status: implemented in part (Phase 9). This page is the contract for the
 commands that sit around the compiler: the documentation generator, the linter and editor
-references, rename and completion now, and more editor features, cross-compilation and debugging as they land.
+references, rename, completion, inlay types and hover
+documentation now, and more editor features, cross-compilation and debugging as they land.
 The formatter, `chimi check` and `chimi test` keep their own pages
 (`testing.md` for the runner and doc-comment examples).
 
@@ -174,3 +175,29 @@ value and a dot, which needs the value's type.
 Implementation: `IncrementalTypeReport::alias_members` (in
 `compiler/chimi/src/doc.rs`) and `Workspace::completion`. Tests: the
 workspace unit tests and `compiler/chimi-lsp/tests/protocol.rs`.
+
+## Editor: inlay types and documentation on hover
+
+Purpose: show what the compiler inferred where the source leaves it out,
+and an item's documentation where it is used.
+
+Rules:
+
+- `textDocument/inlayHint` MUST give, for each `let` that does not state a
+  type, the inferred type after the binding's name, as `: List<Int>`, for
+  the lines the editor asks about. An annotated `let` gets none.
+- A binding whose type is not fully inferred, because of a type error or an
+  unsolved type, MUST get no hint: a wrong type misleads more than none.
+- Hover MUST add the item's `///` doc comment under the contract or type it
+  shows, after a rule, at a reference to the item in any module and at its
+  declaration. An item without a doc comment shows only its contract.
+
+Not yet covered: hints for pattern bindings (a destructuring `let`, a `case`
+arm) and for parameters of anonymous functions, and doc comments of fields
+and variants.
+
+Implementation: `compiler/chimi/src/hints.rs`
+(`IncrementalTypeReport::let_type_hints`), `doc_comment_at` in
+`compiler/chimi/src/doc.rs`, and `Workspace::inlay_hints` and
+`Workspace::hover`. Tests: the workspace unit tests and
+`compiler/chimi-lsp/tests/protocol.rs`.

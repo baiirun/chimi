@@ -9,6 +9,7 @@
 //! are left out.
 
 use crate::doc_examples::{doc_comment_before, module_comment};
+use crate::occurrences::symbol_at;
 use crate::json::write_json_string_escaping_controls;
 use crate::semantic::{
     ImportBinding, ModuleDeclaration, ModuleDeclarationKind, SemanticModule, is_generated_name,
@@ -181,6 +182,25 @@ pub(crate) fn alias_members(
         _ => None,
     })?;
     document_module(typed, imported)
+}
+
+/// The `///` doc comment of the item named at `offset` in `module_path`, at
+/// a reference to it or at its declaration, in any module.
+pub(crate) fn doc_comment_at(typed: &TypedProject, module_path: &str, offset: usize) -> Option<String> {
+    let resolved = &typed.resolved;
+    let module = resolved
+        .semantic
+        .modules
+        .iter()
+        .find(|module| module.path == module_path)?;
+    let symbol = resolved.symbol(symbol_at(resolved, module, offset)?);
+    let declaring = &resolved.semantic.modules[symbol.module_id?.raw() as usize];
+    let semantic_id = symbol.semantic_id?;
+    let declaration = declaring
+        .declarations
+        .iter()
+        .find(|declaration| declaration.semantic_id == semantic_id)?;
+    item_doc(declaring.source.text(), item_start(declaring, declaration))
 }
 
 const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {

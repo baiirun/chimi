@@ -16,6 +16,7 @@ mod formatter;
 #[doc(hidden)]
 pub mod frontend_benchmark;
 mod graphemes;
+mod hints;
 mod ids;
 mod inspection;
 mod json;
@@ -46,6 +47,7 @@ pub use compiler::{
 };
 pub use doc::{ItemDocumentation, ModuleDocumentation};
 pub use formatter::FormatReport;
+pub use hints::TypeHint;
 pub use inspection::{
     CallableInspection, ClausePosition, InspectedToken, InspectionError, InspectionReport,
     NeedInspection, ReferenceInspection, SymbolInspection, SyntaxFrame, ValuePropertyInspection,
