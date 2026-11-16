@@ -40,8 +40,8 @@ MUTATIONS = [
         "            .any(|_| false)",
     )]),
     mutant("module aliases are renamable", O, [(
-        "            ProjectSymbolKind::Module\n                | ProjectSymbolKind::BuiltinModule",
-        "            ProjectSymbolKind::BuiltinModule",
+        "    let renamable = source_backed\n",
+        "    let renamable = true\n",
     )]),
     mutant("references always include the declaration", W, [(
         "                .filter(|occurrence| include_declaration || !occurrence.is_declaration())",
@@ -52,11 +52,19 @@ MUTATIONS = [
         "            || false",
     )]),
     mutant("a rename may collide", W, [(
-        "        if project.errors_after(&edits, new_name) > project.report.diagnostics().len() {",
+        "        if renamed.diagnostics().len() > self.report.diagnostics().len() {",
         "        if false {",
     )]),
-    mutant("occurrences are not deduplicated", O, [(
-        "    references.dedup();",
-        "",
+    mutant("a rename may shadow if it type-checks", W, [(
+        "        found == expected\n",
+        "        let _ = (found, expected);\n        true\n",
+    )]),
+    mutant("later spans in a file do not shift", W, [(
+        "                shift += i64::from(length) - i64::from(end - start);",
+        "                let _ = end;",
+    )]),
+    mutant("a local named like an item is imported", O, [(
+        "            | ProjectSymbolKind::LocalBinding\n            | ProjectSymbolKind::PatternBinding\n    ) {",
+        "            | ProjectSymbolKind::LocalBinding\n            | ProjectSymbolKind::PatternBinding\n    ) && false {",
     )]),
 ]

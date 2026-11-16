@@ -116,19 +116,12 @@ pub(crate) fn occurrences_at(
     references.sort_by(|left, right| {
         (&left.module_path, left.range.start()).cmp(&(&right.module_path, right.range.start()))
     });
-    references.dedup();
     occurrences.extend(references);
+    // A built-in or a module alias declares no name in source.
     let renamable = source_backed
         && !occurrences
             .iter()
-            .any(|occurrence| occurrence.module_path.starts_with("std/"))
-        && !matches!(
-            symbol.kind,
-            ProjectSymbolKind::Module
-                | ProjectSymbolKind::BuiltinModule
-                | ProjectSymbolKind::BuiltinType
-                | ProjectSymbolKind::BuiltinValue
-        );
+            .any(|occurrence| occurrence.module_path.starts_with("std/"));
     Some(SymbolOccurrences {
         name: symbol.name.clone(),
         kind: symbol.kind.name(),
@@ -293,6 +286,18 @@ fn declaration_ranges(resolved: &ResolvedProject, symbol: SymbolId) -> Vec<TextR
 /// resolution leaves unresolved.
 fn imported_occurrences(resolved: &ResolvedProject, target: SymbolId) -> Vec<Occurrence> {
     let symbol = resolved.symbol(target);
+    // Only a module-level item can be imported; a local of the same name in
+    // the declaring module is another symbol.
+    if matches!(
+        symbol.kind,
+        ProjectSymbolKind::GenericParameter
+            | ProjectSymbolKind::Parameter
+            | ProjectSymbolKind::Requirement
+            | ProjectSymbolKind::LocalBinding
+            | ProjectSymbolKind::PatternBinding
+    ) {
+        return Vec::new();
+    }
     let Some(declaring) = symbol
         .module_id
         .map(|module_id| &resolved.semantic.modules[module_id.raw() as usize])

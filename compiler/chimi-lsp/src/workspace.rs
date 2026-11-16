@@ -14,7 +14,7 @@ use chimi::project::{LoadedProject, SourceReader, StandardTree};
 use chimi::source::SourceSnapshot;
 use chimi::{
     CallableInspection, Compiler, CompilerSession, IncrementalTypeReport, InspectionReport,
-    Occurrence, ProjectSource, ReferenceInspection, SymbolOccurrences,
+    Occurrence, ProjectSource, ReferenceInspection, SymbolOccurrences, TypeReport,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -158,9 +158,9 @@ impl AnalyzedProject {
         })
     }
 
-    /// How many errors the analyzed modules have with every span in `edits`
-    /// replaced by `text`.
-    fn errors_after(&self, edits: &BTreeMap<DocumentPath, Vec<(u32, u32)>>, text: &str) -> usize {
+    /// The analyzed modules type-checked with every span in `edits` replaced
+    /// by `text`.
+    fn type_after(&self, edits: &BTreeMap<DocumentPath, Vec<(u32, u32)>>, text: &str) -> TypeReport {
         let sources = self
             .modules
             .iter()
@@ -178,7 +178,62 @@ impl AnalyzedProject {
                 .ok()
             })
             .collect();
-        Compiler::type_project(sources).diagnostics().len()
+        Compiler::type_project(sources)
+    }
+
+    /// Whether renaming every span of `edits` to `text` keeps the program's
+    /// meaning: no more errors than before, and the symbol at `anchor` (a
+    /// module path, a file and an offset of one renamed span) is written at
+    /// exactly the renamed spans afterwards. A shadowing that still
+    /// type-checks, as a parameter renamed to a constant's name, moves a
+    /// reference into or out of that set.
+    fn rename_keeps_meaning(
+        &self,
+        edits: &BTreeMap<DocumentPath, Vec<(u32, u32)>>,
+        text: &str,
+        anchor: (&str, &Path, u32),
+    ) -> bool {
+        let renamed = self.type_after(edits, text);
+        if renamed.diagnostics().len() > self.report.diagnostics().len() {
+            return false;
+        }
+        let (module_path, anchor_path, anchor_start) = anchor;
+        let length = text.len() as u32;
+        let mut expected = BTreeSet::new();
+        let mut anchor_offset = None;
+        for (document, spans) in edits {
+            let mut spans = spans.clone();
+            spans.sort_unstable();
+            // Every span holds the old name, so each one shifts the spans
+            // after it in the file by the same length difference.
+            let mut shift: i64 = 0;
+            for (start, end) in spans {
+                let moved = (i64::from(start) + shift) as u32;
+                if document.as_path() == anchor_path && start == anchor_start {
+                    anchor_offset = Some(moved);
+                }
+                expected.insert((document.as_path().to_owned(), moved, moved + length));
+                shift += i64::from(length) - i64::from(end - start);
+            }
+        }
+        let Some(offset) = anchor_offset else {
+            return false;
+        };
+        let Some(after) = renamed.occurrences(module_path, offset as usize) else {
+            return false;
+        };
+        let found: BTreeSet<_> = after
+            .occurrences()
+            .iter()
+            .map(|occurrence| {
+                (
+                    occurrence.source_path().to_owned(),
+                    occurrence.range().start(),
+                    occurrence.range().end(),
+                )
+            })
+            .collect();
+        found == expected
     }
 }
 
@@ -190,7 +245,8 @@ pub enum RenameError {
     NotRenamable(String),
     /// Not an identifier, or one whose case differs from the old name's.
     InvalidName(String),
-    /// The renamed project would not compile: the name collides or shadows.
+    /// The renamed project would not compile, or a reference would name
+    /// another symbol: the name collides or shadows.
     Conflict(String),
 }
 
@@ -207,7 +263,7 @@ impl std::fmt::Display for RenameError {
             ),
             Self::Conflict(name) => write!(
                 formatter,
-                "renaming to `{name}` would collide with another name in scope"
+                "renaming to `{name}` would collide with or shadow another name, or change what a name refers to"
             ),
         }
     }
@@ -429,7 +485,13 @@ impl Workspace {
                 .or_default()
                 .push((occurrence.range().start(), occurrence.range().end()));
         }
-        if project.errors_after(&edits, new_name) > project.report.diagnostics().len() {
+        let anchor = &occurrences.occurrences()[0];
+        let anchor = (
+            anchor.module_path(),
+            anchor.source_path(),
+            anchor.range().start(),
+        );
+        if !project.rename_keeps_meaning(&edits, new_name, anchor) {
             return Err(RenameError::Conflict(new_name.to_owned()));
         }
         Ok(edits
@@ -1070,6 +1132,69 @@ mod tests {
         assert_eq!(
             workspace.rename(&app, at(3, 8), "size"),
             Err(RenameError::NotRenamable("length".to_owned()))
+        );
+    }
+
+    /// A rename that still type-checks but makes a local shadow an item, or
+    /// an item take a local's name, changes what a reference means.
+    #[test]
+    fn rename_refuses_a_shadowing_that_type_checks() {
+        let fixture = Fixture::new("rename-shadow");
+        let app = fixture.write(
+            "app.chimi",
+            "const limit = 5\n\nfn f(n: Int) -> Int {\n  n + limit\n}\n\npub fn main() -> Int { f(1) }\n",
+        );
+        let project = ProjectConfig::new(fixture.root(), "app").unwrap();
+        let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
+        workspace.analyze(&app);
+
+        // The constant to the parameter's name, and the parameter to the
+        // constant's.
+        assert_eq!(
+            workspace.rename(&app, at(0, 7), "n"),
+            Err(RenameError::Conflict("n".to_owned()))
+        );
+        assert_eq!(
+            workspace.rename(&app, at(2, 5), "limit"),
+            Err(RenameError::Conflict("limit".to_owned()))
+        );
+        // A name nothing else uses is fine, and a longer one shifts the
+        // later spans in the file.
+        let edits = workspace.rename(&app, at(2, 5), "count").expect("renames");
+        let spans: Vec<(u32, u32)> = edits[&app]
+            .iter()
+            .map(|edit| (edit.range.start.line, edit.range.start.character))
+            .collect();
+        assert_eq!(spans, vec![(2, 5), (3, 2)]);
+        assert!(workspace.rename(&app, at(0, 7), "maximum").is_ok());
+    }
+
+    /// A parameter that shares an item's name is not the imported item.
+    #[test]
+    fn a_local_named_like_an_imported_item_is_not_imported() {
+        let fixture = Fixture::new("local-import-name");
+        let lib = fixture.write(
+            "lib.chimi",
+            "pub const total = 3\n\npub fn twice(total: Int) -> Int {\n  total + total\n}\n",
+        );
+        let app = fixture.write(
+            "app.chimi",
+            "import lib.{total}\nimport lib as Lib\n\npub fn main() -> Int {\n  Lib.twice(total)\n}\n",
+        );
+        let project = ProjectConfig::new(fixture.root(), "app").unwrap();
+        let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
+        workspace.analyze(&app);
+        let lib_path = lib.as_path().to_owned();
+
+        let uses = workspace.references(&lib, at(2, 14), true).expect("a symbol");
+
+        assert_eq!(
+            spans(&uses),
+            vec![
+                (lib_path.clone(), 2, 13, 18),
+                (lib_path.clone(), 3, 2, 7),
+                (lib_path, 3, 10, 15),
+            ]
         );
     }
 

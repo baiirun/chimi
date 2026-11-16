@@ -133,7 +133,10 @@ Rules:
   - the new name is not an identifier, or changes the leading case, since
     case decides whether a name is a type or a value;
   - the renamed project would have more errors than before, which catches a
-    collision with another name in scope or a shadowing.
+    collision with another name in scope;
+  - in the renamed project the symbol would not be written at exactly the
+    renamed places, which catches a shadowing that still type-checks, such
+    as a parameter renamed to the name of a constant its function reads.
 - A refused rename is an error reply that says why, never a partial edit.
 
 Not yet covered: renaming a struct field or an enum variant through its uses,
