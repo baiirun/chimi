@@ -76,8 +76,8 @@ owner heaps.
 
 Step 1 sorted every writable global in `runtime.c` into three groups. The test
 `compiler/chimi/tests/runtime_state.rs` compiles the runtime and fails on any
-writable static that is in neither of the last two groups' lists, so new state
-gets an owner when it is added.
+writable static that is neither the carrier nor on its shared list, and on any
+function-local static, so new state gets an owner when it is added.
 
 - **Fiber context** (`FiberContext`, the `fiber` field of the carrier): the
   heap the running fiber allocates in and its allocation target. It follows
@@ -87,11 +87,12 @@ gets an owner when it is added.
   while it runs fibers. That is the collector's and the copier's scratch
   (`collecting_*`, the mark, copy and pending stacks, `copy_counting` and the
   foreign owner of the last failed copy), the allocator's caches (small blocks,
-  young chunks, the deferred footprint), and the counters behind the memory
-  report and the profile (`heap_totals`, `copied_*`, `capture_transfer_probes`,
-  `unscoped_allocated_bytes`, `process_heap_peak_value_bytes`,
-  `profile_rows`). Today `carrier` is a constant pointer to one static, so
-  every access compiles to the fixed address the old static had.
+  young chunks, the deferred footprint, `fs_read`'s buffer), and the counters
+  behind the memory report (`heap_totals`, `copied_*`,
+  `capture_transfer_probes`, `unscoped_allocated_bytes`,
+  `process_heap_peak_value_bytes`). Today `carrier` is a constant pointer to
+  one static, so every access compiles to the fixed address the old static
+  had.
 - **Shared** (file-scope globals): state every carrier sees.
   - Heaps and constants: `main_heap`, `static_area`, `next_heap_owner`,
     `shared_values`, `constant_values`, `host_stack_limit`.
@@ -105,6 +106,9 @@ gets an owner when it is added.
     per-carrier deltas or owner-routed messages.
   - Tables whose ids travel inside values: binding handles, open files, test
     mailboxes, process defects.
+  - The operation profile's rows (`profile_rows`), allocated once at startup
+    and updated after nodes that may park. Each carrier will need its own
+    rows, allocated before the carriers start and summed in the report.
   - The `random` provider's one seeded stream, which is deterministic only on
     one carrier.
   - Standard input and every signal field. Signal handlers write these, so
@@ -123,9 +127,14 @@ Rules for the steps that run more than one carrier:
   parks in a loop, so it reads the shared queue again on every pass.
 - Leaf code that never parks (the allocator, the collector, the copier) may
   read `carrier` once per call.
-- The memory report sums the counters across carriers. A sum of per-carrier
-  peaks is not the process's peak, so decide what the peak fields mean before
-  step 3 changes the numbers.
+- The memory counters cannot simply become per-carrier fields. An allocation
+  made on one carrier can be freed on another, so that carrier's unsigned
+  `footprint_bytes` or `live_allocations` would wrap below zero, and its peak
+  check would then record a value near the type's maximum. They need signed
+  per-carrier deltas summed at report time, or shared atomics with an atomic
+  maximum for the peaks. A sum of per-carrier peaks is not the process's
+  peak either, so decide what the peak fields mean before step 3 changes the
+  numbers.
 - Before step 3, add a test build in which every resume switches to a second
   carrier with fresh scratch and caches. It is the only check that would
   catch a field filed as carrier state that must in fact follow the fiber.

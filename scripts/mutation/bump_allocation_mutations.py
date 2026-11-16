@@ -57,5 +57,5 @@ MUTATIONS = [
    [("      FORWARD(((ChimiControl *)pointer)->cause);\n", "")],
    dict(targets=["cli", "language"], filter=None)),
  m("the counters of the pass are never added",
-   [("  flush_young_counts(scope);\n  collecting_scope = scope;", "  collecting_scope = scope;")], HEAP),
+   [("  flush_young_counts(scope);\n  carrier->collecting_scope = scope;", "  carrier->collecting_scope = scope;")], HEAP),
 ]

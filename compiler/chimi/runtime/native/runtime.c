@@ -460,6 +460,9 @@ typedef struct {
   uint64_t allocations;
   uint64_t allocated_bytes;
 } ProfileRow;
+/* Allocated once at startup and indexed by node, so it is shared. Once fibers run
+   on several carriers, each carrier needs its own rows, summed in the report. */
+static ProfileRow *profile_rows;
 
 static void exhausted_memory(void) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
 
@@ -531,7 +534,6 @@ typedef struct {
   uint64_t copied_bytes;
   /* The foreign owner the last failed fragment_copy reached. */
   uint64_t fragment_copy_foreign_owner;
-  ProfileRow *profile_rows;
   SmallBlock *small_blocks[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
   uint32_t small_block_counts[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
   YoungChunk *young_chunk_cache;
@@ -548,6 +550,9 @@ typedef struct {
   /* Copies that copy_scan still has to redirect. Copying never yields, so one stack,
      kept between copies, serves every heap. */
   PointerStack copy_pending;
+  /* fs_read's buffer: read(2) fills it and the bytes are copied out before any
+     park. NULL until the first read. */
+  char *fs_read_chunk;
 } Carrier;
 
 static Carrier carrier_state = {.fiber = {.heap = &main_heap}};
@@ -736,8 +741,8 @@ static void *allocate(size_t count, size_t size) {
     innermost->pending_bytes += bytes;
     ++innermost->pending_count;
     carrier->pending_footprint_bytes += sizeof(AllocationHeader) + bytes;
-    if (carrier->profile_rows && carrier->fiber.heap->profiled_node_plus_one) {
-      ProfileRow *row = &carrier->profile_rows[carrier->fiber.heap->profiled_node_plus_one - 1];
+    if (profile_rows && carrier->fiber.heap->profiled_node_plus_one) {
+      ProfileRow *row = &profile_rows[carrier->fiber.heap->profiled_node_plus_one - 1];
       ++row->allocations;
       row->allocated_bytes += bytes;
     }
@@ -756,8 +761,8 @@ static void *allocate(size_t count, size_t size) {
   } else if (area->role != AREA_FRAGMENT) {
     carrier->unscoped_allocated_bytes += bytes;
   }
-  if (carrier->profile_rows && carrier->fiber.heap->profiled_node_plus_one) {
-    ProfileRow *row = &carrier->profile_rows[carrier->fiber.heap->profiled_node_plus_one - 1];
+  if (profile_rows && carrier->fiber.heap->profiled_node_plus_one) {
+    ProfileRow *row = &profile_rows[carrier->fiber.heap->profiled_node_plus_one - 1];
     ++row->allocations;
     row->allocated_bytes += bytes;
   }
@@ -2249,8 +2254,8 @@ static void emit_dependency(ChimiRuntime *runtime, uint32_t node_id, uint64_t sp
 
 /* Charges the current heap's allocations to `node` until profile_leave. */
 static uint32_t profile_enter(uint32_t node, const char *operation) {
-  if (!carrier->profile_rows) return 0;
-  ProfileRow *row = &carrier->profile_rows[node];
+  if (!profile_rows) return 0;
+  ProfileRow *row = &profile_rows[node];
   row->operation = operation;
   ++row->evaluations;
   uint32_t outer = carrier->fiber.heap->profiled_node_plus_one;
@@ -2258,7 +2263,7 @@ static uint32_t profile_enter(uint32_t node, const char *operation) {
   return outer;
 }
 static void profile_leave(uint32_t outer) {
-  if (carrier->profile_rows) carrier->fiber.heap->profiled_node_plus_one = outer;
+  if (profile_rows) carrier->fiber.heap->profiled_node_plus_one = outer;
 }
 
 static uint64_t begin_node(ChimiRuntime *runtime, uint32_t node, uint64_t parent, const char *operation) {
@@ -3028,7 +3033,7 @@ static ChimiValue *application_arguments(int32_t count, const char **argv) {
 
 /* Whether a direct integer root must run node by node: full tracing and profiling
    both observe every node. */
-int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace || carrier->profile_rows; }
+int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace || profile_rows; }
 ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t node_count,
                                                int64_t raw) {
   if (!runtime->silent) runtime->next_span += node_count;
@@ -9718,15 +9723,25 @@ static ChimiControl *fs_metadata(const char *path) {
   return success(fs_tuple(values, 5));
 }
 
+/* The carrier's read buffer, allocated on first use: it is too large for a fiber
+   stack, and most programs never read a file. */
+static char *fs_read_chunk(void) {
+  if (!carrier->fs_read_chunk && !(carrier->fs_read_chunk = malloc(FS_READ_CHUNK_BYTES)))
+    exhausted_memory();
+  return carrier->fs_read_chunk;
+}
+
 static ChimiControl *fs_read(ChimiRuntime *runtime, int64_t handle) {
   FsFile *file = fs_get(handle);
   if (!file) {
     ChimiValue *values[] = {integer_value(FS_CLOSED), bytes_from("", 0), text_value("file is closed")};
     return success(fs_tuple(values, 3));
   }
-  static char chunk[FS_READ_CHUNK_BYTES];
   for (;;) {
-    ssize_t count = read(file->fd, chunk, sizeof(chunk));
+    /* Read again on every pass: the wait below parks, and a later step may resume
+       this fiber on another carrier. */
+    char *chunk = fs_read_chunk();
+    ssize_t count = read(file->fd, chunk, FS_READ_CHUNK_BYTES);
     if (count >= 0) {
       ChimiValue *values[] = {integer_value(count > 0 ? 1 : 0), bytes_from(chunk, (size_t)count), text_value("")};
       return success(fs_tuple(values, 3));
@@ -11043,7 +11058,7 @@ NODE_WRAPPER(loop, "loop", {
 ChimiControl *chimi_rt_direct_loop(ChimiRuntime *runtime, uint32_t node_id,
                                    ChimiEnvironment *incoming, uint64_t parent,
                                    ChimiDirectPass pass) {
-  if (!runtime->silent || carrier->profile_rows) return chimi_rt_loop(runtime, node_id, incoming, parent);
+  if (!runtime->silent || profile_rows) return chimi_rt_loop(runtime, node_id, incoming, parent);
   ChimiControl *initial = run_node(CHIMI_NODES[node_id].b, runtime, incoming, parent);
   if (initial->kind != CONTROL_SUCCESS) return initial;
   /* A body that never reads its state (`loop s = "x" { break 5 }`) lowers whatever
@@ -11130,7 +11145,7 @@ static bool close_output(FILE *output) {
 
 static int compare_profile_rows(const void *left, const void *right) {
   uint32_t a = *(const uint32_t *)left, b = *(const uint32_t *)right;
-  const ProfileRow *x = &carrier->profile_rows[a], *y = &carrier->profile_rows[b];
+  const ProfileRow *x = &profile_rows[a], *y = &profile_rows[b];
   if (x->allocated_bytes != y->allocated_bytes) return x->allocated_bytes > y->allocated_bytes ? -1 : 1;
   if (x->evaluations != y->evaluations) return x->evaluations > y->evaluations ? -1 : 1;
   return a < b ? -1 : a > b;
@@ -11149,12 +11164,12 @@ static bool write_profile(const char *path) {
   if (!order) exhausted_memory();
   uint32_t count = 0;
   for (uint32_t node = 0; node < CHIMI_NODE_COUNT; ++node)
-    if (carrier->profile_rows[node].evaluations) order[count++] = node;
+    if (profile_rows[node].evaluations) order[count++] = node;
   qsort(order, count, sizeof(*order), compare_profile_rows);
   fputs("{\"schema\":\"chimi.runtime-profile.v1\",\"operations\":[", output);
   for (uint32_t index = 0; index < count; ++index) {
     uint32_t node = order[index];
-    const ProfileRow *row = &carrier->profile_rows[node];
+    const ProfileRow *row = &profile_rows[node];
     const ChimiOrigin *origin = &CHIMI_ORIGINS[CHIMI_NODES[node].origin];
     fprintf(output,
             "%s{\"core_node_id\":%u,\"origin_id\":%u,\"file_id\":%u,\"source_start\":%u,"
@@ -11232,11 +11247,11 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
 }
 
 static const char *scheduler_event_name(const ChimiSchedulerTraceEvent *event) {
-  static const char *task_names[] = {
+  static const char *const task_names[] = {
     "task_started", "task_parked", "task_woken", "task_cancellation_requested",
     "task_cleanup_completed", "task_terminal",
   };
-  static const char *channel_names[] = {
+  static const char *const channel_names[] = {
     "channel_created", "channel_send_accepted", "channel_send_parked",
     "channel_send_rejected_closed", "channel_send_rejected_aborted",
     "channel_send_cancelled", "channel_receive_delivered", "channel_receive_parked",
@@ -11247,7 +11262,7 @@ static const char *scheduler_event_name(const ChimiSchedulerTraceEvent *event) {
   if (event->family == CHIMI_SCHEDULER_TRACE_TASK &&
       event->kind > 0 && event->kind <= sizeof(task_names) / sizeof(*task_names))
     return task_names[event->kind - 1];
-  static const char *clock_names[] = {
+  static const char *const clock_names[] = {
     "clock_advanced", "clock_timer_started", "clock_timer_fired",
     "clock_timer_cancelled", "clock_deadlock_waiter", "clock_scope_fired",
     "clock_select_parked", "clock_select_committed", "clock_signal_received",
@@ -11259,7 +11274,7 @@ static const char *scheduler_event_name(const ChimiSchedulerTraceEvent *event) {
       event->kind > 0 && event->kind <= sizeof(clock_names) / sizeof(*clock_names))
     return clock_names[event->kind - 1];
   /* The transcript table's names, in trace-kind order. */
-  static const char *process_names[] = {
+  static const char *const process_names[] = {
     "process_started", "admission_rejected", "process_terminated", "restart_attempted",
     "restart_limit_exceeded", "supervisor_escalated", "membership_removed",
     "supervisor_stopped", "process_send", "supervisor_started",
@@ -11282,8 +11297,8 @@ static void json_word(FILE *output, const char *key, const char *word) {
 
 /* The word of a process event's `cause`: a terminal cause, or an admission reason. */
 static const char *process_cause_word(const ChimiSchedulerTraceEvent *event) {
-  static const char *terminal[] = {"returned", "failed", "defected", "cancelled", "forced"};
-  static const char *admission[] = {"capacity_reached", "name_taken", "stopped", "start_failed"};
+  static const char *const terminal[] = {"returned", "failed", "defected", "cancelled", "forced"};
+  static const char *const admission[] = {"capacity_reached", "name_taken", "stopped", "start_failed"};
   if (event->kind == CHIMI_PROCESS_TRACE_TERMINATED && event->cause >= 1 && event->cause <= 5)
     return terminal[event->cause - 1];
   if (event->kind == CHIMI_PROCESS_TRACE_ADMISSION_REJECTED && event->cause >= 1 && event->cause <= 4)
@@ -11304,7 +11319,7 @@ static void emit_process_fields(const ChimiRuntime *runtime, FILE *output,
     return;
   }
   bool send = event->kind == CHIMI_PROCESS_TRACE_SEND;
-  static const char *outcomes[] = {"accepted", "full", "unavailable"};
+  static const char *const outcomes[] = {"accepted", "full", "unavailable"};
   fprintf(output, ",\"time_ns\":%" PRId64, event->time);
   json_word(output, "cause", process_cause_word(event));
   json_word(output, "name", process_name_label(event->name));
@@ -11647,10 +11662,10 @@ static void on_user_signal(int number) {
   errno = saved;
 }
 
+static bool user_signals_installed = false;
 static void install_user_signals(void) {
-  static bool installed = false;
-  if (installed) return;
-  installed = true;
+  if (user_signals_installed) return;
+  user_signals_installed = true;
   struct sigaction action;
   memset(&action, 0, sizeof(action));
   action.sa_handler = on_user_signal;
@@ -11705,10 +11720,10 @@ static void on_child_signal(int number) {
   errno = saved;
 }
 
+static bool child_signal_installed = false;
 void chimi_binding_prepare_children(void) {
-  static bool installed = false;
-  if (installed) return;
-  installed = true;
+  if (child_signal_installed) return;
+  child_signal_installed = true;
   struct sigaction action;
   memset(&action, 0, sizeof(action));
   action.sa_handler = on_child_signal;
@@ -12013,8 +12028,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     return 64;
   }
   if (profile_path) {
-    carrier->profile_rows = calloc(CHIMI_NODE_COUNT ? CHIMI_NODE_COUNT : 1, sizeof(*carrier->profile_rows));
-    if (!carrier->profile_rows) exhausted_memory();
+    profile_rows = calloc(CHIMI_NODE_COUNT ? CHIMI_NODE_COUNT : 1, sizeof(*profile_rows));
+    if (!profile_rows) exhausted_memory();
   }
   if (telemetry_path) {
     runtime.telemetry = open_report(telemetry_path, strcmp(telemetry_path, "/dev/null") == 0 ? "w" : "wx");

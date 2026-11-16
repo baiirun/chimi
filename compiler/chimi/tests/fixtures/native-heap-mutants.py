@@ -47,7 +47,7 @@ E2E = cargo("native_concurrency_pipeline_runs", "native_task_result_can_be_read"
 
 MUTANTS = [
     ("minor-pass-rescans-survivors", "pass cost independent of old survivors",
-     "  if (area->role == AREA_SURVIVOR && !collecting_full) return;\n", "", HEAP),
+     "  if (area->role == AREA_SURVIVOR && !carrier->collecting_full) return;\n", "", HEAP),
     ("full-pass-every-pass", "full-pass trigger (baseline + minimum growth)",
      "  bool full = scope->has_baseline && survivors >= 2 * scope->full_baseline &&\n              survivors - scope->full_baseline >= REGION_FULL_MIN_GROWTH;",
      "  bool full = scope->has_baseline; (void)survivors;", HEAP),
@@ -63,7 +63,7 @@ MUTANTS = [
      "  area_merge(parent ? &parent->young : &heap->base, &scope->survivors);",
      "  area_release_all(&scope->survivors); scope->live_bytes = 0;", HEAP),
     ("pass-ignores-foreign-pointers", "a pointer into another heap is reported",
-     "    if (area->heap != collecting_scope->heap && area->role != AREA_STATIC) collecting_foreign = true;\n",
+     "    if (area->heap != carrier->collecting_scope->heap && area->role != AREA_STATIC) carrier->collecting_foreign = true;\n",
      "", HEAP),
     ("copy-ignores-foreign-pointers", "a pointer into another heap is reported",
      "  if (!copy_owns(copy, header->area)) {\n    copy->status = HEAP_FOREIGN_POINTER;",
@@ -92,8 +92,8 @@ MUTANTS = [
      "      for (;;) {\n        ChimiSchedulerRequest request = {\n          .kind = CHIMI_REQUEST_CHANNEL_SEND,",
      "      message->roots[0] = arguments[1];\n      for (;;) {\n        ChimiSchedulerRequest request = {\n          .kind = CHIMI_REQUEST_CHANNEL_SEND,", E2E),
     ("no-heap-switch-on-resume", "the current heap follows the resumed fiber",
-     "  if (command != CHIMI_FIBER_CANCEL) command = chimi_fiber_request(request, NULL);\n  current_heap = heap;",
-     "  if (command != CHIMI_FIBER_CANCEL) command = chimi_fiber_request(request, NULL);\n  (void)heap;", E2E),
+     "  if (command != CHIMI_FIBER_CANCEL) command = chimi_fiber_request(request, NULL);\n  carrier->fiber = fiber;",
+     "  if (command != CHIMI_FIBER_CANCEL) command = chimi_fiber_request(request, NULL);\n  (void)fiber;", E2E),
     ("no-reclamation-under-scheduler", "loops reclaim under the scheduler",
      "      if (allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {",
      "      if (!CHIMI_REQUIRES_SCHEDULER && allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {", E2E),

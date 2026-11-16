@@ -5,6 +5,7 @@
 //! A new file-scope or function-local static would be state that running
 //! fibers on several threads has to account for, so it must be added to
 //! `Carrier` or to the list below on purpose, with its owner decided.
+//! Function-local statics are not allowed at all: their owner is invisible.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -45,6 +46,8 @@ const SHARED: &[&str] = &[
     "random_seed",
     "random_seed_given",
     "random_read",
+    // The operation profile's rows, allocated once at startup.
+    "profile_rows",
     // Standard input and signals, owned by the first carrier.
     "standard_input",
     "standard_input_bytes",
@@ -52,29 +55,8 @@ const SHARED: &[&str] = &[
     "signal_pipe",
     "signal_runtime",
     "user_signals",
-    // Tables of names, written only by their initialisers.
-    "DURATION_CONSTRUCTORS",
-    "DURATION_SUFFIXES",
-    "SUPPRESSION_LABELS",
-];
-
-/// Function-local statics, named by the variable (compilers add the function
-/// name or a number to the symbol).
-const LOCAL: &[&str] = &[
-    // The file read buffer and the signal handlers' install flags.
-    "chunk",
-    "installed",
-    // Tables of names, written only by their initialisers.
-    "KINDS",
-    "admission",
-    "channel_names",
-    "clock_names",
-    "names",
-    "outcomes",
-    "process_names",
-    "task_names",
-    "terminal",
-    "units",
+    "user_signals_installed",
+    "child_signal_installed",
 ];
 
 fn writable_symbols(process_kernel: bool) -> BTreeSet<String> {
@@ -85,8 +67,12 @@ fn writable_symbols(process_kernel: bool) -> BTreeSet<String> {
         std::process::id()
     ));
     let mut compile = Command::new("cc");
-    // The shipping flags (RUNTIME_C_FLAGS): constants they fold away are not state.
-    compile.args(["-std=c11", "-O2", "-w", "-c", "-I"]).arg(&native);
+    // The shipping flags (RUNTIME_C_FLAGS), so constants they fold away are not
+    // counted. Without position-independent code a table of constant pointers
+    // goes to read-only data instead of the relocated data nm also shows as `d`.
+    compile
+        .args(["-std=c11", "-O2", "-w", "-fno-pic", "-fno-pie", "-c", "-I"])
+        .arg(&native);
     compile
         .arg("-I")
         .arg(manifest.join("../../runtime/chimi-fiber/include"));
@@ -119,14 +105,19 @@ fn writable_symbols(process_kernel: bool) -> BTreeSet<String> {
         .collect()
 }
 
-/// Whether `symbol` is a listed global or a listed function-local static.
-/// Mach-O prefixes C names with `_`; GCC names a local `var.N` and Clang
-/// `function.var`.
+/// Whether `symbol` is a listed global. Mach-O prefixes C names with `_`,
+/// and an optimiser may split an array into `name.0`, `name.1` and so on.
+/// Every function-local static is refused: GCC names one `var.N` and Clang
+/// `function.var`, so the latter never matches, and the former matches only
+/// a local that shares a listed global's name.
 fn allowed(symbol: &str) -> bool {
     let name = symbol.strip_prefix('_').unwrap_or(symbol);
-    match name.split_once('.') {
-        None => SHARED.contains(&name),
-        Some((first, second)) => LOCAL.contains(&first) || LOCAL.contains(&second),
+    let mut parts = name
+        .split('.')
+        .filter(|part| !part.chars().all(|character| character.is_ascii_digit()));
+    match (parts.next(), parts.next()) {
+        (Some(base), None) => SHARED.contains(&base),
+        _ => false,
     }
 }
 
