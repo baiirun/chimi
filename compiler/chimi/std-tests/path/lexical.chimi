@@ -15,6 +15,7 @@ pub fn main() -> List<Text> {
     Path.join(Path.from("a/"), "/b"),
     Path.join(Path.from("/"), "etc"),
     Path.join(Path.from(""), "b"),
+    Path.join(Path.from(""), "/etc"),
     Path.join(Path.from("a"), ""),
   ])
   let names = [
@@ -46,6 +47,7 @@ pub fn main() -> List<Text> {
     Path.with_extension(Path.from("a/b.txt"), ""),
     Path.with_extension(Path.from("/"), "md"),
     Path.with_extension(Path.from("b.txt/"), "md"),
+    Path.with_extension(Path.from("a/b/./"), "md"),
   ])
   let normalized = show(List.map([
     Path.from("a//b/./c/"),

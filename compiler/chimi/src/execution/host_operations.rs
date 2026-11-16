@@ -23,7 +23,8 @@ impl Evaluator<'_> {
         }
         match function {
             // `vars_os` reads `environ` in order, as the native runtime does;
-            // a pair that is not UTF-8 is left out on both.
+            // a pair that is not UTF-8 is left out on both, and a name may start
+            // with `=` (the separator is the first `=` after the first byte).
             StandardFunction::EnvHostVariables => Control::Success(RuntimeValue::List(
                 std::env::vars_os()
                     .filter_map(|(name, value)| {

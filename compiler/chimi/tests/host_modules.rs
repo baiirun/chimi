@@ -123,17 +123,18 @@ pub fn main() -> List<Text> needs { environment: Environment } {
     Debug.render(Env.get("greeting")),
     Debug.render(Env.get("MISSING")),
     Debug.render(Env.get("EMPTY")),
+    Debug.render([Env.get("=odd"), Env.get("")]),
     Debug.render(Map.size(Env.all())),
     Path.to_text(Env.current_directory()),
   ]
 }
 "#,
-        &[("GREETING", "héllo wörld"), ("EMPTY", "")],
+        &[("GREETING", "héllo wörld"), ("EMPTY", ""), ("=odd", "a=b")],
     );
     assert_eq!(
         value(&record),
         format!(
-            r#"["Some(\"héllo wörld\")","None","None","Some(\"\")","2","{}"]"#,
+            r#"["Some(\"héllo wörld\")","None","None","Some(\"\")","[Some(\"a=b\"), None]","3","{}"]"#,
             directory.display()
         )
     );
@@ -149,6 +150,7 @@ fn a_test_supplies_the_environment_as_a_fake() {
     let source = r#"
 import std/env as Env
 import std/env.{Environment, EnvError}
+import std/map as Map
 import std/option as Option
 import std/result as Result
 import std/test as Test
@@ -163,6 +165,7 @@ test "the first value of a name wins" {
     current_directory: fn() { None },
   }
   Test.assert_equal(home() using { environment: fake }, "/home/a")
+  Test.assert_equal(Map.get(Env.all(), "HOME") using { environment: fake }, Some("/home/a"))
   Test.assert_equal(
     Result.capture(Env.current_directory) using { environment: fake },
     Result.Err(EnvError.NoCurrentDirectory),

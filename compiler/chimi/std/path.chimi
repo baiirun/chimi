@@ -42,7 +42,7 @@ pub fn join(path: Path, part: Text) -> Path {
   let base = to_text(path)
   let tail = trim_leading_separators(part)
   case (base, tail) {
-    ("", _) -> from(part)
+    ("", _) -> from(tail)
     (_, "") -> path
     _ -> case Text.ends_with(base, "/") {
       True -> from(Text.append(base, tail))
@@ -210,11 +210,15 @@ fn trim_leading_separators(text: Text) -> Text {
   }
 }
 
+// `text` without trailing `/` and `.` components, so it ends with its `name`.
 fn trim_trailing_separators(text: Text) -> Text {
   loop rest = text {
     case Text.strip_suffix(rest, "/") {
       Some(shorter) -> shorter
-      None -> break rest
+      None -> case Text.strip_suffix(rest, "/.") {
+        Some(shorter) -> shorter
+        None -> break rest
+      }
     }
   }
 }

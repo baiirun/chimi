@@ -8694,7 +8694,9 @@ static ChimiControl *invoke_host_operation(ChimiRuntime *runtime, uint32_t intri
       /* environ in order; a pair whose name or value is not UTF-8 is left out. */
       ChimiValue *list = list_from_values(NULL, 0);
       for (char **entry = environ; entry && *entry; ++entry) {
-        const char *equals = strchr(*entry, '=');
+        /* As Rust's vars_os: a name may start with '=', so the separator is
+           the first '=' after the first byte. */
+        const char *equals = **entry ? strchr(*entry + 1, '=') : NULL;
         if (!equals) continue;
         size_t name_length = (size_t)(equals - *entry), value_length = strlen(equals + 1);
         if (!valid_utf8((const unsigned char *)*entry, name_length) ||
