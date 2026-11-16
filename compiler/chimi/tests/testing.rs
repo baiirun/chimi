@@ -536,6 +536,35 @@ fn capture_defect_cancels_the_tasks_its_operation_started() {
     );
 }
 
+/// The helper's call is the last assertion node of the program, which a
+/// lookup of the native table must still find.
+#[test]
+fn an_assertion_in_a_later_helper_is_not_captured_either() {
+    let source = concat!(
+        "import std/test as Test\n",
+        "\n",
+        "test \"a lone inner assertion\" {\n",
+        "  let message = Test.capture_defect(fn() { check() })\n",
+        "  Void\n",
+        "}\n",
+        "\n",
+        "fn check() -> Void {\n",
+        "  Test.fail(\"inner\")\n",
+        "}\n",
+    );
+    let run = both_backends("capture-last", source, &[]);
+    assert_eq!(
+        run.stdout,
+        concat!(
+            "test main \"a lone inner assertion\" ... FAILED\n",
+            "  assertion failed at cases.chimi:9:3\n",
+            "  inner\n",
+            "\n",
+            "0 passed, 1 failed\n",
+        )
+    );
+}
+
 /// With no deadline, the scope adds no timer for virtual time to jump to.
 #[test]
 fn a_deadlock_inside_capture_defect_is_still_a_deadlock() {
