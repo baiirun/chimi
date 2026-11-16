@@ -451,6 +451,17 @@ what reaches C and what C may do:
 | A test-only binding is `T4401` from `main` | `a_program_cannot_reach_the_test_only_probe` |
 | `N3101` | `an_application_module_cannot_declare_a_binding` |
 | Every registered binding is defined in its package | `backend::bindings::tests::every_binding_package_has_sources` |
+| A package's archive key changes with each of its inputs | `backend::bindings::tests::the_archive_key_changes_with_every_input` |
+| A constant cannot call a binding (`E5201`) | `a_constant_cannot_call_a_binding` |
+| A handle is neither equatable nor ordered | `a_handle_is_neither_equatable_nor_ordered` |
+
+Rules with no test yet, because the probe cannot reach them: `N3106` for a
+public binding, one type per binding `native type` declaration, invalid text
+built in C becoming a defect, `chimi run`'s `E5204` (only test-only bindings
+exist, so `T4401` comes first), release at root end, system libraries in the
+build report, the dependency-boundary trace, the `Bool`, tuple and list
+builders, and `chimi_binding_is_cancelled`. `std/net` and later packages add
+their tests.
 
 ## Module constants (G7, `ts-f47931`)
 

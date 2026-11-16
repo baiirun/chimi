@@ -281,3 +281,19 @@ fn a_constant_cannot_call_a_binding() {
         "{output}"
     );
 }
+
+#[test]
+fn a_handle_is_neither_equatable_nor_ordered() {
+    let scratch = Scratch::new(
+        "equality",
+        &suite(
+            "test \"compares\" {\n  Test.assert_equal(BindingProbe.open(), BindingProbe.open())\n}\n",
+        ),
+    );
+    let run = scratch.chimi(&["test", "cases.chimi"]);
+    let output = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        output.contains("T4300") && output.contains("`Pipe` is not equatable"),
+        "{output}"
+    );
+}

@@ -39,7 +39,7 @@ MUTATIONS = [
         "  return entry != NULL ? entry->state : NULL;",
     )]),
     mutant("Err loses its message", C, [(
-        "    chimi_binding_make_text(call, message, strlen(message)),\n  };",
+        "    chimi_binding_make_text(call, message, message ? strlen(message) : 0),\n  };",
         "    chimi_binding_make_text(call, \"\", 0),\n  };",
     )]),
     mutant("ok returns the bare value", C, [(
