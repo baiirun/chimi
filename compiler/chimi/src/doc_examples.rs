@@ -99,7 +99,14 @@ fn format_example(code: &[&str], format: &impl Fn(&str) -> Option<String>) -> Op
     let formatted = format(&module)?;
     let formatted: Vec<&str> = formatted.trim_end_matches('\n').split('\n').collect();
     let header = formatted.iter().position(|line| *line == FORMAT_HEADER)?;
-    if formatted.last() != Some(&"}") {
+    // A body that closes the test early and declares items of its own is not
+    // one test body; leave it as written.
+    let inside = &formatted[header + 1..formatted.len().saturating_sub(1)];
+    if formatted.last() != Some(&"}")
+        || inside
+            .iter()
+            .any(|line| !line.is_empty() && !line.starts_with("  "))
+    {
         return None;
     }
     let mut lines: Vec<String> = formatted[..header]

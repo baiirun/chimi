@@ -813,6 +813,39 @@ mod tests {
             )
         );
         assert_eq!(format(first.text()).text(), first.text());
+        let examples = crate::doc_examples::examples(first.text());
+        assert_eq!(examples.len(), 2, "both chimi blocks are still examples");
+        assert_eq!(
+            examples[0].text.lines().count(),
+            first.text().lines().count(),
+            "an example keeps the documented file's layout"
+        );
+    }
+
+    /// An example without imports is formatted as a body alone, and one that
+    /// closes the test early to declare its own items keeps its text.
+    #[test]
+    fn doc_comment_examples_without_imports_or_with_items() {
+        let source = concat!(
+            "/// ```chimi\n",
+            "/// let x=add(1,2)\n",
+            "/// ```\n",
+            "///\n",
+            "/// ```chimi\n",
+            "/// let a=1\n",
+            "/// }\n",
+            "/// fn g()->Int{2}\n",
+            "/// test \"t\" {\n",
+            "/// let b=2\n",
+            "/// ```\n",
+            "pub fn add(left: Int, right: Int) -> Int {\n",
+            "  left + right\n",
+            "}\n",
+        );
+        let formatted = format(source);
+        assert!(!formatted.is_blocked());
+        assert!(formatted.text().starts_with("/// ```chimi\n/// let x = add(1, 2)\n/// ```\n"));
+        assert!(formatted.text().contains("/// let a=1\n/// }\n/// fn g()->Int{2}\n"));
     }
 
     #[test]
