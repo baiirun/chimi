@@ -293,6 +293,23 @@ impl Scheduler {
         record.scopes[mask..].iter().any(|entry| entry.id == started)
     }
 
+    /// True when shutdown should leave `child` of `task` running: `task`
+    /// holds a resource and `child` was started in a release or outside every
+    /// scope, so a release may still need it.
+    pub(super) fn kept_for_release(&self, task: TaskId, child: TaskId) -> bool {
+        let holds_resource = self.tasks.get(&task).is_some_and(|record| {
+            record
+                .scopes
+                .iter()
+                .any(|entry| matches!(entry.kind, ScopeKind::Resource { .. }))
+        });
+        let outside = self
+            .tasks
+            .get(&child)
+            .is_some_and(|record| record.started_in_scope.is_none());
+        holds_resource && (outside || self.started_in_release(task, child))
+    }
+
     fn entry_index(&self, task: TaskId, scope: ScopeId, resource: bool) -> Option<usize> {
         let scopes = &self.tasks.get(&task)?.scopes;
         let index = scopes.iter().position(|entry| entry.id == scope)?;
@@ -475,7 +492,7 @@ impl Scheduler {
         let process = record.process.is_some();
         let no_fiber = record.fiber.is_none();
         let stopping = process && self.is_stopping(task);
-        if stopping && !self.is_forced(task) && holds_resource {
+        if self.forcing == 0 && stopping && !self.is_forced(task) && holds_resource {
             // Shutdown already cancels this body, holding off while it
             // releases (`Scheduler::begin_shutdown`); a defect only decides
             // how it ends.

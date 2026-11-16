@@ -1926,7 +1926,12 @@ impl Scheduler {
             && !self.absorbs_child_defect(parent)
         {
             self.cancel_task(parent, outcome);
-            // A parent finishing its releases may be selecting on this child.
+        }
+        // A parent that keeps running, to finish a release or because shutdown
+        // absorbed the defect, may be selecting on this child.
+        if outcome.is_defect()
+            && let Some(parent) = parent
+        {
             self.wake_selecting_parent(parent, task);
         }
     }
@@ -1952,7 +1957,38 @@ impl Scheduler {
     pub(super) fn force_terminal(&mut self, task: TaskId, outcome: TaskOutcome, fiber_is_terminal: bool) {
         self.forcing += 1;
         self.begin_terminal(task, outcome, fiber_is_terminal);
+        self.force_live_descendants(task);
         self.forcing -= 1;
+    }
+
+    /// Ends every running descendant of `task` now, including those below a
+    /// child that is already draining while it waits for them.
+    pub(super) fn force_live_descendants(&mut self, task: TaskId) {
+        let children: Vec<TaskId> = self
+            .tasks
+            .get(&task)
+            .map(|record| record.children.iter().copied().collect())
+            .unwrap_or_default();
+        for child in children {
+            match self.tasks.get(&child).map(|record| record.phase) {
+                Some(TaskPhase::Runnable | TaskPhase::Parked) => {
+                    self.force_terminal(child, TaskOutcome::Cancelled, false);
+                }
+                Some(TaskPhase::Draining(_)) => self.force_live_descendants(child),
+                _ => {}
+            }
+        }
+    }
+
+    /// True when some descendant of `task` is still running.
+    pub(super) fn has_live_descendants(&self, task: TaskId) -> bool {
+        self.tasks.get(&task).is_some_and(|record| {
+            record.children.iter().any(|child| {
+                self.tasks.get(child).is_some_and(|record| {
+                    matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked)
+                }) || self.has_live_descendants(*child)
+            })
+        })
     }
 
     fn require_owner(&self, owner: Option<TaskId>, task: TaskId) -> Result<(), SchedulerError> {

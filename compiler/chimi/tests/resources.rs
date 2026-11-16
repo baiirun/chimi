@@ -541,8 +541,10 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
     assert_eq!(result.outcome, success("702"), "{}", result.outcome);
 }
 
-// Rejects a graceful process stop delivered into a running release: stopped
-// 1 s into a 2 s release, the body still reports 7, 1 s later (701).
+// Rejects a graceful process stop delivered into a running release, and one
+// never delivered after it: stopped 1 s into a 2 s release, the body reports 7
+// 1 s later, and `scoped` then returns the stop, so its 99 is never sent
+// (7001).
 #[test]
 fn a_process_stopped_in_its_release_lets_the_release_finish() {
     let result = run_virtual("process-stop-in-release", r#"pub enum Message {
@@ -551,17 +553,27 @@ fn a_process_stopped_in_its_release_lets_the_release_finish() {
 
 fn body(inbox: Inbox<Message>) -> Void needs { clock: Clock.Clock } {
   case Process.receive(inbox) {
-    Message.Start(report) -> Resource.scoped(
-      fn() { 7 },
-      fn(held) {
-        Clock.sleep(Duration.seconds(2))
-        Channel.send(report, held)
-      },
-      fn(_held) { Void },
-    )
+    Message.Start(report) -> {
+      Resource.scoped(
+        fn() { 7 },
+        fn(held) {
+          Clock.sleep(Duration.seconds(2))
+          Channel.send(report, held)
+        },
+        fn(_held) { Void },
+      )
+      Channel.send(report, 99)
+    }
   }
   let _ = Process.receive(inbox)
   Void
+}
+
+fn read(next: Receive<Int>) -> Int {
+  case next {
+    Receive.Received(value) -> value
+    Receive.Drained -> 0
+  }
 }
 
 pub fn main() -> Int needs { clock: Clock.Clock } {
@@ -574,10 +586,12 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
   Supervisor.remove_process(root, managed)
   let elapsed = Duration.to_seconds(Clock.since(start))
   Supervisor.stop(root)
-  take(reports.receiver) * 100 + elapsed
+  let first = take(reports.receiver)
+  let second = Select.first([Select.receive(reports.receiver, read), Select.after(Duration.seconds(1), 0)])
+  first * 1000 + second * 10 + elapsed
 }
 "#);
-    assert_eq!(result.outcome, success("701"), "{}", result.outcome);
+    assert_eq!(result.outcome, success("7001"), "{}", result.outcome);
 }
 
 // Rejects a shutdown that waits forever for a child's release: the child's
@@ -706,4 +720,137 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
 }
 "#);
     assert_eq!(result.outcome, success("701"), "{}", result.outcome);
+}
+
+// Rejects a shutdown deadline that misses a grandchild: the body's child waits
+// on a grandchild stuck in its release, and the stop still ends at 3 s.
+#[test]
+fn a_process_grandchild_stuck_in_its_release_is_forced_at_the_deadline() {
+    let result = run_virtual("process-grandchild-forced", r#"pub enum Message {
+  Start(never: Receiver<Int>)
+}
+
+fn body(inbox: Inbox<Message>) -> Void needs { clock: Clock.Clock } {
+  case Process.receive(inbox) {
+    Message.Start(never) -> {
+      let _child = Task.start(fn() {
+        let grandchild = Task.start(fn() {
+          Resource.scoped(
+          fn() { 1 },
+          fn(_held) {
+            let _ = take(never)
+            Void
+          },
+          fn(held) {
+            Clock.sleep(Duration.seconds(100))
+            held
+          },
+        )
+        })
+        Task.result(grandchild)
+      })
+      let _ = Process.receive(inbox)
+      Void
+    }
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock.Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(body, 3, Duration.seconds(3)), Supervisor.Restart.Never)
+  let never = Channel.bounded(1)
+  Process.send(Supervisor.address(managed), Message.Start(never.receiver))
+  Clock.sleep(Duration.seconds(1))
+  let start = Clock.now()
+  Supervisor.remove_process(root, managed)
+  let elapsed = Duration.to_seconds(Clock.since(start))
+  Supervisor.stop(root)
+  let keep = never.sender
+  elapsed
+}
+"#);
+    assert_eq!(result.outcome, success("3"), "{}", result.outcome);
+}
+
+// Rejects a release parked in `Process.receive` that a stop never wakes: the
+// receive answers the stop at once, so the stop takes no time.
+#[test]
+fn a_process_receive_in_a_release_answers_the_stop() {
+    let result = run_virtual("process-receive-in-release", r#"pub enum Message {
+  Start(report: Sender<Int>)
+}
+
+fn body(inbox: Inbox<Message>) -> Void needs { clock: Clock.Clock } {
+  case Process.receive(inbox) {
+    Message.Start(report) -> Resource.scoped(
+      fn() { 7 },
+      fn(held) {
+        let _ = Process.receive(inbox)
+        Channel.send(report, held)
+      },
+      fn(_held) { Void },
+    )
+  }
+  let _ = Process.receive(inbox)
+  Void
+}
+
+pub fn main() -> Int needs { clock: Clock.Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(body, 3, Duration.seconds(10)), Supervisor.Restart.Never)
+  let reports = Channel.bounded(4)
+  Process.send(Supervisor.address(managed), Message.Start(reports.sender))
+  Clock.sleep(Duration.seconds(1))
+  let start = Clock.now()
+  Supervisor.remove_process(root, managed)
+  let elapsed = Duration.to_seconds(Clock.since(start))
+  Supervisor.stop(root)
+  elapsed
+}
+"#);
+    assert_eq!(result.outcome, success("0"), "{}", result.outcome);
+}
+
+// Rejects a stopping body whose release selects on a helper that defects and
+// is never woken: the helper defects 1 s after the stop and the stop ends
+// then, not at the 10 s deadline.
+#[test]
+fn a_stopping_release_selecting_on_a_defecting_helper_is_woken() {
+    let result = run_virtual("process-select-helper-defect", r#"pub enum Message {
+  Start(report: Sender<Int>)
+}
+
+fn body(inbox: Inbox<Message>) -> Void needs { clock: Clock.Clock } {
+  case Process.receive(inbox) {
+    Message.Start(report) -> Resource.scoped(
+      fn() { 7 },
+      fn(held) {
+        let helper = Task.start(fn() {
+          Clock.sleep(Duration.seconds(2))
+          held / 0
+        })
+        let _ = Select.first([Select.task(helper, fn(value: Int) -> Int { value })])
+        Channel.send(report, held)
+      },
+      fn(_held) { Void },
+    )
+  }
+  let _ = Process.receive(inbox)
+  Void
+}
+
+pub fn main() -> Int needs { clock: Clock.Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(body, 3, Duration.seconds(10)), Supervisor.Restart.Never)
+  let reports = Channel.bounded(4)
+  Process.send(Supervisor.address(managed), Message.Start(reports.sender))
+  Clock.sleep(Duration.seconds(1))
+  let start = Clock.now()
+  Supervisor.remove_process(root, managed)
+  let elapsed = Duration.to_seconds(Clock.since(start))
+  Supervisor.stop(root)
+  elapsed
+}
+"#);
+    assert_eq!(result.outcome, success("1"), "{}", result.outcome);
 }

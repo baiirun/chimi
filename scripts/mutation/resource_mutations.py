@@ -8,6 +8,10 @@ The scheduler and runtime.c mutants are judged by compiled programs in
 tests/resources.rs; the outcome-order mutants by the std-tests/resource
 programs, which run on both backends. Results:
 scripts/mutation/resource_results.txt.
+
+Left out as unobservable: the interpreter calling `release` after a failed
+acquire and ignoring its outcome. The interpreter has no scheduler and no
+side effect a program can see besides its outcome.
 """
 
 CRATE = "compiler/chimi"
@@ -43,7 +47,7 @@ MUTATIONS = [
         "            let _ = index;\n            return Some(false);")]),
     # Task cancellation waits for releases.
     resources("cancelling a task that holds a resource tears it down at once", SCOPE, [(
-        "        if self.forcing > 0 || record.process.is_some() || record.fiber.is_none() || !holds_resource {",
+        "        if self.forcing > 0 || no_fiber || !holds_resource || stopping {",
         "        if true {")]),
     resources("the root scope also cancels children started outside every scope", SCOPE, [(
         "                    None => false,",
@@ -84,13 +88,16 @@ MUTATIONS = [
     outcomes("interpreter: a release defect outranks a use defect", INTERPRETER, [(
         "        (used @ Control::Defect { .. }, _) => used,\n        (_, released @ Control::Defect { .. }) => released,",
         "        (_, released @ Control::Defect { .. }) => released,\n        (used @ Control::Defect { .. }, _) => used,")]),
-    outcomes("interpreter: release runs when acquire fails", INTERPRETER, [(
-        "            other => return other,",
-        "            other => {\n                let _ = self.invoke(release.clone(), vec![RuntimeValue::Void], span, call_node, environment.clone());\n                return other;\n            }")]),
     # Processes and Select (review findings).
     resources("a containment cancel does not wake a selecting release", SCHEDULER, [(
-        "            self.cancel_task(parent, outcome);\n            // A parent finishing its releases may be selecting on this child.\n            self.wake_selecting_parent(parent, task);",
-        "            self.cancel_task(parent, outcome);")]),
+        "        if outcome.is_defect()\n            && let Some(parent) = parent\n        {\n            self.wake_selecting_parent(parent, task);",
+        "        if false\n            && let Some(parent) = parent\n        {\n            self.wake_selecting_parent(parent, task);")]),
+    resources("the deadline forces only direct children", SCHEDULER, [(
+        "                Some(TaskPhase::Draining(_)) => self.force_live_descendants(child),",
+        "                Some(TaskPhase::Draining(_)) => {}")]),
+    resources("a release's receive is not woken by the stop", PROCESS, [(
+        "        let releasing = !forced && !receiving && self.holds_mask(task);",
+        "        let releasing = !forced && self.holds_mask(task);")]),
     resources("parks inside a release linger under shutdown", PROCESS, [(
         "            && self.stopping(task).is_some_and(|stopping| stopping.told)\n            && !self.holds_mask(task)",
         "            && self.stopping(task).is_some_and(|stopping| stopping.told)")]),

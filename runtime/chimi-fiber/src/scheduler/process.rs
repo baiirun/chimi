@@ -1116,6 +1116,7 @@ impl Scheduler {
     /// empty, then `Cancelled` on every call; past the deadline, `Forced`.
     pub(super) fn receive_for(&mut self, incarnation: IncarnationId) -> Receipt {
         let now = self.clock.now();
+        let releasing = self.holds_mask(self.kernel.incarnations[&incarnation].task);
         let record = self
             .kernel
             .incarnations
@@ -1128,7 +1129,10 @@ impl Scheduler {
                 Receipt::Forced
             }
             Some(stopping) => {
-                stopping.pending = false;
+                // A release's receive leaves a deferred stop for its exit.
+                if !releasing {
+                    stopping.pending = false;
+                }
                 match record.mailbox.pop_front() {
                     Some(entry) => monitor::receipt(&mut record.notices, entry),
                     None => {
@@ -1930,10 +1934,10 @@ impl Scheduler {
             self.run(task);
         }
         let task = self.kernel.incarnations[&incarnation].task;
-        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) && !self.has_live_children(task) {
+        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) && !self.has_live_descendants(task) {
             // The body has ended and waits for root supervisors it started;
             // their members' deadlines bound the wait, so no timer is armed.
-            // A child still running its releases keeps the deadline armed.
+            // A descendant still running its releases keeps the deadline armed.
             return false;
         }
         let now = self.clock.now();
@@ -1993,7 +1997,9 @@ impl Scheduler {
             phase == TaskPhase::Parked && self.kernel.incarnations[&incarnation].receiving;
         // A body inside a release keeps waiting; it is told once the release
         // returns (`exit_resource`), and the deadline still forces it.
-        let releasing = !forced && self.holds_mask(task);
+        // A receive or inbox select in the release is answered as after the
+        // stop (`Cancelled`), so that body is woken as before.
+        let releasing = !forced && !receiving && self.holds_mask(task);
         if phase == TaskPhase::Parked && !releasing {
             self.disarm_wake_sources(task);
         }
@@ -2037,26 +2043,19 @@ impl Scheduler {
 
     /// Cancels the task's structured children. Each drains before this
     /// returns, except one that holds a resource: it finishes its releases
-    /// first, and the shutdown deadline forces it ([`Self::force`]). A child
-    /// started inside a release belongs to that release and is left running.
+    /// first, and the shutdown deadline forces it ([`Self::force`]). While the
+    /// body holds a resource, a child its release may use (started inside a
+    /// release, or outside every scope) is left running until the body ends.
     fn cancel_children(&mut self, task: TaskId) {
         let children: Vec<_> = self.tasks[&task]
             .children
             .iter()
             .copied()
-            .filter(|child| !self.started_in_release(task, *child))
+            .filter(|child| !self.kept_for_release(task, *child))
             .collect();
         for child in children {
             self.cancel_task(child, TaskOutcome::Cancelled);
         }
-    }
-
-    fn has_live_children(&self, task: TaskId) -> bool {
-        self.tasks[&task].children.iter().any(|child| {
-            self.tasks
-                .get(child)
-                .is_some_and(|record| matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked))
-        })
     }
 
     /// Tells a stopping body the shutdown that its release held off, if it
@@ -2088,15 +2087,12 @@ impl Scheduler {
             .expect("only stopping incarnations are forced");
         stopping.timer = None;
         if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) {
-            // The body finished its cleanup in time. Children still running
+            // The body finished its cleanup in time. Descendants still running
             // their releases end now; supervisors it started are still
             // stopping, each under its own deadlines.
-            let children: Vec<_> = self.tasks[&task].children.iter().copied().collect();
-            for child in children {
-                if matches!(self.tasks[&child].phase, TaskPhase::Runnable | TaskPhase::Parked) {
-                    self.force_terminal(child, TaskOutcome::Cancelled, false);
-                }
-            }
+            self.forcing += 1;
+            self.force_live_descendants(task);
+            self.forcing -= 1;
             return;
         }
         stopping.forced = true;

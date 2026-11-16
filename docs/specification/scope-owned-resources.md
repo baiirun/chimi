@@ -116,9 +116,12 @@ pub native fn scoped<H, T, EA, ER, EU, RA, RR, RU>(
   (`Supervisor.remove_process`, a restart, a parent supervisor stopping)
   that arrives during `use` cancels `use`, and the release then runs with
   shutdown held off. A stop that arrives during a release is told to the body
-  only once the release returns. Children a release started are not
-  cancelled by the stop. `shutdown_within` still bounds all of it: at the
-  deadline the body and every child still running a release end at once.
+  only once the release returns. While the body holds a resource, the stop
+  leaves running the children a release may need: those started in a
+  release and those started outside every scope. A `Process.receive` or an
+  inbox select inside a release answers the stop as it would after it, with
+  `Cancelled`. `shutdown_within` still bounds all of it: at the deadline the
+  body and every descendant still running end at once.
 - **The program's end.** When `main` returns, its children are cancelled
   like any parent's, so they run their releases before the program ends.
   A release that can never return then ends the program in the deadlock
@@ -177,6 +180,9 @@ with that call's span.
 | A release that never returns ends in the deadlock defect | `a_release_that_never_returns_ends_in_the_deadlock_defect` |
 | A child's defect runs the parent's release, which can still use an earlier sibling, and stays the outcome | `a_child_defect_runs_the_parent_release_and_stays_the_outcome` |
 | A release selecting on a helper that defects is woken | `a_release_selecting_on_a_helper_that_defects_is_woken` |
+| The deadline also forces a grandchild stuck in its release | `a_process_grandchild_stuck_in_its_release_is_forced_at_the_deadline` |
+| A receive inside a release answers the stop | `a_process_receive_in_a_release_answers_the_stop` |
+| A stopping release selecting on a helper that defects is woken | `a_stopping_release_selecting_on_a_defecting_helper_is_woken` |
 | A process stopped during use finishes its release before the deadline | `a_process_stopped_in_use_finishes_its_release_before_the_deadline` |
 | A process stopped during a release lets it finish, helpers included | `a_process_stopped_in_its_release_lets_the_release_finish`, `a_process_stop_leaves_a_release_helper_running` |
 | A process child stuck in a release is forced at the deadline | `a_process_child_stuck_in_its_release_is_forced_at_the_deadline` |
@@ -210,11 +216,11 @@ with that call's span.
   started.
 - **ABI.** `CHIMI_FIBER_ABI_VERSION` is 12 and the native runtime ABI is 29.
 - **Not covered yet.** A supervisor started inside a scope is not stopped
-  when the scope is cancelled (follow-up ticket).
+  when the scope is cancelled (CHI-237).
 - **Causes.** The outcome that loses under the order above is not yet
   attached to the winner's cause as a `Displaced` or `Cleanup` suppressed
-  cause ([failure context](time-and-outcomes.md#failure-context)); a
-  follow-up ticket adds it on both backends.
+  cause ([failure context](time-and-outcomes.md#failure-context));
+  CHI-236 adds it on both backends.
 - **Process messages.** A receiver or completion carried by a `Process.send`
   message (G28, CHI-213) is stamped when it lands, like a channel message's,
   so the rule covers it too.
