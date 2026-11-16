@@ -28,8 +28,8 @@ MUTATIONS = [
         "    uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n    if (key) channel_endpoint_drop(key);\n  }\n  if (header->area->heap)",
         "    uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n    if (key && !(key & TASK_HANDLE_KEY)) channel_endpoint_drop(key);\n  }\n  if (header->area->heap)")]),
     handle("a dead task handle in a loop pass is not dropped", [(
-        "      if (channel_endpoint_count && header->kind == ALLOCATION_VALUE) {\n        uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n        if (key) channel_endpoint_drop(key);",
-        "      if (channel_endpoint_count && header->kind == ALLOCATION_VALUE) {\n        uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n        if (key && !(key & TASK_HANDLE_KEY)) channel_endpoint_drop(key);")]),
+        "      if (handles_live() && header->kind == ALLOCATION_VALUE) {\n        uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n        if (key) channel_endpoint_drop(key);",
+        "      if (handles_live() && header->kind == ALLOCATION_VALUE) {\n        uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n        if (key && !(key & TASK_HANDLE_KEY)) channel_endpoint_drop(key);")]),
     dict(name="the scheduler ignores a task release", file="../../runtime/chimi-fiber/src/scheduler.rs",
          edits=[("                request.status = if self.release_task(TaskId(request.task)).is_ok() {",
                  "                request.status = if true {")],
