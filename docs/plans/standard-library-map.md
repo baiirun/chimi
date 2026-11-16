@@ -68,7 +68,7 @@ which language gaps matter for a module.
 | Concurrency | `std/task` (`all`, `race`, `timeout`) | D | `start`, `result`, `cancel` | G13, G14 |
 | | `std/channel` (`select`, multi-producer helpers) | D | bounded MPSC | G14 |
 | | `std/process`, `std/supervisor` | D | in progress (`ep-f29d47`) | G14 (Duration) |
-| Resources | `std/resource` (scope-owned acquire/use/release) | D | only inside `process_utf8_lines` | G11, G12 |
+| Resources | `std/resource` (scope-owned acquire/use/release) | D | done: `Resource.scoped` (G12) | G11, G12 |
 | IO and host | `std/io` (binary read/write, directories, metadata, atomic write) | C | UTF-8 line processing and console | G6, G11, G12 |
 | | `std/env` (environment variables, arguments, exit status) | C | arguments only, as `List<Text>` | — |
 | | `std/random` (seeded test provider) | C | missing | G6 for bytes |
@@ -187,6 +187,10 @@ own scope-owning interface such as `Database.transaction` or
 `Http.with_connection`.
 
 ### G12. General scope-owned resources
+
+Done (Phase 6b): `Resource.scoped(acquire, release, use)`, specified in
+[scope-owned resources](../specification/scope-owned-resources.md). The handle
+is not checked statically; see that contract's "Handle escape".
 
 Cleanup on success, failure, defect, and cancellation exists only inside one
 host operation. Library-defined resources such as connection pools, temporary

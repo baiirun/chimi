@@ -1116,6 +1116,7 @@ impl Scheduler {
     /// empty, then `Cancelled` on every call; past the deadline, `Forced`.
     pub(super) fn receive_for(&mut self, incarnation: IncarnationId) -> Receipt {
         let now = self.clock.now();
+        let releasing = self.holds_mask(self.kernel.incarnations[&incarnation].task);
         let record = self
             .kernel
             .incarnations
@@ -1128,7 +1129,10 @@ impl Scheduler {
                 Receipt::Forced
             }
             Some(stopping) => {
-                stopping.pending = false;
+                // A release's receive leaves a deferred stop for its exit.
+                if !releasing {
+                    stopping.pending = false;
+                }
                 match record.mailbox.pop_front() {
                     Some(entry) => monitor::receipt(&mut record.notices, entry),
                     None => {
@@ -1183,9 +1187,12 @@ impl Scheduler {
     /// incarnation was already told it is cancelled and the request is one
     /// that can park, so it waits for the shutdown deadline. Requests that
     /// never park (send, self, now, starts) are still answered, and a
-    /// receive answers `Cancelled` again.
+    /// receive answers `Cancelled` again. A release (`Resource.scoped`) may
+    /// park until the deadline forces it.
     pub(super) fn park_lingers(&self, task: TaskId, kind: u32) -> bool {
-        can_park(kind) && self.stopping(task).is_some_and(|stopping| stopping.told)
+        can_park(kind)
+            && self.stopping(task).is_some_and(|stopping| stopping.told)
+            && !self.holds_mask(task)
     }
 
     /// Delivers shutdown to a request that left its caller blocked on park
@@ -1195,10 +1202,12 @@ impl Scheduler {
     /// request that completed is answered, so a value it took is not lost.
     /// Supervisor operations from a draining handler are served.
     pub(super) fn interrupt_blocked_park(&mut self, task: TaskId, park: u64, kind: u32) {
-        let blocked = self
-            .tasks
-            .get(&task)
-            .is_some_and(|record| record.phase == TaskPhase::Parked && record.park == park);
+        // A release holds shutdown off until it returns (`exit_resource`).
+        let blocked = !self.holds_mask(task)
+            && self
+                .tasks
+                .get(&task)
+                .is_some_and(|record| record.phase == TaskPhase::Parked && record.park == park);
         let Some(incarnation) = self.incarnation_of(task).filter(|_| blocked) else {
             return;
         };
@@ -1688,7 +1697,7 @@ impl Scheduler {
             .map(|(task, _)| *task)
             .collect();
         for task in roots {
-            self.begin_terminal(
+            self.force_terminal(
                 task,
                 TaskOutcome::Defected {
                     origin: task,
@@ -1925,9 +1934,10 @@ impl Scheduler {
             self.run(task);
         }
         let task = self.kernel.incarnations[&incarnation].task;
-        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) {
+        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) && !self.has_live_descendants(task) {
             // The body has ended and waits for root supervisors it started;
             // their members' deadlines bound the wait, so no timer is armed.
+            // A descendant still running its releases keeps the deadline armed.
             return false;
         }
         let now = self.clock.now();
@@ -1985,7 +1995,12 @@ impl Scheduler {
         let phase = self.tasks[&task].phase;
         let receiving =
             phase == TaskPhase::Parked && self.kernel.incarnations[&incarnation].receiving;
-        if phase == TaskPhase::Parked {
+        // A body inside a release keeps waiting; it is told once the release
+        // returns (`exit_resource`), and the deadline still forces it.
+        // A receive or inbox select in the release is answered as after the
+        // stop (`Cancelled`), so that body is woken as before.
+        let releasing = !forced && !receiving && self.holds_mask(task);
+        if phase == TaskPhase::Parked && !releasing {
             self.disarm_wake_sources(task);
         }
         self.cancel_children(task);
@@ -1997,6 +2012,7 @@ impl Scheduler {
                 (true, false)
             }
             TaskPhase::Runnable => (false, true),
+            TaskPhase::Parked if releasing => (false, true),
             TaskPhase::Parked => {
                 let told = if forced {
                     task_record.command = ChimiFiberCommand::Cancel;
@@ -2025,13 +2041,37 @@ impl Scheduler {
         stopping.pending = pending;
     }
 
-    /// Cancels the task's structured children; each drains before this
-    /// returns.
+    /// Cancels the task's structured children. Each drains before this
+    /// returns, except one that holds a resource: it finishes its releases
+    /// first, and the shutdown deadline forces it ([`Self::force`]). While the
+    /// body holds a resource, a child its release may use (started inside a
+    /// release, or outside every scope) is left running until the body ends.
     fn cancel_children(&mut self, task: TaskId) {
-        let children: Vec<_> = self.tasks[&task].children.iter().copied().collect();
+        let children: Vec<_> = self.tasks[&task]
+            .children
+            .iter()
+            .copied()
+            .filter(|child| !self.kept_for_release(task, *child))
+            .collect();
         for child in children {
-            self.begin_terminal(child, TaskOutcome::Cancelled, false);
+            self.cancel_task(child, TaskOutcome::Cancelled);
         }
+    }
+
+    /// Tells a stopping body the shutdown that its release held off, if it
+    /// has not been told yet. True when it now is.
+    pub(super) fn tell_deferred_shutdown(&mut self, task: TaskId) -> bool {
+        let Some(stopping) = self
+            .incarnation_of(task)
+            .and_then(|incarnation| self.kernel.incarnations.get_mut(&incarnation))
+            .and_then(|record| record.stopping.as_mut())
+            .filter(|stopping| stopping.pending && !stopping.told)
+        else {
+            return false;
+        };
+        stopping.told = true;
+        stopping.pending = false;
+        true
     }
 
     /// The shutdown deadline passed: answer the pending call with a forced
@@ -2047,8 +2087,12 @@ impl Scheduler {
             .expect("only stopping incarnations are forced");
         stopping.timer = None;
         if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) {
-            // The body finished its cleanup in time; only supervisors it
-            // started are still stopping, each under its own deadlines.
+            // The body finished its cleanup in time. Descendants still running
+            // their releases end now; supervisors it started are still
+            // stopping, each under its own deadlines.
+            self.forcing += 1;
+            self.force_live_descendants(task);
+            self.forcing -= 1;
             return;
         }
         stopping.forced = true;
@@ -2075,7 +2119,7 @@ impl Scheduler {
         let record = self.tasks.get_mut(&task).expect("forced incarnation");
         std::mem::forget(record.fiber.take());
         record.request = std::ptr::null_mut();
-        self.begin_terminal(task, TaskOutcome::Cancelled, true);
+        self.force_terminal(task, TaskOutcome::Cancelled, true);
     }
 
     /// Drops a membership record, keeping only what a live handle needs.

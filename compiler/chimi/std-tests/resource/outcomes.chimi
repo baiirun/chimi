@@ -1,0 +1,50 @@
+// Resource.scoped returns what `use` returns once `release` has run with the
+// acquired value. A release failure replaces the use's value and its failure;
+// a failed acquire never reaches use or release.
+import std/debug as Debug
+import std/resource as Resource
+import std/result as Result
+
+enum PoolError {
+  Empty
+  Released(handle: Int)
+  Used(handle: Int)
+}
+
+fn take(handle: Int) -> Int {
+  case handle {
+    0 -> Failure(PoolError.Empty)
+    _ -> handle
+  }
+}
+
+fn give_back(handle: Int) -> Void {
+  case handle {
+    7 -> Failure(PoolError.Released(handle))
+    _ -> Void
+  }
+}
+
+fn run(handle: Int, use_fails: Bool) -> Int {
+  Resource.scoped(
+    fn() { take(handle) },
+    give_back,
+    fn(held) {
+      case use_fails {
+        True -> Failure(PoolError.Used(held))
+        False -> held * 10
+      }
+    },
+  )
+}
+
+pub fn main() -> Text {
+  let results = [
+    Result.capture(fn() { run(4, False) }),
+    Result.capture(fn() { run(4, True) }),
+    Result.capture(fn() { run(7, False) }),
+    Result.capture(fn() { run(7, True) }),
+    Result.capture(fn() { run(0, False) }),
+  ]
+  Debug.render(results)
+}

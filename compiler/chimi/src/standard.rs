@@ -517,6 +517,9 @@ pub(crate) enum StandardFunction {
     TestAssertNotEqual,
     TestAssert,
     TestFail,
+    /// `std/resource.scoped`: acquire, use, and release with release masked
+    /// against cancellation.
+    ResourceScoped,
 }
 
 impl StandardFunction {
@@ -785,6 +788,7 @@ impl StandardFunction {
             | Self::TestAssertNotEqual
             | Self::TestAssert
             | Self::TestFail => None,
+            | Self::ResourceScoped => None,
         }
     }
 
@@ -954,6 +958,7 @@ impl StandardFunction {
             Self::TestAssertNotEqual => "assert_not_equal",
             Self::TestAssert => "assert",
             Self::TestFail => "fail",
+            Self::ResourceScoped => "scoped",
         }
     }
 

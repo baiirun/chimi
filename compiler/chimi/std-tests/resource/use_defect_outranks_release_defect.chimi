@@ -1,0 +1,17 @@
+// When both `use` and `release` defect, the defect in `use` is the outcome.
+import std/resource as Resource
+
+fn divide(left: Int, right: Int) -> Int {
+  left / right
+}
+
+pub fn main() -> Int {
+  Resource.scoped(
+    fn() { 0 },
+    fn(held) {
+      let _ = divide(2, held)
+      Void
+    },
+    fn(held) { divide(1, held) },
+  )
+}
