@@ -11149,7 +11149,10 @@ fn a_failure_set_argument_used_as_a_function_input_does_not_join() {
         ["T4203"]
     );
     assert_eq!(
-        check_codes(&source("struct Handler<E> { run: Option<fn(E) -> Int> }", "Some")),
+        check_codes(&source(
+            "struct Handler<E> { run: Option<fn(E) -> Int> }",
+            "Some"
+        )),
         ["T4203"]
     );
     // An argument of another data type whose parameter is not covariant
@@ -11179,7 +11182,8 @@ fn a_callback_for_a_narrower_failure_set_does_not_fit_a_wider_one() {
         fn takes_either(value: A | B) -> Text {\n  case value {\n    A.XA -> \"a\"\n    B.XB -> \"b\"\n  }\n}\n\
         fn run_a(f: fn(A) -> Text) -> Text { f(A.XA) }\n\
         pub fn main() -> Text { run_a(takes_either) }\n";
-    assert_eq!(run_both("callback_wider_input", accepted),
+    assert_eq!(
+        run_both("callback_wider_input", accepted),
         "\"outcome\":\"success\",\"value\":\"a\""
     );
 }
@@ -11261,10 +11265,69 @@ fn a_generic_failure_enum_fits_only_at_its_own_type_arguments() {
 }
 
 #[test]
+fn a_variant_raised_at_two_type_arguments_cannot_bind_its_fields() {
+    // `fail_either` raises `W<Int>.Bad` and `W<Text>.Bad`, so the payload of a
+    // `W.Bad(x)` pattern has no one type. Before the fix the arm typed `x` as
+    // `Int` and then defected adding 1 to a text, matched directly or after
+    // binding the whole error.
+    let prelude = "enum W<T> { Bad(x: T) }\n\
+        fn fail_either(n: Int) -> Int {\n  case n > 0 {\n    True -> {\n      let w: W<Int> = W.Bad(1)\n      Failure(w)\n    }\n    False -> {\n      let w: W<Text> = W.Bad(\"s\")\n      Failure(w)\n    }\n  }\n}\n";
+    let direct = format!(
+        "{prelude}pub fn main() -> Int {{\n  case fail_either(0) {{\n    Success(v) -> v\n    Failure(W.Bad(x)) -> x + 1\n  }}\n}}\n"
+    );
+    assert_eq!(check_codes(&direct), ["T4230"]);
+    let whole = format!(
+        "{prelude}pub fn main() -> Int {{\n  case fail_either(0) {{\n    Success(v) -> v\n    Failure(e) -> case e {{\n      W.Bad(x) -> x + 1\n    }}\n  }}\n}}\n"
+    );
+    assert_eq!(check_codes(&whole), ["T4230"]);
+    // A pattern that inspects no such field is fine: a wildcard field, a
+    // field whose type is the same at both arguments, or a fieldless variant.
+    let sound = "import std/text as Text\nenum W<T> { Bad(x: T) }\nenum P<A, C> { One(a: A), Two(c: C) }\n\
+        enum B<T> { Back(x: T)\n  Lost }\n\
+        fn fail_w(n: Int) -> Int {\n  case n > 0 {\n    True -> {\n      let w: W<Int> = W.Bad(1)\n      Failure(w)\n    }\n    False -> {\n      let w: W<Text> = W.Bad(\"s\")\n      Failure(w)\n    }\n  }\n}\n\
+        fn fail_p(n: Int) -> Int {\n  case n > 0 {\n    True -> {\n      let p: P<Int, Int> = P.One(1)\n      Failure(p)\n    }\n    False -> {\n      let p: P<Text, Int> = P.Two(2)\n      Failure(p)\n    }\n  }\n}\n\
+        fn fail_b(n: Int) -> Int {\n  case n > 0 {\n    True -> Failure(B.Lost)\n    False -> {\n      let b: B<Text> = B.Back(\"s\")\n      Failure(b)\n    }\n  }\n}\n\
+        fn w(n: Int) -> Int {\n  case fail_w(n) {\n    Success(v) -> v\n    Failure(W.Bad(_)) -> 1\n  }\n}\n\
+        fn p(n: Int) -> Int {\n  case fail_p(n) {\n    Success(v) -> v\n    Failure(P.One(_)) -> 10\n    Failure(P.Two(c)) -> c * 100\n  }\n}\n\
+        fn b(n: Int) -> Int {\n  case fail_b(n) {\n    Success(v) -> v\n    Failure(B.Back(x)) -> Text.byte_length(x)\n    Failure(B.Lost) -> 2000\n  }\n}\n\
+        pub fn main() -> Int { w(0) + p(0) + b(1) + b(0) }\n";
+    assert_eq!(
+        run_both("generic_variant_wildcards", sound),
+        "\"outcome\":\"success\",\"value\":2202"
+    );
+}
+
+#[test]
+fn a_written_generic_failure_enum_keeps_its_type_arguments() {
+    // `errors W<Int>` and `W<Int> | A` name `W` at `Int`, so a `W<Int>`
+    // raised inside fits them and a handler over `W<Int>` takes them. Both
+    // used to lose the argument and reject these sound programs.
+    let program = "enum W<T> { Bad(x: T) }\nenum A { A1 }\n\
+        fn ft(n: Int) -> Int {\n  let w: W<Int> = W.Bad(n)\n  Failure(w)\n}\n\
+        fn plus(e: W<Int>) -> Int {\n  case e {\n    W.Bad(x) -> x + 1\n  }\n}\n\
+        fn mk(n: Int) -> fn() -> Int errors W<Int> {\n  fn() { ft(n) }\n}\n\
+        fn both(n: Int) -> Int {\n  case n > 0 {\n    True -> ft(n)\n    False -> Failure(A.A1)\n  }\n}\n\
+        fn either(e: W<Int> | A) -> Int {\n  case e {\n    W.Bad(x) -> x\n    A.A1 -> 100\n  }\n}\n\
+        fn run<T, E>(op: fn() -> T errors E, f: fn(E) -> Int) -> Int {\n  case op() {\n    Success(_) -> 0\n    Failure(e) -> f(e)\n  }\n}\n\
+        pub fn main() -> Int {\n  let first = case mk(0)() {\n    Success(v) -> v\n    Failure(e) -> plus(e)\n  }\n  first + run(fn() { both(5) }, either) + run(fn() { both(0) }, either)\n}\n";
+    assert_eq!(
+        run_both("written_generic_failure_enum", program),
+        "\"outcome\":\"success\",\"value\":106"
+    );
+    // And a written `W<Text>` does not take a raised `W<Int>`.
+    let mismatch = "enum W<T> { Bad(x: T) }\n\
+        fn ft(n: Int) -> Int {\n  let w: W<Int> = W.Bad(n)\n  Failure(w)\n}\n\
+        fn mk(n: Int) -> fn() -> Int errors W<Text> {\n  fn() { ft(n) }\n}\n";
+    assert_eq!(check_codes(mismatch), ["T4203"]);
+}
+
+#[test]
 fn a_set_already_checked_against_a_narrower_one_does_not_widen_later() {
     // The lambda's `v` is first checked to fit `A | C` inside `score(v)`; a
     // later call with `B | C` must not widen `v` past that check.
-    assert_eq!(check_codes(r#"enum A {
+    assert_eq!(
+        check_codes(
+            r#"enum A {
   Alpha
 }
 
@@ -11294,13 +11357,18 @@ pub fn main() -> Int {
   }
   g(beta())
 }
-"#), ["T4346"]);
+"#
+        ),
+        ["T4346"]
+    );
 }
 
 #[test]
 fn a_sender_of_one_enum_does_not_pass_for_a_sender_of_a_wider_set() {
     // A `Sender<A | B>` may send a `B`, so a `Sender<A>` cannot stand in.
-    assert_eq!(check_codes(r#"import std/channel as Channel
+    assert_eq!(
+        check_codes(
+            r#"import std/channel as Channel
 import std/channel.{Sender, Receive}
 
 enum A {
@@ -11332,7 +11400,10 @@ pub fn main() -> Int {
     Receive.Drained -> 0
   }
 }
-"#), ["T4203"]);
+"#
+        ),
+        ["T4203"]
+    );
 }
 
 #[test]
@@ -11340,7 +11411,9 @@ fn a_failure_type_pattern_binds_only_the_variants_the_row_can_hold() {
     // `load` never fails with `FileProblem.Denied`, so a `FileProblem`
     // pattern binds `FileProblem.Missing | FileProblem.TooLong`, which fits
     // a function that takes exactly those two.
-    let program = format!("{FAILURE_KINDS}{}", r#"fn file_only(error: FileProblem.Missing | FileProblem.TooLong) -> Text {
+    let program = format!(
+        "{FAILURE_KINDS}{}",
+        r#"fn file_only(error: FileProblem.Missing | FileProblem.TooLong) -> Text {
   case error {
     FileProblem.Missing(path) -> "missing ${path}"
     FileProblem.TooLong(path, _) -> "long ${path}"
@@ -11354,7 +11427,8 @@ fn label(choice: Int) -> Text {
   }
 }
 pub fn main() -> Text { "${label(0)} ${label(1)} ${label(2)}" }
-"#);
+"#
+    );
     assert_eq!(
         run_both("failure-type-pattern-row", &program),
         "\"outcome\":\"success\",\"value\":\"missing a long b parse\""
@@ -11544,10 +11618,16 @@ fn comparisons_past_the_inline_compare_steps_agree_with_the_interpreter() {
         ),
         same = items(40),
         later = items(41),
-        counts = (1..=40).map(|index| index.to_string()).collect::<Vec<_>>().join(", "),
+        counts = (1..=40)
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
     );
     let outcome = run_both("compare-past-inline-steps", &source);
-    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[true,false,true,true,false]", "{outcome}");
+    assert_eq!(
+        outcome, "\"outcome\":\"success\",\"value\":[true,false,true,true,false]",
+        "{outcome}"
+    );
 }
 
 // Guards: bump allocation (CHI-219). A loop pass's values are moved out of the
@@ -11639,8 +11719,7 @@ fn values_kept_across_bump_allocated_passes_agree_with_the_interpreter() {
         ),
     );
     assert_eq!(
-        outcome,
-        "\"outcome\":\"success\",\"value\":[601,25000,90770,20000]",
+        outcome, "\"outcome\":\"success\",\"value\":[601,25000,90770,20000]",
         "{outcome}"
     );
 }
@@ -11749,7 +11828,11 @@ fn a_crash_message_built_inside_a_loop_survives_the_loop() {
             "}\n",
         ),
     );
-    assert_eq!(defect_message(&outcome), "boom-message-in-chunk", "{outcome}");
+    assert_eq!(
+        defect_message(&outcome),
+        "boom-message-in-chunk",
+        "{outcome}"
+    );
 }
 
 // Guards: a match reads every subject, both when its subjects fit the runtime's

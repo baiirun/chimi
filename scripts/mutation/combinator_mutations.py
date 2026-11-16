@@ -40,10 +40,6 @@ MUTATIONS = [
     combinators("the losers are neither cancelled nor drained", RUNTIME, [(
         "  if (children.live > 0) {\n    if (!cancel_live_children(&children)) {",
         "  if (false) {\n    if (!cancel_live_children(&children)) {")]),
-    # A stop interrupts a draining process body's combinator wait.
-    combinators("a stop does not interrupt a draining body's combinator", PROCESS, [(
-        "        0 | super::REQUEST_TASK_RESULT\n            | super::REQUEST_TASK_ANY\n",
-        "        0 | super::REQUEST_TASK_RESULT\n")]),
     combinators("Task.race waits for every child", RUNTIME, [(
         "    } else if (intrinsic == CHIMI_INTRINSIC_TASK_RACE || outcome->kind == CONTROL_FAILURE) {",
         "    } else if (outcome->kind == CONTROL_FAILURE) {")]),

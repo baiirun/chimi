@@ -421,11 +421,13 @@ fn a_child_that_ends_cancelled_cancels_the_caller_of_task_race() {
 
 // ----- Processes --------------------------------------------------------------
 
-// Rejects a combinator wait that a stop cannot interrupt once the body is
-// draining queued messages: the removal would wait out `shutdown_within`
-// (30 seconds) instead of returning at once, as it does for `Task.result`.
+// A stop drains before it cancels (application-lifecycle.md): the body keeps
+// working on the message it already took. Rejects a combinator that the stop
+// cancels at once (time 0) and one that stays parked until the body is forced
+// at `shutdown_within` (time 30); the child finishes at time 5 and the body
+// then ends at its next receive.
 #[test]
-fn a_stop_interrupts_a_draining_process_body_waiting_in_task_all() {
+fn a_stopped_process_body_finishes_its_task_all_before_it_ends() {
     let run = run_virtual(
         "process-drain",
         concat!(
@@ -437,7 +439,7 @@ fn a_stop_interrupts_a_draining_process_body_waiting_in_task_all() {
             "  loop handled = 0 {\n",
             "    case Process.receive(inbox) {\n",
             "      Message.Job(n) -> case n == 2 {\n",
-            "        True -> handled + List.length(Task.all([fn() { after(100, 1) }]))\n",
+            "        True -> handled + List.length(Task.all([fn() { after(5, 1) }]))\n",
             "        False -> handled + 1\n",
             "      }\n",
             "    }\n",
@@ -458,7 +460,7 @@ fn a_stop_interrupts_a_draining_process_body_waiting_in_task_all() {
             "}\n",
         ),
     );
-    assert_success(&run, "0");
+    assert_success(&run, "5");
 }
 
 // Rejects an empty race that parks forever, returns a value, or fails.

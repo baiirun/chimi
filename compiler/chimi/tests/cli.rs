@@ -533,7 +533,10 @@ fn std_check_rejects_a_native_fn_header_that_disagrees_with_the_registry() {
         let output = std_check(Some(&tree));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(1), "{name}: {stderr}");
-        assert!(stderr.contains("T4320") && stderr.contains(message), "{name}: {stderr}");
+        assert!(
+            stderr.contains("T4320") && stderr.contains(message),
+            "{name}: {stderr}"
+        );
         assert!(
             stderr.contains("registered operation std/debug.render has no `native fn` declaration"),
             "{name}: the header must not bind the operation: {stderr}"
@@ -593,7 +596,10 @@ fn std_dir_override_applies_to_a_root_project() {
     let override_dir = standard.as_os_str();
 
     let embedded = chimi(&["check".as_ref(), "--root".as_ref(), root, "main".as_ref()]);
-    assert!(!embedded.status.success(), "the embedded std/list has no answer");
+    assert!(
+        !embedded.status.success(),
+        "the embedded std/list has no answer"
+    );
     let checked = chimi(&[
         "--std-dir".as_ref(),
         override_dir,
@@ -3791,11 +3797,23 @@ fn native_profile_counts_evaluations_and_allocations_per_operation() {
         profile.starts_with("{\"schema\":\"chimi.runtime-profile.v1\",\"operations\":["),
         "{profile}"
     );
-    assert_eq!(profile_total(&profile, "loop", "evaluations"), 2, "{profile}");
-    assert_eq!(profile_total(&profile, "call", "evaluations"), 1000 + 2, "{profile}");
+    assert_eq!(
+        profile_total(&profile, "loop", "evaluations"),
+        2,
+        "{profile}"
+    );
+    assert_eq!(
+        profile_total(&profile, "call", "evaluations"),
+        1000 + 2,
+        "{profile}"
+    );
     // 1,001 passes of the first loop and 501 of the second, which profiling keeps
     // off the direct path.
-    assert_eq!(profile_total(&profile, "match", "evaluations"), 1001 + 501, "{profile}");
+    assert_eq!(
+        profile_total(&profile, "match", "evaluations"),
+        1001 + 501,
+        "{profile}"
+    );
     // `1000` and `1` once a pass, the two initial `0`s, and `1` in 500 direct passes:
     // integer constants are direct roots, which profiling also turns off.
     assert_eq!(
@@ -3803,7 +3821,10 @@ fn native_profile_counts_evaluations_and_allocations_per_operation() {
         1001 + 1000 + 2 + 500,
         "{profile}"
     );
-    assert!(profile_total(&profile, "call", "allocated_bytes") > 0, "{profile}");
+    assert!(
+        profile_total(&profile, "call", "allocated_bytes") > 0,
+        "{profile}"
+    );
     // An integer constant allocates its value and its result, and nothing its parent
     // allocates after it returns is charged to it.
     for row in profile_rows(&profile) {
@@ -3819,7 +3840,10 @@ fn native_profile_counts_evaluations_and_allocations_per_operation() {
         .into_iter()
         .map(|row| json_u64_field(row, "allocated_bytes"))
         .collect::<Vec<_>>();
-    assert!(allocated.windows(2).all(|pair| pair[0] >= pair[1]), "{profile}");
+    assert!(
+        allocated.windows(2).all(|pair| pair[0] >= pair[1]),
+        "{profile}"
+    );
     // Ties on allocated bytes are ordered by evaluations, then by node id.
     let keys = profile_rows(&profile)
         .into_iter()
@@ -3838,12 +3862,19 @@ fn native_profile_counts_evaluations_and_allocations_per_operation() {
     let traced = Command::new(&executable)
         .arg("--chimi-runner")
         .arg("--trace=boundaries")
-        .arg(format!("--telemetry-file={}", scratch.join("trace.jsonl").display()))
+        .arg(format!(
+            "--telemetry-file={}",
+            scratch.join("trace.jsonl").display()
+        ))
         .arg(format!("--profile-file={}", traced_path.display()))
         .arg("--")
         .output()
         .expect("run traced native program with a profile");
-    assert!(traced.status.success(), "{}", String::from_utf8_lossy(&traced.stderr));
+    assert!(
+        traced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&traced.stderr)
+    );
     let traced_profile = std::fs::read_to_string(&traced_path).unwrap();
     for operation in ["loop", "call", "match", "constant"] {
         assert_eq!(
@@ -3856,7 +3887,10 @@ fn native_profile_counts_evaluations_and_allocations_per_operation() {
     let repeated = Command::new(&executable)
         .arg("--chimi-runner")
         .arg("--benchmark-repeats=2")
-        .arg(format!("--profile-file={}", scratch.join("repeated.json").display()))
+        .arg(format!(
+            "--profile-file={}",
+            scratch.join("repeated.json").display()
+        ))
         .arg("--")
         .output()
         .expect("run native program with a profile and repeats");
@@ -5456,7 +5490,10 @@ fn native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect() {
     };
     let (fits_status, fits) = run("5000");
     assert_eq!(fits_status, Some(0), "{fits}");
-    assert!(fits.contains(r#""outcome":"success","value":10000"#), "{fits}");
+    assert!(
+        fits.contains(r#""outcome":"success","value":10000"#),
+        "{fits}"
+    );
     let (overflow_status, overflow) = run("1000000");
     assert_eq!(overflow_status, Some(70), "{overflow}");
     assert!(

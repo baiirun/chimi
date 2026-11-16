@@ -6,6 +6,7 @@ use crate::json::{JsonData, decode_json};
 
 const SCHEMA: &str = "chimi.runtime.v1";
 const CLOCK_ADVANCED: &str = "clock_advanced";
+const SIGNAL_RECEIVED: &str = "clock_signal_received";
 const PROCESS_SEND: &str = "process_send";
 
 const ENVELOPE: &[&str] = &[
@@ -43,6 +44,8 @@ const PROCESS_ATTRIBUTES: &[&str] = &[
     "defect",
 ];
 const CLOCK_ATTRIBUTES: &[&str] = &["time_ns", "request_kind"];
+/// A select commit carries the committed event's index instead.
+const SELECT_COMMITTED_ATTRIBUTES: &[&str] = &["time_ns", "index"];
 
 /// Process-family event names in trace-kind order (kinds 1 to 10).
 const PROCESS_EVENTS: &[&str] = &[
@@ -64,6 +67,7 @@ const CLOCK_EVENTS: &[&str] = &[
     "clock_timer_cancelled",
     "clock_deadlock_waiter",
     "clock_scope_fired",
+    SIGNAL_RECEIVED,
     "clock_select_parked",
     "clock_select_committed",
 ];
@@ -77,7 +81,10 @@ const CLOCK_EVENTS: &[&str] = &[
 /// does not increase, time that moves backwards, or a kept event with a
 /// missing or unknown field.
 pub fn project(telemetry: &str, extra_events: &[&str]) -> Result<Vec<String>, String> {
-    if let Some(unknown) = extra_events.iter().find(|event| **event != "task_terminal") {
+    if let Some(unknown) = extra_events
+        .iter()
+        .find(|event| !["task_terminal", SIGNAL_RECEIVED].contains(*event))
+    {
         return Err(format!("extra event `{unknown}` has no transcript form"));
     }
     let mut lines = Vec::new();
@@ -98,6 +105,8 @@ pub fn project(telemetry: &str, extra_events: &[&str]) -> Result<Vec<String>, St
         let name = event.name.as_str();
         let family = if PROCESS_EVENTS.contains(&name) {
             Some((PROCESS_IDENTITIES, PROCESS_ATTRIBUTES))
+        } else if name == "clock_select_committed" {
+            Some((&[][..], SELECT_COMMITTED_ATTRIBUTES))
         } else if CLOCK_EVENTS.contains(&name) {
             Some((&[][..], CLOCK_ATTRIBUTES))
         } else if extra_events.contains(&name) {
@@ -128,6 +137,11 @@ pub fn project(telemetry: &str, extra_events: &[&str]) -> Result<Vec<String>, St
             }
             now = time;
             None
+        } else if event.name == SIGNAL_RECEIVED {
+            extra_events
+                .contains(&SIGNAL_RECEIVED)
+                .then(|| event.render_signal())
+                .transpose()?
         } else if extra_events.contains(&event.name.as_str()) {
             Some(event.render_task()?)
         } else {
@@ -310,6 +324,14 @@ impl Event {
         } else {
             parent
         })
+    }
+
+    /// `signal=<number>`: the signal the root was cancelled for.
+    fn render_signal(&self) -> Result<String, String> {
+        let signal = number(lookup(&self.attributes, "request_kind"))
+            .filter(|signal| *signal > 0)
+            .ok_or_else(|| format!("`{}` has no signal number", self.name))?;
+        Ok(format!("signal={signal}"))
     }
 
     fn render_task(&self) -> Result<String, String> {

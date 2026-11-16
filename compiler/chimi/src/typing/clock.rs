@@ -55,10 +55,22 @@ impl ProjectTypeChecker {
 
         let mut contracts = vec![
             (F::ClockAdd, vec![instant, duration], instant, none, pure),
-            (F::ClockBetween, vec![instant, instant], duration, none, pure),
+            (
+                F::ClockBetween,
+                vec![instant, instant],
+                duration,
+                none,
+                pure,
+            ),
             (F::ClockTimestampToText, vec![timestamp], text, none, pure),
             (F::ClockUnixNanoseconds, vec![timestamp], int, none, pure),
-            (F::ClockFromUnixNanoseconds, vec![int], timestamp, none, pure),
+            (
+                F::ClockFromUnixNanoseconds,
+                vec![int],
+                timestamp,
+                none,
+                pure,
+            ),
             (
                 F::ClockTimestampBetween,
                 vec![timestamp, timestamp],
@@ -66,7 +78,13 @@ impl ProjectTypeChecker {
                 none,
                 pure,
             ),
-            (F::ClockStartingAt, vec![clock, timestamp], clock, none, pure),
+            (
+                F::ClockStartingAt,
+                vec![clock, timestamp],
+                clock,
+                none,
+                pure,
+            ),
         ];
         for (function, inputs, success) in [
             (F::ClockNow, Vec::new(), instant),
@@ -85,8 +103,12 @@ impl ProjectTypeChecker {
         // still arms the scope timer on the execution clock, because only a
         // scheduler timer can cancel the scope (decisions.md, CHI-201).
         let value = self.standard_generic_type(StandardGeneric::TimeoutValue);
-        let failures = self.resolved.standard_generic(StandardGeneric::TimeoutFailures);
-        let needs = self.resolved.standard_generic(StandardGeneric::TimeoutNeeds);
+        let failures = self
+            .resolved
+            .standard_generic(StandardGeneric::TimeoutFailures);
+        let needs = self
+            .resolved
+            .standard_generic(StandardGeneric::TimeoutNeeds);
         let operation_failures = self.intern_failure_row(FailureRow {
             variants: Vec::new(),
             variant_arguments: Vec::new(),

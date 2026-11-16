@@ -1274,9 +1274,9 @@ program.
   A child that ends cancelled while the caller was not, because it ran
   `Task.result` on a task it cancelled itself, cancels the caller, as
   `Task.result` of that child would; the race contract's "first to terminate
-  with success or expected failure" does not skip it. A stop interrupts the
-  wait of a process body that is draining queued messages, as it interrupts
-  `Task.result`.
+  with success or expected failure" does not skip it. A stopped process body
+  that is waiting in a combinator keeps waiting, as it does in `Task.result`:
+  a stop drains before it cancels (`application-lifecycle.md`).
 - **Cancelling and draining.** Once the outcome is decided, the combinator
   cancels the rest and waits for each to be terminal with `REQUEST_TASK_DRAIN`,
   which is neither a cancellation point nor withdrawable: a scope that fires

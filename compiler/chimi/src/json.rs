@@ -553,7 +553,11 @@ pub(crate) fn canonical_number_text(text: &str) -> String {
             .magnitude
             .iter()
             .fold(0_i64, |value, digit| value * 10 + i64::from(*digit));
-        let before = if number.exponent.negative { -before } else { before };
+        let before = if number.exponent.negative {
+            -before
+        } else {
+            before
+        };
         let length = digits.len() as i64;
         if before >= length {
             output.push_str(&digits);
@@ -579,7 +583,12 @@ pub(crate) fn canonical_number_text(text: &str) -> String {
     if scientific.negative {
         output.push('-');
     }
-    output.extend(scientific.magnitude.iter().map(|digit| char::from(b'0' + digit)));
+    output.extend(
+        scientific
+            .magnitude
+            .iter()
+            .map(|digit| char::from(b'0' + digit)),
+    );
     output
 }
 
@@ -641,9 +650,16 @@ fn exact_number(text: &str) -> ExactNumber {
     let magnitude = exponent_digits.bytes().fold(0_i64, |magnitude, digit| {
         (magnitude * 10 + i64::from(digit - b'0')).min(EXPONENT_CLAMP)
     });
-    let written_exponent = if exponent_negative { -magnitude } else { magnitude };
+    let written_exponent = if exponent_negative {
+        -magnitude
+    } else {
+        magnitude
+    };
     let fraction_digits = i64::try_from(fraction.len()).expect("a spelling fits in memory");
-    let digits = whole.bytes().chain(fraction.bytes()).map(|digit| digit - b'0');
+    let digits = whole
+        .bytes()
+        .chain(fraction.bytes())
+        .map(|digit| digit - b'0');
     let mut significant = digits.skip_while(|digit| *digit == 0).collect::<Vec<_>>();
     let mut trailing = 0;
     while significant.last() == Some(&0) {
@@ -680,7 +696,11 @@ pub(crate) fn number_to_int(text: &str) -> Result<i64, NumberConversionError> {
         .copied()
         .chain(zeros)
         .fold(0_i128, |value, digit| value * 10 + i128::from(digit));
-    let value = if number.negative { -magnitude } else { magnitude };
+    let value = if number.negative {
+        -magnitude
+    } else {
+        magnitude
+    };
     i64::try_from(value).map_err(|_| NumberConversionError::OutOfRange)
 }
 
@@ -765,7 +785,10 @@ mod tests {
             ("0e50", Some("0")),
             ("1.5e3", Some("1500")),
             ("1500e-2", Some("15.00")),
-            ("123456789012345678901234567890", Some("123456789012345678901234567890")),
+            (
+                "123456789012345678901234567890",
+                Some("123456789012345678901234567890"),
+            ),
             (
                 "0.12345678901234567890123456789012345678",
                 Some("0.12345678901234567890123456789012345678"),
@@ -861,7 +884,10 @@ mod tests {
     #[test]
     fn encode_escapes_only_c0_controls_and_inspection_escapes_every_control() {
         let mut encoded = String::new();
-        write_json_data(&mut encoded, &JsonData::Text("del\u{7f} nel\u{85} \u{1f}".to_owned()));
+        write_json_data(
+            &mut encoded,
+            &JsonData::Text("del\u{7f} nel\u{85} \u{1f}".to_owned()),
+        );
         assert_eq!(encoded, "\"del\u{7f} nel\u{85} \\u001f\"");
 
         let mut inspected = String::new();
