@@ -10072,6 +10072,7 @@ fn a_constructor_holding_a_closure_is_no_more_shareable_than_the_closure() {
         format!(
             concat!(
                 "import std/channel as Channel\n",
+                "import std/option as Option\n",
                 "import std/task as Task\n",
                 "pub struct Conn {{\n  run: fn() -> Int,\n}}\n",
                 "pub struct Tagged {{\n  run: fn() -> Int,\n  tag: Int,\n}}\n",
@@ -10094,12 +10095,16 @@ fn a_constructor_holding_a_closure_is_no_more_shareable_than_the_closure() {
     ] {
         assert_eq!(check_codes(&program(&send)), ["T4243"], "{send}");
     }
-    assert!(
-        check_codes(&program(
-            "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Conn(fn() { 1 }))\n"
-        ))
-        .is_empty()
-    );
+    // A call other than a constructor is not followed: `Option.map` runs its
+    // callback and does not keep it, so its result is judged by its type.
+    for send in [
+        "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Conn(fn() { 1 }))\n".to_owned(),
+        format!(
+            "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Option.map(Some(1), fn(x: Int) -> Int {{\n    let _ = child\n    x\n  }}))\n"
+        ),
+    ] {
+        assert!(check_codes(&program(&send)).is_empty(), "{send}");
+    }
 }
 
 // Rejects a Core verifier that counts a handoff body closure's own parameters

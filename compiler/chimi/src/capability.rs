@@ -536,6 +536,7 @@ impl CapabilityChecker<'_> {
                     result.carries = callee_value.carries;
                 }
                 let result_type = self.expression_type(module_id, expression);
+                let constructs = self.is_constructor(module_id, callee);
                 for (argument, value) in &arguments {
                     let embeds = match (result_type, self.expression_type(module_id, argument)) {
                         (Some(result_type), Some(argument_type)) => {
@@ -548,10 +549,13 @@ impl CapabilityChecker<'_> {
                             result.carries.extend(value.carries.iter().copied());
                         }
                         result.borrows.extend(value.borrows.iter().copied());
-                        // A closure argument the result may hold keeps what its
-                        // captures make it: `Conn(fn() { child })` is no more
-                        // shareable than the closure.
-                        result.take_sharing_of(value);
+                        // A constructor holds its arguments, so a closure argument
+                        // keeps what its captures make it: `Conn(fn() { child })`
+                        // is no more shareable than the closure. Other calls are
+                        // not followed, and their result may hold none of it.
+                        if constructs {
+                            result.take_sharing_of(value);
+                        }
                     }
                 }
                 if let Some(StandardFunction::SelectReceive | StandardFunction::SelectWatch) =
@@ -1230,6 +1234,21 @@ impl CapabilityChecker<'_> {
         self.expression_properties
             .insert((module_id, expression.semantic_id()), value.properties);
         value
+    }
+
+    /// Whether `callee` names a struct or enum constructor, declared in the
+    /// program or by a standard module, such as `Conn`, `Ask.Return` or `Some`.
+    fn is_constructor(&self, module_id: ModuleId, callee: &ModuleExpression) -> bool {
+        self.expression_binding_symbol(module_id, callee)
+            .is_some_and(|symbol| {
+                matches!(
+                    self.typed.resolved.symbol(symbol).kind,
+                    ProjectSymbolKind::StructConstructor | ProjectSymbolKind::EnumConstructor
+                ) || matches!(
+                    self.typed.resolved.standard_symbol(symbol),
+                    Some(StandardSymbol::Constructor(_))
+                )
+            })
     }
 
     fn standard_function(
