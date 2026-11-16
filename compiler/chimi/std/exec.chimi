@@ -392,7 +392,10 @@ pub fn child(
 /// output streams (as a host read after a stop does), `Closed` as
 /// `ExecError.BrokenPipe` for the input, and anything else as `Failed`. Make
 /// the streams inside the fake's `start`: a provider goes to every task its
-/// caller starts, and a channel end it held would belong to one of them. For
+/// caller starts, and a channel end it held would belong to one of them. A
+/// fake cannot tell a write after `Stream.close` from one after the reader
+/// stopped: both are `BrokenPipe`, where a host pipe gives `Closed` for the
+/// first. For
 /// the same reason a stream of a fake is used by one task: hand a writer
 /// task `Exec.input(child)`, not the child.
 ///

@@ -630,9 +630,9 @@ test "capture reads no input" {
 // input under a writer task (wc would count fewer than 262 144 bytes), a write to a child that
 // stopped reading that kills the runner with SIGPIPE instead of failing with
 // `BrokenPipe`, a stopped output that leaves the child writing forever (it
-// dies of SIGPIPE, the default it starts with), and a pipe end another child
-// inherits: a sibling started while the first child runs would hold its
-// output open, and reading it to the end would wait for the sibling.
+// dies of SIGPIPE, the default it starts with), a pipe end another child
+// inherits (a sibling holding cat's input open would keep cat from exiting
+// after the input is closed), and a read that a cancellation cannot stop.
 #[test]
 fn pipes_carry_a_childs_input_and_output() {
     let run = run_tests(
@@ -681,9 +681,10 @@ test "wait leaves the input to a writer task" {
 }
 
 test "a write to a child that stopped reading" {
-  let command = Exec.stdin(Exec.command("/bin/sh", ["-c", "exec 0<&-; sleep 5"]), Stdio.Pipe)
+  let command = Exec.stdout(Exec.stdin(Exec.command("/bin/sh", ["-c", "exec 0<&-; echo closed; exec sleep 5"]), Stdio.Pipe), Stdio.Pipe)
   let got = Exec.start(command, fn(child) {
-    Clock.sleep(Duration.milliseconds(200))
+    // The child says when its input is closed.
+    let said = Stream.read(Exec.output(child))
     attempt(fn() { Stream.write(Exec.input(child), Bytes.from_text("nobody reads this")) })
   }) using { commands: Exec.host_for_tests() }
   got |> Test.assert_equal("Err(ExecError.BrokenPipe(\"/bin/sh\"))")
@@ -707,18 +708,25 @@ test "stopping the output ends a child that keeps writing" {
 }
 
 test "a sibling does not hold a child's pipe" {
-  let waited = Exec.start(Exec.stdout(Exec.command("/bin/sh", ["-c", "printf hi"]), Stdio.Pipe), fn(child) {
+  let waited = Exec.start(Exec.stdin(Exec.command("/bin/cat", []), Stdio.Pipe), fn(child) {
     Exec.start(Exec.command("/bin/sh", ["-c", "exec sleep 3"]), fn(_later) {
       let start = Clock.now()
-      let all = Stream.read_all(Exec.output(child), 100)
-      (Bytes.to_text(all), Clock.since(start) < Duration.seconds(2))
+      Stream.close(Exec.input(child))
+      (Exec.wait(child), Clock.since(start) < Duration.seconds(2))
     })
   }) using { commands: Exec.host_for_tests() }
-  waited |> Test.assert_equal(("hi", True))
+  waited |> Test.assert_equal((Status.Exited(0), True))
+}
+
+test "a cancelled read returns at once" {
+  let got = Exec.start(Exec.stdout(Exec.command("/bin/sh", ["-c", "exec sleep 5"]), Stdio.Pipe), fn(child) {
+    attempt(fn() { Task.timeout(fn() { Stream.read(Exec.output(child)) }, Duration.milliseconds(100)) })
+  }) using { commands: Exec.host_for_tests() }
+  got |> Test.assert_equal("Err(Timeout.TimedOut(100ms))")
 }
 "#,
     );
-    assert_passed(&run, 6);
+    assert_passed(&run, 7);
 }
 
 // Rejects a release that leaves the parent's pipe ends open: the runner holds
