@@ -141,9 +141,13 @@ fn host_monotonic_nanos() -> i64 {
     // SAFETY: `time` is a valid timespec for the duration of the call.
     let status = unsafe { libc::clock_gettime(SOURCE, &mut time) };
     assert_eq!(status, 0, "the host monotonic clock is unavailable");
-    time.tv_sec
+    timespec_nanos(time.tv_sec, time.tv_nsec)
+}
+
+fn timespec_nanos(seconds: i64, nanoseconds: i64) -> i64 {
+    seconds
         .saturating_mul(1_000_000_000)
-        .saturating_add(time.tv_nsec)
+        .saturating_add(nanoseconds)
 }
 
 /// Targets without the suspend-counting clocks fall back to the standard
@@ -241,6 +245,12 @@ mod tests {
         assert_eq!(real_wait(now, Instant::NEVER), MAX_REAL_WAIT);
         assert_eq!(real_wait(now, now), Duration::ZERO);
         assert_eq!(real_wait(now, Instant::from_nanos(-5)), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_host_reading_counts_whole_seconds_and_nanoseconds() {
+        assert_eq!(timespec_nanos(3, 250), 3_000_000_250);
+        assert_eq!(timespec_nanos(i64::MAX, 1), i64::MAX);
     }
 
     #[test]

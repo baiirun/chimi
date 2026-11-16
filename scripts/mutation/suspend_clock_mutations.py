@@ -27,7 +27,10 @@ MUTATIONS = [
     clock("the real clock reads seconds as milliseconds", [(
         "        .saturating_mul(1_000_000_000)",
         "        .saturating_mul(1_000_000)")]),
+    clock("the real clock overflows instead of saturating", [(
+        "        .saturating_mul(1_000_000_000)",
+        "        .wrapping_mul(1_000_000_000)")]),
     clock("the real clock drops the nanoseconds", [(
-        "        .saturating_add(time.tv_nsec)",
+        "        .saturating_add(nanoseconds)",
         "        .saturating_add(0)")]),
 ]
