@@ -1,0 +1,399 @@
+/// Running other programs. Starting one needs the `commands: Commands`
+/// capability, which the runner supplies to `main`; a test supplies a fake
+/// with `using`, or real programs on purpose with `Exec.host_for_tests()`.
+///
+/// ```text
+/// pub fn main() -> Void needs { commands: Commands, console: Console } {
+///   let status = Exec.run(Exec.command("git", ["fetch", "--quiet"]))
+///   case Exec.succeeded(status) {
+///     True -> console.write_line("fetched")
+///     False -> console.write_line("git fetch failed: ${Debug.render(status)}")
+///   }
+/// }
+/// ```
+///
+/// A `Command` is a value: the program, its arguments, its environment, its
+/// working directory and where its standard streams go. Building one starts
+/// nothing. `Exec.start(command, use)` starts it and hands the running
+/// `Child` to `use`; when `use` returns or fails, a child still running is
+/// killed and reaped, so no child outlives the code that started it.
+/// `Exec.run(command)` starts it and waits for its `Status`.
+///
+/// There is no shell: the arguments reach the program exactly as given, and
+/// a program name without a `/` is looked up on the parent's `PATH`. An exit
+/// with a nonzero code is a `Status`, not a failure; `ExecError` is only for
+/// a command that could not start. Waiting lets other tasks run, and under
+/// the virtual clock a task waiting for a child holds virtual time, since the
+/// child runs in real time.
+
+import std/debug as Debug
+import std/list as List
+import std/map as Map
+import std/map.{Map}
+import std/option.{None, Option, Some}
+import std/path as Path
+import std/path.{Path}
+import std/resource as Resource
+import std/result.{Err, Ok, Result}
+
+// 1. Public types.
+
+/// The capability to start programs. The runner's provider starts real
+/// processes; a fake is a record of this function.
+pub interface Commands {
+  /// Starts `command` and returns the running child.
+  start: fn(Command) -> Child errors ExecError
+}
+
+/// A program to run and how to run it. Build one with `Exec.command`.
+pub struct Command {
+  program: Text,
+  arguments: List<Text>,
+  variables: List<(Text, Text)>,
+  inherits_environment: Bool,
+  directory: Option<Path>,
+  stdin: Stdio,
+  stdout: Stdio,
+  stderr: Stdio,
+}
+
+/// Where a child's standard stream goes.
+pub enum Stdio {
+  /// The parent's own stream.
+  Inherit
+  /// Nothing: reading gives end of input, and writes are discarded.
+  Null
+}
+
+/// A running child: `Exec.wait` for its status, `Exec.terminate` or
+/// `Exec.kill` to stop it.
+pub struct Child {
+  wait: fn() -> Status errors ExecError,
+  terminate: fn() -> Void,
+  kill: fn() -> Void,
+  release: fn() -> Void,
+}
+
+/// How a child ended.
+pub enum Status {
+  /// It exited with this code; 0 means success by convention.
+  Exited(code: Int)
+  /// A signal ended it, such as 15 for SIGTERM or 9 for SIGKILL.
+  Signaled(signal: Int)
+}
+
+// 2. Failure types.
+
+/// Why a command could not start or be waited for.
+pub enum ExecError {
+  /// No program of that name exists, or none on `PATH`.
+  NotFound(program: Text)
+  /// The program exists but is not executable.
+  PermissionDenied(program: Text)
+  /// The working directory does not exist, is not a directory, or cannot be
+  /// entered.
+  InvalidDirectory(path: Path)
+  /// The child was already released.
+  Closed(program: Text)
+  /// Any other failure, with the operating system's words.
+  Failed(program: Text, message: Text)
+}
+
+// 3. Building commands.
+
+/// A command that runs `program` with `arguments`, inheriting the parent's
+/// environment, working directory and standard streams.
+///
+/// Cost: O(1).
+pub fn command(program: Text, arguments: List<Text>) -> Command {
+  Command(program, arguments, [], True, None, Stdio.Inherit, Stdio.Inherit, Stdio.Inherit)
+}
+
+/// The command with the environment variable `name` set to `value`, over
+/// what it inherits. A later value for the same name wins.
+///
+/// Defects when: `name` is empty or holds `=`, once the command starts.
+/// Cost: O(1).
+pub fn variable(command: Command, name: Text, value: Text) -> Command {
+  Command(
+    command.program,
+    command.arguments,
+    List.push(command.variables, (name, value)),
+    command.inherits_environment,
+    command.directory,
+    command.stdin,
+    command.stdout,
+    command.stderr,
+  )
+}
+
+/// The command with exactly `variables` as its environment, inheriting none
+/// of the parent's and dropping any set by an earlier `Exec.variable`.
+/// `Exec.variable` adds to it afterwards.
+///
+/// Cost: O(n).
+pub fn environment(command: Command, variables: Map<Text, Text>) -> Command {
+  Command(
+    command.program,
+    command.arguments,
+    Map.entries(variables),
+    False,
+    command.directory,
+    command.stdin,
+    command.stdout,
+    command.stderr,
+  )
+}
+
+/// The command run in `path` instead of the parent's working directory. A
+/// relative program name with a `/` is found from the parent's directory.
+///
+/// Cost: O(1).
+pub fn directory(command: Command, path: Path) -> Command {
+  Command(
+    command.program,
+    command.arguments,
+    command.variables,
+    command.inherits_environment,
+    Some(path),
+    command.stdin,
+    command.stdout,
+    command.stderr,
+  )
+}
+
+/// The command with its standard input connected to `stdio`.
+///
+/// Cost: O(1).
+pub fn stdin(command: Command, stdio: Stdio) -> Command {
+  Command(
+    command.program,
+    command.arguments,
+    command.variables,
+    command.inherits_environment,
+    command.directory,
+    stdio,
+    command.stdout,
+    command.stderr,
+  )
+}
+
+/// The command with its standard output connected to `stdio`.
+///
+/// Cost: O(1).
+pub fn stdout(command: Command, stdio: Stdio) -> Command {
+  Command(
+    command.program,
+    command.arguments,
+    command.variables,
+    command.inherits_environment,
+    command.directory,
+    command.stdin,
+    stdio,
+    command.stderr,
+  )
+}
+
+/// The command with its standard error connected to `stdio`.
+///
+/// Cost: O(1).
+pub fn stderr(command: Command, stdio: Stdio) -> Command {
+  Command(
+    command.program,
+    command.arguments,
+    command.variables,
+    command.inherits_environment,
+    command.directory,
+    command.stdin,
+    command.stdout,
+    stdio,
+  )
+}
+
+/// The program the command runs, as given.
+///
+/// Cost: O(1).
+pub fn program(command: Command) -> Text {
+  command.program
+}
+
+/// The command's arguments, without the program name.
+///
+/// Cost: O(1).
+pub fn arguments(command: Command) -> List<Text> {
+  command.arguments
+}
+
+// 4. Running commands.
+
+/// Starts `command`, hands the running child to `use`, and returns what `use`
+/// returns. When `use` returns or fails, a child still running is killed and
+/// reaped. A child's own children are not: a program that starts others
+/// and leaves them running leaves them to outlive it.
+///
+/// Calls: `use` once, with the child, unless the command cannot start.
+/// Fails with: `ExecError.NotFound`, `PermissionDenied`, `InvalidDirectory`
+/// or `Failed` when the command cannot start; what `use` fails with.
+pub fn start<T, E, R>(command: Command, use: fn(Child) -> T errors E needs R) -> T needs R + {
+  commands: Commands
+} {
+  Resource.scoped(fn() { commands.start(command) }, fn(child) { child.release() }, use)
+}
+
+/// Starts `command` and waits until it ends.
+///
+/// Fails with: `ExecError.NotFound`, `PermissionDenied`, `InvalidDirectory`
+/// or `Failed` when the command cannot start.
+pub fn run(command: Command) -> Status needs {
+  commands: Commands
+} {
+  start(command, wait)
+}
+
+/// Waits until the child ends and returns how. Asking again returns the same
+/// status at once. Other tasks run meanwhile, and a cancelled task stops
+/// waiting at once; the child keeps running until its `Exec.start` ends.
+///
+/// Fails with: `ExecError.Closed` when the child was released;
+/// `ExecError.Failed` when the operating system cannot wait for it.
+pub fn wait(child: Child) -> Status {
+  child.wait()
+}
+
+/// Asks the child to stop with SIGTERM. Does nothing once it has been waited
+/// for.
+///
+/// Cost: one system call.
+pub fn terminate(child: Child) -> Void {
+  child.terminate()
+}
+
+/// Stops the child at once with SIGKILL. Does nothing once it has been
+/// waited for.
+///
+/// Cost: one system call.
+pub fn kill(child: Child) -> Void {
+  child.kill()
+}
+
+/// True when the child exited with code 0.
+///
+/// Cost: O(1).
+pub fn succeeded(status: Status) -> Bool {
+  status == Status.Exited(0)
+}
+
+// 5. Fakes.
+
+/// A child whose operations are these functions, for a fake `Commands`.
+/// `release` runs when the `Exec.start` that started it ends.
+///
+/// Cost: O(1).
+pub fn child(
+  wait: fn() -> Status errors ExecError,
+  terminate: fn() -> Void,
+  kill: fn() -> Void,
+  release: fn() -> Void,
+) -> Child {
+  Child(wait, terminate, kill, release)
+}
+
+// 6. Runner provider.
+
+fn stdio_code(stdio: Stdio) -> Int {
+  case stdio {
+    Stdio.Inherit -> 0
+    Stdio.Null -> 1
+  }
+}
+
+// The binding's failure codes (runtime/native/bindings/exec/exec.c): a
+// spawn fails with 1, 2, 3 or 5, and a wait with 4 or 5.
+fn started<T>(command: Command, result: Result<T, (Int, Text)>) -> T {
+  case result {
+    Ok(value) -> value
+    Err((1, _)) -> Failure(ExecError.NotFound(command.program))
+    Err((2, _)) -> Failure(ExecError.PermissionDenied(command.program))
+    Err((3, _)) -> Failure(ExecError.InvalidDirectory(
+      case command.directory {
+        Some(path) -> path
+        None -> Debug.crash("Exec: an invalid directory without one")
+      },
+    ))
+    Err((_, message)) -> Failure(ExecError.Failed(command.program, message))
+  }
+}
+
+fn waited<T>(command: Command, result: Result<T, (Int, Text)>) -> T {
+  case result {
+    Ok(value) -> value
+    Err((4, _)) -> Failure(ExecError.Closed(command.program))
+    Err((_, message)) -> Failure(ExecError.Failed(command.program, message))
+  }
+}
+
+fn status(ended: (Int, Int)) -> Status {
+  case ended {
+    (0, code) -> Status.Exited(code)
+    (_, signal) -> Status.Signaled(signal)
+  }
+}
+
+fn host_start(command: Command) -> Child {
+  let builder = native_command(command.program)
+  List.each(command.arguments, fn(argument) { native_argument(builder, argument) })
+  case command.inherits_environment {
+    True -> Void
+    False -> native_clear_environment(builder)
+  }
+  List.each(command.variables, fn(variable) {
+    let (name, value) = variable
+    native_variable(builder, name, value)
+  })
+  case command.directory {
+    Some(path) -> native_directory(builder, Path.to_text(path))
+    None -> Void
+  }
+  let process = started(
+    command,
+    native_spawn(builder, stdio_code(command.stdin), stdio_code(command.stdout), stdio_code(command.stderr)),
+  )
+  Child(
+    fn() {
+      status(waited(command, native_wait(process)))
+    },
+    fn() { native_terminate(process) },
+    fn() { native_kill(process) },
+    fn() { native_release(process) },
+  )
+}
+
+native type Builder
+native type Process
+
+native fn native_command(program: Text) -> Builder
+native fn native_argument(builder: Builder, argument: Text) -> Void
+native fn native_variable(builder: Builder, name: Text, value: Text) -> Void
+native fn native_clear_environment(builder: Builder) -> Void
+native fn native_directory(builder: Builder, path: Text) -> Void
+native fn native_spawn(builder: Builder, stdin: Int, stdout: Int, stderr: Int) -> Result<Process, (Int, Text)>
+native fn native_wait(process: Process) -> Result<(Int, Int), (Int, Text)>
+native fn native_terminate(process: Process) -> Void
+native fn native_kill(process: Process) -> Void
+native fn native_release(process: Process) -> Void
+native fn native_allow_real_commands() -> Void
+
+// The provider the runner binds to `main`'s `commands` need (operations.rs
+// `RUNNER_PROVIDERS`). Private, so no other code can take the capability
+// without declaring the need.
+fn system() {
+  { start: host_start }
+}
+
+/// The operating system's programs, for a test that means to run real ones:
+/// `run() using { commands: Exec.host_for_tests() }`. Test-only (`T4401`): a
+/// program gets the capability only by declaring the need.
+pub fn host_for_tests() {
+  native_allow_real_commands()
+  system()
+}

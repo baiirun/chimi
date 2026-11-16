@@ -23,6 +23,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/wait.h>
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -11084,6 +11085,19 @@ static void print_outcome(FILE *output, const ChimiControl *control) {
   fputs("}\n", output);
 }
 
+/* A report file the runtime writes, closed in every child process it starts
+   (std/exec), so a child cannot hold it open or write into it. */
+static FILE *open_report(const char *path, const char *mode) {
+  FILE *output = fopen(path, mode);
+  if (output && fcntl(fileno(output), F_SETFD, FD_CLOEXEC) != 0) {
+    int error = errno;
+    fclose(output);
+    errno = error;
+    return NULL;
+  }
+  return output;
+}
+
 static bool close_output(FILE *output) {
   if (output == NULL) return false;
   bool failed = fflush(output) != 0;
@@ -11103,7 +11117,7 @@ static int compare_profile_rows(const void *left, const void *right) {
    evaluations, then node id, so the same program always writes the same profile. */
 static bool write_profile(const char *path) {
   if (!path) return false;
-  FILE *output = fopen(path, "wx");
+  FILE *output = open_report(path, "wx");
   if (!output) {
     fprintf(stderr, "cannot open profile file %s: %s\n", path, strerror(errno));
     return true;
@@ -11134,7 +11148,7 @@ static bool write_profile(const char *path) {
 
 static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
   if (!path) return false;
-  FILE *output = fopen(path, "wx");
+  FILE *output = open_report(path, "wx");
   if (!output) {
     fprintf(stderr, "cannot open memory report file %s: %s\n", path, strerror(errno));
     return true;
@@ -11655,6 +11669,54 @@ static ChimiControl *invoke_signal_operation(uint32_t intrinsic, ChimiValue **ar
   }
 }
 
+/* Child processes for binding packages (std/exec, CHI-250). SIGCHLD's
+   handler only writes to the stop signals' pipe, which wakes an idle
+   scheduler; CHIMI_REQUEST_CHILD_WAIT then checks every waiting child with
+   waitid(WNOWAIT), so the binding reaps the child itself. Installed once, by
+   the first chimi_binding_prepare_children, before the first spawn: an
+   inherited SIG_IGN would make the kernel reap children on its own. */
+static void on_child_signal(int number) {
+  (void)number;
+  int saved = errno;
+  if (signal_pipe[1] >= 0) (void)!write(signal_pipe[1], "", 1);
+  errno = saved;
+}
+
+void chimi_binding_prepare_children(void) {
+  static bool installed = false;
+  if (installed) return;
+  installed = true;
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = on_child_signal;
+  sigemptyset(&action.sa_mask);
+  action.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+  sigaction(SIGCHLD, &action, NULL);
+}
+
+int chimi_binding_wait_child(ChimiBindingCall *call, uint32_t handle, int pid) {
+  if (pid <= 0) return CHIMI_BINDING_WAIT_FAILED;
+  if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
+  chimi_binding_prepare_children();
+  if (CHIMI_REQUIRES_SCHEDULER) {
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHILD_WAIT, .value = pid};
+    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;
+    if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
+    if (request.status == CHIMI_RESPONSE_ERROR) return CHIMI_BINDING_WAIT_FAILED;
+    /* Exited, or woken to look again: either way the caller looks. A wake
+       after another task reaped the child is answered from the caller's
+       record, never by waiting on a pid the kernel may have reused. */
+    return CHIMI_BINDING_READY;
+  }
+  for (;;) {
+    if (call->runtime->cancel) return CHIMI_BINDING_WAIT_CANCELLED;
+    siginfo_t info;
+    memset(&info, 0, sizeof(info));
+    if (waitid(P_PID, (id_t)pid, &info, WEXITED | WNOWAIT) == 0) return CHIMI_BINDING_READY;
+    if (errno != EINTR) return CHIMI_BINDING_WAIT_FAILED;
+  }
+}
+
 /* `--signal=TERM@2s`: a signal the virtual clock delivers at that instant.
    The time is an integer with a unit of ns, us, ms, s, m, or h. INT and TERM
    stop the program; HUP, USR1 and USR2 are std/signal's, latched for its
@@ -11932,14 +11994,14 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     if (!profile_rows) exhausted_memory();
   }
   if (telemetry_path) {
-    runtime.telemetry = fopen(telemetry_path, strcmp(telemetry_path, "/dev/null") == 0 ? "w" : "wx");
+    runtime.telemetry = open_report(telemetry_path, strcmp(telemetry_path, "/dev/null") == 0 ? "w" : "wx");
     if (!runtime.telemetry) {
       fprintf(stderr, "cannot open telemetry file %s: %s\n", telemetry_path, strerror(errno));
       return 74;
     }
   }
   if (outcome_path) {
-    runtime.outcome = fopen(outcome_path, "wx");
+    runtime.outcome = open_report(outcome_path, "wx");
     if (!runtime.outcome) {
       fprintf(stderr, "cannot open outcome file %s: %s\n", outcome_path, strerror(errno));
       if (runtime.telemetry) fclose(runtime.telemetry);
