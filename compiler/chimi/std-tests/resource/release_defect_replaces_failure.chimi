@@ -1,5 +1,6 @@
 // A defect in `release` replaces the failure `use` ended with.
 import std/resource as Resource
+import std/test as Test
 
 enum UseError {
   Broken
@@ -9,7 +10,7 @@ fn divide(left: Int, right: Int) -> Int {
   left / right
 }
 
-pub fn main() -> Int {
+fn run() -> Int {
   Resource.scoped(
     fn() { 0 },
     fn(held) {
@@ -18,4 +19,8 @@ pub fn main() -> Int {
     },
     fn(_held) { Failure(UseError.Broken) },
   )
+}
+
+test "release defect replaces failure" {
+  Test.assert_equal(Test.capture_defect(run), "integer division by zero in `/`: 2 / 0")
 }

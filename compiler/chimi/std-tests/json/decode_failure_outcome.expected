@@ -1,1 +1,0 @@
-{"schema":"chimi.runtime.v1","outcome":"expected_failure","error":{"type":"DecodeError","variant":"InvalidJson","fields":{"message":"expected `,` or `]` in JSON array","offset":11}}}

@@ -1,6 +1,9 @@
 // A failing change passes through Map.map_values unchanged: the first value it
 // rejects in ascending key order is the one that escapes.
 import std/map as Map
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
 
 enum Rejected {
   Negative(value: Int)
@@ -13,6 +16,10 @@ fn positive(value: Int) -> Int {
   }
 }
 
-pub fn main() -> Map.Map<Text, Int> {
+fn run() -> Map.Map<Text, Int> {
   Map.map_values(Map.from([("z", -9), ("m", -5), ("a", 1)]), positive)
+}
+
+test "map values failure" {
+  Test.assert_equal(Result.capture(run), Err(Rejected.Negative(-5)))
 }

@@ -8,12 +8,13 @@ import std/map as Map
 import std/map.{Map}
 import std/set as Set
 import std/text as Text
+import std/test as Test
 
 fn keys<V>(map: Map<Decimal, V>) -> Text {
   Text.join(List.map(Map.keys(map), Decimal.to_text), ",")
 }
 
-pub fn main() -> List<Text> {
+fn run() -> List<Text> {
   let short = Decimal.of(15, 1)
   let long = Decimal.of(150, 2)
   let held = Map.put(Map.empty(), short, "first")
@@ -25,4 +26,8 @@ pub fn main() -> List<Text> {
     "merge: ${keys(Map.merge(held, Map.put(Map.empty(), long, "second")))}",
     "set add: ${Text.join(List.map(items, Decimal.to_text), ",")}",
   ]
+}
+
+test "equal keys keep the held one" {
+  Test.assert_equal(run(), ["put: 1.5 = second", "from: 1.5", "merge: 1.5", "set add: 1.5"])
 }

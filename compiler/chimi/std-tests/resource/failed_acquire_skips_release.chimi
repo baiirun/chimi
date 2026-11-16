@@ -1,6 +1,9 @@
 // A failed `acquire` reaches neither `use` nor `release`: the outcome is the
 // acquire's failure, not the defect `release` would raise.
 import std/resource as Resource
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
 
 enum PoolError {
   Empty
@@ -10,7 +13,7 @@ fn divide(left: Int, right: Int) -> Int {
   left / right
 }
 
-pub fn main() -> Int {
+fn run() -> Int {
   Resource.scoped(
     fn() { Failure(PoolError.Empty) },
     fn(_held) {
@@ -19,4 +22,8 @@ pub fn main() -> Int {
     },
     fn(_held) { divide(4, 0) },
   )
+}
+
+test "failed acquire skips release" {
+  Test.assert_equal(Result.capture(run), Err(PoolError.Empty))
 }

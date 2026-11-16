@@ -1,5 +1,6 @@
 // A defect in `use` stays the outcome even though `release` then fails.
 import std/resource as Resource
+import std/test as Test
 
 enum CloseError {
   Refused
@@ -9,10 +10,14 @@ fn divide(left: Int, right: Int) -> Int {
   left / right
 }
 
-pub fn main() -> Int {
+fn run() -> Int {
   Resource.scoped(
     fn() { 0 },
     fn(_held) { Failure(CloseError.Refused) },
     fn(held) { divide(1, held) },
   )
+}
+
+test "use defect stays primary" {
+  Test.assert_equal(Test.capture_defect(run), "integer division by zero in `/`: 1 / 0")
 }
