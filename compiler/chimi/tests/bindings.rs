@@ -162,10 +162,23 @@ test "closing a handle ends another task's wait on it" {
   BindingProbe.close(pipe)
   Task.result(reader) |> Debug.render |> Test.assert_equal("Result.Err(ProbeError.Closed)")
 }
+
+test "closing a handle ends another task's wait even when its descriptors are reused" {
+  let pipe = BindingProbe.open()
+  let reader = Task.start(fn() { Result.capture(fn() { BindingProbe.read(pipe) }) })
+  Clock.sleep(Duration.milliseconds(20))
+  BindingProbe.close(pipe)
+  // The new pipe gets the closed one's descriptor numbers at once.
+  let reused = BindingProbe.open()
+  Task.timeout(fn() { Task.result(reader) }, Duration.seconds(5))
+    |> Debug.render
+    |> Test.assert_equal("Result.Err(ProbeError.Closed)")
+  BindingProbe.close(reused)
+}
 "#,
     );
     assert_eq!(run.status, Some(0), "{}{}", run.stdout, run.stderr);
-    assert!(run.stdout.contains("4 passed, 0 failed"), "{}", run.stdout);
+    assert!(run.stdout.contains("5 passed, 0 failed"), "{}", run.stdout);
 }
 
 /// The build report of the test build in `scratch`.

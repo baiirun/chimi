@@ -1,0 +1,21 @@
+# mutation run at 5f831b26f2b6c77c6bd9a5bdb256c9031538a87d
+# withdraw_mutations.py: 10 mutants against compiler/chimi
+BASELINE ok  [cargo test --quiet -p chimi-fiber --lib -- a_withdraw_wakes_only_the_waits_on_its_resource] (6s)
+BASELINE ok  [cargo test --quiet -p chimi-fiber --lib -- a_failed_poll_fails_the_waits_in_flight_instead_of_spinning] (0s)
+BASELINE ok  [cli] (32s)
+BASELINE ok  [bindings] (1s)
+KILLED       a withdraw wakes nobody [cargo test --quiet -p chimi-fiber --lib -- a_withdraw_wakes_only_the_waits_on_its_resource] (3s)
+KILLED       a withdraw ignores the resource [cargo test --quiet -p chimi-fiber --lib -- a_withdraw_wakes_only_the_waits_on_its_resource] (4s)
+KILLED       a wait forgets its resource [cargo test --quiet -p chimi-fiber --lib -- a_withdraw_wakes_only_the_waits_on_its_resource] (4s)
+TIMEOUT      a failed poll leaves the wait pending [cargo test --quiet -p chimi-fiber --lib -- a_failed_poll_fails_the_waits_in_flight_instead_of_spinning] (120s)
+SURVIVED     a stdin wait reads after the reactor fails [cli] (28s)
+TIMEOUT      a failed poll reads as an empty wait [cargo test --quiet -p chimi-fiber --lib -- a_failed_poll_fails_the_waits_in_flight_instead_of_spinning] (120s)
+KILLED       a dispatch drops the withdraw [bindings] (16s)
+KILLED       closing a handle does not withdraw [bindings] (15s)
+KILLED       a binding wait names no resource [bindings] (15s)
+KILLED       the withdraw key is the new generation [bindings] (15s)
+# result: 1 survivor, explained:
+# - a stdin wait reads after the reactor fails: no test can make the native
+#   reactor's poll fail from a program, and for a closed stdin (the other
+#   ERROR) the read that follows fails with EBADF too, so the outcome is the
+#   same. The fiber test covers the reactor's side of a failed poll.

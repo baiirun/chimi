@@ -16,15 +16,12 @@
      is chimi_binding_ok.
    - Wait for a descriptor with chimi_binding_wait, never with a blocking
      call, so other tasks keep running. Make descriptors non-blocking.
-   - Never close a descriptor while another task waits on it: the reactor
-     waits on the descriptor's number, which the next open may reuse. A
-     handle whose descriptor tasks wait on must stop them first (the runtime
-     does not yet offer a way to wake them; see the spec's "Not covered
-     yet").
    - chimi_binding_wait lets other tasks run, and one may close a handle
      argument meanwhile: pass the handle's index so the wait answers
      CHIMI_BINDING_WAIT_CLOSED, and read its state again with
-     chimi_binding_handle after every wait.
+     chimi_binding_handle after every wait. Closing a handle wakes every
+     task waiting on its descriptors before `release` runs, so close a
+     descriptor only in `release`, never one another task may wait on.
    - A host resource is a handle: chimi_binding_make_handle gives the runtime
      ownership of `state`, and the type's release runs exactly once, at
      chimi_binding_close_handle or when the program ends. Chimi code never sees
