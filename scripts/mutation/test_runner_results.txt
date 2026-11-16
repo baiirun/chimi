@@ -1,0 +1,20 @@
+# mutation run at 5ff27e61fd4c70101c8a1e4b9099642ba4bb7e0e
+# test_runner_mutations.py: 15 mutants against compiler/chimi
+BASELINE ok  [testing] (18s)
+BASELINE ok  [lib -- testing::] (3s)
+KILLED       classify: no defect is an assertion [testing] (10s)
+KILLED       classify: a deadlock is an ordinary defect [testing] (10s)
+KILLED       classify: a failure's rendering is dropped [testing] (10s)
+KILLED       report: passing tests always show their output [testing] (10s)
+KILLED       report: no diff for multi-line renderings [testing] (23s)
+KILLED       diff: changed lines are not marked [lib -- testing::] (2s)
+KILLED       parallel: results come back in finishing order [testing] (23s)
+KILLED       filter: filters are ignored [testing] (15s)
+KILLED       filter: only the quoted form matches [testing] (10s)
+KILLED       clock start: any text is accepted [testing] (10s)
+KILLED       interpreter: every test runs the first entry [testing] (11s)
+KILLED       native: --test is ignored [testing] (12s)
+KILLED       native: assert_equal passes on unequal values [testing] (11s)
+KILLED       native: a failed assert is not a defect [testing] (11s)
+KILLED       interpreter: assert_not_equal never fails [testing] (15s)
+# result: every mutant killed
