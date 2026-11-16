@@ -11,8 +11,8 @@ Implemented: test declarations (they parse, format, and type-check, and
 builds drop them), the `chimi test` runner on both backends with the human
 report, `--json`, filters, jobs, the time limit, the clock options, and the
 exit status, the four `std/test` assertions, `capture_defect`, recorders
-and scripts, `T4401`, `T4403`, and `std/random` with `--seed`. Not
-implemented yet: fake mailboxes, `--trace`, directory inputs, doc-comment examples,
+and scripts, fake mailboxes, `T4401`, `T4403`, and `std/random` with
+`--seed`. Not implemented yet: `--trace`, directory inputs, doc-comment examples,
 and the std-tests migration. The build is tracked
 by CHI-208; the spec was written under CHI-202.
 
@@ -516,11 +516,17 @@ the code a fake address:
   follows the mailbox rules: it never parks, and it returns
   `SendError.Full(message)` once `capacity` messages are held.
 - `received` returns every message delivered so far, in delivery order, and
-  removes them, which frees capacity.
-- Such an address equals only itself and renders as `<Address test>`, a row
-  this spec adds to the [debug rendering
+  removes them, which frees capacity. A capacity below 1 is a defect.
+- A message holding a `Receiver` or `Completion` is refused as a defect when
+  the mailbox has room (a full one returns `SendError.Full` first): moving
+  it into a mailbox would need the capability transfer a process receive
+  makes, and no test has needed one yet. `Process.monitor` of a test address
+  is a defect too, because no process stands behind it.
+- Such an address, like every process address, has no equality. It renders as
+  `<address test>`, a row this spec adds to the [debug rendering
   table](standard-modules-and-constants.md#format).
-- Both are test-only operations and native-only, as processes are.
+- Both are test-only operations and native-only, as processes are. The
+  interpreter defects on `Test.mailbox`.
 
 ## The runner
 

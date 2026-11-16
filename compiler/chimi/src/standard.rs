@@ -159,6 +159,9 @@ pub(crate) enum StandardType {
     /// logs the test execution owns (testing.md, "Recorders and scripted fakes").
     TestRecorder,
     TestScript,
+    /// `std/test.Mailbox<M>`: the receiving end of a fake process address
+    /// (testing.md, "Fake process addresses").
+    TestMailbox,
 }
 
 impl StandardType {
@@ -241,6 +244,7 @@ impl StandardType {
             Self::Result => "Result",
             Self::TestRecorder => "Recorder",
             Self::TestScript => "Script",
+            Self::TestMailbox => "Mailbox",
         }
     }
 
@@ -267,6 +271,7 @@ impl StandardType {
             Self::Task => StandardProperties::Opaque("a `Task` capability"),
             Self::TestRecorder => StandardProperties::Opaque("a `Test.Recorder`"),
             Self::TestScript => StandardProperties::Opaque("a `Test.Script`"),
+            Self::TestMailbox => StandardProperties::Opaque("a `Test.Mailbox`"),
             Self::SelectEvent => StandardProperties::Opaque("a `Select.Event`"),
             Self::ChannelSender
             | Self::ChannelReceiver
@@ -583,6 +588,8 @@ pub(crate) enum StandardFunction {
     TestRecorded,
     TestScript,
     TestNext,
+    TestMailbox,
+    TestReceived,
 }
 
 impl StandardFunction {
@@ -881,7 +888,9 @@ impl StandardFunction {
             | Self::TestRecord
             | Self::TestRecorded
             | Self::TestScript
-            | Self::TestNext => None,
+            | Self::TestNext
+            | Self::TestMailbox
+            | Self::TestReceived => None,
         }
     }
 
@@ -1068,6 +1077,8 @@ impl StandardFunction {
             Self::TestRecorded => "recorded",
             Self::TestScript => "script",
             Self::TestNext => "next",
+            Self::TestMailbox => "mailbox",
+            Self::TestReceived => "received",
         }
     }
 
@@ -1478,6 +1489,7 @@ impl StandardConstructor {
             | StandardType::Cause
             | StandardType::TestRecorder
             | StandardType::TestScript
+            | StandardType::TestMailbox
             | StandardType::JsonValue
             | StandardType::JsonNumber
             | StandardType::DecodeError

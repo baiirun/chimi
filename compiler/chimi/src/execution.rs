@@ -1863,6 +1863,14 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::TestRecorded
             | StandardFunction::TestScript
             | StandardFunction::TestNext => self.invoke_test_log(function, arguments, call_node),
+            StandardFunction::TestMailbox | StandardFunction::TestReceived => Control::Defect {
+                message: format!(
+                    "Test.{} requires the native backend, as processes do",
+                    function.name()
+                ),
+                node: Some(call_node),
+                cause: None,
+            },
             StandardFunction::DebugCrash
             | StandardFunction::OptionUnwrapOrFail
             | StandardFunction::TextConcat

@@ -285,6 +285,8 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     test_only("std/test.recorded", 1, StandardFunction::TestRecorded),
     test_only("std/test.script", 1, StandardFunction::TestScript),
     test_only("std/test.next", 1, StandardFunction::TestNext),
+    test_only("std/test.mailbox", 1, StandardFunction::TestMailbox),
+    test_only("std/test.received", 1, StandardFunction::TestReceived),
 ];
 
 pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
@@ -326,6 +328,7 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     known_constructor("std/result.Result.Err", StandardConstructor::ResultErr),
     native_type("std/test.Recorder", StandardType::TestRecorder),
     native_type("std/test.Script", StandardType::TestScript),
+    native_type("std/test.Mailbox", StandardType::TestMailbox),
     known_type("std/json.Value", StandardType::JsonValue),
     known_constructor("std/json.Value.Null", StandardConstructor::JsonNull),
     known_constructor("std/json.Value.Boolean", StandardConstructor::JsonBoolean),
