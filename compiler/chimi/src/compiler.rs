@@ -657,9 +657,13 @@ impl Compiler {
     /// Every operation id in the standard registry, each of which a std-tests
     /// program must reach.
     #[doc(hidden)]
+    /// The id of every registered operation that a program may reach. Test-only
+    /// operations are left out: no program reaches them (`T4401`), and
+    /// `tests/testing.rs` covers them through `chimi test`.
     pub fn standard_operation_ids() -> Vec<&'static str> {
         crate::operations::OPERATIONS
             .iter()
+            .filter(|operation| !operation.test_only)
             .map(|operation| operation.id)
             .collect()
     }

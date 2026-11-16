@@ -25,7 +25,6 @@ pub(crate) enum OperationClass {
     /// Deterministic and creates no runtime resource; constants may call it.
     Pure,
     /// Needs the scheduler or creates runtime resources.
-    #[allow(dead_code)]
     Runtime,
     /// Talks to the operating system; its `native fn` must be private (`N3106`).
     #[allow(dead_code)]
@@ -40,6 +39,9 @@ pub(crate) struct Operation {
     pub(crate) arity: usize,
     pub(crate) class: OperationClass,
     pub(crate) implementation: StandardFunction,
+    /// Only tests may reach it: `chimi build` and `chimi run` reject a program
+    /// whose `main` reaches it (`T4401`, testing.md "Defects").
+    pub(crate) test_only: bool,
 }
 
 /// A source declaration whose identity the runtime knows.
@@ -66,7 +68,30 @@ const fn pure(id: &'static str, arity: usize, implementation: StandardFunction) 
         arity,
         class: OperationClass::Pure,
         implementation,
+        test_only: false,
     }
+}
+
+const fn test_only(id: &'static str, arity: usize, implementation: StandardFunction) -> Operation {
+    Operation {
+        id,
+        arity,
+        class: OperationClass::Runtime,
+        implementation,
+        test_only: true,
+    }
+}
+
+/// The source spelling of a test-only operation (`Test.capture_defect` for
+/// `std/test.capture_defect`), for `T4401`; `None` for any other operation.
+pub(crate) fn test_only_name(function: StandardFunction) -> Option<String> {
+    let operation = OPERATIONS
+        .iter()
+        .find(|operation| operation.implementation == function && operation.test_only)?;
+    let (module, name) = operation.id.strip_prefix("std/")?.split_once('.')?;
+    let mut qualifier = module.chars();
+    let first = qualifier.next()?.to_ascii_uppercase();
+    Some(format!("{first}{}.{name}", qualifier.as_str()))
 }
 
 pub(crate) const OPERATIONS: &[Operation] = &[
@@ -169,6 +194,7 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/test.assert_not_equal", 2, StandardFunction::TestAssertNotEqual),
     pure("std/test.assert", 2, StandardFunction::TestAssert),
     pure("std/test.fail", 1, StandardFunction::TestFail),
+    test_only("std/test.capture_defect", 1, StandardFunction::TestCaptureDefect),
 ];
 
 pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[

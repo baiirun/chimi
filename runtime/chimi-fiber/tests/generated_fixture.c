@@ -397,6 +397,7 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       CHIMI_REQUEST_PROCESS_MONITOR,
       CHIMI_REQUEST_PROCESS_MAILBOX,
       CHIMI_DOWN_UNAVAILABLE,
+      CHIMI_REQUEST_SCOPE_CANCEL,
   };
   size_t count = sizeof(values) / sizeof(*values);
   for (size_t index = 0; index < count; index += 1) out[index] = values[index];

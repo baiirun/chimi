@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 11u
+#define CHIMI_FIBER_ABI_VERSION 12u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -100,7 +100,9 @@ enum {
   CHIMI_REQUEST_CHANNEL_RELEASE = 24,
   /* ChimiSchedulerRequest: enters a cancellation scope of the calling task
      whose deadline Instant is `value`; the reply's `token` is the scope id.
-     A cancellation point (see chimi_fiber_scope_cancel_pending). */
+     INT64_MAX means no deadline: the scope has no timer and is cancelled
+     only from outside. A cancellation point (see
+     chimi_fiber_scope_cancel_pending). */
   CHIMI_REQUEST_SCOPE_ENTER = 25,
   /* ChimiSchedulerRequest: leaves the scope whose id is `token`, and any
      scope nested in it. PENDING while child tasks the scope cancelled still
@@ -133,6 +135,12 @@ enum {
      (receive, process receive, task result), which answers at once. ERROR
      for an empty list or an unknown kind. A cancellation point. */
   CHIMI_REQUEST_SELECT = 32,
+  /* ChimiSchedulerRequest: cancels the live child tasks started in the
+     scope whose id is `token`, or in a scope nested in it, but not the
+     caller (Test.capture_defect after its operation defected). A later
+     SCOPE_EXIT is PENDING until they drain. ERROR when the task is not
+     inside the scope. Never a cancellation point. */
+  CHIMI_REQUEST_SCOPE_CANCEL = 33,
 };
 
 /* `down` of a RECEIVE reply whose `message` is a notice handle. */

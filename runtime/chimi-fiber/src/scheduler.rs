@@ -93,6 +93,11 @@ pub const REQUEST_PROCESS_ARGUMENT: u32 = 31;
 /// first ready source in `value`, or PENDING until one may be ready; reissue
 /// the request after every wake. Consumes nothing (`scheduler/select.rs`).
 pub const REQUEST_SELECT: u32 = 32;
+/// Cancels the live children of the scope whose id is `token` (and of the
+/// scopes nested in it) without cancelling the caller; leaving the scope then
+/// waits for them to drain. ERROR when the task is not inside it. Never a
+/// cancellation point.
+pub const REQUEST_SCOPE_CANCEL: u32 = 33;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -1506,6 +1511,15 @@ impl Scheduler {
             },
             REQUEST_SCOPE_CHECK => {
                 request.status = RESPONSE_OK;
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_SCOPE_CANCEL => {
+                request.status =
+                    if self.cancel_scope_children(owner, ScopeId::from_raw(request.token)) {
+                        RESPONSE_OK
+                    } else {
+                        RESPONSE_ERROR
+                    };
                 let _ = self.wake_front(owner);
             }
             REQUEST_SELECT => self.handle_select(owner, request),

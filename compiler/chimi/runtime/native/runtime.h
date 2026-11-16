@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 29
+#define CHIMI_RUNTIME_ABI_VERSION 30
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -251,6 +251,8 @@ enum {
   CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL,
   CHIMI_INTRINSIC_TEST_ASSERT,
   CHIMI_INTRINSIC_TEST_FAIL,
+  /* Test-only; runs its operation in a cancellation scope without a deadline. */
+  CHIMI_INTRINSIC_TEST_CAPTURE_DEFECT,
 };
 
 enum {
@@ -497,6 +499,10 @@ extern const uint32_t CHIMI_FUNCTION_COUNT;
    runs the k-th instead of the entry. Empty for a program. */
 extern const uint32_t CHIMI_TEST_FUNCTIONS[];
 extern const uint32_t CHIMI_TEST_COUNT;
+/* Ascending ids of the call nodes that fail a test as an assertion
+   (CoreProgram::assertion_calls); Test.capture_defect lets their defects pass. */
+extern const uint32_t CHIMI_ASSERTION_NODES[];
+extern const uint32_t CHIMI_ASSERTION_NODE_COUNT;
 extern const ChimiConstructor CHIMI_CONSTRUCTORS[];
 extern const ChimiNamedNode CHIMI_NAMED_NODES[];
 extern const ChimiStep CHIMI_STEPS[];

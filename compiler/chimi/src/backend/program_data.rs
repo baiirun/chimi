@@ -609,6 +609,20 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         u32::to_string,
     );
     writeln!(output, "const uint32_t CHIMI_TEST_COUNT = {};", tests.len()).unwrap();
+    let mut assertion_nodes = core.assertion_calls().into_iter().collect::<Vec<_>>();
+    assertion_nodes.sort_unstable();
+    render_array(
+        &mut output,
+        "const uint32_t CHIMI_ASSERTION_NODES[]",
+        &assertion_nodes,
+        u32::to_string,
+    );
+    writeln!(
+        output,
+        "const uint32_t CHIMI_ASSERTION_NODE_COUNT = {};",
+        assertion_nodes.len()
+    )
+    .unwrap();
     render_array(
         &mut output,
         "const ChimiConstructor CHIMI_CONSTRUCTORS[]",
