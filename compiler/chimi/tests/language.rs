@@ -10015,6 +10015,44 @@ fn process_program(declarations: &str) -> String {
     format!("{PROCESS_PRELUDE}{declarations}pub fn main() -> Int {{\n  0\n}}\n")
 }
 
+// Rejects a checker that judges a qualified constructor such as `Ask.Done` by
+// the receiver it is written on, the type name, instead of as a declaration:
+// a fieldless variant of an enum whose other variant holds functions is
+// sendable, bound first or built in place (CHI-270). A task handle is still
+// refused.
+#[test]
+fn a_qualified_constructor_is_a_declaration_not_a_field_read() {
+    let program = |send: &str| {
+        format!(
+            concat!(
+                "import std/channel as Channel\n",
+                "import std/task as Task\n",
+                "pub struct Conn {{\n  run: fn(Int) -> Int,\n}}\n",
+                "enum Ask {{\n  Return(connection: Conn)\n  Done\n}}\n",
+                "pub fn main() -> Int {{\n",
+                "  let made = Channel.bounded(4)\n",
+                "  let asks = made.sender\n",
+                "{}",
+                "  0\n",
+                "}}\n",
+            ),
+            send
+        )
+    };
+    assert!(check_codes(&program("  Channel.send(asks, Ask.Done)\n")).is_empty());
+    assert!(
+        check_codes(&program("  let ask = Ask.Done\n  Channel.send(asks, ask)\n")).is_empty()
+    );
+    assert_eq!(
+        check_codes(&program(concat!(
+            "  let running = Task.start(fn() { 1 })\n",
+            "  let tasks = Channel.bounded(1)\n",
+            "  Channel.send(tasks.sender, running)\n",
+        ))),
+        ["T4243"]
+    );
+}
+
 // Rejects a Core verifier that counts a handoff body closure's own parameters
 // and locals as captures: this body captures only `step`, a shareable
 // function, but binds an inbox and a task handle of its own, which a nested

@@ -341,6 +341,24 @@ impl CapabilityChecker<'_> {
                     self.type_value(module_id, expression)
                 }
             }
+            // A qualified constructor or function, such as `Ask.Done` or
+            // `List.map`, names a declaration as a bare name does; it reads no
+            // field of its receiver, which is a module or type name.
+            ModuleExpression::Select { .. }
+                if self
+                    .expression_binding_symbol(module_id, expression)
+                    .is_some_and(|symbol| {
+                        matches!(
+                            self.typed.resolved.symbol(symbol).kind,
+                            ProjectSymbolKind::Function
+                                | ProjectSymbolKind::StructConstructor
+                                | ProjectSymbolKind::EnumConstructor
+                                | ProjectSymbolKind::BuiltinValue
+                        )
+                    }) =>
+            {
+                FlowValue::shareable()
+            }
             ModuleExpression::Select {
                 receiver: receiver_expression,
                 ..
