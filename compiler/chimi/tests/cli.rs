@@ -3086,8 +3086,11 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi check [--json] --root <project-dir> <entry-module> | ",
             "chimi run --root <project-dir> <entry-module> [-- <argument>...] | ",
             "chimi build --root <project-dir> <entry-module> ",
-            "[-o <executable>] | chimi std check; a compiler developer may put ",
-            "--std-dir <directory> before inspect, check, run, build, or std check\n"
+            "[-o <executable>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
+            "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
+            "[--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] | ",
+            "chimi std check; a compiler developer may put ",
+            "--std-dir <directory> before inspect, check, run, build, test, or std check\n"
         )
     );
 }
@@ -5400,6 +5403,65 @@ fn native_a_root_overflowing_inside_a_loop_ends_with_a_stack_overflow_defect() {
             .contains(r#""outcome":"defect","message":"Task stack overflow""#),
         "{}",
         execution.outcome
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// A program without tasks runs main on the host thread, which has no guard page
+// of Chimi's own. Recursing past that stack ends with the "Stack overflow" defect
+// rather than SIGSEGV (CHI-230), inside a loop region as well, while recursion
+// that fits still succeeds: 5,000 calls fit an 8 MiB stack with room to spare.
+#[test]
+fn native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect() {
+    let scratch = scratch_directory("native-host-stack-overflow");
+    let executable = build_native(
+        &scratch,
+        "host-overflow",
+        concat!(
+            "import std/int as Int\n",
+            "import std/list as List\n",
+            "fn build(n: Int, acc: List<Int>) -> List<Int> {\n",
+            "  case n {\n",
+            "    0 -> acc\n",
+            "    _ -> build(n - 1, List.push(acc, n))\n",
+            "  }\n",
+            "}\n",
+            "struct Round { left: Int, total: Int }\n",
+            "pub fn main(arguments: List<Text>) -> Int {\n",
+            "  let depth = case List.first(arguments) {\n",
+            "    Some(text) -> Int.parse(text)\n",
+            "    None -> 0\n",
+            "  }\n",
+            "  loop state = Round(2, 0) {\n",
+            "    case state.left {\n",
+            "      0 -> break state.total\n",
+            "      _ -> Round(state.left - 1, state.total + List.length(build(depth, [])))\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let run = |depth: &str| {
+        let outcome_path = scratch.join(format!("host-overflow-{depth}-outcome.jsonl"));
+        let process = Command::new(&executable)
+            .arg("--chimi-runner")
+            .arg("--trace=off")
+            .arg(format!("--outcome-file={}", outcome_path.display()))
+            .arg("--")
+            .arg(depth)
+            .output()
+            .expect("execute native Chimi program");
+        let outcome = std::fs::read_to_string(&outcome_path).unwrap_or_default();
+        (process.status.code(), outcome)
+    };
+    let (fits_status, fits) = run("5000");
+    assert_eq!(fits_status, Some(0), "{fits}");
+    assert!(fits.contains(r#""outcome":"success","value":10000"#), "{fits}");
+    let (overflow_status, overflow) = run("1000000");
+    assert_eq!(overflow_status, Some(70), "{overflow}");
+    assert!(
+        overflow.contains(r#""outcome":"defect","message":"Stack overflow""#),
+        "{overflow}"
     );
     std::fs::remove_dir_all(scratch).unwrap();
 }

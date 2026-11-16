@@ -463,6 +463,11 @@ pub(crate) fn test_symbol_name(name: &str) -> String {
     format!("test \"{name}\"")
 }
 
+/// The test's own name when `symbol_name` is a [`test_symbol_name`].
+pub(crate) fn test_name_of(symbol_name: &str) -> Option<&str> {
+    symbol_name.strip_prefix("test \"")?.strip_suffix('"')
+}
+
 
 #[derive(Clone, Debug)]
 pub(crate) enum TypeUse {

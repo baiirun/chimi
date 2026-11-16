@@ -19,6 +19,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 /* The stack of every scheduler fiber: the root task, child tasks, and incarnations. */
 #define CHIMI_FIBER_STACK_BYTES (1024u * 1024u)
@@ -892,6 +893,51 @@ static ChimiControl *new_control(ControlKind kind, ChimiValue *value, const char
 static ChimiControl *success(ChimiValue *value) { return new_control(CONTROL_SUCCESS, value, NULL, -1); }
 static ChimiControl *failure(ChimiValue *value) { return new_control(CONTROL_FAILURE, value, NULL, -1); }
 static ChimiControl *defect(const char *message, int64_t node) { return new_control(CONTROL_DEFECT, NULL, message, node); }
+
+/* A program without tasks runs main on the host thread, which has no overflow guard
+   of its own: past its stack the program would die with SIGSEGV. Instead each call
+   checks the stack against this address and defects while STACK_HEADROOM_BYTES
+   remain, enough for the runtime frames between two calls and for reporting the
+   defect. An unlimited stack (glibc then reports the end of the previous mapping)
+   is held to STACK_UNLIMITED_BYTES, so the program defects before memory runs
+   out. Finding the bottom reads /proc/self/maps on Linux, so it runs once at
+   startup, not per benchmark repeat. Zero disables the check: on a fiber the guard page catches overflow, and
+   on a host whose stack bounds are unknown nothing better is available. */
+static uintptr_t host_stack_limit;
+enum { STACK_HEADROOM_BYTES = 256 * 1024 };
+#define STACK_UNLIMITED_BYTES ((uintptr_t)1 << 30)
+
+/* The lowest address of the calling thread's stack, or 0 when it is unknown. */
+static uintptr_t host_stack_bottom(void) {
+#if defined(__APPLE__)
+  pthread_t self = pthread_self();
+  uintptr_t top = (uintptr_t)pthread_get_stackaddr_np(self);
+  size_t size = pthread_get_stacksize_np(self);
+  return size < top ? top - size : 0;
+#elif defined(__linux__)
+  pthread_attr_t attributes;
+  if (pthread_getattr_np(pthread_self(), &attributes) != 0) return 0;
+  void *bottom = NULL;
+  size_t size = 0;
+  int status = pthread_attr_getstack(&attributes, &bottom, &size);
+  pthread_attr_destroy(&attributes);
+  return status == 0 ? (uintptr_t)bottom : 0;
+#else
+  return 0;
+#endif
+}
+
+static void guard_host_stack(void) {
+  uintptr_t bottom = host_stack_bottom();
+  uintptr_t here = (uintptr_t)__builtin_frame_address(0);
+  if (bottom == 0 || here <= bottom || here - bottom <= 2 * (uintptr_t)STACK_HEADROOM_BYTES) return;
+  host_stack_limit = here - bottom > STACK_UNLIMITED_BYTES ? here - STACK_UNLIMITED_BYTES
+                                                         : bottom + STACK_HEADROOM_BYTES;
+}
+
+static bool host_stack_exhausted(void) {
+  return (uintptr_t)__builtin_frame_address(0) < host_stack_limit;
+}
 static ChimiControl *cancelled(void) { return new_control(CONTROL_CANCEL, NULL, NULL, -1); }
 
 /* Timestamps (time-and-outcomes.md, "Timestamp"): signed nanoseconds since
@@ -5459,6 +5505,44 @@ static ChimiControl *invoke_bytes_operation(uint32_t intrinsic, ChimiValue **arg
   return intrinsic_shape_defect(call_node);
 }
 
+/* std/test. A comparison's message is "<heading>\nactual:\n<render>\nexpected:\n<render>",
+   byte for byte as `comparison_message` in execution/core_operations.rs, because
+   `chimi test` reads the two renderings back from it. */
+static ChimiValue *debug_render(const ChimiValue *value, bool indented);
+
+static ChimiControl *invoke_assertion(uint32_t intrinsic, ChimiValue **arguments,
+                                      uint32_t argument_count, uint32_t call_node) {
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_TEST_ASSERT_EQUAL:
+    case CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL: {
+      if (argument_count != 2) break;
+      bool wanted = intrinsic == CHIMI_INTRINSIC_TEST_ASSERT_EQUAL;
+      if ((chimi_value_compare(arguments[0], arguments[1]) == 0) == wanted)
+        return success(void_value());
+      TextBuffer buffer = {0};
+      const char *heading = wanted ? "Test.assert_equal: the values differ"
+                                    : "Test.assert_not_equal: the values are equal";
+      buffer_bytes(&buffer, heading, strlen(heading));
+      buffer_bytes(&buffer, "\nactual:\n", 9);
+      ChimiValue *actual = debug_render(arguments[0], true);
+      buffer_bytes(&buffer, actual->as.text.bytes, actual->as.text.length);
+      buffer_bytes(&buffer, "\nexpected:\n", 11);
+      ChimiValue *expected = debug_render(arguments[1], true);
+      buffer_bytes(&buffer, expected->as.text.bytes, expected->as.text.length);
+      buffer_char(&buffer, '\0');
+      return defect(buffer.data, call_node);
+    }
+    case CHIMI_INTRINSIC_TEST_ASSERT:
+      if (argument_count != 2 || arguments[0]->kind != VALUE_BOOLEAN || arguments[1]->kind != VALUE_TEXT) break;
+      if (arguments[0]->as.boolean) return success(void_value());
+      return defect(copy_text(arguments[1]->as.text.bytes), call_node);
+    case CHIMI_INTRINSIC_TEST_FAIL:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
+      return defect(copy_text(arguments[0]->as.text.bytes), call_node);
+  }
+  return intrinsic_shape_defect(call_node);
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
@@ -5675,6 +5759,7 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
   if (callable->kind == CALL_HOST)
     return invoke_host(runtime, callable->host, arguments, argument_count,
                        span, call_node, call_environment);
+  if (host_stack_exhausted()) return defect("Stack overflow", -1);
   ChimiEnvironment *environment;
   if (callable->kind == CALL_DECLARED) {
     // Declared functions capture provisioned requirements, but never local
@@ -8167,6 +8252,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_bytes_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_CAUSE_CONTEXT && intrinsic <= CHIMI_INTRINSIC_CAUSE_TO_TEXT)
     return invoke_cause_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+  if (intrinsic >= CHIMI_INTRINSIC_TEST_ASSERT_EQUAL && intrinsic <= CHIMI_INTRINSIC_TEST_FAIL)
+    return invoke_assertion(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
@@ -9228,7 +9315,14 @@ static void print_outcome(FILE *output, const ChimiControl *control) {
     case CONTROL_SUCCESS:
       fputs("\"outcome\":\"success\",\"value\":", output); json_value(output, control->value); break;
     case CONTROL_FAILURE:
-      fputs("\"outcome\":\"expected_failure\",\"error\":", output); json_value(output, control->value); break;
+      fputs("\"outcome\":\"expected_failure\",\"error\":", output); json_value(output, control->value);
+      /* A test build also writes the debug rendering `chimi test` reports. */
+      if (CHIMI_TEST_COUNT > 0) {
+        ChimiValue *rendered = debug_render(control->value, true);
+        fputs(",\"rendering\":", output);
+        json_string(output, rendered->as.text.bytes);
+      }
+      break;
     case CONTROL_DEFECT:
       fputs("\"outcome\":\"defect\",\"message\":", output); json_string(output, control->message);
       if (control->node < 0) fputs(",\"core_node_id\":null,\"origin_id\":null", output);
@@ -9770,12 +9864,14 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     .next_span = 2,
   };
   uint32_t benchmark_repeats = 0;
+  int64_t test_index = -1;
   bool clock_start_given = false;
   const char *telemetry_path = NULL;
   const char *outcome_path = NULL;
   const char *memory_report_path = NULL;
   const char *profile_path = NULL;
   decode_constants();
+  if (!CHIMI_REQUIRES_SCHEDULER) guard_host_stack();
   int32_t index = 1;
   if (index < argc && strcmp(argv[index], "--chimi-runner") == 0) {
     ++index;
@@ -9795,6 +9891,16 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     else if (strncmp(argv[index], "--profile-file=", 15) == 0) profile_path = argv[index] + 15;
     else if (strncmp(argv[index], "--execution-id=", 15) == 0) runtime.execution_id = argv[index] + 15;
     else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = true;
+    else if (strncmp(argv[index], "--test=", 7) == 0) {
+      errno = 0;
+      char *end = NULL;
+      unsigned long value = strtoul(argv[index] + 7, &end, 10);
+      if (errno == ERANGE || end == argv[index] + 7 || *end != '\0' || value >= CHIMI_TEST_COUNT) {
+        fprintf(stderr, "--test requires a test index below %u\n", CHIMI_TEST_COUNT);
+        return 64;
+      }
+      test_index = (int64_t)value;
+    }
     else if (strcmp(argv[index], "--clock=real") == 0) runtime.virtual_clock = false;
     else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;
     else if (strncmp(argv[index], "--clock-start=", 14) == 0) {
@@ -9873,7 +9979,12 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   }
   uint32_t entry_node = 0;
   const ChimiFunction *entry_function = NULL;
-  for (uint32_t i = 0; i < CHIMI_FUNCTION_COUNT; ++i)
+  if (test_index >= 0) {
+    entry_function = &CHIMI_FUNCTIONS[CHIMI_TEST_FUNCTIONS[test_index]];
+    entry_node = entry_function->body;
+    entry = CHIMI_NODE_FUNCTIONS[entry_node];
+  }
+  for (uint32_t i = 0; entry_function == NULL && i < CHIMI_FUNCTION_COUNT; ++i)
     if (CHIMI_NODE_FUNCTIONS[CHIMI_FUNCTIONS[i].body] == entry) {
       entry_node = CHIMI_FUNCTIONS[i].body;
       entry_function = &CHIMI_FUNCTIONS[i];
