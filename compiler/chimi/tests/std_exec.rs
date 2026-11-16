@@ -150,7 +150,7 @@ test "a second wait answers the same status" {
 // Rejects a lookup that ignores PATH or the parent's PATH, a failure that
 // names the wrong program, a missing directory reported only by the child, an
 // environment that is not replaced or not extended (or holds a variable
-// twice), a relative program looked for in the child's directory, a file the
+// twice, seen in the shell's own environment block on Linux), a relative program looked for in the child's directory, a file the
 // kernel cannot run reported as a permission, and `Stdio.Null` that leaves a
 // stream connected. A directory with no search permission is also invalid,
 // but tests run as root in CI, where `access` grants it, so none covers it.
@@ -187,7 +187,7 @@ test "a name is found on PATH" {
 }
 
 test "variables are added to the inherited environment" {
-  let command = Exec.variable(Exec.variable(Exec.command("/bin/sh", ["-c", "test \"$X\" = second && test \"$(env | grep -c '^X=')\" = 1 && test -n \"$PATH\""]), "X", "first"), "X", "second")
+  let command = Exec.variable(Exec.variable(Exec.command("/bin/sh", ["-c", "test \"$X\" = second && { test ! -r /proc/$$/environ || test \"$(tr '\\0' '\\n' < /proc/$$/environ | grep -c '^X=')\" = 1; } && test -n \"$PATH\""]), "X", "first"), "X", "second")
   let status = Exec.run(command) using { commands: Exec.host_for_tests() }
   status |> Test.assert_equal(Status.Exited(0))
 }
@@ -204,15 +204,14 @@ test "a working directory" {
   status |> Test.assert_equal(Status.Exited(0))
 }
 
-// A test's own standard input is already /dev/null, so only the output
-// streams can tell `Stdio.Null` from `Stdio.Inherit` here; stdin goes through
-// the same code.
-test "standard streams to nothing" {
-  let script = "test -c /dev/fd/0 && test -c /dev/fd/1 && ! test -c /dev/fd/2"
-  let nothing = Exec.stdin(Exec.stdout(Exec.command("/bin/sh", ["-c", script]), Stdio.Null), Stdio.Null)
-  let inherited = Exec.command("/bin/sh", ["-c", "! test -c /dev/fd/1"])
-  let statuses = (Exec.run(nothing), Exec.run(inherited)) using { commands: Exec.host_for_tests() }
-  statuses |> Test.assert_equal((Status.Exited(0), Status.Exited(0)))
+// A test's own standard input is already /dev/null, so stdin is told apart
+// in `standard_input_to_nothing_reads_nothing`, from a built program.
+test "standard output and error to nothing" {
+  let output = Exec.stdout(Exec.command("/bin/sh", ["-c", "test -c /dev/fd/1 && ! test -c /dev/fd/2"]), Stdio.Null)
+  let error = Exec.stderr(Exec.command("/bin/sh", ["-c", "! test -c /dev/fd/1 && test -c /dev/fd/2"]), Stdio.Null)
+  let inherited = Exec.command("/bin/sh", ["-c", "! test -c /dev/fd/1 && ! test -c /dev/fd/2"])
+  let statuses = (Exec.run(output), Exec.run(error), Exec.run(inherited)) using { commands: Exec.host_for_tests() }
+  statuses |> Test.assert_equal((Status.Exited(0), Status.Exited(0), Status.Exited(0)))
 }
 
 test "a relative program is found from the parent's directory" {
@@ -305,6 +304,14 @@ test "a cancelled wait kills and reaps the child" {
   got |> Test.assert_equal("Err(Timeout.TimedOut(300ms))")
 }
 
+test "a wait after a cancelled one still gets the status" {
+  let both = Exec.start(Exec.command("/bin/sh", ["-c", "sleep 0.3; exit 9"]), fn(child) {
+    let first = attempt(fn() { Task.timeout(fn() { Exec.wait(child) }, Duration.milliseconds(50)) })
+    (first, Exec.wait(child))
+  }) using { commands: Exec.host_for_tests() }
+  both |> Test.assert_equal(("Err(Timeout.TimedOut(50ms))", Status.Exited(9)))
+}
+
 test "a wait after release is Closed" {
   let child = Exec.start(Exec.command("/bin/sh", ["-c", "exec sleep 30"]), fn(child) { child }) using { commands: Exec.host_for_tests() }
   attempt(fn() { Exec.wait(child) }) |> Test.assert_equal("Err(ExecError.Closed(\"/bin/sh\"))")
@@ -314,7 +321,7 @@ test "a wait after release is Closed" {
     );
     let started = Instant::now();
     let run = scratch.chimi(&["test", "cases.chimi", "--clock=real"]);
-    assert_passed(&run, 6);
+    assert_passed(&run, 7);
     assert!(started.elapsed() < Duration::from_secs(20), "a sleep 30 child was waited out");
     for file in ["left.pid", "cancelled.pid"] {
         let text = std::fs::read_to_string(scratch.0.join(file)).expect(file);
@@ -508,4 +515,78 @@ test "the exit wakes the wait" {
 "#,
     );
     assert_passed(&run, 2);
+}
+
+/// Builds `main` from `body` (after the shared imports) into `runner`.
+fn build_main(name: &str, body: &str) -> Scratch {
+    let scratch = Scratch::new(name, &format!("{IMPORTS}\n{body}"));
+    let built = scratch.chimi(&["build", "cases.chimi", "-o", "runner"]);
+    assert_eq!(built.status, Some(0), "{}{}", built.stdout, built.stderr);
+    scratch
+}
+
+/// Runs the built `runner` with `input` on a piped standard input.
+fn run_main(scratch: &Scratch, input: &str) -> std::process::Output {
+    use std::io::Write;
+    let mut child = Command::new(scratch.0.join("runner"))
+        .current_dir(&scratch.0)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run the program");
+    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    child.wait_with_output().expect("wait for the program")
+}
+
+// Rejects `Stdio.Null` on stdin that leaves the parent's input connected, or
+// is opened for writing: the program's own input holds a line, which a child
+// that inherits it reads and one given nothing does not.
+#[test]
+fn standard_input_to_nothing_reads_nothing() {
+    let scratch = build_main(
+        "stdin",
+        r#"pub fn main() -> Void needs { commands: Commands } {
+  let nothing = Exec.run(Exec.stdin(Exec.command("/bin/sh", ["-c", "! read line && test -c /dev/fd/0"]), Stdio.Null))
+  let inherited = Exec.run(Exec.command("/bin/sh", ["-c", "read line && test \"$line\" = hello"]))
+  case (nothing, inherited) {
+    (Status.Exited(0), Status.Exited(0)) -> Void
+    other -> Debug.crash("the children ended with ${Debug.render(other)}")
+  }
+}
+"#,
+    );
+    let output = run_main(&scratch, "hello\n");
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+// Rejects a child that inherits the parent's blocked signals: the program is
+// started with SIGUSR1 blocked, and its child's mask is still empty.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_child_starts_with_no_signal_blocked() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipped: no python3 to block a signal with");
+        return;
+    }
+    let scratch = build_main(
+        "mask",
+        r#"pub fn main() -> Void needs { commands: Commands } {
+  let ended = sh("grep -q '^SigBlk:[[:space:]]*0*$' /proc/self/status")
+  case ended {
+    Status.Exited(0) -> Void
+    other -> Debug.crash("the child ended with ${Debug.render(other)}")
+  }
+}
+"#,
+    );
+    let blocked = Command::new("python3")
+        .current_dir(&scratch.0)
+        .args([
+            "-c",
+            "import os, signal; signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGUSR1]); os.execv('./runner', ['runner'])",
+        ])
+        .output()
+        .expect("run the program");
+    assert_eq!(blocked.status.code(), Some(0), "{}", String::from_utf8_lossy(&blocked.stderr));
 }

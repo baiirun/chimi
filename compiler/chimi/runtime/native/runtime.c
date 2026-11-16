@@ -11699,13 +11699,14 @@ int chimi_binding_wait_child(ChimiBindingCall *call, uint32_t handle, int pid) {
   if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
   chimi_binding_prepare_children();
   if (CHIMI_REQUIRES_SCHEDULER) {
-    for (;;) {
-      ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHILD_WAIT, .value = pid};
-      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;
-      if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
-      if (request.status == CHIMI_RESPONSE_ERROR) return CHIMI_BINDING_WAIT_FAILED;
-      if (request.status != CHIMI_RESPONSE_PENDING) return CHIMI_BINDING_READY;
-    }
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHILD_WAIT, .value = pid};
+    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;
+    if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
+    if (request.status == CHIMI_RESPONSE_ERROR) return CHIMI_BINDING_WAIT_FAILED;
+    /* Exited, or woken to look again: either way the caller looks. A wake
+       after another task reaped the child is answered from the caller's
+       record, never by waiting on a pid the kernel may have reused. */
+    return CHIMI_BINDING_READY;
   }
   for (;;) {
     if (call->runtime->cancel) return CHIMI_BINDING_WAIT_CANCELLED;

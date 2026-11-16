@@ -133,8 +133,11 @@ void chimi_binding_prepare_children(void);
 /* Waits until the child process `pid`, which belongs to the handle argument
    at index `handle` (or CHIMI_BINDING_NO_HANDLE), has exited, letting other
    tasks run. It does not reap the child: on CHIMI_BINDING_READY, reap it
-   with waitpid(pid, &status, WNOHANG). CHIMI_BINDING_WAIT_FAILED when `pid`
-   is not an unreaped child of this process. */
+   with waitpid(pid, &status, WNOHANG), and wait again if it is still
+   running (READY can come early, on a wake meant for a recheck). Keep the
+   reaped status in the handle and check it before every wait, since another
+   task may have reaped the child meanwhile. CHIMI_BINDING_WAIT_FAILED when
+   `pid` is not an unreaped child of this process. */
 int chimi_binding_wait_child(ChimiBindingCall *call, uint32_t handle, int pid);
 
 #endif

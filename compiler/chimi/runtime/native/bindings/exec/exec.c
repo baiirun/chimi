@@ -194,14 +194,16 @@ static bool executable(const char *path, int *error) {
 }
 
 /* `path` made absolute against the parent's working directory; frees `path`.
-   NULL when out of memory or the directory cannot be named. */
+   NULL with errno set when out of memory or the directory cannot be named. */
 static char *absolute(char *path) {
   if (path == NULL || path[0] == '/') return path;
   char *directory = getcwd(NULL, 0);
   char *joined = directory ? malloc(strlen(directory) + strlen(path) + 2) : NULL;
+  int error = errno;
   if (joined != NULL) sprintf(joined, "%s/%s", directory, path);
   free(directory);
   free(path);
+  errno = error;
   return joined;
 }
 
@@ -329,9 +331,11 @@ ChimiBindingResult *chimi_exec_spawn(ChimiBindingCall *call) {
     }
   }
   int code = EXEC_FAILED;
+  errno = 0;
   char *path = resolve(builder->program, &code);
   if (path == NULL) {
-    ChimiBindingResult *failure = chimi_binding_failure(call, code, strerror(code == EXEC_PERMISSION_DENIED ? EACCES : code == EXEC_NOT_FOUND ? ENOENT : ENOMEM));
+    int error = code == EXEC_PERMISSION_DENIED ? EACCES : code == EXEC_NOT_FOUND ? ENOENT : errno ? errno : ENOMEM;
+    ChimiBindingResult *failure = chimi_binding_failure(call, code, strerror(error));
     chimi_binding_close_handle(call, 0, &BUILDER);
     return failure;
   }
@@ -371,13 +375,9 @@ ChimiBindingResult *chimi_exec_spawn(ChimiBindingCall *call) {
     result = spawn_failure(call, error);
   } else {
     ChimiBindingValue *handle = chimi_binding_make_handle(call, &CHILD, child);
-    if (handle != NULL) {
-      result = chimi_binding_ok(call, handle);
-    } else {
-      /* No handle to stop it through: stop it now. */
-      release_child(child);
-      result = chimi_binding_failure(call, EXEC_FAILED, strerror(EMFILE));
-    }
+    /* With no handle made, chimi_binding_make_handle has already released
+       the child, which killed and reaped it. */
+    result = handle ? chimi_binding_ok(call, handle) : chimi_binding_failure(call, EXEC_FAILED, strerror(EMFILE));
   }
   chimi_binding_close_handle(call, 0, &BUILDER);
   return result;

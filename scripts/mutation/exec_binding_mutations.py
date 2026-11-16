@@ -1,17 +1,15 @@
 """Mutants of std/exec part 2 (CHI-250): the exec binding package, the
 runtime's child-wait API, and the Chimi wrapper.
 
-Not listed, as equivalent: the empty signal mask at spawn (the runtime blocks
-no signal on its scheduler thread, so a child inherits an empty mask anyway),
-the NUL checks on program, argument and variable text (the defect message is
+Not listed, as equivalent: the NUL checks on program, argument and variable text (the defect message is
 the only difference a test can see, and Chimi text rarely holds U+0000), and
 the non-scheduler branch of `chimi_binding_wait_child` (a binding call always
 forces the scheduler).
 
 Not covered by a test: a directory without search permission (`access` in
 the spawn's directory check; tests run as root in CI, where it always
-passes), a child stopped when no handle can be made for it (needs 64K open
-handles), and the report files closed in children (FD_CLOEXEC in
+passes), a child stopped when no handle can be made for it (needs 2^20
+open handles), and the report files closed in children (FD_CLOEXEC in
 `open_report`; a child holding one open changes nothing a test can see
 before the runner exits).
 
@@ -51,7 +49,7 @@ MUTATIONS = [
     exec_test("the working directory is ignored", EXEC, [
         ("    if (error == 0 && builder->directory != NULL)\n      error = posix_spawn_file_actions_addchdir_np(&actions, builder->directory);\n", "")]),
     exec_test("a bad directory is found only by the child", EXEC, [
-        ("    if (stat(builder->directory, &info) != 0 || !S_ISDIR(info.st_mode)) {", "    if (0) {")]),
+        ("    if (stat(builder->directory, &info) != 0 || !S_ISDIR(info.st_mode) || access(builder->directory, X_OK) != 0) {", "    if (0) {")]),
     exec_test("Stdio.Null is inherited", EXEC, [
         ("  if (mode == STDIO_NULL)\n    return posix_spawn_file_actions_addopen", "  if (mode == STDIO_NULL)\n    return true || posix_spawn_file_actions_addopen")]),
     exec_test("a relative program stays relative", EXEC, [
@@ -63,8 +61,16 @@ MUTATIONS = [
     exec_test("a cancelled wait is not cancelled", EXEC, [
         ("      case CHIMI_BINDING_WAIT_CANCELLED: return chimi_binding_cancelled(call);\n", "")]),
     exec_test("a child wait does not wait", RUNTIME, [
-        ("      if (request.status != CHIMI_RESPONSE_PENDING) return CHIMI_BINDING_READY;\n    }\n  }\n  for (;;) {\n    if (call->runtime->cancel) return CHIMI_BINDING_WAIT_CANCELLED;\n    siginfo_t info;",
-         "      return CHIMI_BINDING_READY;\n    }\n  }\n  for (;;) {\n    if (call->runtime->cancel) return CHIMI_BINDING_WAIT_CANCELLED;\n    siginfo_t info;")]),
+        ("    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHILD_WAIT, .value = pid};\n    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;\n",
+         "    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHILD_WAIT, .value = pid, .status = CHIMI_RESPONSE_OK};\n")]),
+    exec_test("the child's signal mask is inherited", EXEC, [
+        ("    if (error == 0) error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK);", "")]),
+    exec_test("Stdio.Null stdin is opened for writing", EXEC, [
+        ("fd == STDIN_FILENO ? O_RDONLY : O_WRONLY", "O_WRONLY")]),
+    exec_test("stdin is never connected", MODULE, [
+        ("    stdio,\n    command.stdout,\n    command.stderr,\n  )\n}", "    command.stdin,\n    command.stdout,\n    command.stderr,\n  )\n}")]),
+    exec_test("a second wait after a cancelled one asks the dead pid", EXEC, [
+        ("      child->reaped = true;\n", "")]),
     exec_test("no SIGCHLD handler", RUNTIME, [
         ("  action.sa_handler = on_child_signal;\n  sigemptyset(&action.sa_mask);\n  action.sa_flags = SA_RESTART | SA_NOCLDSTOP;\n  sigaction(SIGCHLD, &action, NULL);\n", "")]),
     exec_test("start does not release the child", MODULE, [

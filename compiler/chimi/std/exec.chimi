@@ -90,7 +90,8 @@ pub enum ExecError {
   NotFound(program: Text)
   /// The program exists but is not executable.
   PermissionDenied(program: Text)
-  /// The working directory does not exist or is not a directory.
+  /// The working directory does not exist, is not a directory, or cannot be
+  /// entered.
   InvalidDirectory(path: Path)
   /// The child was already released.
   Closed(program: Text)
@@ -259,14 +260,16 @@ pub fn wait(child: Child) -> Status {
   child.wait()
 }
 
-/// Asks the child to stop with SIGTERM. Does nothing once it has ended.
+/// Asks the child to stop with SIGTERM. Does nothing once it has been waited
+/// for.
 ///
 /// Cost: one system call.
 pub fn terminate(child: Child) -> Void {
   child.terminate()
 }
 
-/// Stops the child at once with SIGKILL. Does nothing once it has ended.
+/// Stops the child at once with SIGKILL. Does nothing once it has been
+/// waited for.
 ///
 /// Cost: one system call.
 pub fn kill(child: Child) -> Void {

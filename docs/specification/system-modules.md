@@ -318,7 +318,7 @@ pub fn host_for_tests() -> Commands                      // test-only
   text holding U+0000, is a defect when the command starts.
 - There is no shell. The arguments MUST reach the program exactly as given. A
   program name without a `/` is looked up on the parent's `PATH` (on
-  `/usr/bin:/bin` when it is unset), before the child is created, so
+  `/usr/bin:/bin` when it is unset or empty), before the child is created, so
   `NotFound` and `PermissionDenied` are reported by the start itself; a
   directory on `PATH` named like the program is passed over. A name with a
   `/` is found from the parent's working directory, even when `directory`
@@ -338,10 +338,13 @@ pub fn host_for_tests() -> Commands                      // test-only
   is a `Status`, never an `ExecError`. `terminate` sends SIGTERM and `kill`
   SIGKILL; both do nothing once the child has been waited for, so a signal
   never reaches a reused process number.
-- The child starts with an empty signal mask and the actions `exec` leaves:
-  the runtime's own handlers reset to the default, and a signal the parent
-  inherited as ignored stays ignored, so a program run under `nohup` passes
-  that on, as a shell does. The child stays in the parent's process group,
+- The child starts with an empty signal mask and the actions `exec` leaves.
+  A signal the runtime handles is back at its default action in the child:
+  SIGINT and SIGTERM always, and SIGHUP, SIGUSR1 and SIGUSR2 when the program
+  needs `signals`, even if the program itself inherited one as ignored (as
+  Go's `os/exec` does for signals a program has asked for). Any other signal
+  the program inherited as ignored stays ignored, so a program without
+  `signals` run under `nohup` passes SIGHUP's on. The child stays in the parent's process group,
   and no file the runtime opens for itself (the telemetry, outcome, profile
   and memory reports) stays open in it.
 - On the native backend `std/exec` is a binding package
