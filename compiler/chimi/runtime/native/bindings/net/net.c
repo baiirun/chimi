@@ -47,7 +47,8 @@ enum { NET_CHUNK = 64 * 1024, NET_BACKLOG = 128, NET_LOOKUPS = 8 };
 
 typedef struct {
   int fd;
-  int reading_stopped; /* native_stop_reading ran: later reads fail */
+  int reading_stopped;  /* native_stop_reading ran: later reads fail */
+  int writing_finished; /* native_finish ran: later writes fail */
 } Socket;
 
 static void release_socket(void *state) {
@@ -125,6 +126,7 @@ static ChimiBindingValue *socket_handle(ChimiBindingCall *call, const ChimiBindi
   }
   state->fd = fd;
   state->reading_stopped = 0;
+  state->writing_finished = 0;
   /* make_handle releases `state` (closing fd) when the table is full. */
   return chimi_binding_make_handle(call, type, state);
 }
@@ -379,14 +381,15 @@ ChimiBindingResult *chimi_net_connect(ChimiBindingCall *call) {
 /* ---- Listening ------------------------------------------------------ */
 
 /* native_listen(host, port) -> Result<ListenSocket, (Int, Text)>. An empty
-   host listens on every address; port 0 picks a free port. */
+   host listens on 0.0.0.0, every IPv4 address, on every platform; port 0
+   picks a free port. */
 ChimiBindingResult *chimi_net_listen(ChimiBindingCall *call) {
   const char *host;
   int64_t port;
   int arguments = host_and_port(call, &host, &port);
   if (arguments == 0) return chimi_binding_defect(call, "listen takes a host and a port");
   if (arguments < 0) return chimi_binding_failure(call, NET_HOST_NOT_FOUND, host);
-  Resolved resolved = resolve(call, host[0] ? host : NULL, port, 1);
+  Resolved resolved = resolve(call, host[0] ? host : "0.0.0.0", port, 1);
   if (resolved.result != NULL) return resolved.result;
   int last = EADDRNOTAVAIL;
   for (const struct addrinfo *address = resolved.addresses; address; address = address->ai_next) {
@@ -519,7 +522,7 @@ ChimiBindingResult *chimi_net_write(ChimiBindingCall *call) {
   size_t written = 0;
   while (written < length) {
     Socket *socket_state = chimi_binding_handle(call, 0, &SOCKET);
-    if (socket_state == NULL) return closed(call);
+    if (socket_state == NULL || socket_state->writing_finished) return closed(call);
     ssize_t count = send(socket_state->fd, bytes + written, length - written, NET_SEND_FLAGS);
     if (count > 0) {
       written += (size_t)count;
@@ -538,6 +541,8 @@ ChimiBindingResult *chimi_net_write(ChimiBindingCall *call) {
 ChimiBindingResult *chimi_net_finish(ChimiBindingCall *call) {
   Socket *socket_state = chimi_binding_handle(call, 0, &SOCKET);
   if (socket_state == NULL) return closed(call);
+  if (socket_state->writing_finished) return chimi_binding_ok(call, chimi_binding_void(call));
+  socket_state->writing_finished = 1;
   if (shutdown(socket_state->fd, SHUT_WR) != 0 && errno != ENOTCONN)
     return errno_failure(call, errno);
   return chimi_binding_ok(call, chimi_binding_void(call));

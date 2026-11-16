@@ -103,7 +103,7 @@ fn assert_passed(run: &Run, count: usize) {
 const ECHO: &str = r#"
 fn echo_once(host: Text, request: Text) -> Text needs { network: Network } {
   Resource.scoped(fn() { Net.listen(host, 0) }, Net.close_listener, fn(listener) {
-    let port = Net.port_of(Net.listener_address(listener))
+    let port = Net.port(Net.listener_address(listener))
     let server = Task.start(fn() {
       let connection = Net.accept(listener)
       let got = Stream.read_all(Net.reader(connection), 33554432)
@@ -149,6 +149,17 @@ test "a body larger than the socket buffers arrives whole" {
   answer |> Test.assert_equal(big)
 }
 
+test "an empty host listens on every IPv4 address" {
+  let address = wildcard() using { network: Net.host_for_tests() }
+  address |> Test.assert_equal("0.0.0.0")
+}
+
+fn wildcard() -> Text needs { network: Network } {
+  Resource.scoped(fn() { Net.listen("", 0) }, Net.close_listener, fn(listener) {
+    Net.host(Net.listener_address(listener))
+  })
+}
+
 test "addresses" {
   let report = run_addresses() using { network: Net.host_for_tests() }
   report |> Test.assert_equal("127.0.0.1 127.0.0.1 (True, True, True)")
@@ -157,14 +168,14 @@ test "addresses" {
 fn run_addresses() -> Text needs { network: Network } {
   Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
     let listening = Net.listener_address(listener)
-    let port = Net.port_of(listening)
+    let port = Net.port(listening)
     let accepted = Task.start(fn() { Net.accept(listener) })
     let client = Net.connect("127.0.0.1", port)
     let server = Task.result(accepted)
     let local = Net.local_address(client)
     let peer = Net.peer_address(client)
-    let checks = (port > 0, Net.port_of(peer) == port, Net.port_of(Net.peer_address(server)) == Net.port_of(local))
-    let report = "${Net.host_of(local)} ${Net.host_of(peer)} ${Debug.render(checks)}"
+    let checks = (port > 0, Net.port(peer) == port, Net.port(Net.peer_address(server)) == Net.port(local))
+    let report = "${Net.host(local)} ${Net.host(peer)} ${Debug.render(checks)}"
     Net.close(client)
     Net.close(server)
     report
@@ -173,7 +184,7 @@ fn run_addresses() -> Text needs { network: Network } {
 "#
         ),
     );
-    assert_passed(&run, 3);
+    assert_passed(&run, 4);
 }
 
 // Rejects a name lookup that loses its answer: a name (not a numeric address)
@@ -211,7 +222,7 @@ fn the_operating_systems_failures_become_net_errors() {
         r#"
 fn closed_port() -> Int needs { network: Network } {
   let listener = Net.listen("127.0.0.1", 0)
-  let port = Net.port_of(Net.listener_address(listener))
+  let port = Net.port(Net.listener_address(listener))
   Net.close_listener(listener)
   port
 }
@@ -223,7 +234,7 @@ fn refused() -> Text needs { network: Network } {
 
 fn in_use() -> Text needs { network: Network } {
   Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
-    let port = Net.port_of(Net.listener_address(listener))
+    let port = Net.port(Net.listener_address(listener))
     attempt(fn() { Net.listen("127.0.0.1", port) })
   })
 }
@@ -280,7 +291,7 @@ fn accept_then_close() -> Text needs { network: Network } {
 
 fn read_then_close() -> Text needs { network: Network } {
   Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
-    let port = Net.port_of(Net.listener_address(listener))
+    let port = Net.port(Net.listener_address(listener))
     let client = Net.connect("127.0.0.1", port)
     let server = Net.accept(listener)
     let waiting = Task.start(fn() { Result.capture(fn() { Stream.read(Net.reader(client)) }) })
@@ -297,18 +308,19 @@ fn read_then_close() -> Text needs { network: Network } {
 // The server stops reading a request that is too large and still answers.
 fn stop_then_answer() -> Text needs { network: Network } {
   Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
-    let port = Net.port_of(Net.listener_address(listener))
+    let port = Net.port(Net.listener_address(listener))
     let client = Net.connect("127.0.0.1", port)
     let server = Net.accept(listener)
     Stream.write(Net.writer(client), Bytes.from_text("far too long"))
     let request = Result.capture(fn() { Stream.read_all(Net.reader(server), 4) }) |> Debug.render
     Stream.write(Net.writer(server), Bytes.from_text("too large"))
     Stream.close(Net.writer(server))
+    let late = attempt(fn() { Stream.write(Net.writer(server), Bytes.from_text("late")) })
     let answer = Bytes.to_text(Stream.read_all(Net.reader(client), 1024))
     let again = Result.capture(fn() { Stream.read(Net.reader(server)) }) |> Debug.render
     Net.close(client)
     Net.close(server)
-    "${request} ${answer} ${again}"
+    "${request} ${answer} ${again} ${late}"
   })
 }
 
@@ -316,7 +328,7 @@ fn stop_then_answer() -> Text needs { network: Network } {
 // would kill the test process.
 fn write_to_gone_peer() -> Text needs { network: Network } {
   Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
-    let port = Net.port_of(Net.listener_address(listener))
+    let port = Net.port(Net.listener_address(listener))
     let client = Net.connect("127.0.0.1", port)
     Net.close(Net.accept(listener))
     let chunk = Bytes.from_text(Text.repeat("x", 65536))
@@ -343,7 +355,7 @@ fn write_to_gone_peer() -> Text needs { network: Network } {
 // A task parked in a read wakes when another task stops the reader.
 fn stop_while_parked() -> Text needs { network: Network } {
   Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
-    let port = Net.port_of(Net.listener_address(listener))
+    let port = Net.port(Net.listener_address(listener))
     let client = Net.connect("127.0.0.1", port)
     let server = Net.accept(listener)
     let waiting = Task.start(fn() { Result.capture(fn() { Stream.read(Net.reader(server)) }) })
@@ -363,7 +375,7 @@ test "stopping a reader wakes a parked read" {
 
 test "a stopped reader leaves the writer working" {
   let outcome = stop_then_answer() using { network: Net.host_for_tests() }
-  outcome |> Test.assert_equal("Result.Err(StreamError.TooLarge(4)) too large Result.Err(NetError.Closed)")
+  outcome |> Test.assert_equal("Result.Err(StreamError.TooLarge(4)) too large Result.Err(NetError.Closed) Err(NetError.Closed)")
 }
 
 test "a write to a gone peer fails" {
@@ -373,7 +385,7 @@ test "a write to a gone peer fails" {
 
 fn scoped_then_read() -> Text needs { network: Network } {
   Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
-    let port = Net.port_of(Net.listener_address(listener))
+    let port = Net.port(Net.listener_address(listener))
     let kept = Resource.scoped(fn() { Net.connect("127.0.0.1", port) }, Net.close, fn(connection) { connection })
     let server = Net.accept(listener)
     let after = Result.capture(fn() { Stream.read(Net.reader(kept)) }) |> Debug.render
@@ -428,7 +440,7 @@ test "a pair" {
   Stream.write(Net.writer(right), Bytes.from_text("to left"))
   Stream.close(Net.writer(right))
   Stream.read_all(Net.reader(left), 1024) |> Test.assert_equal(Bytes.from_text("to left"))
-  Net.port_of(Net.peer_address(left)) |> Test.assert_equal(Net.port_of(Net.local_address(right)))
+  Net.port(Net.peer_address(left)) |> Test.assert_equal(Net.port(Net.local_address(right)))
 }
 
 test "a closed end" {
@@ -440,6 +452,13 @@ test "a closed end" {
   Result.capture(fn() { Stream.read(Net.reader(left)) })
     |> Debug.render
     |> Test.assert_equal("Result.Err(NetError.Closed)")
+}
+
+test "a write after this end finished writing" {
+  let (left, _right) = Net.pair(4)
+  Stream.close(Net.writer(left))
+  attempt(fn() { Stream.write(Net.writer(left), Bytes.from_text("late")) })
+    |> Test.assert_equal("Err(NetError.Closed)")
 }
 
 test "a fake network" {
@@ -461,7 +480,7 @@ test "a fake network" {
         ),
     )
     .chimi(&["test", "cases.chimi"]);
-    assert_passed(&run, 3);
+    assert_passed(&run, 4);
 }
 
 // Rejects a runner that does not close `main`'s `network` need: a program that

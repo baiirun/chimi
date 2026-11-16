@@ -452,7 +452,7 @@ pub(crate) const RUNNER_PROVIDERS: &[RunnerProvider] = &[
     RunnerProvider {
         interface: StandardType::Network,
         need: "network",
-        provider: "std/net.host",
+        provider: "std/net.system",
     },
 ];
 

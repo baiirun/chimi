@@ -34,7 +34,7 @@ pub interface Network {
   connect: fn(Text, Int) -> Connection errors NetError
   listen: fn(Text, Int) -> Listener errors NetError
 }
-pub struct Address        // Net.address(host, port), Net.host_of, Net.port_of
+pub struct Address        // Net.address(host, port), Net.host, Net.port
 pub struct Connection     // Net.reader, Net.writer, Net.local_address, Net.peer_address, Net.close
 pub struct Listener       // Net.accept, Net.listener_address, Net.close_listener
 pub enum NetError {
@@ -47,13 +47,13 @@ pub fn listen(host: Text, port: Int) -> Listener        needs { network: Network
 pub fn pair(capacity: Int) -> (Connection, Connection)
 pub fn connection(reader, writer, local, peer, close) -> Connection
 pub fn listener(accept, address, close) -> Listener
-pub fn host_for_tests() -> { connect, listen }          // test-only
+pub fn host_for_tests()                                 // test-only; its result is a provider record
 ```
 
 ### The capability
 
 - `Network` is a runner-provided capability with the fixed need name
-  `network` (provider `std/net.host`). Name resolution is part of it: there is
+  `network` (provider `std/net.system`). Name resolution is part of it: there is
   no separate need for looking a name up.
 - Listening needs nothing beyond `network`. A service that only connects and
   one that also listens declare the same need.
@@ -62,6 +62,9 @@ pub fn host_for_tests() -> { connect, listen }          // test-only
   real socket is code whose needs reach `main`. A test that reaches `network`
   without `using` is rejected with `T4400`, as for every runner-provided
   capability, so a test opens real sockets only when it asks to.
+- A fake pair's read after its peer's task ended without closing fails with
+  `Closed`, where a real socket would report `Reset`: the fake cannot tell
+  that apart from this side stopping.
 - A fake is a record of `connect` and `listen`. `Net.pair`, `Net.connection`,
   `Net.listener`, and `Net.address` build the values a fake returns; the
   structs' fields stay private, as every published struct's do.
@@ -84,9 +87,13 @@ pub fn host_for_tests() -> { connect, listen }          // test-only
 - A write to a peer that has gone MUST fail with a `NetError` (`Reset` or
   `Closed` when the peer reset or closed), never raise `SIGPIPE`.
 - Stopping the reader (`Stream.stop`, which `Stream.read_all` does past its
-  limit) MUST end only this side's reading: the writer keeps working, so a
-  server can still answer a request it refused to read whole, and later reads
-  fail with `NetError.Closed`. A fake pair behaves the same way.
+  limit) MUST end only this side's reading: the writer keeps working, and
+  later reads fail with `NetError.Closed`. A fake pair behaves the same way.
+  The writer working does not promise the peer reads the answer: closing a
+  socket with unread bytes resets it, which can discard what was just
+  written. A close that drains first belongs to the HTTP layer.
+- A write after this side's `Stream.close(writer)` MUST fail with
+  `NetError.Closed`, on a real socket and a fake alike.
 - A connection whose peer reset it before it was accepted is skipped:
   `accept` waits for the next one. On Linux the network errors accept(2)
   reports for a new connection are skipped the same way.
@@ -108,8 +115,11 @@ pub fn host_for_tests() -> { connect, listen }          // test-only
   A caller that wants to retry it wraps the call in `Retry`.
 - `connect` tries each address of a name in order and fails with the last
   address's failure.
-- `listen` with an empty `host` listens on the first wildcard address the
-  system lists (all IPv4 addresses on glibc and macOS); port 0 picks a free
+- `listen` with an empty `host` MUST listen on `0.0.0.0`, every IPv4
+  address, on every platform. `"::"` listens on every IPv6 address, and on
+  IPv4 too on Linux and macOS by default (`IPV6_V6ONLY` is left unset).
+  `listen` on a name binds the first of its addresses that binds, where
+  `connect` tries them all. Port 0 picks a free
   port, which `Net.listener_address` reports. A listener sets `SO_REUSEADDR`,
   so a restarted service can listen again on a port whose old connections are
   still closing.

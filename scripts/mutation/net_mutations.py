@@ -62,6 +62,12 @@ MUTATIONS = [
     mutant("listening ignores a failed bind", NET_C,
            "bind(fd, address->ai_addr, address->ai_addrlen) != 0 ||",
            "(bind(fd, address->ai_addr, address->ai_addrlen), 0) ||"),
+    mutant("a write after finishing reaches the socket", NET_C,
+           "    if (socket_state == NULL || socket_state->writing_finished) return closed(call);",
+           "    if (socket_state == NULL) return closed(call);"),
+    mutant("an empty host listens on whatever the system lists first", NET_C,
+           "resolve(call, host[0] ? host : \"0.0.0.0\", port, 1)",
+           "resolve(call, host[0] ? host : \"::\", port, 1)"),
     # The Chimi module.
     mutant("stopping the reader releases the socket", NET,
            "fn() { native_stop_reading(socket) }",

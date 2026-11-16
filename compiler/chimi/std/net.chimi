@@ -4,12 +4,11 @@
 ///
 /// ```text
 /// pub fn main() -> Void needs { network: Network } {
-///   let use = fn(connection) {
+///   Resource.scoped(fn() { Net.connect("example.com", 80) }, Net.close, fn(connection) {
 ///     Stream.write(Net.writer(connection), Bytes.from_text("GET / HTTP/1.0\r\n\r\n"))
 ///     Stream.close(Net.writer(connection))
 ///     Stream.read_all(Net.reader(connection), 1048576)
-///   }
-///   Resource.scoped(fn() { Net.connect("example.com", 80) }, Net.close, use)
+///   })
 /// }
 /// ```
 ///
@@ -45,8 +44,8 @@ import std/stream.{Reader, StreamError, Writer}
 pub interface Network {
   /// A connection to `host` (a name or a numeric address) on `port`.
   connect: fn(Text, Int) -> Connection errors NetError
-  /// A listener on `host` and `port`. An empty `host` listens on the wildcard
-  /// address (every IPv4 address); port 0 picks a free port, which
+  /// A listener on `host` and `port`. An empty `host` listens on `0.0.0.0`
+  /// (every IPv4 address); port 0 picks a free port, which
   /// `Net.listener_address` reports.
   listen: fn(Text, Int) -> Listener errors NetError
 }
@@ -114,8 +113,10 @@ pub fn connect(host: Text, port: Int) -> Connection needs {
   network.connect(host, checked_port(port))
 }
 
-/// A listener on `host` and `port`; an empty `host` listens on the wildcard
-/// address (every IPv4 address), and port 0 picks a free port.
+/// A listener on `host` and `port`; an empty `host` listens on `0.0.0.0`
+/// (every IPv4 address) and `"::"` on every IPv6 address (and IPv4 too, on
+/// Linux and macOS by default). Port 0 picks a free port. A name listens on
+/// the first of its addresses that binds.
 ///
 /// Fails with: what the network's `listen` fails with; for the real network,
 /// `NetError.AddressInUse`, `HostNotFound`, `TooManyOpen` or `Failed`.
@@ -138,7 +139,7 @@ pub fn reader(connection: Connection) -> Reader<NetError> {
 
 /// Takes the bytes to send; each write sends every byte or fails.
 /// `Stream.close` on it finishes this side's writing, and the connection stays
-/// open for reading.
+/// open for reading; a write after that fails with `NetError.Closed`.
 ///
 /// Cost: O(1).
 pub fn writer(connection: Connection) -> Writer<NetError> {
@@ -193,14 +194,14 @@ pub fn close_listener(listener: Listener) -> Void {
 /// The numeric host of an address, such as `"127.0.0.1"` or `"::1"`.
 ///
 /// Cost: O(1).
-pub fn host_of(address: Address) -> Text {
+pub fn host(address: Address) -> Text {
   address.host
 }
 
 /// The port of an address.
 ///
 /// Cost: O(1).
-pub fn port_of(address: Address) -> Int {
+pub fn port(address: Address) -> Int {
   address.port
 }
 
@@ -239,7 +240,9 @@ pub fn listener(accept: fn() -> Connection errors NetError, address: Address, cl
 /// at most `capacity` chunks buffered in each direction. For tests of code
 /// that takes a `Connection`. Closing one end's writer ends the other end's
 /// reader; `close` ends both of its streams. A read after this end stopped
-/// or closed its reader fails with `NetError.Closed`.
+/// or closed its reader fails with `NetError.Closed`, and so does a read
+/// whose peer's task ended without closing its writer (a real socket would
+/// say `Reset`).
 ///
 /// Cost: O(1).
 pub fn pair(capacity: Int) -> (Connection, Connection) {
@@ -405,7 +408,7 @@ native fn native_allow_real_network() -> Void
 // without declaring the need. It and `host_for_tests` come last, after every
 // function they reach: an unannotated result is inferred in declaration order
 // (CHI-260).
-fn host() {
+fn system() {
   { connect: host_connect, listen: host_listen }
 }
 
@@ -414,5 +417,5 @@ fn host() {
 /// (`T4401`): a program gets the network only by declaring the need.
 pub fn host_for_tests() {
   native_allow_real_network()
-  host()
+  system()
 }
