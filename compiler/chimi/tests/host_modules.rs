@@ -3,6 +3,7 @@
 //! controlled environment and working directory. Each test compares the two
 //! backends' outcome records with the expected one.
 
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -123,7 +124,7 @@ pub fn main() -> List<Text> needs { environment: Environment } {
     Debug.render(Env.get("greeting")),
     Debug.render(Env.get("MISSING")),
     Debug.render(Env.get("EMPTY")),
-    Debug.render([Env.get("=odd"), Env.get("")]),
+    Debug.render([Env.get("=odd"), Env.get(""), Env.get("BROKEN")]),
     Debug.render(Map.size(Env.all())),
     Path.to_text(Env.current_directory()),
   ]
@@ -134,7 +135,7 @@ pub fn main() -> List<Text> needs { environment: Environment } {
     assert_eq!(
         value(&record),
         format!(
-            r#"["Some(\"héllo wörld\")","None","None","Some(\"\")","[Some(\"a=b\"), None]","3","{}"]"#,
+            r#"["Some(\"héllo wörld\")","None","None","Some(\"\")","[Some(\"a=b\"), None, None]","3","{}"]"#,
             directory.display()
         )
     );

@@ -37,8 +37,14 @@ MUTATIONS = [
          "            Some(StandardSymbol::Type(StandardType::Clock)) => need.lexical_name == \"clock\",\n            Some(StandardSymbol::Type(StandardType::Environment)) => true,\n            _ => false,\n        }\n    }\n\n    /// Whether the runner's")]),
     # std/env on each backend.
     host("the interpreter keeps non-UTF-8 pairs as empty", HOST, [
-        (".filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))",
-         ".map(|(name, value)| (name.into_string().unwrap_or_default(), value.into_string().unwrap_or_default()))")]),
+        ("Some((name.into_string().ok()?, value.into_string().ok()?))",
+         "Some((name.into_string().ok()?, value.into_string().unwrap_or_default()))")]),
+    host("native variables keep non-UTF-8 values", RUNTIME, [
+        ("            !valid_utf8((const unsigned char *)equals + 1, value_length))",
+         "            false)")]),
+    host("native names split at a leading =", RUNTIME, [
+        ("const char *equals = **entry ? strchr(*entry + 1, '=') : NULL;",
+         "const char *equals = strchr(*entry, '=');")]),
     host("native variables keep the separator", RUNTIME, [
         ("(RuntimeField){NULL, text_from_bytes(equals + 1, value_length)};",
          "(RuntimeField){NULL, text_from_bytes(equals, value_length + 1)};")]),
@@ -54,6 +60,11 @@ MUTATIONS = [
     programs("join lets an absolute part replace the base", PATH, [
         ("  let tail = trim_leading_separators(part)\n  case (base, tail) {\n    (\"\", _) -> from(part)",
          "  let tail = trim_leading_separators(part)\n  case (base, tail) {\n    _ if Text.starts_with(part, \"/\") -> from(part)\n    (\"\", _) -> from(part)")]),
+    programs("join from an empty base keeps an absolute part", PATH, [
+        ('    ("", _) -> from(tail)', '    ("", _) -> from(part)')]),
+    programs("with_extension keeps trailing dot components", PATH, [
+        ('      None -> case Text.strip_suffix(rest, "/.") {\n        Some(shorter) -> shorter\n        None -> break rest\n      }',
+         '      None -> break rest')]),
     programs("join doubles the separator", PATH, [
         ("      True -> from(Text.append(base, tail))", "      True -> from(Text.concat([base, \"/\", tail]))")]),
     programs("name keeps ..", PATH, [
