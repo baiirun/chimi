@@ -455,3 +455,31 @@ fn cancelled() -> ChimiFiberResult {
         defect_code: 0,
     }
 }
+
+unsafe extern "C" fn wait_inside_an_expired_scope(context: *mut c_void) -> ChimiFiberResult {
+    let mut enter = blank(REQUEST_SCOPE_ENTER);
+    enter.value = now();
+    call(&mut enter);
+    // The child has exited, but the scope's deadline has passed (real time
+    // moved on since `now`): a cancellation point refuses the wait first.
+    note(i64::from(wait_child(context as usize as i64).is_none()));
+    let mut exit = blank(REQUEST_SCOPE_EXIT);
+    exit.token = enter.token;
+    exit.value = 1;
+    call(&mut exit);
+    succeeded(0)
+}
+
+#[test]
+fn a_child_wait_is_a_cancellation_point() {
+    let child = shell("exit 0");
+    await_exit(child.id());
+    let (outcome, seen) = run(
+        wait_inside_an_expired_scope,
+        process_abi::CLOCK_REAL,
+        pid_context(&child),
+    );
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_eq!(seen, [1]);
+    assert!(reap(child).success());
+}
