@@ -444,6 +444,9 @@ pub(crate) struct CoreConstructor {
     pub(crate) variant_name: Option<String>,
     pub(crate) fields: Vec<String>,
     pub(crate) outcome_success: Option<bool>,
+    /// A variant of `std/cli.Exit`: as `main`'s outcome, returned or failed
+    /// with, the runner writes its text and exits with its status.
+    pub(crate) program_exit: bool,
     /// The constructor's place in one order over every constructor in the
     /// program. A type's constructors are contiguous and in declaration order,
     /// which the derived order follows; distinct types never share an ordinal,
@@ -3137,6 +3140,7 @@ fn lower_core_constructor(
                 .map(|name| (*name).to_owned())
                 .collect(),
             outcome_success: None,
+            program_exit: false,
             ordinal: constructor.ordinal(),
         };
         return (shape, OwningType::Standard(constructor.type_kind()));
@@ -3147,6 +3151,7 @@ fn lower_core_constructor(
             variant_name: Some(symbol.name.clone()),
             fields: vec!["value".to_owned()],
             outcome_success: Some(symbol.name == "Success"),
+            program_exit: false,
             ordinal: 0,
         };
         return (shape, OwningType::Outcome);
@@ -3164,6 +3169,7 @@ fn lower_core_constructor(
             variant_name: None,
             fields,
             outcome_success: None,
+            program_exit: false,
             ordinal: 0,
         };
         return (shape, OwningType::Struct(constructor));
@@ -3197,6 +3203,8 @@ fn lower_core_constructor(
         variant_name: Some(symbol.name.clone()),
         fields,
         outcome_success: None,
+        program_exit: declaration.name.text == "Exit"
+            && typed.resolved.semantic.modules[module_id.raw() as usize].path == "std/cli",
         ordinal: u32::try_from(ordinal).expect("variant count fits u32"),
     };
     (shape, OwningType::Enum(module_id, declaration_index))

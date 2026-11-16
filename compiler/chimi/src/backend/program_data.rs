@@ -306,6 +306,7 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                 length,
                 outcome,
                 shape.ordinal,
+                u32::from(shape.program_exit),
             ));
             index
         } else {
@@ -668,7 +669,7 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         &mut output,
         "const ChimiConstructor CHIMI_CONSTRUCTORS[]",
         &constructors,
-        |r| format!("{{{}, {}, {}, {}, {}, {}}}", r.0, r.1, r.2, r.3, r.4, r.5),
+        |r| format!("{{{}, {}, {}, {}, {}, {}, {}}}", r.0, r.1, r.2, r.3, r.4, r.5, r.6),
     );
     render_array(
         &mut output,

@@ -265,6 +265,15 @@ pub enum ExecutionOutcome {
     Cancellation(ExecutionCancellation),
 }
 
+/// How a `std/cli.Exit` ends the program: the status, and the text written
+/// to standard output (`Help`) or standard error (`Usage`) first.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProgramExit {
+    Code(i64),
+    Help(String),
+    Usage(String),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionReport {
     pub events: Vec<ExecutionEvent>,
@@ -277,6 +286,9 @@ pub struct ExecutionReport {
     pub failure_rendering: Option<String>,
     pub application_stdout: String,
     pub application_stderr: String,
+    /// The `std/cli.Exit` the entry returned or failed with, which the runner
+    /// applies after the outcome (CHI-252); `None` for any other outcome.
+    pub program_exit: Option<ProgramExit>,
     /// Whether the execution drew from its `random` provider, so a failing
     /// test's report names the seed.
     pub random_read: bool,
@@ -1028,6 +1040,7 @@ impl<'core> Evaluator<'core> {
             Control::Failure(value, _) => Some(debug::render(self.core, value, true)),
             _ => None,
         };
+        let program_exit = self.program_exit(&control);
         let outcome = self.public_outcome(control);
         ExecutionReport {
             events: self.events,
@@ -1036,6 +1049,7 @@ impl<'core> Evaluator<'core> {
             failure_rendering,
             application_stdout: self.application_stdout,
             application_stderr: self.application_stderr,
+            program_exit,
             random_read: self.random.is_some(),
         }
     }
@@ -2519,6 +2533,33 @@ impl<'core> Evaluator<'core> {
         self.next_sequence += 1;
     }
 
+    /// The `std/cli.Exit` variant the entry ended with, as `Success` or
+    /// `Failure`, read by its shape's marker, not its name.
+    fn program_exit(&self, control: &Control) -> Option<ProgramExit> {
+        let (Control::Success(value) | Control::Failure(value, _)) = control else {
+            return None;
+        };
+        let RuntimeValue::Constructed {
+            constructor,
+            variant_name,
+            fields,
+            ..
+        } = value
+        else {
+            return None;
+        };
+        let shape = self.core.symbol(*constructor).constructor.as_ref()?;
+        if !shape.program_exit {
+            return None;
+        }
+        match (variant_name.as_deref(), &fields.last()?.value) {
+            (Some("Code"), RuntimeValue::Integer(code)) => Some(ProgramExit::Code(*code)),
+            (Some("Help"), RuntimeValue::Text(text)) => Some(ProgramExit::Help(text.to_string())),
+            (Some("Usage"), RuntimeValue::Text(text)) => Some(ProgramExit::Usage(text.to_string())),
+            _ => None,
+        }
+    }
+
     fn public_outcome(&self, control: Control) -> ExecutionOutcome {
         match control {
             Control::Success(value) => ExecutionOutcome::Success(public_value(&value)),
@@ -3147,6 +3188,7 @@ pub(crate) fn execute_legacy(core: LegacyCoreProgram, config: ExecutionConfig) -
         }),
         application_stdout: String::new(),
         application_stderr: String::new(),
+        program_exit: None,
         random_read: false,
     }
 }

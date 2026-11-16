@@ -11594,6 +11594,36 @@ static volatile int32_t received_signal = 0;
 static int signal_pipe[2] = {-1, -1};
 static ChimiRuntime *signal_runtime = NULL;
 
+/* A `std/cli.Exit` that `main` returned or failed with (CHI-252), applied
+   after every release, the drain and the outcome record: `Code(n)` exits n,
+   `Help(text)` writes text to standard output and exits 0, `Usage(_,
+   message)` writes message to standard error and exits 2. A code outside 0
+   to 255 is a defect, 70. False for any other outcome. */
+static bool program_exit(const ChimiControl *control, int *status) {
+  if (control->kind != CONTROL_SUCCESS && control->kind != CONTROL_FAILURE) return false;
+  const ChimiValue *value = control->value;
+  if (value == NULL || value->kind != VALUE_CONSTRUCTED) return false;
+  const ChimiConstructor *shape = &CHIMI_CONSTRUCTORS[CHIMI_SYMBOLS[value->as.constructed.constructor].constructor];
+  if (!shape->program_exit) return false;
+  const ChimiValue *field = value->as.constructed.fields[value->as.constructed.length - 1].value;
+  const char *variant = CHIMI_STRINGS[shape->variant_name];
+  if (strcmp(variant, "Code") == 0) {
+    if (field->as.integer < 0 || field->as.integer > 255) {
+      fprintf(stderr, "Chimi runtime: Exit.Code(%" PRId64 ") is outside 0 to 255\n", field->as.integer);
+      *status = 70;
+    } else {
+      *status = (int)field->as.integer;
+    }
+    return true;
+  }
+  bool help = strcmp(variant, "Help") == 0;
+  FILE *stream = help ? stdout : stderr;
+  bool written = fwrite(field->as.text.bytes, 1, field->as.text.length, stream) == field->as.text.length &&
+                 fputc('\n', stream) != EOF && fflush(stream) == 0;
+  *status = written ? (help ? 0 : 2) : 74;
+  return true;
+}
+
 static void end_by_signal(int number) {
   /* Dying by the signal tells a parent (a shell, systemd, Kubernetes) that the
      program stopped because it was asked to. As process 1 in a container a
@@ -12122,6 +12152,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   write_failed = close_output(runtime.telemetry) || write_failed;
   write_failed = close_output(runtime.outcome) || write_failed;
   if (write_failed) return 74;
+  int exit_status;
+  if (program_exit(control, &exit_status)) return exit_status;
   switch (control->kind) {
     case CONTROL_SUCCESS: return 0;
     case CONTROL_FAILURE: return 1;

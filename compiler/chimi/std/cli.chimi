@@ -1,0 +1,398 @@
+/// Command-line parsing prototype for std/cli (CHI-252).
+
+import std/debug as Debug
+import std/int as Int
+import std/list as List
+import std/map as Map
+import std/map.{Map}
+import std/option as Option
+import std/option.{None, Option, Some}
+import std/path as Path
+import std/path.{Path}
+import std/result as Result
+import std/result.{Err, Ok}
+import std/text as Text
+
+// 1. Public types.
+
+/// A declared flag, option or argument whose parsed value is a `T`.
+pub struct Handle<T> {
+  spec: Spec,
+  read: fn(List<Text>) -> T errors CliError,
+}
+
+/// A handle with its type erased, so handles of different types fit one list.
+pub struct Arg {
+  spec: Spec,
+  check: fn(List<Text>) -> Void errors CliError,
+}
+
+/// A program's command line: its name, summary and arguments.
+pub struct Command {
+  name: Text,
+  summary: Text,
+  args: List<Arg>,
+  version: Option<Text>,
+}
+
+/// The arguments of one run, read with `Cli.get`.
+pub struct Parsed {
+  values: Map<Text, List<Text>>,
+}
+
+/// How a program ends. The runner writes the text and exits with the code.
+pub enum Exit {
+  /// Exit with `code`, 0 to 255, writing nothing.
+  Code(code: Int)
+  /// `--help` or `--version` was given: `text` goes to standard output, exit 0.
+  Help(text: Text)
+  /// The arguments were wrong: `message` goes to standard error, exit 2.
+  Usage(error: CliError, message: Text)
+}
+
+// 2. Failure types.
+
+/// What was wrong with the arguments.
+pub enum CliError {
+  /// An option the command does not declare, as typed (`--colour`, `-x`).
+  UnknownOption(option: Text)
+  /// An option that takes a value came last, with none after it.
+  MissingValue(option: Text)
+  /// A flag was given a value, as `--ignore-case=yes`.
+  UnexpectedValue(option: Text, value: Text)
+  /// A value its parser did not accept.
+  InvalidValue(name: Text, value: Text, expected: Text)
+  /// A required argument was not given.
+  MissingArgument(name: Text)
+  /// More arguments than the command declares.
+  UnexpectedArgument(value: Text)
+}
+
+enum Kind {
+  Flag
+  Named
+  Positional
+  Rest
+}
+
+struct Spec {
+  kind: Kind,
+  name: Text,
+  short: Text,
+  help: Text,
+  value: Text,
+}
+
+struct Scan {
+  rest: List<Text>,
+  values: Map<Text, List<Text>>,
+  positionals: List<Text>,
+}
+
+// 3. Value parsers.
+
+/// Any text, unchanged.
+pub const text = { name: "text", read: fn(value: Text) { Some(value) } }
+
+/// A whole number, as `Int.parse` reads it.
+pub const int = { name: "int", read: read_int }
+
+/// A file path, not checked to exist.
+pub const path = { name: "path", read: fn(value: Text) { Some(Path.from(value)) } }
+
+fn read_int(value: Text) -> Option<Int> {
+  case Result.capture(fn() { Int.parse(value) }) {
+    Ok(number) -> Some(number)
+    Err(_) -> None
+  }
+}
+
+// 4. Declaring.
+
+/// A flag: `--long` or `-short`, `True` when given. `short` is one ASCII
+/// letter, or "" for none.
+pub fn flag(long: Text, short: Text, help: Text) -> Handle<Bool> {
+  Handle(named(Kind.Flag, long, short, help, ""), fn(values) { not List.is_empty(values) })
+}
+
+/// An option with a value: `--long value`, `--long=value`, `-s value` or
+/// `-svalue`. `None` when not given; the last one wins when repeated.
+pub fn option<T>(long: Text, short: Text, help: Text, parser: { name: Text, read: fn(Text) -> Option<T> }) -> Handle<Option<T>> {
+  let spec = named(Kind.Named, long, short, help, parser.name)
+  Handle(spec, fn(values) {
+    case List.last(values) {
+      Some(value) -> Some(convert(spec, parser, value))
+      None -> None
+    }
+  })
+}
+
+/// A required positional argument.
+pub fn argument<T>(name: Text, help: Text, parser: { name: Text, read: fn(Text) -> Option<T> }) -> Handle<T> {
+  let spec = Spec(Kind.Positional, name, "", help, parser.name)
+  Handle(spec, fn(values) {
+    case values {
+      [value, .._] -> convert(spec, parser, value)
+      [] -> Failure(CliError.MissingArgument(name))
+    }
+  })
+}
+
+/// Every remaining positional argument, zero or more. It must be declared last.
+pub fn rest<T>(name: Text, help: Text, parser: { name: Text, read: fn(Text) -> Option<T> }) -> Handle<List<T>> {
+  let spec = Spec(Kind.Rest, name, "", help, parser.name)
+  Handle(spec, fn(values) { List.map(values, fn(value) { convert(spec, parser, value) }) })
+}
+
+/// The handle as a member of a command's argument list.
+pub fn arg<T>(handle: Handle<T>) -> Arg {
+  Arg(handle.spec, fn(values) {
+    handle.read(values)
+    Void
+  })
+}
+
+/// A command named `name`, as usage shows it. `--help` and `-h` are added.
+///
+/// Defects when: two args share a name or short letter, one is named `help`
+/// or `h`, or a `rest` is not last.
+pub fn command(name: Text, summary: Text, args: List<Arg>) -> Command {
+  let names = List.flat_map(args, fn(each) { option_names(each.spec) })
+  case List.length(List.unique(names)) == List.length(names) and not List.contains(names, "--help") and not List.contains(names, "-h") {
+    True -> Command(name, summary, args, None)
+    False -> Debug.crash("Cli.command: ${name} declares a name twice, or declares help")
+  }
+}
+
+/// The command with `--version`, which prints `name version`.
+pub fn version(command: Command, version: Text) -> Command {
+  Command(command.name, command.summary, command.args, Some(version))
+}
+
+// 5. Parsing.
+
+/// Reads `arguments` against `command`.
+///
+/// Fails with: `Exit.Help` for `--help`, `-h` and `--version`, and
+/// `Exit.Usage` when the arguments are wrong.
+pub fn parse(command: Command, arguments: List<Text>) -> Parsed {
+  case Result.capture(fn() { scan(command, arguments) }) {
+    Ok(parsed) -> parsed
+    Err(Stop.Shown(shown)) -> Failure(Exit.Help(shown))
+    Err(Stop.Wrong(error)) -> Failure(Exit.Usage(error, "${command.name}: ${message(error)}\n${synopsis(command)}\nTry '${command.name} --help' for more information."))
+  }
+}
+
+/// The value of `handle` in `parsed`.
+///
+/// Defects when: `handle` is not part of the command that was parsed.
+pub fn get<T>(parsed: Parsed, handle: Handle<T>) -> T {
+  let values = case Map.get(parsed.values, handle.spec.name) {
+    Some(values) -> values
+    None -> Debug.crash("Cli.get: ${handle.spec.name} is not part of the parsed command")
+  }
+  case Result.capture(fn() { handle.read(values) }) {
+    Ok(value) -> value
+    Err(_) -> Debug.crash("Cli.get: ${handle.spec.name} is not the handle the command was parsed with")
+  }
+}
+
+/// The help text `--help` prints.
+pub fn usage(command: Command) -> Text {
+  let positionals = List.filter(command.args, fn(each) { is_positional(each.spec) })
+  let options = List.filter(command.args, fn(each) { not is_positional(each.spec) })
+  let builtin = List.append([("-h, --help", "Print this help")], case command.version {
+    Some(_) -> [("    --version", "Print the version")]
+    None -> []
+  })
+  let option_rows = List.append(List.map(options, fn(each) { (option_label(each.spec), each.spec.help) }), builtin)
+  let argument_rows = List.map(positionals, fn(each) { (positional_label(each.spec), each.spec.help) })
+  let sections = List.append(
+    case List.is_empty(argument_rows) {
+      True -> []
+      False -> ["Arguments:\n${table(argument_rows)}"]
+    },
+    ["Options:\n${table(option_rows)}"],
+  )
+  Text.join(List.append([command.summary, synopsis(command)], sections), "\n\n")
+}
+
+enum Stop {
+  Shown(text: Text)
+  Wrong(error: CliError)
+}
+
+fn scan(command: Command, arguments: List<Text>) -> Parsed {
+  let empty = List.reduce(command.args, Map.empty(), fn(values, each) { Map.put(values, each.spec.name, []) })
+  let done = loop state = Scan(arguments, empty, []) {
+    case state.rest {
+      [] -> break state
+      ["--", ..rest] -> break Scan([], state.values, List.append(state.positionals, rest))
+      ["--help", .._] -> Failure(Stop.Shown(usage(command)))
+      ["-h", .._] -> Failure(Stop.Shown(usage(command)))
+      ["--version", ..rest] -> case command.version {
+        Some(version) -> Failure(Stop.Shown("${command.name} ${version}"))
+        None -> Failure(Stop.Wrong(CliError.UnknownOption("--version")))
+      }
+      [word, ..rest] -> case Text.strip_prefix(word, "--") {
+        Some(long) -> scan_long(command, state, long, rest)
+        None -> case is_cluster(word) {
+          True -> scan_cluster(command, state, Text.graphemes(Text.byte_slice(word, 1..Text.byte_length(word))), rest)
+          False -> Scan(rest, state.values, List.push(state.positionals, word))
+        }
+      }
+    }
+  }
+  let values = place(command, done.values, done.positionals)
+  List.each(command.args, fn(each) {
+    case Result.capture(fn() { each.check(Option.unwrap_or(Map.get(values, each.spec.name), [])) }) {
+      Ok(_) -> Void
+      Err(error) -> Failure(Stop.Wrong(error))
+    }
+  })
+  Parsed(values)
+}
+
+fn scan_long(command: Command, state: Scan, long: Text, rest: List<Text>) -> Scan {
+  let (name, inline) = case Text.split_once(long, "=") {
+    Some((name, value)) -> (name, Some(value))
+    None -> (long, None)
+  }
+  let spec = case List.find(command.args, fn(each) { not is_positional(each.spec) and each.spec.name == name }) {
+    Some(found) -> found.spec
+    None -> Failure(Stop.Wrong(CliError.UnknownOption("--${name}")))
+  }
+  case (spec.kind, inline, rest) {
+    (Kind.Flag, None, _) -> Scan(rest, add(state.values, spec, "true"), state.positionals)
+    (Kind.Flag, Some(value), _) -> Failure(Stop.Wrong(CliError.UnexpectedValue("--${name}", value)))
+    (_, Some(value), _) -> Scan(rest, add(state.values, spec, value), state.positionals)
+    (_, None, [value, ..after]) -> Scan(after, add(state.values, spec, value), state.positionals)
+    (_, None, []) -> Failure(Stop.Wrong(CliError.MissingValue("--${name}")))
+  }
+}
+
+fn scan_cluster(command: Command, state: Scan, letters: List<Text>, rest: List<Text>) -> Scan {
+  case letters {
+    [] -> Scan(rest, state.values, state.positionals)
+    [letter, ..more] -> {
+      let spec = case List.find(command.args, fn(each) { not is_positional(each.spec) and each.spec.short == letter }) {
+        Some(found) -> found.spec
+        None -> Failure(Stop.Wrong(CliError.UnknownOption("-${letter}")))
+      }
+      case (spec.kind, more, rest) {
+        (Kind.Flag, _, _) -> scan_cluster(command, Scan(rest, add(state.values, spec, "true"), state.positionals), more, rest)
+        (_, [], [value, ..after]) -> Scan(after, add(state.values, spec, value), state.positionals)
+        (_, [], []) -> Failure(Stop.Wrong(CliError.MissingValue("-${letter}")))
+        (_, _, _) -> Scan(rest, add(state.values, spec, Text.concat(more)), state.positionals)
+      }
+    }
+  }
+}
+
+// `-x` and `-abc` are options; `-`, `-5` and `-.5` are ordinary words, since
+// a short name is always a letter.
+fn is_cluster(word: Text) -> Bool {
+  case Text.graphemes(word) {
+    ["-", second, .._] -> not List.contains(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "."], second)
+    _ -> False
+  }
+}
+
+fn place(command: Command, values: Map<Text, List<Text>>, positionals: List<Text>) -> Map<Text, List<Text>> {
+  let declared = List.filter(command.args, fn(each) { is_positional(each.spec) })
+  let (placed, left) = List.reduce(declared, (values, positionals), fn(state, each) {
+    let (placed, left) = state
+    case (each.spec.kind, left) {
+      (Kind.Rest, _) -> (Map.put(placed, each.spec.name, left), [])
+      (_, [first, ..others]) -> (Map.put(placed, each.spec.name, [first]), others)
+      (_, []) -> state
+    }
+  })
+  case left {
+    [] -> placed
+    [extra, .._] -> Failure(Stop.Wrong(CliError.UnexpectedArgument(extra)))
+  }
+}
+
+fn add(values: Map<Text, List<Text>>, spec: Spec, value: Text) -> Map<Text, List<Text>> {
+  Map.put(values, spec.name, List.push(Option.unwrap_or(Map.get(values, spec.name), []), value))
+}
+
+fn convert<T>(spec: Spec, parser: { name: Text, read: fn(Text) -> Option<T> }, value: Text) -> T {
+  case parser.read(value) {
+    Some(read) -> read
+    None -> Failure(CliError.InvalidValue(display(spec), value, parser.name))
+  }
+}
+
+fn named(kind: Kind, long: Text, short: Text, help: Text, value: Text) -> Spec {
+  case Text.is_empty(long) or Text.starts_with(long, "-") or Text.contains(long, "=") or List.length(Text.graphemes(short)) > 1 {
+    True -> Debug.crash("Cli: `${long}` with short `${short}` is not a long name and one short letter")
+    False -> Spec(kind, long, short, help, value)
+  }
+}
+
+fn is_positional(spec: Spec) -> Bool {
+  spec.kind == Kind.Positional or spec.kind == Kind.Rest
+}
+
+fn option_names(spec: Spec) -> List<Text> {
+  case (is_positional(spec), Text.is_empty(spec.short)) {
+    (True, _) -> [spec.name]
+    (False, True) -> ["--${spec.name}"]
+    (False, False) -> ["--${spec.name}", "-${spec.short}"]
+  }
+}
+
+fn display(spec: Spec) -> Text {
+  case is_positional(spec) {
+    True -> "<${spec.name}>"
+    False -> "--${spec.name}"
+  }
+}
+
+fn option_label(spec: Spec) -> Text {
+  let names = case Text.is_empty(spec.short) {
+    True -> "    --${spec.name}"
+    False -> "-${spec.short}, --${spec.name}"
+  }
+  case spec.kind {
+    Kind.Flag -> names
+    _ -> "${names} <${spec.value}>"
+  }
+}
+
+fn positional_label(spec: Spec) -> Text {
+  case spec.kind {
+    Kind.Rest -> "[<${spec.name}>...]"
+    _ -> "<${spec.name}>"
+  }
+}
+
+fn synopsis(command: Command) -> Text {
+  let positionals = List.filter(command.args, fn(each) { is_positional(each.spec) })
+  let words = List.append([command.name, "[options]"], List.map(positionals, fn(each) { positional_label(each.spec) }))
+  "usage: ${Text.join(words, " ")}"
+}
+
+fn table(rows: List<(Text, Text)>) -> Text {
+  let width = Option.unwrap_or(List.max(List.map(rows, fn(row) {
+    let (label, _) = row
+    Text.grapheme_count(label)
+  })), 0)
+  Text.join(List.map(rows, fn(row) {
+    let (label, help) = row
+    "  ${Text.pad_end(label, width, " ")}  ${help}"
+  }), "\n")
+}
+
+fn message(error: CliError) -> Text {
+  case error {
+    CliError.UnknownOption(option) -> "unknown option ${option}"
+    CliError.MissingValue(option) -> "option ${option} needs a value"
+    CliError.UnexpectedValue(option, _) -> "option ${option} takes no value"
+    CliError.InvalidValue(name, value, expected) -> "invalid value \"${value}\" for ${name}: expected ${expected}"
+    CliError.MissingArgument(name) -> "missing argument <${name}>"
+    CliError.UnexpectedArgument(value) -> "unexpected argument \"${value}\""
+  }
+}
