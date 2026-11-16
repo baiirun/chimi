@@ -186,3 +186,136 @@ fn crlf_declarations_print_with_plain_newlines() {
         "{\"module\":\"main\",\"summary\":null,\"items\":[{\"kind\":\"struct\",\"name\":\"Point\",\"signature\":\"pub struct Point {\\n  x: Int\\n}\",\"doc\":\"A point.\"}]}\n"
     );
 }
+
+fn scratch_directory(name: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!("chimi-doc-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+#[test]
+fn html_writes_a_page_per_project_module_and_an_index() {
+    let root = scratch_directory("html-project");
+    std::fs::create_dir_all(root.join("lib")).unwrap();
+    std::fs::write(
+        root.join("app.chimi"),
+        "/// The app.\n\nimport lib/geo as Geo\nimport base/unit as Unit\nimport std/list as List\n\n/// Twice the area, `<doubled>`.\npub fn double(side: Int) -> Int {\n  Geo.square(side) * Unit.one() * List.length([1, 2])\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("lib/geo.chimi"),
+        "/// Shapes & sizes.\n\n/// - squares\n/// - more\npub fn square(side: Int) -> Int {\n  side * side\n}\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("base")).unwrap();
+    std::fs::write(
+        root.join("base/unit.chimi"),
+        "/// One.\npub fn one() -> Int {\n  1\n}\n",
+    )
+    .unwrap();
+    let site = root.join("site");
+
+    let output = chimi(&[
+        "doc",
+        "--html",
+        site.to_str().unwrap(),
+        "--root",
+        root.to_str().unwrap(),
+        "app",
+    ]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let mut pages: Vec<String> = walk(&site)
+        .iter()
+        .map(|path| path.strip_prefix(&site).unwrap().display().to_string())
+        .collect();
+    pages.sort();
+    assert_eq!(
+        pages,
+        ["app.html", "base/unit.html", "index.html", "lib/geo.html"]
+    );
+    let index = std::fs::read_to_string(site.join("index.html")).unwrap();
+    assert!(
+        index.contains("<li><a href=\"lib/geo.html\"><code>lib/geo</code></a> <span>Shapes &amp; sizes.</span></li>"),
+        "{index}"
+    );
+    let app = std::fs::read_to_string(site.join("app.html")).unwrap();
+    assert!(
+        app.contains("<pre><code>pub fn double(side: Int) -&gt; Int</code></pre>\n<p>Twice the area, <code>&lt;doubled&gt;</code>.</p>"),
+        "{app}"
+    );
+    let geo = std::fs::read_to_string(site.join("lib/geo.html")).unwrap();
+    assert!(geo.contains("<a href=\"../index.html\">Index</a>"), "{geo}");
+    assert!(
+        geo.contains("<ul>\n<li>squares</li>\n<li>more</li>\n</ul>"),
+        "{geo}"
+    );
+    assert!(
+        !site.join("std").exists(),
+        "std modules are not the project's"
+    );
+}
+
+#[test]
+fn html_for_std_documents_the_standard_tree() {
+    let site = scratch_directory("html-std").join("site");
+
+    let output = chimi(&["doc", "--html", site.to_str().unwrap(), "std"]);
+
+    assert!(output.status.success(), "{output:?}");
+    let index = std::fs::read_to_string(site.join("index.html")).unwrap();
+    assert!(index.contains("href=\"std/option.html\""), "{index}");
+    let option = std::fs::read_to_string(site.join("std/option.html")).unwrap();
+    assert!(option.contains("unwrap_or"), "{option}");
+}
+
+#[test]
+fn html_writes_nothing_for_a_project_that_does_not_type_check() {
+    let root = scratch_directory("html-invalid");
+    std::fs::write(
+        root.join("app.chimi"),
+        "pub fn broken() -> Int {\n  \"text\"\n}\n",
+    )
+    .unwrap();
+    let site = root.join("site");
+
+    let output = chimi(&[
+        "doc",
+        "--html",
+        site.to_str().unwrap(),
+        root.join("app.chimi").to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("error["));
+    assert!(!site.exists());
+}
+
+fn walk(directory: &Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files.extend(walk(&path));
+        } else {
+            files.push(path);
+        }
+    }
+    files
+}
+
+#[test]
+fn html_for_one_std_module_is_a_usage_error() {
+    let site = scratch_directory("html-std-one").join("site");
+
+    let output = chimi(&["doc", "--html", site.to_str().unwrap(), "std/option"]);
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("name it as std"),
+        "{output:?}"
+    );
+    assert!(!site.exists());
+}

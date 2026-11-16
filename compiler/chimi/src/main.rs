@@ -11,6 +11,7 @@ const VERSION: &str = concat!("chimi ", env!("CARGO_PKG_VERSION"), "-bootstrap")
 const USAGE: &str = concat!(
     "usage: chimi --version | chimi format <path> | chimi doc [--json] <path> | ",
     "chimi doc [--json] --root <project-dir> <module> | chimi doc [--json] std/<module> | ",
+    "chimi doc --html <directory> (<path> | --root <project-dir> <module> | std) | ",
     "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | chimi inspect <path> <byte-offset> | ",
     "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
     "chimi check [--json] <path> | chimi run <path> [-- <argument>...] | ",
@@ -47,7 +48,7 @@ enum Command {
     /// Prints one module's public surface.
     Doc {
         target: DocTarget,
-        output: DiagnosticOutput,
+        output: DocOutput,
     },
     Inspect {
         input: Input,
@@ -77,6 +78,17 @@ enum Command {
         input: Input,
         options: TestOptions,
     },
+}
+
+/// What `chimi doc` writes.
+#[derive(Debug, Eq, PartialEq)]
+enum DocOutput {
+    /// The module's surface on standard output, like `go doc`.
+    Text,
+    Json,
+    /// Static pages for every module of the target's project, or of the
+    /// standard tree for a `std/` target, written into `directory`.
+    Html { directory: PathBuf },
 }
 
 /// The module `chimi doc` documents.
@@ -516,13 +528,22 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
     })
 }
 
-/// Parses `chimi doc [--json] (<path> | --root <project> <module> | std/<module>)`.
+/// Parses `chimi doc [--json | --html <directory>] (<path> | --root <project> <module> | std/<module>)`.
 fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
     let mut arguments = arguments.peekable();
     let output = if arguments.next_if(|argument| argument == "--json").is_some() {
-        DiagnosticOutput::Json
+        DocOutput::Json
+    } else if arguments.next_if(|argument| argument == "--html").is_some() {
+        let Some(directory) = arguments.next() else {
+            return Err(UsageError {
+                message: "doc --html requires an output directory",
+            });
+        };
+        DocOutput::Html {
+            directory: PathBuf::from(directory),
+        }
     } else {
-        DiagnosticOutput::Human
+        DocOutput::Text
     };
     let target = match arguments.next() {
         None => {
@@ -547,7 +568,9 @@ fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Comman
             }
         }
         Some(argument) => match argument.to_str() {
-            Some(module) if module.starts_with("std/") && !module.ends_with(".chimi") => {
+            Some(module)
+                if module == "std" || (module.starts_with("std/") && !module.ends_with(".chimi")) =>
+            {
                 DocTarget::Standard {
                     module: module.to_owned(),
                 }
@@ -562,7 +585,17 @@ fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Comman
             message: "doc received unexpected arguments",
         });
     }
-    Ok(Command::Doc { target, output })
+    let names_one_std_module = matches!(&target, DocTarget::Standard { module } if module != "std");
+    let names_all_of_std = matches!(&target, DocTarget::Standard { module } if module == "std");
+    match output {
+        DocOutput::Html { .. } if names_one_std_module => Err(UsageError {
+            message: "doc --html writes the whole standard tree; name it as std",
+        }),
+        DocOutput::Text | DocOutput::Json if names_all_of_std => Err(UsageError {
+            message: "doc requires a source path, a project root and module, or a std/ module",
+        }),
+        _ => Ok(Command::Doc { target, output }),
+    }
 }
 
 /// Parses `chimi lint [--json] (<path> | <directory> | --root <project> <module>)`.
@@ -669,13 +702,27 @@ fn lint(input: Input, standard: &StandardTree, output: DiagnosticOutput) -> Exit
     }
 }
 
-fn doc(target: DocTarget, standard: &StandardTree, output: DiagnosticOutput) -> ExitCode {
-    let (loaded, module) = match target {
-        DocTarget::File { path } => (LoadedProject::single_file(path, standard), "main".to_owned()),
-        DocTarget::Project { root, module } => {
-            (LoadedProject::load(root, module.clone(), standard), module)
+fn doc(target: DocTarget, standard: &StandardTree, output: DocOutput) -> ExitCode {
+    let standard_target = matches!(target, DocTarget::Standard { .. });
+    let (loaded, module, title) = match target {
+        DocTarget::File { path } => {
+            let title = path.file_stem().map_or_else(
+                || "main".to_owned(),
+                |stem| stem.to_string_lossy().into_owned(),
+            );
+            (LoadedProject::single_file(path, standard), "main".to_owned(), title)
         }
-        DocTarget::Standard { module } => (LoadedProject::standard_tree(standard), module),
+        DocTarget::Project { root, module } => {
+            let title = root
+                .canonicalize()
+                .ok()
+                .and_then(|root| root.file_name().map(|name| name.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| module.clone());
+            (LoadedProject::load(root, module.clone(), standard), module, title)
+        }
+        DocTarget::Standard { module } => {
+            (LoadedProject::standard_tree(standard), module, "std".to_owned())
+        }
     };
     let project = match loaded {
         Ok(project) => project,
@@ -689,13 +736,42 @@ fn doc(target: DocTarget, standard: &StandardTree, output: DiagnosticOutput) -> 
         eprint!("{}", project.render_diagnostics(report.diagnostics()));
         return ExitCode::FAILURE;
     }
-    let Some(documentation) = report.documentation(&module) else {
+    let rendered = match output {
+        DocOutput::Html { directory } => {
+            // A std target documents the standard tree; any other target only
+            // its project's own modules.
+            let modules = report.documentation_of(|path| {
+                let in_std = path.starts_with("std/");
+                if standard_target { in_std } else { !in_std }
+            });
+            return write_doc_site(&directory, &title, &modules);
+        }
+        DocOutput::Text => report.documentation(&module).map(|doc| doc.render_text()),
+        DocOutput::Json => report.documentation(&module).map(|doc| doc.render_json()),
+    };
+    let Some(rendered) = rendered else {
         eprintln!("chimi: no module `{module}`");
         return ExitCode::FAILURE;
     };
-    match output {
-        DiagnosticOutput::Human => print!("{}", documentation.render_text()),
-        DiagnosticOutput::Json => print!("{}", documentation.render_json()),
+    print!("{rendered}");
+    ExitCode::SUCCESS
+}
+
+fn write_doc_site(
+    directory: &std::path::Path,
+    title: &str,
+    modules: &[chimi::ModuleDocumentation],
+) -> ExitCode {
+    for page in chimi::render_site(title, modules) {
+        let path = directory.join(&page.path);
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&path, page.html));
+        if let Err(error) = written {
+            eprintln!("chimi: cannot write {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
     }
     ExitCode::SUCCESS
 }
@@ -1028,7 +1104,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, DiagnosticOutput, DocTarget, Input, UsageError, parse_command};
+    use super::{Command, DiagnosticOutput, DocOutput, DocTarget, Input, UsageError, parse_command};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -1044,7 +1120,7 @@ mod tests {
                 target: DocTarget::File {
                     path: PathBuf::from("app.chimi")
                 },
-                output: DiagnosticOutput::Human,
+                output: DocOutput::Text,
             })
         );
         assert_eq!(
@@ -1054,7 +1130,7 @@ mod tests {
                     root: PathBuf::from("service"),
                     module: "app/orders".to_owned(),
                 },
-                output: DiagnosticOutput::Json,
+                output: DocOutput::Json,
             })
         );
         assert_eq!(
@@ -1063,7 +1139,30 @@ mod tests {
                 target: DocTarget::Standard {
                     module: "std/option".to_owned()
                 },
-                output: DiagnosticOutput::Human,
+                output: DocOutput::Text,
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["doc", "--html", "site", "--root", "service", "app"])),
+            Ok(Command::Doc {
+                target: DocTarget::Project {
+                    root: PathBuf::from("service"),
+                    module: "app".to_owned(),
+                },
+                output: DocOutput::Html {
+                    directory: PathBuf::from("site")
+                },
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["doc", "--html", "site", "std"])),
+            Ok(Command::Doc {
+                target: DocTarget::Standard {
+                    module: "std".to_owned()
+                },
+                output: DocOutput::Html {
+                    directory: PathBuf::from("site")
+                },
             })
         );
         // A file under a `std` directory is still a file.
@@ -1073,7 +1172,7 @@ mod tests {
                 target: DocTarget::File {
                     path: PathBuf::from("std/option.chimi")
                 },
-                output: DiagnosticOutput::Human,
+                output: DocOutput::Text,
             })
         );
     }
@@ -1090,6 +1189,15 @@ mod tests {
                 "doc --root requires a project directory and a module",
             ),
             (&["doc", "a.chimi", "b.chimi"][..], "doc received unexpected arguments"),
+            (&["doc", "--html"][..], "doc --html requires an output directory"),
+            (
+                &["doc", "--html", "site", "std/option"][..],
+                "doc --html writes the whole standard tree; name it as std",
+            ),
+            (
+                &["doc", "std"][..],
+                "doc requires a source path, a project root and module, or a std/ module",
+            ),
         ] {
             assert_eq!(
                 parse_command(arguments(command)),

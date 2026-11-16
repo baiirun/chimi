@@ -6,6 +6,7 @@ mod compiler;
 pub mod concurrency_lab;
 mod decimal;
 mod doc;
+mod doc_site;
 mod doc_examples;
 pub mod diagnostic;
 mod duration;
@@ -46,6 +47,7 @@ pub use compiler::{
     ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport, ValuePropertyStatus,
 };
 pub use doc::{ItemDocumentation, ModuleDocumentation};
+pub use doc_site::{DocPage, render_site};
 pub use formatter::FormatReport;
 pub use hints::TypeHint;
 pub use inspection::{
