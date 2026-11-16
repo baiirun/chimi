@@ -408,7 +408,11 @@ what reaches C and what C may do:
   heaps as plain data. Chimi code never sees an address, a length paired with
   a pointer, or a raw descriptor.
 - A handle's release runs exactly once: when the binding closes it, or when
-  the program's root ends. A closed handle stays closed in every copy, even
+  the program's root ends. A wait names the handle its descriptor belongs to,
+  and closing a handle first wakes every task waiting on its descriptors
+  (`CHIMI_REQUEST_IO_WITHDRAW`), whose wait then answers
+  `CHIMI_BINDING_WAIT_CLOSED`, so no task stays parked on a descriptor number
+  the release frees for reuse. A closed handle stays closed in every copy, even
   after its slot is reused, and closing it again does nothing. There is no
   finalizer; `Resource.scoped` is how code ties a handle to a scope.
 - `Debug.render` shows a handle as `<Name>`, with its type's name.
@@ -435,13 +439,6 @@ what reaches C and what C may do:
 - Prebuilt binding archives in the compiler, for packages whose cold compile
   is slow (TLS, SQLite).
 - Vendored-module grants (T5).
-- Waking the tasks that wait on a descriptor when its handle closes. A wait
-  names its handle, so a waiter that wakes after the close answers
-  `CHIMI_BINDING_WAIT_CLOSED` instead of touching the descriptor. But the
-  reactor waits on the descriptor's number, so a waiter stays parked when a
-  new resource reuses the number before the reactor next polls. The runtime
-  will withdraw a handle's waiters before its release runs; that lands before
-  `std/net`.
 
 ### Conformance
 
@@ -457,6 +454,7 @@ what reaches C and what C may do:
 | A package's archive key changes with each of its inputs | `backend::bindings::tests::the_archive_key_changes_with_every_input` |
 | A constant cannot call a binding (`E5201`) | `a_constant_cannot_call_a_binding` |
 | A handle is neither equatable nor ordered | `a_handle_is_neither_equatable_nor_ordered` |
+| Closing a handle ends another task's wait on it, even when a new handle reuses its descriptors | `a_handle_waits_through_the_scheduler_crosses_tasks_and_stays_closed` |
 
 Rules with no test yet, because the probe cannot reach them: `N3106` for a
 public binding, one type per binding `native type` declaration, invalid text

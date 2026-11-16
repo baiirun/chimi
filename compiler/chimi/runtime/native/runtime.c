@@ -5946,23 +5946,32 @@ enum { INPUT_END = -1, INPUT_FAILED = -2, INPUT_CANCELLED = -3 };
    descriptor answers ERROR, and the read reports it. It also ends when another
    task reading "-" has refilled the shared buffer meanwhile. False when
    cancelled. */
-static bool wait_readable(const ByteInput *input) {
+enum { INPUT_WAIT_READY, INPUT_WAIT_CANCELLED, INPUT_WAIT_FAILED };
+
+/* Waits until `input` may be read. INPUT_WAIT_FAILED, with errno set, when the
+   reactor cannot wait on the descriptor (it is closed, or poll failed): a
+   read then could block the scheduler thread. */
+static int wait_readable(const ByteInput *input) {
   int fd = input->fd;
   if (CHIMI_REQUIRES_SCHEDULER) {
     for (;;) {
-      if (input->start < input->end) return true;
+      if (input->start < input->end) return INPUT_WAIT_READY;
       ChimiSchedulerRequest request = {
         .kind = CHIMI_REQUEST_IO_WAIT, .value = fd, .token = CHIMI_IO_READABLE,
       };
-      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return false;
-      if (request.status != CHIMI_RESPONSE_PENDING) return true;
+      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return INPUT_WAIT_CANCELLED;
+      if (request.status == CHIMI_RESPONSE_ERROR) {
+        errno = fcntl(fd, F_GETFD) < 0 ? EBADF : EIO;
+        return INPUT_WAIT_FAILED;
+      }
+      if (request.status != CHIMI_RESPONSE_PENDING) return INPUT_WAIT_READY;
     }
   }
   /* Without the scheduler a signal interrupts poll with EINTR and sets `cancel`,
      which the caller checks. */
   struct pollfd poll_fd = {.fd = fd, .events = POLLIN};
   (void)poll(&poll_fd, 1, -1);
-  return true;
+  return INPUT_WAIT_READY;
 }
 
 /* The next byte, INPUT_END, INPUT_CANCELLED, or INPUT_FAILED with errno set. */
@@ -5971,7 +5980,9 @@ static int input_next(ChimiRuntime *runtime, ByteInput *input) {
   for (;;) {
     if (runtime->cancel) return INPUT_CANCELLED;
     if (CHIMI_REQUIRES_SCHEDULER) {
-      if (!wait_readable(input)) return INPUT_CANCELLED;
+      int waited = wait_readable(input);
+      if (waited == INPUT_WAIT_CANCELLED) return INPUT_CANCELLED;
+      if (waited == INPUT_WAIT_FAILED) return INPUT_FAILED;
       /* Another task reading "-" may have refilled the shared buffer while this
          one waited; reading over it would lose those bytes. */
       if (input->start < input->end) return input->bytes[input->start++];
@@ -6196,7 +6207,25 @@ static BindingHandleSlot *binding_handle_slot(const ChimiValue *value) {
 }
 
 
-static void release_binding_slot(BindingHandleSlot *entry, uint32_t slot) {
+/* The reactor's key for the waits on a handle's descriptors: nonzero, since
+   slot 0 is unused, and distinct per generation. */
+static uint64_t binding_resource_key(uint32_t slot, uint32_t generation) {
+  return (uint64_t)slot << 32 | generation;
+}
+
+/* Releases an open slot. `withdraw` (true inside a binding call) first wakes
+   every task waiting on the handle's descriptors, so none stays parked on a
+   descriptor number the release frees for reuse; each answers
+   CHIMI_BINDING_WAIT_CLOSED. */
+static void release_binding_slot(BindingHandleSlot *entry, uint32_t slot, bool withdraw) {
+  /* The answer is always OK: the withdraw never parks. A forced process body
+     that gets CANCEL here is abandoned at its next park, so releasing anyway
+     is safe. */
+  if (withdraw && CHIMI_REQUIRES_SCHEDULER) {
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_IO_WITHDRAW,
+                                     .channel = binding_resource_key(slot, entry->generation)};
+    scheduler_request(&request);
+  }
   const ChimiBindingType *type = entry->type;
   void *state = entry->state;
   entry->type = NULL;
@@ -6213,7 +6242,7 @@ static void release_binding_slot(BindingHandleSlot *entry, uint32_t slot) {
 /* Runs every open handle's release once, when the program ends. */
 static void release_binding_handles(void) {
   for (uint32_t slot = 1; slot < binding_handle_count; ++slot)
-    if (binding_handles[slot].type != NULL) release_binding_slot(&binding_handles[slot], slot);
+    if (binding_handles[slot].type != NULL) release_binding_slot(&binding_handles[slot], slot, false);
 }
 
 static const ChimiValue *binding_argument(const ChimiBindingCall *call, uint32_t index,
@@ -6371,7 +6400,7 @@ void chimi_binding_close_handle(ChimiBindingCall *call, uint32_t index,
                                 const ChimiBindingType *type) {
   const ChimiValue *value = binding_argument(call, index, VALUE_NATIVE_HANDLE);
   BindingHandleSlot *entry = value ? binding_handle_slot(value) : NULL;
-  if (entry != NULL && entry->type == type) release_binding_slot(entry, value->as.handle.slot);
+  if (entry != NULL && entry->type == type) release_binding_slot(entry, value->as.handle.slot, true);
 }
 
 ChimiBindingResult *chimi_binding_success(ChimiBindingCall *call, ChimiBindingValue *value) {
@@ -6432,10 +6461,16 @@ int chimi_binding_wait(ChimiBindingCall *call, uint32_t handle, int fd, int inte
     return CHIMI_BINDING_WAIT_FAILED;
   if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
   if (CHIMI_REQUIRES_SCHEDULER) {
+    uint64_t resource = 0;
+    if (handle != CHIMI_BINDING_NO_HANDLE) {
+      const ChimiValue *value = binding_argument(call, handle, VALUE_NATIVE_HANDLE);
+      resource = binding_resource_key(value->as.handle.slot, value->as.handle.generation);
+    }
     uint64_t token = ((interest & CHIMI_BINDING_READABLE) ? CHIMI_IO_READABLE : 0) |
                      ((interest & CHIMI_BINDING_WRITABLE) ? CHIMI_IO_WRITABLE : 0);
     for (;;) {
-      ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_IO_WAIT, .value = fd, .token = token};
+      ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_IO_WAIT, .value = fd, .token = token, .channel = resource};
       if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;
       /* Another task may have closed the handle while this one was parked;
          its descriptor number may already belong to a new resource. */
