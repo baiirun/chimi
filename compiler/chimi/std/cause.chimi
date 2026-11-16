@@ -50,7 +50,8 @@ pub enum Suppression {
 /// import std/int.{ParseError}
 /// import std/test as Test
 ///
-/// let port = case fn() { Int.parse("80x") } |> Cause.context("reading the port") {
+/// let read_port = fn() { Int.parse("80x") }
+/// let port = case Cause.context(read_port, "reading the port") {
 ///   Success(value) -> value
 ///   Failure(ParseError.InvalidDigit) -> 8080
 /// }
