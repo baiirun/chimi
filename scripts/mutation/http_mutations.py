@@ -77,12 +77,11 @@ MUTATIONS = [
     mutant("the connection cap is one more than asked",
            "Supervisor.policy([], settings.max_connections,",
            "Supervisor.policy([], settings.max_connections + 1,"),
-    mutant("a connection past the cap is dropped",
-           "      Failure(HandoffError.CapacityReached(back)) -> {\n        Clock.sleep(Duration.milliseconds(pause))\n        (back, smaller(pause * 2, 100))\n      }",
-           "      Failure(HandoffError.CapacityReached(back)) -> {\n        Net.close(back)\n        break Void\n      }"),
-    mutant("open connections outlive serving",
-           "  }, Supervisor.stop, fn(connections) {",
-           "  }, fn(_) { Void }, fn(connections) {"),
+    mutant("a connection past the cap is left open",
+           "    Failure(HandoffError.CapacityReached(back)) -> Net.close(back)",
+           "    Failure(HandoffError.CapacityReached(back)) -> Void"),
+    # Not a mutant: dropping the explicit Supervisor.stop survives, because a
+    # root supervisor also stops when the task that started it ends.
     mutant("a connection's process waits only for its task",
            "    Select.first([Select.task(serving, fn(_) { Void }), Select.inbox(inbox, fn(_) { Void })])",
            "    let _ = Task.result(serving)\n    Void"),

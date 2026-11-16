@@ -198,7 +198,7 @@ pub fn response_body(response: Response) -> Bytes {
 /// takes longer than `request_timeout` to arrive (counted from the end of the
 /// previous answer, body included), or a response longer than
 /// `write_timeout` to send. At most `max_connections` connections are served
-/// at once; past that, `Http.serve` accepts no more until one closes. The
+/// at once; past that, `Http.serve` closes a new connection at once. The
 /// defaults are 64 KiB, 100 headers, 8 MiB, 60 s, 60 s and 512 connections.
 /// `max_body_bytes` may be 0 (no bodies); the others must be positive, and
 /// `Http.serve` and `Http.serve_connection` defect otherwise.
@@ -215,9 +215,8 @@ pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int
 /// `handle`, until the listener is closed. Each connection runs in its own
 /// process under a supervisor that never restarts one, so a defect in
 /// `handle` closes only the connection it happened on. While
-/// `max_connections` are open, an accepted connection waits for one to
-/// close, checking after a pause that grows from 1 ms to 100 ms, and the
-/// next stay in the listener's backlog. A failed accept, such as running out
+/// `max_connections` are open, a new connection is closed as soon as it is
+/// accepted, as Node's `server.maxConnections` does. A failed accept, such as running out
 /// of file descriptors or a client that reset before it was accepted, is
 /// retried after a pause that grows from 10 ms to 1 s, so a burst of failures
 /// neither ends serving nor spins. When serving ends, by the listener
@@ -262,22 +261,13 @@ enum Unused {
   Unused
 }
 
-// Starts `accepted`'s process, waiting while the server is at its cap.
-fn admit<E>(connections: Running, spec: HandoffSpec<Connection, Unused, E>, accepted: Connection) -> Void needs {
-  clock: Clock
-} {
-  loop (waiting, pause) = (accepted, 1) {
-    case Supervisor.start_handoff(connections, spec, waiting) {
-      Success(_) -> break Void
-      Failure(HandoffError.CapacityReached(back)) -> {
-        Clock.sleep(Duration.milliseconds(pause))
-        (back, smaller(pause * 2, 100))
-      }
-      Failure(HandoffError.Stopped(back)) -> {
-        Net.close(back)
-        break Void
-      }
-    }
+// Starts `accepted`'s process, or closes it when the server is at its cap or
+// stopping.
+fn admit<E>(connections: Running, spec: HandoffSpec<Connection, Unused, E>, accepted: Connection) -> Void {
+  case Supervisor.start_handoff(connections, spec, accepted) {
+    Success(_) -> Void
+    Failure(HandoffError.CapacityReached(back)) -> Net.close(back)
+    Failure(HandoffError.Stopped(back)) -> Net.close(back)
   }
 }
 

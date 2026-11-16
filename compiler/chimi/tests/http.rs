@@ -70,7 +70,7 @@ import std/net as Net
 import std/net.{Connection, Listener, NetError, Network}
 import std/resource as Resource
 import std/result as Result
-import std/result.{Ok}
+import std/result.{Err, Ok}
 import std/stream as Stream
 import std/stream.{Reader, StreamError}
 import std/task as Task
@@ -430,44 +430,51 @@ fn crash_then_health() -> Text needs { network: Network, clock: Clock } {
   let listener = Net.listen("127.0.0.1", 0)
   let port = Net.port(Net.listener_address(listener))
   let server = Task.start(fn() { Http.serve(listener, Http.defaults, handle) })
+  // A connection open while another's handler defects is still served.
+  let held = Net.connect("127.0.0.1", port)
   let crashed = Task.timeout(fn() { get(port, "/crash") }, Duration.seconds(5))
+  Stream.write(Net.writer(held), Bytes.from_text("GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
+  let kept = Task.timeout(fn() { Bytes.to_text(Stream.read_all(Net.reader(held), 1048576)) }, Duration.seconds(5))
+  Net.close(held)
   let after = Task.timeout(fn() { get(port, "/health") }, Duration.seconds(5))
   Net.close_listener(listener)
   Task.timeout(fn() { Task.result(server) }, Duration.seconds(5))
-  "${crashed}|${after}"
+  "${crashed}|${kept}|${after}"
 }
 
 test "a handler's defect closes only its own connection" {
+  let ok = "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok"
   let outcome = crash_then_health() using { network: Net.host_for_tests() }
-  outcome |> Test.assert_equal("|HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+  outcome |> Test.assert_equal("|${ok}|${ok}")
 }
 
-// With a cap of one, a second client is answered only once the first, which
-// holds its connection open, has closed it.
+// With a cap of one, a second client is closed at once while the first holds
+// its connection open, and is answered once the first has closed it.
 fn capped() -> Text needs { network: Network, clock: Clock } {
   let listener = Net.listen("127.0.0.1", 0)
   let port = Net.port(Net.listener_address(listener))
   let server = Task.start(fn() { Http.serve(listener, { ..Http.defaults, max_connections: 1 }, handle) })
   let idle = Net.connect("127.0.0.1", port)
-  let start = Clock.now()
-  let waiting = Task.start(fn() {
-    let answer = get(port, "/health")
-    (answer, Clock.since(start))
-  })
-  Clock.sleep(Duration.milliseconds(300))
+  Clock.sleep(Duration.milliseconds(100))
+  let asked = Clock.now()
+  let refused = case Result.capture(fn() { Task.timeout(fn() { get(port, "/health") }, Duration.seconds(5)) }) {
+    Ok(answer) -> answer
+    Err(_) -> case Clock.since(asked) < Duration.seconds(1) {
+      True -> ""
+      False -> "the connection past the cap was left open"
+    }
+  }
   Net.close(idle)
-  let (answer, took) = Task.timeout(fn() { Task.result(waiting) }, Duration.seconds(5))
+  Clock.sleep(Duration.milliseconds(100))
+  let answered = Task.timeout(fn() { get(port, "/health") }, Duration.seconds(5))
   Net.close_listener(listener)
   Task.timeout(fn() { Task.result(server) }, Duration.seconds(5))
-  case took >= Duration.milliseconds(300) {
-    True -> answer
-    False -> "answered while the first client held the only slot"
-  }
+  "${refused}|${answered}"
 }
 
-test "past the cap a connection waits for one to close" {
+test "past the cap a new connection is closed" {
   let outcome = capped() using { network: Net.host_for_tests() }
-  outcome |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+  outcome |> Test.assert_equal("|HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
 }
 "#,
         "real",

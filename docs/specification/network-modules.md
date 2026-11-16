@@ -222,7 +222,7 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 | trailer lines of a chunked body | `max_headers` | 100 | 431 |
 | time for a request to arrive, body included, counted from the previous answer | `request_timeout` | 60 s | the connection closes without an answer |
 | time to send one response | `write_timeout` | 60 s | the connection closes |
-| connections served at once | `max_connections` | 512 | `serve` accepts no more until one closes |
+| connections served at once | `max_connections` | 512 | a new connection is closed as soon as it is accepted |
 
 ### Responses and connections
 
@@ -250,10 +250,10 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
   cancellation or a defect.
 - `serve` runs each connection in its own process, started with
   `Supervisor.start_handoff` under a supervisor of its own that never
-  restarts one and whose capacity is `max_connections`. At the cap, the
-  accepted connection waits for a slot, checking after a pause that grows
-  from 1 ms to 100 ms, and later clients wait in the listener's backlog (as
-  Go's `netutil.LimitListener` does). The handler's needs are captured into
+  restarts one and whose capacity is `max_connections`. At the cap, a new
+  connection is closed as soon as it is accepted, as Node's
+  `server.maxConnections` does, so the accept loop never waits and closing
+  the listener always ends serving. The handler's needs are captured into
   the process, so their providers MUST be shareable.
 - A failed accept (out of file descriptors, a client that reset before it
   was accepted) is retried after a pause that grows from 10 ms to 1 s and
@@ -264,6 +264,10 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 
 ### Not yet
 
+- A connection accepted just before serving ends, whose process has not
+  started yet, is discarded by the stop without being closed, so its client
+  waits until the program exits (a runtime gap: a discarded start argument
+  does not release host handles).
 - `Date` headers, streamed request and response bodies, a graceful drain of
   open connections when serving stops, and a close that drains unread input
   before it closes (so a peer that is still sending does not see a reset).
