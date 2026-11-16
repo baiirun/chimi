@@ -10,9 +10,7 @@
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::ids::SymbolId;
 use crate::operations::RUNNER_PROVIDERS;
-use crate::resolution::{
-    Namespace, ProjectSymbolKind, ReferenceResolution, ResolvedProject,
-};
+use crate::resolution::{Namespace, ProjectSymbolKind, ReferenceResolution, ResolvedProject};
 use crate::semantic::{ImportBinding, ModuleDeclarationKind, SemanticModule, is_generated_name};
 use std::collections::HashSet;
 
@@ -57,8 +55,19 @@ fn is_intentionally_unused(name: &str) -> bool {
     name.starts_with('_') || is_generated_name(name)
 }
 
-fn finding(module: &SemanticModule, code: &'static str, range: crate::ids::TextRange, message: String) -> Diagnostic {
-    Diagnostic::warning(DiagnosticStage::Lint, code, module.source.file_id(), range, message)
+fn finding(
+    module: &SemanticModule,
+    code: &'static str,
+    range: crate::ids::TextRange,
+    message: String,
+) -> Diagnostic {
+    Diagnostic::warning(
+        DiagnosticStage::Lint,
+        code,
+        module.source.file_id(),
+        range,
+        message,
+    )
 }
 
 fn unused_imports(resolved: &ResolvedProject, module: &SemanticModule) -> Vec<Diagnostic> {
@@ -102,10 +111,7 @@ fn unused_imports(resolved: &ResolvedProject, module: &SemanticModule) -> Vec<Di
                             module,
                             UNUSED_IMPORT,
                             member.range,
-                            format!(
-                                "the imported name {} is never used",
-                                member.text
-                            ),
+                            format!("the imported name {} is never used", member.text),
                         ));
                     }
                 }

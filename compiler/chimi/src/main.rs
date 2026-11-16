@@ -1100,6 +1100,54 @@ mod tests {
     }
 
     #[test]
+    fn parses_lint_inputs() {
+        assert_eq!(
+            parse_command(arguments(&["lint", "--json", "--root", "service", "app/main"])),
+            Ok(Command::Lint {
+                input: Input::Project {
+                    root: PathBuf::from("service"),
+                    entry: "app/main".to_owned(),
+                },
+                output: DiagnosticOutput::Json,
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["lint", "missing.chimi"])),
+            Ok(Command::Lint {
+                input: Input::File {
+                    path: PathBuf::from("missing.chimi")
+                },
+                output: DiagnosticOutput::Human,
+            })
+        );
+        let directory = std::env::temp_dir();
+        assert_eq!(
+            parse_command(vec![OsString::from("lint"), directory.clone().into_os_string()]),
+            Ok(Command::Lint {
+                input: Input::Directory { root: directory },
+                output: DiagnosticOutput::Human,
+            })
+        );
+        for (command, message) in [
+            (
+                &["lint"][..],
+                "lint requires a source path, a directory, or a project root and module",
+            ),
+            (
+                &["lint", "--root", "service"][..],
+                "lint --root requires a project directory and a module",
+            ),
+            (&["lint", "a.chimi", "b.chimi"][..], "lint received unexpected arguments"),
+        ] {
+            assert_eq!(
+                parse_command(arguments(command)),
+                Err(UsageError { message }),
+                "{command:?}"
+            );
+        }
+    }
+
+    #[test]
     fn parses_version_without_additional_arguments() {
         assert_eq!(
             parse_command(arguments(&["--version"])),
