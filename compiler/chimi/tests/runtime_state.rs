@@ -7,6 +7,9 @@
 //! `Carrier` or to the list below on purpose, with its owner decided.
 //! Function-local statics are not allowed at all: their owner is invisible.
 //!
+//! The shared handle table also gets a two-thread stress run here, since it
+//! is the one shared table later steps touch from several carriers.
+//!
 //! The check reads the object's symbols, and only ELF reports one per
 //! variable: on Mach-O, clang merges internal globals into `__MergedGlobals`
 //! and labels sections `ltmpN`. The source is the same on every host, so
@@ -29,13 +32,9 @@ const SHARED: &[&str] = &[
     "shared_values",
     "constant_values",
     "host_stack_limit",
-    // Handle counts and their release queue (step 2 splits them).
-    "channel_endpoints",
-    "channel_endpoint_capacity",
-    "channel_endpoint_count",
-    "released_channels",
-    "released_channel_count",
-    "released_channel_capacity",
+    // Task and channel handle counts, one locked table for every carrier
+    // (each carrier queues its own releases).
+    "handle_table",
     // Tables whose ids travel inside values.
     "binding_handles",
     "binding_handle_count",
@@ -147,4 +146,47 @@ fn runtime_globals_are_the_carrier_or_listed_shared_state() {
              as shared (process kernel {process_kernel}): {unlisted:?}"
         );
     }
+}
+
+/// The shared handle table under two threads (`fixtures/handle-table-stress.c`):
+/// a reference retained on one thread and dropped on another never reaches zero
+/// early. ThreadSanitizer, where the compiler has it, fails any access outside
+/// the table's lock.
+#[test]
+fn the_handle_table_counts_across_threads() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let executable = std::env::temp_dir().join(format!(
+        "chimi-handle-table-stress-{}",
+        std::process::id()
+    ));
+    let compile = |flags: &[&str]| {
+        Command::new("cc")
+            .args(["-std=c11", "-O1", "-g", "-w"])
+            .args(flags)
+            .arg("-I")
+            .arg(manifest.join("runtime/native"))
+            .arg("-I")
+            .arg(manifest.join("../../runtime/chimi-fiber/include"))
+            .arg(manifest.join("tests/fixtures/handle-table-stress.c"))
+            .arg("-o")
+            .arg(&executable)
+            .args(["-lm", "-lpthread"])
+            .output()
+            .expect("run cc")
+    };
+    if !compile(&["-fsanitize=thread"]).status.success() {
+        let plain = compile(&[]);
+        assert!(plain.status.success(), "{}", String::from_utf8_lossy(&plain.stderr));
+    }
+    let run = Command::new(&executable)
+        .env("TSAN_OPTIONS", "halt_on_error=1")
+        .output()
+        .expect("run the handle table stress");
+    let _ = std::fs::remove_file(&executable);
+    assert!(
+        run.status.success() && run.stdout == b"ok\n",
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
 }

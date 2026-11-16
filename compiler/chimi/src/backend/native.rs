@@ -288,6 +288,7 @@ fn build_to_path(
     }
     let started = Instant::now();
     let runtime_abi = RUNTIME_ABI_VERSION.to_string();
+    let test_defines = test_runtime_defines()?;
     let runtime_key = runtime_archive_key(&RuntimeArchiveInputs {
         abi_version: &runtime_abi,
         target_triple: env!("CHIMI_RUNTIME_TARGET"),
@@ -298,6 +299,17 @@ fn build_to_path(
         fiber_header: FIBER_RUNTIME_HEADER.as_bytes(),
         process_kernel,
     });
+    let runtime_key = if test_defines.is_empty() {
+        runtime_key
+    } else {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(runtime_key.as_bytes());
+        for define in &test_defines {
+            hasher.update(&(define.len() as u64).to_le_bytes());
+            hasher.update(define.as_bytes());
+        }
+        hasher.finalize().to_hex().to_string()
+    };
     if let Some(archive) = prebuilt_runtime_archive(&runtime_key, process_kernel) {
         std::fs::write(&runtime_archive_path, archive)
             .map_err(|error| format!("materialize prebuilt native runtime: {error}"))?;
@@ -314,6 +326,7 @@ fn build_to_path(
                 run(
                     Command::new(RUNTIME_C_COMPILER)
                         .args(runtime_c_flags(process_kernel))
+                        .args(&test_defines)
                         .arg("-I")
                         .arg(&include_directory)
                         .arg("-c")
@@ -485,6 +498,32 @@ const PREBUILT_PROCESS_RUNTIME_KEY: &str =
 /// The archive of the variant `build.rs` compiled, when it was compiled from
 /// exactly the inputs `key` names (the embedded sources and today's `cc`);
 /// otherwise `None`, and the caller compiles the runtime into the project cache.
+/// Test builds of the runtime: in a debug build of the compiler,
+/// `CHIMI_TEST_RUNTIME_DEFINES` names `-D` flags (space-separated, each
+/// `-DCHIMI_` and an upper-case name) added to the runtime's compile, such as
+/// `-DCHIMI_CARRIER_SIMULATION` (parallel-scheduler.md). They change the
+/// archive's key, so a test build never reuses the prebuilt runtime. A
+/// release build ignores the variable.
+fn test_runtime_defines() -> Result<Vec<String>, String> {
+    if !cfg!(debug_assertions) {
+        return Ok(Vec::new());
+    }
+    let Ok(value) = std::env::var("CHIMI_TEST_RUNTIME_DEFINES") else {
+        return Ok(Vec::new());
+    };
+    value
+        .split_whitespace()
+        .map(|define| {
+            let name = define.strip_prefix("-DCHIMI_").unwrap_or("");
+            if !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+                Ok(define.to_owned())
+            } else {
+                Err(format!("CHIMI_TEST_RUNTIME_DEFINES: `{define}` is not -DCHIMI_<NAME>"))
+            }
+        })
+        .collect()
+}
+
 fn prebuilt_runtime_archive(key: &str, process_kernel: bool) -> Option<&'static [u8]> {
     let (archive, prebuilt_key) = if process_kernel {
         (
