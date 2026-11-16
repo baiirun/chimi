@@ -76,9 +76,6 @@ impl Scheduler {
 
     pub(super) fn fire_signal(&mut self, signal: i32) {
         self.signals.timer = None;
-        if self.retire_signals_after_root() {
-            return;
-        }
         self.signals.injected = signal;
         if let Some(word) = self.signals.word {
             // SAFETY: as in `Signals::pending`. The runner reads it after the

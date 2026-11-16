@@ -38,7 +38,7 @@ The run shows:
 - SIGTERM arrives at 1.5 s (`clock_signal_received signal=15`). It cancels
   `main`, which stops the root supervisor. Members stop one at a time,
   newest first, so `worker_3` drains first while the older members keep
-  running: `worker_1` and `worker_2` finish jobs 4 and 5, queued when the
+  running: `worker_1` and `worker_2` finish jobs 4 and 5, in flight when the
   signal arrived, and the ledger receives them at 2.001 s. Nothing accepted
   is cut off.
 - Job 6 needs 30 s, longer than its worker's 5 s `shutdown_within`, so

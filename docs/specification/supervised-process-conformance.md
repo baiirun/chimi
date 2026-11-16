@@ -1073,8 +1073,8 @@ takes 30 s, and each worker's `shutdown_within` is 5 s.
 
 At 1.5s SIGTERM cancels main and the root stops. Members stop one at a
 time, newest first, so `worker_3`, busy with job 6, drains first while the
-older members keep running and stay routable: jobs 4 and 5, queued when the
-signal arrived, finish and reach the ledger at 2.001s. Job 6 outlasts its
+older members keep running and stay routable: jobs 4 and 5, in flight when
+the signal arrived, finish and reach the ledger at 2.001s. Job 6 outlasts its
 5 s deadline, so `worker_3` is forced at 6.5s. The other members then have
 nothing left to do and end `cancelled` at once, so nothing they accepted is
 lost. The outcome is `cancellation` and the exit status 143.

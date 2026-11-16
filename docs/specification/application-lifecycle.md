@@ -151,7 +151,10 @@ outcome record and closes its sinks, then:
 - for an injected signal, exits `128 + signal`: 143 for TERM, 130 for INT.
 
 Any other outcome after a signal, such as a defect during cleanup, uses its
-usual status. Cancellation without a signal still exits 130.
+usual status. Cancellation without a signal still exits 130. One edge remains:
+the runner reads whether a real signal was received, not whether it
+cancelled `main`, so a `main` that ended cancelled on its own and then
+receives a signal while its supervisors stop dies by that signal.
 
 ## Verification
 
