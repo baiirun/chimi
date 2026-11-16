@@ -1436,10 +1436,10 @@ program.
   due scope deadlines, and while a task is inside a scope a loop issues
   `REQUEST_SCOPE_CHECK` every 1,024 passes. A timeout over a busy loop is
   therefore late by at most 1,024 passes.
-  Exclusive capabilities owned by the scope are not yet released at the
-  scope boundary: they are released at task exit as before (follow-up
-  ticket). The scope module documents where masked cancellation will hook
-  in.
+  Since G12 and CHI-215, a cancelled scope exit aborts the exclusive
+  capabilities the task gained inside the scope, and a `Resource.scoped`
+  release masks cancellation; both are in
+  [scope-owned resources](scope-owned-resources.md).
 - **Telemetry.** `clock_scope_fired` (clock kind 6) is a boundary event
   whose `task_id` is the task that owns the scope. The scope's timer emits
   the motion events `clock_timer_started`, `clock_timer_fired`, and
@@ -1505,7 +1505,7 @@ program.
   waited operation in a deadlock report.
 - **ABI.** `CHIMI_FIBER_ABI_VERSION` 11 added `CHIMI_REQUEST_SELECT` (kind 32)
   and `ChimiSelectSource`, with native runtime ABI 28. The channel variants
-  moved them to 12 and 30.
+  moved them to 14 and 32.
 
 ### Runner
 

@@ -1,0 +1,31 @@
+# mutation run at 04de12dfb483eedd1e9c5485a853ac367f4abd18
+# resource_mutations.py: 25 mutants against compiler/chimi
+BASELINE ok  [resources] (120s)
+BASELINE ok  [std_modules] (20s)
+KILLED       a mask does not hold off the scopes beneath it [resources] (12s)
+KILLED       releasing does not mask the entry [resources] (13s)
+KILLED       leaving a resource never reports the held-off cancellation [resources] (13s)
+KILLED       cancelling a task that holds a resource tears it down at once [resources] (26s)
+KILLED       the root scope also cancels children started outside every scope [resources] (20s)
+KILLED       a recorded cancellation never decides the outcome [resources] (10s)
+KILLED       a cancelled scope exit keeps what the scope gained [resources] (10s)
+KILLED       a cancelled scope aborts capabilities held before it [resources] (10s)
+KILLED       a child's hand-back is not backdated to its start [resources] (9s)
+KILLED       resource_scoped ignores the cancellation its exit delivers [resources] (16s)
+KILLED       a cancelled use skips its release [resources] (15s)
+KILLED       native: a release failure does not replace the use's outcome [std_modules] (28s)
+KILLED       native: a release defect outranks a use defect [std_modules] (31s)
+KILLED       native: a release defect does not replace a use failure [std_modules] (29s)
+KILLED       interpreter: a release failure does not replace the use's outcome [std_modules] (28s)
+KILLED       interpreter: a release defect outranks a use defect [std_modules] (19s)
+KILLED       a containment cancel does not wake a selecting release [resources] (11s)
+KILLED       the deadline forces only direct children [resources] (8s)
+KILLED       a release's receive is not woken by the stop [resources] (8s)
+KILLED       parks inside a release linger under shutdown [resources] (11s)
+KILLED       a deferred shutdown is never told after the release [resources] (11s)
+KILLED       a process body is torn down at once on a child defect [resources] (9s)
+# rerun of the three stale mutants after refreshing their text:
+KILLED       shutdown is delivered into a running release [resources]
+KILLED       the deadline leaves children of a finished body running [resources]
+KILLED       shutdown cancels the helpers a release started [resources]
+# result: 25/25 killed

@@ -416,11 +416,11 @@ receivers of one queue; each value still goes to one of them.
   in a helper function, carried out of a loop by `break`, or taken out of a
   tuple by a pattern loses the link; those cases keep the run-time
   owner-token check (CHI-241).
-- **ABI.** Fiber ABI 12 adds requests 33 to 36 (add receiver, broadcast,
+- **ABI.** Fiber ABI 14 adds requests 36 to 39 (add receiver, broadcast,
   watch, subscribe), capability violations 7 (a published value holds a
   capability) and 8 (an operation on the wrong kind of channel), and the
   `copy_channel_value` hook at the end of `ChimiSchedulerConfig`. Native
-  runtime ABI 30 adds the nine intrinsics after `Select.first`.
+  runtime ABI 32 adds the nine intrinsics after `Select.first`.
 
 ## Owner exit and automatic cleanup
 

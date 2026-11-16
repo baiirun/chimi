@@ -284,6 +284,11 @@ struct Channel {
     receiver_ended: bool,
     completion_owner: Option<TaskId>,
     completion_token: u64,
+    /// When the current owner of each capability gained it, on the
+    /// registry's arrival clock: a cancelled timeout scope aborts what its
+    /// task gained after the scope began (`abort_arrivals`).
+    receiver_since: u64,
+    completion_since: u64,
     /// The sent value whose parcel holds the receiver or the completion. A
     /// capability in flight has no owner.
     receiver_parcel: Option<usize>,
@@ -319,6 +324,8 @@ impl Channel {
             receiver_ended: false,
             completion_owner: None,
             completion_token: 1,
+            receiver_since: 0,
+            completion_since: 0,
             receiver_parcel: None,
             completion_parcel: None,
             select_watchers: Vec::new(),
@@ -356,6 +363,8 @@ pub(crate) struct ChannelRegistry {
     /// Keyed by the sent value, which is unique while the registry holds it.
     parcels: BTreeMap<usize, Parcel>,
     next_channel: u64,
+    /// Counts ownership changes; see `Channel::receiver_since`.
+    arrivals: u64,
     observe_boundaries: bool,
     observe_full: bool,
     /// Without a copier, every subscription gets the same value (tests whose
@@ -371,6 +380,7 @@ impl ChannelRegistry {
             operations: BTreeMap::new(),
             parcels: BTreeMap::new(),
             next_channel: 1,
+            arrivals: 0,
             observe_boundaries,
             observe_full,
             copier: None,
@@ -421,6 +431,9 @@ impl ChannelRegistry {
         let mut channel = Channel::new(capacity);
         channel.receiver_owner = Some(owner);
         channel.completion_owner = Some(owner);
+        let since = self.tick();
+        channel.receiver_since = since;
+        channel.completion_since = since;
         self.channels.insert(id, channel);
         self.owned_channels.entry(owner).or_default().insert(id);
         let capabilities = ChannelCapabilities {
@@ -453,6 +466,7 @@ impl ChannelRegistry {
         let mut channel = Channel::new(capacity);
         channel.receiver_ended = true;
         channel.completion_owner = Some(owner);
+        channel.completion_since = self.tick();
         channel.hub = Some(Hub {
             kind,
             subscriptions: Vec::new(),
@@ -494,6 +508,7 @@ impl ChannelRegistry {
         let id = self.next_id();
         let mut channel = Channel::new(capacity);
         channel.receiver_owner = Some(task);
+        channel.receiver_since = self.tick();
         channel.lifecycle = lifecycle;
         channel.conflate = kind == HubKind::Watch;
         if lifecycle != Lifecycle::Aborted
@@ -543,6 +558,7 @@ impl ChannelRegistry {
         let id = self.next_id();
         let mut tap = Channel::new(0);
         tap.receiver_owner = Some(task);
+        tap.receiver_since = self.tick();
         tap.receiver_ended = ended;
         tap.tap_of = Some(queue_id);
         self.channels.insert(id, tap);
@@ -1325,7 +1341,9 @@ impl ChannelRegistry {
             .get_mut(&receiver.channel)
             .ok_or(ChannelError::UnknownChannel(receiver.channel))?;
         validate_receiver(channel, receiver, task)?;
+        self.arrivals += 1;
         channel.receiver_owner = Some(new_owner);
+        channel.receiver_since = self.arrivals;
         channel.receiver_token = channel
             .receiver_token
             .checked_add(1)
@@ -1366,7 +1384,9 @@ impl ChannelRegistry {
             .get_mut(&completion.channel)
             .ok_or(ChannelError::UnknownChannel(completion.channel))?;
         validate_completion(channel, completion, task)?;
+        self.arrivals += 1;
         channel.completion_owner = Some(new_owner);
+        channel.completion_since = self.arrivals;
         channel.completion_token = channel
             .completion_token
             .checked_add(1)
@@ -1555,6 +1575,67 @@ impl ChannelRegistry {
         transition
     }
 
+    /// Advances the arrival clock and returns the new stamp: every
+    /// capability a task gains later has a larger one.
+    pub fn tick(&mut self) -> u64 {
+        self.arrivals += 1;
+        self.arrivals
+    }
+
+    /// Dates `task`'s capabilities of `channel` that it gained just now to
+    /// `since` instead: a child's result handed to its parent counts as
+    /// gained when the child started.
+    pub fn backdate(&mut self, channel: ChannelId, task: TaskId, since: u64) {
+        let Some(channel) = self.channels.get_mut(&channel) else {
+            return;
+        };
+        if channel.receiver_owner == Some(task) && channel.receiver_since > since {
+            channel.receiver_since = since;
+        }
+        if channel.completion_owner == Some(task) && channel.completion_since > since {
+            channel.completion_since = since;
+        }
+    }
+
+    /// Ends the capabilities `task` gained after arrival stamp `since` as its
+    /// exit would (`cleanup_task`): a cancelled timeout scope discards the
+    /// operation's values, and a capability gained inside it is reachable only
+    /// through them (`time-and-outcomes.md`, Semantics of timeouts, step 4).
+    pub fn abort_arrivals(&mut self, task: TaskId, since: u64) -> Transition {
+        let mut transition = Transition::default();
+        let channels: Vec<ChannelId> = self
+            .owned_channels
+            .get(&task)
+            .map(|channels| channels.iter().copied().collect())
+            .unwrap_or_default();
+        for id in channels {
+            let channel = self.channels.get(&id).expect("owned channel");
+            let receiver = channel.receiver_owner == Some(task) && channel.receiver_since > since;
+            let completion =
+                channel.completion_owner == Some(task) && channel.completion_since > since;
+            if !receiver && !completion {
+                continue;
+            }
+            let abandons_completion = completion && channel.lifecycle == Lifecycle::Open;
+            if receiver {
+                transition.merge(self.end_receiver(id, Some(task), false));
+            }
+            if abandons_completion {
+                transition.merge(self.abort_entry(id, Some(task), ChannelEventKind::Aborted));
+            }
+            let channel = self.channels.get_mut(&id).expect("owned channel");
+            if receiver {
+                channel.receiver_owner = None;
+            }
+            if completion {
+                channel.completion_owner = None;
+            }
+            self.refresh_owner_index(id, task);
+        }
+        self.settle_parcels(&mut transition);
+        transition
+    }
+
     /// Withdraws the task's pending send or receive, leaving the channel as
     /// if the operation had never been issued. A ready result is dropped.
     pub fn cancel_pending(&mut self, task: TaskId) -> Transition {
@@ -1674,6 +1755,11 @@ impl ChannelRegistry {
         let Some(channel) = self.channels.get_mut(&item.channel) else {
             return;
         };
+        self.arrivals += 1;
+        match item.kind {
+            CapabilityKind::Receiver => channel.receiver_since = self.arrivals,
+            CapabilityKind::Completion => channel.completion_since = self.arrivals,
+        }
         let (holder, current, parcel) = channel.holder(item.kind);
         *holder = Some(owner);
         *parcel = None;

@@ -1,7 +1,7 @@
 mod bytes_operations;
 mod causes;
 mod constants;
-mod core_operations;
+pub(crate) mod core_operations;
 mod debug;
 mod decimal_operations;
 mod durations;
@@ -9,6 +9,7 @@ mod json_operations;
 mod map_operations;
 mod persistent_list;
 mod processes;
+mod resource_operations;
 mod structural;
 mod teardown;
 
@@ -261,6 +262,9 @@ pub struct ExecutionReport {
     /// The root outcome's cause tree (`Cause.to_text`), when it has context
     /// frames, a `caused_by` link, or suppressed causes.
     pub cause: Option<String>,
+    /// An expected failure's value in the indented debug format, which
+    /// `chimi test` reports; `None` for any other outcome.
+    pub failure_rendering: Option<String>,
     pub application_stdout: String,
     pub application_stderr: String,
 }
@@ -990,11 +994,16 @@ impl<'core> Evaluator<'core> {
             .cause()
             .filter(|cause| causes::has_detail(cause))
             .map(|cause| causes::render(self.core, &cause));
+        let failure_rendering = match &control {
+            Control::Failure(value, _) => Some(debug::render(self.core, value, true)),
+            _ => None,
+        };
         let outcome = self.public_outcome(control);
         ExecutionReport {
             events: self.events,
             outcome,
             cause,
+            failure_rendering,
             application_stdout: self.application_stdout,
             application_stderr: self.application_stderr,
         }
@@ -1802,6 +1811,10 @@ impl<'core> Evaluator<'core> {
                 node: Some(call_node),
                 cause: None,
             },
+            StandardFunction::TestAssertEqual
+            | StandardFunction::TestAssertNotEqual
+            | StandardFunction::TestAssert
+            | StandardFunction::TestFail => self.invoke_assertion(function, arguments, call_node),
             StandardFunction::DebugCrash
             | StandardFunction::OptionUnwrapOrFail
             | StandardFunction::TextConcat
@@ -1882,6 +1895,9 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::CauseReasonCode
             | StandardFunction::CauseToText => {
                 self.invoke_cause_operation(function, arguments, span, call_node, environment)
+            }
+            StandardFunction::ResourceScoped => {
+                self.invoke_resource_scoped(arguments, span, call_node, environment)
             }
             StandardFunction::IoPath => {
                 let [RuntimeValue::Text(path)] = arguments.as_slice() else {
@@ -3013,6 +3029,7 @@ pub(crate) fn execute_legacy(core: LegacyCoreProgram, config: ExecutionConfig) -
     };
 
     ExecutionReport {
+        failure_rendering: None,
         events: vec![
             event(0, EventKind::ComputationStarted),
             event(1, EventKind::ComputationCompleted),

@@ -1,0 +1,9 @@
+# mutation run at afe902648964bbcf61a121766ed5a14912901b59
+# host_stack_mutations.py: 5 mutants against compiler/chimi
+BASELINE ok  [cli -- native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect] (54s)
+KILLED       calls never check the stack [cli -- native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect] (9s)
+KILLED       the main thread is never guarded [cli -- native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect] (10s)
+KILLED       the check compares the wrong way [cli -- native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect] (10s)
+KILLED       the limit leaves no headroom [cli -- native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect] (10s)
+KILLED       the limit sits far above the stack bottom [cli -- native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect] (10s)
+# result: every mutant killed

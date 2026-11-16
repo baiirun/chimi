@@ -15,8 +15,11 @@ const USAGE: &str = concat!(
     "chimi build <path> [-o <executable>] | ",
     "chimi check [--json] --root <project-dir> <entry-module> | chimi run --root ",
     "<project-dir> <entry-module> [-- <argument>...] | chimi build --root <project-dir> <entry-module> ",
-    "[-o <executable>] | chimi std check; a compiler developer may put ",
-    "--std-dir <directory> before inspect, check, run, build, or std check"
+    "[-o <executable>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
+    "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
+    "[--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] | ",
+    "chimi std check; a compiler developer may put ",
+    "--std-dir <directory> before inspect, check, run, build, test, or std check"
 );
 
 #[derive(Debug, Eq, PartialEq)]
@@ -51,6 +54,118 @@ enum Command {
     },
     /// Checks the whole standard tree against the operation registry.
     StdCheck,
+    Test {
+        input: Input,
+        options: TestOptions,
+    },
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct TestOptions {
+    filters: Vec<String>,
+    backend: chimi::testing::Backend,
+    virtual_clock: bool,
+    clock_start: Option<String>,
+    time_limit: std::time::Duration,
+    jobs: Option<usize>,
+    show_output: bool,
+    json: bool,
+}
+
+impl Default for TestOptions {
+    fn default() -> Self {
+        Self {
+            filters: Vec::new(),
+            backend: chimi::testing::Backend::Native,
+            virtual_clock: true,
+            clock_start: None,
+            time_limit: std::time::Duration::from_secs(60),
+            jobs: None,
+            show_output: false,
+            json: false,
+        }
+    }
+}
+
+/// Parses `chimi test [<path> | --root <project> <module>] [options]`.
+fn parse_test_command(arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    let usage = |message| Err(UsageError { message });
+    let mut options = TestOptions::default();
+    let mut input = None;
+    let mut arguments = arguments.peekable();
+    while let Some(argument) = arguments.next() {
+        let Ok(argument) = argument.into_string() else {
+            return usage("test arguments must be valid UTF-8");
+        };
+        if argument == "--root" {
+            let (Some(root), Some(entry)) = (arguments.next(), arguments.next()) else {
+                return usage("--root requires a project directory and module");
+            };
+            let Ok(entry) = entry.into_string() else {
+                return usage("entry module must be valid UTF-8");
+            };
+            if input.is_some() {
+                return usage("test takes one source path or project root");
+            }
+            input = Some(Input::Project {
+                root: PathBuf::from(root),
+                entry,
+            });
+        } else if let Some(filter) = argument.strip_prefix("--filter=") {
+            options.filters.push(filter.to_owned());
+        } else if let Some(backend) = argument.strip_prefix("--backend=") {
+            options.backend = match backend {
+                "native" => chimi::testing::Backend::Native,
+                "interpreter" => chimi::testing::Backend::Interpreter,
+                _ => return usage("--backend must be native or interpreter"),
+            };
+        } else if let Some(clock) = argument.strip_prefix("--clock=") {
+            options.virtual_clock = match clock {
+                "virtual" => true,
+                "real" => false,
+                _ => return usage("--clock must be virtual or real"),
+            };
+        } else if let Some(start) = argument.strip_prefix("--clock-start=") {
+            if !chimi::testing::valid_clock_start(start) {
+                return usage(
+                    "--clock-start requires an RFC 3339 timestamp from 1678 through 2262, such as 2026-11-10T09:30:00Z",
+                );
+            }
+            options.clock_start = Some(start.to_owned());
+        } else if let Some(limit) = argument.strip_prefix("--time-limit=") {
+            let Some(limit) = chimi::testing::parse_time_limit(limit) else {
+                return usage("--time-limit must be a positive duration such as 60s");
+            };
+            options.time_limit = limit;
+        } else if let Some(jobs) = argument.strip_prefix("--jobs=") {
+            match jobs.parse::<usize>() {
+                Ok(jobs) if jobs > 0 => options.jobs = Some(jobs),
+                _ => return usage("--jobs must be a positive integer"),
+            }
+        } else if argument == "--show-output" {
+            options.show_output = true;
+        } else if argument == "--json" {
+            options.json = true;
+        } else if argument.starts_with("--") {
+            return usage("unknown test option");
+        } else if input.is_some() {
+            return usage("test takes one source path or project root");
+        } else {
+            input = Some(Input::File {
+                path: PathBuf::from(argument),
+            });
+        }
+    }
+    if options.clock_start.is_some() && !options.virtual_clock {
+        return usage("--clock-start requires --clock=virtual");
+    }
+    if options.clock_start.is_some() && options.backend == chimi::testing::Backend::Interpreter {
+        return usage("--clock-start requires --backend=native");
+    }
+    let Some(input) = input else {
+        return usage("test requires a source path or project root");
+    };
+    Ok(Command::Test { input, options })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,6 +256,10 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
                 message: "std takes one subcommand: check",
             }),
         };
+    }
+
+    if command == "test" {
+        return parse_test_command(arguments);
     }
 
     if command == "inspect" {
@@ -339,6 +458,7 @@ fn execute(Invocation { std_dir, command }: Invocation) -> ExitCode {
         Command::Run { input, arguments } => run(input, &standard, arguments),
         Command::Build { input, output } => build(input, &standard, output),
         Command::StdCheck => std_check(&standard),
+        Command::Test { input, options } => test(input, &standard, options),
     }
 }
 
@@ -492,6 +612,59 @@ fn build(input: Input, standard: &StandardTree, output: Option<PathBuf>) -> Exit
             eprintln!("chimi: build failed: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `chimi test`: exits 0 when every selected test passed, 1 when one failed,
+/// and 2 when the run could not start (testing.md, Exit status).
+fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode {
+    use chimi::testing::{Backend, RunOptions, TestSuite, render_json, render_report};
+    let artifact_directory = artifact_directory(&default_executable_path(&input)).join("test");
+    let Some(project) = load_project(input, standard) else {
+        return ExitCode::from(2);
+    };
+    let suite = match TestSuite::prepare(project.sources()) {
+        Ok(suite) => suite,
+        Err(diagnostics) => {
+            eprint!("{}", project.render_diagnostics(&diagnostics));
+            return ExitCode::from(2);
+        }
+    };
+    let selected = suite.select(&options.filters);
+    if selected.is_empty() {
+        eprintln!("chimi: no test matches the filter");
+        return ExitCode::from(2);
+    }
+    let run = RunOptions {
+        backend: options.backend,
+        filters: options.filters,
+        virtual_clock: options.virtual_clock,
+        clock_start: options.clock_start,
+        time_limit: options.time_limit,
+        jobs: options.jobs.unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+        }),
+    };
+    let results = match run.backend {
+        Backend::Interpreter => suite.run_interpreted(&selected, &run),
+        Backend::Native => {
+            let executable = artifact_directory.join("tests");
+            if let Err(error) = suite.build_native(standard, &executable, &artifact_directory) {
+                eprintln!("chimi: test build failed: {error}");
+                return ExitCode::from(2);
+            }
+            suite.run_native(&executable, &artifact_directory, &selected, &run)
+        }
+    };
+    if options.json {
+        print!("{}", render_json(&suite, &selected, &results));
+    } else {
+        print!("{}", render_report(&suite, &selected, &results, options.show_output));
+    }
+    if results.iter().all(|result| result.failure.is_none()) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 

@@ -1,0 +1,43 @@
+/// Scope-owned resources: acquire something, use it, and release it however
+/// the use ends. `Resource.scoped(acquire, release, use)` is the one way to
+/// tie a resource the program creates (a pooled connection, a temporary file,
+/// a lock, a stream) to the code that uses it:
+///
+/// ```text
+/// Resource.scoped(
+///   fn() { Pool.take(pool) },
+///   fn(connection) { Pool.give(pool, connection) },
+///   fn(connection) { Sql.query(connection, "select 1") },
+/// )
+/// ```
+///
+/// Release runs while cancellation is held off, so a timeout that fires, a
+/// `Task.cancel`, or a parent that ends does not interrupt it; that
+/// cancellation takes effect as soon as release returns. A `Task.timeout`
+/// written inside `release` still bounds it.
+
+// 2. Constructors.
+
+/// Calls `acquire`, then `use` with what it returned, then `release` with the
+/// same value, and returns what `use` returned.
+///
+/// `release` runs exactly once whenever `acquire` succeeded, whether `use`
+/// succeeds, fails, defects, or is cancelled. It does not run when `acquire`
+/// does not succeed: nothing was acquired. Cancellation that arrives while
+/// `release` runs waits until it returns.
+///
+/// Fails with: what `acquire` fails with; otherwise what `release` fails
+/// with, which replaces both the value and the failure of `use`, as a file
+/// that cannot be closed replaces the result of reading it; otherwise what
+/// `use` fails with. A defect or cancellation in `use` stays the outcome
+/// even when `release` fails. A defect in `release` replaces everything
+/// except an earlier defect in `use`.
+///
+/// Calls: `acquire` once; `use` and `release` once each when `acquire`
+/// succeeded.
+/// Cost: O(1) plus the three calls.
+pub native fn scoped<H, T, EA, ER, EU, RA, RR, RU>(
+  acquire: fn() -> H errors EA needs RA,
+  release: fn(H) -> Void errors ER needs RR,
+  use: fn(H) -> T errors EU needs RU,
+) -> T errors EA | ER | EU needs RA + RR + RU

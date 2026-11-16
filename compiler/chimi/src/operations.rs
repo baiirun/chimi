@@ -25,7 +25,6 @@ pub(crate) enum OperationClass {
     /// Deterministic and creates no runtime resource; constants may call it.
     Pure,
     /// Needs the scheduler or creates runtime resources.
-    #[allow(dead_code)]
     Runtime,
     /// Talks to the operating system; its `native fn` must be private (`N3106`).
     #[allow(dead_code)]
@@ -65,6 +64,15 @@ const fn pure(id: &'static str, arity: usize, implementation: StandardFunction) 
         id,
         arity,
         class: OperationClass::Pure,
+        implementation,
+    }
+}
+
+const fn runtime(id: &'static str, arity: usize, implementation: StandardFunction) -> Operation {
+    Operation {
+        id,
+        arity,
+        class: OperationClass::Runtime,
         implementation,
     }
 }
@@ -164,6 +172,13 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/cause.suppressed", 1, StandardFunction::CauseSuppressed),
     pure("std/cause.reason_code", 1, StandardFunction::CauseReasonCode),
     pure("std/cause.to_text", 1, StandardFunction::CauseToText),
+    // std/test: assertions defect at their own call (testing.md, Assertions).
+    pure("std/test.assert_equal", 2, StandardFunction::TestAssertEqual),
+    pure("std/test.assert_not_equal", 2, StandardFunction::TestAssertNotEqual),
+    pure("std/test.assert", 2, StandardFunction::TestAssert),
+    pure("std/test.fail", 1, StandardFunction::TestFail),
+    // std/resource
+    runtime("std/resource.scoped", 3, StandardFunction::ResourceScoped),
 ];
 
 pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
@@ -254,6 +269,8 @@ pub(crate) const STATED_REQUIREMENTS: &[StatedRequirement] = &[
     requires("std/set.add", "T", ValueProperty::Equatable),
     requires("std/set.remove", "T", ValueProperty::Equatable),
     requires("std/set.reduce", "T", ValueProperty::Ordered),
+    requires("std/test.assert_equal", "T", ValueProperty::Equatable),
+    requires("std/test.assert_not_equal", "T", ValueProperty::Equatable),
 ];
 
 /// The requirements [`STATED_REQUIREMENTS`] states for the standard function

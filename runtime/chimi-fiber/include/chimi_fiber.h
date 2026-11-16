@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 12u
+#define CHIMI_FIBER_ABI_VERSION 14u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -103,9 +103,11 @@ enum {
      A cancellation point (see chimi_fiber_scope_cancel_pending). */
   CHIMI_REQUEST_SCOPE_ENTER = 25,
   /* ChimiSchedulerRequest: leaves the scope whose id is `token`, and any
-     scope nested in it. PENDING while child tasks the scope cancelled still
-     drain; then OK with `value` 1 when this scope's own cancellation is the
-     one the task is unwinding, else 0. ERROR when the task is not inside it.
+     scope nested in it; `value` is 1 when the operation ended in a
+     cancellation, whose values are discarded: the exclusive channel
+     capabilities the task gained inside the scope are aborted. PENDING while
+     child tasks the scope cancelled still drain; then OK with `value` 1 when
+     this scope's own cancellation is the one the task is unwinding, else 0. ERROR when the task is not inside it.
      Never a cancellation point; never issue it after a terminal cancel. */
   CHIMI_REQUEST_SCOPE_EXIT = 26,
   /* ChimiSchedulerRequest: a loop pass's cancellation point. OK, or the
@@ -133,24 +135,33 @@ enum {
      (receive, process receive, task result), which answers at once. ERROR
      for an empty list or an unknown kind. A cancellation point. */
   CHIMI_REQUEST_SELECT = 32,
+  /* ChimiSchedulerRequest: Resource.scoped's entry on the scope stack. ENTER
+     (before acquire) replies with the entry in `token`. RELEASE(`token`)
+     masks it before release: cancellation of the scopes beneath waits.
+     EXIT(`token`) leaves it and replies `value` 1 when a cancellation it held
+     off is now delivered: return a cancellation. None is a cancellation point;
+     issue none after a terminal cancel. */
+  CHIMI_REQUEST_RESOURCE_ENTER = 33,
+  CHIMI_REQUEST_RESOURCE_RELEASE = 34,
+  CHIMI_REQUEST_RESOURCE_EXIT = 35,
   /* ChimiSchedulerRequest: `channel`, `owner`, `token` name one of the
      caller's receivers. OK with another receiver of the same queue, owned by
      the caller, in `channel`, `owner`, `token` (Channel.add_receiver). */
-  CHIMI_REQUEST_CHANNEL_ADD_RECEIVER = 33,
+  CHIMI_REQUEST_CHANNEL_ADD_RECEIVER = 36,
   /* `value` is a positive capacity per subscription. OK with the
      broadcast's id in `channel`: a SENDER of that id publishes, and
      `owner`, `token` name its completion. ERROR for a capacity below 1. */
-  CHIMI_REQUEST_CHANNEL_BROADCAST = 34,
+  CHIMI_REQUEST_CHANNEL_BROADCAST = 37,
   /* `value` is the watch's initial value, a message the scheduler takes on
      OK (and releases through release_channel_value). Replies as for
      CHIMI_REQUEST_CHANNEL_BROADCAST. A send to a broadcast or watch id
      publishes, and its message must carry no capability. For a broadcast,
      OK carries the number of subscriptions reached in `value`; for a watch,
      `value` is left as the host wrote it, as for a plain send. */
-  CHIMI_REQUEST_CHANNEL_WATCH = 35,
+  CHIMI_REQUEST_CHANNEL_WATCH = 38,
   /* `channel` names a broadcast or watch. OK with a new subscription, a
      receiver owned by the caller, in `channel`, `owner`, `token`. */
-  CHIMI_REQUEST_CHANNEL_SUBSCRIBE = 36,
+  CHIMI_REQUEST_CHANNEL_SUBSCRIBE = 39,
 };
 
 /* `down` of a RECEIVE reply whose `message` is a notice handle. */
