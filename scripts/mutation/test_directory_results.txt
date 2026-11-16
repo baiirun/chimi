@@ -1,12 +1,12 @@
-# mutation run at f43f7b1d571cf05e563365dfcc6029688071c83f
+# mutation run at 2a63130ad2a04717f1829cbd99804fa2e0ad3a52
 # test_directory_mutations.py: 8 mutants against compiler/chimi
-BASELINE ok  [testing -- directory] (85s)
+BASELINE ok  [testing -- directory] (11s)
 KILLED       target is walked [testing -- directory] (3s)
 KILLED       hidden directories are walked [testing -- directory] (3s)
-STALE        subdirectories are never walked: edit text occurs 0 times in src/project.rs
-KILLED       only the first module loads [testing -- directory] (3s)
+KILLED       subdirectories are never walked [testing -- directory] (19s)
+KILLED       only the first module loads [testing -- directory] (19s)
 KILLED       a directory is read as a file [testing -- directory] (3s)
 KILLED       symbolic links are followed [testing -- directory] (24s)
 KILLED       hidden files load [testing -- directory] (23s)
-KILLED       an empty directory runs nothing [testing -- directory] (24s)
-# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+KILLED       an empty directory runs nothing [testing -- directory] (23s)
+# result: every mutant killed
