@@ -1,4 +1,5 @@
 mod bytes_operations;
+mod causes;
 mod constants;
 mod core_operations;
 mod debug;
@@ -28,6 +29,7 @@ use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol, Sta
 pub(crate) use constants::{ConstantLimits, evaluate_constants};
 #[cfg(test)]
 pub(crate) use constants::{evaluate_constants_with, measured_values_to_evaluate};
+use causes::{Cause, CauseKind};
 use persistent_list::PersistentList;
 use std::cmp::Ordering as Comparison;
 use std::collections::HashMap;
@@ -256,6 +258,9 @@ pub enum ExecutionOutcome {
 pub struct ExecutionReport {
     pub events: Vec<ExecutionEvent>,
     pub outcome: ExecutionOutcome,
+    /// The root outcome's cause tree (`Cause.to_text`), when it has context
+    /// frames, a `caused_by` link, or suppressed causes.
+    pub cause: Option<String>,
     pub application_stdout: String,
     pub application_stderr: String,
 }
@@ -353,6 +358,10 @@ impl ExecutionReport {
                 write_json_string(&mut output, &cancellation.reason);
             }
         }
+        if let Some(cause) = &self.cause {
+            output.push_str(",\"cause\":");
+            write_json_string(&mut output, cause);
+        }
         output.push_str("}\n");
         output
     }
@@ -391,6 +400,9 @@ enum RuntimeValue {
         type_name: String,
         variant_name: Option<String>,
         fields: Arc<Vec<RuntimeField>>,
+        /// The cause a stored `Err` keeps, outside the value: equality, order,
+        /// matching and rendering ignore it.
+        cause: Option<Arc<Cause>>,
     },
     Map(RuntimeMap),
     /// A `std/set.Set`: a map from each item to `Void`, kept a separate kind so
@@ -398,6 +410,8 @@ enum RuntimeValue {
     Set(RuntimeMap),
     JsonNumber(String),
     Callable(RuntimeCallable),
+    /// A `std/cause.Cause`.
+    Cause(Arc<Cause>),
 }
 
 thread_local! {
@@ -764,12 +778,13 @@ struct Environment {
 #[derive(Clone, Debug)]
 enum Control {
     Success(RuntimeValue),
-    Failure(RuntimeValue),
+    Failure(RuntimeValue, Trail),
     Defect {
         message: String,
         node: Option<CoreNodeId>,
+        cause: Option<Arc<Cause>>,
     },
-    Cancellation,
+    Cancellation(Option<Arc<Cause>>),
     /// Unwinds to the loop whose state symbol is `target`. Verified programs never let it
     /// cross a function boundary, so it never reaches a call, task, or root outcome.
     Break {
@@ -777,6 +792,77 @@ enum Control {
         value: RuntimeValue,
     },
 }
+
+/// The cause of a live expected failure. Until something reads or extends it,
+/// it stays implicit: a fresh cause of the failure's value, started at `origin`.
+#[derive(Clone, Debug, Default)]
+struct Trail {
+    cause: Option<Arc<Cause>>,
+    origin: Option<CoreNodeId>,
+}
+
+impl Trail {
+    const fn at(origin: CoreNodeId) -> Self {
+        Self {
+            cause: None,
+            origin: Some(origin),
+        }
+    }
+
+    fn built(cause: Cause) -> Self {
+        Self {
+            origin: cause.origin,
+            cause: Some(Arc::new(cause)),
+        }
+    }
+}
+
+impl Control {
+    /// An expected failure whose cause starts where the caller stamps it.
+    fn failure(value: RuntimeValue) -> Self {
+        Self::Failure(value, Trail::default())
+    }
+
+    /// The cause of a terminal outcome, built from the outcome when still implicit.
+    fn cause(&self) -> Option<Arc<Cause>> {
+        match self {
+            Self::Success(_) | Self::Break { .. } => None,
+            Self::Failure(value, trail) => Some(trail.cause.clone().unwrap_or_else(|| {
+                Arc::new(Cause::new(CauseKind::ExpectedFailure(value.clone()), trail.origin))
+            })),
+            Self::Defect {
+                message,
+                node,
+                cause,
+            } => Some(cause.clone().unwrap_or_else(|| {
+                Arc::new(Cause::new(CauseKind::Defect(message.clone()), *node))
+            })),
+            Self::Cancellation(cause) => Some(cause.clone().unwrap_or_else(|| {
+                Arc::new(Cause::new(
+                    CauseKind::Cancellation(CANCELLATION_REASON.to_owned()),
+                    None,
+                ))
+            })),
+        }
+    }
+
+    /// This outcome with its cause replaced; a success or break is unchanged.
+    fn with_cause(self, cause: Cause) -> Self {
+        match self {
+            Self::Failure(value, _) => Self::Failure(value, Trail::built(cause)),
+            Self::Defect { message, node, .. } => Self::Defect {
+                message,
+                node,
+                cause: Some(Arc::new(cause)),
+            },
+            Self::Cancellation(_) => Self::Cancellation(Some(Arc::new(cause))),
+            other @ (Self::Success(_) | Self::Break { .. }) => other,
+        }
+    }
+}
+
+/// The reason the interpreter gives every cancellation it observes.
+const CANCELLATION_REASON: &str = "requested before the next semantic operation";
 
 /// Runs a program on the reference interpreter, on a thread with a large stack.
 pub(crate) fn execute(core: &CoreProgram, config: ExecutionConfig) -> ExecutionReport {
@@ -869,7 +955,7 @@ impl<'core> Evaluator<'core> {
             );
         }
         let control = if self.config.cancellation_requested {
-            Control::Cancellation
+            Control::Cancellation(None)
         } else {
             let mut environment = Environment::default();
             if let Some(parameter) = entry.parameters.first() {
@@ -897,10 +983,15 @@ impl<'core> Evaluator<'core> {
                 vec![text_attribute("outcome", control_name(&control))],
             );
         }
+        let cause = control
+            .cause()
+            .filter(|cause| causes::has_detail(cause))
+            .map(|cause| causes::render(self.core, &cause));
         let outcome = self.public_outcome(control);
         ExecutionReport {
             events: self.events,
             outcome,
+            cause,
             application_stdout: self.application_stdout,
             application_stderr: self.application_stderr,
         }
@@ -913,7 +1004,7 @@ impl<'core> Evaluator<'core> {
         environment: Environment,
     ) -> Control {
         if self.config.cancellation_requested {
-            return Control::Cancellation;
+            return Control::Cancellation(None);
         }
         if let Some(stop) = self.count_constant_operation(node_id) {
             return stop;
@@ -974,6 +1065,7 @@ impl<'core> Evaluator<'core> {
                 select_field(&value, &member).unwrap_or_else(|| Control::Defect {
                     message: format!("verified value has no field {member}"),
                     node: Some(node_id),
+                    cause: None,
                 })
             }
             CoreOperation::DependencyMethod {
@@ -993,6 +1085,7 @@ impl<'core> Evaluator<'core> {
                                 "provider {requirement_name} has no callable field {name}"
                             ),
                             node: Some(node_id),
+                            cause: None,
                         };
                     };
                     callable.clone()
@@ -1002,6 +1095,7 @@ impl<'core> Evaluator<'core> {
                     return Control::Defect {
                         message: format!("closed core has no provider for {requirement_name}"),
                         node: Some(node_id),
+                        cause: None,
                     };
                 };
                 Control::Success(RuntimeValue::Callable(RuntimeCallable::Dependency {
@@ -1015,6 +1109,7 @@ impl<'core> Evaluator<'core> {
             CoreOperation::Construct {
                 constructor,
                 arguments,
+                cause,
             } => {
                 let mut values = Vec::with_capacity(arguments.len());
                 for argument in arguments {
@@ -1024,7 +1119,11 @@ impl<'core> Evaluator<'core> {
                         environment.clone()
                     )));
                 }
-                self.construct(constructor, values)
+                let control = self.construct(constructor, values, node_id);
+                match cause {
+                    Some(cause) => attach_matched_cause(control, &environment, cause, node_id),
+                    None => control,
+                }
             }
             CoreOperation::Call { callee, arguments } => {
                 let callable =
@@ -1033,6 +1132,7 @@ impl<'core> Evaluator<'core> {
                     return Control::Defect {
                         message: "verified call target is not callable".to_owned(),
                         node: Some(node_id),
+                        cause: None,
                     };
                 };
                 let callable = callable.clone();
@@ -1044,7 +1144,16 @@ impl<'core> Evaluator<'core> {
                         environment.clone(),
                     )));
                 }
-                self.invoke(callable, values, span, node_id, environment)
+                match self.invoke(callable, values, span, node_id, environment) {
+                    // A failure an operation raised without a source construction
+                    // starts at its call.
+                    Control::Failure(value, trail)
+                        if trail.cause.is_none() && trail.origin.is_none() =>
+                    {
+                        Control::Failure(value, Trail::at(node_id))
+                    }
+                    control => control,
+                }
             }
             CoreOperation::List(elements) => {
                 let mut values = Vec::with_capacity(elements.len());
@@ -1091,6 +1200,7 @@ impl<'core> Evaluator<'core> {
                     Err(message) => Control::Defect {
                         message,
                         node: Some(node_id),
+                        cause: None,
                     },
                 },
                 RuntimeValue::Float(value) => Control::Success(RuntimeValue::Float(-value)),
@@ -1100,6 +1210,7 @@ impl<'core> Evaluator<'core> {
                 _ => Control::Defect {
                     message: "verified unary operand is not an integer".to_owned(),
                     node: Some(node_id),
+                    cause: None,
                 },
             },
             CoreOperation::Unary {
@@ -1191,7 +1302,7 @@ impl<'core> Evaluator<'core> {
         let mut value = success_or_return!(self.eval_node(initial, span, environment.clone()));
         loop {
             if self.config.cancellation_requested {
-                return Control::Cancellation;
+                return Control::Cancellation(None);
             }
             let mut pass = environment.clone();
             pass.locals.insert(state, value);
@@ -1241,6 +1352,7 @@ impl<'core> Evaluator<'core> {
                 .unwrap_or_else(|| Control::Defect {
                     message: format!("closed core has no provider for {}", core_symbol.name),
                     node: None,
+                    cause: None,
                 }),
             CoreSymbolKind::Local => environment
                 .locals
@@ -1250,6 +1362,7 @@ impl<'core> Evaluator<'core> {
                 .unwrap_or_else(|| Control::Defect {
                     message: format!("verified local {} is not bound", core_symbol.name),
                     node: None,
+                    cause: None,
                 }),
             CoreSymbolKind::Intrinsic => match core_symbol.standard {
                 Some(StandardSymbol::Function(function)) => {
@@ -1258,6 +1371,7 @@ impl<'core> Evaluator<'core> {
                 _ => Control::Defect {
                     message: format!("intrinsic symbol {} has no operation", core_symbol.name),
                     node: None,
+                    cause: None,
                 },
             },
             CoreSymbolKind::Constructor => {
@@ -1269,11 +1383,13 @@ impl<'core> Evaluator<'core> {
             CoreSymbolKind::Other => Control::Defect {
                 message: format!("symbol {} is not a runtime value", core_symbol.name),
                 node: None,
+                cause: None,
             },
         }
     }
 
-    fn construct(&self, constructor: SymbolId, values: Vec<RuntimeValue>) -> Control {
+    /// Constructs a value, or a live outcome; a failure's cause starts at `node`.
+    fn construct(&self, constructor: SymbolId, values: Vec<RuntimeValue>, node: CoreNodeId) -> Control {
         let symbol = self.core.symbol(constructor);
         let shape = symbol
             .constructor
@@ -1288,7 +1404,7 @@ impl<'core> Evaluator<'core> {
             return if success {
                 Control::Success(value)
             } else {
-                Control::Failure(value)
+                Control::Failure(value, Trail::at(node))
             };
         }
         debug_assert_eq!(values.len(), shape.fields.len());
@@ -1306,6 +1422,7 @@ impl<'core> Evaluator<'core> {
             type_name: shape.type_name,
             variant_name: shape.variant_name,
             fields: Arc::new(fields),
+            cause: None,
         })
     }
 
@@ -1400,7 +1517,9 @@ impl<'core> Evaluator<'core> {
             RuntimeCallable::Host(function) => {
                 self.invoke_host(function, arguments, span, call_node, call_environment)
             }
-            RuntimeCallable::Constructor { symbol, .. } => self.construct(symbol, arguments),
+            RuntimeCallable::Constructor { symbol, .. } => {
+                self.construct(symbol, arguments, call_node)
+            }
         }
     }
 
@@ -1436,6 +1555,7 @@ impl<'core> Evaluator<'core> {
                     return Control::Defect {
                         message: "verified console call has invalid runtime arguments".to_owned(),
                         node: Some(call_node),
+                        cause: None,
                     };
                 };
                 let output = if matches!(function, HostFunction::WriteLine) {
@@ -1458,6 +1578,7 @@ impl<'core> Evaluator<'core> {
                         message: "verified filesystem call has invalid runtime arguments"
                             .to_owned(),
                         node: Some(call_node),
+                        cause: None,
                     };
                 };
                 let mut input: Box<dyn Read> = if path == "-" {
@@ -1466,7 +1587,7 @@ impl<'core> Evaluator<'core> {
                     match std::fs::File::open(path) {
                         Ok(file) => Box::new(file),
                         Err(error) => {
-                            return Control::Failure(self.standard_value(
+                            return Control::failure(self.standard_value(
                                 StandardConstructor::FileOpen,
                                 vec![
                                     RuntimeValue::Text(path.clone()),
@@ -1482,7 +1603,7 @@ impl<'core> Evaluator<'core> {
                 let mut byte = [0_u8; 1];
                 loop {
                     if self.config.cancellation_requested {
-                        return Control::Cancellation;
+                        return Control::Cancellation(None);
                     }
                     match input.read(&mut byte) {
                         Ok(0) => {
@@ -1521,7 +1642,7 @@ impl<'core> Evaluator<'core> {
                         }
                         Ok(_) => {
                             if line.len() == self.config.max_line_bytes {
-                                return Control::Failure(self.standard_value(
+                                return Control::failure(self.standard_value(
                                     StandardConstructor::FileLineTooLong,
                                     vec![
                                         RuntimeValue::Text(path.clone()),
@@ -1535,7 +1656,7 @@ impl<'core> Evaluator<'core> {
                             line.push(byte[0]);
                         }
                         Err(error) => {
-                            return Control::Failure(self.standard_value(
+                            return Control::failure(self.standard_value(
                                 StandardConstructor::FileRead,
                                 vec![
                                     RuntimeValue::Text(path.clone()),
@@ -1562,7 +1683,7 @@ impl<'core> Evaluator<'core> {
         environment: Environment,
     ) -> Control {
         let Ok(line) = std::str::from_utf8(bytes) else {
-            return Control::Failure(self.standard_value(
+            return Control::failure(self.standard_value(
                 StandardConstructor::Utf8Invalid,
                 vec![
                     RuntimeValue::Text(path.to_owned()),
@@ -1571,7 +1692,7 @@ impl<'core> Evaluator<'core> {
             ));
         };
         if line.contains('\0') {
-            return Control::Failure(self.standard_value(
+            return Control::failure(self.standard_value(
                 StandardConstructor::Utf8Invalid,
                 vec![
                     RuntimeValue::Text(path.to_owned()),
@@ -1631,6 +1752,7 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::ProcessCapacity
             | StandardFunction::ProcessMonitor
             | StandardFunction::ProcessUnmonitor
+            | StandardFunction::ProcessHandoffSpec
             | StandardFunction::SupervisorProcess
             | StandardFunction::SupervisorSupervisor
             | StandardFunction::SupervisorPolicy
@@ -1638,6 +1760,7 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::SupervisorStart
             | StandardFunction::SupervisorStartProcess
             | StandardFunction::SupervisorStartSupervisor
+            | StandardFunction::SupervisorStartHandoff
             | StandardFunction::SupervisorAddress
             | StandardFunction::SupervisorRemoveProcess
             | StandardFunction::SupervisorRemoveSupervisor
@@ -1657,6 +1780,19 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::ClockStartingAt
             | StandardFunction::TaskTimeout
             | StandardFunction::TaskDeadline => self.invoke_process(function, arguments, call_node),
+            StandardFunction::SelectReceive
+            | StandardFunction::SelectInbox
+            | StandardFunction::SelectTask
+            | StandardFunction::SelectAfter
+            | StandardFunction::SelectAt
+            | StandardFunction::SelectFirst => Control::Defect {
+                message: format!(
+                    "Select.{} requires the native runtime; build the program with `chimi build`",
+                    function.name()
+                ),
+                node: Some(call_node),
+                cause: None,
+            },
             StandardFunction::DebugCrash
             | StandardFunction::OptionUnwrapOrFail
             | StandardFunction::TextConcat
@@ -1727,6 +1863,17 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::EmbedBytes => {
                 self.invoke_bytes_operation(function, arguments, call_node)
             }
+            StandardFunction::CauseContext
+            | StandardFunction::CauseOf
+            | StandardFunction::CauseKindCode
+            | StandardFunction::CauseSummary
+            | StandardFunction::CauseFrames
+            | StandardFunction::CauseCausedBy
+            | StandardFunction::CauseSuppressed
+            | StandardFunction::CauseReasonCode
+            | StandardFunction::CauseToText => {
+                self.invoke_cause_operation(function, arguments, span, call_node, environment)
+            }
             StandardFunction::IoPath => {
                 let [RuntimeValue::Text(path)] = arguments.as_slice() else {
                     return self.intrinsic_shape_defect(function, call_node);
@@ -1772,7 +1919,7 @@ impl<'core> Evaluator<'core> {
                 };
                 match parse_int(text) {
                     Ok(value) => Control::Success(RuntimeValue::Integer(value)),
-                    Err(error) => Control::Failure(self.standard_value(
+                    Err(error) => Control::failure(self.standard_value(
                         match error {
                             IntParseError::Empty => StandardConstructor::IntParseEmpty,
                             IntParseError::InvalidDigit => {
@@ -1848,6 +1995,7 @@ impl<'core> Evaluator<'core> {
                     Err(message) => Control::Defect {
                         message,
                         node: Some(call_node),
+                        cause: None,
                     },
                 }
             }
@@ -1866,6 +2014,7 @@ impl<'core> Evaluator<'core> {
                             return Control::Defect {
                                 message: RANGE_LENGTH_OVERFLOW.to_owned(),
                                 node: Some(call_node),
+                                cause: None,
                             };
                         }
                     },
@@ -1909,7 +2058,7 @@ impl<'core> Evaluator<'core> {
                 };
                 match float_to_int(*value) {
                     Ok(value) => Control::Success(RuntimeValue::Integer(value)),
-                    Err(error) => Control::Failure(self.standard_value(
+                    Err(error) => Control::failure(self.standard_value(
                         match error {
                             FloatToIntError::NotInteger => StandardConstructor::FloatNotInteger,
                             FloatToIntError::OutOfRange => StandardConstructor::FloatOutOfRange,
@@ -1940,7 +2089,7 @@ impl<'core> Evaluator<'core> {
                 };
                 match parse_float(text) {
                     Ok(value) => Control::Success(RuntimeValue::Float(value)),
-                    Err(error) => Control::Failure(self.standard_value(
+                    Err(error) => Control::failure(self.standard_value(
                         match error {
                             FloatParseError::Empty => StandardConstructor::FloatParseEmpty,
                             FloatParseError::Invalid => StandardConstructor::FloatParseInvalid,
@@ -1960,6 +2109,7 @@ impl<'core> Evaluator<'core> {
                     function.name()
                 ),
                 node: Some(call_node),
+                cause: None,
             },
             StandardFunction::ChannelSend
             | StandardFunction::ChannelReceive
@@ -1971,6 +2121,7 @@ impl<'core> Evaluator<'core> {
                     function.name()
                 ),
                 node: Some(call_node),
+                cause: None,
             },
         }
     }
@@ -1982,6 +2133,7 @@ impl<'core> Evaluator<'core> {
                 function.name()
             ),
             node: Some(call_node),
+            cause: None,
         }
     }
 
@@ -2010,6 +2162,7 @@ impl<'core> Evaluator<'core> {
                     .map(|(name, value)| RuntimeField { name, value })
                     .collect(),
             ),
+            cause: None,
         }
     }
 
@@ -2048,6 +2201,7 @@ impl<'core> Evaluator<'core> {
         let defect = |message| Control::Defect {
             message,
             node: Some(node),
+            cause: None,
         };
         if let Some(arithmetic) = ArithmeticOperator::from_binary(operator) {
             return match (left, right) {
@@ -2136,7 +2290,9 @@ impl<'core> Evaluator<'core> {
             if contextual[index] {
                 match control {
                     Control::Success(value) => values.push(MatchValue::Success(value)),
-                    Control::Failure(value) => values.push(MatchValue::Failure(value)),
+                    Control::Failure(value, trail) => {
+                        values.push(MatchValue::Failure(value, trail));
+                    }
                     other => return other,
                 }
             } else {
@@ -2157,6 +2313,7 @@ impl<'core> Evaluator<'core> {
                         return Control::Defect {
                             message: message.to_owned(),
                             node: Some(node_id),
+                            cause: None,
                         };
                     }
                 }
@@ -2172,22 +2329,29 @@ impl<'core> Evaluator<'core> {
                         return Control::Defect {
                             message: "verified case guard is not Boolean".to_owned(),
                             node: Some(node_id),
+                            cause: None,
                         };
                     }
                     other => return other,
                 }
+            }
+            if let Some(cause) = arm.cause {
+                arm_environment
+                    .locals
+                    .insert(cause.local, matched_cause(&values[cause.subject]));
             }
             return self.eval_node(arm.body, span, arm_environment);
         }
         values
             .into_iter()
             .find_map(|value| match value {
-                MatchValue::Failure(error) => Some(Control::Failure(error)),
+                MatchValue::Failure(error, trail) => Some(Control::Failure(error, trail)),
                 MatchValue::Plain(_) | MatchValue::Success(_) => None,
             })
             .unwrap_or_else(|| Control::Defect {
                 message: "verified exhaustive match had no matching arm".to_owned(),
                 node: Some(node_id),
+                cause: None,
             })
     }
 
@@ -2223,8 +2387,10 @@ impl<'core> Evaluator<'core> {
     fn public_outcome(&self, control: Control) -> ExecutionOutcome {
         match control {
             Control::Success(value) => ExecutionOutcome::Success(public_value(&value)),
-            Control::Failure(value) => ExecutionOutcome::ExpectedFailure(public_value(&value)),
-            Control::Defect { message, node } => {
+            Control::Failure(value, _) => {
+                ExecutionOutcome::ExpectedFailure(public_value(&value))
+            }
+            Control::Defect { message, node, .. } => {
                 let origin = node.map(|node| {
                     let node = &self.core.nodes[node.raw() as usize];
                     node.origin.raw()
@@ -2235,8 +2401,8 @@ impl<'core> Evaluator<'core> {
                     origin_id: origin,
                 })
             }
-            Control::Cancellation => ExecutionOutcome::Cancellation(ExecutionCancellation {
-                reason: "requested before the next semantic operation".to_owned(),
+            Control::Cancellation(_) => ExecutionOutcome::Cancellation(ExecutionCancellation {
+                reason: CANCELLATION_REASON.to_owned(),
             }),
             Control::Break { .. } => ExecutionOutcome::Defect(ExecutionDefect {
                 message: "verified break escaped its loop".to_owned(),
@@ -2251,7 +2417,70 @@ impl<'core> Evaluator<'core> {
 enum MatchValue {
     Plain(RuntimeValue),
     Success(RuntimeValue),
-    Failure(RuntimeValue),
+    Failure(RuntimeValue, Trail),
+}
+
+/// The cause a cause arm binds for its subject: a live failure's, or the one a
+/// stored `Err` keeps, or `Void` when it keeps none.
+fn matched_cause(value: &MatchValue) -> RuntimeValue {
+    let cause = match value {
+        MatchValue::Failure(error, trail) => Some(
+            trail
+                .cause
+                .clone()
+                .unwrap_or_else(|| {
+                    Arc::new(Cause::new(CauseKind::ExpectedFailure(error.clone()), trail.origin))
+                }),
+        ),
+        MatchValue::Plain(RuntimeValue::Constructed { cause, .. }) => cause.clone(),
+        MatchValue::Plain(_) | MatchValue::Success(_) => None,
+    };
+    cause.map_or(RuntimeValue::Void, RuntimeValue::Cause)
+}
+
+/// Gives a `Failure(...)` or `Result.Err(...)` built in a cause arm the arm's
+/// matched cause, read from the arm's generated local: the same cause when it
+/// keeps it, otherwise a new cause started at `node` and linked to it.
+fn attach_matched_cause(
+    control: Control,
+    environment: &Environment,
+    cause: crate::executable::ConstructCause,
+    node: CoreNodeId,
+) -> Control {
+    let matched = match environment.locals.get(&cause.local) {
+        Some(RuntimeValue::Cause(matched)) => Some(Arc::clone(matched)),
+        _ => None,
+    };
+    let derive = |error: &RuntimeValue| -> Option<Arc<Cause>> {
+        if cause.keep {
+            return matched.clone();
+        }
+        let fresh = Cause::new(CauseKind::ExpectedFailure(error.clone()), Some(node));
+        Some(Arc::new(match &matched {
+            Some(matched) => fresh.linked_to(Arc::clone(matched)),
+            None => fresh,
+        }))
+    };
+    match control {
+        Control::Failure(error, trail) => {
+            let cause = derive(&error);
+            let trail = match cause {
+                Some(cause) => Trail {
+                    origin: cause.origin,
+                    cause: Some(cause),
+                },
+                None => trail,
+            };
+            Control::Failure(error, trail)
+        }
+        Control::Success(mut value) => {
+            if let RuntimeValue::Constructed { fields, cause, .. } = &mut value {
+                *cause = fields.first().and_then(|field| derive(&field.value));
+            }
+            Control::Success(value)
+        }
+        other => other,
+    }
 }
 
 /// Matches `value` against `pattern`, binding into `bindings`. `Err` is a defect: a
@@ -2266,14 +2495,14 @@ fn match_pattern(
             success: expected,
             value: pattern,
         } => match (expected, value) {
-            (true, MatchValue::Success(value)) | (false, MatchValue::Failure(value)) => {
+            (true, MatchValue::Success(value)) | (false, MatchValue::Failure(value, _)) => {
                 match_plain_pattern(pattern, value, bindings)
             }
             _ => Ok(false),
         },
         _ => match value {
             MatchValue::Plain(value) => match_plain_pattern(pattern, value, bindings),
-            MatchValue::Success(_) | MatchValue::Failure(_) => Ok(false),
+            MatchValue::Success(_) | MatchValue::Failure(..) => Ok(false),
         },
     }
 }
@@ -2510,6 +2739,12 @@ fn public_value(value: &RuntimeValue) -> ExecutionValue {
             variant_name: None,
             fields: Vec::new(),
         },
+        // Diagnostic data: its public form names only what it is.
+        RuntimeValue::Cause(_) => ExecutionValue::Constructed {
+            type_name: "Cause".to_owned(),
+            variant_name: None,
+            fields: Vec::new(),
+        },
     }
 }
 
@@ -2562,9 +2797,9 @@ fn operation_name(operation: &CoreOperation) -> &'static str {
 fn control_name(control: &Control) -> &'static str {
     match control {
         Control::Success(_) => "success",
-        Control::Failure(_) => "expected_failure",
+        Control::Failure(..) => "expected_failure",
         Control::Defect { .. } => "defect",
-        Control::Cancellation => "cancellation",
+        Control::Cancellation(_) => "cancellation",
         Control::Break { .. } => "break",
     }
 }
@@ -2759,6 +2994,7 @@ pub(crate) fn execute_legacy(core: LegacyCoreProgram, config: ExecutionConfig) -
             event(0, EventKind::ComputationStarted),
             event(1, EventKind::ComputationCompleted),
         ],
+        cause: None,
         outcome: ExecutionOutcome::Success(ExecutionValue::Constructed {
             type_name: core.constructor_name,
             variant_name: None,
@@ -2955,6 +3191,7 @@ mod tests {
             type_name: "Nest".to_owned(),
             variant_name: Some("Wrap".to_owned()),
             fields: field(inner),
+            cause: None,
         },
         |inner| {
             RuntimeValue::Map(RuntimeMap::default().put(RuntimeValue::Integer(0), inner, &order))

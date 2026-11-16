@@ -23,6 +23,12 @@ sources with `--clock-start`, virtual deadlock, `Task.timeout`,
 joins, `T4340`, `T4341`, `T4346` for a failure-set value passed where a member
 is missing, and [`std/result`](#stdresult) are implemented on both backends
 (CHI-200; see [Failure-set types as implemented](#failure-set-types-as-implemented-chi-200)).
+[Failure context](#failure-context) is implemented on both backends except
+the suppressed-cause producers and the trace fields (CHI-204; see
+[Failure context as implemented](#failure-context-as-implemented-chi-204)).
+[`std/select`](#choosing-among-events) and `T4345` for `Select.first` are
+implemented on the native backend only (CHI-203; see
+[Select as implemented](#select-as-implemented-chi-203)).
 Nothing else here is implemented yet.
 Source spelling follows the current kernel and remains free to break.
 
@@ -820,6 +826,10 @@ A cause is not part of any failure value. Matching, equality, hashing,
 ordering, failure rows, and selective recovery MUST ignore it. Code can read
 it, but a program whose result depends on it is depending on diagnostic data.
 
+`Cause` itself is neither equatable nor ordered, like a function: comparing
+two causes is rejected, `Debug.render` writes `<Cause>`, and a module
+constant cannot hold one.
+
 ### Cause chains
 
 When a `Failure(...)` expression is evaluated in the body of an arm that
@@ -840,6 +850,15 @@ No wrapping syntax is needed.
 If the arm re-raises the bound variable unchanged, as `Failure(error)` where
 `error` is the variable bound by that arm's pattern, the runtime MUST keep the
 original cause and add no chain link. `Result.get` re-raises the same way.
+
+An arm that matched a stored `Err(...)` pattern of `std/result` follows the
+same rule, with the cause the `Err` keeps: converting it links, and
+re-raising the bound error keeps the cause. That is how `Result.get` keeps
+it. The rule applies to `Failure(...)` and `Err(...)` constructions anywhere
+in the arm's body, inside a nested `case` too, but not in its guard or inside
+a function literal written in the body. The innermost enclosing failure arm
+is the source, and within it the first subject matched by a `Failure` or
+`Err` pattern.
 
 The compiler resolves the link statically. Lowering passes the matched
 outcome as an explicit operand of the failure construction. The runtime does
@@ -898,7 +917,11 @@ expected failure JobError.Transient("payments returned 503")
 - A cancellation cause names its reason: explicit `Task.cancel`, a timeout
   scope and its limit, owner unwind, or supervisor shutdown.
 - The root report prints the cause tree of a failed, defected, or cancelled
-  root.
+  root when the tree says more than the outcome record: when the cause has a
+  context frame, a `caused_by` link, or a suppressed cause. The outcome record
+  then gains a `cause` field holding the `Cause.to_text` rendering. A
+  failure that only carries its value keeps the record it had before causes
+  existed.
 - Causes exist in every trace mode, because the root report and `Cause.of`
   need them. They are built only on failure paths. In `boundaries` and `full`
   mode, terminal-outcome events carry the cause identity and its variant
@@ -1180,6 +1203,51 @@ program.
   failure set. Causes (CHI-204) will ride outside the value, excluded from
   equality, as decided.
 
+### Failure context as implemented (CHI-204)
+
+- **Where a cause lives.** Each terminal outcome carries an optional,
+  immutable, shared cause: the interpreter's `Control` and the native
+  `ChimiControl` gain a cause pointer. Adding a frame or a link copies the
+  node it changes and shares the rest. A cause is built lazily: a failure
+  that nothing annotates has no cause object, and readers treat it as a
+  cause with the failure's value and origin only. So the success path does no
+  cause work at all.
+- **Chains.** Lowering gives every `case` arm whose first cause-source
+  pattern is a `Failure(...)` or `Result.Err(...)` a compiler-generated local
+  holding the matched cause (`CoreArm.cause`). A `Failure` or `Err`
+  construction lexically in that arm's body names the local
+  (`Construct.cause`) and whether to keep it: keep when the argument is
+  exactly the variable bound directly under the matched `Failure` or `Err`,
+  link otherwise. Function literals start a new scope, so a construction
+  inside one never links to an outer arm.
+- **Stored causes.** `Result.capture` keeps the failure's cause on the `Err`
+  it builds. The interpreter holds it in a field of the constructed value
+  that equality, ordering, hashing, `Debug`, and JSON never read. The native
+  runtime stores it as a hidden trailing field after the declared fields,
+  which the collector and the cross-heap copy carry because they copy by
+  allocation size.
+- **Locations.** The Core program gains one `path:line` text per source
+  origin (`CoreProgram.origin_locations`, `ChimiOrigin.location`), so both
+  backends print the same locations.
+- **Bounds** are the spec's: 32 frames, 16 suppressed causes, 64 links. A
+  frame or suppressed list at its limit drops the entry just past the oldest
+  half. A chain past 64 links drops the link at depth 32, so the newest 32
+  links and the oldest stay, and `to_text` writes `(N causes dropped)` where
+  they were. The limits are fixed for now; runner configuration comes when a
+  program needs it.
+- **Not yet.** Nothing produces a suppressed cause yet: `Sibling` waits for
+  `Task.all` (CHI-205) and `Displaced` and `Cleanup` for the file-close rule,
+  so `Cause.suppressed` returns `[]` and `Cause.reason` returns `None` today.
+  Terminal trace events do not yet carry a cause identity. A defect cause
+  does not hold the parked-stack snapshot. A cancellation cause's summary is
+  the fixed text `requested before the next semantic operation`, not its
+  specific reason. A child task that ends cancelled hands its parent a fresh
+  cancellation, so frames added inside the child are lost, and capability
+  transfer does not walk a cause's payloads (none can reach user code yet).
+  The native tests for
+  channel and task transfer run on the native backend only, because the
+  interpreter has no channel runtime.
+
 ### Compiler (`compiler/chimi/src`)
 
 - **Syntax and formatter.** Parse `|` in type positions and after `errors`.
@@ -1324,7 +1392,8 @@ program.
 - **Timeouts use the execution clock.** `Task.timeout` and `Task.deadline`
   read `now` and arm their timer on the execution time source, not on a
   bound provider. The scope timer is a scheduler timer, and a user `Clock`
-  cannot cancel a task. `Select.after` is where a user timer will plug in.
+  cannot cancel a task. `Select.after` and `Select.at` do use a bound
+  provider (see [Select as implemented](#select-as-implemented-chi-203)).
 - **`--clock-start=<RFC 3339>`** sets the virtual clock's starting
   `Timestamp` and is accepted only with `--clock=virtual`; under the real
   clock `timestamp` is the host's wall time, so the flag would be ignored.
@@ -1367,6 +1436,64 @@ program.
 - **ABI.** `CHIMI_FIBER_ABI_VERSION` is 8 and the native runtime ABI is 23.
   Program data gains `CHIMI_CLOCK_REQUIREMENT_SLOT`, the requirement slot
   that `using { clock: … }` binds for the std time functions.
+
+### Select as implemented (CHI-203)
+
+- **Native only.** The interpreter reports every `std/select` function with
+  the defect "Select.<name> requires the native runtime; build the program
+  with `chimi build`", as it does for the clock.
+- **Event.** `Select.Event<A, F>` is task-local, like `Receive` and
+  `Task`: it holds a receiver, an inbox, or a task handle, so it cannot be
+  sent or captured by a started task. At run time it is a record the source
+  never sees, holding the event's kind, its source, its mapping function or
+  timer value, and, for a timer, the `clock` provider bound where it was
+  built. Its failure-set argument is covariant, so
+  `[Select.receive(jobs, f), Select.at(next, Wake.Beat)]` joins to
+  `List<Event<Wake, ChannelError>>`.
+- **One request, nothing consumed.** `Select.first` issues
+  `CHIMI_REQUEST_SELECT` with every event in list order. The scheduler
+  answers with the index of the first ready source, or registers the task
+  on every source (one watcher per channel and inbox, the child's terminal,
+  and one wake timer at the earliest deadline) and parks it. A wake only
+  makes the task ask again; each request first withdraws every earlier
+  registration. The request itself takes nothing from any source, so a
+  cancelled or interrupted select leaves every channel and inbox as it was.
+  After a commit the runtime performs the source's own operation (receive,
+  process receive, or `Task.result`), which answers at once: each source
+  belongs to the selecting task alone, and the reply wakes that task at the
+  front of the run queue, so nothing else can take the value first.
+- **Commit outcomes.** A committed receive on an aborted channel fails with
+  `ChannelError.Aborted` without calling the mapping function. A committed
+  task event's failure is the select's failure. The mapping function runs
+  with the providers it captured, like any function value.
+- **Timers.** Every `Select.after` on the execution clock in one call
+  measures from a single read of `now` at the start of that call. A timer
+  whose provider is the execution clock (the root clock or
+  `Clock.starting_at` over it) is a scheduler deadline. A timer on a user
+  `Clock` provider reads that provider's `now` when the call starts; if its
+  deadline has passed it is ready at once, in list order, and otherwise it
+  runs `sleep_until(deadline)` in a child task that the select waits on as a
+  task source. Timer children that did not commit are cancelled, but
+  only after the committed source's operation has taken its value: a cancel
+  reply lets other tasks run, which would break the commit. Cancelled timer
+  children are not yet observed, so each select with a user-clock timer
+  leaves one terminal task record behind (follow-up ticket).
+- **Abandoned selects.** Any request from a task first withdraws a select it
+  had parked in. A select woken by a source and then refused by a fired scope
+  therefore leaves no watcher or wake timer behind.
+- **Gap.** `T4241` is not yet reported for a receive event used after its
+  receiver was transferred; the run-time token check defects instead
+  (follow-up ticket).
+- **Errors.** `T4345` rejects an empty list literal at `Select.first`; an
+  empty list built at run time defects with "`Select.first` needs at least
+  one event". A receiver whose token is stale defects the task as a channel
+  capability violation, as a plain receive does.
+- **Telemetry.** `clock_select_parked` (clock kind 7) and
+  `clock_select_committed` (clock kind 8, with the committed `index`) are
+  boundary events. A task parked in a select reports `Select.first` as its
+  waited operation in a deadlock report.
+- **ABI.** `CHIMI_FIBER_ABI_VERSION` is 11 (`CHIMI_REQUEST_SELECT`, kind 32,
+  and `ChimiSelectSource`) and the native runtime ABI is 28.
 
 ### Runner
 

@@ -1,0 +1,79 @@
+// Where the chain rule reaches: a Failure(...) anywhere in a failure arm's
+// body links or keeps, a nested `case` included, but one inside a function
+// literal written there starts fresh. Only the matched error itself keeps the
+// cause; any other value, even a named one, links.
+import std/cause as Cause
+import std/result as Result
+import std/result.{Result}
+import std/text as Text
+
+enum LowError {
+  Low(n: Int)
+}
+
+enum HighError {
+  High(n: Int)
+}
+
+fn low() -> Int {
+  Failure(LowError.Low(1))
+}
+
+fn nested_conversion(flag: Bool) -> Int {
+  case low() {
+    Success(value) -> value
+    Failure(_) -> case flag {
+      True -> Failure(HighError.High(7))
+      False -> 0
+    }
+  }
+}
+
+fn nested_reraise(flag: Bool) -> Int {
+  case low |> Cause.context("calling low") {
+    Success(value) -> value
+    Failure(error) -> case flag {
+      True -> Failure(error)
+      False -> 0
+    }
+  }
+}
+
+fn named_conversion() -> Int {
+  case low() {
+    Success(value) -> value
+    Failure(_) -> {
+      let converted = HighError.High(3)
+      Failure(converted)
+    }
+  }
+}
+
+fn inside_a_function(flag: Bool) -> Int {
+  case low() {
+    Success(value) -> value
+    Failure(_) -> {
+      let raise = fn() -> Int { Failure(HighError.High(9)) }
+      case flag {
+        True -> raise()
+        False -> 0
+      }
+    }
+  }
+}
+
+fn render<E>(result: Result<Int, E>) -> Text {
+  case Cause.of(result) {
+    Some(cause) -> Cause.to_text(cause)
+    None -> "none"
+  }
+}
+
+pub fn main() -> Text {
+  [
+    render(Result.capture(fn() { nested_conversion(True) })),
+    render(Result.capture(fn() { nested_reraise(True) })),
+    render(Result.capture(fn() { inside_a_function(True) })),
+    render(Result.capture(named_conversion)),
+  ] |> Text.join("\n--\n")
+}

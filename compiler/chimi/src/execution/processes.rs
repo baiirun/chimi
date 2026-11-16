@@ -55,24 +55,25 @@ impl Evaluator<'_> {
         }
         let checked = match (function, arguments.as_slice()) {
             (
-                StandardFunction::ProcessSpec,
+                StandardFunction::ProcessSpec | StandardFunction::ProcessHandoffSpec,
                 [
                     body @ RuntimeValue::Callable(_),
                     RuntimeValue::Integer(capacity),
                     within @ RuntimeValue::Duration(nanoseconds),
                 ],
             ) => {
+                let operation = function.name();
                 if *capacity < 1 {
                     Err(format!(
-                        "Process.spec: mailbox capacity must be at least 1, got {capacity}"
+                        "Process.{operation}: mailbox capacity must be at least 1, got {capacity}"
                     ))
                 } else if *nanoseconds < 0 {
                     Err(format!(
-                        "Process.spec: shutdown_within must be at least zero, got {}",
+                        "Process.{operation}: shutdown_within must be at least zero, got {}",
                         crate::duration::to_text(*nanoseconds)
                     ))
                 } else {
-                    Ok(record([
+                    let mut fields = vec![
                         ("body", body.clone()),
                         ("capacity", RuntimeValue::Integer(*capacity)),
                         (
@@ -80,7 +81,13 @@ impl Evaluator<'_> {
                             self.standard_value(StandardConstructor::OptionNone, Vec::new()),
                         ),
                         ("shutdown_within", within.clone()),
-                    ]))
+                    ];
+                    // A handoff spec's body takes the start argument after the
+                    // inbox; the native runtime reads `handoff` to pass it.
+                    if function == StandardFunction::ProcessHandoffSpec {
+                        fields.insert(2, ("handoff", RuntimeValue::Boolean(true)));
+                    }
+                    Ok(record(fields))
                 }
             }
             (
@@ -181,11 +188,12 @@ fn defect(message: String, call_node: CoreNodeId) -> Control {
     Control::Defect {
         message,
         node: Some(call_node),
+        cause: None,
     }
 }
 
 /// A record whose fields are given in ascending name order.
-fn record<const N: usize>(fields: [(&str, RuntimeValue); N]) -> RuntimeValue {
+fn record<'a>(fields: impl IntoIterator<Item = (&'a str, RuntimeValue)>) -> RuntimeValue {
     RuntimeValue::Record(
         fields
             .into_iter()

@@ -73,7 +73,9 @@ typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN
                /* A `std/set.Set` in `as.map`: each item is a key bound to Void. */
                VALUE_SET,
                /* A `std/bytes.Bytes` in `as.text`, which holds any bytes. */
-               VALUE_BYTES } ValueKind;
+               VALUE_BYTES,
+               /* A `std/cause.Cause` in `as.record`: the CAUSE_* fields, unnamed. */
+               VALUE_CAUSE } ValueKind;
 /* CALL_CONSTRUCTOR is a constructor with fields named as a value; calling it constructs. */
 typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC,
                CALL_CONSTRUCTOR } CallableKind;
@@ -81,7 +83,10 @@ typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INT
    timestamp is `Clock.starting_at`'s: its `inner` reads now, plus `shift`. */
 typedef enum { HOST_PROCESS_UTF8_LINES, HOST_WRITE_LINE, HOST_WRITE_ERROR,
                HOST_CLOCK_NOW, HOST_CLOCK_TIMESTAMP, HOST_CLOCK_SLEEP_UNTIL,
-               HOST_CLOCK_SHIFTED_TIMESTAMP } HostFunction;
+               HOST_CLOCK_SHIFTED_TIMESTAMP,
+               /* A Select timer on a user Clock: its `inner` is the provider's
+                  sleep_until, called with the Instant in `shift`. */
+               HOST_SELECT_SLEEP } HostFunction;
 /* CONTROL_BREAK carries the target loop's state symbol in `node` and its value in `value`.
    Verified programs keep it inside one function, so it never reaches a call or root. */
 typedef enum { CONTROL_SUCCESS, CONTROL_FAILURE, CONTROL_DEFECT, CONTROL_CANCEL, CONTROL_BREAK } ControlKind;
@@ -177,11 +182,15 @@ struct ChimiEnvironment {
   uint32_t local_count;
 };
 
+/* `node` is where a failure or defect started (-1 when unknown), or a break's
+   target. `cause` is a failure's, defect's or cancellation's cause once built;
+   NULL means the fresh cause of the outcome itself (see control_cause). */
 struct ChimiControl {
   ControlKind kind;
   ChimiValue *value;
   const char *message;
   int64_t node;
+  ChimiValue *cause;
 };
 
 /* The root task runs `entry` in the main heap. A child task gets its own heap and
@@ -727,6 +736,7 @@ static ChimiControl *new_control(ControlKind kind, ChimiValue *value, const char
   ChimiControl *control = allocate(1, sizeof(*control));
   allocation_kind(control, ALLOCATION_CONTROL);
   control->kind = kind; control->value = value; control->message = message; control->node = node;
+  control->cause = NULL;
   return control;
 }
 static ChimiControl *success(ChimiValue *value) { return new_control(CONTROL_SUCCESS, value, NULL, -1); }
@@ -1141,7 +1151,8 @@ static void mark_children(void *pointer) {
           mark_push(value->as.list.vector.tail, ALLOCATION_LIST_NODE);
           break;
         case VALUE_RECORD:
-        case VALUE_TUPLE: mark_push(value->as.record.fields, ALLOCATION_FIELDS); break;
+        case VALUE_TUPLE:
+        case VALUE_CAUSE: mark_push(value->as.record.fields, ALLOCATION_FIELDS); break;
         case VALUE_CONSTRUCTED: mark_push(value->as.constructed.fields, ALLOCATION_FIELDS); break;
         case VALUE_CALLABLE: mark_push(value->as.callable, ALLOCATION_CALLABLE); break;
         case VALUE_MAP:
@@ -1206,7 +1217,10 @@ static void mark_children(void *pointer) {
       mark_push(node->right, ALLOCATION_MAP_NODE);
       break;
     }
-    case ALLOCATION_CONTROL: mark_push(((ChimiControl *)pointer)->value, ALLOCATION_VALUE); break;
+    case ALLOCATION_CONTROL:
+      mark_push(((ChimiControl *)pointer)->value, ALLOCATION_VALUE);
+      mark_push(((ChimiControl *)pointer)->cause, ALLOCATION_VALUE);
+      break;
     case ALLOCATION_BYTES: break;
     case ALLOCATION_FRAME_ENVIRONMENT:
     case ALLOCATION_KIND_COUNT: allocation_graph_inconsistent();
@@ -1486,6 +1500,7 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
           break;
         case VALUE_LIST: copy_list_window(copy, value); break;
         case VALUE_RECORD:
+        case VALUE_CAUSE:
         case VALUE_TUPLE:
           value->as.record.fields = copy_forward(copy, value->as.record.fields, ALLOCATION_FIELDS);
           break;
@@ -1557,6 +1572,7 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
     case ALLOCATION_CONTROL: {
       ChimiControl *control = duplicate;
       control->value = copy_forward(copy, control->value, ALLOCATION_VALUE);
+      control->cause = copy_forward(copy, control->cause, ALLOCATION_VALUE);
       break;
     }
     case ALLOCATION_BYTES: break;
@@ -1837,6 +1853,17 @@ static const char *numeric_message(const char *format, ...) {
   char *message = malloc(256);
   if (!message) { fputs("Chimi runtime allocation failed\n", stderr); exit(70); }
   vsnprintf(message, 256, format, arguments); va_end(arguments);
+  return message;
+}
+
+/* A defect message copied outside every reclaimable heap, like
+   numeric_message's: a control's message is not traced, and a loop region or a
+   child task's heap may be freed while the defect it ended with is still read. */
+static const char *lasting_message(const char *raw) {
+  size_t length = strlen(raw);
+  char *message = malloc(length + 1);
+  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); exit(70); }
+  memcpy(message, raw, length + 1);
   return message;
 }
 
@@ -2396,6 +2423,7 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
         transfer_push(transfer, TRANSFER_VALUE, list_get(value, index));
       return true;
     case VALUE_RECORD:
+    case VALUE_CAUSE:
     case VALUE_TUPLE:
       for (uint32_t index = value->as.record.length; index-- > 0;)
         transfer_push(transfer, TRANSFER_VALUE, value->as.record.fields[index].value);
@@ -2889,6 +2917,7 @@ static void json_value(FILE *output, const ChimiValue *root) {
       case VALUE_MANAGED_SUPERVISOR:
         fputs("{\"type\":\"ManagedSupervisor\",\"fields\":{}}", output); break;
       case VALUE_PROCESS_MONITOR: fputs("{\"type\":\"Monitor\",\"fields\":{}}", output); break;
+      case VALUE_CAUSE: fputs("{\"type\":\"Cause\",\"fields\":{}}", output); break;
     }
   }
   free(steps.items);
@@ -2981,7 +3010,7 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
       case VALUE_CALLABLE: case VALUE_TASK: case VALUE_CHANNEL_SENDER:
       case VALUE_CHANNEL_RECEIVER: case VALUE_CHANNEL_COMPLETION:
       case VALUE_PROCESS_INBOX: case VALUE_SUPERVISOR_RUNNING: case VALUE_MANAGED_PROCESS:
-      case VALUE_MANAGED_SUPERVISOR:
+      case VALUE_MANAGED_SUPERVISOR: case VALUE_CAUSE:
         order = order_of((int64_t)(uintptr_t)left, (int64_t)(uintptr_t)right); break;
       /* Routing kind, then the name or incarnation it routes to. */
       case VALUE_PROCESS_MONITOR:
@@ -4771,7 +4800,7 @@ static ChimiControl *invoke_core_operation(uint32_t intrinsic, ChimiValue **argu
   switch (intrinsic) {
     case CHIMI_INTRINSIC_DEBUG_CRASH:
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return defect(copy_text(arguments[0]->as.text.bytes), call_node);
+      return defect(lasting_message(arguments[0]->as.text.bytes), call_node);
     case CHIMI_INTRINSIC_OPTION_UNWRAP_OR_FAIL:
       if (argument_count != 2 || arguments[0]->kind != VALUE_CONSTRUCTED) break;
       if (arguments[0]->as.constructed.length == 1) return success(arguments[0]->as.constructed.fields[0].value);
@@ -5944,6 +5973,8 @@ static void debug_expand(DebugRenderer *renderer, DebugSteps *steps, const Chimi
       return;
     }
     case VALUE_TASK: debug_text(buffer, "<Task>"); return;
+    /* Diagnostic data, read through `Cause.to_text`, like a function's body. */
+    case VALUE_CAUSE: debug_text(buffer, "<Cause>"); return;
     case VALUE_CHANNEL_SENDER: debug_text(buffer, "<Sender>"); return;
     case VALUE_CHANNEL_RECEIVER: debug_text(buffer, "<Receiver>"); return;
     case VALUE_CHANNEL_COMPLETION: debug_text(buffer, "<Completion>"); return;
@@ -6005,6 +6036,324 @@ static ChimiValue *debug_render(const ChimiValue *value, bool indented) {
 
 static ChimiControl *intrinsic_shape_defect(uint32_t call_node) {
   return defect("verified standard function has invalid runtime arguments", call_node);
+}
+
+/* Failure causes (time-and-outcomes.md, "Failure context"). The interpreter's
+   execution/causes.rs is the reference; the language tests run every cause
+   program on both backends.
+
+   A cause is a VALUE_CAUSE, immutable once built: adding a frame or a link
+   builds a new one, so a cause shared by a stored Err and a live failure never
+   changes under either. Its unnamed fields are the CAUSE_* slots below; a frame
+   is a tuple of its text and its node (-1 when unknown), and `caused_by` is a
+   cause or Void. A live outcome holds its cause in `ChimiControl.cause`; NULL
+   means the fresh cause of the outcome itself, built only when read. */
+enum {
+  CAUSE_KIND, CAUSE_PAYLOAD, CAUSE_ORIGIN, CAUSE_FRAMES, CAUSE_DROPPED_FRAMES,
+  CAUSE_CAUSED_BY, CAUSE_LINKS, CAUSE_DROPPED_LINKS, CAUSE_SUPPRESSED,
+  CAUSE_DROPPED_SUPPRESSED, CAUSE_REASON, CAUSE_FIELD_COUNT
+};
+enum { CAUSE_EXPECTED_FAILURE, CAUSE_DEFECT, CAUSE_CANCELLATION };
+enum { CAUSE_FRAME_LIMIT = 32, CAUSE_SUPPRESSED_LIMIT = 16, CAUSE_LINK_LIMIT = 64 };
+static const char CANCELLATION_REASON[] = "requested before the next semantic operation";
+/* The name of the hidden field after a stored Err's own fields that holds its
+   cause. Equality, order, rendering and patterns read only `length` fields. */
+static const char STORED_CAUSE_FIELD[] = "cause";
+
+static ChimiValue *cause_field(const ChimiValue *cause, uint32_t field) {
+  return cause->as.record.fields[field].value;
+}
+static int64_t cause_integer(const ChimiValue *cause, uint32_t field) {
+  return cause_field(cause, field)->as.integer;
+}
+
+static ChimiValue *cause_new(int64_t kind, ChimiValue *payload, int64_t origin) {
+  ChimiValue *cause = new_value(VALUE_CAUSE);
+  cause->as.record.length = CAUSE_FIELD_COUNT;
+  cause->as.record.fields = allocate(CAUSE_FIELD_COUNT, sizeof(*cause->as.record.fields));
+  allocation_kind(cause->as.record.fields, ALLOCATION_FIELDS);
+  ChimiValue *zero = integer_value(0), *empty = list_from_values(NULL, 0);
+  ChimiValue *values[CAUSE_FIELD_COUNT] = {
+    integer_value(kind), payload, integer_value(origin), empty, zero,
+    void_value(), zero, zero, empty, zero, integer_value(-1),
+  };
+  for (uint32_t field = 0; field < CAUSE_FIELD_COUNT; ++field)
+    cause->as.record.fields[field] = (RuntimeField){NULL, values[field]};
+  return cause;
+}
+
+static ChimiValue *cause_copy(const ChimiValue *cause) {
+  ChimiValue *copy = cause_new(0, NULL, 0);
+  for (uint32_t field = 0; field < CAUSE_FIELD_COUNT; ++field)
+    copy->as.record.fields[field].value = cause_field(cause, field);
+  return copy;
+}
+
+static void cause_set(ChimiValue *cause, uint32_t field, ChimiValue *value) {
+  cause->as.record.fields[field].value = value;
+}
+
+/* The outcome's cause, built from the outcome when it is still implicit. */
+static ChimiValue *control_cause(const ChimiControl *control) {
+  if (control->cause) return control->cause;
+  switch (control->kind) {
+    case CONTROL_FAILURE: return cause_new(CAUSE_EXPECTED_FAILURE, control->value, control->node);
+    case CONTROL_DEFECT: return cause_new(CAUSE_DEFECT, text_value(control->message), control->node);
+    case CONTROL_CANCEL: return cause_new(CAUSE_CANCELLATION, text_value(CANCELLATION_REASON), -1);
+    case CONTROL_SUCCESS:
+    case CONTROL_BREAK: break;
+  }
+  return NULL;
+}
+
+/* A copy of the outcome with `cause` as its cause. */
+static ChimiControl *control_with_cause(const ChimiControl *control, ChimiValue *cause) {
+  ChimiControl *copy = new_control(control->kind, control->value, control->message, control->node);
+  copy->cause = cause;
+  if (control->kind == CONTROL_FAILURE) copy->node = cause_integer(cause, CAUSE_ORIGIN);
+  return copy;
+}
+
+/* `items` with `item` pushed; at `limit` it first drops the entry just past the
+   kept oldest half. Sets `*dropped` when it drops one. */
+static ChimiValue *cause_push_bounded(const ChimiValue *items, ChimiValue *item, uint32_t limit,
+                                      bool *dropped) {
+  uint32_t length = list_length(items);
+  *dropped = length == limit;
+  if (!*dropped) return list_push(items, item);
+  ChimiValue **kept = new_value_slots(limit);
+  uint32_t count = 0;
+  for (uint32_t index = 0; index < length; ++index)
+    if (index != limit / 2) kept[count++] = list_get(items, index);
+  kept[count++] = item;
+  return list_from_values(kept, count);
+}
+
+static ChimiValue *cause_with_frame(const ChimiValue *cause, ChimiValue *text, int64_t node) {
+  ChimiValue *frame = new_value(VALUE_TUPLE);
+  frame->as.record.length = 2;
+  frame->as.record.fields = allocate(2, sizeof(*frame->as.record.fields));
+  allocation_kind(frame->as.record.fields, ALLOCATION_FIELDS);
+  frame->as.record.fields[0] = (RuntimeField){NULL, text};
+  frame->as.record.fields[1] = (RuntimeField){NULL, integer_value(node)};
+  ChimiValue *copy = cause_copy(cause);
+  bool dropped = false;
+  cause_set(copy, CAUSE_FRAMES, cause_push_bounded(cause_field(cause, CAUSE_FRAMES), frame,
+                                                   CAUSE_FRAME_LIMIT, &dropped));
+  if (dropped)
+    cause_set(copy, CAUSE_DROPPED_FRAMES, integer_value(cause_integer(cause, CAUSE_DROPPED_FRAMES) + 1));
+  return copy;
+}
+
+static ChimiValue *cause_below(const ChimiValue *cause) {
+  ChimiValue *below = cause_field(cause, CAUSE_CAUSED_BY);
+  return below->kind == VALUE_CAUSE ? below : NULL;
+}
+
+static void cause_link(ChimiValue *cause, ChimiValue *below) {
+  cause_set(cause, CAUSE_CAUSED_BY, below ? below : void_value());
+  cause_set(cause, CAUSE_LINKS, integer_value(below ? cause_integer(below, CAUSE_LINKS) + 1 : 0));
+}
+
+/* `cause` (fresh, unshared) linked to `below`. A chain longer than the limit
+   keeps its newest and oldest halves: the link at depth LIMIT / 2 is dropped and
+   the newer links above it are copied onto the rest of the chain. */
+static ChimiValue *cause_linked(ChimiValue *cause, ChimiValue *below) {
+  cause_link(cause, below);
+  if (cause_integer(cause, CAUSE_LINKS) <= CAUSE_LINK_LIMIT) return cause;
+  enum { KEEP_NEWEST = CAUSE_LINK_LIMIT / 2 };
+  ChimiValue *newer[KEEP_NEWEST];
+  uint32_t count = 0;
+  ChimiValue *link = below;
+  for (uint32_t depth = 1; depth < KEEP_NEWEST; ++depth) {
+    newer[count++] = link;
+    link = cause_below(link);
+  }
+  int64_t dropped = cause_integer(link, CAUSE_DROPPED_LINKS) + 1;
+  ChimiValue *resumed = cause_below(link);
+  ChimiValue *top = cause;
+  if (count == 0) {
+    cause_set(cause, CAUSE_DROPPED_LINKS, integer_value(cause_integer(cause, CAUSE_DROPPED_LINKS) + dropped));
+  }
+  for (uint32_t index = count; index-- > 0;) {
+    ChimiValue *copy = cause_copy(newer[index]);
+    if (index == count - 1)
+      cause_set(copy, CAUSE_DROPPED_LINKS, integer_value(cause_integer(copy, CAUSE_DROPPED_LINKS) + dropped));
+    cause_link(copy, resumed);
+    resumed = copy;
+  }
+  cause_link(top, resumed);
+  return top;
+}
+
+/* The cause a `Failure(...)` or `Result.Err(...)` built in a cause arm gets from
+   `matched` (a cause, or NULL): the same one when it keeps it, otherwise a new
+   cause of `error` started at `node`, linked to it. */
+static ChimiValue *cause_derived(ChimiValue *matched, bool keep, ChimiValue *error, int64_t node) {
+  if (keep) return matched;
+  ChimiValue *fresh = cause_new(CAUSE_EXPECTED_FAILURE, error, node);
+  return matched ? cause_linked(fresh, matched) : fresh;
+}
+
+/* The cause a stored Err keeps in its hidden field, or NULL. */
+static ChimiValue *stored_cause(const ChimiValue *value) {
+  if (value->kind != VALUE_CONSTRUCTED) return NULL;
+  uint32_t length = value->as.constructed.length;
+  size_t slots = allocation_header(value->as.constructed.fields)->bytes / sizeof(RuntimeField);
+  if (slots <= length || value->as.constructed.fields[length].name != STORED_CAUSE_FIELD) return NULL;
+  return value->as.constructed.fields[length].value;
+}
+
+/* A copy of the constructed `value` whose hidden field holds `cause`. */
+static ChimiValue *with_stored_cause(const ChimiValue *value, ChimiValue *cause) {
+  uint32_t length = value->as.constructed.length;
+  ChimiValue *copy = new_value(VALUE_CONSTRUCTED);
+  copy->as.constructed = value->as.constructed;
+  copy->as.constructed.fields = allocate(length + 1, sizeof(*copy->as.constructed.fields));
+  allocation_kind(copy->as.constructed.fields, ALLOCATION_FIELDS);
+  memcpy(copy->as.constructed.fields, value->as.constructed.fields, length * sizeof(RuntimeField));
+  copy->as.constructed.fields[length] = (RuntimeField){STORED_CAUSE_FIELD, cause};
+  return copy;
+}
+
+/* The cause a cause arm binds for a matched subject: the live failure's, or the
+   one a stored Err keeps, or Void. */
+static ChimiValue *matched_cause_value(const ChimiControl *subject) {
+  ChimiValue *cause = NULL;
+  if (subject->kind == CONTROL_FAILURE) cause = control_cause(subject);
+  else if (subject->kind == CONTROL_SUCCESS) cause = stored_cause(subject->value);
+  return cause ? cause : void_value();
+}
+
+static void cause_location(TextBuffer *buffer, int64_t node) {
+  if (node < 0) return;
+  debug_text(buffer, " (");
+  debug_text(buffer, CHIMI_STRINGS[CHIMI_ORIGINS[CHIMI_NODES[node].origin].location]);
+  debug_text(buffer, ")");
+}
+
+static void cause_indent(TextBuffer *buffer, uint32_t depth) {
+  buffer_char(buffer, '\n');
+  for (uint32_t level = 0; level <= depth; ++level) debug_text(buffer, "  ");
+}
+
+static void cause_dropped(TextBuffer *buffer, uint32_t depth, int64_t count, const char *what) {
+  char text[96];
+  snprintf(text, sizeof(text), "(%" PRId64 " %s%s dropped)", count, what, count == 1 ? "" : "s");
+  cause_indent(buffer, depth);
+  debug_text(buffer, text);
+}
+
+static const char *const SUPPRESSION_LABELS[] = {"cleanup", "sibling", "displaced"};
+
+/* `Cause.to_text`, as causes.rs `render` writes it. Bounded: at most 64 links,
+   each with at most 32 frames and 16 suppressed causes. */
+static void cause_render(TextBuffer *buffer, const ChimiValue *cause, uint32_t depth) {
+  static const char *const KINDS[] = {"expected failure", "defect", "cancellation"};
+  debug_text(buffer, KINDS[cause_integer(cause, CAUSE_KIND)]);
+  buffer_char(buffer, ' ');
+  ChimiValue *payload = cause_field(cause, CAUSE_PAYLOAD);
+  if (cause_integer(cause, CAUSE_KIND) == CAUSE_EXPECTED_FAILURE) {
+    ChimiValue *summary = debug_render(payload, false);
+    buffer_bytes(buffer, summary->as.text.bytes, summary->as.text.length);
+  } else {
+    buffer_bytes(buffer, payload->as.text.bytes, payload->as.text.length);
+  }
+  cause_location(buffer, cause_integer(cause, CAUSE_ORIGIN));
+  ChimiValue *frames = cause_field(cause, CAUSE_FRAMES);
+  int64_t dropped_frames = cause_integer(cause, CAUSE_DROPPED_FRAMES);
+  for (uint32_t index = 0; index < list_length(frames); ++index) {
+    if (index == CAUSE_FRAME_LIMIT / 2 && dropped_frames > 0)
+      cause_dropped(buffer, depth, dropped_frames, "context frame");
+    ChimiValue *frame = list_get(frames, index);
+    ChimiValue *text = frame->as.record.fields[0].value;
+    cause_indent(buffer, depth);
+    debug_text(buffer, "context: ");
+    buffer_bytes(buffer, text->as.text.bytes, text->as.text.length);
+    cause_location(buffer, frame->as.record.fields[1].value->as.integer);
+  }
+  ChimiValue *suppressed = cause_field(cause, CAUSE_SUPPRESSED);
+  int64_t dropped_suppressed = cause_integer(cause, CAUSE_DROPPED_SUPPRESSED);
+  for (uint32_t index = 0; index < list_length(suppressed); ++index) {
+    if (index == CAUSE_SUPPRESSED_LIMIT / 2 && dropped_suppressed > 0)
+      cause_dropped(buffer, depth, dropped_suppressed, "suppressed cause");
+    ChimiValue *child = list_get(suppressed, index);
+    int64_t reason = cause_integer(child, CAUSE_REASON);
+    cause_indent(buffer, depth);
+    debug_text(buffer, "suppressed (");
+    debug_text(buffer, reason >= 0 && reason <= 2 ? SUPPRESSION_LABELS[reason] : "unknown");
+    debug_text(buffer, "): ");
+    cause_render(buffer, child, depth + 1);
+  }
+  ChimiValue *below = cause_below(cause);
+  if (below) {
+    int64_t dropped_links = cause_integer(cause, CAUSE_DROPPED_LINKS);
+    if (dropped_links > 0) cause_dropped(buffer, depth, dropped_links, "cause");
+    cause_indent(buffer, depth);
+    debug_text(buffer, "caused by: ");
+    cause_render(buffer, below, depth + 1);
+  }
+}
+
+static ChimiValue *cause_text(const ChimiValue *cause) {
+  TextBuffer buffer = {0};
+  buffer_reserve(&buffer, 0);
+  cause_render(&buffer, cause, 0);
+  return text_from_bytes(buffer.data, buffer.length);
+}
+
+/* Whether a root outcome's record shows its cause: only when the cause says
+   more than the record already does. */
+static bool cause_has_detail(const ChimiValue *cause) {
+  return list_length(cause_field(cause, CAUSE_FRAMES)) > 0 || cause_below(cause) ||
+         list_length(cause_field(cause, CAUSE_SUPPRESSED)) > 0;
+}
+
+static ChimiValue *cause_option(ChimiValue *cause) {
+  if (!cause) return standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0);
+  return standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, &cause, 1);
+}
+
+/* The native core of std/cause; execution/causes.rs implements the same. */
+static ChimiControl *invoke_cause_operation(ChimiRuntime *runtime, uint32_t intrinsic,
+                                            ChimiValue **arguments, uint32_t argument_count,
+                                            uint64_t span, uint32_t call_node,
+                                            ChimiEnvironment *environment) {
+  if (intrinsic == CHIMI_INTRINSIC_CAUSE_CONTEXT) {
+    if (argument_count != 2 || arguments[0]->kind != VALUE_CALLABLE || arguments[1]->kind != VALUE_TEXT)
+      return intrinsic_shape_defect(call_node);
+    ChimiControl *control = invoke(runtime, arguments[0]->as.callable, NULL, 0, span, call_node, environment);
+    ChimiValue *cause = control_cause(control);
+    if (!cause) return control;
+    return control_with_cause(control, cause_with_frame(cause, arguments[1], call_node));
+  }
+  if (intrinsic == CHIMI_INTRINSIC_CAUSE_OF) {
+    if (argument_count != 1 || arguments[0]->kind != VALUE_CONSTRUCTED) return intrinsic_shape_defect(call_node);
+    return success(cause_option(stored_cause(arguments[0])));
+  }
+  if (argument_count != 1 || arguments[0]->kind != VALUE_CAUSE) return intrinsic_shape_defect(call_node);
+  ChimiValue *cause = arguments[0];
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_CAUSE_KIND_CODE: return success(cause_field(cause, CAUSE_KIND));
+    case CHIMI_INTRINSIC_CAUSE_SUMMARY: {
+      ChimiValue *payload = cause_field(cause, CAUSE_PAYLOAD);
+      return success(cause_integer(cause, CAUSE_KIND) == CAUSE_EXPECTED_FAILURE
+                       ? debug_render(payload, false) : payload);
+    }
+    case CHIMI_INTRINSIC_CAUSE_FRAMES: {
+      ChimiValue *frames = cause_field(cause, CAUSE_FRAMES);
+      uint32_t length = list_length(frames);
+      ChimiValue **texts = new_value_slots(length);
+      for (uint32_t index = 0; index < length; ++index)
+        texts[index] = list_get(frames, index)->as.record.fields[0].value;
+      return success(list_from_values(texts, length));
+    }
+    case CHIMI_INTRINSIC_CAUSE_CAUSED_BY: return success(cause_option(cause_below(cause)));
+    case CHIMI_INTRINSIC_CAUSE_SUPPRESSED: return success(cause_field(cause, CAUSE_SUPPRESSED));
+    case CHIMI_INTRINSIC_CAUSE_REASON_CODE: return success(cause_field(cause, CAUSE_REASON));
+    case CHIMI_INTRINSIC_CAUSE_TO_TEXT: return success(cause_text(cause));
+    default: return intrinsic_shape_defect(call_node);
+  }
 }
 
 /* std/process and std/supervisor (docs/architecture/supervised-process-runtime.md,
@@ -6085,6 +6434,26 @@ static ChimiControl *invoke_process_data(uint32_t intrinsic, ChimiValue **argume
       if (!values[2]) return intrinsic_shape_defect(call_node);
       return success(process_record(names, values, 4));
     }
+    /* A spec record with `handoff` set, as the interpreter builds it. It has no
+       name: Process.register takes only a Process.Spec. */
+    case CHIMI_INTRINSIC_PROCESS_HANDOFF_SPEC: {
+      if (argument_count != 3 || arguments[0]->kind != VALUE_CALLABLE ||
+          arguments[1]->kind != VALUE_INTEGER || arguments[2]->kind != VALUE_DURATION)
+        return intrinsic_shape_defect(call_node);
+      if (arguments[1]->as.integer < 1)
+        return process_range_defect(
+          "Process.handoff_spec: mailbox capacity must be at least 1, got %" PRId64,
+          arguments[1]->as.integer, call_node);
+      if (arguments[2]->as.integer < 0)
+        return process_duration_defect(
+          "Process.handoff_spec: shutdown_within must be at least zero, got %s",
+          arguments[2]->as.integer, call_node);
+      static const char *const names[] = {"body", "capacity", "handoff", "name", "shutdown_within"};
+      ChimiValue *values[] = {arguments[0], arguments[1], boolean_value(true),
+                              standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0), arguments[2]};
+      if (!values[3]) return intrinsic_shape_defect(call_node);
+      return success(process_record(names, values, 5));
+    }
     case CHIMI_INTRINSIC_PROCESS_REGISTER: {
       if (argument_count != 2 || arguments[1]->kind != VALUE_PROCESS_ADDRESS)
         return intrinsic_shape_defect(call_node);
@@ -6152,10 +6521,12 @@ static ChimiValue *managed_value(ValueKind kind, uint64_t supervisor, uint64_t m
   return value;
 }
 
-/* What every incarnation of one spec runs: its body, copied into each new heap. */
+/* What every incarnation of one spec runs: its body, copied into each new heap. A
+   handoff body also takes its start argument, which it asks the scheduler for. */
 typedef struct {
   ChimiRuntime *runtime;
   RuntimeFragment *body;
+  bool handoff;
 } ProcessSpecContext;
 
 /* The largest peak of live payload bytes of any incarnation's heap. */
@@ -6199,10 +6570,29 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
   void *roots[FRAGMENT_ROOTS];
   fragment_copy_into_current(context->body, roots);
   ChimiValue *body = roots[0];
-  ChimiValue *arguments[] = {new_value(VALUE_PROCESS_INBOX)};
+  ChimiValue *arguments[] = {new_value(VALUE_PROCESS_INBOX), NULL};
+  uint32_t argument_count = 1;
+  ChimiControl *control = NULL;
+  if (context->handoff) {
+    /* The start argument travelled as a message: adopting it makes this heap
+       its owner, and the reply moved its capabilities to this incarnation. */
+    ChimiProcessRequest request = {.kind = CHIMI_REQUEST_PROCESS_ARGUMENT};
+    ChimiFiberCommand command = scheduler_request(&request);
+    if (command == CHIMI_FIBER_CANCEL) {
+      if (request.status == CHIMI_RESPONSE_OK) fragment_free((RuntimeFragment *)(uintptr_t)request.message);
+      control = cancelled();
+    } else if (request.status != CHIMI_RESPONSE_OK) {
+      control = defect("Supervisor.start_handoff: the incarnation has no start argument", UINT32_MAX);
+    } else {
+      void *argument_roots[FRAGMENT_ROOTS];
+      fragment_adopt((RuntimeFragment *)(uintptr_t)request.message, argument_roots);
+      arguments[argument_count++] = argument_roots[0];
+    }
+  }
   uint64_t span = runtime->next_span++;
-  ChimiControl *control = invoke(runtime, body->as.callable, arguments, 1, span, UINT32_MAX,
-                                 new_environment(0));
+  if (!control)
+    control = invoke(runtime, body->as.callable, arguments, argument_count, span, UINT32_MAX,
+                     new_environment(0));
   ChimiFiberResult result = {.state = CHIMI_FIBER_SUCCEEDED, .value = CHIMI_PROCESS_END_RETURNED};
   switch (control->kind) {
     case CONTROL_SUCCESS: break;
@@ -6284,7 +6674,12 @@ static ChimiControl *marshal_spec(ChimiRuntime *runtime, const ChimiValue *spec,
   if (fragment_copy(roots, kinds, 1, &copy) != HEAP_OK) return defect(FOREIGN_POINTER_DEFECT, call_node);
   ProcessSpecContext *context = malloc(sizeof(*context));
   if (!context) exhausted_memory();
-  *context = (ProcessSpecContext){.runtime = runtime, .body = copy};
+  ChimiValue *handoff = process_field(spec, "handoff");
+  *context = (ProcessSpecContext){
+    .runtime = runtime,
+    .body = copy,
+    .handoff = handoff && handoff->kind == VALUE_BOOLEAN && handoff->as.boolean,
+  };
   marshal_keep(&marshal->contexts, &marshal->context_count, context);
   uint64_t registered = 0;
   if (name->as.constructed.length == 1 && name->as.constructed.fields[0].value->kind == VALUE_PROCESS_ADDRESS)
@@ -6447,13 +6842,21 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
                                       ", outside the sender's heap (owner %" PRIu64 ")",
                                       fragment_copy_foreign_owner, current_heap->owner),
                       call_node);
+      /* Receivers and Completions in the message travel with it, as through a
+         channel: an accepted message puts them in flight, and the process that
+         receives it owns them. A refused one leaves them with the sender. */
+      CapabilityTransfer carried = {.collect = true};
+      transfer_captures(&carried, message->roots[0]);
+      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
       ChimiProcessRequest request = {
         .kind = CHIMI_REQUEST_PROCESS_SEND,
         .address_kind = arguments[0]->as.address.kind,
         .address = arguments[0]->as.address.target,
         .message = (uint64_t)(uintptr_t)message,
+        .carried = capabilities.count ? &capabilities : NULL,
       };
       ChimiFiberCommand command = scheduler_request(&request);
+      free(carried.carried);
       /* Only an accepted message is the scheduler's; any other reply leaves it here. */
       if (request.status != CHIMI_RESPONSE_OK) fragment_free(message);
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
@@ -6545,6 +6948,56 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
                                      request.membership));
       return start_error(request.status, request.name, "Supervisor.start_process", call_node);
     }
+    case CHIMI_INTRINSIC_SUPERVISOR_START_HANDOFF: {
+      if (argument_count != 3 || !is_kind(arguments, 0, VALUE_SUPERVISOR_RUNNING))
+        return intrinsic_shape_defect(call_node);
+      ProcessMarshal marshal = {0};
+      ChimiProcessSpec spec;
+      ChimiControl *failed = marshal_spec(runtime, arguments[1], &marshal, &spec,
+                                          "Supervisor.start_handoff", call_node);
+      if (failed) {
+        marshal_finish(&marshal, false);
+        return failed;
+      }
+      /* The argument travels like a Process.send message: a copy in the caller's
+         heap whose Receivers and Completions go in flight once the start is
+         accepted. The new incarnation takes it before its body runs. */
+      void *roots[] = {arguments[2]};
+      AllocationKind kinds[] = {ALLOCATION_VALUE};
+      RuntimeFragment *argument = NULL;
+      if (fragment_copy(roots, kinds, 1, &argument) != HEAP_OK) {
+        marshal_finish(&marshal, false);
+        return defect(FOREIGN_POINTER_DEFECT, call_node);
+      }
+      CapabilityTransfer carried = {.collect = true};
+      transfer_captures(&carried, argument->roots[0]);
+      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
+      ChimiProcessRequest request = {
+        .kind = CHIMI_REQUEST_SUPERVISOR_START_PROCESS,
+        .supervisor = arguments[0]->as.managed.supervisor,
+        .restart = CHIMI_RESTART_NEVER,
+        .spec = &spec,
+        .message = (uint64_t)(uintptr_t)argument,
+        .carried = capabilities.count ? &capabilities : NULL,
+      };
+      ChimiFiberCommand command = scheduler_request(&request);
+      free(carried.carried);
+      marshal_finish(&marshal, request.status != CHIMI_RESPONSE_UNSET);
+      /* Only an accepted start keeps the argument; a refused one hands it back. */
+      if (request.status != CHIMI_RESPONSE_OK) fragment_free(argument);
+      if (command == CHIMI_FIBER_CANCEL) return cancelled();
+      ChimiValue *fields[] = {arguments[2]};
+      switch (request.status) {
+        case CHIMI_RESPONSE_OK:
+          return success(managed_value(VALUE_MANAGED_PROCESS, arguments[0]->as.managed.supervisor,
+                                       request.membership));
+        case CHIMI_RESPONSE_CAPACITY_REACHED:
+          return failure(standard_value(CHIMI_CONSTRUCTOR_HANDOFF_CAPACITY_REACHED, fields, 1));
+        case CHIMI_RESPONSE_STOPPED:
+          return failure(standard_value(CHIMI_CONSTRUCTOR_HANDOFF_STOPPED, fields, 1));
+      }
+      return defect("Supervisor.start_handoff scheduler request failed", call_node);
+    }
     case CHIMI_INTRINSIC_SUPERVISOR_ADDRESS: {
       if (argument_count != 1 || !is_kind(arguments, 0, VALUE_MANAGED_PROCESS))
         return intrinsic_shape_defect(call_node);
@@ -6606,6 +7059,7 @@ static ChimiControl *invoke_process(ChimiRuntime *runtime, uint32_t intrinsic, C
                                     ChimiEnvironment *environment) {
   switch (intrinsic) {
     case CHIMI_INTRINSIC_PROCESS_SPEC:
+    case CHIMI_INTRINSIC_PROCESS_HANDOFF_SPEC:
     case CHIMI_INTRINSIC_PROCESS_REGISTER:
     case CHIMI_INTRINSIC_SUPERVISOR_PROCESS:
     case CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR:
@@ -6988,6 +7442,10 @@ static ChimiControl *invoke_clock_host(ChimiRuntime *runtime, ChimiCallable *cal
         return defect("`Clock.starting_at` clock's timestamp overflows the Timestamp range", call_node);
       return success(timestamp_value(wall));
     }
+    case HOST_SELECT_SLEEP: {
+      ChimiValue *at[] = {instant_value(callable->shift)};
+      return invoke(runtime, callable->inner, at, 1, span, call_node, environment);
+    }
     default: return defect("unknown clock host function", call_node);
   }
 }
@@ -7133,6 +7591,240 @@ static ChimiControl *invoke_clock(ChimiRuntime *runtime, uint32_t intrinsic, Chi
   return defect("unknown standard intrinsic", call_node);
 }
 
+/* std/select (time-and-outcomes.md, "Choosing among events"). An Event is a record
+   that is never shown to source code: `kind` is a SELECT_EVENT_* code, `source` the
+   receiver, inbox, task, Duration, or Instant it waits on, `map` the mapping
+   function (the value itself for a timer), and `clock` the provider a timer
+   snapshotted when it was built, or Void for the execution clock. */
+enum { SELECT_EVENT_RECEIVE = 1, SELECT_EVENT_INBOX, SELECT_EVENT_TASK, SELECT_EVENT_AFTER,
+       SELECT_EVENT_AT };
+
+static ChimiValue *select_event(int64_t kind, ChimiValue *source, ChimiValue *map, ChimiValue *clock) {
+  ChimiValue *value = new_value(VALUE_RECORD);
+  value->as.record.length = 4;
+  value->as.record.fields = allocate(4, sizeof(*value->as.record.fields));
+  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
+  value->as.record.fields[0] = (RuntimeField){"kind", integer_value(kind)};
+  value->as.record.fields[1] = (RuntimeField){"source", source};
+  value->as.record.fields[2] = (RuntimeField){"map", map};
+  value->as.record.fields[3] = (RuntimeField){"clock", clock};
+  return value;
+}
+
+static bool is_host(ChimiValue *value, HostFunction host) {
+  return value && value->kind == VALUE_CALLABLE && value->as.callable->kind == CALL_HOST &&
+         value->as.callable->host == host;
+}
+
+/* True when the provider's `now` and `sleep_until` are the execution clock's, so
+   its timers go straight onto the scheduler's timer queue. `Clock.starting_at`
+   shifts only `timestamp`, so it counts. */
+static bool on_execution_clock(ChimiValue *provider) {
+  if (!provider || provider->kind == VALUE_VOID) return true;
+  if (provider->kind != VALUE_RECORD) return false;
+  return is_host(select_value(provider, "now"), HOST_CLOCK_NOW) &&
+         is_host(select_value(provider, "sleep_until"), HOST_CLOCK_SLEEP_UNTIL);
+}
+
+/* The deadline of a timer event and the `now` it is measured against: the
+   execution clock's (read once per Select.first) or the event's own provider's.
+   NULL on success. */
+static ChimiControl *timer_deadline(ChimiRuntime *runtime, ChimiValue *event, int64_t *now_io,
+                                    int64_t *deadline, uint64_t span, uint32_t call_node,
+                                    ChimiEnvironment *environment) {
+  ChimiValue *source = select_value(event, "source");
+  ChimiValue *provider = select_value(event, "clock");
+  int64_t now = *now_io;
+  if (!on_execution_clock(provider)) {
+    ChimiValue *read = select_value(provider, "now");
+    if (!read || read->kind != VALUE_CALLABLE) return defect("provider has no callable field", call_node);
+    ChimiControl *control = invoke(runtime, read->as.callable, NULL, 0, span, call_node, environment);
+    if (control->kind != CONTROL_SUCCESS) return control;
+    if (control->value->kind != VALUE_INSTANT) return intrinsic_shape_defect(call_node);
+    now = control->value->as.integer;
+  }
+  *now_io = now;
+  if (select_value(event, "kind")->as.integer == SELECT_EVENT_AT) {
+    *deadline = source->as.integer;
+    return NULL;
+  }
+  if (__builtin_add_overflow(now, source->as.integer, deadline)) {
+    char text[32]; duration_text(source->as.integer, text);
+    return defect(numeric_message("`Select.after(%s)` overflows the Instant range", text), call_node);
+  }
+  return NULL;
+}
+
+/* Starts the child that stands for a timer on a user Clock: it runs the provider's
+   `sleep_until(deadline)`, and the select waits for it to end. */
+static ChimiControl *start_user_timer(ChimiRuntime *runtime, ChimiValue *provider, int64_t deadline,
+                                      uint64_t *task, uint64_t span, uint32_t call_node,
+                                      ChimiEnvironment *environment) {
+  ChimiValue *sleep_until = select_value(provider, "sleep_until");
+  if (!sleep_until || sleep_until->kind != VALUE_CALLABLE)
+    return defect("provider has no callable field", call_node);
+  ChimiValue *sleeper = clock_host_value(HOST_SELECT_SLEEP);
+  sleeper->as.callable->inner = sleep_until->as.callable;
+  sleeper->as.callable->shift = deadline;
+  ChimiValue *arguments[] = {sleeper};
+  ChimiControl *started = invoke_intrinsic(runtime, CHIMI_INTRINSIC_TASK_START, arguments, 1, span,
+                                           call_node, environment);
+  if (started->kind != CONTROL_SUCCESS) return started;
+  *task = started->value->as.task;
+  return NULL;
+}
+
+/* Cancels the user-clock timer children except `keep` (an index, or -1). */
+static void cancel_user_timers(ChimiRuntime *runtime, const ChimiSelectSource *sources,
+                               const bool *user_timer, uint32_t count, int64_t keep, uint64_t span,
+                               uint32_t call_node, ChimiEnvironment *environment) {
+  for (uint32_t index = 0; index < count; ++index) {
+    if (!user_timer[index] || (int64_t)index == keep) continue;
+    ChimiValue *arguments[] = {task_value(sources[index].task)};
+    invoke_intrinsic(runtime, CHIMI_INTRINSIC_TASK_CANCEL, arguments, 1, span, call_node, environment);
+  }
+}
+
+/* Takes the committed event's value: its source's own operation, which answers
+   at once because the scheduler reported it ready, nothing else can consume it,
+   and no other task runs before this request (the select's reply woke this task
+   at the front of the run queue). Nothing may be issued between the select and
+   this. A timer's value is its event value. */
+static ChimiControl *select_take(ChimiRuntime *runtime, ChimiValue *event, uint64_t user_timer_task,
+                                 uint64_t span, uint32_t call_node, ChimiEnvironment *environment) {
+  int64_t kind = select_value(event, "kind")->as.integer;
+  ChimiValue *map = select_value(event, "map");
+  ChimiValue *source = select_value(event, "source");
+  uint32_t operation;
+  switch (kind) {
+    case SELECT_EVENT_RECEIVE: operation = CHIMI_INTRINSIC_CHANNEL_RECEIVE; break;
+    case SELECT_EVENT_INBOX: operation = CHIMI_INTRINSIC_PROCESS_RECEIVE; break;
+    case SELECT_EVENT_TASK: operation = CHIMI_INTRINSIC_TASK_RESULT; break;
+    default: {
+      if (!user_timer_task) return success(map);
+      /* Observe the timer child: a cancelled sleep cancels this task, as it would
+         a direct `sleep_until`. */
+      ChimiValue *arguments[] = {task_value(user_timer_task)};
+      ChimiControl *slept = invoke_intrinsic(runtime, CHIMI_INTRINSIC_TASK_RESULT, arguments, 1,
+                                             span, call_node, environment);
+      return slept->kind == CONTROL_SUCCESS ? success(map) : slept;
+    }
+  }
+  ChimiValue *arguments[] = {source};
+  return invoke_intrinsic(runtime, operation, arguments, 1, span, call_node, environment);
+}
+
+/* Maps a taken value with the providers the mapping function snapshotted when
+   the event was built. A timer has no mapping function. */
+static ChimiControl *select_map(ChimiRuntime *runtime, ChimiValue *event, ChimiControl *taken,
+                                uint64_t span, uint32_t call_node) {
+  int64_t kind = select_value(event, "kind")->as.integer;
+  if (taken->kind != CONTROL_SUCCESS || kind == SELECT_EVENT_AFTER || kind == SELECT_EVENT_AT)
+    return taken;
+  ChimiValue *mapped[] = {taken->value};
+  return invoke(runtime, select_value(event, "map")->as.callable, mapped, 1, span, call_node,
+                new_environment(0));
+}
+
+/* Select.first (time-and-outcomes.md, "Semantics of `Select.first`"): one
+   CHIMI_REQUEST_SELECT over every event in list order, reissued after each wake,
+   then the committed event. A user-Clock timer is a child running that clock's
+   `sleep_until`, so it is a task source to the scheduler. */
+static ChimiControl *select_first(ChimiRuntime *runtime, ChimiValue *events, uint64_t span,
+                                  uint32_t call_node, ChimiEnvironment *environment) {
+  uint32_t count = list_length(events);
+  if (count == 0) return defect("`Select.first` needs at least one event", call_node);
+  ChimiSelectSource *sources = calloc(count, sizeof(*sources));
+  bool *user_timer = calloc(count, sizeof(*user_timer));
+  if (!sources || !user_timer) exhausted_memory();
+  ChimiControl *stopped = NULL;
+  bool read_now = false;
+  int64_t now = 0;
+  for (uint32_t index = 0; index < count && !stopped; ++index) {
+    ChimiValue *event = list_get(events, index);
+    ChimiValue *source = select_value(event, "source");
+    ChimiSelectSource *entry = &sources[index];
+    switch (select_value(event, "kind")->as.integer) {
+      case SELECT_EVENT_RECEIVE:
+        *entry = (ChimiSelectSource){.kind = CHIMI_SELECT_RECEIVE,
+                                     .channel = source->as.capability.channel,
+                                     .owner = source->as.capability.owner,
+                                     .token = source->as.capability.token};
+        break;
+      case SELECT_EVENT_INBOX: entry->kind = CHIMI_SELECT_INBOX; break;
+      case SELECT_EVENT_TASK: *entry = (ChimiSelectSource){.kind = CHIMI_SELECT_TASK, .task = source->as.task}; break;
+      default: {
+        /* Every timer measures from the start of this call. */
+        if (!read_now && (stopped = execution_now(&now, call_node))) break;
+        read_now = true;
+        int64_t deadline, measured = now;
+        if ((stopped = timer_deadline(runtime, event, &measured, &deadline, span, call_node, environment)))
+          break;
+        ChimiValue *provider = select_value(event, "clock");
+        if (on_execution_clock(provider)) {
+          *entry = (ChimiSelectSource){.kind = CHIMI_SELECT_TIMER, .deadline = deadline};
+        } else if (deadline <= measured) {
+          /* Already due on its own clock: ready now, in list order. */
+          *entry = (ChimiSelectSource){.kind = CHIMI_SELECT_TIMER, .deadline = INT64_MIN};
+        } else {
+          entry->kind = CHIMI_SELECT_TASK;
+          stopped = start_user_timer(runtime, provider, deadline, &entry->task, span, call_node, environment);
+          user_timer[index] = !stopped;
+        }
+      }
+    }
+  }
+  int64_t committed = -1;
+  while (!stopped) {
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_SELECT, .context = sources, .value = count};
+    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) { stopped = cancelled(); break; }
+    if (request.status == CHIMI_RESPONSE_PENDING) continue;
+    if (request.status != CHIMI_RESPONSE_OK || request.value < 0 || request.value >= count) {
+      stopped = defect("Select.first scheduler request failed", call_node);
+      break;
+    }
+    committed = request.value;
+    break;
+  }
+  ChimiValue *event = committed >= 0 ? list_get(events, (uint32_t)committed) : NULL;
+  ChimiControl *taken = NULL;
+  if (!stopped) {
+    uint64_t timer_task = user_timer[committed] ? sources[committed].task : 0;
+    taken = select_take(runtime, event, timer_task, span, call_node, environment);
+  }
+  /* Only after the take: a cancel reply lets other tasks run first. */
+  if (!stopped || stopped->kind != CONTROL_CANCEL || !chimi_fiber_cancel_is_terminal())
+    cancel_user_timers(runtime, sources, user_timer, count, committed, span, call_node, environment);
+  free(sources);
+  free(user_timer);
+  if (stopped) return stopped;
+  return select_map(runtime, event, taken, span, call_node);
+}
+
+static ChimiControl *invoke_select(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
+                                   uint32_t argument_count, uint64_t span, uint32_t call_node,
+                                   ChimiEnvironment *environment) {
+  ValueKind source_kind;
+  int64_t kind;
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_SELECT_RECEIVE: source_kind = VALUE_CHANNEL_RECEIVER; kind = SELECT_EVENT_RECEIVE; break;
+    case CHIMI_INTRINSIC_SELECT_INBOX: source_kind = VALUE_PROCESS_INBOX; kind = SELECT_EVENT_INBOX; break;
+    case CHIMI_INTRINSIC_SELECT_TASK: source_kind = VALUE_TASK; kind = SELECT_EVENT_TASK; break;
+    case CHIMI_INTRINSIC_SELECT_AFTER: source_kind = VALUE_DURATION; kind = SELECT_EVENT_AFTER; break;
+    case CHIMI_INTRINSIC_SELECT_AT: source_kind = VALUE_INSTANT; kind = SELECT_EVENT_AT; break;
+    case CHIMI_INTRINSIC_SELECT_FIRST:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST) return intrinsic_shape_defect(call_node);
+      return select_first(runtime, arguments[0], span, call_node, environment);
+    default: return defect("unknown standard intrinsic", call_node);
+  }
+  if (argument_count != 2 || arguments[0]->kind != source_kind) return intrinsic_shape_defect(call_node);
+  bool timer = kind == SELECT_EVENT_AFTER || kind == SELECT_EVENT_AT;
+  if (!timer && arguments[1]->kind != VALUE_CALLABLE) return intrinsic_shape_defect(call_node);
+  ChimiValue *clock = NULL;
+  if (timer) clock = environment->requirements[CHIMI_CLOCK_REQUIREMENT_SLOT];
+  return success(select_event(kind, arguments[0], arguments[1], clock ? clock : void_value()));
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
@@ -7148,10 +7840,14 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_decimal_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_EMBED_BYTES)
     return invoke_bytes_operation(intrinsic, arguments, argument_count, call_node);
+  if (intrinsic >= CHIMI_INTRINSIC_CAUSE_CONTEXT && intrinsic <= CHIMI_INTRINSIC_CAUSE_TO_TEXT)
+    return invoke_cause_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
     return invoke_process(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+  if (intrinsic >= CHIMI_INTRINSIC_SELECT_RECEIVE && intrinsic <= CHIMI_INTRINSIC_SELECT_FIRST)
+    return invoke_select(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_CLOCK_NOW && intrinsic <= CHIMI_INTRINSIC_TASK_DEADLINE)
     return invoke_clock(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DEBUG_CRASH && intrinsic <= CHIMI_INTRINSIC_LIST_SET)
@@ -7805,6 +8501,21 @@ NODE_WRAPPER(construct, "construct", {
   }
   if (stopped) break;
   result = construct_value(node->a, values);
+  if (result->kind == CONTROL_FAILURE) result->node = node_id;
+  /* A Failure(...) or Result.Err(...) in a cause arm: `b` is the arm's cause
+     local plus one, and `c` says whether it keeps that cause. */
+  if (node->b == 0) break;
+  ChimiValue *matched = environment->locals[environment_slot(node->b - 1)];
+  if (!matched || matched->kind != VALUE_CAUSE) matched = NULL;
+  if (result->kind == CONTROL_FAILURE) {
+    ChimiValue *cause = cause_derived(matched, node->c != 0, result->value, node_id);
+    if (cause) result = control_with_cause(result, cause);
+  } else if (result->kind == CONTROL_SUCCESS && result->value->kind == VALUE_CONSTRUCTED &&
+             result->value->as.constructed.length == 1) {
+    ChimiValue *cause = cause_derived(matched, node->c != 0,
+                                      result->value->as.constructed.fields[0].value, node_id);
+    if (cause) result = success(with_stored_cause(result->value, cause));
+  }
 })
 
 NODE_WRAPPER(call, "call", {
@@ -7817,7 +8528,12 @@ NODE_WRAPPER(call, "call", {
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
     arguments[index] = control->value;
   }
-  if (!stopped) result = invoke(runtime, callee->value->as.callable, arguments, node->length, span, node_id, environment);
+  if (stopped) break;
+  result = invoke(runtime, callee->value->as.callable, arguments, node->length, span, node_id, environment);
+  /* A failure an operation raised without a source construction starts at its call. */
+  if (result->kind == CONTROL_FAILURE && !result->cause && result->node < 0) {
+    result = new_control(CONTROL_FAILURE, result->value, NULL, node_id);
+  }
 })
 
 NODE_WRAPPER(list, "list", {
@@ -7946,7 +8662,8 @@ NODE_WRAPPER(closure, "closure", {
 })
 
 typedef enum { MATCH_PLAIN, MATCH_SUCCESS, MATCH_FAILURE } MatchKind;
-typedef struct { MatchKind kind; ChimiValue *value; } MatchValue;
+/* `control` is the subject's outcome, which holds a failure's cause. */
+typedef struct { MatchKind kind; ChimiValue *value; ChimiControl *control; } MatchValue;
 
 static bool literal_matches(const ChimiPattern *pattern, const ChimiValue *value) {
   if (pattern->a == CHIMI_LITERAL_INTEGER) return value->kind == VALUE_INTEGER && value->as.integer == pattern->integer;
@@ -8041,9 +8758,9 @@ NODE_WRAPPER(match, "match", {
       if (CHIMI_PATTERNS[CHIMI_IDS[arm->patterns_offset + subject]].kind == CHIMI_PATTERN_OUTCOME) contextual = true;
     }
     ChimiControl *control = RUN(CHIMI_IDS[node->offset + subject]);
-    if (contextual && control->kind == CONTROL_SUCCESS) values[subject] = (MatchValue){MATCH_SUCCESS, control->value};
-    else if (contextual && control->kind == CONTROL_FAILURE) values[subject] = (MatchValue){MATCH_FAILURE, control->value};
-    else if (!contextual && control->kind == CONTROL_SUCCESS) values[subject] = (MatchValue){MATCH_PLAIN, control->value};
+    if (contextual && control->kind == CONTROL_SUCCESS) values[subject] = (MatchValue){MATCH_SUCCESS, control->value, control};
+    else if (contextual && control->kind == CONTROL_FAILURE) values[subject] = (MatchValue){MATCH_FAILURE, control->value, control};
+    else if (!contextual && control->kind == CONTROL_SUCCESS) values[subject] = (MatchValue){MATCH_PLAIN, control->value, control};
     else { result = control; stopped = true; break; }
   }
   if (stopped) break;
@@ -8052,7 +8769,7 @@ NODE_WRAPPER(match, "match", {
     for (uint32_t subject = 0; subject < node->length; ++subject)
       if (!match_value(CHIMI_IDS[arm->patterns_offset + subject], values[subject], NULL)) { matched = false; break; }
     if (!matched) continue;
-    bool binds = false;
+    bool binds = arm->cause_local != UINT32_MAX;
     for (uint32_t subject = 0; subject < node->length; ++subject)
       if (pattern_binds(CHIMI_IDS[arm->patterns_offset + subject])) { binds = true; break; }
     ChimiEnvironment *arm_environment = binds ? clone_local_environment(environment) : environment;
@@ -8070,10 +8787,13 @@ NODE_WRAPPER(match, "match", {
       if (guard->value->kind != VALUE_BOOLEAN) { result = defect("verified case guard is not Boolean", node_id); stopped = true; break; }
       if (!guard->value->as.boolean) continue;
     }
+    if (arm->cause_local != UINT32_MAX)
+      arm_environment->locals[environment_slot(arm->cause_local)] =
+        matched_cause_value(values[arm->cause_subject].control);
     result = run_node(arm->body, runtime, arm_environment, span); stopped = true; break;
   }
   if (!stopped) {
-    for (uint32_t i = 0; i < node->length; ++i) if (values[i].kind == MATCH_FAILURE) { result = failure(values[i].value); stopped = true; break; }
+    for (uint32_t i = 0; i < node->length; ++i) if (values[i].kind == MATCH_FAILURE) { result = values[i].control; stopped = true; break; }
     if (!stopped) result = defect("verified exhaustive match had no matching arm", node_id);
   }
 })
@@ -8191,7 +8911,15 @@ static void print_outcome(FILE *output, const ChimiControl *control) {
                    control->node, CHIMI_NODES[control->node].origin);
       break;
     case CONTROL_CANCEL:
-      fputs("\"outcome\":\"cancellation\",\"reason\":\"requested before the next semantic operation\"", output); break;
+      fputs("\"outcome\":\"cancellation\",\"reason\":", output); json_string(output, CANCELLATION_REASON);
+      break;
+    case CONTROL_BREAK: break;
+  }
+  ChimiValue *cause = control->kind == CONTROL_SUCCESS ? NULL : control_cause(control);
+  if (cause && cause_has_detail(cause)) {
+    fputs(",\"cause\":", output);
+    ChimiValue *text = cause_text(cause);
+    json_bytes(output, text->as.text.bytes, text->as.text.length);
   }
   fputs("}\n", output);
 }
@@ -8324,6 +9052,7 @@ static const char *scheduler_event_name(const ChimiSchedulerTraceEvent *event) {
   static const char *clock_names[] = {
     "clock_advanced", "clock_timer_started", "clock_timer_fired",
     "clock_timer_cancelled", "clock_deadlock_waiter", "clock_scope_fired",
+    "clock_select_parked", "clock_select_committed",
   };
   if (event->family == CHIMI_SCHEDULER_TRACE_CHANNEL &&
       event->kind > 0 && event->kind <= sizeof(channel_names) / sizeof(*channel_names))
@@ -8427,7 +9156,9 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
           ",\"waiter_depth\":%" PRIu64 ",\"discard_count\":%" PRIu64,
           event->sequence, event->capacity, event->queue_depth,
           event->waiter_depth, event->discard_count);
-  if (clock)
+  if (clock && event->kind == CHIMI_CLOCK_TRACE_SELECT_COMMITTED)
+    fprintf(output, ",\"time_ns\":%" PRId64 ",\"index\":%" PRIu64, event->time, event->cause);
+  else if (clock)
     fprintf(output, ",\"time_ns\":%" PRId64 ",\"request_kind\":%" PRIu64,
             event->time, event->cause);
   if (process) emit_process_fields(runtime, output, event, true);
@@ -8440,6 +9171,7 @@ static const char *waited_operation(uint32_t request_kind) {
     case CHIMI_REQUEST_TASK_RESULT: return "Task.result";
     case CHIMI_REQUEST_CHANNEL_SEND: return "Channel.send";
     case CHIMI_REQUEST_CHANNEL_RECEIVE: return "Channel.receive";
+    case CHIMI_REQUEST_SELECT: return "Select.first";
     default: return "a scheduler request";
   }
 }
@@ -8468,6 +9200,8 @@ static const char *channel_operation(uint32_t request_kind) {
     case CHIMI_REQUEST_CHANNEL_CLOSE: return "Channel.close";
     case CHIMI_REQUEST_CHANNEL_ABORT: return "aborting the channel";
     case CHIMI_REQUEST_CHANNEL_RELEASE: return "releasing the channel";
+    case CHIMI_REQUEST_PROCESS_SEND: return "Process.send";
+    case CHIMI_REQUEST_SUPERVISOR_START_PROCESS: return "Supervisor.start_handoff";
     default: return "a channel request";
   }
 }
