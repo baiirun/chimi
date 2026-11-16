@@ -1259,12 +1259,15 @@ impl ChannelRegistry {
     /// is aborted only when nothing can send to it or close it any more; it
     /// is forgotten with its last tap. A hub is aborted while open (nobody
     /// can publish or close it again) and forgotten.
+    ///
+    /// A release is not one of `task`'s operations: the host issues it for
+    /// any task's freed endpoints ahead of `task`'s next request, which may
+    /// be the one that collects a result already linearized for `task`.
     pub fn release_unreferenced(
         &mut self,
         task: TaskId,
         id: ChannelId,
     ) -> Result<Transition, ChannelError> {
-        self.begin_operation(task)?;
         let channel = self
             .channels
             .get(&id)
@@ -2566,6 +2569,20 @@ mod variant_tests {
         let (tap, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
         channels.release_unreferenced(OWNER, queue.sender.channel()).unwrap();
         assert_eq!(receive(&mut channels, OWNER, tap), ReceiveResult::Aborted);
+    }
+
+    #[test]
+    fn a_release_waits_for_no_uncollected_result() {
+        let mut channels = registry();
+        let (queue, _) = channels.create(OWNER, 0);
+        let (other, _) = channels.create(OWNER, 1);
+        assert_eq!(receive(&mut channels, OWNER, queue.receiver), ReceiveResult::Pending);
+        assert_eq!(send(&mut channels, OTHER, queue.sender, 7), SendResult::Accepted);
+        channels.release_unreferenced(OWNER, other.sender.channel()).unwrap();
+        assert_eq!(
+            channels.take_receive_result(OWNER),
+            Some(ReceiveResult::Received(7))
+        );
     }
 
     fn broadcast(channels: &mut ChannelRegistry, capacity: usize) -> (Sender, Completion) {

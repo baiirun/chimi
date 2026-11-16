@@ -5,8 +5,9 @@
 This is the normative contract for the Phase 7b network modules of the
 [language completion plan](../plans/language-completion-plan.md) (CHI-253):
 the modules a service uses to talk over the network. It covers `std/net`
-(CHI-255) and the `std/http` server (CHI-257). `std/tls`, the HTTP client, and
-`std/sql` (CHI-256 to CHI-258) add their sections as they land.
+(CHI-255), the `std/http` server (CHI-257), and `std/sql`'s
+driver-independent layer (CHI-258). `std/tls`, the HTTP client, and the SQL
+drivers add their sections as they land.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 modules follow the [standard library conventions](standard-library-conventions.md),
@@ -258,6 +259,91 @@ pub fn serve_connection(connection: Connection, handle) -> Void needs R + { cloc
   before it closes (so a peer that is still sending does not see a reset).
 - The HTTP client, and HTTPS after `std/tls`.
 
+## std/sql (driver-independent layer)
+
+The pool's settings and nested transactions are **provisional**: they follow
+the recommendations on open decision cards (settings as a struct with
+defaults; a transaction inside a transaction is a savepoint), and until those
+are answered the settings are fixed defaults. Which database the first driver
+talks to is also open; this layer has no driver of its own beyond `Sql.fake`.
+`std/sql` is written in Chimi with no binding package, but its pool uses
+bounded channels, so it runs on the native backend only.
+
+```text
+pub enum Value { Null, Bool, Int, Float, Decimal, Text, Bytes }
+pub enum SqlError { ConnectFailed, ConnectionLost, PoolTimedOut, PoolClosed, Rejected,
+  ConstraintFailed, Conflict, NoRows, ManyRows, NoColumn, WrongType, UnexpectedNull, Failed }
+pub struct Database   // a pool, or the transaction a body is given
+pub struct Row        // Sql.value, Sql.int, Sql.float, Sql.decimal, Sql.text, Sql.bool,
+                      // Sql.bytes, Sql.nullable, Sql.columns, Sql.values
+
+pub fn open(driver: Driver, target: Text, use: fn(Database) -> T errors E needs R) -> T needs R
+pub fn execute(db, sql, params: List<Value>) -> Int
+pub fn query(db, sql, params) -> List<Row>
+pub fn one(db, sql, params) -> Row
+pub fn first(db, sql, params) -> Option<Row>
+pub fn transaction(db, body: fn(Database) -> T errors E needs R) -> T needs R
+
+// For writing a driver, and for tests.
+pub fn driver(connect: fn(Text) -> Connection errors SqlError) -> Driver
+pub fn connection(run, begin, commit, rollback, reset, close) -> Connection
+pub fn reply(columns, rows, affected) -> Reply
+pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
+```
+
+### Statements and rows
+
+- Parameters MUST reach the driver as the list of `Value`s, unchanged and
+  apart from the statement's text. Placeholders (`?`, `$1`) are the driver's
+  dialect and are not rewritten.
+- A result is read whole. `Sql.one` fails `NoRows` or `ManyRows` unless there
+  is exactly one row; `Sql.first` gives the first or `None`.
+- A row is read by column name. A typed accessor fails `NoColumn` for a
+  missing column, `UnexpectedNull` for a null, and `WrongType(column,
+  expected, found)` for another kind. `Sql.nullable(row, name, read)` is the
+  only way to read a null, as `None`.
+- A failure's payload names columns and constraints, never a row's contents.
+
+### The pool
+
+- `Sql.open` runs its body with a pool and closes the pool when the body ends,
+  however it ends. Closing closes every idle connection before `open`
+  returns. Using the pool after that fails `PoolClosed`.
+- A connection is opened only when a statement needs one and none is idle,
+  and is reused after the statement. At most 10 connections are open at once.
+  A statement that waits more than 30 s for one fails `PoolTimedOut`, and a
+  statement that gave up holds no place in the pool afterwards.
+- Waiting statements are served in the order they asked.
+- After every use the pool resets the connection (rolling back anything left
+  open) within 5 s before it is reused. A connection whose reset fails or
+  times out, and one whose use was cut off by a cancellation or a defect, is
+  closed instead, and the next statement opens a new one. A failed connect
+  frees its place.
+- The pool can be shared by every task the body starts. The pool's state is
+  owned by one task, and other tasks reach it through a channel.
+- A statement is not retried by the pool on `ConnectionLost`; retrying is
+  `std/retry`'s job.
+
+### Transactions
+
+- `Sql.transaction(db, body)` begins a transaction on one connection and runs
+  `body` with a database whose statements all use that connection. When
+  `body` succeeds it commits, and a failed commit is the outcome. When `body`
+  fails it rolls back and the body's failure is the outcome. When `body`
+  defects or is cancelled, the pool's reset rolls the transaction back.
+- A transaction inside a transaction is a savepoint (`SAVEPOINT chimi_<n>`,
+  then `RELEASE SAVEPOINT` or `ROLLBACK TO SAVEPOINT`), so an inner failure
+  that the outer body catches undoes only the inner statements.
+
+### Drivers and tests
+
+- A driver is passed to `Sql.open` explicitly; there is no database need. A
+  driver that needs the network or the file system takes that capability when
+  it is built, so the capability still appears in `main`.
+- `Sql.fake(answer)` is a driver that hands every call (`Connected`, `Ran`,
+  `Began`, `Committed`, `RolledBack`, `Reset`, `Closed`) to `answer`. Tests
+  record the calls with `Test.recorder` and script failures in `answer`.
+
 ## Decisions
 
 - **One `network` need covers connecting, listening, and name lookup.** A
@@ -290,6 +376,10 @@ pub fn serve_connection(connection: Connection, handle) -> Void needs R + { cloc
 | HTTP: the write limit; a handler's defect closes the connection; failed accepts are retried with a growing pause | `tests/http.rs` `slow_clients_and_failed_accepts_do_not_stop_the_server_and_a_defect_closes_its_connection` |
 | HTTP: a handler failure is 500; the idle limit; status and header defects; `Http.request` for handler tests | `tests/http.rs` `a_handler_failure_answers_500_and_an_idle_client_is_closed` |
 | HTTP: connections served at once over loopback (within a time limit, so a server that answers one at a time fails); closing the listener ends `serve` | `tests/http.rs` `a_server_on_loopback_serves_clients_at_once_and_stops_with_its_listener` |
+| SQL: rows read by name, each typed accessor, nulls, missing columns, wrong kinds, `one` and `first` | `tests/sql.rs` `rows_are_read_by_column_name_with_typed_accessors` |
+| SQL: lazy connections, reuse, parameters unchanged, a failed reset or connect, sharing across tasks, use after close | `tests/sql.rs` `a_pool_opens_connections_lazily_reuses_them_and_closes_them` |
+| SQL: the pool's size and wait, and a waiter that gave up | `tests/sql.rs` `a_full_pool_makes_statements_wait_up_to_its_limit` |
+| SQL: commit, rollback, defect, cancellation, a failed commit, savepoints | `tests/sql.rs` `a_transaction_commits_or_rolls_back_however_its_body_ends` |
 | Bytes cross loopback both ways, a body larger than one read arrives whole, half-close, addresses and port 0 | `tests/net.rs` `a_loopback_connection_carries_bytes_both_ways_after_a_half_close` |
 | A name resolves through the lookup thread (that the scheduler keeps running during a slow lookup is not tested: no lookup in the test environment is slow) | `tests/net.rs` `a_name_resolves_on_the_lookup_thread` |
 | `Refused`, `AddressInUse`, `HostNotFound(host)` (also for a host holding U+0000), and the port defect | `tests/net.rs` `the_operating_systems_failures_become_net_errors` |

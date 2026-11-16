@@ -1,0 +1,661 @@
+/// SQL databases through a driver: a pool of connections, parameterized
+/// statements, and transactions tied to a scope. A driver (`Sql.driver`)
+/// opens connections to one kind of database; this module pools them and
+/// runs statements on them:
+///
+/// ```text
+/// fn active_names(db: Database) -> List<Text> errors SqlError {
+///   let rows = Sql.query(db, "select name from users where active = ?", [Value.Bool(True)])
+///   List.map(rows, fn(row) { Sql.text(row, "name") })
+/// }
+///
+/// fn rename(db: Database, id: Int, name: Text) -> Void errors SqlError {
+///   Sql.transaction(db, fn(tx) {
+///     Sql.execute(tx, "update users set name = ? where id = ?", [Value.Text(name), Value.Int(id)])
+///     Sql.execute(tx, "insert into audit (user_id) values (?)", [Value.Int(id)])
+///   })
+/// }
+///
+/// Sql.open(driver, "app.db", fn(db) { rename(db, 7, "Ada") })
+/// ```
+///
+/// Placeholders (`?` or `$1`) are the driver's dialect and reach it
+/// unchanged, with the parameters as a list of `Value`s, so a value never
+/// becomes part of the statement's text.
+///
+/// The pool's settings are fixed defaults for now (at most 10 connections,
+/// 30 s to wait for one, 5 s to reset one), and a transaction inside a
+/// transaction is a savepoint: both are provisional (decisions.md,
+/// 2026-11-16).
+
+import std/bytes.{Bytes}
+import std/channel as Channel
+import std/channel.{Receive}
+import std/decimal.{Decimal}
+import std/duration as Duration
+import std/duration.{Duration}
+import std/list as List
+import std/resource as Resource
+import std/result as Result
+import std/result.{Err, Ok}
+import std/task as Task
+
+// 1. Values, rows and failures.
+
+/// A value in a statement's parameters or in a row. Dates and times are
+/// `Text` in the database's own format until std has calendar time.
+pub enum Value {
+  Null
+  Bool(value: Bool)
+  Int(value: Int)
+  Float(value: Float)
+  Decimal(value: Decimal)
+  Text(value: Text)
+  Bytes(value: Bytes)
+}
+
+/// Why a database operation failed. Payloads name columns and constraints,
+/// never a row's contents.
+pub enum SqlError {
+  /// The driver could not open a connection.
+  ConnectFailed(message: Text)
+  /// The connection broke while in use.
+  ConnectionLost
+  /// No connection came free within the pool's wait.
+  PoolTimedOut(limit: Duration)
+  /// The pool was closed.
+  PoolClosed
+  /// The database refused the statement, as for a syntax error or a missing
+  /// permission; `code` is the database's own code.
+  Rejected(code: Text, message: Text)
+  /// A write broke `constraint` (unique, foreign key, check, not null).
+  ConstraintFailed(constraint: Text, message: Text)
+  /// The database gave up on a conflict with another transaction (a
+  /// serialization failure, a deadlock, a busy database). Retrying the whole
+  /// transaction may succeed.
+  Conflict(message: Text)
+  /// `Sql.one` found no row.
+  NoRows
+  /// `Sql.one` found more than one row.
+  ManyRows
+  /// The row has no column `name`.
+  NoColumn(name: Text)
+  /// The column holds a `found` where an `expected` was read.
+  WrongType(column: Text, expected: Text, found: Text)
+  /// The column is null where a value was read; read it with `Sql.nullable`.
+  UnexpectedNull(column: Text)
+  /// Any other failure the driver reports.
+  Failed(message: Text)
+}
+
+/// One row of a result: its columns' names and values, in order.
+pub struct Row {
+  columns: List<Text>,
+  values: List<Value>,
+}
+
+/// What a statement gave back: the result's column names, its rows, and the
+/// number of rows a write changed.
+pub struct Reply {
+  columns: List<Text>,
+  rows: List<List<Value>>,
+  affected: Int,
+}
+
+// 2. Drivers.
+
+/// One open connection, as a driver provides it. Build it with
+/// `Sql.connection`.
+pub struct Connection {
+  run: fn(Text, List<Value>) -> Reply errors SqlError,
+  begin: fn() -> Void errors SqlError,
+  commit: fn() -> Void errors SqlError,
+  rollback: fn() -> Void errors SqlError,
+  reset: fn() -> Void errors SqlError,
+  close: fn() -> Void,
+}
+
+/// How to open connections to one kind of database. Build it with
+/// `Sql.driver`; a driver that needs the network or the file system takes
+/// that capability when it is built.
+pub struct Driver {
+  connect: fn(Text) -> Connection errors SqlError,
+}
+
+/// A driver whose `connect` opens a connection to a target, such as a file
+/// path or a URL.
+///
+/// Cost: O(1).
+pub fn driver(connect: fn(Text) -> Connection errors SqlError) -> Driver {
+  Driver(connect)
+}
+
+/// A connection from its operations, for writing a driver. `run` runs one
+/// statement with its parameters; `begin`, `commit` and `rollback` manage a
+/// transaction; `reset` returns the connection to a clean state before the
+/// pool reuses it (rolling back anything left open) and fails when the
+/// connection is no longer usable; `close` releases it.
+///
+/// Cost: O(1).
+pub fn connection(
+  run: fn(Text, List<Value>) -> Reply errors SqlError,
+  begin: fn() -> Void errors SqlError,
+  commit: fn() -> Void errors SqlError,
+  rollback: fn() -> Void errors SqlError,
+  reset: fn() -> Void errors SqlError,
+  close: fn() -> Void,
+) -> Connection {
+  Connection(run, begin, commit, rollback, reset, close)
+}
+
+/// A statement's result, for writing a driver: the column names, the rows
+/// (each a value per column), and the number of rows a write changed.
+///
+/// Cost: O(1).
+pub fn reply(columns: List<Text>, rows: List<List<Value>>, affected: Int) -> Reply {
+  Reply(columns, rows, affected)
+}
+
+/// What a fake driver was asked to do.
+pub enum Call {
+  Connected(target: Text)
+  Ran(sql: Text, params: List<Value>)
+  Began
+  Committed
+  RolledBack
+  Reset
+  Closed
+}
+
+/// A driver that answers every call with `answer`, for tests. A statement's
+/// reply is what `answer` gives for `Call.Ran`; for every other call the
+/// reply is ignored, and a failure of `answer` is that call's failure (a
+/// failed `Call.Connected` fails the connect, a failed `Call.Reset` makes the
+/// pool drop the connection). Record calls with `Test.recorder` inside
+/// `answer` to check what reached the driver.
+///
+/// Cost: O(1).
+pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver {
+  Driver(fn(target) {
+    let _ = answer(Call.Connected(target))
+    Connection(fn(sql, params) {
+      answer(Call.Ran(sql, params))
+    }, fn() {
+      let _ = answer(Call.Began)
+      Void
+    }, fn() {
+      let _ = answer(Call.Committed)
+      Void
+    }, fn() {
+      let _ = answer(Call.RolledBack)
+      Void
+    }, fn() {
+      let _ = answer(Call.Reset)
+      Void
+    }, fn() {
+      let _ = Result.capture(fn() { answer(Call.Closed) })
+      Void
+    })
+  })
+}
+
+/// An empty reply, for a fake driver's answer to a call that returns no rows.
+///
+/// Cost: O(1).
+pub fn done() -> Reply {
+  Reply([], [], 0)
+}
+
+// 3. Pools and statements.
+
+/// A database to run statements on: a pool from `Sql.open`, or the
+/// transaction that `Sql.transaction` passes to its body.
+pub struct Database {
+  place: Place,
+}
+
+// Where a database's statements run: on a connection from the pool, or on
+// the connection a transaction holds, `depth` transactions deep.
+enum Place {
+  Pooled(asks: Channel.Sender<Ask>, driver: Driver, target: Text, bounds: Limits)
+  Pinned(connection: Connection, depth: Int)
+}
+
+/// Opens a pool of connections to `target` through `driver`, runs `use` with
+/// it, and closes the pool when `use` ends, however it ends. Connections are
+/// opened when first needed and reused; at most 10 are open at once, and a
+/// statement that waits more than 30 s for one fails with
+/// `SqlError.PoolTimedOut`. The pool can be shared by every task `use`
+/// starts.
+///
+/// Fails with: what `use` fails with.
+pub fn open<T, E, R>(driver: Driver, target: Text, use: fn(Database) -> T errors E needs R) -> T needs R {
+  let bounds = limits()
+  let made = Channel.bounded(64)
+  let keeper = Keeper(made.receiver)
+  let running = Task.start(fn() { keep(keeper, bounds.size) })
+  let asks = made.sender
+  Resource.scoped(fn() { asks }, fn(sender) {
+    let _ = tell(sender, Ask.Close)
+    let _ = Result.capture(fn() { Task.result(running) })
+    Void
+  }, fn(sender) {
+    use(Database(Place.Pooled(sender, driver, target, bounds)))
+  })
+}
+
+/// Runs a statement that returns no rows and gives the number of rows it
+/// changed.
+///
+/// Fails with: what the driver fails with, and the pool's failures.
+pub fn execute(db: Database, sql: Text, params: List<Value>) -> Int {
+  run(db, sql, params).affected
+}
+
+/// Runs a query and gives its rows.
+///
+/// Fails with: what the driver fails with, and the pool's failures.
+pub fn query(db: Database, sql: Text, params: List<Value>) -> List<Row> {
+  let answer = run(db, sql, params)
+  List.map(answer.rows, fn(values) { Row(answer.columns, values) })
+}
+
+/// Runs a query that must give exactly one row, and gives it.
+///
+/// Fails with: `SqlError.NoRows` or `SqlError.ManyRows` when it gives none
+/// or several, what the driver fails with, and the pool's failures.
+pub fn one(db: Database, sql: Text, params: List<Value>) -> Row {
+  let rows = query(db, sql, params)
+  case rows {
+    [row] -> row
+    [] -> Failure(SqlError.NoRows)
+    _ -> Failure(SqlError.ManyRows)
+  }
+}
+
+/// Runs a query and gives its first row, or `None` when it gives none.
+///
+/// Fails with: what the driver fails with, and the pool's failures.
+pub fn first(db: Database, sql: Text, params: List<Value>) -> Option<Row> {
+  List.first(query(db, sql, params))
+}
+
+/// Runs `body` in a transaction: it commits when `body` succeeds, and rolls
+/// back when `body` fails, defects or is cancelled. Every statement `body`
+/// runs on the database it is given uses the transaction's connection.
+/// A transaction inside a transaction is a savepoint, so its failure undoes
+/// only its own statements.
+///
+/// Fails with: what `body` fails with (after the rollback), a failed commit,
+/// what the driver fails with, and the pool's failures.
+pub fn transaction<T, E, R>(db: Database, body: fn(Database) -> T errors E needs R) -> T needs R {
+  case db.place {
+    Place.Pinned(connection, depth) -> savepoint(connection, depth, body)
+    Place.Pooled(_, _, _, _) -> borrow(db, fn(connection) { outermost(connection, body) })
+  }
+}
+
+// 4. Reading rows.
+
+/// The row's column names, in order.
+///
+/// Cost: O(1).
+pub fn columns(row: Row) -> List<Text> {
+  row.columns
+}
+
+/// The row's values, in column order.
+///
+/// Cost: O(1).
+pub fn values(row: Row) -> List<Value> {
+  row.values
+}
+
+/// The value of the column `name`.
+///
+/// Fails with: `SqlError.NoColumn(name)`.
+/// Cost: O(n) in the columns.
+pub fn value(row: Row, name: Text) -> Value {
+  case List.find_index(row.columns, fn(column) { column == name }) {
+    Some(index) -> case List.get(row.values, index) {
+      Some(found) -> found
+      None -> Failure(SqlError.NoColumn(name))
+    }
+    None -> Failure(SqlError.NoColumn(name))
+  }
+}
+
+/// The `Int` in the column `name`.
+///
+/// Fails with: `SqlError.NoColumn`, `SqlError.UnexpectedNull` or
+/// `SqlError.WrongType`.
+/// Cost: O(n) in the columns.
+pub fn int(row: Row, name: Text) -> Int {
+  let found = value(row, name)
+  case found {
+    Value.Int(found) -> found
+    other -> mismatch(name, "Int", other)
+  }
+}
+
+/// The `Float` in the column `name`.
+///
+/// Fails with: `SqlError.NoColumn`, `SqlError.UnexpectedNull` or
+/// `SqlError.WrongType`.
+/// Cost: O(n) in the columns.
+pub fn float(row: Row, name: Text) -> Float {
+  let found = value(row, name)
+  case found {
+    Value.Float(found) -> found
+    other -> mismatch(name, "Float", other)
+  }
+}
+
+/// The `Decimal` in the column `name`.
+///
+/// Fails with: `SqlError.NoColumn`, `SqlError.UnexpectedNull` or
+/// `SqlError.WrongType`.
+/// Cost: O(n) in the columns.
+pub fn decimal(row: Row, name: Text) -> Decimal {
+  let found = value(row, name)
+  case found {
+    Value.Decimal(found) -> found
+    other -> mismatch(name, "Decimal", other)
+  }
+}
+
+/// The `Text` in the column `name`.
+///
+/// Fails with: `SqlError.NoColumn`, `SqlError.UnexpectedNull` or
+/// `SqlError.WrongType`.
+/// Cost: O(n) in the columns.
+pub fn text(row: Row, name: Text) -> Text {
+  let found = value(row, name)
+  case found {
+    Value.Text(found) -> found
+    other -> mismatch(name, "Text", other)
+  }
+}
+
+/// The `Bool` in the column `name`.
+///
+/// Fails with: `SqlError.NoColumn`, `SqlError.UnexpectedNull` or
+/// `SqlError.WrongType`.
+/// Cost: O(n) in the columns.
+pub fn bool(row: Row, name: Text) -> Bool {
+  let found = value(row, name)
+  case found {
+    Value.Bool(found) -> found
+    other -> mismatch(name, "Bool", other)
+  }
+}
+
+/// The `Bytes` in the column `name`.
+///
+/// Fails with: `SqlError.NoColumn`, `SqlError.UnexpectedNull` or
+/// `SqlError.WrongType`.
+/// Cost: O(n) in the columns.
+pub fn bytes(row: Row, name: Text) -> Bytes {
+  let found = value(row, name)
+  case found {
+    Value.Bytes(found) -> found
+    other -> mismatch(name, "Bytes", other)
+  }
+}
+
+/// The column `name` read with `read`, or `None` when it is null:
+/// `Sql.nullable(row, "email", Sql.text)`.
+///
+/// Fails with: what `read` fails with, and `SqlError.NoColumn`.
+/// Cost: O(n) in the columns, plus `read`.
+pub fn nullable<T>(row: Row, name: Text, read: fn(Row, Text) -> T errors SqlError) -> Option<T> {
+  let found = value(row, name)
+  case found {
+    Value.Null -> None
+    _ -> Some(read(row, name))
+  }
+}
+
+fn mismatch(column: Text, expected: Text, found: Value) -> Never {
+  case found {
+    Value.Null -> Failure(SqlError.UnexpectedNull(column))
+    _ -> Failure(SqlError.WrongType(column, expected, kind(found)))
+  }
+}
+
+fn kind(value: Value) -> Text {
+  case value {
+    Value.Null -> "Null"
+    Value.Bool(_) -> "Bool"
+    Value.Int(_) -> "Int"
+    Value.Float(_) -> "Float"
+    Value.Decimal(_) -> "Decimal"
+    Value.Text(_) -> "Text"
+    Value.Bytes(_) -> "Bytes"
+  }
+}
+
+// 5. Running statements and transactions.
+
+fn run(db: Database, sql: Text, params: List<Value>) -> Reply {
+  case db.place {
+    Place.Pinned(connection, _) -> connection.run(sql, params)
+    Place.Pooled(_, _, _, _) -> borrow(db, fn(connection) { connection.run(sql, params) })
+  }
+}
+
+fn outermost<T, E, R>(connection: Connection, body: fn(Database) -> T errors E needs R) -> T needs R {
+  connection.begin()
+  case Result.capture(fn() {
+    body(Database(Place.Pinned(connection, 1)))
+  }) {
+    Ok(result) -> {
+      connection.commit()
+      result
+    }
+    Err(error) -> {
+      // A failed rollback leaves the connection for the pool's reset, which
+      // closes it if it cannot be cleaned.
+      let _ = Result.capture(fn() { connection.rollback() })
+      Failure(error)
+    }
+  }
+}
+
+// A savepoint named for its depth, so nested ones never collide. A defect or
+// cancellation inside it ends the outer transaction too, whose connection the
+// pool's reset rolls back.
+fn savepoint<T, E, R>(connection: Connection, depth: Int, body: fn(Database) -> T errors E needs R) -> T needs R {
+  let name = "chimi_${depth}"
+  let _ = connection.run("SAVEPOINT ${name}", [])
+  case Result.capture(fn() {
+    body(Database(Place.Pinned(connection, depth + 1)))
+  }) {
+    Ok(result) -> {
+      let _ = connection.run("RELEASE SAVEPOINT ${name}", [])
+      result
+    }
+    Err(error) -> {
+      let _ = connection.run("ROLLBACK TO SAVEPOINT ${name}", [])
+      let _ = connection.run("RELEASE SAVEPOINT ${name}", [])
+      Failure(error)
+    }
+  }
+}
+
+// 6. The pool.
+
+// The pool's settings; fixed until the settings shape is decided.
+struct Limits {
+  size: Int,
+  wait: Duration,
+  reset: Duration,
+}
+
+fn limits() -> Limits {
+  Limits(10, Duration.seconds(30), Duration.seconds(5))
+}
+
+// What a borrower asks of the keeper. `Take` waits for a grant; `Return`
+// gives back a connection that is clean again; `Done` frees the borrower's
+// slot, after its connection was returned or closed.
+enum Ask {
+  Take(reply: Channel.Sender<Grant>)
+  Return(connection: Connection)
+  Done
+  Close
+}
+
+// What a borrower is given: an idle connection, or a slot in which to open a
+// new one itself, so a slow connect never holds up the keeper.
+enum Grant {
+  Idle(connection: Connection)
+  Permit
+}
+
+// The keeper's receiver, held in a struct so that each pass reads a fresh
+// binding of it: receiving on a captured receiver whose messages hold
+// functions would otherwise count as moving it inside the loop.
+struct Keeper {
+  asks: Channel.Receiver<Ask>,
+}
+
+// The keeper's state: idle connections, slots held by borrowers, and the
+// borrowers waiting for a grant, oldest first.
+struct Pool {
+  idle: List<Connection>,
+  held: Int,
+  waiting: List<Channel.Sender<Grant>>,
+}
+
+// Owns the pool's state in its loop, so tasks share the pool through the
+// shareable sender of its asks. A slot is held from a grant until `Done`;
+// an idle connection keeps no slot, so `held + idle` never passes `size`
+// for longer than the moment between a `Return` and its `Done`.
+fn keep(keeper: Keeper, size: Int) -> Void {
+  loop pool = Pool([], 0, []) {
+    let asks = keeper.asks
+    let next = case Channel.receive(asks) {
+      Success(received) -> received
+      Failure(_) -> Receive.Drained
+    }
+    case next {
+      Receive.Drained -> {
+        List.each(pool.idle, fn(connection) { connection.close() })
+        break Void
+      }
+      Receive.Received(Ask.Close) -> {
+        List.each(pool.idle, fn(connection) { connection.close() })
+        break Void
+      }
+      Receive.Received(Ask.Take(reply)) -> serve_waiting(Pool(pool.idle, pool.held, List.push(pool.waiting, reply)), size)
+      Receive.Received(Ask.Return(connection)) -> serve_waiting(Pool(List.push(pool.idle, connection), pool.held, pool.waiting), size)
+      Receive.Received(Ask.Done) -> serve_waiting(Pool(pool.idle, pool.held - 1, pool.waiting), size)
+    }
+  }
+}
+
+// Grants to waiting borrowers while there is an idle connection or room for
+// a new one. A waiter that gave up (its wait timed out) refuses the grant,
+// which comes back and goes to the next.
+fn serve_waiting(pool: Pool, size: Int) -> Pool {
+  loop state = pool {
+    case (state.waiting, state.idle, state.held + List.length(state.idle) < size) {
+      ([], _, _) -> break state
+      ([waiter, ..rest], [connection, ..idle], _) -> case offer(waiter, Grant.Idle(connection)) {
+        None -> Pool(idle, state.held + 1, rest)
+        Some(Grant.Idle(back)) -> Pool(List.append([back], idle), state.held, rest)
+        Some(Grant.Permit) -> Pool(idle, state.held, rest)
+      }
+      ([waiter, ..rest], [], True) -> case offer(waiter, Grant.Permit) {
+        None -> Pool([], state.held + 1, rest)
+        Some(_) -> Pool([], state.held, rest)
+      }
+      ([_, .._], [], False) -> break state
+    }
+  }
+}
+
+// Runs `use` on a connection from the pool. The slot is freed and the
+// connection returned (once reset) or closed on every way out of `use`, so a
+// connection that broke, or was cut off mid-statement by a cancellation, is
+// never reused.
+fn borrow<T, E, R>(db: Database, use: fn(Connection) -> T errors E needs R) -> T needs R {
+  case db.place {
+    Place.Pinned(connection, _) -> use(connection)
+    Place.Pooled(asks, driver, target, bounds) -> Resource.scoped(fn() { take(asks, bounds.wait) }, fn(_) {
+      let _ = tell(asks, Ask.Done)
+      Void
+    }, fn(grant) {
+      Resource.scoped(fn() { opened(grant, driver, target) }, fn(connection) {
+        give_back(asks, connection, bounds.reset)
+      }, use)
+    })
+  }
+}
+
+fn take(asks: Channel.Sender<Ask>, wait: Duration) -> Grant {
+  let answer = Result.capture(fn() {
+    Task.timeout(fn() {
+      let reply = Channel.bounded(0)
+      let grants = reply.receiver
+      case tell(asks, Ask.Take(reply.sender)) {
+        None -> Void
+        Some(_) -> Failure(SqlError.PoolClosed)
+      }
+      let granted = case Result.capture(fn() { Channel.receive(grants) }) {
+        Ok(received) -> received
+        Err(_) -> Receive.Drained
+      }
+      case granted {
+        Receive.Received(grant) -> grant
+        Receive.Drained -> Failure(SqlError.PoolClosed)
+      }
+    }, wait)
+  })
+  case answer {
+    Ok(grant) -> grant
+    Err(SqlError.PoolClosed) -> Failure(SqlError.PoolClosed)
+    Err(_) -> Failure(SqlError.PoolTimedOut(wait))
+  }
+}
+
+fn opened(grant: Grant, driver: Driver, target: Text) -> Connection {
+  case grant {
+    Grant.Idle(connection) -> connection
+    Grant.Permit -> driver.connect(target)
+  }
+}
+
+fn give_back(asks: Channel.Sender<Ask>, connection: Connection, limit: Duration) -> Void {
+  case Result.capture(fn() {
+    Task.timeout(fn() { connection.reset() }, limit)
+  }) {
+    Ok(_) -> case tell(asks, Ask.Return(connection)) {
+      Some(Ask.Return(back)) -> back.close()
+      _ -> Void
+    }
+    Err(_) -> connection.close()
+  }
+}
+
+// Sends `ask` to the keeper, and gives it back when the keeper is gone. Both
+// sends go through a parameter: the checker counts a payload built in place,
+// such as `Ask.Done`, as task-local because the type holds functions.
+fn tell(asks: Channel.Sender<Ask>, ask: Ask) -> Option<Ask> {
+  case Channel.send(asks, ask) {
+    Success(_) -> None
+    Failure(Channel.SendError.Aborted(back)) -> Some(back)
+    Failure(Channel.SendError.Closed(back)) -> Some(back)
+  }
+}
+
+// Offers `grant` to a waiting borrower, and gives it back when the borrower
+// stopped waiting.
+fn offer(waiter: Channel.Sender<Grant>, grant: Grant) -> Option<Grant> {
+  case Channel.send(waiter, grant) {
+    Success(_) -> None
+    Failure(Channel.SendError.Aborted(back)) -> Some(back)
+    Failure(Channel.SendError.Closed(back)) -> Some(back)
+  }
+}
