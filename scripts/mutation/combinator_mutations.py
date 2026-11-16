@@ -13,6 +13,7 @@ CRATE = "compiler/chimi"
 
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 SCOPE = "../../runtime/chimi-fiber/src/scheduler/scope.rs"
+PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 RUNTIME = "runtime/native/runtime.c"
 
 
@@ -28,14 +29,21 @@ MUTATIONS = [
     combinators("a terminating child does not wake its waiting parent", SCHEDULER, [(
         "                .waiting_any\n                .clear();\n            let _ = self.wake(parent);",
         "                .waiting_any\n                .clear();")]),
-    # A firing scope withdraws the wait.
-    combinators("a scope cannot withdraw a combinator's wait", SCOPE, [(
-        "            | super::REQUEST_PROCESS_RECEIVE\n            | super::REQUEST_TASK_ANY\n    )",
-        "            | super::REQUEST_PROCESS_RECEIVE\n    )")]),
+    # No mutant drops REQUEST_TASK_ANY from scope.rs's withdrawable list: a
+    # firing scope cancels every child of the waiting task too, the first
+    # cancelled child wakes the wait, and the call ends cancelled at the same
+    # instant, so the mutant is equivalent.
     # The decided outcome cancels the rest.
     combinators("the losers are not cancelled", RUNTIME, [(
-        "      ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TASK_CANCEL, .task = children.waiting[index]};\n",
-        "      ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TIMER_NOW};\n")]),
+        "    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TASK_CANCEL, .task = children->waiting[index]};\n",
+        "    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TIMER_NOW};\n")]),
+    combinators("the losers are neither cancelled nor drained", RUNTIME, [(
+        "  if (children.live > 0) {\n    if (!cancel_live_children(&children)) {",
+        "  if (false) {\n    if (!cancel_live_children(&children)) {")]),
+    # A stop interrupts a draining process body's combinator wait.
+    combinators("a stop does not interrupt a draining body's combinator", PROCESS, [(
+        "        0 | super::REQUEST_TASK_RESULT\n            | super::REQUEST_TASK_ANY\n",
+        "        0 | super::REQUEST_TASK_RESULT\n")]),
     combinators("Task.race waits for every child", RUNTIME, [(
         "    } else if (intrinsic == CHIMI_INTRINSIC_TASK_RACE || outcome->kind == CONTROL_FAILURE) {",
         "    } else if (outcome->kind == CONTROL_FAILURE) {")]),

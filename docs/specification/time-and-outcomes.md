@@ -1265,6 +1265,12 @@ program.
   number, so "first" is termination order even when several end at one
   instant. It is a cancellation point that a firing scope withdraws, so
   `Task.timeout` interrupts a waiting combinator.
+  A child that ends cancelled while the caller was not, because it ran
+  `Task.result` on a task it cancelled itself, cancels the caller, as
+  `Task.result` of that child would; the race contract's "first to terminate
+  with success or expected failure" does not skip it. A stop interrupts the
+  wait of a process body that is draining queued messages, as it interrupts
+  `Task.result`.
 - **Cancelling and draining.** Once the outcome is decided, the combinator
   cancels the rest and waits for each to be terminal with `REQUEST_TASK_DRAIN`,
   which is neither a cancellation point nor withdrawable: a scope that fires

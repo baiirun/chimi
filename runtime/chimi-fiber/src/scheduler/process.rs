@@ -2311,6 +2311,7 @@ fn interrupted_while_draining(kind: u32) -> bool {
     matches!(
         kind,
         0 | super::REQUEST_TASK_RESULT
+            | super::REQUEST_TASK_ANY
             | super::REQUEST_CHANNEL_SEND
             | super::REQUEST_CHANNEL_RECEIVE
             | super::REQUEST_TIMER_SLEEP_UNTIL
@@ -2318,11 +2319,14 @@ fn interrupted_while_draining(kind: u32) -> bool {
     )
 }
 
-/// Request kinds that may leave the caller parked.
+/// Request kinds that may leave the caller parked. `REQUEST_TASK_DRAIN` is
+/// left out: a combinator issues it only after it decided its outcome, and its
+/// children are cancelled, so the drain ends promptly and is always served.
 fn can_park(kind: u32) -> bool {
     matches!(
         kind,
         super::REQUEST_TASK_RESULT
+            | super::REQUEST_TASK_ANY
             | super::REQUEST_CHANNEL_SEND
             | super::REQUEST_CHANNEL_RECEIVE
             | super::REQUEST_TIMER_SLEEP_UNTIL

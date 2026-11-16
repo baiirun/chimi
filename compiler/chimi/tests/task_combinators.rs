@@ -294,8 +294,7 @@ fn task_all_of_an_empty_list_is_an_empty_list() {
     assert_success(&run, "0");
 }
 
-// Rejects a child defect that the caller survives, or one that waits for the
-// slow sibling instead of unwinding the caller.
+// Rejects a child defect that the caller survives or turns into a failure.
 #[test]
 fn a_child_defect_unwinds_the_caller_of_task_all() {
     let run = run_virtual(
@@ -357,17 +356,26 @@ fn task_results_waits_for_every_child_and_stores_each_outcome() {
 // ----- Task.race --------------------------------------------------------------
 
 // Rejects the input order deciding the winner, waiting for the losers to
-// finish (time 9), and a loser left running past the call: its effect would
-// show as a later sleep of the root.
+// finish (time 9), and a loser left running past the call: it would send 9
+// on the channel at time 9, before the root's own 0 at time 10.
 #[test]
 fn task_race_returns_the_first_outcome_and_drains_the_losers() {
     let run = run_virtual(
         "race",
         concat!(
+            "import std/channel as Channel\n",
+            "import std/channel.{Receive, Sender}\n",
+            "fn report_after(seconds: Int, report: Sender<Int>) -> Int {\n",
+            "  Clock.sleep(Duration.seconds(seconds))\n",
+            "  Channel.send(report, 9)\n",
+            "  1\n",
+            "}\n",
             "pub fn main() -> List<Int> {\n",
+            "  let reports = Channel.bounded(4)\n",
+            "  let report = reports.sender\n",
             "  let start = Clock.now()\n",
             "  let won = Task.race([\n",
-            "    fn() { after(9, 1) },\n",
+            "    fn() { report_after(9, report) },\n",
             "    fn() { after(2, 2) },\n",
             "    fn() { after(5, 3) },\n",
             "  ])\n",
@@ -375,11 +383,82 @@ fn task_race_returns_the_first_outcome_and_drains_the_losers() {
             "    Success(value) -> value\n",
             "    Failure(JobError.Broken(code)) -> code\n",
             "  }\n",
-            "  [won, failed, elapsed(start)]\n",
+            "  let spent = elapsed(start)\n",
+            "  Clock.sleep(Duration.seconds(7))\n",
+            "  Channel.send(reports.sender, 0)\n",
+            "  let got = Channel.receive(reports.receiver)\n",
+            "  let first = case got {\n",
+            "    Receive.Received(value) -> value\n",
+            "    Receive.Drained -> -1\n",
+            "  }\n",
+            "  [won, failed, spent, first]\n",
             "}\n",
         ),
     );
-    assert_success(&run, "[2,6,3]");
+    assert_success(&run, "[2,6,3,0]");
+}
+
+// Rejects a combinator that treats a child's own cancellation as a lost
+// race: a child that ends cancelled cancels the caller, as `Task.result` of
+// it would.
+#[test]
+fn a_child_that_ends_cancelled_cancels_the_caller_of_task_race() {
+    let run = run_virtual(
+        "race-self-cancel",
+        concat!(
+            "fn cancel_own() -> Int {\n",
+            "  let inner = Task.start(fn() { after(5, 1) })\n",
+            "  Task.cancel(inner)\n",
+            "  Task.result(inner)\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  Task.race([cancel_own, fn() { after(3, 2) }])\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(run.process.status.code(), Some(130), "{}", run.outcome);
+}
+
+// ----- Processes --------------------------------------------------------------
+
+// Rejects a combinator wait that a stop cannot interrupt once the body is
+// draining queued messages: the removal would wait out `shutdown_within`
+// (30 seconds) instead of returning at once, as it does for `Task.result`.
+#[test]
+fn a_stop_interrupts_a_draining_process_body_waiting_in_task_all() {
+    let run = run_virtual(
+        "process-drain",
+        concat!(
+            "import std/process as Process\n",
+            "import std/process.{Inbox}\n",
+            "import std/supervisor as Supervisor\n",
+            "pub enum Message {\n  Job(n: Int)\n}\n",
+            "fn body(inbox: Inbox<Message>) -> Void {\n",
+            "  loop handled = 0 {\n",
+            "    case Process.receive(inbox) {\n",
+            "      Message.Job(n) -> case n == 2 {\n",
+            "        True -> handled + List.length(Task.all([fn() { after(100, 1) }]))\n",
+            "        False -> handled + 1\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(1, Duration.seconds(300))))\n",
+            "  let managed = Supervisor.start_process(root, Process.spec(body, 4, Duration.seconds(30)), Supervisor.Restart.OnDefect)\n",
+            "  let address = Supervisor.address(managed)\n",
+            "  Clock.sleep(Duration.milliseconds(1))\n",
+            "  let start = Clock.now()\n",
+            "  Process.send(address, Message.Job(1))\n",
+            "  Process.send(address, Message.Job(2))\n",
+            "  Supervisor.remove_process(root, managed)\n",
+            "  let spent = elapsed(start)\n",
+            "  Supervisor.stop(root)\n",
+            "  spent\n",
+            "}\n",
+        ),
+    );
+    assert_success(&run, "0");
 }
 
 // Rejects an empty race that parks forever, returns a value, or fails.

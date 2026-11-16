@@ -7726,6 +7726,15 @@ static ChimiControl *stored_outcome(ChimiControl *outcome, uint32_t call_node) {
   return success(failed ? with_stored_cause(stored, control_cause(outcome)) : stored);
 }
 
+/* Cancels every child still live; false when this task was cancelled meanwhile. */
+static bool cancel_live_children(const CombinatorChildren *children) {
+  for (uint32_t index = 0; index < children->live; ++index) {
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TASK_CANCEL, .task = children->waiting[index]};
+    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return false;
+  }
+  return true;
+}
+
 static ChimiControl *run_combinator(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue *operations,
                                     uint64_t span, uint32_t call_node,
                                     ChimiEnvironment *environment) {
@@ -7767,12 +7776,17 @@ static ChimiControl *run_combinator(ChimiRuntime *runtime, uint32_t intrinsic, C
     ChimiControl *outcome =
       combinator_next(&children, false, &position, &interrupted, &child_cancelled, call_node);
     if (interrupted) {
+      /* A child defect reaches here only when this task absorbs it (a process
+         body that is shutting down); the siblings stop now, not when the body
+         ends. */
+      cancel_live_children(&children);
       combinator_children_free(&children);
       return interrupted;
     }
     if (child_cancelled) {
-      /* Only a scope or a shutdown cancels a combinator's child, and it cancels
-         this task too. */
+      /* A child that ends cancelled cancels this call, as `Task.result` of it
+         would: a scope or shutdown cancelled this task too, or the child ran
+         `Task.result` on a task it cancelled itself. */
       decided = cancelled();
     } else if (outcome->kind != CONTROL_SUCCESS && outcome->kind != CONTROL_FAILURE) {
       decided = outcome;
@@ -7788,12 +7802,9 @@ static ChimiControl *run_combinator(ChimiRuntime *runtime, uint32_t intrinsic, C
   }
 
   if (children.live > 0) {
-    for (uint32_t index = 0; index < children.live; ++index) {
-      ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TASK_CANCEL, .task = children.waiting[index]};
-      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) {
-        combinator_children_free(&children);
-        return cancelled();
-      }
+    if (!cancel_live_children(&children)) {
+      combinator_children_free(&children);
+      return cancelled();
     }
     bool collect_siblings = intrinsic == CHIMI_INTRINSIC_TASK_ALL && decided->kind == CONTROL_FAILURE;
     ChimiValue *cause = collect_siblings ? control_cause(decided) : NULL;
