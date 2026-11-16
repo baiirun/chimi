@@ -998,7 +998,7 @@ fn a_stop_signal_during_a_stop_ends_the_program_by_it() {
 }
 "#,
     );
-    let mut runner = Command::new(scratch.0.join("runner"))
+    let runner = Command::new(scratch.0.join("runner"))
         .current_dir(&scratch.0)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -1014,13 +1014,9 @@ fn a_stop_signal_during_a_stop_ends_the_program_by_it() {
     let sent = Command::new("kill").args(["-TERM", &runner.id().to_string()]).status().expect("run kill");
     assert!(sent.success());
     let output = runner.wait_with_output().expect("wait for the program");
-    assert_eq!(output.status.signal(), Some(libc_sigterm()), "{:?} {}", output.status, String::from_utf8_lossy(&output.stderr));
+    assert_eq!(output.status.signal(), Some(15), "{:?} {}", output.status, String::from_utf8_lossy(&output.stderr));
     let pid: i32 = std::fs::read_to_string(scratch.0.join("child.pid")).unwrap().trim().parse().unwrap();
     assert!(!exists(pid), "the child {pid} outlived the program");
-}
-
-fn libc_sigterm() -> i32 {
-    15
 }
 
 // Rejects a runner that leaves a child behind when the program dies: a
