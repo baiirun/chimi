@@ -970,7 +970,8 @@ impl TypedProject {
     }
 
     /// Whether the test provider plan closes this need: `clock: Clock` under the
-    /// virtual source and a captured `Console` under any name, as on `main`.
+    /// virtual source, `random: Random` seeded from the run seed and the test's
+    /// identity, and a captured `Console` under any name, as on `main`.
     /// Unlike `main`, a test gets no `FileSystem`.
     fn test_plan_closes(&self, need: &Need) -> bool {
         let CanonicalType::Named { symbol, arguments } = &self.types[need.interface.raw() as usize]
@@ -983,13 +984,16 @@ impl TypedProject {
         match self.resolved.standard_symbol(*symbol) {
             Some(StandardSymbol::Type(StandardType::Console)) => true,
             Some(StandardSymbol::Type(StandardType::Clock)) => need.lexical_name == "clock",
+            Some(StandardSymbol::Type(StandardType::Random)) => need.lexical_name == "random",
             _ => false,
         }
     }
 
     /// Whether the runner's provider plan closes this need on `main`: the
-    /// native `Console` and `FileSystem` under any name, and the execution
-    /// clock provider for `clock: Clock` (std/clock), whose need name is fixed.
+    /// native `Console` and `FileSystem` under any name, the execution clock
+    /// provider for `clock: Clock` (std/clock), and a generator seeded from the
+    /// operating system for `random: Random` (std/random); those need names are
+    /// fixed.
     fn runner_closes(&self, need: &Need) -> bool {
         let CanonicalType::Named { symbol, arguments } = &self.types[need.interface.raw() as usize]
         else {
@@ -1001,6 +1005,7 @@ impl TypedProject {
         match self.resolved.standard_symbol(*symbol) {
             Some(StandardSymbol::Type(StandardType::Console | StandardType::FileSystem)) => true,
             Some(StandardSymbol::Type(StandardType::Clock)) => need.lexical_name == "clock",
+            Some(StandardSymbol::Type(StandardType::Random)) => need.lexical_name == "random",
             _ => false,
         }
     }

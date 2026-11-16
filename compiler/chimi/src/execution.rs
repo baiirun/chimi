@@ -65,6 +65,8 @@ pub struct ExecutionConfig {
     application_arguments: Vec<String>,
     standard_input: Vec<u8>,
     max_line_bytes: usize,
+    /// The `random` provider's seed; `None` seeds it from the operating system.
+    random_seed: Option<u64>,
 }
 
 impl ExecutionConfig {
@@ -84,6 +86,7 @@ impl ExecutionConfig {
             application_arguments: Vec::new(),
             standard_input: Vec::new(),
             max_line_bytes: 1024 * 1024,
+            random_seed: None,
         })
     }
 
@@ -120,6 +123,12 @@ impl ExecutionConfig {
 
     pub fn with_standard_input(mut self, input: impl Into<Vec<u8>>) -> Self {
         self.standard_input = input.into();
+        self
+    }
+
+    /// Seeds the `random` provider, as `chimi test` does for each test.
+    pub const fn with_random_seed(mut self, seed: u64) -> Self {
+        self.random_seed = Some(seed);
         self
     }
 
@@ -267,6 +276,9 @@ pub struct ExecutionReport {
     pub failure_rendering: Option<String>,
     pub application_stdout: String,
     pub application_stderr: String,
+    /// Whether the execution drew from its `random` provider, so a failing
+    /// test's report names the seed.
+    pub random_read: bool,
 }
 
 impl ExecutionReport {
@@ -774,6 +786,7 @@ enum HostFunction {
     ProcessUtf8Lines,
     WriteLine,
     WriteError,
+    RandomNextInt,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -925,6 +938,8 @@ struct Evaluator<'core> {
     /// The id the next recorder or script takes, from 1 in creation order, as
     /// the native runtime numbers them, so both order handles alike.
     next_test_log: u64,
+    /// The `random` provider's generator, made on the first draw.
+    random: Option<crate::random_source::Generator>,
 }
 
 impl<'core> Evaluator<'core> {
@@ -950,6 +965,7 @@ impl<'core> Evaluator<'core> {
             application_stderr: String::new(),
             assertion_calls: std::cell::OnceCell::new(),
             next_test_log: 1,
+            random: None,
         }
     }
 
@@ -1016,6 +1032,7 @@ impl<'core> Evaluator<'core> {
             failure_rendering,
             application_stdout: self.application_stdout,
             application_stderr: self.application_stderr,
+            random_read: self.random.is_some(),
         }
     }
 
@@ -1556,6 +1573,9 @@ impl<'core> Evaluator<'core> {
                 Some(HostFunction::ProcessUtf8Lines)
             }
             (Some(StandardSymbol::Type(StandardType::Console)), 0) => Some(HostFunction::WriteLine),
+            (Some(StandardSymbol::Type(StandardType::Random)), 0) => {
+                Some(HostFunction::RandomNextInt)
+            }
             (Some(StandardSymbol::Type(StandardType::Console)), 1) => {
                 Some(HostFunction::WriteError)
             }
@@ -1577,6 +1597,16 @@ impl<'core> Evaluator<'core> {
             return stop;
         }
         match function {
+            HostFunction::RandomNextInt => {
+                let seed = self.config.random_seed;
+                let generator = self.random.get_or_insert_with(|| {
+                    seed.map_or_else(
+                        crate::random_source::Generator::from_os,
+                        crate::random_source::Generator::seeded,
+                    )
+                });
+                Control::Success(RuntimeValue::Integer(generator.next().cast_signed()))
+            }
             HostFunction::WriteLine | HostFunction::WriteError => {
                 let [RuntimeValue::Text(line)] = arguments.as_slice() else {
                     return Control::Defect {
@@ -2836,6 +2866,7 @@ fn callable_name(callable: &RuntimeCallable) -> &str {
         RuntimeCallable::Host(HostFunction::ProcessUtf8Lines) => "process_utf8_lines",
         RuntimeCallable::Host(HostFunction::WriteLine) => "write_line",
         RuntimeCallable::Host(HostFunction::WriteError) => "write_error",
+        RuntimeCallable::Host(HostFunction::RandomNextInt) => "next_int",
         RuntimeCallable::Constructor { name, .. } => name,
     }
 }
@@ -3075,6 +3106,7 @@ pub(crate) fn execute_legacy(core: LegacyCoreProgram, config: ExecutionConfig) -
         }),
         application_stdout: String::new(),
         application_stderr: String::new(),
+        random_read: false,
     }
 }
 
@@ -3120,6 +3152,7 @@ mod tests {
                 application_arguments: Vec::new(),
                 standard_input: Vec::new(),
                 max_line_bytes: 1024 * 1024,
+                random_seed: None,
             }
         );
         assert_eq!(

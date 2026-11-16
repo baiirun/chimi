@@ -1,0 +1,114 @@
+/// Random numbers from a `Random` provider, needed under the name `random`.
+///
+/// A program's `main` gets a generator seeded from the operating system. It is
+/// fine for jitter, sampling and shuffling, and not suitable for keys or
+/// tokens. A test gets a seeded generator, so its numbers repeat on every run
+/// (`chimi test --seed`). Every function here is written over `next_int`, so a
+/// seeded provider fixes their results on both backends.
+
+import std/debug as Debug
+import std/float as Float
+import std/int as Int
+import std/list as List
+import std/range as Range
+
+// 1. Public types.
+
+/// A source of random bits. Supply another with `using { random: ... }`, as
+/// with `Clock`.
+pub interface Random {
+  /// 64 uniformly distributed bits, as an `Int`.
+  next_int: fn() -> Int
+}
+
+// 2. Drawing numbers.
+
+/// A uniformly distributed `Int` in `range`, such as `Random.int(1..=6)`.
+///
+/// Defects when: `range` is empty, or holds more values than an `Int` counts.
+/// Cost: O(1) expected draws.
+pub fn int(range: Range) -> Int needs {
+  random: Random
+} {
+  let count = Range.length(range)
+  case count == 0 {
+    True -> Debug.crash("Random.int: the range ${Debug.render(range)} is empty")
+    False -> Range.start(range) + below(count)
+  }
+}
+
+/// A uniformly distributed `Float` from `0.0` up to but excluding `1.0`, with
+/// 53 random bits.
+///
+/// Cost: O(1).
+pub fn float() -> Float needs {
+  random: Random
+} {
+  Float.from_int(bits_63() / 1024) / 9007199254740992.0
+}
+
+/// One item of `list`, each equally likely, or `None` when it is empty.
+///
+/// Cost: O(log n).
+pub fn pick<T>(list: List<T>) -> Option<T> needs {
+  random: Random
+} {
+  case List.length(list) {
+    0 -> None
+    length -> List.get(list, below(length))
+  }
+}
+
+/// The items of `list` in a uniformly random order (Fisher-Yates).
+///
+/// Cost: O(n log n).
+pub fn shuffle<T>(list: List<T>) -> List<T> needs {
+  random: Random
+} {
+  loop state = (list, List.length(list) - 1) {
+    let (items, last) = state
+    case last < 1 {
+      True -> break items
+      False -> {
+        let other = below(last + 1)
+        (swap(items, last, other), last - 1)
+      }
+    }
+  }
+}
+
+// 3. Helpers.
+
+/// A uniformly distributed `Int` from 0 up to but excluding `count`, which is
+/// positive. Draws again when a draw would favour the low values: 2^63 values
+/// do not split evenly into `count` buckets, and the `skew` largest are left out.
+fn below(count: Int) -> Int needs {
+  random: Random
+} {
+  let largest = 9223372036854775807
+  let skew = Int.modulo(Int.modulo(largest, count) + 1, count)
+  loop draw = bits_63() {
+    case skew == 0 or draw <= largest - skew {
+      True -> break Int.modulo(draw, count)
+      False -> bits_63()
+    }
+  }
+}
+
+/// 63 uniformly distributed bits: `next_int` with its sign bit cleared.
+fn bits_63() -> Int needs {
+  random: Random
+} {
+  let bits = random.next_int()
+  case bits < 0 {
+    True -> bits + 9223372036854775807 + 1
+    False -> bits
+  }
+}
+
+fn swap<T>(items: List<T>, left: Int, right: Int) -> List<T> {
+  case (List.get(items, left), List.get(items, right)) {
+    (Some(first), Some(second)) -> List.set(List.set(items, left, second), right, first)
+    _ -> items
+  }
+}
