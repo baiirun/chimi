@@ -31,8 +31,8 @@ MUTATIONS = [
         "  return entry->type != NULL ? entry : NULL;",
     )]),
     mutant("closing twice releases twice", C, [(
-        "  BindingHandleSlot *entry = value ? binding_handle_slot(value) : NULL;\n  if (entry != NULL) release_binding_slot(entry, value->as.handle.slot);",
-        "  if (value != NULL && value->as.handle.slot < binding_handle_count) {\n    BindingHandleSlot *entry = &binding_handles[value->as.handle.slot];\n    if (entry->type != NULL) release_binding_slot(entry, value->as.handle.slot);\n  }",
+        "  BindingHandleSlot *entry = value ? binding_handle_slot(value) : NULL;\n  if (entry != NULL && entry->type == type) release_binding_slot(entry, value->as.handle.slot);",
+        "  if (value != NULL && value->as.handle.slot < binding_handle_count) {\n    BindingHandleSlot *entry = &binding_handles[value->as.handle.slot];\n    if (entry->type == type) release_binding_slot(entry, value->as.handle.slot);\n  }",
     )]),
     mutant("a handle of another type is accepted", C, [(
         "  return entry != NULL && entry->type == type ? entry->state : NULL;",
