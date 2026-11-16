@@ -12035,3 +12035,21 @@ fn a_failure_set_type_argument_carries_its_failures_through_a_field_call() {
     );
     assert_eq!(run_both("failure-set-argument-nested-after", nested_after), expected);
 }
+
+// An unannotated result is re-read on every pass: a record of functions built
+// before the functions it names are checked gains their failures, so the order
+// of declarations does not matter (a runner provider's record, CHI-248).
+#[test]
+fn an_unannotated_record_result_gains_the_failures_of_later_functions() {
+    let program = concat!(
+        "pub enum Oops {\n  Bad\n}\n\n",
+        "fn provider() {\n  { run: later }\n}\n\n",
+        "fn later() -> Int {\n  middle()\n}\n\n",
+        "fn middle() -> Int {\n  Failure(Oops.Bad)\n}\n\n",
+        "pub fn main() -> Int {\n  let built = provider()\n  case built.run() {\n    Success(value) -> value\n    Failure(Oops.Bad) -> 7\n  }\n}\n",
+    );
+    assert_eq!(
+        run_both("unannotated-record-result", program),
+        "\"outcome\":\"success\",\"value\":7"
+    );
+}

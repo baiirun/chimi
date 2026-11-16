@@ -23,6 +23,8 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 /* The stack of every scheduler fiber: the root task, child tasks, and incarnations. */
 #define CHIMI_FIBER_STACK_BYTES (1024u * 1024u)
@@ -9449,6 +9451,374 @@ static ChimiControl *invoke_host_operation(ChimiRuntime *runtime, uint32_t intri
   }
 }
 
+/* std/fs's host core. Results are tuples whose first field is a status: a
+   non-negative result, or a portable failure code that std/fs maps to FsError,
+   the same codes execution/host_operations.rs gives from Rust's ErrorKind. The
+   message is strerror's text, which Rust's io::Error also prints. */
+enum {
+  FS_NOT_FOUND = -1, FS_PERMISSION_DENIED = -2, FS_ALREADY_EXISTS = -3, FS_NOT_A_DIRECTORY = -4,
+  FS_IS_A_DIRECTORY = -5, FS_NOT_EMPTY = -6, FS_CLOSED = -7, FS_OTHER = -8,
+};
+enum { FS_READ_CHUNK_BYTES = 64 * 1024 };
+
+static int64_t fs_failure_code(int error) {
+  switch (error) {
+    case ENOENT: return FS_NOT_FOUND;
+    case EACCES: case EPERM: return FS_PERMISSION_DENIED;
+    case EEXIST: return FS_ALREADY_EXISTS;
+    case ENOTDIR: return FS_NOT_A_DIRECTORY;
+    case EISDIR: return FS_IS_A_DIRECTORY;
+    case ENOTEMPTY: return FS_NOT_EMPTY;
+    default: return FS_OTHER;
+  }
+}
+
+static ChimiValue *fs_tuple(ChimiValue *const *values, uint32_t length) {
+  ChimiValue *tuple = new_value(VALUE_TUPLE);
+  tuple->as.record.length = length;
+  tuple->as.record.fields = allocate(length, sizeof(*tuple->as.record.fields));
+  allocation_kind(tuple->as.record.fields, ALLOCATION_FIELDS);
+  for (uint32_t index = 0; index < length; ++index)
+    tuple->as.record.fields[index] = (RuntimeField){NULL, values[index]};
+  return tuple;
+}
+
+/* (status, message) */
+static ChimiValue *fs_status(int64_t status, const char *message) {
+  ChimiValue *values[] = {integer_value(status), text_value(message)};
+  return fs_tuple(values, 2);
+}
+static ChimiValue *fs_errno_status(int error) { return fs_status(fs_failure_code(error), strerror(error)); }
+static ChimiValue *fs_result(int result) { return result == 0 ? fs_status(0, "") : fs_errno_status(errno); }
+
+/* The path's text as a C string, or NULL when it holds U+0000: a C path stops
+   there, so such a path names no file. The caller frees it. */
+static const char FS_NUL_MESSAGE[] = "path contains a NUL byte";
+static char *fs_path(const ChimiValue *path) {
+  if (memchr(path->as.text.bytes, '\0', path->as.text.length)) return NULL;
+  char *copy = malloc(path->as.text.length + 1);
+  if (!copy) exhausted_memory();
+  memcpy(copy, path->as.text.bytes, path->as.text.length);
+  copy[path->as.text.length] = '\0';
+  return copy;
+}
+
+/* The open files. A handle is `slot | generation << 32`, so a handle used after
+   its file was closed names a slot whose generation moved on and fails with
+   FS_CLOSED instead of reaching another file. Only the thread that runs Chimi
+   code touches the table. */
+typedef struct {
+  int fd;
+  uint32_t generation;
+  bool open;
+} FsFile;
+static FsFile *fs_files;
+static size_t fs_file_count;
+
+static int64_t fs_insert(int fd) {
+  size_t slot = 0;
+  while (slot < fs_file_count && fs_files[slot].open) ++slot;
+  if (slot == fs_file_count) {
+    FsFile *grown = realloc(fs_files, (fs_file_count + 1) * sizeof(*fs_files));
+    if (!grown) exhausted_memory();
+    fs_files = grown;
+    fs_files[fs_file_count++] = (FsFile){-1, 0, false};
+  }
+  fs_files[slot].fd = fd;
+  fs_files[slot].open = true;
+  return (int64_t)slot | ((int64_t)fs_files[slot].generation << 32);
+}
+
+static FsFile *fs_get(int64_t handle) {
+  uint64_t slot = (uint64_t)handle & 0xffffffffu;
+  if (handle < 0 || slot >= fs_file_count) return NULL;
+  FsFile *file = &fs_files[slot];
+  return file->open && (int64_t)file->generation == handle >> 32 ? file : NULL;
+}
+
+/* A descriptor that is not a regular file (a pipe, a terminal, a socket) is made
+   non-blocking, so a read or write that would block parks the task in
+   CHIMI_REQUEST_IO_WAIT instead of stopping every task. */
+static int fs_register(int fd) {
+  struct stat status;
+  if (fstat(fd, &status) != 0) return -1;
+  if (!S_ISREG(status.st_mode)) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags != -1) (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  }
+  return 0;
+}
+
+/* Waits for `interest` on `fd`; false when cancelled. */
+static bool fs_wait(ChimiRuntime *runtime, int fd, int64_t interest) {
+  if (CHIMI_REQUIRES_SCHEDULER) {
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_IO_WAIT, .value = fd, .token = interest};
+    return scheduler_request(&request) != CHIMI_FIBER_CANCEL;
+  }
+  struct pollfd poll_fd = {.fd = fd, .events = interest == CHIMI_IO_READABLE ? POLLIN : POLLOUT};
+  (void)poll(&poll_fd, 1, -1);
+  return !runtime->cancel;
+}
+
+static int fs_compare_names(const void *left, const void *right) {
+  return strcmp(*(char *const *)left, *(char *const *)right);
+}
+
+static ChimiControl *fs_list(const char *path) {
+  DIR *directory = opendir(path);
+  if (!directory) {
+    ChimiValue *values[] = {integer_value(fs_failure_code(errno)), list_from_values(NULL, 0),
+                            text_value(strerror(errno))};
+    return success(fs_tuple(values, 3));
+  }
+  char **names = NULL;
+  size_t count = 0, capacity = 0;
+  const char *failure = NULL;
+  int error = 0;
+  for (;;) {
+    errno = 0;
+    struct dirent *entry = readdir(directory);
+    if (!entry) {
+      error = errno;
+      break;
+    }
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+    if (!valid_utf8((const unsigned char *)entry->d_name, strlen(entry->d_name))) {
+      failure = "a name is not UTF-8";
+      break;
+    }
+    if (count == capacity) {
+      capacity = capacity ? capacity * 2 : 16;
+      char **grown = realloc(names, capacity * sizeof(*names));
+      if (!grown) exhausted_memory();
+      names = grown;
+    }
+    names[count] = strdup(entry->d_name);
+    if (!names[count]) exhausted_memory();
+    ++count;
+  }
+  closedir(directory);
+  ChimiValue *list = list_from_values(NULL, 0);
+  if (!failure && !error) {
+    qsort(names, count, sizeof(*names), fs_compare_names);
+    for (size_t index = 0; index < count; ++index) list = list_push(list, text_value(names[index]));
+  }
+  for (size_t index = 0; index < count; ++index) free(names[index]);
+  free(names);
+  int64_t status = failure ? FS_OTHER : error ? fs_failure_code(error) : 0;
+  ChimiValue *values[] = {integer_value(status), failure || error ? list_from_values(NULL, 0) : list,
+                          text_value(failure ? failure : error ? strerror(error) : "")};
+  return success(fs_tuple(values, 3));
+}
+
+#if defined(__APPLE__)
+#define FS_MODIFIED(status) ((status).st_mtimespec)
+#else
+#define FS_MODIFIED(status) ((status).st_mtim)
+#endif
+
+static ChimiControl *fs_metadata(const char *path) {
+  struct stat status;
+  if (stat(path, &status) != 0) {
+    int error = errno;
+    ChimiValue *values[] = {integer_value(fs_failure_code(error)), integer_value(0), integer_value(0),
+                            integer_value(0), text_value(strerror(error))};
+    return success(fs_tuple(values, 5));
+  }
+  int64_t kind = S_ISREG(status.st_mode) ? 0 : S_ISDIR(status.st_mode) ? 1 : 2;
+  int64_t modified = (int64_t)FS_MODIFIED(status).tv_sec * 1000000000 + (int64_t)FS_MODIFIED(status).tv_nsec;
+  ChimiValue *values[] = {integer_value(0), integer_value(kind), integer_value((int64_t)status.st_size),
+                          integer_value(modified), text_value("")};
+  return success(fs_tuple(values, 5));
+}
+
+static ChimiControl *fs_read(ChimiRuntime *runtime, int64_t handle) {
+  FsFile *file = fs_get(handle);
+  if (!file) {
+    ChimiValue *values[] = {integer_value(FS_CLOSED), bytes_from("", 0), text_value("file is closed")};
+    return success(fs_tuple(values, 3));
+  }
+  static char chunk[FS_READ_CHUNK_BYTES];
+  for (;;) {
+    ssize_t count = read(file->fd, chunk, sizeof(chunk));
+    if (count >= 0) {
+      ChimiValue *values[] = {integer_value(count > 0 ? 1 : 0), bytes_from(chunk, (size_t)count), text_value("")};
+      return success(fs_tuple(values, 3));
+    }
+    if (errno == EINTR) continue;
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      if (!fs_wait(runtime, file->fd, CHIMI_IO_READABLE)) return cancelled();
+      /* The wait may have let another task close this handle. */
+      file = fs_get(handle);
+      if (!file) return fs_read(runtime, handle);
+      continue;
+    }
+    int error = errno;
+    ChimiValue *values[] = {integer_value(fs_failure_code(error)), bytes_from("", 0), text_value(strerror(error))};
+    return success(fs_tuple(values, 3));
+  }
+}
+
+static ChimiControl *fs_write(ChimiRuntime *runtime, int64_t handle, const ChimiValue *bytes) {
+  if (!fs_get(handle)) return success(fs_status(FS_CLOSED, "file is closed"));
+  size_t written = 0;
+  while (written < bytes->as.text.length) {
+    FsFile *file = fs_get(handle);
+    if (!file) return success(fs_status(FS_CLOSED, "file is closed"));
+    ssize_t count = write(file->fd, bytes->as.text.bytes + written, bytes->as.text.length - written);
+    if (count > 0) {
+      written += (size_t)count;
+      continue;
+    }
+    if (count < 0 && errno == EINTR) continue;
+    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      if (!fs_wait(runtime, file->fd, CHIMI_IO_WRITABLE)) return cancelled();
+      continue;
+    }
+    return success(fs_errno_status(count == 0 ? EIO : errno));
+  }
+  return success(fs_status(0, ""));
+}
+
+/* A new directory under $TMPDIR (else /tmp), as Rust's temp_dir finds it, with
+   its symbolic links resolved. */
+static ChimiControl *fs_temporary_directory(uint32_t call_node) {
+  const char *base = getenv("TMPDIR");
+  if (!base || !*base) base = "/tmp";
+  size_t length = strlen(base);
+  while (length > 1 && base[length - 1] == '/') --length;
+  char *template = malloc(length + sizeof("/chimi-test-XXXXXX"));
+  if (!template) exhausted_memory();
+  memcpy(template, base, length);
+  memcpy(template + length, "/chimi-test-XXXXXX", sizeof("/chimi-test-XXXXXX"));
+  char *resolved = mkdtemp(template) ? realpath(template, NULL) : NULL;
+  free(template);
+  if (!resolved) return defect("cannot create a temporary directory", call_node);
+  ChimiValue *path = valid_utf8((const unsigned char *)resolved, strlen(resolved)) ? text_value(resolved) : NULL;
+  free(resolved);
+  return path ? success(path) : defect("cannot create a temporary directory: it is not UTF-8", call_node);
+}
+
+static bool fs_path_argument(ChimiValue *const *arguments, uint32_t argument_count, uint32_t at) {
+  return at < argument_count && arguments[at]->kind == VALUE_TEXT;
+}
+
+static ChimiControl *invoke_fs_operation(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
+                                         uint32_t argument_count, uint32_t call_node) {
+  static const uint32_t arity[] = {1, 2, 1, 2, 1, 1, 1, 1, 1, 2, 1, 0, 1};
+  if (argument_count != arity[intrinsic - CHIMI_INTRINSIC_FS_HOST_OPEN]) return intrinsic_shape_defect(call_node);
+  if (runtime->cancel) return cancelled();
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_FS_HOST_READ:
+      if (arguments[0]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
+      return fs_read(runtime, arguments[0]->as.integer);
+    case CHIMI_INTRINSIC_FS_HOST_WRITE:
+      if (arguments[0]->kind != VALUE_INTEGER || arguments[1]->kind != VALUE_BYTES)
+        return intrinsic_shape_defect(call_node);
+      return fs_write(runtime, arguments[0]->as.integer, arguments[1]);
+    case CHIMI_INTRINSIC_FS_HOST_CLOSE: {
+      if (arguments[0]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
+      FsFile *file = fs_get(arguments[0]->as.integer);
+      if (!file) return success(fs_status(FS_CLOSED, "file is closed"));
+      /* As the interpreter, which drops the file: a close error is not reported. */
+      (void)close(file->fd);
+      file->open = false;
+      file->fd = -1;
+      ++file->generation;
+      return success(fs_status(0, ""));
+    }
+    case CHIMI_INTRINSIC_FS_HOST_TEMPORARY_DIRECTORY: return fs_temporary_directory(call_node);
+    case CHIMI_INTRINSIC_FS_TEST_ROOT:
+      if (!fs_path_argument(arguments, argument_count, 0)) return intrinsic_shape_defect(call_node);
+      if (arguments[0]->as.text.length == 0 || arguments[0]->as.text.bytes[0] != '/')
+        return defect("Fs.files_within needs an absolute root", call_node);
+      return success(arguments[0]);
+    default: break;
+  }
+  if (!fs_path_argument(arguments, argument_count, 0)) return intrinsic_shape_defect(call_node);
+  char *path = fs_path(arguments[0]);
+  char *second = NULL;
+  if (intrinsic == CHIMI_INTRINSIC_FS_HOST_RENAME) {
+    if (!fs_path_argument(arguments, argument_count, 1)) {
+      free(path);
+      return intrinsic_shape_defect(call_node);
+    }
+    second = fs_path(arguments[1]);
+  }
+  if (!path || (intrinsic == CHIMI_INTRINSIC_FS_HOST_RENAME && !second)) {
+    free(path);
+    free(second);
+    switch (intrinsic) {
+      case CHIMI_INTRINSIC_FS_HOST_METADATA: {
+        ChimiValue *values[] = {integer_value(FS_OTHER), integer_value(0), integer_value(0), integer_value(0),
+                                text_value(FS_NUL_MESSAGE)};
+        return success(fs_tuple(values, 5));
+      }
+      case CHIMI_INTRINSIC_FS_HOST_LIST: {
+        ChimiValue *values[] = {integer_value(FS_OTHER), list_from_values(NULL, 0), text_value(FS_NUL_MESSAGE)};
+        return success(fs_tuple(values, 3));
+      }
+      default: return success(fs_status(FS_OTHER, FS_NUL_MESSAGE));
+    }
+  }
+  ChimiControl *control;
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_FS_HOST_OPEN: {
+      int fd = open(path, O_RDONLY | O_CLOEXEC);
+      struct stat status = {0};
+      if (fd < 0) {
+        control = success(fs_errno_status(errno));
+      } else if (fstat(fd, &status) != 0 || S_ISDIR(status.st_mode) || fs_register(fd) != 0) {
+        int error = errno != 0 && !S_ISDIR(status.st_mode) ? errno : EISDIR;
+        (void)close(fd);
+        control = success(fs_errno_status(error));
+      } else {
+        control = success(fs_status(fs_insert(fd), ""));
+      }
+      break;
+    }
+    case CHIMI_INTRINSIC_FS_HOST_CREATE: {
+      if (arguments[1]->kind != VALUE_INTEGER) {
+        control = intrinsic_shape_defect(call_node);
+        break;
+      }
+      int64_t mode = arguments[1]->as.integer;
+      int flags = O_WRONLY | O_CREAT | O_CLOEXEC | (mode == 0 ? O_TRUNC : mode == 1 ? O_APPEND : O_EXCL);
+      int fd = open(path, flags, 0666);
+      if (fd < 0) {
+        control = success(fs_errno_status(errno));
+      } else if (fs_register(fd) != 0) {
+        int error = errno;
+        (void)close(fd);
+        control = success(fs_errno_status(error));
+      } else {
+        control = success(fs_status(fs_insert(fd), ""));
+      }
+      break;
+    }
+    case CHIMI_INTRINSIC_FS_HOST_METADATA: control = fs_metadata(path); break;
+    case CHIMI_INTRINSIC_FS_HOST_LIST: control = fs_list(path); break;
+    case CHIMI_INTRINSIC_FS_HOST_CREATE_DIRECTORY: control = success(fs_result(mkdir(path, 0777))); break;
+    case CHIMI_INTRINSIC_FS_HOST_REMOVE: {
+      struct stat status;
+      if (lstat(path, &status) != 0) control = success(fs_errno_status(errno));
+      else control = success(fs_result(S_ISDIR(status.st_mode) ? rmdir(path) : unlink(path)));
+      break;
+    }
+    case CHIMI_INTRINSIC_FS_HOST_RENAME: control = success(fs_result(rename(path, second))); break;
+    case CHIMI_INTRINSIC_FS_HOST_IS_DIRECTORY: {
+      struct stat status;
+      if (lstat(path, &status) != 0) control = success(fs_errno_status(errno));
+      else control = success(fs_status(S_ISDIR(status.st_mode) ? 1 : 0, ""));
+      break;
+    }
+    default: control = intrinsic_shape_defect(call_node); break;
+  }
+  free(path);
+  free(second);
+  return control;
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
@@ -9476,6 +9846,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_test_log(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_ENV_HOST_VARIABLES && intrinsic <= CHIMI_INTRINSIC_ENV_HOST_CURRENT_DIRECTORY)
     return invoke_host_operation(runtime, intrinsic, argument_count, call_node);
+  if (intrinsic >= CHIMI_INTRINSIC_FS_HOST_OPEN && intrinsic <= CHIMI_INTRINSIC_FS_TEST_ROOT)
+    return invoke_fs_operation(runtime, intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)

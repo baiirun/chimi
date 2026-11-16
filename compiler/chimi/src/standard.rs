@@ -168,6 +168,9 @@ pub(crate) enum StandardType {
     /// `std/env.Environment`: the capability to read environment variables and
     /// the working directory; the runner closes `main`'s `environment` need.
     Environment,
+    /// `std/fs.Files`: the capability to read and change the file system; the
+    /// runner closes `main`'s `files` need.
+    Files,
 }
 
 impl StandardType {
@@ -253,6 +256,7 @@ impl StandardType {
             Self::TestMailbox => "Mailbox",
             Self::BindingHandle => "Handle",
             Self::Environment => "Environment",
+            Self::Files => "Files",
         }
     }
 
@@ -264,7 +268,8 @@ impl StandardType {
             | Self::FileSystem
             | Self::Clock
             | Self::Random
-            | Self::Environment => {
+            | Self::Environment
+            | Self::Files => {
                 StandardProperties::Opaque("a provider")
             }
             Self::ProcessAddress
@@ -612,6 +617,21 @@ pub(crate) enum StandardFunction {
     // `std/env`'s host core, which only its runner provider calls.
     EnvHostVariables,
     EnvHostCurrentDirectory,
+    // `std/fs`'s host core, which only its providers call; the last two are
+    // test-only.
+    FsHostOpen,
+    FsHostCreate,
+    FsHostRead,
+    FsHostWrite,
+    FsHostClose,
+    FsHostMetadata,
+    FsHostList,
+    FsHostCreateDirectory,
+    FsHostRemove,
+    FsHostRename,
+    FsHostIsDirectory,
+    FsHostTemporaryDirectory,
+    FsTestRoot,
 }
 
 impl StandardFunction {
@@ -916,6 +936,19 @@ impl StandardFunction {
             | Self::BindingCall => None,
             Self::PathFrom | Self::PathToText => None,
             Self::EnvHostVariables | Self::EnvHostCurrentDirectory => None,
+            Self::FsHostOpen
+            | Self::FsHostCreate
+            | Self::FsHostRead
+            | Self::FsHostWrite
+            | Self::FsHostClose
+            | Self::FsHostMetadata
+            | Self::FsHostList
+            | Self::FsHostCreateDirectory
+            | Self::FsHostRemove
+            | Self::FsHostRename
+            | Self::FsHostIsDirectory
+            | Self::FsHostTemporaryDirectory
+            | Self::FsTestRoot => None,
         }
     }
 
@@ -1109,6 +1142,19 @@ impl StandardFunction {
             Self::PathToText => "to_text",
             Self::EnvHostVariables => "host_variables",
             Self::EnvHostCurrentDirectory => "host_current_directory",
+            Self::FsHostOpen => "host_open",
+            Self::FsHostCreate => "host_create",
+            Self::FsHostRead => "host_read",
+            Self::FsHostWrite => "host_write",
+            Self::FsHostClose => "host_close",
+            Self::FsHostMetadata => "host_metadata",
+            Self::FsHostList => "host_list",
+            Self::FsHostCreateDirectory => "host_create_directory",
+            Self::FsHostRemove => "host_remove",
+            Self::FsHostRename => "host_rename",
+            Self::FsHostIsDirectory => "host_is_directory",
+            Self::FsHostTemporaryDirectory => "host_temporary_directory",
+            Self::FsTestRoot => "test_root",
         }
     }
 
@@ -1502,6 +1548,7 @@ impl StandardConstructor {
             | StandardType::Clock
             | StandardType::Random
             | StandardType::Environment
+            | StandardType::Files
             | StandardType::Instant
             | StandardType::Timestamp
             | StandardType::SelectEvent
