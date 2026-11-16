@@ -20,14 +20,14 @@ MUTATIONS = [
     dict(
         name="a writer returns once its line is queued",
         file=RUNTIME,
-        edits=[("    if (stream->resolved >= line.end) break;\n", "    break;\n")],
+        edits=[("    if (queue->resolved >= line.end) break;\n", "    break;\n")],
         targets=["console_output"],
     ),
     dict(
         name="the end of the program drops lines still queued",
         file=RUNTIME,
         edits=[
-            ("static void console_drain_all(void) {\n  for", "static void console_drain_all(void) {\n  return;\n  for"),
+            ("static void console_drain_all(void) {\n", "static void console_drain_all(void) {\n  return;\n"),
         ],
         targets=["console_output"],
     ),
@@ -38,9 +38,21 @@ MUTATIONS = [
         targets=["console_output"],
     ),
     dict(
+        name="standard error keeps its own queue when it names standard output's file",
+        file=RUNTIME,
+        edits=[("      stream->queue = output->queue;\n", "      (void)output;\n")],
+        targets=["console_output"],
+    ),
+    dict(
+        name="a failure also fails lines already written",
+        file=RUNTIME,
+        edits=[("    if (line->end > queue->resolved) line->error = error;", "    line->error = error;")],
+        targets=["console_output"],
+    ),
+    dict(
         name="the queue is not listed as shared runtime state",
         file="tests/runtime_state.rs",
-        edits=[('    "console_streams",\n', "")],
+        edits=[('    "console_queues",\n', "")],
         targets=["runtime_state"],
     ),
 ]

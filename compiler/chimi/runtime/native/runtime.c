@@ -6352,12 +6352,14 @@ static uint64_t random_next(void) {
    terminal may still hold such a write briefly.
 
    Lines from different tasks never interleave: each line goes whole onto its
-   stream's queue before its writer waits, and whichever writer the reactor
+   stream's queue before its writer waits (standard error shares standard
+   output's queue when both name the same open file), and whichever writer the reactor
    wakes writes the front of the queue, its own bytes or an earlier line's.
    A writer returns once the queue has passed the end of its line. A line once
    queued is written whole, even when its writer is cancelled while it waits:
-   later writers or the end of the program write it. A failed write drops the
-   queue and fails every line still waiting in it.
+   later writers or the end of the program write it. A body ending under a
+   terminal cancel queues its line and returns without waiting. A failed write
+   drops the queue and fails every line not yet fully written.
 
    A socket is written with send(MSG_DONTWAIT), which never blocks and leaves
    the shared descriptor alone. The queue holds at most CONSOLE_QUEUE_LIMIT
@@ -6379,14 +6381,8 @@ struct ConsoleLine {
   ConsoleLine *previous;
 };
 
-typedef enum { CONSOLE_UNKNOWN, CONSOLE_DIRECT, CONSOLE_QUEUED } ConsoleMode;
-
+/* The bytes waiting for one open file. */
 typedef struct {
-  int fd;
-  FILE *file;
-  const char *name;
-  ConsoleMode mode;
-  bool socket;
   unsigned char *bytes;
   size_t capacity;
   size_t start;
@@ -6397,8 +6393,22 @@ typedef struct {
      its writer's stack and is unlinked before the writer returns. */
   ConsoleLine *first;
   ConsoleLine *last;
+} ConsoleQueue;
+
+typedef enum { CONSOLE_UNKNOWN, CONSOLE_DIRECT, CONSOLE_QUEUED } ConsoleMode;
+
+typedef struct {
+  int fd;
+  const char *name;
+  ConsoleMode mode;
+  bool socket;
+  FILE *file;
+  /* Its own queue, or standard output's when both descriptors name the same
+     open file (`2>&1`, one terminal), so their lines never interleave. */
+  ConsoleQueue *queue;
 } ConsoleStream;
 
+static ConsoleQueue console_queues[2];
 static ConsoleStream console_streams[2] = {
   {.fd = STDOUT_FILENO, .name = "stdout"},
   {.fd = STDERR_FILENO, .name = "stderr"},
@@ -6407,87 +6417,98 @@ static ConsoleStream console_streams[2] = {
 enum { CONSOLE_QUEUE_LIMIT = 1 << 20 };
 
 static ConsoleMode console_mode(const ChimiRuntime *runtime, ConsoleStream *stream) {
-  if (stream->mode == CONSOLE_UNKNOWN) {
-    stream->file = stream->fd == STDOUT_FILENO ? stdout : stderr;
-    struct stat status;
-    bool known = fstat(stream->fd, &status) == 0;
-    bool regular = known && S_ISREG(status.st_mode);
-    stream->socket = known && S_ISSOCK(status.st_mode);
-    stream->mode = CHIMI_REQUIRES_SCHEDULER && !runtime->virtual_clock && known && !regular
-      ? CONSOLE_QUEUED : CONSOLE_DIRECT;
+  if (stream->mode != CONSOLE_UNKNOWN) return stream->mode;
+  stream->file = stream->fd == STDOUT_FILENO ? stdout : stderr;
+  stream->queue = &console_queues[stream->fd == STDOUT_FILENO ? 0 : 1];
+  struct stat status;
+  bool known = fstat(stream->fd, &status) == 0;
+  stream->socket = known && S_ISSOCK(status.st_mode);
+  stream->mode = CHIMI_REQUIRES_SCHEDULER && !runtime->virtual_clock && known && !S_ISREG(status.st_mode)
+    ? CONSOLE_QUEUED : CONSOLE_DIRECT;
+  if (stream->mode == CONSOLE_QUEUED && stream->fd == STDERR_FILENO) {
+    ConsoleStream *output = &console_streams[0];
+    struct stat other;
+    if (console_mode(runtime, output) == CONSOLE_QUEUED && fstat(output->fd, &other) == 0 &&
+        other.st_dev == status.st_dev && other.st_ino == status.st_ino)
+      stream->queue = output->queue;
   }
   return stream->mode;
 }
 
-static void console_enqueue(ConsoleStream *stream, const void *bytes, size_t length) {
-  if (stream->end + length > stream->capacity) {
-    size_t queued = stream->end - stream->start;
-    memmove(stream->bytes, stream->bytes + stream->start, queued);
-    stream->start = 0;
-    stream->end = queued;
-    if (queued + length > stream->capacity) {
-      size_t capacity = stream->capacity ? stream->capacity : 4096;
+static void console_enqueue(ConsoleQueue *queue, const void *bytes, size_t length) {
+  if (queue->end + length > queue->capacity) {
+    size_t queued = queue->end - queue->start;
+    memmove(queue->bytes, queue->bytes + queue->start, queued);
+    queue->start = 0;
+    queue->end = queued;
+    if (queued + length > queue->capacity) {
+      size_t capacity = queue->capacity ? queue->capacity : 4096;
       while (capacity < queued + length) {
         if (capacity > SIZE_MAX / 2) exhausted_memory();
         capacity *= 2;
       }
-      unsigned char *grown = realloc(stream->bytes, capacity);
+      unsigned char *grown = realloc(queue->bytes, capacity);
       if (!grown) exhausted_memory();
-      stream->bytes = grown;
-      stream->capacity = capacity;
+      queue->bytes = grown;
+      queue->capacity = capacity;
     }
   }
-  memcpy(stream->bytes + stream->end, bytes, length);
-  stream->end += length;
+  memcpy(queue->bytes + queue->end, bytes, length);
+  queue->end += length;
 }
 
-/* Drops every queued byte and fails each waiting line with `error`. */
-static void console_fail(ConsoleStream *stream, int error) {
-  stream->resolved += stream->end - stream->start;
-  stream->start = stream->end = 0;
-  for (ConsoleLine *line = stream->first; line; line = line->next) line->error = error;
+/* Drops every queued byte and fails each line not yet fully written with
+   `error`. A line already written stays written. */
+static void console_fail(ConsoleQueue *queue, int error) {
+  for (ConsoleLine *line = queue->first; line; line = line->next)
+    if (line->end > queue->resolved) line->error = error;
+  queue->resolved += queue->end - queue->start;
+  queue->start = queue->end = 0;
 }
 
 /* One write(2) from the front of the queue, at most `limit` bytes. False with
    errno set when it failed; an interruption or a descriptor a parent left
    non-blocking reports nothing written and true. */
-static bool console_write_front(ConsoleStream *stream, size_t limit) {
-  size_t length = stream->end - stream->start;
+static bool console_write_front(const ConsoleStream *stream, size_t limit) {
+  ConsoleQueue *queue = stream->queue;
+  size_t length = queue->end - queue->start;
   if (length > limit) length = limit;
   ssize_t count = stream->socket
-    ? send(stream->fd, stream->bytes + stream->start, length, MSG_DONTWAIT)
-    : write(stream->fd, stream->bytes + stream->start, length);
+    ? send(stream->fd, queue->bytes + queue->start, length, MSG_DONTWAIT)
+    : write(stream->fd, queue->bytes + queue->start, length);
   if (count < 0) return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK;
-  stream->start += (size_t)count;
-  stream->resolved += (uint64_t)count;
+  queue->start += (size_t)count;
+  queue->resolved += (uint64_t)count;
   return true;
 }
 
-/* Writes the whole queue, blocking this thread. The end of the program, and a
-   writer that must not park, use it. */
-static void console_drain_blocking(ConsoleStream *stream) {
-  while (stream->start < stream->end) {
+/* Writes the whole queue, blocking this thread. Only the end of the program
+   uses it, when no task is left to keep running. */
+static void console_drain_blocking(const ConsoleStream *stream) {
+  ConsoleQueue *queue = stream->queue;
+  while (queue->start < queue->end) {
     struct pollfd poll_fd = {.fd = stream->fd, .events = POLLOUT};
     if (poll(&poll_fd, 1, -1) < 0 && errno != EINTR) {
-      console_fail(stream, errno);
+      console_fail(queue, errno);
       return;
     }
     if (!console_write_front(stream, SIZE_MAX)) {
-      console_fail(stream, errno);
+      console_fail(queue, errno);
       return;
     }
   }
 }
 
 static void console_drain_all(void) {
-  for (size_t index = 0; index < 2; ++index) console_drain_blocking(&console_streams[index]);
+  for (size_t index = 0; index < 2; ++index)
+    if (console_streams[index].mode == CONSOLE_QUEUED) console_drain_blocking(&console_streams[index]);
 }
 
-static void console_unlink(ConsoleStream *stream, ConsoleLine *line) {
+static void console_unlink(ConsoleQueue *queue, ConsoleLine *line) {
   if (line->previous) line->previous->next = line->next;
-  else stream->first = line->next;
+  else queue->first = line->next;
   if (line->next) line->next->previous = line->previous;
-  else stream->last = line->previous;
+  else queue->last = line->previous;
 }
 
 /* Waits until `stream` is writable and writes the front of its queue.
@@ -6497,28 +6518,24 @@ static void console_unlink(ConsoleStream *stream, ConsoleLine *line) {
    read of "-" does: writing anyway could block the scheduler thread. */
 enum { CONSOLE_WAITED, CONSOLE_CANCELLED };
 
-static int console_wait_and_write(ConsoleStream *stream) {
-  /* A body ending under a terminal cancel must not park (CHI-265). */
-  if (chimi_fiber_cancel_is_terminal()) {
-    console_drain_blocking(stream);
-    return CONSOLE_WAITED;
-  }
+static int console_wait_and_write(const ConsoleStream *stream) {
   ChimiSchedulerRequest request = {
     .kind = CHIMI_REQUEST_IO_WAIT, .value = stream->fd, .token = CHIMI_IO_WRITABLE};
   if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CONSOLE_CANCELLED;
   if (request.status == CHIMI_RESPONSE_PENDING) return CONSOLE_WAITED;
+  ConsoleQueue *queue = stream->queue;
   if (request.status == CHIMI_RESPONSE_ERROR) {
-    console_fail(stream, fcntl(stream->fd, F_GETFD) < 0 ? EBADF : EIO);
+    console_fail(queue, fcntl(stream->fd, F_GETFD) < 0 ? EBADF : EIO);
     return CONSOLE_WAITED;
   }
   /* Another writer may have emptied the queue while this one waited. */
-  if (stream->start < stream->end && !console_write_front(stream, PIPE_BUF))
-    console_fail(stream, errno);
+  if (queue->start < queue->end && !console_write_front(stream, PIPE_BUF)) console_fail(queue, errno);
   return CONSOLE_WAITED;
 }
 
-/* Writes `text` and a newline. 0 when written, -1 when cancelled, otherwise
-   the errno of the failed write. */
+/* Writes `text` and a newline. 0 when written (or, for a body ending under a
+   terminal cancel, queued), -1 when cancelled, otherwise the errno of the
+   failed write. */
 static int console_write_line(const ChimiRuntime *runtime, ConsoleStream *stream,
                               const char *text, size_t length) {
   if (console_mode(runtime, stream) == CONSOLE_DIRECT) {
@@ -6528,23 +6545,29 @@ static int console_write_line(const ChimiRuntime *runtime, ConsoleStream *stream
       return errno ? errno : EIO;
     return 0;
   }
+  ConsoleQueue *queue = stream->queue;
+  /* A body ending under a terminal cancel must not park (CHI-265), and must
+     not block the other tasks either: its line is queued for later writers or
+     the end of the program, past the limit if need be. */
+  bool terminal = chimi_fiber_cancel_is_terminal();
   /* Nothing is queued yet, so a cancellation here loses nothing. */
-  while (stream->start < stream->end &&
-         stream->end - stream->start + length + 1 > CONSOLE_QUEUE_LIMIT)
+  while (!terminal && queue->start < queue->end &&
+         queue->end - queue->start + length + 1 > CONSOLE_QUEUE_LIMIT)
     if (console_wait_and_write(stream) == CONSOLE_CANCELLED) return -1;
-  console_enqueue(stream, text, length);
-  console_enqueue(stream, "\n", 1);
-  ConsoleLine line = {.end = stream->resolved + (stream->end - stream->start), .previous = stream->last};
-  if (stream->last) stream->last->next = &line;
-  else stream->first = &line;
-  stream->last = &line;
+  console_enqueue(queue, text, length);
+  console_enqueue(queue, "\n", 1);
+  if (terminal) return 0;
+  ConsoleLine line = {.end = queue->resolved + (queue->end - queue->start), .previous = queue->last};
+  if (queue->last) queue->last->next = &line;
+  else queue->first = &line;
+  queue->last = &line;
   int outcome = 0;
   for (;;) {
     if (line.error) { outcome = line.error; break; }
-    if (stream->resolved >= line.end) break;
+    if (queue->resolved >= line.end) break;
     if (console_wait_and_write(stream) == CONSOLE_CANCELLED) { outcome = -1; break; }
   }
-  console_unlink(stream, &line);
+  console_unlink(queue, &line);
   return outcome;
 }
 

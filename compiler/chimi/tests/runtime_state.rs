@@ -57,6 +57,7 @@ const SHARED: &[&str] = &[
     "standard_input",
     "standard_input_bytes",
     // Console output queues (CHI-266), owned by the first carrier.
+    "console_queues",
     "console_streams",
     "received_signal",
     "signal_pipe",

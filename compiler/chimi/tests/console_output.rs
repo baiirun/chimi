@@ -218,3 +218,66 @@ pub fn main() -> Int needs { console: Console } {
     assert_eq!(lines, ["x".repeat(300000)]);
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+/// With `2>&1` standard output and standard error are one pipe. A task
+/// writing each stream still never splits the other's lines, since each
+/// write after poll takes at most `PIPE_BUF` bytes of a shared queue.
+#[test]
+fn stdout_and_stderr_on_one_pipe_keep_their_lines_whole() {
+    let scratch = scratch_directory("merged");
+    let executable = build_native(
+        &scratch,
+        "merged",
+        r#"import std/io.{Console}
+import std/task as Task
+import std/text as Text
+
+fn flood(error: Bool) -> Void needs { console: Console } {
+  let line = case error {
+    True -> Text.repeat("e", 3000)
+    False -> Text.repeat("o", 3000)
+  }
+  loop count = 0 {
+    case count == 100 {
+      True -> break
+      False -> {
+        case error {
+          True -> console.write_error(line)
+          False -> console.write_line(line)
+        }
+        count + 1
+      }
+    }
+  }
+}
+
+pub fn main() -> Int needs { console: Console } {
+  let out = Task.start(fn() { flood(False) })
+  let err = Task.start(fn() { flood(True) })
+  Task.result(out)
+  Task.result(err)
+  0
+}
+"#,
+    );
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg("exec \"$0\" 2>&1")
+        .arg(&executable)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start native program");
+    // Let both writers fill the pipe before reading, so they share it while
+    // it is full. Nothing below depends on how long this takes.
+    std::thread::sleep(Duration::from_millis(200));
+    let mut output = String::new();
+    child.stdout.take().unwrap().read_to_string(&mut output).unwrap();
+    assert!(child.wait().unwrap().success());
+    let out = "o".repeat(3000);
+    let err = "e".repeat(3000);
+    let lines: Vec<&str> = output.lines().collect();
+    assert!(lines.iter().all(|line| *line == out || *line == err), "a line was split");
+    assert_eq!(lines.len(), 200);
+    std::fs::remove_dir_all(scratch).unwrap();
+}

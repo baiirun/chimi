@@ -213,15 +213,17 @@ is not being read parks while the other tasks run:
   `send(MSG_DONTWAIT)`. A terminal may still hold such a write briefly.
 - Each line goes whole onto its stream's queue before its writer waits, and
   whichever writer wakes writes the front of the queue, so lines from
-  different tasks never interleave. A call returns once its whole line is
+  different tasks never interleave. Standard error shares standard output's
+  queue when both name the same open file (`2>&1`, one terminal). A call returns once its whole line is
   written. The queue holds at most 1 MiB; a writer waits before queueing a
   line that would pass that, except into an empty queue.
 - A line once queued is written whole even if its writer is cancelled while
   it waits (a `Task.timeout`, a stop signal): a later write, or the end of
-  the program, writes it. A second stop signal ends the program at once and
+  the program, writes it. A body ending under a terminal cancel (CHI-265)
+  queues its line and returns without waiting. A second stop signal ends the program at once and
   drops what is still queued.
-- A failed write, or an ERROR answer from the wait, fails every line still
-  queued on that stream with `WriteFailed`. SIGPIPE keeps its default
+- A failed write, or an ERROR answer from the wait, drops the queue and
+  fails every line not yet fully written with `WriteFailed`. SIGPIPE keeps its default
   action, so a closed pipe still ends the program as it did.
 - A regular file, a program without the scheduler, and every program under
   `--clock=virtual` write directly and block as before. Under the virtual
