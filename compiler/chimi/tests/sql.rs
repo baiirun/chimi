@@ -274,7 +274,15 @@ test "the eleventh statement waits for a connection to come free" {
 
 test "a statement that waits too long fails" {
   let calls = Test.recorder()
-  Sql.open(recording(calls), "app.db", fn(db) {
+  let driver = Sql.fake(fn(call) {
+    let dropping = List.contains(Test.recorded(calls), ran("drop"))
+    let reply = answer(calls, call)
+    case (call, dropping) {
+      (Call.Reset, True) -> Failure(SqlError.ConnectionLost)
+      _ -> reply
+    }
+  })
+  Sql.open(driver, "app.db", fn(db) {
     let holders = Task.start(fn() { Task.all(List.repeat(fn() { hold(db, 40) }, 10)) })
     Clock.sleep(Duration.seconds(1))
     let start = Clock.now()
@@ -285,14 +293,16 @@ test "a statement that waits too long fails" {
     Sql.execute(db, "later", [Value.Int(1)]) |> Test.assert_equal(1)
     Clock.since(start) |> Test.assert_equal(Duration.seconds(39))
     List.length(Task.result(holders)) |> Test.assert_equal(10)
-    // All ten slots and connections are free again.
+    // All ten slots are free again: once "drop" makes every reset fail, the
+    // pool drops a connection after each use and has room to open ten new ones.
+    let _ = Sql.execute(db, "drop", [])
     let again = Clock.now()
     List.length(Task.all(List.repeat(fn() { hold(db, 5) }, 10))) |> Test.assert_equal(10)
     Clock.since(again) |> Test.assert_equal(Duration.seconds(5))
   })
   let opened = List.count(Test.recorded(calls), fn(call) { call == Call.Connected("app.db") })
   let closed = List.count(Test.recorded(calls), fn(call) { call == Call.Closed })
-  (opened, closed) |> Test.assert_equal((10, 10))
+  (opened, closed) |> Test.assert_equal((11, 11))
 }
 
 test "waiting statements are served in the order they asked" {
