@@ -113,6 +113,19 @@ pub struct HoverInfo {
     pub markdown: String,
 }
 
+/// One name an editor can insert at the cursor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Completion {
+    pub label: String,
+    /// The item's kind as `chimi doc` names it: `fn`, `struct`, `enum`,
+    /// `const`, `interface`, ...
+    pub kind: &'static str,
+    /// The item's signature, with a function's derived contract.
+    pub detail: String,
+    /// The item's `///` doc comment, as Markdown.
+    pub documentation: Option<String>,
+}
+
 #[derive(Debug)]
 struct OpenDocument {
     version: DocumentVersion,
@@ -414,6 +427,33 @@ impl Workspace {
         })
     }
 
+    /// The names that can follow `Alias.` at `position` in `path`: the public
+    /// items of the module the alias imports, in source order, with their
+    /// signatures and doc comments.
+    ///
+    /// Ensures: `None` when the text before the cursor is not a module alias,
+    /// a dot and part of a name. The alias is looked up in the module's last
+    /// analysis, so a half-typed `Lib.` that does not parse still completes.
+    pub fn completion(&self, path: &DocumentPath, position: LinePosition) -> Option<Vec<Completion>> {
+        let project = self.latest_for(path)?;
+        let module = project.modules.get(path)?;
+        let offset = module.lines.offset(position, self.encoding).ok()? as usize;
+        let alias = alias_before(module.lines.text(), offset)?;
+        let members = project.report.alias_members(&module.module_path, alias)?;
+        Some(
+            members
+                .items()
+                .iter()
+                .map(|item| Completion {
+                    label: item.name().to_owned(),
+                    kind: item.kind(),
+                    detail: item.signature().to_owned(),
+                    documentation: item.doc().map(str::to_owned),
+                })
+                .collect(),
+        )
+    }
+
     /// Where the symbol referenced at `position` in `path` is declared.
     ///
     /// Ensures: the target may be any module of the same project, open or not.
@@ -701,6 +741,23 @@ impl Workspace {
 /// inferred type, headed by the referenced name.
 ///
 /// Ensures: `None` when the report has neither a contract nor a type.
+/// The alias in `Alias.partial` that ends at `offset`, where `partial` is
+/// the start of a name, possibly empty. `None` for a longer path such as
+/// `a.Alias.`, whose first segment is not an alias.
+fn alias_before(text: &str, offset: usize) -> Option<&str> {
+    let before = text.get(..offset)?;
+    let is_name = |c: char| c == '_' || c.is_ascii_alphanumeric();
+    let partial_start = before.trim_end_matches(is_name).len();
+    let dotted = before[..partial_start].strip_suffix('.')?;
+    let alias_start = dotted.trim_end_matches(is_name).len();
+    let alias = &dotted[alias_start..];
+    let starts_name = alias
+        .chars()
+        .next()
+        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic());
+    (starts_name && !dotted[..alias_start].ends_with('.')).then_some(alias)
+}
+
 fn hover_markdown(report: &InspectionReport) -> Option<String> {
     let description = report
         .instantiated_callable()

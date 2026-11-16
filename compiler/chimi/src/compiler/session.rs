@@ -72,6 +72,13 @@ impl IncrementalTypeReport {
         crate::occurrences::occurrences_at(&self.types.typed, module_path, offset)
     }
 
+    /// The public surface of the module that `alias` names in `module_path`
+    /// (`import lib as Lib`), for completing `Lib.`. `None` when `alias` is
+    /// not a module alias there.
+    pub fn alias_members(&self, module_path: &str, alias: &str) -> Option<crate::ModuleDocumentation> {
+        crate::doc::alias_members(&self.types.typed, module_path, alias)
+    }
+
     /// Groups this report's diagnostics by owning module.
     ///
     /// Ensures: exactly one entry per analyzed module in module-path order,
