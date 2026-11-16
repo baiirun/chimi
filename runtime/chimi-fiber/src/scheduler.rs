@@ -142,6 +142,11 @@ pub const REQUEST_TASK_DRAIN: u32 = 43;
 /// channel-variant requests, 41 cancels a scope, and 42 and 43 are the task
 /// combinators'.
 pub const REQUEST_IO_WAIT: u32 = 48;
+/// Wakes every task whose IO wait names the resource key in `channel`
+/// (nonzero), before the host closes that resource's descriptors: OK with
+/// the number woken in `value`. Never parks, and not a cancellation point,
+/// so a cancelled task can still close what it owns (`scheduler/reactor.rs`).
+pub const REQUEST_IO_WITHDRAW: u32 = 44;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -1759,6 +1764,7 @@ impl Scheduler {
             }
             REQUEST_SELECT => self.handle_select(owner, request),
             REQUEST_IO_WAIT => self.handle_io_wait(owner, request),
+            REQUEST_IO_WITHDRAW => self.handle_io_withdraw(owner, request),
             REQUEST_TASK_START => {
                 let Some(entry) = request.entry else {
                     request.status = RESPONSE_ERROR;
@@ -2047,6 +2053,7 @@ impl Scheduler {
         }
         self.clear_select(task);
         self.clear_io_wait(task);
+        self.forget_io_failure(task);
         self.clear_scopes(task);
         self.unroute_task(task);
 

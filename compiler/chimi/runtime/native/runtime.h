@@ -5,7 +5,7 @@
 
 #include "chimi_binding.h"
 
-#define CHIMI_RUNTIME_ABI_VERSION 45
+#define CHIMI_RUNTIME_ABI_VERSION 46
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;

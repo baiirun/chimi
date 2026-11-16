@@ -136,7 +136,8 @@ through the scheduler's IO reactor instead of blocking the scheduler thread.
   issues the request again after the wake. The wait is level-triggered and
   consumes nothing: the host then does its own read or write. A negative or
   closed descriptor, the runner's signal pipe, or any other interest
-  answers ERROR.
+  answers ERROR. The request may also name the host resource the descriptor
+  belongs to (`channel`: a nonzero key the host chooses, or 0 for none).
 - **Order.** An OK answer resumes the task before any other task runs, so
   the read or write right after it sees the descriptor as reported. Another
   OS process sharing the descriptor can still drain it first; the host then
@@ -158,9 +159,19 @@ through the scheduler's IO reactor instead of blocking the scheduler thread.
   descriptor is never a deadlock.
 - **Cancellation.** The wait is a cancellation point. A cancellation, a
   timeout scope's deadline, or a forced shutdown withdraws it.
-- **Closing.** Closing a descriptor while a task waits on it is a host bug.
-  The current poll(2) backend wakes the waiter, whose next request answers
-  ERROR, but an epoll or kqueue backend would not notice.
+- **Closing.** `CHIMI_REQUEST_IO_WITHDRAW` (kind 44) wakes every wait that
+  names a resource key and answers OK with how many it woke; it never parks
+  and is not a cancellation point, so a cancelled task can still close what
+  it owns. A host issues it before closing a resource's descriptors, so no
+  waiter stays parked on a descriptor number the close frees for the next
+  open; each waiter's reissue then learns from the host that the resource
+  is closed. Closing a descriptor a task waits on without withdrawing first
+  is a host bug: poll(2) reports the closed descriptor only while its number
+  stays unused, and an epoll or kqueue backend would not report it at all.
+- **Poll failure.** When the reactor's poll(2) fails other than by an
+  interruption (too many descriptors, no memory), every waiting task wakes
+  and its reissued wait answers ERROR, instead of the scheduler retrying a
+  wait that cannot succeed.
 - **Backend.** poll(2) on macOS and Linux. Each idle wait costs time linear
   in the number of waits, which is fine until a server holds thousands of
   connections; the reactor's wait is the one place an epoll or kqueue

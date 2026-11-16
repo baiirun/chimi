@@ -20,19 +20,22 @@
 //!   host's read or write follows it before any other task runs. Another OS
 //!   process sharing the descriptor can still take the data first; the host
 //!   then waits again (or blocks, for a descriptor it does not own).
-//! - Closing a descriptor while a task waits on it is a host bug. poll(2)
-//!   reports it, so the waiter wakes and its reissue answers ERROR, but a
-//!   later epoll or kqueue backend would not see it.
+//! - A wait may name the resource its descriptor belongs to (`channel`, a
+//!   host-chosen nonzero key). `CHIMI_REQUEST_IO_WITHDRAW` wakes every wait
+//!   on a key, so a host closing a resource wakes its waiters before the
+//!   descriptor closes and its number can be reused. Closing a descriptor
+//!   a task waits on without withdrawing first is a host bug: poll(2) only
+//!   reports it while the number stays unused.
+//! - A failed poll(2) (not an interruption) wakes every waiter, and each
+//!   one's reissue answers ERROR, so a reactor that cannot wait never spins.
 //!
 //! Backend: poll(2) on macOS and Linux, one code path. It costs O(n) in the
 //! registrations per idle wait, which is fine until servers hold thousands
 //! of connections; `Reactor::wait` is the one place an epoll or kqueue
 //! backend would go.
 
-use super::{
-    RESPONSE_ERROR, RESPONSE_OK, RESPONSE_PENDING, Scheduler, SchedulerRequest, TaskId,
-};
-use std::collections::BTreeMap;
+use super::{RESPONSE_ERROR, RESPONSE_OK, RESPONSE_PENDING, Scheduler, SchedulerRequest, TaskId};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 /// Interest and ready bit: reading will not block.
@@ -57,12 +60,23 @@ struct IoWait {
     task: TaskId,
     fd: i32,
     interest: u32,
+    /// The host's resource key; 0 for none.
+    resource: u64,
 }
 
 #[derive(Default)]
 pub(super) struct Reactor {
     next: u64,
     waits: BTreeMap<IoWaitId, IoWait>,
+    /// Tasks a failed poll woke; their next wait answers ERROR.
+    failed: BTreeSet<TaskId>,
+}
+
+/// What an idle or non-blocking wait found.
+struct Woken {
+    tasks: Vec<TaskId>,
+    /// poll(2) failed: every registered task is in `tasks`.
+    failed: bool,
 }
 
 impl Reactor {
@@ -70,11 +84,28 @@ impl Reactor {
         self.waits.is_empty()
     }
 
-    fn register(&mut self, task: TaskId, fd: i32, interest: u32) -> IoWaitId {
+    fn register(&mut self, task: TaskId, fd: i32, interest: u32, resource: u64) -> IoWaitId {
         self.next += 1;
         let id = IoWaitId(self.next);
-        self.waits.insert(id, IoWait { task, fd, interest });
+        self.waits.insert(
+            id,
+            IoWait {
+                task,
+                fd,
+                interest,
+                resource,
+            },
+        );
         id
+    }
+
+    /// The tasks waiting on `resource`, in registration order.
+    fn waiting_on(&self, resource: u64) -> Vec<TaskId> {
+        self.waits
+            .values()
+            .filter(|wait| wait.resource == resource)
+            .map(|wait| wait.task)
+            .collect()
     }
 
     fn remove(&mut self, id: IoWaitId) {
@@ -82,27 +113,43 @@ impl Reactor {
     }
 
     /// The tasks whose descriptors are ready now, without blocking.
-    fn ready_now(&self) -> Vec<TaskId> {
+    fn ready_now(&self) -> Woken {
         self.wait(Some(Duration::ZERO), None)
     }
 
     /// Blocks until a registered descriptor is ready, `wake_fd` is readable,
     /// a signal interrupts the wait, or `timeout` passes (never when none).
-    /// Returns the tasks whose descriptors are ready, in registration order.
-    fn wait(&self, timeout: Option<Duration>, wake_fd: Option<i32>) -> Vec<TaskId> {
+    /// Returns the tasks whose descriptors are ready, in registration order,
+    /// or every registered task when poll(2) failed.
+    fn wait(&self, timeout: Option<Duration>, wake_fd: Option<i32>) -> Woken {
         let watched: Vec<(i32, u32)> = self
             .waits
             .values()
             .map(|wait| (wait.fd, wait.interest))
             .collect();
-        let ready = sys::wait(&watched, timeout, wake_fd);
-        self.waits
-            .values()
-            .zip(ready)
-            .filter(|(_, ready)| *ready)
-            .map(|(wait, _)| wait.task)
-            .collect()
+        let Some(ready) = sys::wait(&watched, timeout, wake_fd) else {
+            return Woken {
+                tasks: self.waits.values().map(|wait| wait.task).collect(),
+                failed: true,
+            };
+        };
+        Woken {
+            tasks: self
+                .waits
+                .values()
+                .zip(ready)
+                .filter(|(_, ready)| *ready)
+                .map(|(wait, _)| wait.task)
+                .collect(),
+            failed: false,
+        }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes the next idle or non-blocking wait fail as poll(2) would.
+    pub(super) static FAIL_NEXT_POLL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// What a zero-timeout check of one descriptor found.
@@ -152,12 +199,13 @@ mod sys {
     }
 
     /// One flag per `watched` entry: true when it is ready (or invalid, so
-    /// its waiter wakes and learns that from its reissue).
+    /// its waiter wakes and learns that from its reissue). `None` when
+    /// poll(2) failed for a reason other than an interruption.
     pub(super) fn wait(
         watched: &[(i32, u32)],
         timeout: Option<Duration>,
         wake_fd: Option<i32>,
-    ) -> Vec<bool> {
+    ) -> Option<Vec<bool>> {
         let mut polls: Vec<libc::pollfd> = watched
             .iter()
             .map(|&(fd, interest)| pollfd(fd, interest))
@@ -169,18 +217,28 @@ mod sys {
                 revents: 0,
             });
         }
+        #[cfg(test)]
+        if super::FAIL_NEXT_POLL.with(|fail| fail.replace(false)) {
+            return None;
+        }
         // A timeout or EINTR leaves every revents zero: the caller fires due
         // timers and delivers the signal, then waits again.
-        poll(&mut polls, timeout);
+        if poll(&mut polls, timeout) < 0
+            && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+        {
+            return None;
+        }
         if let Some(fd) = wake_fd
             && polls.last().is_some_and(|poll| poll.revents != 0)
         {
             crate::scheduler::signal::drain(fd);
         }
-        polls[..watched.len()]
-            .iter()
-            .map(|poll| poll.revents != 0)
-            .collect()
+        Some(
+            polls[..watched.len()]
+                .iter()
+                .map(|poll| poll.revents != 0)
+                .collect(),
+        )
     }
 
     fn pollfd(fd: i32, interest: u32) -> libc::pollfd {
@@ -205,7 +263,13 @@ mod sys {
             i32::try_from(timeout.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
         });
         // SAFETY: `polls` is a valid, exclusively borrowed array for the call.
-        unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, milliseconds) }
+        unsafe {
+            libc::poll(
+                polls.as_mut_ptr(),
+                polls.len() as libc::nfds_t,
+                milliseconds,
+            )
+        }
     }
 }
 
@@ -228,20 +292,22 @@ mod sys {
         watched: &[(i32, u32)],
         _timeout: Option<Duration>,
         _wake_fd: Option<i32>,
-    ) -> Vec<bool> {
-        vec![true; watched.len()]
+    ) -> Option<Vec<bool>> {
+        Some(vec![true; watched.len()])
     }
 }
 
 impl Scheduler {
-    /// Serves an IO wait: `value` is the descriptor, `token` the interest.
-    /// Ensures: OK with the ready conditions in `value`; PENDING with the
-    /// task registered and parked; ERROR for a closed or negative
-    /// descriptor or an interest outside `IO_READABLE | IO_WRITABLE`.
+    /// Serves an IO wait: `value` is the descriptor, `token` the interest,
+    /// `channel` the resource key or 0. Ensures: OK with the ready
+    /// conditions in `value`; PENDING with the task registered and parked;
+    /// ERROR for a closed or negative descriptor, an interest outside
+    /// `IO_READABLE | IO_WRITABLE`, or the first wait after a failed poll.
     pub(super) fn handle_io_wait(&mut self, owner: TaskId, request: &mut SchedulerRequest) {
         let fd = i32::try_from(request.value).unwrap_or(-1);
         let interest = u32::try_from(request.token).unwrap_or(0);
-        if fd < 0
+        if self.reactor.failed.remove(&owner)
+            || fd < 0
             || Some(fd) == self.signals.wake_fd()
             || interest == 0
             || interest & !INTEREST != 0
@@ -261,10 +327,45 @@ impl Scheduler {
                 let _ = self.wake_front(owner);
             }
             Check::Waiting => {
-                let id = self.reactor.register(owner, fd, interest);
+                let id = self.reactor.register(owner, fd, interest, request.channel);
                 self.tasks.get_mut(&owner).expect("waiting task").io_wait = Some(id);
                 request.status = RESPONSE_PENDING;
             }
+        }
+    }
+
+    /// Serves an IO withdraw: wakes every task waiting on the resource key in
+    /// `channel` (nonzero), so each reissues its wait. Ensures: OK, with the
+    /// number of tasks woken in `value`; ERROR for key 0. Never parks.
+    pub(super) fn handle_io_withdraw(&mut self, owner: TaskId, request: &mut SchedulerRequest) {
+        if request.channel == 0 {
+            request.status = RESPONSE_ERROR;
+        } else {
+            let waiting = self.reactor.waiting_on(request.channel);
+            request.value = i64::try_from(waiting.len()).unwrap_or(i64::MAX);
+            for task in waiting {
+                self.clear_io_wait(task);
+                let _ = self.wake(task);
+            }
+            request.status = RESPONSE_OK;
+        }
+        let _ = self.wake_front(owner);
+    }
+
+    /// Forgets a task that ends, so a later task never inherits its mark.
+    pub(super) fn forget_io_failure(&mut self, task: TaskId) {
+        self.reactor.failed.remove(&task);
+    }
+
+    /// Wakes the tasks `woken` names; after a failed poll each one's next
+    /// wait answers ERROR.
+    fn wake_io(&mut self, woken: Woken) {
+        for task in woken.tasks {
+            if woken.failed {
+                self.reactor.failed.insert(task);
+            }
+            self.clear_io_wait(task);
+            let _ = self.wake(task);
         }
     }
 
@@ -300,10 +401,8 @@ impl Scheduler {
                 )
             }),
         };
-        for task in self.reactor.wait(timeout, self.signals.wake_fd()) {
-            self.clear_io_wait(task);
-            let _ = self.wake(task);
-        }
+        let woken = self.reactor.wait(timeout, self.signals.wake_fd());
+        self.wake_io(woken);
         self.fire_due_timers();
     }
 
@@ -311,10 +410,8 @@ impl Scheduler {
     /// always has runnable work still serves its IO. `drive` calls it every
     /// `IO_POLL_INTERVAL` resumes while a registration exists.
     pub(super) fn poll_io_now(&mut self) {
-        for task in self.reactor.ready_now() {
-            self.clear_io_wait(task);
-            let _ = self.wake(task);
-        }
+        let woken = self.reactor.ready_now();
+        self.wake_io(woken);
     }
 }
 

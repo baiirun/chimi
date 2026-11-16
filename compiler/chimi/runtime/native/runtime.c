@@ -6196,7 +6196,22 @@ static BindingHandleSlot *binding_handle_slot(const ChimiValue *value) {
 }
 
 
-static void release_binding_slot(BindingHandleSlot *entry, uint32_t slot) {
+/* The reactor's key for the waits on a handle's descriptors: nonzero, since
+   slot 0 is unused, and distinct per generation. */
+static uint64_t binding_resource_key(uint32_t slot, uint32_t generation) {
+  return (uint64_t)slot << 32 | generation;
+}
+
+/* Releases an open slot. `withdraw` (true inside a binding call) first wakes
+   every task waiting on the handle's descriptors, so none stays parked on a
+   descriptor number the release frees for reuse; each answers
+   CHIMI_BINDING_WAIT_CLOSED. */
+static void release_binding_slot(BindingHandleSlot *entry, uint32_t slot, bool withdraw) {
+  if (withdraw && CHIMI_REQUIRES_SCHEDULER) {
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_IO_WITHDRAW,
+                                     .channel = binding_resource_key(slot, entry->generation)};
+    scheduler_request(&request);
+  }
   const ChimiBindingType *type = entry->type;
   void *state = entry->state;
   entry->type = NULL;
@@ -6213,7 +6228,7 @@ static void release_binding_slot(BindingHandleSlot *entry, uint32_t slot) {
 /* Runs every open handle's release once, when the program ends. */
 static void release_binding_handles(void) {
   for (uint32_t slot = 1; slot < binding_handle_count; ++slot)
-    if (binding_handles[slot].type != NULL) release_binding_slot(&binding_handles[slot], slot);
+    if (binding_handles[slot].type != NULL) release_binding_slot(&binding_handles[slot], slot, false);
 }
 
 static const ChimiValue *binding_argument(const ChimiBindingCall *call, uint32_t index,
@@ -6371,7 +6386,7 @@ void chimi_binding_close_handle(ChimiBindingCall *call, uint32_t index,
                                 const ChimiBindingType *type) {
   const ChimiValue *value = binding_argument(call, index, VALUE_NATIVE_HANDLE);
   BindingHandleSlot *entry = value ? binding_handle_slot(value) : NULL;
-  if (entry != NULL && entry->type == type) release_binding_slot(entry, value->as.handle.slot);
+  if (entry != NULL && entry->type == type) release_binding_slot(entry, value->as.handle.slot, true);
 }
 
 ChimiBindingResult *chimi_binding_success(ChimiBindingCall *call, ChimiBindingValue *value) {
@@ -6432,10 +6447,16 @@ int chimi_binding_wait(ChimiBindingCall *call, uint32_t handle, int fd, int inte
     return CHIMI_BINDING_WAIT_FAILED;
   if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
   if (CHIMI_REQUIRES_SCHEDULER) {
+    uint64_t resource = 0;
+    if (handle != CHIMI_BINDING_NO_HANDLE) {
+      const ChimiValue *value = binding_argument(call, handle, VALUE_NATIVE_HANDLE);
+      resource = binding_resource_key(value->as.handle.slot, value->as.handle.generation);
+    }
     uint64_t token = ((interest & CHIMI_BINDING_READABLE) ? CHIMI_IO_READABLE : 0) |
                      ((interest & CHIMI_BINDING_WRITABLE) ? CHIMI_IO_WRITABLE : 0);
     for (;;) {
-      ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_IO_WAIT, .value = fd, .token = token};
+      ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_IO_WAIT, .value = fd, .token = token, .channel = resource};
       if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;
       /* Another task may have closed the handle while this one was parked;
          its descriptor number may already belong to a new resource. */
