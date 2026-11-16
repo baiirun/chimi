@@ -17,7 +17,13 @@
 /// nothing. `Exec.start(command, use)` starts it and hands the running
 /// `Child` to `use`; when `use` returns or fails, a child still running is
 /// killed and reaped, so no child outlives the code that started it.
-/// `Exec.run(command)` starts it and waits for its `Status`.
+/// `Exec.run(command)` starts it and waits for its `Status`, and
+/// `Exec.capture(command)` also collects what it writes.
+///
+/// A stream set to `Stdio.Pipe` is read with `Exec.output(child)` or
+/// `Exec.error_output(child)` and written with `Exec.input(child)`, as std/stream
+/// readers and writers. Write a child's input from another task while you
+/// read its output, since a child that fills its output pipe stops reading.
 ///
 /// There is no shell: the arguments reach the program exactly as given, and
 /// a program name without a `/` is looked up on the parent's `PATH`. An exit
@@ -30,11 +36,19 @@ import std/debug as Debug
 import std/list as List
 import std/map as Map
 import std/map.{Map}
+import std/option as Option
 import std/option.{None, Option, Some}
 import std/path as Path
 import std/path.{Path}
+import std/bytes as Bytes
+import std/bytes.{Bytes}
 import std/resource as Resource
+import std/result as Result
 import std/result.{Err, Ok, Result}
+import std/stream as Stream
+import std/stream.{Reader, StreamError, Writer}
+import std/task as Task
+import std/task.{Task}
 
 // 1. Public types.
 
@@ -63,15 +77,22 @@ pub enum Stdio {
   Inherit
   /// Nothing: reading gives end of input, and writes are discarded.
   Null
+  /// A pipe to the parent: `Exec.input`, `Exec.output` or `Exec.error_output`.
+  Pipe
 }
 
 /// A running child: `Exec.wait` for its status, `Exec.terminate` or
-/// `Exec.kill` to stop it.
+/// `Exec.kill` to stop it, and its piped streams.
 pub struct Child {
+  program: Text,
   wait: fn() -> Status errors ExecError,
   terminate: fn() -> Void,
   kill: fn() -> Void,
   release: fn() -> Void,
+  // Each takes the program, which a fake's streams name in their failures.
+  input: Option<fn(Text) -> Writer<ExecError>>,
+  output: Option<fn(Text) -> Reader<ExecError>>,
+  error_output: Option<fn(Text) -> Reader<ExecError>>,
 }
 
 /// How a child ended.
@@ -93,8 +114,10 @@ pub enum ExecError {
   /// The working directory does not exist, is not a directory, or cannot be
   /// entered.
   InvalidDirectory(path: Path)
-  /// The child was already released.
+  /// The child was already released, or the stream was closed or stopped.
   Closed(program: Text)
+  /// A write to the child's input after it stopped reading it.
+  BrokenPipe(program: Text)
   /// Any other failure, with the operating system's words.
   Failed(program: Text, message: Text)
 }
@@ -237,7 +260,9 @@ pub fn arguments(command: Command) -> List<Text> {
 pub fn start<T, E, R>(command: Command, use: fn(Child) -> T errors E needs R) -> T needs R + {
   commands: Commands
 } {
-  Resource.scoped(fn() { commands.start(command) }, fn(child) { child.release() }, use)
+  Resource.scoped(fn() {
+    named(commands.start(command), command.program)
+  }, fn(child) { child.release() }, use)
 }
 
 /// Starts `command` and waits until it ends.
@@ -250,8 +275,71 @@ pub fn run(command: Command) -> Status needs {
   start(command, wait)
 }
 
+/// Runs `command` with its standard input `Stdio.Null` and its output and
+/// error output piped, and returns a record of how it ended (`status`) and
+/// everything it wrote to each (`output`, `error_output`),
+/// read side by side so neither pipe fills. A nonzero exit is in `status`,
+/// not a failure. It waits for the end of both streams, which a program's own
+/// child that keeps them open delays.
+///
+/// Fails with: `ExecError.NotFound`, `PermissionDenied`, `InvalidDirectory`
+/// or `Failed` when the command cannot start or a read fails.
+/// Cost: O(n) in the bytes written, all held in memory.
+pub fn capture(command: Command) -> { status: Status, output: Bytes, error_output: Bytes } needs {
+  commands: Commands
+} {
+  let piped = stderr(stdout(stdin(command, Stdio.Null), Stdio.Pipe), Stdio.Pipe)
+  start(piped, fn(child) {
+    let written = read_in_task(output(child))
+    let failed = read_in_task(error_output(child))
+    let status = wait(child)
+    {
+      status: status, output: Task.result(written), error_output: Task.result(failed)
+    }
+  })
+}
+
+/// The child's standard input, when the command set it to `Stdio.Pipe`.
+/// Close it when done writing: a child reading to the end of its input,
+/// such as `cat`, exits only then, and `Exec.wait` does not close it, since
+/// another task may still be writing.
+///
+/// Defects when: the command did not set stdin to `Stdio.Pipe`.
+/// Cost: O(1).
+pub fn input(child: Child) -> Writer<ExecError> {
+  case child.input {
+    Some(make) -> make(child.program)
+    None -> Debug.crash("Exec: ${child.program} was started without Stdio.Pipe for stdin")
+  }
+}
+
+/// The child's standard output, when the command set it to `Stdio.Pipe`.
+/// It ends once the child, and any program holding the pipe after it, has
+/// closed it. Stopping it early makes the child's next write to it fail.
+///
+/// Defects when: the command did not set stdout to `Stdio.Pipe`.
+/// Cost: O(1).
+pub fn output(child: Child) -> Reader<ExecError> {
+  case child.output {
+    Some(make) -> make(child.program)
+    None -> Debug.crash("Exec: ${child.program} was started without Stdio.Pipe for stdout")
+  }
+}
+
+/// The child's standard error, when the command set it to `Stdio.Pipe`.
+///
+/// Defects when: the command did not set stderr to `Stdio.Pipe`.
+/// Cost: O(1).
+pub fn error_output(child: Child) -> Reader<ExecError> {
+  case child.error_output {
+    Some(make) -> make(child.program)
+    None -> Debug.crash("Exec: ${child.program} was started without Stdio.Pipe for stderr")
+  }
+}
+
 /// Waits until the child ends and returns how. Asking again returns the same
-/// status at once. Other tasks run meanwhile, and a cancelled task stops
+/// status at once. It leaves a piped input open: close it first if the child
+/// waits for the end of its input. Other tasks run meanwhile, and a cancelled task stops
 /// waiting at once; the child keeps running until its `Exec.start` ends.
 ///
 /// Fails with: `ExecError.Closed` when the child was released;
@@ -286,7 +374,8 @@ pub fn succeeded(status: Status) -> Bool {
 // 5. Fakes.
 
 /// A child whose operations are these functions, for a fake `Commands`.
-/// `release` runs when the `Exec.start` that started it ends.
+/// `release` runs when the `Exec.start` that started it ends. It has no
+/// piped streams; `Exec.piped` gives it some.
 ///
 /// Cost: O(1).
 pub fn child(
@@ -295,7 +384,39 @@ pub fn child(
   kill: fn() -> Void,
   release: fn() -> Void,
 ) -> Child {
-  Child(wait, terminate, kill, release)
+  Child("", wait, terminate, kill, release, None, None, None)
+}
+
+/// The fake `child` with these streams as its piped input, output and
+/// error output, such as a `Stream.pipe` end or `Stream.from_bytes`. Their
+/// `StreamError.Closed` and `Aborted` read as `ExecError.Closed` for the
+/// output streams (as a host read after a stop does), `Closed` as
+/// `ExecError.BrokenPipe` for the input, and anything else as `Failed`. Make
+/// the streams inside the fake's `start`: a provider goes to every task its
+/// caller starts, and a channel end it held would belong to one of them. A
+/// fake cannot tell a write after `Stream.close` from one after the reader
+/// stopped: both are `BrokenPipe`, where a host pipe gives `Closed` for the
+/// first. For
+/// the same reason a stream of a fake is used by one task: hand a writer
+/// task `Exec.input(child)`, not the child.
+///
+/// Cost: O(1).
+pub fn piped(
+  child: Child,
+  input: Writer<StreamError>,
+  output: Reader<StreamError>,
+  error_output: Reader<StreamError>,
+) -> Child {
+  Child(
+    child.program,
+    child.wait,
+    child.terminate,
+    child.kill,
+    child.release,
+    Some(fake_input(input)),
+    Some(fake_output(output)),
+    Some(fake_output(error_output)),
+  )
 }
 
 // 6. Runner provider.
@@ -304,7 +425,81 @@ fn stdio_code(stdio: Stdio) -> Int {
   case stdio {
     Stdio.Inherit -> 0
     Stdio.Null -> 1
+    Stdio.Pipe -> 2
   }
+}
+
+// The child as `Exec.start` hands it out, naming the program it runs.
+fn named(child: Child, program: Text) -> Child {
+  Child(program, child.wait, child.terminate, child.kill, child.release, child.input, child.output, child.error_output)
+}
+
+// A task reading every byte of `reader`. Its own function, so the task
+// holds only that stream: a fake's streams may hold channel ends, which one
+// task at a time owns.
+fn read_in_task<E>(reader: Reader<E>) -> Task<Bytes, E> {
+  Task.start(fn() { everything(reader) })
+}
+
+// Every byte of `reader`, with no limit.
+fn everything<E>(reader: Reader<E>) -> Bytes {
+  let parts = loop parts = [] {
+    let next = Stream.read(reader)
+    case next {
+      None -> break parts
+      Some(chunk) -> List.push(parts, chunk)
+    }
+  }
+  Bytes.concat(parts)
+}
+
+fn fake_failure(error: StreamError, program: Text, closed: ExecError) -> ExecError {
+  case error {
+    StreamError.Closed -> closed
+    other -> ExecError.Failed(program, Debug.render(other))
+  }
+}
+
+// A read after the reader was stopped is `Aborted` from std/stream and
+// `Closed` from a host pipe.
+fn fake_read_failure(error: StreamError, program: Text) -> ExecError {
+  case error {
+    StreamError.Aborted -> ExecError.Closed(program)
+    other -> fake_failure(other, program, ExecError.Closed(program))
+  }
+}
+
+// One function per stream, so each closure holds only its own stream: a
+// fake's streams may hold channel ends, which one task at a time owns.
+fn fake_input(writer: Writer<StreamError>) -> fn(Text) -> Writer<ExecError> {
+  fn(program) { fake_writer(writer, program) }
+}
+
+fn fake_output(reader: Reader<StreamError>) -> fn(Text) -> Reader<ExecError> {
+  fn(program) { fake_reader(reader, program) }
+}
+
+fn fake_reader(reader: Reader<StreamError>, program: Text) -> Reader<ExecError> {
+  Stream.reader(fn() {
+    case Result.capture(fn() { Stream.read(reader) }) {
+      Ok(chunk) -> chunk
+      Err(error) -> Failure(fake_read_failure(error, program))
+    }
+  }, fn() { Stream.stop(reader) })
+}
+
+fn fake_writer(writer: Writer<StreamError>, program: Text) -> Writer<ExecError> {
+  Stream.writer(fn(bytes) {
+    case Result.capture(fn() { Stream.write(writer, bytes) }) {
+      Ok(done) -> done
+      Err(error) -> Failure(fake_failure(error, program, ExecError.BrokenPipe(program)))
+    }
+  }, fn() {
+    case Result.capture(fn() { Stream.close(writer) }) {
+      Ok(done) -> done
+      Err(error) -> Failure(fake_failure(error, program, ExecError.Closed(program)))
+    }
+  })
 }
 
 // The binding's failure codes (runtime/native/bindings/exec/exec.c): a
@@ -324,11 +519,30 @@ fn started<T>(command: Command, result: Result<T, (Int, Text)>) -> T {
   }
 }
 
+// A wait, read or write fails with 4, 5 or (a write) 6.
 fn waited<T>(command: Command, result: Result<T, (Int, Text)>) -> T {
   case result {
     Ok(value) -> value
     Err((4, _)) -> Failure(ExecError.Closed(command.program))
+    Err((6, _)) -> Failure(ExecError.BrokenPipe(command.program))
     Err((_, message)) -> Failure(ExecError.Failed(command.program, message))
+  }
+}
+
+fn host_writer(command: Command, pipe: Pipe) -> Writer<ExecError> {
+  Stream.writer(fn(bytes) {
+    waited(command, native_write(pipe, bytes))
+  }, fn() { native_close_pipe(pipe) })
+}
+
+fn host_reader(command: Command, pipe: Pipe) -> Reader<ExecError> {
+  Stream.reader(fn() { waited(command, native_read(pipe)) }, fn() { native_close_pipe(pipe) })
+}
+
+fn close_pipe(pipe: Option<Pipe>) -> Void {
+  case pipe {
+    Some(open) -> native_close_pipe(open)
+    None -> Void
   }
 }
 
@@ -354,29 +568,53 @@ fn host_start(command: Command) -> Child {
     Some(path) -> native_directory(builder, Path.to_text(path))
     None -> Void
   }
-  let process = started(
+  let (process, input_pipe, output_pipe, errors_pipe) = started(
     command,
     native_spawn(builder, stdio_code(command.stdin), stdio_code(command.stdout), stdio_code(command.stderr)),
   )
   Child(
+    command.program,
     fn() {
       status(waited(command, native_wait(process)))
     },
     fn() { native_terminate(process) },
     fn() { native_kill(process) },
-    fn() { native_release(process) },
+    fn() {
+      native_release(process)
+      close_pipe(input_pipe)
+      close_pipe(output_pipe)
+      close_pipe(errors_pipe)
+    },
+    Option.map(input_pipe, fn(pipe) {
+      fn(_program) { host_writer(command, pipe) }
+    }),
+    Option.map(output_pipe, fn(pipe) {
+      fn(_program) { host_reader(command, pipe) }
+    }),
+    Option.map(errors_pipe, fn(pipe) {
+      fn(_program) { host_reader(command, pipe) }
+    }),
   )
 }
 
 native type Builder
 native type Process
+native type Pipe
 
 native fn native_command(program: Text) -> Builder
 native fn native_argument(builder: Builder, argument: Text) -> Void
 native fn native_variable(builder: Builder, name: Text, value: Text) -> Void
 native fn native_clear_environment(builder: Builder) -> Void
 native fn native_directory(builder: Builder, path: Text) -> Void
-native fn native_spawn(builder: Builder, stdin: Int, stdout: Int, stderr: Int) -> Result<Process, (Int, Text)>
+native fn native_spawn(
+  builder: Builder,
+  stdin: Int,
+  stdout: Int,
+  stderr: Int,
+) -> Result<(Process, Option<Pipe>, Option<Pipe>, Option<Pipe>), (Int, Text)>
+native fn native_read(pipe: Pipe) -> Result<Option<Bytes>, (Int, Text)>
+native fn native_write(pipe: Pipe, bytes: Bytes) -> Result<Void, (Int, Text)>
+native fn native_close_pipe(pipe: Pipe) -> Void
 native fn native_wait(process: Process) -> Result<(Int, Int), (Int, Text)>
 native fn native_terminate(process: Process) -> Void
 native fn native_kill(process: Process) -> Void
