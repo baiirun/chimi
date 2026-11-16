@@ -281,13 +281,13 @@ pub interface Commands {
   start: fn(Command) -> Child errors ExecError
 }
 pub struct Command { ... }                 // built with the functions below
-pub enum Stdio { Inherit, Null }
-pub struct Child { ... }                   // wait, terminate, kill, release
+pub enum Stdio { Inherit, Null, Pipe }
+pub struct Child { ... }                   // wait, terminate, kill, release, streams
 pub enum Status { Exited(code: Int), Signaled(signal: Int) }
 pub enum ExecError {
   NotFound(program: Text), PermissionDenied(program: Text),
   InvalidDirectory(path: Path), Closed(program: Text),
-  Failed(program: Text, message: Text),
+  BrokenPipe(program: Text), Failed(program: Text, message: Text),
 }
 
 pub fn command(program: Text, arguments: List<Text>) -> Command
@@ -301,12 +301,19 @@ pub fn arguments(command: Command) -> List<Text>
 // needs { commands: Commands }
 pub fn start(command: Command, use: fn(Child) -> T) -> T
 pub fn run(command: Command) -> Status
+pub fn capture(command: Command) -> { status: Status, output: Bytes, error_output: Bytes }
+
+pub fn input(child: Child) -> Writer<ExecError>           // stdin set to Pipe
+pub fn output(child: Child) -> Reader<ExecError>          // stdout set to Pipe
+pub fn error_output(child: Child) -> Reader<ExecError>    // stderr set to Pipe
 
 pub fn wait(child: Child) -> Status
 pub fn terminate(child: Child) -> Void
 pub fn kill(child: Child) -> Void
 pub fn succeeded(status: Status) -> Bool
 pub fn child(wait, terminate, kill, release) -> Child  // for fakes
+pub fn piped(child, input: Writer<StreamError>, output: Reader<StreamError>,
+             error_output: Reader<StreamError>) -> Child  // a fake's streams
 pub fn host_for_tests() -> Commands                      // test-only
 ```
 
@@ -333,6 +340,25 @@ pub fn host_for_tests() -> Commands                      // test-only
   children are not stopped: a program that leaves its children running when
   it dies leaves them to outlive the `start` (process groups are decided
   with the graceful release in part 4).
+- A stream set to `Stdio.Pipe` MUST be connected to the parent by a pipe,
+  read with `output` or `error_output` and written with `input`, as
+  std/stream readers and writers. Asking for a stream that was not piped is
+  a defect naming it. A reader ends once every holder of the pipe's other
+  end (the child, and any program it passed it to) has closed it; stopping a
+  reader closes the parent's end, so the child's next write fails (SIGPIPE,
+  which it starts with at its default action). A write to a child that
+  stopped reading MUST fail with `BrokenPipe` and MUST NOT raise SIGPIPE in
+  the parent; a write after `input` was closed, or a read after a reader was
+  stopped, fails with `Closed`. The parent's ends of a child's pipes never
+  reach another child, and `start` closes them when it ends.
+- `capture` pipes stdout and stderr, sets stdin to `Null`, reads both side
+  by side (so neither pipe fills while the other is read), and returns the
+  status and both byte buffers, unbounded. A nonzero exit is in `status`. It
+  waits for the end of both streams, so a grandchild that keeps them open
+  delays it (part 4 decides process groups).
+- `wait` MUST NOT close a piped `input`, since another task may still be
+  writing it; a program closes the input itself when done, and a child that
+  reads to the end of its input exits only then.
 - `wait` MUST let other tasks run while the child runs, and MUST return the
   same `Status` when asked again. It is a cancellation point. A nonzero exit
   is a `Status`, never an `ExecError`. `terminate` sends SIGTERM and `kill`
@@ -427,4 +453,8 @@ pub fn host_for_tests() -> Commands                      // test-only
 | `kill` and `terminate`; a child left running, or whose wait was cancelled, is killed and reaped when its `start` ends; `Closed` after release | `tests/std_exec.rs` `a_child_is_stopped_and_never_outlives_its_start` |
 | A child wait holds virtual time | `tests/std_exec.rs` `a_child_wait_holds_virtual_time`; the scheduler side in `runtime/chimi-fiber/src/scheduler/child_tests.rs` |
 | A child keeps SIGHUP ignored when the parent inherited it ignored | `tests/std_exec.rs` `a_child_keeps_the_signals_its_parent_ignores` |
+| `capture` returns both streams and the status; more than a pipe holds on both at once; no input | `tests/std_exec.rs` `capture_collects_both_streams_and_the_status` |
+| A round trip through `cat`; `wait` leaves the input to a writer task; a cancelled read; `BrokenPipe` without SIGPIPE; `Closed` after close; a stopped output ends the child with SIGPIPE; a sibling does not hold a child's pipe | `tests/std_exec.rs` `pipes_carry_a_childs_input_and_output` |
+| A released child leaves no descriptor open (Linux) | `tests/std_exec.rs` `a_released_child_leaves_no_descriptor_open` |
+| A fake's piped streams through `capture`; a fake round trip with a writer task; a fake read after a stop is `Closed`; a fake input whose reader stopped is `BrokenPipe` (a fake also gives `BrokenPipe` for a write after close); an unpiped stream is a defect (native: std/stream needs the bounded channel runtime) | `tests/std_exec.rs` `a_fake_child_pipes_streams` |
 | A fake on both backends; the runner closes `commands` on `main`; `T4401` from `main`; `T4400` without one; the interpreter defects | `tests/std_exec.rs` `a_fake_stands_in_for_real_programs_on_both_backends`, `main_gets_real_programs_by_declaring_the_need_and_nothing_else_does`, `the_interpreter_cannot_start_real_programs` |

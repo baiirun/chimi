@@ -10015,6 +10015,47 @@ fn process_program(declarations: &str) -> String {
     format!("{PROCESS_PRELUDE}{declarations}pub fn main() -> Int {{\n  0\n}}\n")
 }
 
+// Rejects a Core verifier that counts a handoff body closure's own parameters
+// and locals as captures: this body captures only `step`, a shareable
+// function, but binds an inbox and a task handle of its own, which a nested
+// closure and `Select` use. The native build lowers and verifies the program.
+#[test]
+fn a_process_body_closure_may_bind_values_that_are_not_shareable() {
+    let scratch = scratch_directory("handoff-closure-locals");
+    let path = scratch.join("main.chimi");
+    std::fs::write(
+        &path,
+        concat!(
+            "import std/duration as Duration\n",
+            "import std/process as Process\n",
+            "import std/process.{Inbox}\n",
+            "import std/select as Select\n",
+            "import std/supervisor as Supervisor\n",
+            "import std/task as Task\n",
+            "enum Message {\n  Ping\n}\n",
+            "fn plus(n: Int) -> Int {\n  n + 1\n}\n",
+            "fn host(step: fn(Int) -> Int) -> Int {\n",
+            "  let spec = Process.handoff_spec(fn(inbox: Inbox<Message>, n: Int) {\n",
+            "    let running = Task.start(fn() { step(n) })\n",
+            "    Select.first([Select.task(running, fn(_) { Void }), Select.inbox(inbox, fn(_) { Void })])\n",
+            "  }, 1, Duration.seconds(1))\n",
+            "  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(1))))\n",
+            "  let started = case Supervisor.start_handoff(root, spec, 1) {\n",
+            "    Success(_) -> 7\n",
+            "    Failure(_) -> 0\n",
+            "  }\n",
+            "  Supervisor.stop(root)\n",
+            "  started\n",
+            "}\n",
+            "pub fn main() -> Int {\n  host(plus)\n}\n",
+        ),
+    )
+    .unwrap();
+    let outcome = native_outcome(&scratch, &path);
+    std::fs::remove_dir_all(scratch).unwrap();
+    assert_eq!(outcome, "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":7}");
+}
+
 // Rejects a formatter that drops or rewrites the declaration, and a parser that
 // reserves `process` or `name` instead of reading them only at item position.
 #[test]
