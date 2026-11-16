@@ -12,6 +12,7 @@ const USAGE: &str = concat!(
     "usage: chimi --version | chimi format <path> | chimi doc [--json] <path> | ",
     "chimi doc [--json] --root <project-dir> <module> | chimi doc [--json] std/<module> | ",
     "chimi doc --html <directory> (<path> | --root <project-dir> <module> | std) | ",
+    "chimi trace show [--all] (<trace> | -) [<path> | <directory> | --root <project-dir> <entry-module>] | ",
     "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | chimi inspect <path> <byte-offset> | ",
     "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
     "chimi check [--json] <path> | chimi run <path> [-- <argument>...] | ",
@@ -44,6 +45,13 @@ enum Command {
     Lint {
         input: Input,
         output: DiagnosticOutput,
+    },
+    /// Reads one run's telemetry after the fact.
+    TraceShow {
+        trace: PathBuf,
+        /// The program the trace came from, to name source locations.
+        source: Option<Input>,
+        all: bool,
     },
     /// Prints one module's public surface.
     Doc {
@@ -340,6 +348,10 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
         return parse_lint_command(arguments);
     }
 
+    if command == "trace" {
+        return parse_trace_command(arguments);
+    }
+
     if command == "std" {
         return match arguments.next() {
             Some(subcommand) if subcommand == "check" => match arguments.next() {
@@ -598,6 +610,59 @@ fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Comman
     }
 }
 
+/// Parses `chimi trace show [--all] <trace> [<path> | <directory> | --root <project> <entry>]`.
+fn parse_trace_command(arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    let mut arguments = arguments.peekable();
+    if arguments.next().is_none_or(|subcommand| subcommand != "show") {
+        return Err(UsageError {
+            message: "trace requires the show subcommand",
+        });
+    }
+    let all = arguments.next_if(|argument| argument == "--all").is_some();
+    let Some(trace) = arguments.next() else {
+        return Err(UsageError {
+            message: "trace show requires a trace file, or - for standard input",
+        });
+    };
+    let source = match arguments.next() {
+        None => None,
+        Some(flag) if flag == "--root" => {
+            let (Some(root), Some(entry)) = (arguments.next(), arguments.next()) else {
+                return Err(UsageError {
+                    message: "trace show --root requires a project directory and an entry module",
+                });
+            };
+            let Ok(entry) = entry.into_string() else {
+                return Err(UsageError {
+                    message: "trace show module paths must be valid UTF-8",
+                });
+            };
+            Some(Input::Project {
+                root: PathBuf::from(root),
+                entry,
+            })
+        }
+        Some(path) => {
+            let path = PathBuf::from(path);
+            Some(if path.is_dir() {
+                Input::Directory { root: path }
+            } else {
+                Input::File { path }
+            })
+        }
+    };
+    if arguments.next().is_some() {
+        return Err(UsageError {
+            message: "trace show received unexpected arguments",
+        });
+    }
+    Ok(Command::TraceShow {
+        trace: PathBuf::from(trace),
+        source,
+        all,
+    })
+}
+
 /// Parses `chimi lint [--json] (<path> | <directory> | --root <project> <module>)`.
 fn parse_lint_command(arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
     let mut arguments = arguments.peekable();
@@ -665,6 +730,7 @@ fn execute(Invocation { std_dir, command }: Invocation) -> ExitCode {
         Command::Format { path } => format(path),
         Command::Doc { target, output } => doc(target, &standard, output),
         Command::Lint { input, output } => lint(input, &standard, output),
+        Command::TraceShow { trace, source, all } => trace_show(&trace, source, &standard, all),
         Command::Inspect {
             input,
             module_path,
@@ -699,6 +765,62 @@ fn lint(input: Input, standard: &StandardTree, output: DiagnosticOutput) -> Exit
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+fn trace_show(
+    trace: &std::path::Path,
+    source: Option<Input>,
+    standard: &StandardTree,
+    all: bool,
+) -> ExitCode {
+    let text = if trace.as_os_str() == "-" {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map(|_| text)
+    } else {
+        std::fs::read_to_string(trace)
+    };
+    let text = match text {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("chimi: cannot read {}: {error}", trace.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let with_source = source.is_some();
+    let locator: Box<dyn Fn(u32, u32) -> Option<String>> = match source {
+        None => Box::new(|_, _| None),
+        Some(input) => {
+            let Some(project) = load_project(input, standard) else {
+                return ExitCode::FAILURE;
+            };
+            Box::new(project.source_locator())
+        }
+    };
+    // A place the source cannot name means the source is not the program
+    // the run was built from, so its other locations may be wrong too.
+    let missed = std::cell::Cell::new(false);
+    let locate = |file: u32, offset: u32| {
+        let location = locator(file, offset);
+        missed.set(missed.get() || location.is_none());
+        location
+    };
+    match chimi::render_trace(&text, &locate, all) {
+        Ok(report) => {
+            // A closed pipe, as in `| head`, is not an error.
+            let _ = std::io::Write::write_all(&mut std::io::stdout(), report.as_bytes());
+            if with_source && missed.get() {
+                eprintln!(
+                    "chimi: warning: some places in the trace are not in the given source; \
+                     give the same file, directory or project the run was built from"
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("chimi: {}: {error}", trace.display());
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -1175,6 +1297,46 @@ mod tests {
                 output: DocOutput::Text,
             })
         );
+    }
+
+    #[test]
+    fn parses_trace_show() {
+        assert_eq!(
+            parse_command(arguments(&["trace", "show", "run.jsonl"])),
+            Ok(Command::TraceShow {
+                trace: PathBuf::from("run.jsonl"),
+                source: None,
+                all: false,
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["trace", "show", "--all", "-", "--root", "svc", "app"])),
+            Ok(Command::TraceShow {
+                trace: PathBuf::from("-"),
+                source: Some(Input::Project {
+                    root: PathBuf::from("svc"),
+                    entry: "app".to_owned(),
+                }),
+                all: true,
+            })
+        );
+        for (command, message) in [
+            (&["trace"][..], "trace requires the show subcommand"),
+            (
+                &["trace", "show"][..],
+                "trace show requires a trace file, or - for standard input",
+            ),
+            (
+                &["trace", "show", "a.jsonl", "a.chimi", "b"][..],
+                "trace show received unexpected arguments",
+            ),
+        ] {
+            assert_eq!(
+                parse_command(arguments(command)),
+                Err(UsageError { message }),
+                "{command:?}"
+            );
+        }
     }
 
     #[test]
