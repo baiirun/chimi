@@ -3,8 +3,9 @@
 // ignores case.
 import std/debug as Debug
 import std/text as Text
+import std/test as Test
 
-pub fn main() -> Text {
+fn run() -> List<Text> {
   let results = [
     Debug.render([Text.lowercase("Hello, World 123"), Text.uppercase("Hello, World 123"), Text.lowercase("")]),
     Debug.render([Text.lowercase("ÉCOLE Ångström"), Text.uppercase("école ångström"), Text.uppercase("日本 ok")]),
@@ -26,5 +27,9 @@ pub fn main() -> Text {
       Text.compare_ignoring_case("ὈΔΌΣ", "ὀδός"),
     ]),
   ]
-  Debug.render(results)
+  results
+}
+
+test "case" {
+  Test.assert_equal(run(), ["[\"hello, world 123\", \"HELLO, WORLD 123\", \"\"]", "[\"école ångström\", \"ÉCOLE ÅNGSTRÖM\", \"日本 OK\"]", "[\"STRASSE\", \"FINE\", \"ʼN\"]", "(\"i̇\", 3)", "(\"É\", 3)", "[\"οδος\", \"σα\", \"σ\", \"ας.\"]", "[\"ασ'α\", \"α'ς\", \"οδος οδος\"]", "[\"ὈΔΌΣ\", \"Σ\"]", "[Ordering.Equal, Ordering.Less, Ordering.Greater, Ordering.Equal]"])
 }

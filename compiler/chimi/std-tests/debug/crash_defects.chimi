@@ -2,6 +2,7 @@
 // types as any value, so it stands in a branch that must produce an Int, and
 // a branch that is not taken does not crash.
 import std/debug as Debug
+import std/test as Test
 
 fn cents(amount: Int) -> Int {
   case amount < 0 {
@@ -10,6 +11,10 @@ fn cents(amount: Int) -> Int {
   }
 }
 
-pub fn main() -> Int {
+fn run() -> Int {
   cents(2) + cents(-1)
+}
+
+test "crash defects" {
+  Test.assert_equal(Test.capture_defect(run), "Checkout.cents: amount must not be negative, got -1")
 }

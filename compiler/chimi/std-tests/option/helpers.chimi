@@ -2,6 +2,7 @@
 // prelude's derived order (None before every Some).
 import std/debug as Debug
 import std/option as Option
+import std/test as Test
 
 enum Lookup {
   Missing(id: Int)
@@ -15,11 +16,13 @@ fn half(value: Int) -> Option<Int> {
 }
 
 fn found(id: Int) -> Int {
-  Some(id * 10) |> Option.unwrap_or_fail(Lookup.Missing(id))
+  Some(id * 10)
+  |> Option.unwrap_or_fail(Lookup.Missing(id))
 }
 
 fn lost(id: Int) -> Int {
-  None |> Option.unwrap_or_fail(Lookup.Missing(id))
+  None
+  |> Option.unwrap_or_fail(Lookup.Missing(id))
 }
 
 fn recovered(id: Int) -> Int {
@@ -29,7 +32,7 @@ fn recovered(id: Int) -> Int {
   }
 }
 
-pub fn main() -> Text {
+fn run() -> List<Text> {
   let results = [
     Debug.render([Option.is_some(Some(1)), Option.is_some(None), Option.is_none(None), Option.is_none(Some(1))]),
     Debug.render([Option.map(Some(4), fn(value) { value + 1 }), Option.map(None, fn(value) { value + 1 })]),
@@ -40,5 +43,9 @@ pub fn main() -> Text {
     Debug.render([found(4), recovered(6)]),
     Debug.render([None < Some(0), Some(1) < Some(2), Some(0) == Some(0)]),
   ]
-  Debug.render(results)
+  results
+}
+
+test "helpers" {
+  Test.assert_equal(run(), ["[True, False, True, False]", "[Some(5), None]", "[Some(4), None, None]", "[Some(1), Some(2), None]", "[5, 7]", "[5, 9]", "[40, -6]", "[True, True, True]"])
 }

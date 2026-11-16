@@ -4,6 +4,7 @@
 import std/debug as Debug
 import std/result as Result
 import std/result.{Result, Ok, Err}
+import std/test as Test
 
 enum UserError {
   Missing(id: Int)
@@ -39,7 +40,7 @@ fn total(results: List<Result<Text, UserError | OrderError>>) -> Text {
   }
 }
 
-pub fn main() -> Text {
+fn run() -> Text {
   let results = [
     Result.capture(fn() { load_user(1) }),
     Result.capture(fn() { load_user(2) }),
@@ -50,4 +51,8 @@ pub fn main() -> Text {
     [] -> "none"
   }
   "${total(results)}${kept} ${Debug.render(results)}"
+}
+
+test "capture and get" {
+  Test.assert_equal(run(), "ada; no user 2; order lost; ada [Result.Ok(\"ada\"), Result.Err(UserError.Missing(2)), Result.Err(OrderError.Lost)]")
 }

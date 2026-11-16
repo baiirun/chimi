@@ -1,7 +1,12 @@
 // Bytes.from_int defects on a value that does not fit, here -1 for an unsigned layout.
 import std/bytes as Bytes
 import std/bytes.{Bytes, IntLayout}
+import std/test as Test
 
-pub fn main() -> Bytes {
+fn run() -> Bytes {
   Bytes.from_int(-1, IntLayout.U32Be)
+}
+
+test "from int unsigned negative defects" {
+  Test.assert_equal(Test.capture_defect(run), "Bytes.from_int: -1 does not fit IntLayout.U32Be")
 }

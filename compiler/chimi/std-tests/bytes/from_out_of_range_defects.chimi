@@ -1,7 +1,12 @@
 // Bytes.from defects on an element outside 0..=255, naming its index.
 import std/bytes as Bytes
 import std/bytes.{Bytes}
+import std/test as Test
 
-pub fn main() -> Bytes {
+fn run() -> Bytes {
   Bytes.from([1, 2, 256])
+}
+
+test "from out of range defects" {
+  Test.assert_equal(Test.capture_defect(run), "Bytes.from: element 2 is 256, outside 0..=255")
 }

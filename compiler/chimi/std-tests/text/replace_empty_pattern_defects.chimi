@@ -1,5 +1,10 @@
 import std/text as Text
+import std/test as Test
 
-pub fn main() -> Text {
+fn run() -> Text {
   Text.replace("abc", "", "x")
+}
+
+test "replace empty pattern defects" {
+  Test.assert_equal(Test.capture_defect(run), "Text.replace: pattern must not be empty")
 }

@@ -1,6 +1,11 @@
 // Bytes.index_of defects on an empty needle, as Text.contains does.
 import std/bytes as Bytes
+import std/test as Test
 
-pub fn main() -> Option<Int> {
+fn run() -> Option<Int> {
   Bytes.index_of(Bytes.from([1]), Bytes.empty())
+}
+
+test "index of empty needle defects" {
+  Test.assert_equal(Test.capture_defect(run), "Bytes.index_of: needle must not be empty")
 }

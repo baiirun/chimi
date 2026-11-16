@@ -1,7 +1,12 @@
 // Decimal.divide takes result scales 0 through 38.
 import std/decimal as Decimal
 import std/decimal.{Decimal, Rounding}
+import std/test as Test
 
-pub fn main() -> Decimal {
+fn run() -> Decimal {
   Decimal.divide(Decimal.of(1, 0), Decimal.of(3, 0), 39, Rounding.HalfEven)
+}
+
+test "divide scale outside defects" {
+  Test.assert_equal(Test.capture_defect(run), "Decimal.divide: scale must be in 0..=38, got 39")
 }

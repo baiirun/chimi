@@ -2,8 +2,13 @@
 // constructor that receives it.
 import std/list as List
 import std/schedule as Schedule
+import std/test as Test
 
-pub fn main() -> Bool {
+fn run() -> Bool {
   let count = List.length([])
   Schedule.immediate(count) == Schedule.immediate(1)
+}
+
+test "attempts below one" {
+  Test.assert_equal(Test.capture_defect(run), "Schedule attempts must be at least 1, got 0")
 }

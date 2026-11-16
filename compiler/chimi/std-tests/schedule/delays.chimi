@@ -6,8 +6,9 @@
 import std/debug as Debug
 import std/duration as Duration
 import std/schedule as Schedule
+import std/test as Test
 
-pub fn main() -> Text {
+fn run() -> Text {
   let ms = fn(count) { Duration.milliseconds(count) }
   let immediate = Schedule.immediate(2)
   let fixed = Schedule.fixed(3, Duration.seconds(1))
@@ -34,4 +35,8 @@ pub fn main() -> Text {
     [Schedule.delay(huge, 62), Schedule.delay(huge, 63), Schedule.delay(huge, 8999999999999999999)],
     [Schedule.delay(zero, 8999999999999999999)],
   ])
+}
+
+test "delays" {
+  Test.assert_equal(run(), "[[Some(0s), None], [Some(1s), Some(1s), None], [Some(100ms), Some(200ms), Some(400ms), Some(500ms), Some(500ms), None], [Some(2s), Some(2s), None], [Some(1921535h50m27.641081856s), Some(2562047h47m16.854775807s), Some(2562047h47m16.854775807s)], [Some(0s)]]")
 }

@@ -625,7 +625,23 @@ impl Compiler {
     pub fn standard_operations_reached(
         sources: Vec<ProjectSource>,
     ) -> Result<Vec<String>, Vec<Diagnostic>> {
-        let root = seal_entry(check_project(resolve_program_sources(sources)))?;
+        Self::operations_reached(seal_entry(check_project(resolve_program_sources(sources)))?)
+    }
+
+    /// The standard registry operations that the project's test items reach,
+    /// as [`Compiler::standard_operations_reached`] lists them for a program.
+    #[doc(hidden)]
+    pub fn standard_operations_reached_by_tests(
+        sources: Vec<ProjectSource>,
+    ) -> Result<Vec<String>, Vec<Diagnostic>> {
+        Self::operations_reached(crate::executable::seal_tests(check_project(
+            resolve_project_sources(sources),
+        ))?)
+    }
+
+    fn operations_reached(
+        root: crate::executable::VerifiedRoot,
+    ) -> Result<Vec<String>, Vec<Diagnostic>> {
         let typed = Arc::clone(&root.typed);
         let core = lower(root)?;
         let mut reached = core
