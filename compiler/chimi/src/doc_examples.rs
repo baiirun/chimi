@@ -141,10 +141,18 @@ fn example_blocks(lines: &[&str]) -> Vec<(String, Block)> {
         while index < lines.len() && doc_content(lines[index]).is_some() {
             index += 1;
         }
+        let end = index;
+        // Plain `//` lines may separate the doc comment from its item.
+        while lines
+            .get(index)
+            .is_some_and(|line| doc_content(line).is_none() && line.trim_start().starts_with("//"))
+        {
+            index += 1;
+        }
         let Some(item) = lines.get(index).and_then(|line| item_name(line)) else {
             continue;
         };
-        for block in fenced_blocks(lines, start, index) {
+        for block in fenced_blocks(lines, start, end) {
             blocks.push((item.clone(), block));
         }
     }
@@ -303,7 +311,7 @@ fn code_line(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::examples;
+    use super::{doc_comment_before, examples};
 
     #[test]
     fn an_example_keeps_the_documented_layout() {
@@ -379,6 +387,18 @@ mod tests {
         assert!(found[2].text.contains("    import std/test as Test\ntest \"Point example 1\" {Void }"), "{}", found[2].text);
         assert!(found[0].text.contains("test \"run example 1\" {\n    first\n}"));
         assert!(found[1].text.contains("test \"run example 2\" {\n    second\n}"));
+    }
+
+    #[test]
+    fn a_plain_comment_may_separate_an_example_from_its_item() {
+        let text = "/// ```chimi\n/// 1\n/// ```\n// note\npub fn noted() -> Int {\n  1\n}\n";
+        let found = examples(text);
+        let names: Vec<&str> = found.iter().map(|example| example.item.as_str()).collect();
+        assert_eq!(names, ["noted"]);
+        assert_eq!(
+            doc_comment_before(text, text.find("pub fn").unwrap()).as_deref(),
+            Some("```chimi\n1\n```")
+        );
     }
 
     #[test]

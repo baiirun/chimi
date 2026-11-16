@@ -36,7 +36,7 @@ Rules:
   type, because a long initializer is not its contract. Declarations print
   with `\n` line ends whatever the source uses.
 - An item's doc comment is the `///` run directly before the line it starts,
-  the same rule that makes examples (`testing.md`, "Documentation examples"). It is shown
+  or before plain `//` lines directly above it, the same rule that makes examples (`testing.md`, "Documentation examples"). It is shown
   as written, examples included, indented four spaces under the signature.
 - The module's summary is a `///` run at the top of the file that a blank
   line separates from what follows, so it documents no item.
