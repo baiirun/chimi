@@ -18,6 +18,10 @@ inference.
 chimi doc [--json] <path>                      the `main` module of one file
 chimi doc [--json] --root <project> <module>   a module of a project
 chimi doc [--json] std/<module>                a module of the standard tree
+chimi doc --html <directory> <path>            static pages for a file's modules
+chimi doc --html <directory> --root <project> <module>
+                                               static pages for a project
+chimi doc --html <directory> std               static pages for the standard tree
 ```
 
 Rules:
@@ -49,14 +53,30 @@ Rules:
   `kind` is one of `fn`, `struct`, `enum`, `interface`, `const`, `type`,
   `process name`.
 
-Not yet: one item by name (`chimi doc std/option unwrap_or`), and writing a
-whole project's documentation as static pages, which comes with the second
-documentation part.
+- `--html <directory>` MUST write static pages into the directory, creating
+  it: `index.html`, which lists the modules in path order with the first
+  paragraph of each summary, and one page per module at its module path, as
+  `lib/geo.html`, showing what the terminal form shows. For a file or a
+  project the modules are the project's own ones that the entry module
+  reaches, never `std/`; for `std` they are every module of the standard
+  tree, and naming one `std/` module is a usage error. Links between pages are relative, and each page
+  carries its own styles, so the directory can be opened from disk or served
+  as it is. Nothing is printed, and nothing is written when the project does
+  not type-check.
+- On a page, doc comments are read as a small part of Markdown: blank lines
+  separate paragraphs, `- ` lines make a list (an indented line continues an
+  entry), fences make a code block (closed by a fence at least as
+  long), and backticks mark inline code. Anything
+  else shows as written, and all text is HTML-escaped.
+
+Not yet: one item by name (`chimi doc std/option unwrap_or`), links from a
+type in a signature to its declaration, and search.
 
 Implementation: `compiler/chimi/src/doc.rs` builds the documentation from the
-type report (`TypeReport::documentation`); doc-comment lines are read by
-`doc_examples.rs`. Tests: `compiler/chimi/tests/doc.rs` and the fixture
-`tests/fixtures/doc-project`.
+type report (`TypeReport::documentation`, and `TypeReport::documentation_of`
+for many modules); doc-comment lines are read by `doc_examples.rs`, and
+`doc_site.rs` renders the pages. Tests: `compiler/chimi/tests/doc.rs`, the
+fixture `tests/fixtures/doc-project`, and the unit tests in `doc_site.rs`.
 
 ## Linting: `chimi lint`
 
