@@ -436,12 +436,16 @@ pub fn strip(text: Text) -> Text
 - `style` MUST write one SGR sequence (`ESC [ codes m`) with each style's
   code in the order given, the text, and one sequence of each style's own
   closing code (39, 49, 22, 23, 24, 27, 29), each once, never `ESC [ 0 m`,
-  so an outer style stays on around inner styled text. Empty `styles` or
+  so it closes only what it opened: an outer style of another attribute
+  (bold around underlined text) stays on, while an inner style of the same
+  attribute (a color inside a color, or dim inside bold, which share 22)
+  ends the outer one. Empty `styles` or
   empty text MUST return the text unchanged. Colors are the 8 named ones
   (30 to 37, 40 to 47) and their bright forms (90 to 97, 100 to 107).
 - `strip` MUST remove every control sequence: `ESC [`, parameter and
   intermediate bytes (0x20 to 0x3F), and a final byte (0x40 to 0x7E). An
-  `ESC [` not followed by a complete sequence is kept.
+  `ESC [` not followed by a complete sequence, and an `ESC` without `[`, are
+  kept.
 - Styling is pure, with no needs. A program decides once with `uses_color`
   and styles with an empty list when it should not.
 - On the native backend the provider is a binding package
@@ -531,7 +535,7 @@ pub fn strip(text: Text) -> Text
 | A released child leaves no descriptor open (Linux) | `tests/std_exec.rs` `a_released_child_leaves_no_descriptor_open` |
 | A fake's piped streams through `capture`; a fake round trip with a writer task; a fake read after a stop is `Closed`; a fake input whose reader stopped is `BrokenPipe` (a fake also gives `BrokenPipe` for a write after close); an unpiped stream is a defect (native: std/stream needs the bounded channel runtime) | `tests/std_exec.rs` `a_fake_child_pipes_streams` |
 | A fake on both backends; the runner closes `commands` on `main`; `T4401` from `main`; `T4400` without one; the interpreter defects | `tests/std_exec.rs` `a_fake_stands_in_for_real_programs_on_both_backends`, `main_gets_real_programs_by_declaring_the_need_and_nothing_else_does`, `the_interpreter_cannot_start_real_programs` |
-| `style` writes each style's codes, one close per shared code, nothing for empty input; `strip` removes sequences and keeps the rest, on both backends | `tests/std_terminal.rs` `styles_write_their_codes_and_strip_removes_them` |
-| `uses_color`: a terminal, `NO_COLOR` set or empty, `TERM=dumb`, the stream asked; queries reach a fake | `tests/std_terminal.rs` `color_follows_the_terminal_and_no_color` |
-| The runner's provider: pipes are not terminals and have no size; a pseudo-terminal of 100 by 30 is one with its size, and a stream redirected elsewhere is not | `tests/std_terminal.rs` `piped_streams_are_not_terminals`, `a_pseudo_terminal_is_one_and_has_its_size` |
-| A test that does not supply `terminal` fails with `T4400` | `tests/std_terminal.rs` `a_test_must_supply_the_terminal` |
+| `style` writes each style's codes, one close per shared code, nothing for empty input, and an outer style of another attribute survives an inner close; `strip` removes sequences next to multibyte text and in a row and keeps the rest, on both backends | `tests/std_terminal.rs` `styles_write_their_codes_and_strip_removes_them` |
+| `uses_color`: a terminal, `NO_COLOR` set or empty, `TERM=dumb`, the stream asked; queries reach a fake; on both backends | `tests/std_terminal.rs` `color_follows_the_terminal_and_no_color` |
+| The runner's provider: pipes are not terminals and have no size; a pseudo-terminal of 100 by 30 is one with its size, zero columns or rows give `None`, and a stream redirected elsewhere is not | `tests/std_terminal.rs` `piped_streams_are_not_terminals`, `a_pseudo_terminal_is_one_and_has_its_size` |
+| A test that does not supply `terminal` fails with `T4400`; the interpreter cannot reach the host terminal (`E5204`) | `tests/std_terminal.rs` `a_test_must_supply_the_terminal`, `the_interpreter_cannot_ask_the_host_terminal` |

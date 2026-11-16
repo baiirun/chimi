@@ -130,10 +130,19 @@ test "strip removes sequences and keeps the rest" {
   Terminal.strip("no codes, ünïcode") |> Test.assert_equal("no codes, ünïcode")
   Terminal.strip("cut \u{1b}[") |> Test.assert_equal("cut \u{1b}[")
   Terminal.strip("odd \u{1b}[1\u{7}x") |> Test.assert_equal("odd \u{1b}[1\u{7}x")
+  Terminal.strip("é\u{1b}[31mñ\u{1b}[0m日") |> Test.assert_equal("éñ日")
+  Terminal.strip("\u{1b}[1m\u{1b}[4m\u{1b}[?25lx") |> Test.assert_equal("x")
+  Terminal.strip("lone \u{1b}x \u{1b}") |> Test.assert_equal("lone \u{1b}x \u{1b}")
+}
+
+test "only an outer style of another attribute survives an inner close" {
+  let inner = Terminal.style("u", [Style.Underline])
+  Debug.render(Terminal.style("a${inner}b", [Style.Bold]))
+    |> Test.assert_equal("\"\\u{1b}[1ma\\u{1b}[4mu\\u{1b}[24mb\\u{1b}[22m\"")
 }
 "#;
-    assert_passed(&run_tests("styles", tests, &[]), 4);
-    assert_passed(&run_tests("styles-native", tests, &["--backend=native"]), 4);
+    assert_passed(&run_tests("styles", tests, &[]), 5);
+    assert_passed(&run_tests("styles-native", tests, &["--backend=native"]), 5);
 }
 
 // Rejects a `uses_color` that colors piped output, ignores NO_COLOR or
@@ -180,6 +189,7 @@ test "queries reach the fake" {
 }
 "#;
     assert_passed(&run_tests("color", tests, &[]), 6);
+    assert_passed(&run_tests("color-native", tests, &["--backend=native"]), 6);
 }
 
 const PROBE: &str = r#"
@@ -218,12 +228,22 @@ fn piped_streams_are_not_terminals() {
 #[test]
 fn a_pseudo_terminal_is_one_and_has_its_size() {
     let scratch = build_probe("pty");
+    assert_eq!(
+        on_pty(&scratch, 30, 100),
+        "[False, True, False]\nSome({ columns: 100, rows: 30 })\n"
+    );
+    assert_eq!(on_pty(&scratch, 30, 0), "[False, True, False]\nNone\n", "zero columns");
+    assert_eq!(on_pty(&scratch, 0, 100), "[False, True, False]\nNone\n", "zero rows");
+}
+
+/// The probe's output on a pseudo-terminal of `rows` by `columns`.
+fn on_pty(scratch: &Scratch, rows: u16, columns: u16) -> String {
     let script = r#"
 import fcntl, os, pty, struct, sys, termios
 read_end, write_end = os.pipe()
 pid, fd = pty.fork()
 if pid == 0:
-    fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+    fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack("HHHH", int(sys.argv[2]), int(sys.argv[3]), 0, 0))
     os.dup2(read_end, 0)
     null = os.open(os.devnull, os.O_WRONLY)
     os.dup2(null, 2)
@@ -242,14 +262,21 @@ os.waitpid(pid, 0)
 sys.stdout.write(out.decode().replace("\r\n", "\n"))
 "#;
     let output = Command::new("python3")
-        .args(["-c", script, scratch.0.join("probe").to_str().unwrap()])
+        .args(["-c", script, scratch.0.join("probe").to_str().unwrap(), &rows.to_string(), &columns.to_string()])
         .output()
         .expect("run python3");
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "[False, True, False]\nSome({ columns: 100, rows: 30 })\n"
-    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+// Rejects an interpreter that reaches the host terminal: the provider is a C
+// binding, which only native code calls (E5204).
+#[test]
+fn the_interpreter_cannot_ask_the_host_terminal() {
+    let scratch = Scratch::new("interpreter", &format!("{IMPORTS}import std/list as List\n{PROBE}"));
+    let run = scratch.chimi(&["run", "cases.chimi"]);
+    assert_ne!(run.status, Some(0));
+    assert!(run.stdout.contains("E5204") || run.stderr.contains("E5204"), "{}{}", run.stdout, run.stderr);
 }
 
 // Rejects a test that reaches the terminal without supplying it: the need is

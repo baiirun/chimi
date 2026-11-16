@@ -53,6 +53,10 @@ MUTATIONS = [
     terminal_test("a pipe has a size", BINDING, [
         ("  if (!isatty(fd) || ioctl(fd, TIOCGWINSZ, &size) != 0 || size.ws_col == 0 || size.ws_row == 0)\n    return chimi_binding_success(call, chimi_binding_none(call));",
          "  if (ioctl(fd, TIOCGWINSZ, &size) != 0) { size.ws_col = 80; size.ws_row = 24; }")]),
+    terminal_test("zero columns is a size", BINDING, [
+        (" || size.ws_col == 0 || size.ws_row == 0)", " || size.ws_row == 0)")]),
+    terminal_test("zero rows is a size", BINDING, [
+        (" || size.ws_col == 0 || size.ws_row == 0)", " || size.ws_col == 0)")]),
     terminal_test("every stream is a terminal", BINDING, [
         ("chimi_binding_make_boolean(call, isatty(fd) == 1)", "chimi_binding_make_boolean(call, 1)")]),
 ]

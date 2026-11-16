@@ -116,10 +116,11 @@ pub fn uses_color(stream: Standard) -> Bool needs {
 // 6. Styling.
 
 /// `text` wrapped in the escape codes for `styles`: one sequence that turns
-/// them on, and after the text each style's own closing code, so an outer
-/// style stays on around inner styled text. A color inside another color
-/// ends at the terminal's default color, and bold and dim share their
-/// closing code. Empty `styles` or empty `text` returns `text` unchanged.
+/// them on, and after the text each style's own closing code, so it closes
+/// only what it opened. An outer style of another attribute stays on around
+/// inner styled text; one of the same attribute (a color inside a color, or
+/// bold and dim, which share a closing code) ends at the inner close. Empty
+/// `styles` or empty `text` returns `text` unchanged.
 ///
 /// Cost: O(n) in the text and styles.
 pub fn style(text: Text, styles: List<Style>) -> Text {
@@ -134,8 +135,8 @@ pub fn style(text: Text, styles: List<Style>) -> Text {
 }
 
 /// `text` with every terminal control sequence (`ESC [`, parameters, a final
-/// byte) removed, such as the ones `style` adds. An escape not followed by a
-/// complete sequence is kept.
+/// byte) removed, such as the ones `style` adds. An `ESC [` not followed by
+/// a complete sequence, and an `ESC` without `[`, are kept.
 ///
 /// Cost: O(n).
 pub fn strip(text: Text) -> Text {
