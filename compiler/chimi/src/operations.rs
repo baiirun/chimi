@@ -414,6 +414,19 @@ pub(crate) const OPERATIONS: &[Operation] = &[
         0,
         StandardFunction::EnvHostCurrentDirectory,
     ),
+    host("std/fs.host_open", 1, StandardFunction::FsHostOpen),
+    host("std/fs.host_create", 2, StandardFunction::FsHostCreate),
+    host("std/fs.host_read", 1, StandardFunction::FsHostRead),
+    host("std/fs.host_write", 2, StandardFunction::FsHostWrite),
+    host("std/fs.host_close", 1, StandardFunction::FsHostClose),
+    host("std/fs.host_metadata", 1, StandardFunction::FsHostMetadata),
+    host("std/fs.host_list", 1, StandardFunction::FsHostList),
+    host("std/fs.host_create_directory", 1, StandardFunction::FsHostCreateDirectory),
+    host("std/fs.host_remove", 1, StandardFunction::FsHostRemove),
+    host("std/fs.host_rename", 2, StandardFunction::FsHostRename),
+    test_only("std/fs.host_is_directory", 1, StandardFunction::FsHostIsDirectory),
+    test_only("std/fs.host_temporary_directory", 0, StandardFunction::FsHostTemporaryDirectory),
+    test_only("std/fs.test_root", 1, StandardFunction::FsTestRoot),
 ];
 
 /// A capability the runner closes on `main` with a provider written in the
@@ -428,11 +441,18 @@ pub(crate) struct RunnerProvider {
     pub(crate) provider: &'static str,
 }
 
-pub(crate) const RUNNER_PROVIDERS: &[RunnerProvider] = &[RunnerProvider {
-    interface: StandardType::Environment,
-    need: "environment",
-    provider: "std/env.host",
-}];
+pub(crate) const RUNNER_PROVIDERS: &[RunnerProvider] = &[
+    RunnerProvider {
+        interface: StandardType::Environment,
+        need: "environment",
+        provider: "std/env.host",
+    },
+    RunnerProvider {
+        interface: StandardType::Files,
+        need: "files",
+        provider: "std/fs.host",
+    },
+];
 
 /// The runner provider for a need on `interface` named `need`, if the runner
 /// closes it.
@@ -489,6 +509,7 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     native_type("std/bytes.Bytes", StandardType::Bytes),
     native_type("std/path.Path", StandardType::Path),
     known_interface("std/env.Environment", StandardType::Environment),
+    known_interface("std/fs.Files", StandardType::Files),
     native_type("std/json.Number", StandardType::JsonNumber),
     native_type("std/cause.Cause", StandardType::Cause),
     native_type("std/binding_probe.Pipe", StandardType::BindingHandle),

@@ -5,9 +5,9 @@
 This is the normative contract for the Phase 6c system modules of the
 [language completion plan](../plans/language-completion-plan.md) (CHI-209):
 the modules a command-line tool or a service uses to reach its operating
-system. It covers runner-provided capabilities, `std/path`, and `std/env`
-(CHI-246, CHI-247). `std/fs`, `std/signal`, `std/exec`, `std/terminal`, and
-`std/cli` (CHI-248 to CHI-252) add their sections as they land.
+system. It covers runner-provided capabilities, `std/path`, `std/env`, and
+`std/fs` (CHI-246 to CHI-248). `std/signal`, `std/exec`, `std/terminal`, and
+`std/cli` (CHI-249 to CHI-252) add their sections as they land.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 modules follow the [standard library conventions](standard-library-conventions.md)
@@ -35,6 +35,7 @@ Each one has a **fixed need name**, listed with it in the registry
 | Interface | Need name | Provider |
 | --- | --- | --- |
 | `std/env.Environment` | `environment` | `std/env.host` |
+| `std/fs.Files` | `files` | `std/fs.host` |
 
 Rules:
 
@@ -84,8 +85,9 @@ pub fn normalize(path: Path) -> Path
   `import std/io.{Path}` names `std/path.Path`. At run time a `Path` is its
   text on both backends; equality and order are the text's.
 - Every function works on the text alone and MUST NOT consult the file system.
-- `join` MUST append `part` with exactly one `/` between the two, even when
-  `part` starts with `/`. Joining never replaces the base path, unlike Rust's
+- `join` MUST append `part`, without its leading `/`s, with exactly one `/`
+  between the two, even when `part` starts with `/`; an empty `part` leaves the
+  path as it is, and an empty path gives `part` without its leading `/`s. Joining never replaces the base path, unlike Rust's
   `Path::join` and Python's `/`: a name read from input stays inside the
   directory it was joined to, and `..` is removed only by `normalize`. This is
   Go's `filepath.Join` and Node's `path.join` without their cleaning.
@@ -134,6 +136,90 @@ pub fn current_directory() -> Path              needs { environment: Environment
   (CHI-252), not to this module: an immediate exit would skip
   `Resource.scoped` releases and the supervisor drain.
 
+## std/fs
+
+```text
+pub interface Files {
+  open: fn(Path) -> Reader<FsError> errors FsError
+  create: fn(Path, WriteMode) -> Writer<FsError> errors FsError
+  metadata: fn(Path) -> Metadata errors FsError
+  list: fn(Path) -> List<Text> errors FsError
+  create_directory: fn(Path) -> Void errors FsError
+  remove: fn(Path) -> Void errors FsError
+  rename: fn(Path, Path) -> Void errors FsError
+}
+pub enum WriteMode { Replace, Append, New }
+pub enum Kind { File, Directory, Special }
+pub struct Metadata                      // read with kind, size, modified
+pub enum FsError {
+  NotFound(path), PermissionDenied(path), AlreadyExists(path),
+  NotADirectory(path), IsADirectory(path), NotEmpty(path), Closed(path),
+  Other(path, message),
+}
+
+// needs { files: Files }, failing with FsError
+pub fn read(path) -> Bytes            pub fn write(path, bytes) -> Void
+pub fn read_text(path) -> Text        pub fn write_text(path, text) -> Void
+pub fn open(path) -> Reader<FsError>  pub fn append(path, bytes) -> Void
+pub fn metadata(path) -> Metadata     pub fn create(path, mode) -> Writer<FsError>
+pub fn list(path) -> List<Text>       pub fn create_directory(path) -> Void
+pub fn remove(path) -> Void           pub fn create_directories(path) -> Void
+pub fn rename(from, to) -> Void
+
+pub fn kind(metadata) -> Kind         pub fn metadata_of(kind, size, modified) -> Metadata
+pub fn size(metadata) -> Int          pub fn modified(metadata) -> Timestamp
+
+// test-only (T4401 from main)
+pub fn temporary_directory(use: fn(Path) -> T) -> T
+pub fn files_within(root: Path) -> <a Files record>
+```
+
+- Every failure MUST name the path the operating system refused. The runner's
+  provider maps `errno` to the variants on both backends (`ENOENT`, `EACCES`
+  or `EPERM`, `EEXIST`, `ENOTDIR`, `EISDIR`, `ENOTEMPTY`); anything else is
+  `Other` with the system's message. A path holding U+0000 names no file and
+  is `Other(path, "path contains a NUL byte")`.
+- `open` and `create` give streams ([byte streams](byte-streams.md)) built with
+  `Stream.reader` and `Stream.writer`, so `Stream.copy`, `Stream.read_all`, and
+  `Resource.scoped(fn() { Fs.open(path) }, Stream.stop, use)` work on files. A
+  read gives chunks of at most 64 KiB. Opening a directory fails with
+  `IsADirectory`. A read after `Stream.stop` or a write after `Stream.close`
+  fails with `Closed`, never reaching another file: a handle carries a
+  generation that closing advances.
+- A file that is not a regular file (a pipe, a terminal, a socket) is read and
+  written without blocking other tasks on the native backend: the descriptor is
+  made non-blocking and a read or write that would block waits with
+  `CHIMI_REQUEST_IO_WAIT`. Opening a named pipe still blocks until its other
+  end opens, as `open(2)` does.
+- `read` and `write` hold the whole file in memory and have no size limit,
+  since they are for local files the program chose; `Stream.read_all` with a
+  limit is the bounded read. `write` empties the file and writes it in place:
+  it is not atomic.
+- `create` with `Replace` empties or creates the file, `Append` writes after its
+  end, and `New` fails with `AlreadyExists` rather than touch an existing file.
+- `metadata` follows symbolic links, so `Kind` has no link variant; `Special`
+  is a device, socket, or named pipe. `modified` is a `Timestamp`, so on the
+  interpreter, which has no clock, `Fs.modified` defects; `kind` and `size`
+  work on both.
+- `list` returns the entry names without `.` and `..`, in ascending byte order,
+  and fails with `Other` when a name is not UTF-8.
+- `remove` removes a file, a symbolic link, or an empty directory (`NotEmpty`
+  otherwise); there is no public recursive remove. `rename` replaces a file at
+  `to`.
+- `create_directories` creates the missing directories from `path` upward and
+  stops at the first that exists, so it never touches a directory above them
+  (as Rust's `create_dir_all` does). A file in the way fails with
+  `AlreadyExists`, or `NotADirectory` when it is above the leaf.
+- `temporary_directory(use)` creates a new directory under `$TMPDIR` (else
+  `/tmp`), with its symbolic links resolved, runs `use` with it, and removes it
+  and everything in it however `use` ends, through `Resource.scoped`. Removal
+  does not follow symbolic links out of it.
+- `files_within(root)` is the real provider confined to the absolute `root`:
+  it refuses, with `PermissionDenied`, a relative path and any path whose
+  normalized text is not `root` or under it. A test supplies it with
+  `using { files: Fs.files_within(directory) }`. It checks text, so a
+  symbolic link inside `root` that points out of it is followed.
+
 ## Decisions
 
 - **Interfaces in source, fixed need names, private providers.** The advisor
@@ -145,6 +231,14 @@ pub fn current_directory() -> Path              needs { environment: Environment
 - **One `Path` type,** moved to `std/path`, rather than a second type beside
   `std/io`'s or plain `Text`: the conventions already treat a path as a
   nominal boundary.
+- **A `Files` interface of seven members.** Whole-file reads and writes,
+  `create_directories`, and the error mapping are Chimi over them, so a fake is
+  seven functions and both backends share the rest. The host core is a small
+  set of private natives returning status tuples; new modules do not extend
+  the runtime's older `HOST_*` table.
+- **Real files in tests are confined, not ambient.** The test plan never
+  closes `files`; `temporary_directory` and `files_within` are test-only, so a
+  test reaches real files only inside a directory it owns.
 - **`join` appends.** Replacing on an absolute part is a known source of
   path-traversal bugs, and Chimi prefers the rule a reader can predict.
 
@@ -158,3 +252,7 @@ pub fn current_directory() -> Path              needs { environment: Environment
 | Values, missing and empty variables, case, and the working directory | `tests/host_modules.rs` `the_runner_provides_the_environment_to_main` |
 | A test supplies a fake; the first value wins; `NoCurrentDirectory`; `T4400` without one | `tests/host_modules.rs` `a_test_supplies_the_environment_as_a_fake` |
 | Only the fixed need name is closed | `tests/host_modules.rs` `only_the_environment_need_name_is_closed_by_the_runner` |
+| The runner closes `files` on `main` on both backends | `std-tests/fs/runner_provider.chimi`; `tests/host_modules.rs` `the_runner_provides_the_file_system_to_main` |
+| Reading, writing, appending, streaming past one chunk, listing, renaming, and each error variant on both backends | `tests/host_modules.rs` `the_runner_provides_the_file_system_to_main` |
+| Metadata follows links; `create_directories` accepts existing directories and stops at a file | `tests/host_modules.rs` `metadata_reads_kind_size_and_modification_time` (native) |
+| `temporary_directory` is removed after the test; `files_within` refuses paths outside it and relative ones; a fake; `T4400` without one; `T4401` from `main` | `tests/host_modules.rs` `a_test_uses_real_files_in_a_temporary_directory_or_a_fake` |
