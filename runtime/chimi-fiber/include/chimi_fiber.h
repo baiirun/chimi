@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 15u
+#define CHIMI_FIBER_ABI_VERSION 18u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -153,7 +153,7 @@ enum {
      after the cancel is not cancelled, so the caller starts none before it
      leaves. ERROR when the task is not inside the scope. Never a
      cancellation point. */
-  CHIMI_REQUEST_SCOPE_CANCEL = 36,
+  CHIMI_REQUEST_SCOPE_CANCEL = 41,
 };
 
 /* `down` of a RECEIVE reply whose `message` is a notice handle. */

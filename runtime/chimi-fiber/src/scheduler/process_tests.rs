@@ -2759,7 +2759,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         REQUEST_SCOPE_CANCEL as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 15);
+    assert_eq!(crate::chimi_fiber_abi_version(), 18);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------

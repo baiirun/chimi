@@ -107,7 +107,7 @@ pub const REQUEST_RESOURCE_EXIT: u32 = 35;
 /// scopes nested in it) without cancelling the caller; leaving the scope then
 /// waits for them to drain. ERROR when the task is not inside it. Never a
 /// cancellation point.
-pub const REQUEST_SCOPE_CANCEL: u32 = 36;
+pub const REQUEST_SCOPE_CANCEL: u32 = 41;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
