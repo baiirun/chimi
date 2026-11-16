@@ -12,7 +12,7 @@
 ///
 /// pub fn main() -> Void needs { network: Network, clock: Clock } {
 ///   Resource.scoped(fn() { Net.listen("", 8080) }, Net.close_listener, fn(listener) {
-///     Http.serve(listener, handle)
+///     Http.serve(listener, Http.defaults, handle)
 ///   })
 /// }
 /// ```
@@ -25,8 +25,10 @@
 /// A handler's defect is not contained: it ends `serve`, as any defect ends
 /// its task, so a supervisor restarts the server.
 ///
-/// The request shape and how a server takes its settings are provisional
-/// (decisions.md, 2026-11-16): the settings are fixed defaults for now.
+/// A server takes its settings as a record: start from `Http.defaults` and
+/// name what differs, as `Http.serve(listener, { ..Http.defaults,
+/// idle_timeout: Duration.seconds(5) }, handle)`. The request shape is
+/// provisional (decisions.md, 2026-11-16).
 
 import std/bytes as Bytes
 import std/bytes.{Bytes}
@@ -183,6 +185,21 @@ pub fn response_body(response: Response) -> Bytes {
 
 // 4. Serving.
 
+/// A server's settings, to update with what differs: requests whose head
+/// (request line and headers) passes `max_head_bytes` get 431, as do those
+/// with more than `max_headers` headers; a body over `max_body_bytes` gets
+/// 413; a connection closes when the next request takes longer than
+/// `idle_timeout` to arrive (counted from the end of the previous answer,
+/// body included), or a response longer than `write_timeout` to send. The
+/// defaults are 64 KiB, 100 headers, 8 MiB, 60 s and 60 s.
+pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, idle_timeout: Duration, write_timeout: Duration } = {
+  max_head_bytes: 65536,
+  max_headers: 100,
+  max_body_bytes: 8388608,
+  idle_timeout: Duration.seconds(60),
+  write_timeout: Duration.seconds(60),
+}
+
 /// Accepts connections on `listener` and answers each request on them with
 /// `handle`, each connection in its own task, until the listener is closed.
 /// A failed accept, such as running out of file descriptors or a client that
@@ -193,7 +210,7 @@ pub fn response_body(response: Response) -> Bytes {
 ///
 /// Fails with: nothing; only closing the listener ends serving.
 /// Defects when: `handle` defects.
-pub fn serve<E, R>(listener: Listener, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
+pub fn serve<E, R>(listener: Listener, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, idle_timeout: Duration, write_timeout: Duration }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
   clock: Clock
 } {
   loop pause = 10 {
@@ -204,7 +221,9 @@ pub fn serve<E, R>(listener: Listener, handle: fn(Request) -> Response errors E 
         smaller(pause * 2, 1000)
       }
       Ok(connection) -> {
-        let _connection = Task.start(fn() { serve_connection(connection, handle) })
+        let _connection = Task.start(fn() {
+          serve_connection(connection, settings, handle)
+        })
         10
       }
     }
@@ -213,26 +232,27 @@ pub fn serve<E, R>(listener: Listener, handle: fn(Request) -> Response errors E 
 
 /// Answers the requests on one connection with `handle`, in order, until the
 /// client closes it, a request or response asks to close it, a request is
-/// malformed, a request takes longer than a minute to arrive (counted from
-/// the end of the previous answer, body included), or a response takes
-/// longer than a minute to send. Then it closes the connection, also when
+/// malformed, or a request or response passes the settings' idle or write
+/// timeout. Then it closes the connection, also when
 /// the task is cancelled. For a server built on its own accept loop, and for
 /// tests over `Net.pair`.
 ///
 /// Fails with: nothing; a failure of the connection ends it.
 /// Defects when: `handle` defects.
-pub fn serve_connection<E, R>(connection: Connection, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
+pub fn serve_connection<E, R>(connection: Connection, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, idle_timeout: Duration, write_timeout: Duration }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
   clock: Clock
 } {
   Resource.scoped(fn() { connection }, Net.close, fn(open) {
-    let _ = Result.capture(fn() { exchange_all(open, handle) })
+    let _ = Result.capture(fn() {
+      exchange_all(open, limits(settings), handle)
+    })
     Void
   })
 }
 
 // 5. The exchange loop.
 
-// The limits a server applies; fixed until the settings shape is decided.
+// The limits a server applies, from its settings.
 struct Limits {
   head_bytes: Int,
   header_count: Int,
@@ -241,8 +261,8 @@ struct Limits {
   write: Duration,
 }
 
-fn limits() -> Limits {
-  Limits(65536, 100, 8388608, Duration.seconds(60), Duration.seconds(60))
+fn limits(settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, idle_timeout: Duration, write_timeout: Duration }) -> Limits {
+  Limits(settings.max_head_bytes, settings.max_headers, settings.max_body_bytes, settings.idle_timeout, settings.write_timeout)
 }
 
 // Why a request cannot be answered; each has its status.
@@ -261,12 +281,11 @@ enum Next {
   Refused(refusal: Refusal)
 }
 
-fn exchange_all<E, R>(connection: Connection, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
+fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
   clock: Clock
 } {
   let reader = Net.reader(connection)
   let writer = Net.writer(connection)
-  let bounds = limits()
   loop cursor = Cursor(Bytes.empty(), 0) {
     let next = Task.timeout(fn() {
       read_request(reader, writer, cursor, bounds)

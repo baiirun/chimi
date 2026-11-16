@@ -152,12 +152,15 @@ test from advancing. A test that combines sockets and timers runs with
 
 ## std/http (server)
 
-The request shape and how a server takes its settings are **provisional**:
-they follow the recommendations on two open decision cards (a handler is a
-function from `Request` to `Response`, routed with `case`; settings are a
-struct with defaults), and until those are answered the settings are fixed
-defaults with no public way to change them. The wire behaviour below does not
-depend on either answer.
+The request shape is **provisional**: it follows the recommendation on an
+open decision card (a handler is a function from `Request` to `Response`,
+routed with `case`). The wire behaviour below does not depend on the answer.
+
+A server takes its settings as an anonymous record, `Http.defaults` updated
+with what differs: `Http.serve(listener, { ..Http.defaults, idle_timeout:
+Duration.seconds(5) }, handle)` (Byron, 2026-11-16). A record rather than a
+struct, because a struct's fields are private outside its module, so only a
+record can be updated at the call site.
 
 ```text
 pub enum Method { Get, Head, Post, Put, Patch, Delete, Options, Other(name: Text) }
@@ -167,9 +170,11 @@ pub struct Response    // Http.status, Http.response_headers, Http.response_body
 pub fn request(method, path, query, headers, body) -> Request        // for testing handlers
 pub fn response(status: Int, headers, body: Bytes) -> Response
 pub fn text(status: Int, text: Text) -> Response
-pub fn serve(listener: Listener, handle: fn(Request) -> Response errors E needs R)
+pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int,
+  idle_timeout: Duration, write_timeout: Duration }
+pub fn serve(listener: Listener, settings, handle: fn(Request) -> Response errors E needs R)
   -> Void needs R + { clock: Clock }
-pub fn serve_connection(connection: Connection, handle) -> Void needs R + { clock: Clock }
+pub fn serve_connection(connection: Connection, settings, handle) -> Void needs R + { clock: Clock }
 ```
 
 ### Requests
@@ -209,14 +214,14 @@ pub fn serve_connection(connection: Connection, handle) -> Void needs R + { cloc
 
 ### Limits
 
-| Limit | Value | Past it |
-| --- | --- | --- |
-| request line and headers | 64 KiB | 431 |
-| header lines | 100 | 431 |
-| body; for a chunked body, its framing and trailers count too | 8 MiB | 413 |
-| trailer lines of a chunked body | 100 | 431 |
-| time for a request to arrive, body included, counted from the previous answer | 60 s | the connection closes without an answer |
-| time to send one response | 60 s | the connection closes |
+| Limit | Setting | Default | Past it |
+| --- | --- | --- | --- |
+| request line and headers | `max_head_bytes` | 64 KiB | 431 |
+| header lines | `max_headers` | 100 | 431 |
+| body; for a chunked body, its framing and trailers count too | `max_body_bytes` | 8 MiB | 413 |
+| trailer lines of a chunked body | `max_headers` | 100 | 431 |
+| time for a request to arrive, body included, counted from the previous answer | `idle_timeout` | 60 s | the connection closes without an answer |
+| time to send one response | `write_timeout` | 60 s | the connection closes |
 
 ### Responses and connections
 
@@ -261,10 +266,10 @@ pub fn serve_connection(connection: Connection, handle) -> Void needs R + { cloc
 
 ## std/sql (driver-independent layer)
 
-The pool's settings and nested transactions are **provisional**: they follow
-the recommendations on open decision cards (settings as a struct with
-defaults; a transaction inside a transaction is a savepoint), and until those
-are answered the settings are fixed defaults. Which database the first driver
+Nested transactions are **provisional**: they follow the recommendation on an
+open decision card (a transaction inside a transaction is a savepoint). A
+pool takes its settings as a record, `Sql.defaults` updated with what differs,
+as std/http does. Which database the first driver
 talks to is also open; this layer has no driver of its own beyond `Sql.fake`.
 `std/sql` is written in Chimi with no binding package, but its pool uses
 bounded channels, so it runs on the native backend only.
@@ -277,7 +282,9 @@ pub struct Database   // a pool, or the transaction a body is given
 pub struct Row        // Sql.value, Sql.int, Sql.float, Sql.decimal, Sql.text, Sql.bool,
                       // Sql.bytes, Sql.nullable, Sql.columns, Sql.values
 
-pub fn open(driver: Driver, target: Text, use: fn(Database) -> T errors E needs R) -> T needs R
+pub const defaults: { max_connections: Int, wait_timeout: Duration, reset_timeout: Duration }
+pub fn open(driver: Driver, target: Text, settings, use: fn(Database) -> T errors E needs R)
+  -> T needs R
 pub fn execute(db, sql, params: List<Value>) -> Int
 pub fn query(db, sql, params) -> List<Row>
 pub fn one(db, sql, params) -> Row
@@ -308,16 +315,18 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
 
 - `Sql.open` runs its body with a pool and closes the pool when the body ends,
   however it ends. Closing closes every idle connection, fails statements
-  still waiting with `PoolClosed`, and waits up to 30 s for connections that
+  still waiting with `PoolClosed`, and waits up to `wait_timeout` for connections that
   tasks the body started still hold, closing each as it comes back. Using the
   pool after that fails `PoolClosed`.
 - A connection is opened only when a statement needs one and none is idle,
-  and is reused after the statement. At most 10 connections are open at once.
-  A statement that waits more than 30 s for one fails `PoolTimedOut`, and a
+  and is reused after the statement. At most `max_connections` (default 10)
+  are open at once. A statement that waits more than `wait_timeout` (default
+  30 s) for one fails `PoolTimedOut`, and a
   statement that gave up holds no place in the pool afterwards.
 - Waiting statements are served in the order they asked.
 - After every use the pool resets the connection (rolling back anything left
-  open) within 5 s before it is reused, however its use ended. A connection
+  open) within `reset_timeout` (default 5 s) before it is reused, however its
+  use ended. A connection
   whose reset fails or times out is closed instead, and the next statement
   opens a new one. A driver whose connection cannot be trusted after a
   statement was cut off mid-way fails every later call on it with
