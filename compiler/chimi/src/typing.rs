@@ -3158,7 +3158,16 @@ impl ProjectTypeChecker {
                         self.value_producing_range(module_id, body),
                         "this function is declared `-> Never`, but this expression produces a value",
                     );
-                } else {
+                } else if signature.success.is_none()
+                    && !self.type_is_determined(self.resolve_inference_type(contract.success))
+                {
+                    self.unify_expression_result(
+                        module_id,
+                        body,
+                        body_fact.success,
+                        contract.success,
+                    );
+                } else if signature.success.is_some() {
                     self.unify_expression_result(
                         module_id,
                         body,
@@ -3168,7 +3177,17 @@ impl ProjectTypeChecker {
                 }
                 let requirements_changed = self.settle_property_checks(&generic_symbols);
                 let mut inferred = contract;
-                inferred.success = self.resolve_inference_type(inferred.success);
+                // An unannotated result is the body's type. It is re-read on every
+                // pass rather than unified with the last one, because a function
+                // value in it (a provider record's members) gains failures as the
+                // functions it names are checked.
+                inferred.success = if signature.success.is_none()
+                    && self.type_is_determined(self.resolve_inference_type(inferred.success))
+                {
+                    self.resolve_inference_type(body_fact.success)
+                } else {
+                    self.resolve_inference_type(inferred.success)
+                };
                 inferred.failures =
                     self.union_failure_rows([inferred.failures, body_fact.failures]);
                 inferred.needs = self.union_needs_rows([inferred.needs, body_fact.needs]);

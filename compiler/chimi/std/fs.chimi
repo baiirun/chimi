@@ -109,7 +109,7 @@ pub fn metadata_of(kind: Kind, size: Int, modified: Timestamp) -> Metadata {
   Metadata(kind, size, Clock.unix_nanoseconds(modified))
 }
 
-// 5. Queries.
+// 5. Queries: metadata.
 
 /// Returns what kind of entry `metadata` describes.
 ///
@@ -132,7 +132,7 @@ pub fn modified(metadata: Metadata) -> Timestamp {
   Clock.from_unix_nanoseconds(metadata.modified)
 }
 
-// 6. Reading.
+// 5. Queries: reading files.
 
 /// Returns every byte of the file. The whole file is held in memory; read a
 /// large one with `open`.
@@ -293,11 +293,71 @@ pub fn rename(from: Path, to: Path) -> Void needs {
   files.rename(from, to)
 }
 
-// 7. Private helpers and the runner provider.
-//
-// A function here comes after the functions it calls: a provider's inferred
-// record type is fixed the first time it is checked, so the failures of the
-// functions it holds must be known by then.
+// 7. Testing with real files.
+
+/// Runs `use` with a new, empty directory under the system's temporary
+/// directory, and removes it and everything in it afterwards, however `use`
+/// ends. Test-only.
+///
+/// Fails with: what `use` fails with.
+pub fn temporary_directory<T, E, R>(use: fn(Path) -> T errors E needs R) -> T needs R {
+  Resource.scoped(fn() { host_temporary_directory() }, remove_tree, use)
+}
+
+/// A real file-system provider that refuses every path outside `root`, with
+/// `FsError.PermissionDenied`. Relative paths are refused too, since they
+/// depend on the working directory. Test-only: supply it with
+/// `using { files: Fs.files_within(root) }`.
+pub fn files_within(root: Path) {
+  let inside = Path.normalize(test_root(root))
+  let check = fn(path: Path) {
+    let normal = Path.normalize(path)
+    let within = normal == inside or Text.starts_with(Path.to_text(normal), Text.append(Path.to_text(inside), "/"))
+    case within and Path.is_absolute(path) {
+      True -> normal
+      False -> Failure(FsError.PermissionDenied(path))
+    }
+  }
+  let host = host()
+  {
+    open: fn(path: Path) { host.open(check(path)) },
+    create: fn(path: Path, mode: WriteMode) {
+      host.create(check(path), mode)
+    },
+    metadata: fn(path: Path) { host.metadata(check(path)) },
+    list: fn(path: Path) { host.list(check(path)) },
+    create_directory: fn(path: Path) {
+      host.create_directory(check(path))
+    },
+    remove: fn(path: Path) { host.remove(check(path)) },
+    rename: fn(from: Path, to: Path) {
+      host.rename(check(from), check(to))
+    },
+  }
+}
+
+// 8. Private helpers, the runner provider, and the native core.
+
+// The runner provider for `main`'s `files` need (operations.rs
+// `RUNNER_PROVIDERS`). Private, so no other code can take the capability
+// without declaring the need.
+fn host() {
+  {
+    open: open_host,
+    create: create_host,
+    metadata: metadata_host,
+    list: list_names,
+    create_directory: fn(path: Path) {
+      succeed(path, host_create_directory(path))
+    },
+    remove: fn(path: Path) {
+      succeed(path, host_remove(path))
+    },
+    rename: fn(from: Path, to: Path) {
+      succeed(from, host_rename(from, to))
+    },
+  }
+}
 
 // The host's portable failure codes, which both backends map from errno.
 fn failure(path: Path, status: Int, message: Text) -> FsError {
@@ -388,27 +448,6 @@ fn create_host(path: Path, mode: WriteMode) -> Writer<FsError> {
   })
 }
 
-// The runner provider for `main`'s `files` need (operations.rs
-// `RUNNER_PROVIDERS`). Private, so no other code can take the capability
-// without declaring the need.
-fn host() {
-  {
-    open: open_host,
-    create: create_host,
-    metadata: metadata_host,
-    list: list_names,
-    create_directory: fn(path: Path) {
-      succeed(path, host_create_directory(path))
-    },
-    remove: fn(path: Path) {
-      succeed(path, host_remove(path))
-    },
-    rename: fn(from: Path, to: Path) {
-      succeed(from, host_rename(from, to))
-    },
-  }
-}
-
 fn write_with(path: Path, bytes: Bytes, mode: WriteMode) -> Void needs {
   files: Files
 } {
@@ -459,49 +498,6 @@ fn remove_tree_or_fail(path: Path) -> Void {
 fn remove_tree(path: Path) -> Void {
   let _removed = Result.capture(fn() { remove_tree_or_fail(path) })
   Void
-}
-
-// 8. Testing with real files.
-
-/// Runs `use` with a new, empty directory under the system's temporary
-/// directory, and removes it and everything in it afterwards, however `use`
-/// ends. Test-only.
-///
-/// Fails with: what `use` fails with.
-pub fn temporary_directory<T, E, R>(use: fn(Path) -> T errors E needs R) -> T needs R {
-  Resource.scoped(fn() { host_temporary_directory() }, remove_tree, use)
-}
-
-/// A real file-system provider that refuses every path outside `root`, with
-/// `FsError.PermissionDenied`. Relative paths are refused too, since they
-/// depend on the working directory. Test-only: supply it with
-/// `using { files: Fs.files_within(root) }`.
-pub fn files_within(root: Path) {
-  let inside = Path.normalize(test_root(root))
-  let check = fn(path: Path) {
-    let normal = Path.normalize(path)
-    let within = normal == inside or Text.starts_with(Path.to_text(normal), Text.append(Path.to_text(inside), "/"))
-    case within and Path.is_absolute(path) {
-      True -> normal
-      False -> Failure(FsError.PermissionDenied(path))
-    }
-  }
-  let host = host()
-  {
-    open: fn(path: Path) { host.open(check(path)) },
-    create: fn(path: Path, mode: WriteMode) {
-      host.create(check(path), mode)
-    },
-    metadata: fn(path: Path) { host.metadata(check(path)) },
-    list: fn(path: Path) { host.list(check(path)) },
-    create_directory: fn(path: Path) {
-      host.create_directory(check(path))
-    },
-    remove: fn(path: Path) { host.remove(check(path)) },
-    rename: fn(from: Path, to: Path) {
-      host.rename(check(from), check(to))
-    },
-  }
 }
 
 // The host core. A status is non-negative on success (a handle, a flag, or 0)
