@@ -280,11 +280,21 @@ pub fn main() -> List<Text> needs { files: Files } {
   })
   Stream.close(writer)
   Fs.write(at("broken.txt"), Bytes.from([255, 254]))
+  Fs.write_text(at("short.txt"), "a longer first text")
+  Fs.write_text(at("short.txt"), "short")
+  let first = Fs.create(at("first.txt"), WriteMode.Replace)
+  Stream.close(first)
+  let second = Fs.create(at("second.txt"), WriteMode.Replace)
+  let late = Result.capture(fn() { Stream.write(first, Bytes.from_text("late")) })
+  Stream.close(second)
   Fs.rename(at("notes.txt"), at("renamed.txt"))
   [
     Fs.read_text(at("renamed.txt")),
     Debug.render(Fs.read_text(at("copy.txt")) == large),
     Debug.render(copied),
+    Fs.read_text(at("short.txt")),
+    Debug.render(late),
+    Debug.render(Bytes.length(Fs.read(at("second.txt")))),
     Debug.render(Fs.list(Path.from("work"))),
     Debug.render(Fs.list(at("deep"))),
     outcome(fn() { Fs.read_text(at("broken.txt")) }),
@@ -307,7 +317,8 @@ pub fn main() -> List<Text> needs { files: Files } {
         value(&record),
         concat!(
             r#"["first line\nsecond line\n","True","131072","#,
-            r#""[\"broken.txt\", \"copy.txt\", \"deep\", \"large.txt\", \"renamed.txt\"]","#,
+            r#""short","Result.Err(FsError.Closed(\"work/first.txt\"))","0","#,
+            r#""[\"broken.txt\", \"copy.txt\", \"deep\", \"first.txt\", \"large.txt\", \"renamed.txt\", \"second.txt\", \"short.txt\"]","#,
             r#""[\"er\"]","#,
             r#""Result.Err(DecodeError.InvalidUtf8(0))","#,
             r#""Result.Err(FsError.NotFound(\"work/notes.txt\"))","#,
@@ -444,6 +455,11 @@ test "paths outside the directory are refused" {
     Test.assert_equal(
       Result.capture(fn() { Fs.read(Path.from("relative.txt")) }) using { files: files },
       Result.Err(FsError.PermissionDenied(Path.from("relative.txt"))),
+    )
+    let sibling = Path.from(Text.append(Path.to_text(directory), "-sibling/x"))
+    Test.assert_equal(
+      Result.capture(fn() { Fs.read(sibling) }) using { files: files },
+      Result.Err(FsError.PermissionDenied(sibling)),
     )
     Fs.create_directories(Path.join(directory, "a/b")) using { files: files }
     Fs.write_text(Path.join(directory, "a/b/c.txt"), "deep") using { files: files }
