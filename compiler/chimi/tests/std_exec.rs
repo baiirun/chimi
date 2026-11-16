@@ -541,8 +541,8 @@ fn run_main(scratch: &Scratch, input: &str) -> std::process::Output {
     child.wait_with_output().expect("wait for the program")
 }
 
-// Rejects `Stdio.Null` on stdin that leaves the parent's input connected, or
-// is opened for writing: the program's own input holds a line, which a child
+// Rejects `Stdio.Null` on stdin (also `Exec.capture`'s) that leaves the
+// parent's input connected, or is opened for writing: the program's own input holds a line, which a child
 // that inherits it reads and one given nothing does not (and `cat` fails on
 // a descriptor opened only for writing).
 #[test]
@@ -551,9 +551,10 @@ fn standard_input_to_nothing_reads_nothing() {
         "stdin",
         r#"pub fn main() -> Void needs { commands: Commands } {
   let nothing = Exec.run(Exec.stdin(Exec.command("/bin/sh", ["-c", "cat > got && ! test -s got && test -c /dev/fd/0"]), Stdio.Null))
+  let captured = Exec.capture(Exec.command("/bin/cat", []))
   let inherited = Exec.run(Exec.command("/bin/sh", ["-c", "read line && test \"$line\" = hello"]))
-  case (nothing, inherited) {
-    (Status.Exited(0), Status.Exited(0)) -> Void
+  case (nothing, Bytes.length(captured.output), inherited) {
+    (Status.Exited(0), 0, Status.Exited(0)) -> Void
     other -> Debug.crash("the children ended with ${Debug.render(other)}")
   }
 }
