@@ -57,7 +57,9 @@ fn clean_code_has_no_findings() {
         "clean",
         "import std/text as Text\nimport std/clock.{Instant}\n\n\
          /// Doc.\npub fn shout(words: Text) -> Text {\n  let loud = Text.repeat(words, 2)\n  loud\n}\n\n\
-         /// Doc.\npub fn same(at: Instant) -> Instant {\n  at\n}\n",
+         /// Doc.\npub fn same(at: Instant) -> Instant {\n  at\n}\n\n\
+         /// A plain comment may sit between a doc comment and its item.\n// note\n\
+         pub fn noted() -> Int {\n  1\n}\n",
     );
     let output = chimi(&["lint", &path]);
 

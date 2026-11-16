@@ -88,3 +88,14 @@ MUTATIONS += [
         "            true\n                && declaration.name.text != \"main\"",
     )]),
 ]
+
+MUTATIONS += [
+    mutant("a plain comment hides the doc comment above it", "src/doc_examples.rs", [(
+        "        .is_some_and(|line| doc_content(line).is_none() && line.trim_start().starts_with(\"//\"))",
+        "        .is_some_and(|_| false)",
+    )]),
+    mutant("the doc lookup takes the wrong node", "src/doc.rs", [(
+        "        let node = self.nodes.get(after.checked_sub(1)?)?.clone();",
+        "        let node = self.nodes.get(after)?.clone();",
+    )], targets=("lint", "doc")),
+]

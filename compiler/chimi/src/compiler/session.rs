@@ -105,14 +105,15 @@ impl IncrementalTypeReport {
             return findings;
         }
         let resolved = &self.types.typed.resolved;
+        let paths: HashMap<_, &Path> = resolved
+            .semantic
+            .modules
+            .iter()
+            .map(|module| (module.source.file_id(), module.source.path()))
+            .collect();
         for finding in crate::lint::lint(resolved, |module_path| !module_path.starts_with("std/")) {
-            if let Some(module) = resolved
-                .semantic
-                .modules
-                .iter()
-                .find(|module| module.source.file_id() == finding.file_id())
-            {
-                findings.entry(module.source.path()).or_default().push(finding);
+            if let Some(path) = paths.get(&finding.file_id()) {
+                findings.entry(*path).or_default().push(finding);
             }
         }
         findings

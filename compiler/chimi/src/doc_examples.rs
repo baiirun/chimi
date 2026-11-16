@@ -151,18 +151,23 @@ fn example_blocks(lines: &[&str]) -> Vec<(String, Block)> {
     blocks
 }
 
-/// The doc comment directly before the item whose first line starts at byte
-/// `item_line`: its `///` lines with the markers removed, or `None` when the
-/// line before the item is not a doc comment.
+/// The doc comment before the item whose first line starts at byte
+/// `item_line`: its `///` lines with the markers removed, or `None` when no
+/// doc comment is there. Plain `//` lines between the doc comment and the
+/// item are skipped, as rustdoc does. Reads backwards from the item, so the
+/// cost is the comment's length, not the file's.
 pub(crate) fn doc_comment_before(text: &str, item_line: usize) -> Option<String> {
-    let before: Vec<&str> = text[..item_line].split('\n').collect();
-    // `before` ends with the empty text after the item line's preceding newline.
-    let lines = &before[..before.len().saturating_sub(1)];
-    let first = lines
-        .iter()
-        .rposition(|line| doc_content(line).is_none())
-        .map_or(0, |index| index + 1);
-    doc_text(&lines[first..])
+    // The first piece is the empty text after the newline before the item.
+    let mut lines = text[..item_line].rsplit('\n').skip(1).peekable();
+    while lines
+        .peek()
+        .is_some_and(|line| doc_content(line).is_none() && line.trim_start().starts_with("//"))
+    {
+        lines.next();
+    }
+    let mut doc: Vec<&str> = lines.map_while(|line| doc_content(line).map(|_| line)).collect();
+    doc.reverse();
+    doc_text(&doc)
 }
 
 /// The module's own doc comment: a `///` run before the first item that a

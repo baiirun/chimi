@@ -8,7 +8,7 @@
 //! A name that starts with `_` is unused on purpose, so no rule reports it.
 
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
-use crate::doc::{declaration_doc, kind_name};
+use crate::doc::{ItemNodes, kind_name};
 use crate::ids::SymbolId;
 use crate::operations::RUNNER_PROVIDERS;
 use crate::resolution::{Namespace, ProjectSymbolKind, ReferenceResolution, ResolvedProject};
@@ -222,6 +222,7 @@ fn unused_bindings(
 /// A public item a reader of `chimi doc` would see with no explanation.
 /// `main` is exempt: the entry point is the program, not an API.
 fn missing_docs(module: &SemanticModule) -> Vec<Diagnostic> {
+    let nodes = ItemNodes::new(module);
     module
         .declarations
         .iter()
@@ -229,7 +230,7 @@ fn missing_docs(module: &SemanticModule) -> Vec<Diagnostic> {
             declaration.public
                 && declaration.name.text != "main"
                 && !is_intentionally_unused(&declaration.name.text)
-                && declaration_doc(module, declaration).is_none()
+                && nodes.doc(declaration).is_none()
         })
         .map(|declaration| {
             finding(
