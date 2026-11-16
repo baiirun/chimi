@@ -402,13 +402,13 @@ receivers of one queue; each value still goes to one of them.
   owns its value as an ordinary queued message.
 - **Watch subscriptions** are conflating queues of capacity one: a publish
   replaces an unread value and releases the old one.
-- **Select commit.** A select still consumes nothing. After it answers with
-  a ready receiver, the host's receive is served before any other task runs
-  (the reply puts the task at the front of the run queue), so another
-  receiver of the same queue cannot take the value in between. This depends
-  on nothing between the reply and the receive request letting another task
-  run: today the host does no allocation there, and so flushes no channel
-  release, whose reply would put the task at the back of the queue.
+- **Select commit.** A select that answers with a ready receiver takes the
+  value in the same scheduler step and keeps it for the task's receive,
+  which the host issues next and which answers with that value at once. No
+  other receiver of the same queue can take it in between, whatever runs
+  first. A value kept for a task that ends before its receive is released
+  with the task's other operations. Inbox and task sources consume nothing,
+  since each has a single consumer. The other sources keep their values.
 - **Events borrow their receiver.** A `Select.receive` or `Select.watch`
   event reads its receiver without holding it, so building one moves
   nothing, but using the event after the receiver moved is `T4241` at the
