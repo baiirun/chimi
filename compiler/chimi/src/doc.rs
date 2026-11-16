@@ -11,9 +11,9 @@
 use crate::doc_examples::{doc_comment_before, module_comment};
 use crate::json::write_json_string_escaping_controls;
 use crate::semantic::{
-    ModuleDeclaration, ModuleDeclarationKind, SemanticModule, is_generated_name,
+    ImportBinding, ModuleDeclaration, ModuleDeclarationKind, SemanticModule, is_generated_name,
 };
-use crate::syntax::SyntaxNode;
+use crate::syntax::{SyntaxNode, is_comment_or_text_at};
 use crate::typing::TypedProject;
 
 /// The public surface of one module.
@@ -157,6 +157,30 @@ pub(crate) fn document_module(
         summary: module_comment(text),
         items,
     })
+}
+
+/// The public surface of the module that `alias` names in `module_path`,
+/// unless `offset` is inside a comment or a text literal there.
+pub(crate) fn alias_members(
+    typed: &TypedProject,
+    module_path: &str,
+    alias: &str,
+    offset: usize,
+) -> Option<ModuleDocumentation> {
+    let module = typed
+        .resolved
+        .semantic
+        .modules
+        .iter()
+        .find(|module| module.path == module_path)?;
+    if is_comment_or_text_at(&module.source, offset) {
+        return None;
+    }
+    let imported = module.imports.iter().find_map(|import| match &import.binding {
+        ImportBinding::Alias(name) if name.text == alias => Some(import.path.as_str()),
+        _ => None,
+    })?;
+    document_module(typed, imported)
 }
 
 const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {

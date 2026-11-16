@@ -2,7 +2,7 @@
 
 Status: implemented in part (Phase 9). This page is the contract for the
 commands that sit around the compiler: the documentation generator, the linter and editor
-references and rename now, and more editor features, cross-compilation and debugging as they land.
+references, rename and completion now, and more editor features, cross-compilation and debugging as they land.
 The formatter, `chimi check` and `chimi test` keep their own pages
 (`testing.md` for the runner and doc-comment examples).
 
@@ -146,4 +146,31 @@ resolution.
 Implementation: `compiler/chimi/src/occurrences.rs`
 (`IncrementalTypeReport::occurrences`), `Workspace::references` and
 `Workspace::rename` in `compiler/chimi-lsp/src/workspace.rs`. Tests: the
+workspace unit tests and `compiler/chimi-lsp/tests/protocol.rs`.
+
+## Editor: completion
+
+Purpose: after a module alias and a dot, offer the names the imported module
+makes public, so its surface is visible without leaving the file. The
+language server answers `textDocument/completion`, triggered by `.`.
+
+Rules:
+
+- After `Alias.`, or `Alias.` and the start of a name, where `Alias` is a
+  module alias of the file (`import lib as Lib`), the items MUST be the
+  module's public items in source order: their names, kinds, the signatures
+  `chimi doc` prints (a function's with its derived contract) and their `///`
+  doc comments as Markdown. The editor filters them by what is typed.
+- The alias MUST be looked up in the file's latest analysis, so a `Lib.`
+  that does not parse yet still completes.
+- After anything else the answer MUST be empty. A path such as
+  `point.Lib.` is not an alias, and `Lib.` inside a comment or a text
+  literal, closed or still being typed, is not code.
+
+Not yet covered: names in scope where no alias comes first (locals, the
+module's own items and imported members), and a struct's fields after a
+value and a dot, which needs the value's type.
+
+Implementation: `IncrementalTypeReport::alias_members` (in
+`compiler/chimi/src/doc.rs`) and `Workspace::completion`. Tests: the
 workspace unit tests and `compiler/chimi-lsp/tests/protocol.rs`.

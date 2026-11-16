@@ -16,16 +16,17 @@ use lsp_types::notification::{
     Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    Formatting, GotoDefinition, HoverRequest, References, Rename, Request as _,
+    Completion, Formatting, GotoDefinition, HoverRequest, References, Rename, Request as _,
 };
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, Diagnostic,
+    DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams, Documentation,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    InitializeParams, Location, MarkupContent, ReferenceParams, RenameParams, WorkspaceEdit, MarkupKind, NumberOrString, Position,
-    PositionEncodingKind, PublishDiagnosticsParams, Range, SaveOptions, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, TextEdit, Uri,
+    InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString, Position,
+    PositionEncodingKind, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams,
+    SaveOptions, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Uri, WorkspaceEdit,
 };
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -57,6 +58,10 @@ pub fn run(connection: &Connection) -> ServerResult<()> {
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
         rename_provider: Some(lsp_types::OneOf::Left(true)),
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec![".".to_owned()]),
+            ..CompletionOptions::default()
+        }),
         ..ServerCapabilities::default()
     };
     connection.initialize_finish(
@@ -146,6 +151,14 @@ impl Server<'_> {
                     });
                 Response::new_ok(id, location)
             }
+            Completion::METHOD => {
+                let (id, params) = request.extract::<CompletionParams>(Completion::METHOD)?;
+                let at = params.text_document_position;
+                let items = document(&at.text_document.uri)
+                    .and_then(|path| self.workspace.completion(&path, line_position(at.position)))
+                    .map(|items| items.into_iter().map(completion_item).collect::<Vec<_>>());
+                Response::new_ok(id, items)
+            }
             References::METHOD => {
                 let (id, params) = request.extract::<ReferenceParams>(References::METHOD)?;
                 let at = params.text_document_position;
@@ -202,11 +215,9 @@ impl Server<'_> {
                             ..WorkspaceEdit::default()
                         },
                     ),
-                    Err(error) => Response::new_err(
-                        id,
-                        ErrorCode::RequestFailed as i32,
-                        error.to_string(),
-                    ),
+                    Err(error) => {
+                        Response::new_err(id, ErrorCode::RequestFailed as i32, error.to_string())
+                    }
                 }
             }
             _ => Response::new_err(
@@ -408,5 +419,29 @@ const fn position(position: LinePosition) -> Position {
     Position {
         line: position.line,
         character: position.character,
+    }
+}
+
+fn completion_item(completion: crate::workspace::Completion) -> CompletionItem {
+    let kind = match completion.kind {
+        "fn" => CompletionItemKind::FUNCTION,
+        "struct" => CompletionItemKind::STRUCT,
+        "enum" => CompletionItemKind::ENUM,
+        "interface" => CompletionItemKind::INTERFACE,
+        "const" => CompletionItemKind::CONSTANT,
+        "process name" => CompletionItemKind::VARIABLE,
+        _ => CompletionItemKind::CLASS,
+    };
+    CompletionItem {
+        label: completion.label,
+        kind: Some(kind),
+        detail: Some(completion.detail),
+        documentation: completion.documentation.map(|value| {
+            Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            })
+        }),
+        ..CompletionItem::default()
     }
 }

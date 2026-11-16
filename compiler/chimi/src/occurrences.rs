@@ -168,7 +168,11 @@ fn referenced_at(
 
 /// The struct named `name` that a constructor call in `module` builds: one
 /// the module declares or imports by name.
-fn struct_in_scope(resolved: &ResolvedProject, module: &SemanticModule, name: &str) -> Option<SymbolId> {
+fn struct_in_scope(
+    resolved: &ResolvedProject,
+    module: &SemanticModule,
+    name: &str,
+) -> Option<SymbolId> {
     let declaring = std::iter::once(module.path.as_str()).chain(
         module
             .imports
@@ -197,7 +201,11 @@ fn struct_in_scope(resolved: &ResolvedProject, module: &SemanticModule, name: &s
         .map(|symbol| symbol.id)
 }
 
-fn declared_at(resolved: &ResolvedProject, module: &SemanticModule, offset: usize) -> Option<SymbolId> {
+fn declared_at(
+    resolved: &ResolvedProject,
+    module: &SemanticModule,
+    offset: usize,
+) -> Option<SymbolId> {
     resolved
         .symbols
         .iter()
@@ -311,7 +319,11 @@ fn imported_occurrences(resolved: &ResolvedProject, target: SymbolId) -> Vec<Occ
     );
     for module in &resolved.semantic.modules {
         let mut in_scope = module.id == declaring.id;
-        for import in module.imports.iter().filter(|import| import.path == declaring.path) {
+        for import in module
+            .imports
+            .iter()
+            .filter(|import| import.path == declaring.path)
+        {
             if let ImportBinding::Members(members) = &import.binding {
                 for member in members.iter().filter(|member| member.text == symbol.name) {
                     in_scope = true;

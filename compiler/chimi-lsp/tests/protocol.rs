@@ -270,3 +270,63 @@ fn references_and_rename_answer_over_the_protocol() {
     handle.join().unwrap().unwrap();
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Guards the wire shape of completion: the `.` trigger, and items with a
+/// kind, the signature as detail and Markdown documentation.
+#[test]
+fn completion_answers_over_the_protocol() {
+    let root = scratch("completion");
+    fs::write(
+        root.join("app.chimi"),
+        "import lib as Lib\npub fn main() -> Int { 0 }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("lib.chimi"),
+        "/// One, always.\npub fn value() -> Int { 1 }\n",
+    )
+    .unwrap();
+    let uri = format!("file://{}", root.join("app.chimi").display());
+    let (server, client) = Connection::memory();
+    let handle = thread::spawn(move || chimi_lsp::server::run(&server).map_err(|e| e.to_string()));
+
+    let initialized = request(
+        &client,
+        1,
+        "initialize",
+        json!({
+            "capabilities": {"general": {"positionEncodings": ["utf-8"]}},
+            "workspaceFolders": [{"uri": format!("file://{}", root.display()), "name": "fixture"}],
+            "initializationOptions": {"projects": [{"root": ".", "entry": "app"}]},
+        }),
+    );
+    assert_eq!(
+        initialized["capabilities"]["completionProvider"]["triggerCharacters"],
+        json!(["."])
+    );
+    notify(&client, "initialized", json!({}));
+    notify(
+        &client,
+        "textDocument/didOpen",
+        json!({"textDocument": {"uri": uri, "languageId": "chimi", "version": 1,
+            "text": "import lib as Lib\npub fn main() -> Int { Lib. }\n"}}),
+    );
+    next_diagnostics(&client);
+
+    let items = request(
+        &client,
+        2,
+        "textDocument/completion",
+        json!({"textDocument": {"uri": uri}, "position": {"line": 1, "character": 27}}),
+    );
+    assert_eq!(items[0]["label"], "value");
+    assert_eq!(items[0]["kind"], 3);
+    assert_eq!(items[0]["detail"], "pub fn value() -> Int");
+    assert_eq!(items[0]["documentation"]["kind"], "markdown");
+    assert_eq!(items[0]["documentation"]["value"], "One, always.");
+
+    request(&client, 3, "shutdown", Value::Null);
+    notify(&client, "exit", Value::Null);
+    handle.join().unwrap().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
