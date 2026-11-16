@@ -1250,9 +1250,8 @@ program.
   links and the oldest stay, and `to_text` writes `(N causes dropped)` where
   they were. The limits are fixed for now; runner configuration comes when a
   program needs it.
-- **Not yet.** Nothing produces a suppressed cause yet: `Sibling` waits for
-  `Task.all` (CHI-205) and `Displaced` and `Cleanup` for the file-close rule,
-  so `Cause.suppressed` returns `[]` and `Cause.reason` returns `None` today.
+- **Not yet.** `Task.all` (CHI-205) produces `Sibling` causes; `Displaced`
+  and `Cleanup` wait for the file-close rule.
   Terminal trace events do not yet carry a cause identity. A defect cause
   does not hold the parked-stack snapshot. A cancellation cause's summary is
   the fixed text `requested before the next semantic operation`, not its
@@ -1262,6 +1261,53 @@ program.
   The native tests for
   channel and task transfer run on the native backend only, because the
   interpreter has no channel runtime.
+
+### Task combinators as implemented (CHI-205)
+
+- **Shape.** `Task.all`, `Task.results`, and `Task.race` are native
+  intrinsics of the built-in `std/task`, like `Task.timeout`, with the
+  contracts above. Importing `std/task` loads `std/result`, whose `Result`,
+  `Ok`, and `Err` the runtime now knows by identity, so `Task.results` can
+  build them.
+- **Thunks with different rows.** Two monomorphic function types whose
+  inputs agree join in a list literal or across case arms: the join returns
+  the join of the successes and has the union of both failure rows and both
+  needs rows. So `Task.all([load, save])` fails with `LoadError | SaveError`.
+- **Waiting.** The scheduler gains `REQUEST_TASK_ANY`, which parks the caller
+  until the first of a list of its children terminates and reports that
+  child's outcome without applying it: a cancelled child does not cancel the
+  caller, unlike `Task.result`. Children are ordered by a termination sequence
+  number, so "first" is termination order even when several end at one
+  instant. It is a cancellation point that a firing scope withdraws, so
+  `Task.timeout` interrupts a waiting combinator.
+  A child that ends cancelled while the caller was not, because it ran
+  `Task.result` on a task it cancelled itself, cancels the caller, as
+  `Task.result` of that child would; the race contract's "first to terminate
+  with success or expected failure" does not skip it. A stopped process body
+  that is waiting in a combinator keeps waiting, as it does in `Task.result`:
+  a stop drains before it cancels (`application-lifecycle.md`).
+- **Cancelling and draining.** Once the outcome is decided, the combinator
+  cancels the rest and waits for each to be terminal with `REQUEST_TASK_DRAIN`,
+  which is neither a cancellation point nor withdrawable: a scope that fires
+  during the drain cannot replace the decided outcome. Every child is
+  terminal before the call returns.
+- **Sibling causes.** After `Task.all`'s drain, a sibling that ended with its
+  own expected failure, rather than the cancellation, terminated before the
+  cancellation took effect. Its cause joins the primary failure's suppressed
+  list with reason `Sibling`, in termination order, within the 16-entry bound.
+- **Defects** need no combinator code: the scheduler's containment unwinds the
+  caller when any child defects, whichever outcome the combinator was waiting
+  for.
+- **Static checks.** `T4345` rejects an empty list literal at `Task.race`,
+  piped or not; an empty list at run time defects before starting anything.
+  The list argument goes through `Task.start`'s transfer check (`T4240`,
+  `T4242`), and its exclusive captures move with it.
+- **Not yet.** Two thunks of one list that capture the same exclusive
+  capability pass the static check, and the second child's start defects at
+  run time, as a second `Task.start` would. A `Task.race` loser that succeeded
+  just before its cancellation hands its result's exclusive capabilities to the
+  caller, where nothing references them until the caller ends. The interpreter
+  defects at the three, as it does at `Task.start`.
 
 ### Compiler (`compiler/chimi/src`)
 

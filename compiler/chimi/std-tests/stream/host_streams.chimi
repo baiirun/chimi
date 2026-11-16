@@ -1,0 +1,27 @@
+// Streams built from host functions run on both backends: `read_all` stops an
+// endless reader at its limit, `copy` passes on a writer's or a reader's
+// failure, and an empty reader copies nothing.
+import std/bytes as Bytes
+import std/debug as Debug
+import std/result as Result
+import std/stream as Stream
+
+enum HostError {
+  Full
+  Broke
+}
+
+pub fn main() -> Text {
+  let endless = Stream.reader(fn() { Some(Bytes.from_text("ab")) }, fn() { Void })
+  let broken = Stream.reader(fn() { Failure(HostError.Broke) }, fn() { Void })
+  let nothing = Stream.reader(fn() { None }, fn() { Void })
+  let refusing = Stream.writer(fn(_bytes) { Failure(HostError.Full) }, fn() { Void })
+  let quiet = Stream.writer(fn(_bytes) { Void }, fn() { Void })
+  Debug.render((
+    Result.capture(fn() { Stream.read_all(endless, 5) }),
+    Result.capture(fn() { Stream.copy(endless, refusing) }),
+    Result.capture(fn() { Stream.copy(broken, quiet) }),
+    Result.capture(fn() { Stream.copy(nothing, refusing) }),
+    Result.capture(fn() { Bytes.length(Stream.read_all(nothing, 0)) }),
+  ))
+}

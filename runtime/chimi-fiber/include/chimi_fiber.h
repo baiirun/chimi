@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 19u
+#define CHIMI_FIBER_ABI_VERSION 20u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -172,6 +172,17 @@ enum {
      leaves. ERROR when the task is not inside the scope. Never a
      cancellation point. */
   CHIMI_REQUEST_SCOPE_CANCEL = 41,
+  /* ChimiSchedulerRequest: `context` points to `value` uint64_t ids of the
+     caller's children. Replies like a ready TASK_RESULT (SUCCEEDED, CANCELLED,
+     DEFECTED or STACK_OVERFLOW) with `task` set to the listed child that
+     terminated first, in termination order; PENDING while none has. The
+     outcome is only reported: a cancelled child cancels nothing. ERROR for an
+     empty list or a task the caller does not own. A cancellation point that
+     a firing scope withdraws. */
+  CHIMI_REQUEST_TASK_ANY = 42,
+  /* TASK_ANY for children the caller already cancelled: neither a
+     cancellation point nor withdrawn by a firing scope. */
+  CHIMI_REQUEST_TASK_DRAIN = 43,
   /* ChimiSchedulerRequest: waits until descriptor `value` is ready for the
      CHIMI_IO_READABLE and/or CHIMI_IO_WRITABLE interest in `token`. OK with
      the ready conditions (CHIMI_IO_*) in `value` once it is ready; PENDING
@@ -184,8 +195,8 @@ enum {
      under the virtual clock no timeout or shutdown deadline fires during it
      (a real signal still ends it).
      Closing a descriptor a task waits on is a host bug. Kinds 36 to 39 are
-     the channel-variant requests, 41 cancels a scope, and 40 and 42 to
-     47 are left for the task combinators. */
+     the channel-variant requests, 41 cancels a scope, and 42 and 43 are
+     the task combinators'. */
   CHIMI_REQUEST_IO_WAIT = 48,
 };
 

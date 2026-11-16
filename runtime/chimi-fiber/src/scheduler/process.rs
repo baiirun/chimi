@@ -1195,6 +1195,7 @@ impl Scheduler {
     pub(super) fn disarm_wake_sources(&mut self, task: TaskId) {
         let record = self.tasks.get_mut(&task).expect("parked task");
         record.waiting_on = None;
+        record.waiting_any.clear();
         if let Some(timer) = record.timer.take() {
             self.cancel_timer(timer);
         }
@@ -1908,7 +1909,9 @@ impl Scheduler {
     /// cancelled: a park in progress (a sleep, a child's result, a channel
     /// operation) completes as usual, and so do child tasks. A receive is
     /// reissued so it can drain the mailbox. Two cases end at once instead:
-    /// a body that has not run yet has nothing in flight, and a supervisor
+    /// a body that has not run yet and has no accepted messages has nothing
+    /// in flight (messages it accepted are work, so such a body runs and
+    /// drains them), and a supervisor
     /// operation that waits for this very shutdown would otherwise wait for
     /// the deadline. A zero deadline forces at once.
     fn begin_shutdown(&mut self, incarnation: IncarnationId) {
@@ -1923,6 +1926,7 @@ impl Scheduler {
         let forced = deadline <= now;
         let task = record.task;
         let receiving = record.receiving;
+        let nothing_accepted = record.mailbox.is_empty();
         let self_waiting = self.tasks_awaiting_own_shutdown(incarnation);
         self.unroute(incarnation);
         self.kernel
@@ -1947,7 +1951,7 @@ impl Scheduler {
         }
         let task_record = self.tasks.get_mut(&task).expect("incarnation task");
         match task_record.phase {
-            TaskPhase::Runnable if !task_record.ran || forced => {
+            TaskPhase::Runnable if forced || (!task_record.ran && nothing_accepted) => {
                 task_record.command = ChimiFiberCommand::Cancel;
                 set_status(task_record.request, RESPONSE_FORCED, forced);
             }

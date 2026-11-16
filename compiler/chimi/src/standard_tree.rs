@@ -120,6 +120,12 @@ fn imports(source: &ProjectSource) -> Vec<String> {
         .filter(|import| !matches!(import.binding, ImportBinding::Missing))
         .map(|import| import.path)
         .filter(|path| path.starts_with("std/"))
+        .flat_map(|path| {
+            // The built-in `std/task` returns `Result` values (`Task.results`),
+            // so it loads the source module that declares them.
+            let implied = (path == "std/task").then(|| "std/result".to_owned());
+            std::iter::once(path).chain(implied)
+        })
         .collect()
 }
 

@@ -13,7 +13,10 @@
 //! equal when they denote the same set. Later checks (`T4346` for retry
 //! predicates, `Task.all` rows) use the subset and join functions here.
 
-use super::{CanonicalType, FailureRow, FailureVariantArguments, GenericKind, ProjectTypeChecker};
+use super::{
+    CallableContract, CanonicalType, FailureRow, FailureVariantArguments, GenericKind,
+    ProjectTypeChecker,
+};
 use crate::ids::{FailureRowId, ModuleId, SymbolId, TextRange, TypeId};
 use crate::resolution::ProjectSymbolKind;
 use crate::semantic::TypeUse;
@@ -376,6 +379,12 @@ impl ProjectTypeChecker {
         }
         let left = self.resolve_inference_type(left);
         let right = self.resolve_inference_type(right);
+        if let (CanonicalType::Function(left_contract), CanonicalType::Function(right_contract)) = (
+            self.types[left.raw() as usize].clone(),
+            self.types[right.raw() as usize].clone(),
+        ) {
+            return self.join_function_contracts(left_contract, right_contract, depth);
+        }
         let (
             CanonicalType::Named {
                 symbol,
@@ -407,6 +416,40 @@ impl ProjectTypeChecker {
             arguments.push(self.join_types_within(left, right, true, depth + 1)?);
         }
         Some(self.intern_type(CanonicalType::Named { symbol, arguments }))
+    }
+
+    /// Two monomorphic function types join when their inputs agree: the joined
+    /// function may fail with either row and need either row, and returns the
+    /// join of the successes, so a list of thunks with different failures
+    /// (`Task.all([load, save])`) takes the union, as two captures do.
+    fn join_function_contracts(
+        &mut self,
+        left: CallableContract,
+        right: CallableContract,
+        depth: usize,
+    ) -> Option<TypeId> {
+        if left.inputs.len() != right.inputs.len() {
+            return None;
+        }
+        for (left_input, right_input) in left.inputs.iter().zip(&right.inputs) {
+            if !(self.unify(*left_input, *right_input) && self.unify(*right_input, *left_input)) {
+                return None;
+            }
+        }
+        let success =
+            if self.unify(left.success, right.success) && self.unify(right.success, left.success) {
+                right.success
+            } else {
+                self.join_types_within(left.success, right.success, false, depth + 1)?
+            };
+        let failures = self.join_failure_sets([left.failures, right.failures]);
+        let needs = self.union_needs_rows([left.needs, right.needs]);
+        Some(self.intern_type(CanonicalType::Function(CallableContract {
+            inputs: right.inputs,
+            success,
+            failures,
+            needs,
+        })))
     }
 
     /// Whether `type_id` is a data type applied to arguments, such as
