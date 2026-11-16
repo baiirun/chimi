@@ -58,11 +58,17 @@ MUTATIONS = [
     parsing("version may be declared twice", [
         ('List.contains(option_names(each.spec), "--version")', "False")]),
     parsing("help after an error is a usage error", [
-        ("    Err(Stop.Wrong(_)) if asks_help(arguments) -> Failure(Exit.Help(usage(command)))\n", "")]),
+        ("      Some(shown) -> Failure(Exit.Help(shown))\n      None -> Failure(Exit.Usage(", "      _ -> Failure(Exit.Usage(")]),
+    parsing("help in a cluster after an error is missed", [
+        ('    ["h", .._] -> True\n', "")]),
+    parsing("a cluster value h asks for help", [
+        ("      Some(_) -> cluster_asks_help(command, more)\n      None -> False", "      _ -> cluster_asks_help(command, more)")]),
+    parsing("version after an error is a usage error", [
+        ('      Some(version) -> Some("${command.name} ${version}")', "      Some(_) -> None")]),
     parsing("h in a cluster is unknown", [
         ('          "h" -> Failure(Stop.Shown(usage(command)))\n', "")]),
     parsing("help after -- is shown", [
-        ('    ["--", .._] -> False\n', "")]),
+        ('    ["--", .._] -> None\n', "")]),
     parsing("the built-in --version shadows a declared one", [
         ('      ["--", ..rest] -> break',
          '      ["--version", .._] -> Failure(Stop.Wrong(CliError.UnknownOption("--version")))\n      ["--", ..rest] -> break')]),

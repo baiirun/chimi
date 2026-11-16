@@ -31,7 +31,6 @@ import std/map.{Map}
 import std/option as Option
 import std/option.{None, Option, Some}
 import std/path as Path
-import std/path.{Path}
 import std/result as Result
 import std/result.{Err, Ok}
 import std/text as Text
@@ -218,8 +217,10 @@ pub fn parse(command: Command, arguments: List<Text>) -> Parsed {
   case Result.capture(fn() { scan(command, arguments) }) {
     Ok(parsed) -> parsed
     Err(Stop.Shown(shown)) -> Failure(Exit.Help(shown))
-    Err(Stop.Wrong(_)) if asks_help(arguments) -> Failure(Exit.Help(usage(command)))
-    Err(Stop.Wrong(error)) -> Failure(Exit.Usage(error, "${command.name}: ${message(error)}\n${synopsis(command)}\nTry '${command.name} --help' for more information."))
+    Err(Stop.Wrong(error)) -> case asked_to_show(command, arguments) {
+      Some(shown) -> Failure(Exit.Help(shown))
+      None -> Failure(Exit.Usage(error, "${command.name}: ${message(error)}\n${synopsis(command)}\nTry '${command.name} --help' for more information."))
+    }
   }
 }
 
@@ -266,15 +267,38 @@ enum Stop {
   Wrong(error: CliError)
 }
 
-// Whether `--help` or `-h` is among the words before `--`, so that help wins
-// over an error in an earlier word.
-fn asks_help(arguments: List<Text>) -> Bool {
+// The help or version text a word before `--` asks for, so that it wins over
+// an error in an earlier word: `--help`, `-h`, `h` among a cluster's leading
+// flags, or `--version` when the command has a version.
+fn asked_to_show(command: Command, arguments: List<Text>) -> Option<Text> {
   case arguments {
+    [] -> None
+    ["--", .._] -> None
+    ["--help", .._] -> Some(usage(command))
+    ["-h", .._] -> Some(usage(command))
+    ["--version", ..rest] -> case command.version {
+      Some(version) -> Some("${command.name} ${version}")
+      None -> asked_to_show(command, rest)
+    }
+    [word, ..rest] -> case is_cluster(word) and cluster_asks_help(command, Text.graphemes(Text.byte_slice(word, 1..Text.byte_length(word)))) {
+      True -> Some(usage(command))
+      False -> asked_to_show(command, rest)
+    }
+  }
+}
+
+// Whether `h` comes before the first letter that is not a declared flag,
+// after which the rest of the cluster is a value.
+fn cluster_asks_help(command: Command, letters: List<Text>) -> Bool {
+  case letters {
     [] -> False
-    ["--", .._] -> False
-    ["--help", .._] -> True
-    ["-h", .._] -> True
-    [_, ..rest] -> asks_help(rest)
+    ["h", .._] -> True
+    [letter, ..more] -> case List.find(command.args, fn(each) {
+      each.spec.kind == Kind.Flag and each.spec.short == letter
+    }) {
+      Some(_) -> cluster_asks_help(command, more)
+      None -> False
+    }
   }
 }
 

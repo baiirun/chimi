@@ -516,11 +516,12 @@ Parsing follows getopt and the GNU long-option conventions:
   `UnexpectedArgument`; a missing `argument` is `MissingArgument`.
 - A value its parser refuses MUST be `InvalidValue`, naming `--long` for an
   option and `<name>` for a positional, with the parser's name as `expected`.
-- `--help` or `-h` anywhere before `--`, or `h` in a cluster of short flags,
-  MUST fail with `Exit.Help(usage)`, even after an earlier error in the
-  arguments. `--version` MUST fail with `Exit.Help("name version")` when the
-  command has a version; otherwise it is an ordinary option, which the
-  command may declare.
+- `--help` or `-h` anywhere before `--`, or `h` among a cluster's leading
+  flags (`-vh`, but not `-mh`, where `h` is the value of `-m`), MUST fail
+  with `Exit.Help(usage)`. `--version` MUST fail with
+  `Exit.Help("name version")` when the command has a version; otherwise it
+  is an ordinary option, which the command may declare. Both MUST win over
+  an error in an earlier word.
 - Any other wrong arguments MUST fail with `Exit.Usage(error, message)`,
   where `message` is `name: what was wrong`, the synopsis, and a line
   pointing at `--help`.

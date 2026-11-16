@@ -33,10 +33,13 @@ test "help and version are shown wherever they appear" {
   Test.assert_equal(shown(tool, ["--nope", "--help"]), Cli.usage(tool))
   Test.assert_equal(shown(tool, ["--verbose=yes", "-h"]), Cli.usage(tool))
   Test.assert_equal(shown(tool, ["-vh"]), Cli.usage(tool))
+  Test.assert_equal(shown(tool, ["--nope", "-qvh"]), Cli.usage(tool))
+  Test.assert_equal(usage_error(["--nope", "-mh"]), CliError.UnknownOption("--nope"))
   Test.assert_equal(usage_error(["--nope", "--", "--help"]), CliError.UnknownOption("--nope"))
   Test.assert_equal(usage_error(["--help=x"]), CliError.UnknownOption("--help"))
   Test.assert_equal(Cli.get(Cli.parse(tool, ["--", "--help"]), name), "--help")
   let versioned = Cli.version(tool, "1.2.0")
   Test.assert_equal(shown(versioned, ["x", "--version"]), "tool 1.2.0")
+  Test.assert_equal(shown(versioned, ["--nope", "--version"]), "tool 1.2.0")
   Test.assert_equal(usage_error(["--version=2"]), CliError.UnknownOption("--version"))
 }
