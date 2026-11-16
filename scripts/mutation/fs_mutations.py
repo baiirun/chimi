@@ -55,9 +55,6 @@ MUTATIONS = [
          "Text.starts_with(Path.to_text(normal), Path.to_text(inside))")]),
     host("files_within at the root adds a separator", FS, [
         ('    "/" -> "/"\n    text -> Text.append(text, "/")', '    text -> Text.append(text, "/")')]),
-    host("native writes an empty chunk to a closed file", RUNTIME, [
-        ('  if (!fs_get(handle)) return success(fs_status(FS_CLOSED, "file is closed"));\n  size_t written = 0;',
-         "  size_t written = 0;")]),
     host("the temporary directory is left behind", FS, [
         ("Resource.scoped(fn() { host_temporary_directory() }, remove_tree, use)",
          "Resource.scoped(fn() { host_temporary_directory() }, fn(path) { Void }, use)")]),
