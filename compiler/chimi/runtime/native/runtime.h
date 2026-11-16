@@ -246,6 +246,11 @@ enum {
   CHIMI_INTRINSIC_CAUSE_SUPPRESSED,
   CHIMI_INTRINSIC_CAUSE_REASON_CODE,
   CHIMI_INTRINSIC_CAUSE_TO_TEXT,
+  /* std/test assertions; contiguous. Each defects at its own call node. */
+  CHIMI_INTRINSIC_TEST_ASSERT_EQUAL,
+  CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL,
+  CHIMI_INTRINSIC_TEST_ASSERT,
+  CHIMI_INTRINSIC_TEST_FAIL,
 };
 
 enum {
@@ -488,6 +493,10 @@ extern const uint32_t CHIMI_REQUIREMENT_SLOT_COUNT;
 extern const uint32_t CHIMI_CLOCK_REQUIREMENT_SLOT;
 extern const ChimiFunction CHIMI_FUNCTIONS[];
 extern const uint32_t CHIMI_FUNCTION_COUNT;
+/* A test build's tests, as CHIMI_FUNCTIONS indexes in report order; `--test=<k>`
+   runs the k-th instead of the entry. Empty for a program. */
+extern const uint32_t CHIMI_TEST_FUNCTIONS[];
+extern const uint32_t CHIMI_TEST_COUNT;
 extern const ChimiConstructor CHIMI_CONSTRUCTORS[];
 extern const ChimiNamedNode CHIMI_NAMED_NODES[];
 extern const ChimiStep CHIMI_STEPS[];

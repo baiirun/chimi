@@ -511,6 +511,12 @@ pub(crate) enum StandardFunction {
     CauseSuppressed,
     CauseReasonCode,
     CauseToText,
+    // `std/test` assertions. Each defects at its own call, so the defect's node
+    // is the caller's location (testing.md, Failure reports).
+    TestAssertEqual,
+    TestAssertNotEqual,
+    TestAssert,
+    TestFail,
 }
 
 impl StandardFunction {
@@ -775,6 +781,10 @@ impl StandardFunction {
             | Self::CauseSuppressed
             | Self::CauseReasonCode
             | Self::CauseToText => None,
+            | Self::TestAssertEqual
+            | Self::TestAssertNotEqual
+            | Self::TestAssert
+            | Self::TestFail => None,
         }
     }
 
@@ -940,6 +950,10 @@ impl StandardFunction {
             Self::CauseSuppressed => "suppressed",
             Self::CauseReasonCode => "reason_code",
             Self::CauseToText => "to_text",
+            Self::TestAssertEqual => "assert_equal",
+            Self::TestAssertNotEqual => "assert_not_equal",
+            Self::TestAssert => "assert",
+            Self::TestFail => "fail",
         }
     }
 

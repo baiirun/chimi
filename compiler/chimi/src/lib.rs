@@ -30,6 +30,7 @@ pub mod source;
 mod standard;
 mod standard_tree;
 mod syntax;
+pub mod testing;
 mod typing;
 
 pub use backend::{BackendOperationProfile, BackendProfile, BackendProgram, BackendValueProfile};

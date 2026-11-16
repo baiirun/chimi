@@ -595,6 +595,23 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         functions.len()
     )
     .unwrap();
+    let tests = core
+        .tests
+        .iter()
+        .map(|test| {
+            core.functions
+                .iter()
+                .position(|function| function.symbol == *test)
+                .expect("every test of a test build is a lowered function") as u32
+        })
+        .collect::<Vec<_>>();
+    render_array(
+        &mut output,
+        "const uint32_t CHIMI_TEST_FUNCTIONS[]",
+        &tests,
+        u32::to_string,
+    );
+    writeln!(output, "const uint32_t CHIMI_TEST_COUNT = {};", tests.len()).unwrap();
     render_array(
         &mut output,
         "const ChimiConstructor CHIMI_CONSTRUCTORS[]",
