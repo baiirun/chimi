@@ -187,3 +187,39 @@ fn losing_user_clock_timers_leave_no_records_behind() {
     assert_eq!(run.outcome, success("2000"));
     assert!(run.peak_task_records <= 4, "{}", run.peak_task_records);
 }
+
+// A handle copied to another heap is one more reference. Generic code can
+// send a handle on a channel, which copies it into the message and then into
+// the receiver's heap; the original and the message go away while the copy
+// is still live.
+#[test]
+fn a_handle_sent_through_a_channel_still_reads_its_result() {
+    let source = concat!(
+        "fn pass<T>(sender: Channel.Sender<T>, value: T) -> Void { Channel.send(sender, value) }\n",
+        "pub fn main() -> Int {\n",
+        "  let handles = Channel.bounded(1)\n",
+        "  let child = loop step = 0 {\n",
+        "    case step {\n",
+        "      0 -> {\n",
+        "        pass(handles.sender, Task.start(fn() { 42 }))\n",
+        "        1\n",
+        "      }\n",
+        "      3 -> break Channel.receive(handles.receiver)\n",
+        "      _ -> step + Task.result(Task.start(fn() { 1 }))\n",
+        "    }\n",
+        "  }\n",
+        "  let total = loop step = 0 {\n",
+        "    case step == 3 {\n",
+        "      True -> break step\n",
+        "      False -> step + Task.result(Task.start(fn() { 1 }))\n",
+        "    }\n",
+        "  }\n",
+        "  case child {\n",
+        "    Receive.Received(task) -> Task.result(task) + total - 3\n",
+        "    Receive.Drained -> 0\n",
+        "  }\n",
+        "}\n",
+    );
+    let run = run("sent", source);
+    assert_eq!(run.outcome, success("42"));
+}
