@@ -58,6 +58,7 @@ struct Run {
 /// connection served by it, closes the client's writing side, and returns
 /// every byte the server sent before it closed the connection.
 const PRELUDE: &str = r#"import std/bytes as Bytes
+import std/bytes.{Bytes}
 import std/clock as Clock
 import std/clock.{Clock}
 import std/debug as Debug
@@ -110,7 +111,7 @@ fn exchange(raw: Text) -> Text {
   Stream.close(Net.writer(client))
   let answer = Stream.read_all(Net.reader(client), 33554432)
   Task.result(serving)
-  Bytes.to_text(answer)
+  undated(answer)
 }
 
 // `exchange` with settings other than the defaults.
@@ -121,7 +122,7 @@ fn exchange_with(settings: { max_head_bytes: Int, max_headers: Int, max_body_byt
   Stream.close(Net.writer(client))
   let answer = Stream.read_all(Net.reader(client), 33554432)
   Task.result(serving)
-  Bytes.to_text(answer)
+  undated(answer)
 }
 
 // Sends `raw` without closing the client's writing side: the answer ends only
@@ -132,7 +133,7 @@ fn exchange_open(raw: Text) -> Text {
   Stream.write(Net.writer(client), Bytes.from_text(raw))
   let answer = Stream.read_all(Net.reader(client), 1048576)
   Task.result(serving)
-  Bytes.to_text(answer)
+  undated(answer)
 }
 
 // Sends each of `pieces` as its own write, so a head arrives split across
@@ -147,7 +148,7 @@ fn trickle(pieces: List<Text>) -> Text {
   })
   let answer = Stream.read_all(Net.reader(client), 1048576)
   Task.result(serving)
-  Bytes.to_text(answer)
+  undated(answer)
 }
 
 fn ok(body: Text) -> Text {
@@ -156,6 +157,12 @@ fn ok(body: Text) -> Text {
 
 fn refused(status: Int, reason: Text, body: Text) -> Text {
   "HTTP/1.1 ${status} ${reason}\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: ${Text.byte_length(body)}\r\nconnection: close\r\n\r\n${body}"
+}
+
+// A response without its `date` header, which depends on the clock; one
+// test checks the header itself.
+fn undated(answer: Bytes) -> Text {
+  Text.join(List.filter(Text.split(Bytes.to_text(answer), "\r\n"), fn(line) { not Text.starts_with(line, "date: ") }), "\r\n")
 }
 "#;
 
@@ -174,6 +181,43 @@ fn assert_passed(run: &Run, count: usize) {
         "{}",
         run.stdout
     );
+}
+
+// Rejects a server that sends no `Date`, formats it wrongly (weekday, a leap
+// day, a negative timestamp, a century that is not a leap year, rounding a
+// fraction up), or overrides a handler's own `Date`.
+#[test]
+fn every_response_carries_the_date() {
+    let tests = r#"
+fn dated(request: Request) -> Response {
+  case Http.path(request) {
+    ["own"] -> Http.response(200, [("Date", "earlier")], Bytes.empty())
+    _ -> Http.text(200, "ok")
+  }
+}
+
+test "the date" {
+  let (client, server) = Net.pair(64)
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, dated) })
+  Stream.write(Net.writer(client), Bytes.from_text("GET / HTTP/1.1\r\nHost: x\r\n\r\nGET /own HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
+  let answer = Bytes.to_text(Stream.read_all(Net.reader(client), 1024))
+  Task.result(serving)
+  answer |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ndate: DATE\r\ncontent-length: 2\r\n\r\nokHTTP/1.1 200 OK\r\ndate: earlier\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+}
+"#;
+    for (start, date) in [
+        ("1994-11-06T08:49:37Z", "Sun, 06 Nov 1994 08:49:37 GMT"),
+        ("2000-02-29T23:59:59.9Z", "Tue, 29 Feb 2000 23:59:59 GMT"),
+        ("1969-12-31T23:59:59.5Z", "Wed, 31 Dec 1969 23:59:59 GMT"),
+        ("2100-03-01T00:00:00Z", "Mon, 01 Mar 2100 00:00:00 GMT"),
+    ] {
+        let run = Scratch::new(
+            &format!("date-{}", &start[..4]),
+            &format!("{PRELUDE}\n{}", tests.replace("DATE", date)),
+        )
+        .chimi(&["test", "cases.chimi", "--clock=virtual", &format!("--clock-start={start}")]);
+        assert_passed(&run, 1);
+    }
 }
 
 // Rejects a server that closes after one request, mixes up pipelined
@@ -336,7 +380,7 @@ test "a server applies the settings it is given" {
   Stream.write(Net.writer(client), Bytes.from_text("GET /health HTTP/1.1\r\nHost: x\r\n\r\n"))
   let first = Stream.read_all(Net.reader(client), 1048576)
   Task.result(serving)
-  Bytes.to_text(first) |> Test.assert_equal(ok("ok"))
+  undated(first) |> Test.assert_equal(ok("ok"))
   Clock.since(start) |> Test.assert_equal(Duration.seconds(5))
   exchange_with(settings, "GET /health HTTP/1.1\r\nHost: x\r\nX-A: 1\r\n\r\n")
     |> Test.assert_equal(refused(431, "Request Header Fields Too Large", "request header fields too large"))
@@ -399,7 +443,7 @@ fn a_server_on_loopback_serves_clients_at_once_and_stops_with_its_listener() {
 fn get(port: Int, path: Text) -> Text needs { network: Network } {
   Resource.scoped(fn() { Net.connect("127.0.0.1", port) }, Net.close, fn(connection) {
     Stream.write(Net.writer(connection), Bytes.from_text("GET ${path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
-    Bytes.to_text(Stream.read_all(Net.reader(connection), 1048576))
+    undated(Stream.read_all(Net.reader(connection), 1048576))
   })
 }
 
@@ -434,7 +478,7 @@ fn crash_then_health() -> Text needs { network: Network, clock: Clock } {
   let held = Net.connect("127.0.0.1", port)
   let crashed = Task.timeout(fn() { get(port, "/crash") }, Duration.seconds(5))
   Stream.write(Net.writer(held), Bytes.from_text("GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
-  let kept = Task.timeout(fn() { Bytes.to_text(Stream.read_all(Net.reader(held), 1048576)) }, Duration.seconds(5))
+  let kept = Task.timeout(fn() { undated(Stream.read_all(Net.reader(held), 1048576)) }, Duration.seconds(5))
   Net.close(held)
   let after = Task.timeout(fn() { get(port, "/health") }, Duration.seconds(5))
   Net.close_listener(listener)
@@ -596,7 +640,7 @@ test "100-continue waits for the client and is HTTP/1.1 only" {
   Stream.read(Net.reader(client)) |> Test.assert_equal(Some(Bytes.from_text("HTTP/1.1 100 Continue\r\n\r\n")))
   Stream.write(Net.writer(client), Bytes.from_text("hi"))
   Stream.close(Net.writer(client))
-  Bytes.to_text(Stream.read_all(Net.reader(client), 1024)) |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi")
+  undated(Stream.read_all(Net.reader(client), 1024)) |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi")
   Task.result(serving)
   exchange("POST /echo HTTP/1.0\r\nExpect: 100-continue\r\nContent-Length: 2\r\n\r\nhi")
     |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nhi")
@@ -678,7 +722,7 @@ test "failed accepts are retried" {
   Stream.write(script, Bytes.from([2]))
   let start = Clock.now()
   let serving = Task.start(fn() { Http.serve(flaky(server, plan), Http.defaults, handle) })
-  let answer = Bytes.to_text(Stream.read_all(Net.reader(client), 1024))
+  let answer = undated(Stream.read_all(Net.reader(client), 1024))
   Stream.close(script)
   Task.result(serving)
   Clock.since(start) |> Test.assert_equal(Duration.milliseconds(30))
