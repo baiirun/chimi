@@ -80,8 +80,7 @@ pub(crate) fn occurrences_at(
         .modules
         .iter()
         .find(|module| module.path == module_path)?;
-    let target = referenced_at(resolved, module, offset)
-        .or_else(|| declared_at(resolved, module, offset))?;
+    let target = symbol_at(resolved, module, offset)?;
     let symbol = resolved.symbol(target);
     // A struct's type and constructor, or a type and its value, are one
     // declaration with one name.
@@ -128,6 +127,16 @@ pub(crate) fn occurrences_at(
         renamable,
         occurrences,
     })
+}
+
+/// The symbol whose reference or declaration name holds `offset` in
+/// `module`.
+pub(crate) fn symbol_at(
+    resolved: &ResolvedProject,
+    module: &SemanticModule,
+    offset: usize,
+) -> Option<SymbolId> {
+    referenced_at(resolved, module, offset).or_else(|| declared_at(resolved, module, offset))
 }
 
 fn reference_target(resolution: ReferenceResolution) -> Option<SymbolId> {

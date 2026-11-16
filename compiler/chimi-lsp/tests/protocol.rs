@@ -330,3 +330,51 @@ fn completion_answers_over_the_protocol() {
     handle.join().unwrap().unwrap();
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Guards the wire shape of inlay hints: a type hint after the name, with a
+/// plain string label.
+#[test]
+fn inlay_hints_answer_over_the_protocol() {
+    let root = scratch("inlay");
+    let text = "pub fn main() -> Int {\n  let total = 1\n  total\n}\n";
+    fs::write(root.join("app.chimi"), text).unwrap();
+    let uri = format!("file://{}", root.join("app.chimi").display());
+    let (server, client) = Connection::memory();
+    let handle = thread::spawn(move || chimi_lsp::server::run(&server).map_err(|e| e.to_string()));
+
+    let initialized = request(
+        &client,
+        1,
+        "initialize",
+        json!({
+            "capabilities": {"general": {"positionEncodings": ["utf-8"]}},
+            "workspaceFolders": [{"uri": format!("file://{}", root.display()), "name": "fixture"}],
+            "initializationOptions": {"projects": [{"root": ".", "entry": "app"}]},
+        }),
+    );
+    assert_eq!(initialized["capabilities"]["inlayHintProvider"], true);
+    notify(&client, "initialized", json!({}));
+    notify(
+        &client,
+        "textDocument/didOpen",
+        json!({"textDocument": {"uri": uri, "languageId": "chimi", "version": 1, "text": text}}),
+    );
+    next_diagnostics(&client);
+
+    let hints = request(
+        &client,
+        2,
+        "textDocument/inlayHint",
+        json!({"textDocument": {"uri": uri},
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 4, "character": 0}}}),
+    );
+    assert_eq!(
+        hints,
+        json!([{"position": {"line": 1, "character": 11}, "label": ": Int", "kind": 1}])
+    );
+
+    request(&client, 3, "shutdown", Value::Null);
+    notify(&client, "exit", Value::Null);
+    handle.join().unwrap().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
