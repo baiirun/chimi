@@ -3986,9 +3986,15 @@ fn native_per_owner_heaps_meet_the_prototype_heap_contracts() {
             .output()
             .expect("compile native heap test")
     };
-    let sanitized = compile(&["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]);
+    // A checking build frees every young chunk at its pass boundary, so a pointer
+    // kept across one fails as a use after free.
+    let sanitized = compile(&[
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-DCHIMI_POISON_YOUNG_CHUNKS",
+    ]);
     if !sanitized.status.success() {
-        let plain = compile(&[]);
+        let plain = compile(&["-DCHIMI_POISON_YOUNG_CHUNKS"]);
         assert!(
             plain.status.success(),
             "{}",
@@ -4472,6 +4478,53 @@ fn memory_report_over_rounds(name: &str, source: &str, runner: &[&str], rounds: 
     let report = std::fs::read_to_string(memory_report).unwrap();
     std::fs::remove_dir_all(scratch).unwrap();
     report
+}
+
+// Guards: a pass's young chunk allocations are counted at its boundary, while a
+// child task's heap is freed in the middle of the pass. The peak footprint must
+// still count both at once: here the 1000 pushes still live in the pass while
+// the child maps a 20000-element list (CHI-219 review).
+#[test]
+fn native_peak_footprint_counts_a_pass_and_a_child_task_together() {
+    let source = |pushes: usize| {
+        format!(
+            concat!(
+                "import std/list as List\n",
+                "import std/task as Task\n",
+                "fn heavy(seed: Int) -> Int {{\n",
+                "  List.length(List.map(List.repeat(seed, 20000), fn(n: Int) -> Int {{ n + 1 }}))\n",
+                "}}\n",
+                "fn build(n: Int, acc: List<Int>) -> List<Int> {{\n",
+                "  case n <= 0 {{\n",
+                "    True -> acc\n",
+                "    False -> build(n - 1, List.push(acc, n))\n",
+                "  }}\n",
+                "}}\n",
+                "pub fn main() -> Int {{\n",
+                "  loop s = 0 {{\n",
+                "    case s >= 50000 {{\n",
+                "      True -> break s\n",
+                "      False -> {{\n",
+                "        let big = build({pushes}, [])\n",
+                "        let r = Task.result(Task.start(fn() -> Int {{ heavy(s) }}))\n",
+                "        s + r + List.length(big)\n",
+                "      }}\n",
+                "    }}\n",
+                "  }}\n",
+                "}}\n",
+            ),
+            pushes = pushes
+        )
+    };
+    let alone = memory_report_over_rounds("peak-child-alone", &source(1), &[], 0);
+    let together = memory_report_over_rounds("peak-child-together", &source(1000), &[], 0);
+    let alone_peak = json_u64_field(&alone, "peak_footprint_bytes");
+    let together_peak = json_u64_field(&together, "peak_footprint_bytes");
+    // The pushes alone keep about as much live as the child does.
+    assert!(
+        together_peak > alone_peak * 3 / 2,
+        "peak footprint {together_peak} with the pushes, {alone_peak} without"
+    );
 }
 
 fn assert_flat_fragment_peak(small: &str, large: &str) {

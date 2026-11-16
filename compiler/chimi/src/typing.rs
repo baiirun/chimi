@@ -7901,10 +7901,45 @@ impl ProjectTypeChecker {
     fn failure_row_is_subset(&self, actual: FailureRowId, expected: FailureRowId) -> bool {
         let actual = &self.failure_rows[actual.raw() as usize];
         let expected = &self.failure_rows[expected.raw() as usize];
+        // A variant of a generic enum is the same member only at the same type
+        // arguments: `W<Text>.Bad` is not in a set that holds `W<Int>.Bad`. A
+        // row may hold one variant at several argument lists, once per raise,
+        // so every list `actual` holds must be one `expected` holds; poison
+        // (an argument the variant does not mention) agrees with any type.
+        let argument_lists = |row: &FailureRow, variant: SymbolId| {
+            row.variant_arguments
+                .iter()
+                .filter(|arguments| arguments.variant == variant)
+                .map(|arguments| {
+                    arguments
+                        .arguments
+                        .iter()
+                        .map(|argument| self.resolve_inference_type(*argument))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let agree = |left: &[TypeId], right: &[TypeId]| {
+            left.len() == right.len()
+                && left.iter().zip(right).all(|(left, right)| {
+                    left == right || *left == TypeId::new(0) || *right == TypeId::new(0)
+                })
+        };
+        let arguments_fit = |variant: SymbolId| {
+            let actual_lists = argument_lists(actual, variant);
+            let expected_lists = argument_lists(expected, variant);
+            match (actual_lists.is_empty(), expected_lists.is_empty()) {
+                (true, true) => true,
+                (true, false) | (false, true) => false,
+                (false, false) => actual_lists.iter().all(|actual| {
+                    expected_lists.iter().any(|expected| agree(actual, expected))
+                }),
+            }
+        };
         actual
             .variants
             .iter()
-            .all(|variant| expected.variants.contains(variant))
+            .all(|variant| expected.variants.contains(variant) && arguments_fit(*variant))
             && actual.parameters.iter().all(|parameter| {
                 if !expected.parameters.contains(parameter) {
                     return false;
@@ -9157,9 +9192,27 @@ impl ProjectTypeChecker {
                 if self.generic_kinds.get(&parameter) == Some(&GenericKind::FailureSet) {
                     substitution.widenable_failures.remove(&parameter);
                     if let Some(bound) = substitution.failures.get(&parameter).copied() {
-                        return self
-                            .failure_row_for_type(actual)
-                            .is_some_and(|actual| self.failure_rows_equivalent(actual, bound));
+                        // A type still being inferred, as the input of `fn(_) {
+                        // True }`, becomes the bound set.
+                        if matches!(
+                            self.types[actual.raw() as usize],
+                            CanonicalType::InferenceVariable(_)
+                        ) {
+                            let bound = self.failure_set_type(bound);
+                            return self.unify(actual, bound);
+                        }
+                        // Under a function input, a value of the slot's type is
+                        // handed to `actual`, so `actual` must take every member
+                        // of the bound set: a predicate over `A | B` serves an
+                        // operation that fails with `A` (`T4346`).
+                        let input = !self.function_input_depth.is_multiple_of(2);
+                        return self.failure_row_for_type(actual).is_some_and(|actual| {
+                            if input {
+                                self.failure_row_is_subset(bound, actual)
+                            } else {
+                                self.failure_rows_equivalent(actual, bound)
+                            }
+                        });
                     }
                     if let Some(bound) = substitution.values.get(&parameter).copied() {
                         return self.unify(actual, bound);
@@ -9208,9 +9261,19 @@ impl ProjectTypeChecker {
             ) => {
                 actual_symbol == expected_symbol
                     && actual_arguments.len() == expected_arguments.len()
-                    && actual_arguments.into_iter().zip(expected_arguments).all(
-                        |(actual, expected)| self.match_call_type(actual, expected, substitution),
-                    )
+                    && actual_arguments
+                        .into_iter()
+                        .zip(expected_arguments)
+                        .enumerate()
+                        .all(|(index, (actual, expected))| {
+                            self.match_call_type_argument(
+                                actual_symbol,
+                                index,
+                                actual,
+                                expected,
+                                substitution,
+                            )
+                        })
             }
             (CanonicalType::Function(actual), CanonicalType::Function(expected)) => {
                 actual.inputs.len() == expected.inputs.len()
@@ -9280,6 +9343,35 @@ impl ProjectTypeChecker {
         }
     }
 
+    /// Matches the argument at `index` of two instances of the data type
+    /// `owner` by its variance: a covariant argument as a value, one used only
+    /// as a function input with the direction flipped, and any other only when
+    /// both sides agree, so a `Handler<A>` holding a `fn(A)` does not pass for a
+    /// `Handler<A | B>`.
+    fn match_call_type_argument(
+        &mut self,
+        owner: SymbolId,
+        index: usize,
+        actual: TypeId,
+        expected: TypeId,
+        substitution: &mut CallSubstitution,
+    ) -> bool {
+        if self.type_parameter_is_covariant(owner, index) {
+            return self.match_call_type(actual, expected, substitution);
+        }
+        if self.type_parameter_is_contravariant(owner, index) {
+            self.function_input_depth += 1;
+            let matched = self.match_call_type(actual, expected, substitution);
+            self.function_input_depth -= 1;
+            return matched;
+        }
+        if !self.match_call_type(actual, expected, substitution) {
+            return false;
+        }
+        let expected = self.substitute_call_type(expected, &mut substitution.clone());
+        self.unify(actual, expected) && self.unify(expected, actual)
+    }
+
     fn is_polymorphic_function(&self, type_id: TypeId) -> bool {
         matches!(
             self.types[self.resolve_inference_type(type_id).raw() as usize],
@@ -9321,7 +9413,12 @@ impl ProjectTypeChecker {
                 .inputs
                 .into_iter()
                 .zip(expected_contract.inputs)
-                .all(|(actual, expected)| self.match_call_type(actual, expected, substitution))
+                .all(|(actual, expected)| {
+                    self.function_input_depth += 1;
+                    let matched = self.match_call_type(actual, expected, substitution);
+                    self.function_input_depth -= 1;
+                    matched
+                })
             && self.match_call_type(
                 actual_contract.success,
                 expected_contract.success,
@@ -9965,6 +10062,18 @@ impl ProjectTypeChecker {
                 for (index, (left, right)) in
                     left_arguments.into_iter().zip(right_arguments).enumerate()
                 {
+                    // An argument used only as a function input fits the other
+                    // way round, as the input of a function type does.
+                    if self.type_parameter_is_contravariant(left_symbol, index) {
+                        self.function_input_depth += 1;
+                        let fits = self.unify(left, right);
+                        self.function_input_depth -= 1;
+                        if !fits {
+                            return false;
+                        }
+                        joined.push(right);
+                        continue;
+                    }
                     if self.unify(left, right) {
                         // A failure-set argument fits a wider one only where the
                         // parameter is covariant; elsewhere, as for `Handler<E>`

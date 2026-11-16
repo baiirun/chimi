@@ -1,0 +1,61 @@
+/// Runs an operation again when it fails with an expected failure that a
+/// policy says is worth retrying, waiting between attempts as the policy's
+/// schedule says.
+///
+/// Retry is ordinary composition over a thunk: `operation |> Retry.run(policy)`
+/// calls `operation` now and returns its outcome. Defects and cancellation are
+/// never retried, and a failure the policy's predicate rejects passes through
+/// unchanged on the attempt that raised it.
+///
+/// An operation that can run more than once should be idempotent, or carry an
+/// idempotency key, because a failed attempt may already have had an effect.
+/// Retry cannot check that.
+
+import std/clock as Clock
+import std/schedule as Schedule
+import std/schedule.{Schedule}
+
+// 1. Public types.
+
+/// When to retry, and which failures to retry. Build one with `Retry.policy`.
+pub struct Policy<E> {
+  schedule: Schedule,
+  retryable: fn(E) -> Bool,
+}
+
+// 2. Constructors.
+
+/// A policy that retries the failures `retryable` returns `True` for, on
+/// `schedule`. There is no policy that retries everything, because retrying a
+/// validation or authorization failure cannot change its result; write
+/// `fn(_) { True }` to mean it.
+///
+/// Cost: O(1).
+pub fn policy<E>(schedule: Schedule, retryable: fn(E) -> Bool) -> Policy<E> {
+  Policy(schedule, retryable)
+}
+
+// 3. Running.
+
+/// Calls `operation`, and calls it again after each expected failure that
+/// `policy` retries, sleeping the schedule's delay first, until it succeeds or
+/// the schedule runs out. Returns the first success. Fails with the first
+/// failure the policy does not retry, or with the last failure once the
+/// schedule is used up, each with its own cause.
+///
+/// Calls: `operation` at most as many times as the schedule has attempts.
+/// Cost: the attempts and the sleeps between them.
+pub fn run<T, E, R>(operation: fn() -> T errors E needs R, policy: Policy<E>) {
+  loop attempt = 1 {
+    case operation() {
+      Success(value) -> break value
+      Failure(error) if policy.retryable(error) -> case Schedule.delay(policy.schedule, attempt) {
+        Some(wait) -> {
+          Clock.sleep(wait)
+          attempt + 1
+        }
+        None -> Failure(error)
+      }
+    }
+  }
+}
