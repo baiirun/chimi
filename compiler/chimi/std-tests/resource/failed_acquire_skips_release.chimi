@@ -1,0 +1,22 @@
+// A failed `acquire` reaches neither `use` nor `release`: the outcome is the
+// acquire's failure, not the defect `release` would raise.
+import std/resource as Resource
+
+enum PoolError {
+  Empty
+}
+
+fn divide(left: Int, right: Int) -> Int {
+  left / right
+}
+
+pub fn main() -> Int {
+  Resource.scoped(
+    fn() { Failure(PoolError.Empty) },
+    fn(_held) {
+      let _ = divide(3, 0)
+      Void
+    },
+    fn(_held) { divide(4, 0) },
+  )
+}

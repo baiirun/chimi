@@ -103,9 +103,11 @@ enum {
      A cancellation point (see chimi_fiber_scope_cancel_pending). */
   CHIMI_REQUEST_SCOPE_ENTER = 25,
   /* ChimiSchedulerRequest: leaves the scope whose id is `token`, and any
-     scope nested in it. PENDING while child tasks the scope cancelled still
-     drain; then OK with `value` 1 when this scope's own cancellation is the
-     one the task is unwinding, else 0. ERROR when the task is not inside it.
+     scope nested in it; `value` is 1 when the operation ended in a
+     cancellation, whose values are discarded: the exclusive channel
+     capabilities the task gained inside the scope are aborted. PENDING while
+     child tasks the scope cancelled still drain; then OK with `value` 1 when
+     this scope's own cancellation is the one the task is unwinding, else 0. ERROR when the task is not inside it.
      Never a cancellation point; never issue it after a terminal cancel. */
   CHIMI_REQUEST_SCOPE_EXIT = 26,
   /* ChimiSchedulerRequest: a loop pass's cancellation point. OK, or the
@@ -133,6 +135,15 @@ enum {
      (receive, process receive, task result), which answers at once. ERROR
      for an empty list or an unknown kind. A cancellation point. */
   CHIMI_REQUEST_SELECT = 32,
+  /* ChimiSchedulerRequest: Resource.scoped's entry on the scope stack. ENTER
+     (before acquire) replies with the entry in `token`. RELEASE(`token`)
+     masks it before release: cancellation of the scopes beneath waits.
+     EXIT(`token`) leaves it and replies `value` 1 when a cancellation it held
+     off is now delivered: return a cancellation. None is a cancellation point;
+     issue none after a terminal cancel. */
+  CHIMI_REQUEST_RESOURCE_ENTER = 33,
+  CHIMI_REQUEST_RESOURCE_RELEASE = 34,
+  CHIMI_REQUEST_RESOURCE_EXIT = 35,
   /* ChimiSchedulerRequest: `context` points to `value` uint64_t ids of the
      caller's children. Replies like a ready TASK_RESULT (SUCCEEDED, CANCELLED,
      DEFECTED or STACK_OVERFLOW) with `task` set to the listed child that
@@ -140,10 +151,10 @@ enum {
      outcome is only reported: a cancelled child cancels nothing. ERROR for an
      empty list or a task the caller does not own. A cancellation point that
      a firing scope withdraws. */
-  CHIMI_REQUEST_TASK_ANY = 33,
+  CHIMI_REQUEST_TASK_ANY = 36,
   /* TASK_ANY for children the caller already cancelled: neither a
      cancellation point nor withdrawn by a firing scope. */
-  CHIMI_REQUEST_TASK_DRAIN = 34,
+  CHIMI_REQUEST_TASK_DRAIN = 37,
 };
 
 /* `down` of a RECEIVE reply whose `message` is a notice handle. */

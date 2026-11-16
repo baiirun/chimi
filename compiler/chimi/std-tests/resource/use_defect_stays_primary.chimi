@@ -1,0 +1,18 @@
+// A defect in `use` stays the outcome even though `release` then fails.
+import std/resource as Resource
+
+enum CloseError {
+  Refused
+}
+
+fn divide(left: Int, right: Int) -> Int {
+  left / right
+}
+
+pub fn main() -> Int {
+  Resource.scoped(
+    fn() { 0 },
+    fn(_held) { Failure(CloseError.Refused) },
+    fn(held) { divide(1, held) },
+  )
+}
