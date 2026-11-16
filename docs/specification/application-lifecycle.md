@@ -9,9 +9,9 @@ changes the shutdown rules of
 [process execution and mailboxes](process-execution-and-mailboxes.md), and
 the exit status of [runtime output channels](runtime-output-channels.md).
 Decided from the vision docs and recorded in [decisions.md](../decisions.md).
-The lab scenarios are RR05, SD06, SD10 to SD12, MB19, SG01 to SG03, and the
+The lab scenarios are RR05, SD06, SD10 to SD13, MB22, SG01 to SG03, and the
 Phase 4 forcing program FP02 (`programs/service-pool`), in the
-[conformance lab](supervised-process-conformance.md) at stage U12.
+[conformance lab](supervised-process-conformance.md) at stage U13.
 
 Custom signal handlers, SIGHUP, and a `std/signal` module stay in Phase 6c.
 
@@ -80,10 +80,11 @@ A process's end classification does not change: any end during the drain is
 `cancelled`, a defect during the drain stays a defect (and is never
 restarted), and an end at the deadline is `forced`.
 
-A body that never calls `Process.receive`, such as a ticker looping on
-`Clock.sleep`, learns of the stop only at its deadline. It will be able to
-wait on its inbox and a timer together once `Select` (CHI-203) lands; until
-then its author keeps `shutdown_within` short.
+A body that never looks at its inbox, such as a ticker looping on
+`Clock.sleep`, learns of the stop only at its deadline. A ticker that waits
+with `Select.first` on `Select.inbox` and a timer learns at once: during the
+drain the inbox event is ready as soon as the mailbox is empty, and its
+receive returns cancellation (SD13).
 
 ## Ordered shutdown
 

@@ -479,6 +479,7 @@ did for each of its tests.
 | SP07 | U1 | `Process.spec(body, 1, Duration.zero)` and `Supervisor.restarts(0, Duration.seconds(1))` | Compiles. Zero deadline and zero limit are in range |
 | SP08 | U1 | Rendered contracts of `Process.send`, `Supervisor.start`, and `Supervisor.start_process` | `errors SendError<M>`, `errors StartError.NameTaken`, and the three-variant row, exactly as in the static contract |
 | SP09 | U1 | Two modules that each declare `process name counter` with different message types, both used from `app/main` | Compiles. The names are distinct declarations |
+| SP10 | U12 | A module constant `HandoffSpec<Receiver<Int>, Message, ChannelError>` and a `case` on `Supervisor.start_handoff` that matches both `HandoffError` variants and uses the handed-back `Receiver` | Compiles. A handoff spec is shareable although its argument is exclusive, and `HandoffError<A>` is a closed enum |
 
 ### Static: compile-fail
 
@@ -512,6 +513,9 @@ did for each of its tests.
 | SF26 | U1 | A `case Supervisor.start(policy)` arm `Failure(Supervisor.StartError.CapacityReached)` | unreachable arm: the variant is absent from the closed row, `T4224` (patterns FP-02) |
 | SF27 | U11 | A `Process.monitor` notice that can return `Failure` | A notice that can fail inside the watcher's receive |
 | SF28 | U11 | The same `Process.monitor` notice, capturing a `Receiver`, passed to two monitors | A notice that stays usable after the monitor took it, handing out a second copy of an exclusive value |
+| SF29 | U12 | A `Receiver` passed to `Supervisor.start_handoff`, then aborted by the caller | `T4241`: the start moves its argument, as `Process.send` moves a message |
+| SF30 | U12 | A `Process.handoff_spec` body that captures a `Receiver` | `T4260`: one spec starts many incarnations, so its body must be shareable; the exclusive value goes in the argument instead |
+| SF31 | U12 | A handoff body whose start argument is a `Task` | `T4261`: the argument moves into another process, so it must be transferable |
 
 ### Verified Core
 
@@ -544,7 +548,10 @@ did for each of its tests.
 | MB16 | U11 | A notice is queued, then `unmonitor` removes it (`queued` 1, then 0); a second `unmonitor` is ignored and the next receive is the next message | A queued notice left behind by `unmonitor` |
 | MB17 | U11 | The watcher returns with a queued `Unavailable` notice and a live monitor; its target ends later. No fragment outlives the run | Notice handles leaked when the watcher ends first |
 | MB18 | U11 | A monitor set through a name sees the first incarnation's defect and nothing from its replacement | A monitor that follows the name across restarts |
-| MB19 | U12 | The watcher's root stops while its handler naps 1 s, so the watcher drains. Its monitored worker, under another root, returns at 501ms. The watcher accepts no notice under shutdown: it reports only its nap and ends at its next `receive` (CHI-220) | A notice accepted, or received, after shutdown began |
+| MB19 | U12 | A child task hands a `Receiver` to a connection with `start_handoff` and ends; the connection reads 21 and replies 42. A second start on the full supervisor is refused with `CapacityReached`, and main reads 3 from the `Receiver` it hands back | An argument left with the caller (its exit aborts the channel), or a refusal that drops the argument |
+| MB20 | U12 | A handoff connection defects after taking its `Receiver`. Main's send on that channel fails `Aborted`, no replacement starts, and a second start on the capacity-1 supervisor succeeds | A handoff member restarted with a consumed argument, or one whose slot stays taken |
+| MB21 | U12 | `start_handoff` on a stopped supervisor returns `Stopped(argument)`, and main reads 7 from the returned `Receiver` | A refusal that leaves the argument in flight or drops it |
+| MB22 | U13 | The watcher's root stops while its handler naps 1 s, so the watcher drains. Its monitored worker, under another root, returns at 501ms. The watcher accepts no notice under shutdown: it reports only its nap and ends at its next `receive` (CHI-220) | A notice accepted, or received, after shutdown began |
 
 ### Runtime: routing
 
@@ -643,7 +650,7 @@ calls `settle`, sends `Crash` again, and calls `Supervisor.wait(root)`:
 | RR02 | U7 | Removal while the replacement exists but has not run. Exact transcript below | A replacement that survives removal, or an uncharged attempt |
 | RR03 | U7 | Removal begins, and the body defects while it drains a queued `Crash`. Cause `defected`, no `restart_attempted`, then `membership_removed` | Restart of a membership under removal |
 | RR04 | U7 | Removing a membership whose body already returned. `membership_removed` only, with no second `process_terminated` | Double termination |
-| RR05 | U12 | Removal while the target is parked in a 1 s `Clock.sleep` inside a message handler. The drain lets the sleep finish (G22): the handler reports at 1s, the next `receive` finds the mailbox empty, and the cause is `cancelled` at 1s, inside the 5 s deadline. Until U12 this scenario pinned the opposite rule (open question 2) | A removal that interrupts an in-flight handler |
+| RR05 | U13 | Removal while the target is parked in a 1 s `Clock.sleep` inside a message handler. The drain lets the sleep finish (G22): the handler reports at 1s, the next `receive` finds the mailbox empty, and the cause is `cancelled` at 1s, inside the 5 s deadline. Until U13 this scenario pinned the opposite rule (open question 2) | A removal that interrupts an in-flight handler |
 | RR06 | U8 | `stop` begins. The newest member drains a queued request and removes an older sibling. The sibling terminates once, then `membership_removed`, and `stop` skips it | A sibling terminated twice, or removal blocked by an ongoing stop |
 
 RR02 pattern. P is named `p` with `OnDefect`. Q is named `q` with
@@ -699,13 +706,14 @@ consumed budget.
 | SD03 | U8 | `shutdown_within = 5s` with three queued messages. The body drains all three, cause `cancelled`, and virtual time does not move | A deadline that waits when cleanup is done |
 | SD04 | U8 | C harness: a body still parked at its deadline is forced at `now + shutdown_within`. Virtual time jumps to the deadline. Cause `forced`. The body runs no code after the forced reply | Fiber destruction while parked (it aborts the process), or code that runs after forcing |
 | SD05 | U8 | Each member owns a sleeping child task. During `stop`, each member's children terminate before the next member's `process_terminated` (`extra_events = ["task_terminal"]`) | Children left running across members |
-| SD06 | U12 | `stop` begins. The newest member, stopped first, drains a message and sends to the named oldest member, which `stop` ends last and is still running. The send is accepted and the oldest member drains it (G22 ordered shutdown). Until U12 the send returned `Unavailable` | Routing removed for the whole subtree before the first member stops |
+| SD06 | U13 | `stop` begins. The newest member, stopped first, drains a message and sends to the named oldest member, which `stop` ends last and is still running. The send is accepted and the oldest member drains it (G22 ordered shutdown). Until U13 the send returned `Unavailable` | Routing removed for the whole subtree before the first member stops |
 | SD07 | U8 | `OnDefect` members ended by `cancelled` and by `forced` are not restarted | Shutdown treated as a defect |
 | SD08 | U7 | A member calls `Supervisor.stop` on its own root. The stop completes and the member ends `cancelled` | Self-deadlock |
 | SD09 | U5 | A second `stop` returns `Void` and emits nothing | Duplicate stop events |
-| SD10 | U12 | Removal while the handler sleeps 60 s under `shutdown_within = 5s`. The drain lets the sleep run until the deadline, where the body is forced at 5.001s and never reports. The forced path reached from Chimi source | A deadline that waits for the handler, or a handler that runs after forcing |
-| SD11 | U12 | Removal while the handler waits on `Task.result` of a child task that sleeps 1 s. The child keeps running, the handler reports its 7 at 1s, and the body ends `cancelled` | Child tasks cancelled when shutdown begins rather than at the deadline |
-| SD12 | U12 | Removal while the handler sleeps 60 s inside a 1 s `Task.timeout`. The timeout still fires during the drain: the handler reports its timeout at 1s and the body ends `cancelled` | A drain that silences timeout scopes |
+| SD10 | U13 | Removal while the handler sleeps 60 s under `shutdown_within = 5s`. The drain lets the sleep run until the deadline, where the body is forced at 5.001s and never reports. The forced path reached from Chimi source | A deadline that waits for the handler, or a handler that runs after forcing |
+| SD11 | U13 | Removal while the handler waits on `Task.result` of a child task that sleeps 1 s. The child keeps running, the handler reports its 7 at 1s, and the body ends `cancelled` | Child tasks cancelled when shutdown begins rather than at the deadline |
+| SD12 | U13 | Removal while the handler sleeps 60 s inside a 1 s `Task.timeout`. The timeout still fires during the drain: the handler reports its timeout at 1s and the body ends `cancelled` | A drain that silences timeout scopes |
+| SD13 | U13 | A ticker waits with `Select.first` on its inbox and a 1 s timer, under a 30 s `shutdown_within`. `stop` at 2.5s makes the inbox event ready at once, so the ticker ends `cancelled` at 2.5s | A select on the inbox left parked during the drain |
 
 ### Runtime: signals
 
@@ -717,9 +725,9 @@ their timing is not deterministic.
 
 | ID | Unlock | Scenario | Rejects |
 | --- | --- | --- | --- |
-| SG01 | U12 | `--signal=TERM@1500ms`. A worker with three queued 1 s jobs reports each to a `ledger` member; main waits on the root. SIGTERM cancels main, the root stops, and the worker finishes job 2 (in flight) and job 3 (queued) before it ends `cancelled` at 3s, then the ledger drains. Outcome `cancellation`, exit 143, `clock_signal_received signal=15` at 1.5s | A signal that cancels processes at once, or the wrong exit status |
-| SG02 | U12 | `--signal=INT@2s`. Main sleeps an hour with no supervisor. SIGINT cancels the sleep at 2s; outcome `cancellation`, exit 130 | A signal that waits for main |
-| SG03 | U12 | `--signal=TERM@10s`. Main returns 3 at 1s. The signal is never delivered, virtual time stops at 1s, and the program exits 0 | A pending signal after main ends that moves time or changes the outcome |
+| SG01 | U13 | `--signal=TERM@1500ms`. A worker with three queued 1 s jobs reports each to a `ledger` member; main waits on the root. SIGTERM cancels main, the root stops, and the worker finishes job 2 (in flight) and job 3 (queued) before it ends `cancelled` at 3s, then the ledger drains. Outcome `cancellation`, exit 143, `clock_signal_received signal=15` at 1.5s | A signal that cancels processes at once, or the wrong exit status |
+| SG02 | U13 | `--signal=INT@2s`. Main sleeps an hour with no supervisor. SIGINT cancels the sleep at 2s; outcome `cancellation`, exit 130 | A signal that waits for main |
+| SG03 | U13 | `--signal=TERM@10s`. Main returns 3 at 1s. The signal is never delivered, virtual time stops at 1s, and the program exits 0 | A pending signal after main ends that moves time or changes the outcome |
 
 SD04 as built (U8): `kernel_faults.c` starts one dynamic member with
 `shutdown_within = 3s` and removes it at 1ms. The body ignores the
@@ -741,6 +749,10 @@ The scheduler's own C fixture covers the same rule through `stop`.
 | CB06 | U3 | C harness: a graph in heap A that points into heap B. Fragment copy and region pass both return the foreign-pointer status and do not follow the pointer | Following a pointer into another heap |
 | CB07 | U5 | C harness: `Process.send` with a foreign pointer in the message. The sender defects with a message that names both owners. The receiver's mailbox is unchanged, and no `process_send` is recorded | A foreign pointer that reaches a mailbox, or a defect charged to the receiver |
 | CB08 | U6 | A body whose provider holds a closure keeps working after a restart destroyed the first incarnation's heap | Providers shared between incarnations |
+| CB09 | U12 | A child task sends a `Receiver` to a process in a `Process.send` message and ends; the process then reads 5 from it and replies (CHI-213) | A message's capability left with its sender, whose exit aborts the channel |
+| CB10 | U12 | A process that never receives is removed with a message holding a `Receiver` queued; main's next send on that channel fails `Aborted` | A capability in a discarded message left open with no owner |
+| CB11 | U12 | A handoff connection is removed before its body runs; main's send on the argument's channel fails `Aborted`, and no fragment outlives the run | A start argument that nobody took left in flight, or leaked |
+| CB12 | U12 | A second `Process.send` to a process whose one-message mailbox is full fails `Full`; main writes 7 to the returned message's Receiver and reads it back | A refused send that leaves the carried Receiver in flight or with the receiver |
 
 ### Heap: memory flatness
 
@@ -794,7 +806,7 @@ outcome, a dynamic member, a stop); FP01 adds the same check at U10.
 | OB04 | U6 | Every transcript fixture runs twice. Telemetry is byte-identical once `execution_id` is removed | Nondeterministic scheduling or identities |
 | OB05 | U5 | Process, task, and channel events share one strictly increasing `sequence` | A separate sequence for process events |
 | OB06 | U6 | A fixture with 30 s windows and 5 s deadlines finishes in less than 2 s of wall time | Real waiting under virtual time |
-| OB07 | U5 | The trace ABI reports `CHIMI_FIBER_ABI_VERSION` 9 (5 until the capability-violation hook joined the scheduler config, 6 until the process-defect hook did, 7 until cancellation scopes did, 8 until the monitor and mailbox requests of G27 did). Process events carry dedicated `supervisor`, `membership`, and `incarnation` fields, separate from `task_id` | Identities carried in task fields |
+| OB07 | U5 | The trace ABI reports `CHIMI_FIBER_ABI_VERSION` 11 (5 until the capability-violation hook joined the scheduler config, 6 until the process-defect hook did, 7 until cancellation scopes did, 8 until the monitor and mailbox requests of G27 did, 9 until the carried capabilities and start argument of G28 did, 10 until the select request of CHI-203 did). Process events carry dedicated `supervisor`, `membership`, and `incarnation` fields, separate from `task_id` | Identities carried in task fields |
 | OB08 | U5 | A process defects before replying, so main parks and the run ends in a virtual-time deadlock. The `--trace=off` outcome still names the incarnation and its defect: a stack overflow, or the body's own defect message | A process defect that only the trace names |
 | IP01 | U5 | `chimi run` on a process fixture defects with "requires the supervised process runtime" | Silent divergence between backends |
 
@@ -1053,7 +1065,7 @@ FP01 also runs OB04's double run and OB01's zero-event check on this program.
 ### FP02: service pool
 
 FP02 is `programs/service-pool`, the Phase 4 forcing program. It unlocks at
-U12 and runs with `--signal=TERM@1500ms`. A dispatcher hands six jobs
+U13 and runs with `--signal=TERM@1500ms`. A dispatcher hands six jobs
 round-robin to three dynamic workers, which report each finished job to a
 ledger; main waits on the root as a service does. A poison job defects one
 worker first, and the supervisor restarts it. Jobs 1 to 5 take 1 s, job 6
@@ -1171,7 +1183,8 @@ scenarios pass and `CURRENT_STAGE` names it.
 | U9 | Declared and dynamic nested supervisors | SV09, SV10, ES02–ES04 |
 | U10 | `programs/supervised-pool` and the performance harness | FP01, MF02, MF03, PG01–PG10 |
 | U11 | G27: `Process.address`, `queued`, `capacity`, `monitor`, and `unmonitor` ([process monitors and metrics](process-monitors-and-metrics.md), CHI-220), fiber ABI 9 | SF27, SF28, MB12–MB18 |
-| U12 | G22: drain before cancel, ordered shutdown, SIGINT and SIGTERM, the exit status after a signal, and `--signal` ([application lifecycle](application-lifecycle.md)), fiber ABI 10, runtime ABI 27. RR05 and SD06 move here because their rule changed | MB19, RR05, SD06, SD10–SD12, SG01–SG03, FP02 |
+| U12 | G28 and CHI-213: capabilities in a `Process.send` message move to the receiving incarnation, and `Process.handoff_spec` and `Supervisor.start_handoff` start a one-shot process that owns its argument, fiber ABI 10 | SP10, SF29–SF31, MB19–MB21, CB09–CB12 |
+| U13 | G22: drain before cancel, ordered shutdown, SIGINT and SIGTERM, the exit status after a signal, and `--signal` ([application lifecycle](application-lifecycle.md)), fiber ABI 12, runtime ABI 30. RR05 and SD06 move here because their rule changed | MB22, RR05, SD06, SD10–SD13, SG01–SG03, FP02 |
 
 Two scenarios moved stage (coordinator decisions on `ts-6ccbc9`). MF06
 moved from U3 to U5, because a process program cannot be built natively
@@ -1192,23 +1205,23 @@ changing a contract.
 
 | Category | Count |
 | --- | ---: |
-| Static compile-pass (SP) | 9 |
-| Static compile-fail (SF) | 28 |
+| Static compile-pass (SP) | 10 |
+| Static compile-fail (SF) | 31 |
 | Verified Core (CO) | 4 |
-| Mailbox and delivery (MB) | 19 |
+| Mailbox and delivery (MB) | 22 |
 | Routing (RT) | 8 |
 | Supervisor lifecycle and admission (SV) | 12 |
 | Restart accounting (RA) | 8 |
 | Escalation (ES) | 5 |
 | Removal races (RR) | 6 |
-| Shutdown and forced termination (SD) | 12 |
+| Shutdown and forced termination (SD) | 13 |
 | Signals (SG) | 3 |
-| Copy-boundary safety (CB) | 8 |
+| Copy-boundary safety (CB) | 12 |
 | Memory flatness (MF) | 6 |
 | Observability (OB) and backend support (IP) | 9 |
 | Forcing program (FP) | 2 |
 | Performance gates (PG) | 10 |
-| **Total** | **149** |
+| **Total** | **161** |
 
 Four scenarios use C harnesses: RA06, SD04, CB06, and CB07.
 
@@ -1227,7 +1240,7 @@ implementation must match:
 - `Process.receive` after cancellation returns queued messages until the
   mailbox is empty, then cancellation ends the body. This is the coordinator
   decision on `ts-a6b43b`. It replaces the prototype's "cleanup never
-  receives" behavior. From U12 the same holds during a drain, before any
+  receives" behavior. From U13 the same holds during a drain, before any
   cancellation.
 - `NameTaken` text and trace labels use the form `<module path>.<identifier>`.
 
@@ -1259,7 +1272,7 @@ need closed by the runner, and the runner flag `--clock=real|virtual`
    cancellation during drain. That would make deadlines reachable from
    source, but it would give processes and tasks different cancellation
    rules.
-   *Superseded by G22 (U12).* Shutdown no longer cancels a process that has
+   *Superseded by G22 (U13).* Shutdown no longer cancels a process that has
    started: it drains, and every park proceeds until the deadline forces it
    ([application lifecycle](application-lifecycle.md)). Tasks keep their
    cancellation rule; a process is not cancelled during its drain at all, so

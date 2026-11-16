@@ -7,7 +7,7 @@ import std/process as Process
 import std/process.{Address, Down, Inbox}
 import std/supervisor as Supervisor
 
-// MB19: `watcher` monitors `worker`, which lives under another root. Main
+// MB22: `watcher` monitors `worker`, which lives under another root. Main
 // asks the watcher to nap (a 1 s handler) and stops the watcher's root while
 // it naps, so the watcher drains. During the drain the worker ends (it
 // returns at 501ms), which would queue a `Down` notice. A watcher under

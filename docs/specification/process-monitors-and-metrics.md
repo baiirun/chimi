@@ -179,7 +179,7 @@ values it captures, into the monitor, as `Process.send` moves a message.
   same target twice creates two monitors and two notices.
 - From the moment the watcher's shutdown begins, its mailbox accepts no new
   messages, and no new notices either; a notice that would arrive then is
-  dropped, even while the watcher's drain still runs handlers (lab MB19).
+  dropped, even while the watcher's drain still runs handlers (lab MB22).
   Notices already queued drain like messages.
 - When the watcher ends by any route, its monitors end with it, and queued
   notices are discarded unread like messages.

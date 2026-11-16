@@ -6,7 +6,7 @@ use super::Kind;
 
 /// The last stage whose scenarios must pass. Each ts-6ccbc9 commit that
 /// completes a stage bumps this in the same commit.
-pub const CURRENT_STAGE: Stage = Stage::U12;
+pub const CURRENT_STAGE: Stage = Stage::U13;
 
 /// An implementation stage from the lab's unlock order.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -24,10 +24,11 @@ pub enum Stage {
     U10,
     U11,
     U12,
+    U13,
 }
 
 impl Stage {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::U0,
         Self::U1,
         Self::U2,
@@ -41,6 +42,7 @@ impl Stage {
         Self::U10,
         Self::U11,
         Self::U12,
+        Self::U13,
     ];
 
     pub fn name(self) -> &'static str {
@@ -58,6 +60,7 @@ impl Stage {
             Self::U10 => "U10",
             Self::U11 => "U11",
             Self::U12 => "U12",
+            Self::U13 => "U13",
         }
     }
 
@@ -173,7 +176,7 @@ const TASK_TERMINAL: &[&str] = &["task_terminal"];
 
 use Stage::*;
 
-pub static SCENARIOS: [Scenario; 149] = [
+pub static SCENARIOS: [Scenario; 161] = [
     // Static: compile-pass.
     fixture("SP01", "static-contract-example", U1),
     fixture("SP02", "spec-inside-using-shareable-provider", U2),
@@ -184,6 +187,7 @@ pub static SCENARIOS: [Scenario; 149] = [
     fixture("SP07", "zero-deadline-and-zero-limit-in-range", U1),
     fixture("SP08", "rendered-send-and-start-contracts", U1),
     fixture("SP09", "same-process-name-in-two-modules", U1),
+    fixture("SP10", "handoff-start-matches-every-handoff-error", U12),
     // Static: compile-fail.
     fixture("SF01", "body-needs-unshareable-provider", U2),
     fixture("SF02", "body-captures-channel-receiver", U2),
@@ -213,6 +217,9 @@ pub static SCENARIOS: [Scenario; 149] = [
     fixture("SF26", "start-case-has-capacity-reached-arm", U1),
     fixture("SF27", "monitor-notice-must-not-fail", U11),
     fixture("SF28", "monitor-notice-is-kept-by-the-monitor", U11),
+    fixture("SF29", "argument-used-after-start-handoff", U12),
+    fixture("SF30", "handoff-body-captures-receiver", U12),
+    fixture("SF31", "handoff-argument-holds-task", U12),
     // Verified Core.
     Scenario::new(
         "CO01",
@@ -257,7 +264,10 @@ pub static SCENARIOS: [Scenario; 149] = [
     fixture("MB16", "unmonitor-removes-queued-notice", U11),
     fixture("MB17", "watcher-end-releases-notices", U11),
     fixture("MB18", "named-monitor-watches-one-incarnation", U11),
-    fixture("MB19", "notice-during-drain-is-dropped", U12),
+    fixture("MB19", "handoff-argument-belongs-to-the-incarnation", U12),
+    fixture("MB20", "handoff-member-is-never-restarted", U12),
+    fixture("MB21", "stopped-supervisor-hands-the-argument-back", U12),
+    fixture("MB22", "notice-during-drain-is-dropped", U13),
     // Runtime: routing.
     fixture("RT01", "named-follows-replacement-direct-goes-stale", U6),
     fixture("RT02", "never-member-name-released", U6),
@@ -302,7 +312,7 @@ pub static SCENARIOS: [Scenario; 149] = [
     fixture("RR02", "removal-during-replacement-start", U7),
     fixture("RR03", "defect-during-removal-drain", U7),
     fixture("RR04", "removal-after-return", U7),
-    fixture("RR05", "removal-lets-handler-finish", U12),
+    fixture("RR05", "removal-lets-handler-finish", U13),
     fixture("RR06", "removal-during-stop", U8),
     // Runtime: shutdown and forced termination.
     fixture("SD01", "stop-order", U5),
@@ -315,20 +325,21 @@ pub static SCENARIOS: [Scenario; 149] = [
         KERNEL_FAULTS,
     ),
     fixture("SD05", "member-children-end-before-next-member", U8).with_events(TASK_TERMINAL),
-    fixture("SD06", "older-member-routable-while-newer-drains", U12),
+    fixture("SD06", "older-member-routable-while-newer-drains", U13),
     fixture("SD07", "shutdown-ends-not-restarted", U8),
     fixture("SD08", "member-stops-own-root", U7),
     fixture("SD09", "second-stop-is-silent", U5),
-    fixture("SD10", "deadline-forces-in-flight-handler", U12),
-    fixture("SD11", "draining-handler-awaits-child-task", U12),
-    fixture("SD12", "draining-handler-times-out", U12),
-    fixture("SG01", "terminate-drains-then-exits", U12)
+    fixture("SD10", "deadline-forces-in-flight-handler", U13),
+    fixture("SD11", "draining-handler-awaits-child-task", U13),
+    fixture("SD12", "draining-handler-times-out", U13),
+    fixture("SD13", "selecting-ticker-ends-at-stop", U13),
+    fixture("SG01", "terminate-drains-then-exits", U13)
         .signalled(&["--signal=TERM@1500ms"], 143)
         .with_events(&["clock_signal_received"]),
-    fixture("SG02", "interrupt-cancels-main-without-supervisors", U12)
+    fixture("SG02", "interrupt-cancels-main-without-supervisors", U13)
         .signalled(&["--signal=INT@2s"], 130)
         .with_events(&["clock_signal_received"]),
-    fixture("SG03", "signal-after-main-ends-changes-nothing", U12)
+    fixture("SG03", "signal-after-main-ends-changes-nothing", U13)
         .signalled(&["--signal=TERM@10s"], 0)
         .with_events(&["clock_signal_received"]),
     // Heap: copy-boundary safety.
@@ -345,6 +356,10 @@ pub static SCENARIOS: [Scenario; 149] = [
         HEAP_BOUNDARY,
     ),
     fixture("CB08", "provider-closure-per-incarnation", U6),
+    fixture("CB09", "receiver-sent-to-process-outlives-sender", U12),
+    fixture("CB10", "unread-message-aborts-carried-channel", U12),
+    fixture("CB11", "unstarted-handoff-argument-aborts-its-channel", U12),
+    fixture("CB12", "refused-send-hands-the-receiver-back", U12),
     // Heap: memory flatness.
     fixture("MF01", "mailbox-memory-flat-over-uptime", U5).runs(&["10000", "1000000"]),
     fixture("MF02", "memory-flat-over-restarts", U10).runs(&["100", "10000"]),
@@ -381,7 +396,7 @@ pub static SCENARIOS: [Scenario; 149] = [
     fixture("IP01", "interpreter-rejects-processes", U5).defects(),
     // Forcing program.
     fixture("FP01", "supervised-pool", U10),
-    fixture("FP02", "service-pool", U12)
+    fixture("FP02", "service-pool", U13)
         .signalled(&["--signal=TERM@1500ms"], 143)
         .with_events(&["clock_signal_received"]),
     // Performance gates.

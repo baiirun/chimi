@@ -44,6 +44,8 @@ const PROCESS_ATTRIBUTES: &[&str] = &[
     "defect",
 ];
 const CLOCK_ATTRIBUTES: &[&str] = &["time_ns", "request_kind"];
+/// A select commit carries the committed event's index instead.
+const SELECT_COMMITTED_ATTRIBUTES: &[&str] = &["time_ns", "index"];
 
 /// Process-family event names in trace-kind order (kinds 1 to 10).
 const PROCESS_EVENTS: &[&str] = &[
@@ -66,6 +68,8 @@ const CLOCK_EVENTS: &[&str] = &[
     "clock_deadlock_waiter",
     "clock_scope_fired",
     SIGNAL_RECEIVED,
+    "clock_select_parked",
+    "clock_select_committed",
 ];
 
 /// Projects telemetry onto the transcript lines the lab compares.
@@ -101,6 +105,8 @@ pub fn project(telemetry: &str, extra_events: &[&str]) -> Result<Vec<String>, St
         let name = event.name.as_str();
         let family = if PROCESS_EVENTS.contains(&name) {
             Some((PROCESS_IDENTITIES, PROCESS_ATTRIBUTES))
+        } else if name == "clock_select_committed" {
+            Some((&[][..], SELECT_COMMITTED_ATTRIBUTES))
         } else if CLOCK_EVENTS.contains(&name) {
             Some((&[][..], CLOCK_ATTRIBUTES))
         } else if extra_events.contains(&name) {

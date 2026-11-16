@@ -1,0 +1,38 @@
+import std/channel as Channel
+import std/channel.{Receive, Receiver}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{HandoffError}
+
+// MB21: start_handoff on a stopped supervisor fails with Stopped, which hands
+// the argument back with its ownership restored: main sends 7 and reads it
+// from the returned Receiver. A refusal that left the Receiver in flight would
+// make that receive defect, and one that dropped it would abort the channel.
+
+pub enum Message {
+  Stop
+}
+
+fn serve(inbox: Inbox<Message>, requests: Receiver<Int>) -> Void {
+  Void
+}
+
+pub fn main() -> Int {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  Supervisor.stop(root)
+  let data = Channel.bounded(1)
+  case Supervisor.start_handoff(root, Process.handoff_spec(serve, 1, Duration.seconds(1)), data.receiver) {
+    Success(_) -> -1
+    Failure(HandoffError.CapacityReached(_)) -> -2
+    Failure(HandoffError.Stopped(back)) -> {
+      Channel.send(data.sender, 7)
+      let got = Channel.receive(back)
+      case got {
+        Receive.Received(value) -> value
+        Receive.Drained -> -3
+      }
+    }
+  }
+}

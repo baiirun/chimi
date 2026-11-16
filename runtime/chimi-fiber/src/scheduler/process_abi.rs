@@ -58,6 +58,9 @@ pub struct ChimiProcessRequest {
     /// RECEIVE's reply: 0 for a message, else the `Down` code of a notice,
     /// whose handle is then in `message`.
     pub down: u32,
+    /// SEND's and START_PROCESS's: null, or the exclusive capabilities the
+    /// message or start argument holds.
+    pub carried: *const super::ChimiMessageCapabilities,
 }
 
 impl ChimiProcessRequest {
@@ -79,6 +82,7 @@ impl ChimiProcessRequest {
             queued: 0,
             capacity: 0,
             down: 0,
+            carried: std::ptr::null(),
         }
     }
 }
@@ -324,6 +328,10 @@ impl Scheduler {
                 self.process_unmonitor(watcher, monitor);
                 self.respond(waiter, RESPONSE_OK, |_| {});
             }
+            super::REQUEST_PROCESS_ARGUMENT => match self.take_argument(owner) {
+                Some(argument) => self.respond(waiter, RESPONSE_OK, |r| r.message = argument),
+                None => self.respond(waiter, RESPONSE_ERROR, |_| {}),
+            },
             super::REQUEST_PROCESS_MAILBOX => {
                 let Some(incarnation) = self.incarnation_of(owner) else {
                     return self.respond(waiter, RESPONSE_ERROR, |_| {});
@@ -338,7 +346,24 @@ impl Scheduler {
                 let Some(target) = address(input.address_kind, input.address) else {
                     return self.respond(waiter, RESPONSE_ERROR, |_| {});
                 };
-                let status = match self.process_send(target, input.message) {
+                // SAFETY: the host's record names capabilities that stay
+                // valid while it is suspended on the request.
+                let carried =
+                    unsafe { super::carried_capabilities(input.carried.cast_mut().cast()) };
+                if let Err(error) = self.channels.check_carried(owner, &carried) {
+                    let _ = self.channel_violation::<()>(
+                        owner,
+                        error,
+                        super::REQUEST_PROCESS_SEND,
+                        None,
+                    );
+                    return;
+                }
+                let status = match self.process_send_carrying(
+                    target,
+                    input.message,
+                    Some((owner, &carried)),
+                ) {
                     Ok(()) => RESPONSE_OK,
                     Err(rejected) => match rejected.failure {
                         SendFailure::Full => RESPONSE_FULL,
@@ -401,7 +426,27 @@ impl Scheduler {
                     }
                     return self.respond(waiter, RESPONSE_ERROR, |_| {});
                 };
-                match self.start_process(supervisor, spec, restart) {
+                // SAFETY: the host's record names capabilities that stay
+                // valid while it is suspended on the request.
+                let carried =
+                    unsafe { super::carried_capabilities(input.carried.cast_mut().cast()) };
+                let started = if input.message == 0 {
+                    self.start_process(supervisor, spec, restart)
+                } else {
+                    // A violation leaves the request unanswered, so the host
+                    // still owns the spec context and the message.
+                    if let Err(error) = self.channels.check_carried(owner, &carried) {
+                        let _ = self.channel_violation::<()>(
+                            owner,
+                            error,
+                            super::REQUEST_SUPERVISOR_START_PROCESS,
+                            None,
+                        );
+                        return;
+                    }
+                    self.start_handoff(supervisor, spec, owner, input.message, &carried)
+                };
+                match started {
                     Ok(membership) => {
                         let direct = self.process_address(membership);
                         self.respond(waiter, RESPONSE_OK, |r| {

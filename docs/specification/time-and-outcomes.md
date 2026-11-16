@@ -26,6 +26,9 @@ is missing, and [`std/result`](#stdresult) are implemented on both backends
 [Failure context](#failure-context) is implemented on both backends except
 the suppressed-cause producers and the trace fields (CHI-204; see
 [Failure context as implemented](#failure-context-as-implemented-chi-204)).
+[`std/select`](#choosing-among-events) and `T4345` for `Select.first` are
+implemented on the native backend only (CHI-203; see
+[Select as implemented](#select-as-implemented-chi-203)).
 Nothing else here is implemented yet.
 Source spelling follows the current kernel and remains free to break.
 
@@ -1389,7 +1392,8 @@ program.
 - **Timeouts use the execution clock.** `Task.timeout` and `Task.deadline`
   read `now` and arm their timer on the execution time source, not on a
   bound provider. The scope timer is a scheduler timer, and a user `Clock`
-  cannot cancel a task. `Select.after` is where a user timer will plug in.
+  cannot cancel a task. `Select.after` and `Select.at` do use a bound
+  provider (see [Select as implemented](#select-as-implemented-chi-203)).
 - **`--clock-start=<RFC 3339>`** sets the virtual clock's starting
   `Timestamp` and is accepted only with `--clock=virtual`; under the real
   clock `timestamp` is the host's wall time, so the flag would be ignored.
@@ -1432,6 +1436,64 @@ program.
 - **ABI.** `CHIMI_FIBER_ABI_VERSION` is 8 and the native runtime ABI is 23.
   Program data gains `CHIMI_CLOCK_REQUIREMENT_SLOT`, the requirement slot
   that `using { clock: … }` binds for the std time functions.
+
+### Select as implemented (CHI-203)
+
+- **Native only.** The interpreter reports every `std/select` function with
+  the defect "Select.<name> requires the native runtime; build the program
+  with `chimi build`", as it does for the clock.
+- **Event.** `Select.Event<A, F>` is task-local, like `Receive` and
+  `Task`: it holds a receiver, an inbox, or a task handle, so it cannot be
+  sent or captured by a started task. At run time it is a record the source
+  never sees, holding the event's kind, its source, its mapping function or
+  timer value, and, for a timer, the `clock` provider bound where it was
+  built. Its failure-set argument is covariant, so
+  `[Select.receive(jobs, f), Select.at(next, Wake.Beat)]` joins to
+  `List<Event<Wake, ChannelError>>`.
+- **One request, nothing consumed.** `Select.first` issues
+  `CHIMI_REQUEST_SELECT` with every event in list order. The scheduler
+  answers with the index of the first ready source, or registers the task
+  on every source (one watcher per channel and inbox, the child's terminal,
+  and one wake timer at the earliest deadline) and parks it. A wake only
+  makes the task ask again; each request first withdraws every earlier
+  registration. The request itself takes nothing from any source, so a
+  cancelled or interrupted select leaves every channel and inbox as it was.
+  After a commit the runtime performs the source's own operation (receive,
+  process receive, or `Task.result`), which answers at once: each source
+  belongs to the selecting task alone, and the reply wakes that task at the
+  front of the run queue, so nothing else can take the value first.
+- **Commit outcomes.** A committed receive on an aborted channel fails with
+  `ChannelError.Aborted` without calling the mapping function. A committed
+  task event's failure is the select's failure. The mapping function runs
+  with the providers it captured, like any function value.
+- **Timers.** Every `Select.after` on the execution clock in one call
+  measures from a single read of `now` at the start of that call. A timer
+  whose provider is the execution clock (the root clock or
+  `Clock.starting_at` over it) is a scheduler deadline. A timer on a user
+  `Clock` provider reads that provider's `now` when the call starts; if its
+  deadline has passed it is ready at once, in list order, and otherwise it
+  runs `sleep_until(deadline)` in a child task that the select waits on as a
+  task source. Timer children that did not commit are cancelled, but
+  only after the committed source's operation has taken its value: a cancel
+  reply lets other tasks run, which would break the commit. Cancelled timer
+  children are not yet observed, so each select with a user-clock timer
+  leaves one terminal task record behind (follow-up ticket).
+- **Abandoned selects.** Any request from a task first withdraws a select it
+  had parked in. A select woken by a source and then refused by a fired scope
+  therefore leaves no watcher or wake timer behind.
+- **Gap.** `T4241` is not yet reported for a receive event used after its
+  receiver was transferred; the run-time token check defects instead
+  (follow-up ticket).
+- **Errors.** `T4345` rejects an empty list literal at `Select.first`; an
+  empty list built at run time defects with "`Select.first` needs at least
+  one event". A receiver whose token is stale defects the task as a channel
+  capability violation, as a plain receive does.
+- **Telemetry.** `clock_select_parked` (clock kind 7) and
+  `clock_select_committed` (clock kind 8, with the committed `index`) are
+  boundary events. A task parked in a select reports `Select.first` as its
+  waited operation in a deadlock report.
+- **ABI.** `CHIMI_FIBER_ABI_VERSION` is 11 (`CHIMI_REQUEST_SELECT`, kind 32,
+  and `ChimiSelectSource`) and the native runtime ABI is 28.
 
 ### Runner
 
