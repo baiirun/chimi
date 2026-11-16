@@ -162,6 +162,9 @@ pub(crate) enum StandardType {
     /// `std/test.Mailbox<M>`: the receiving end of a fake process address
     /// (testing.md, "Fake process addresses").
     TestMailbox,
+    /// A `native type` of a C binding (G20): a handle the runtime owns, whose
+    /// release function the binding supplies. Each declaration is its own type.
+    BindingHandle,
 }
 
 impl StandardType {
@@ -245,6 +248,7 @@ impl StandardType {
             Self::TestRecorder => "Recorder",
             Self::TestScript => "Script",
             Self::TestMailbox => "Mailbox",
+            Self::BindingHandle => "Handle",
         }
     }
 
@@ -314,6 +318,7 @@ impl StandardType {
             Self::Cause => StandardProperties::Opaque(
                 "a `Cause`, diagnostic data that equality and order never read",
             ),
+            Self::BindingHandle => StandardProperties::Opaque("a handle to a host resource"),
         }
     }
 
@@ -590,6 +595,9 @@ pub(crate) enum StandardFunction {
     TestNext,
     TestMailbox,
     TestReceived,
+    /// Every C binding operation (G20). The symbol's binding names which one;
+    /// the interpreter cannot call C, so it reports `E5204` instead.
+    BindingCall,
 }
 
 impl StandardFunction {
@@ -890,7 +898,8 @@ impl StandardFunction {
             | Self::TestScript
             | Self::TestNext
             | Self::TestMailbox
-            | Self::TestReceived => None,
+            | Self::TestReceived
+            | Self::BindingCall => None,
         }
     }
 
@@ -1079,6 +1088,7 @@ impl StandardFunction {
             Self::TestNext => "next",
             Self::TestMailbox => "mailbox",
             Self::TestReceived => "received",
+            Self::BindingCall => "binding",
         }
     }
 
@@ -1185,6 +1195,7 @@ impl StandardFunction {
                 | Self::ChannelClose
                 | Self::ChannelAbort
                 | Self::ChannelBounded
+                | Self::BindingCall
         ) || self.requires_process_runtime()
             || self.is_select_operation()
             || self.is_channel_variant()
@@ -1490,6 +1501,7 @@ impl StandardConstructor {
             | StandardType::TestRecorder
             | StandardType::TestScript
             | StandardType::TestMailbox
+            | StandardType::BindingHandle
             | StandardType::JsonValue
             | StandardType::JsonNumber
             | StandardType::DecodeError

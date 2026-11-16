@@ -579,6 +579,10 @@ fn run(input: Input, standard: &StandardTree, arguments: Vec<String>) -> ExitCod
             return ExitCode::FAILURE;
         }
     };
+    if let Some(refusal) = program.interpreter_refusal() {
+        eprintln!("chimi: {refusal}");
+        return ExitCode::FAILURE;
+    }
     // As the native runner does: a zero-input `main` rejects arguments rather
     // than dropping them, with the runner-configuration status 64.
     if !arguments.is_empty() && !program.entry_accepts_arguments() {

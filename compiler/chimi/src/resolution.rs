@@ -247,9 +247,8 @@ pub(crate) struct ResolvedProject {
     standard_generics: HashMap<StandardGeneric, SymbolId>,
     standard_callable_parameters: HashMap<SymbolId, Vec<SymbolId>>,
     break_targets: HashMap<(ModuleId, SemanticId), SemanticId>,
-    /// Each `native fn` of the standard tree and the intrinsic its registry
-    /// operation runs.
-    native_operations: HashMap<SymbolId, StandardFunction>,
+    /// Each `native fn` of the standard tree and its registry operation.
+    native_operations: HashMap<SymbolId, &'static crate::operations::Operation>,
     standard_modules: HashSet<ModuleId>,
 }
 
@@ -261,7 +260,25 @@ impl ResolvedProject {
 
     /// The intrinsic a `native fn` symbol runs; `None` for every other symbol.
     pub(crate) fn native_operation(&self, symbol: SymbolId) -> Option<StandardFunction> {
-        self.native_operations.get(&symbol).copied()
+        self.native_operations
+            .get(&symbol)
+            .map(|operation| operation.implementation)
+    }
+
+    /// The C function a binding `native fn` symbol calls (G20); `None` for every
+    /// other symbol.
+    pub(crate) fn native_binding(&self, symbol: SymbolId) -> Option<crate::operations::Binding> {
+        self.native_operations
+            .get(&symbol)
+            .and_then(|operation| operation.binding)
+    }
+
+    /// The source spelling of a test-only `native fn` symbol (`T4401`); `None`
+    /// for every other symbol.
+    pub(crate) fn test_only_operation(&self, symbol: SymbolId) -> Option<String> {
+        self.native_operations
+            .get(&symbol)
+            .and_then(|operation| crate::operations::test_only_name(operation))
     }
 
     /// The `state_id` of the loop a `break` leaves. `None` only for a break that
@@ -389,7 +406,7 @@ struct ProjectResolver {
     /// Runtime identities that a loaded standard module declares in source, so
     /// the resolver must not synthesize built-in symbols for them.
     source_identities: HashMap<(ModuleId, SemanticId), StandardSymbol>,
-    native_operations: HashMap<SymbolId, StandardFunction>,
+    native_operations: HashMap<SymbolId, &'static crate::operations::Operation>,
     references: Vec<ProjectReference>,
     break_targets: HashMap<(ModuleId, SemanticId), SemanticId>,
     diagnostics: Vec<Diagnostic>,
