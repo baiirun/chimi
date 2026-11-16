@@ -71,8 +71,8 @@ owner heaps.
   fiber means moving its heap's ownership, which is one pointer.
 - **Determinism stays available.** `--clock=virtual` and the lab run with one
   carrier, so transcripts stay exact. Parallel runs would promise outcomes,
-  not interleavings; before step 3, check every spec rule that names an order
-  across owners and decide whether it survives parallel runs.
+  not interleavings. "Ordering rules under several carriers" checks every
+  spec rule that names an order across owners.
 
 ## Runtime state by owner
 
@@ -207,6 +207,60 @@ Two tests check this step:
   single-thread design already, for reasons that only get stronger with
   threads.
 
+## Ordering rules under several carriers
+
+The spec promises some orders across owners. Before step 3, each was checked
+against parallel runs. A rule that a lock or a single owner can keep survives.
+A rule that says "before any other task runs" cannot, since another carrier
+is running tasks at the same moment.
+
+- **Kept by the one owner of a queue.** These rules hold under parallel runs
+  as long as each queue changes only under its lock:
+  - mailbox delivery is strict FIFO in acceptance order across senders
+    (process-execution-and-mailboxes.md), and a monitor notice comes after
+    every message already accepted (process-monitors-and-metrics.md);
+  - parked channel receivers are served in the order they parked, a parked
+    plain receive before a select, and parked publishes are accepted in
+    order (task-and-channel-capabilities.md);
+  - a select commits the first ready source in list order
+    (time-and-outcomes.md);
+  - a supervisor stops its members one at a time in reverse order
+    (supervisor-policy-and-lifecycle.md);
+  - a pool serves waiting statements in the order they asked
+    (network-modules.md);
+  - recorder values come in the order the records linearized (testing.md).
+- **Kept by running supervisor decisions under the kernel lock.** A
+  supervisor decision runs "between fiber resumes": a defect, its
+  termination, the restart charge and the replacement's creation happen in
+  one step (supervised-process-conformance.md, "Determinism obligations").
+  With several carriers, that step must run under the kernel lock, with no
+  process of that supervisor running in between. The note's risk list
+  already places a supervisor's record on one carrier.
+- **Does not survive, and must change in step 3.**
+  - Select commit (task-and-channel-capabilities.md, "Select commit"). After
+    a select answers with a ready receiver, the host's receive is "served
+    before any other task runs" by putting the task at the front of the run
+    queue. On another carrier, a second receiver of the same queue could take
+    the value in between. Step 3 must make the commit atomic: the select's
+    answer either takes the value, or reserves it for that task until its
+    receive. The observable rule ("the other source keeps its value") stays
+    the same.
+  - IO wait order (host-capabilities-and-execution-properties.md, "Order").
+    "An OK answer resumes the task before any other task runs" becomes "on
+    its carrier". That is enough, because the wait is level-triggered and a
+    host that finds the descriptor drained waits again, as it already does
+    when another OS process drains it. "Tasks ready together wake in the
+    order they began waiting" holds per carrier only.
+- **Exact interleavings stay single-carrier.** The lab's determinism
+  obligations ("One carrier thread. The ready queue is FIFO.") and every
+  `--clock=virtual` run keep one carrier, so transcripts stay exact. A
+  program under the real clock on several carriers is promised outcomes, not
+  an interleaving. Real IO already makes real-clock interleavings depend on
+  timing.
+
+No rule needed a language decision. Each one either survives as written or
+keeps its observable meaning through a different mechanism.
+
 ## Order of work
 
 1. Move `runtime.c`'s per-fiber and per-carrier statics into one carrier
@@ -216,7 +270,15 @@ Two tests check this step:
    per carrier. Done: one locked table rather than per-carrier counts or
    messages ("Handle counts").
 3. Split `Scheduler` into a carrier loop plus shared kernel state behind a
-   lock, and run N carriers with work stealing turned off. Measure.
+   lock, and run N carriers with work stealing turned off. Measure. This
+   step also has to:
+   - make the select commit atomic ("Ordering rules under several
+     carriers");
+   - have each carrier loop drain its own release queue, replacing
+     `carrier_with_releases`;
+   - turn `carrier` into the accessor;
+   - make `next_mark_epoch` per heap;
+   - create the lazily created shared values before the carriers start.
 4. Shard the kernel and the channel registry by owner, and add stealing.
 5. Publish multi-core baselines next to the single-thread ones (R2).
 
