@@ -358,6 +358,11 @@ reads tasks in a loop therefore holds a fixed number of records. Hidden
 tasks need no rule of their own: the timer child of a user-clock select is
 an ordinary task whose handle the select drops (CHI-225).
 
+One gap remains (CHI-265): handles are dropped when a task's heap is destroyed
+at its end, and a process body that is force-stopped at its shutdown deadline,
+or a child that overflows its stack, never reaches that point. The records
+its handles named then stay until the program ends.
+
 The memory report's `task_records_peak` is the most records the scheduler
 held at once, from `chimi_scheduler_peak_task_records`.
 
@@ -366,7 +371,8 @@ held at once, from `chimi_scheduler_peak_task_records`.
 | A released task is removed with its result once it ends | `a_released_task_is_removed_with_its_result_once_it_ends`, `a_loop_of_finished_tasks_holds_a_bounded_number_of_records` | see `scripts/mutation/task_release_mutations.py` |
 | An observed terminal task is removed at once | `releasing_an_observed_terminal_task_removes_it_at_once` | same |
 | A defect code outlives the record's release | `a_released_defected_task_keeps_its_defect_code_until_the_end` | same |
-| A held or stored handle still reads its result | `a_handle_still_held_reads_the_result_again`, `handles_kept_in_loop_state_survive_each_pass` | same |
+| A held, stored or sent handle still reads its result | `a_handle_still_held_reads_the_result_again`, `handles_kept_in_loop_state_survive_each_pass`, `a_handle_sent_through_a_channel_still_reads_its_result` | `scripts/mutation/task_handle_mutations.py` |
+| A handle that survived a pass is released when it dies | `handles_that_die_after_surviving_a_pass_are_released` | same |
 | Losing user-clock timer children are freed | `losing_user_clock_timers_leave_no_records_behind` | same |
 
 ### Signals

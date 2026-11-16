@@ -1,10 +1,11 @@
-# mutation run at 046bc41236b9ab703545d0a176e8f19d19f8f8f5
-# task_handle_mutations.py: 6 mutants against compiler/chimi
-BASELINE ok  [task_release] (30s)
+# mutation run at 76c6b49288a2d7f6d0e6363321f22667bdbd9cdd
+# task_handle_mutations.py: 7 mutants against compiler/chimi
+BASELINE ok  [task_release] (13s)
 KILLED       task handles are not counted [task_release] (12s)
-KILLED       a task's last handle sends a channel release [task_release] (12s)
-KILLED       a copied task handle is not retained [task_release] (11s)
-KILLED       a dead task handle in a loop pass is not dropped [task_release] (10s)
-KILLED       the scheduler ignores a task release [task_release] (12s)
+KILLED       a task's last handle sends a channel release [task_release] (11s)
+KILLED       a copied task handle is not retained [task_release] (13s)
+KILLED       a freed allocation keeps its task handle counted [task_release] (11s)
+KILLED       a dead task handle in a loop pass is not dropped [task_release] (11s)
+KILLED       the scheduler ignores a task release [task_release] (11s)
 KILLED       the memory report omits the task peak [task_release] (12s)
 # result: every mutant killed
