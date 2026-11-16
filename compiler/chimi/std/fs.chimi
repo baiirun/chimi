@@ -139,7 +139,9 @@ pub fn modified(metadata: Metadata) -> Timestamp {
 ///
 /// Fails with: `FsError`.
 /// Cost: O(n) plus the reads.
-pub fn read(path: Path) -> Bytes needs { files: Files } {
+pub fn read(path: Path) -> Bytes needs {
+  files: Files
+} {
   Resource.scoped(fn() { files.open(path) }, Stream.stop, fn(reader) {
     loop chunks = [] {
       let next = Stream.read(reader)
@@ -156,7 +158,9 @@ pub fn read(path: Path) -> Bytes needs { files: Files } {
 /// Fails with: `FsError`, or `DecodeError.InvalidUtf8` when the file is not
 /// UTF-8.
 /// Cost: O(n) plus the reads.
-pub fn read_text(path: Path) -> Text needs { files: Files } {
+pub fn read_text(path: Path) -> Text needs {
+  files: Files
+} {
   Bytes.to_text(read(path))
 }
 
@@ -165,7 +169,9 @@ pub fn read_text(path: Path) -> Text needs { files: Files } {
 ///
 /// Fails with: `FsError`.
 /// Cost: one system call.
-pub fn open(path: Path) -> Reader<FsError> needs { files: Files } {
+pub fn open(path: Path) -> Reader<FsError> needs {
+  files: Files
+} {
   files.open(path)
 }
 
@@ -173,7 +179,9 @@ pub fn open(path: Path) -> Reader<FsError> needs { files: Files } {
 ///
 /// Fails with: `FsError`.
 /// Cost: one system call.
-pub fn metadata(path: Path) -> Metadata needs { files: Files } {
+pub fn metadata(path: Path) -> Metadata needs {
+  files: Files
+} {
   files.metadata(path)
 }
 
@@ -182,7 +190,9 @@ pub fn metadata(path: Path) -> Metadata needs { files: Files } {
 ///
 /// Fails with: `FsError`; `Other` when a name is not UTF-8.
 /// Cost: O(n log n) plus the system calls.
-pub fn list(path: Path) -> List<Text> needs { files: Files } {
+pub fn list(path: Path) -> List<Text> needs {
+  files: Files
+} {
   files.list(path)
 }
 
@@ -194,21 +204,27 @@ pub fn list(path: Path) -> List<Text> needs { files: Files } {
 ///
 /// Fails with: `FsError`.
 /// Cost: O(n) plus the writes.
-pub fn write(path: Path, bytes: Bytes) -> Void needs { files: Files } {
+pub fn write(path: Path, bytes: Bytes) -> Void needs {
+  files: Files
+} {
   write_with(path, bytes, WriteMode.Replace)
 }
 
 /// Writes `text` as the whole file, encoded as UTF-8, like `write`.
 ///
 /// Fails with: `FsError`.
-pub fn write_text(path: Path, text: Text) -> Void needs { files: Files } {
+pub fn write_text(path: Path, text: Text) -> Void needs {
+  files: Files
+} {
   write(path, Bytes.from_text(text))
 }
 
 /// Writes `bytes` after the end of the file, creating it when it is missing.
 ///
 /// Fails with: `FsError`.
-pub fn append(path: Path, bytes: Bytes) -> Void needs { files: Files } {
+pub fn append(path: Path, bytes: Bytes) -> Void needs {
+  files: Files
+} {
   write_with(path, bytes, WriteMode.Append)
 }
 
@@ -218,45 +234,52 @@ pub fn append(path: Path, bytes: Bytes) -> Void needs { files: Files } {
 /// Fails with: `FsError`; `AlreadyExists` for `WriteMode.New` when the file
 /// exists.
 /// Cost: one system call.
-pub fn create(path: Path, mode: WriteMode) -> Writer<FsError> needs { files: Files } {
+pub fn create(path: Path, mode: WriteMode) -> Writer<FsError> needs {
+  files: Files
+} {
   files.create(path, mode)
 }
 
 /// Creates the directory at `path`. Its parent must exist.
 ///
 /// Fails with: `FsError`; `AlreadyExists` when something is at `path`.
-pub fn create_directory(path: Path) -> Void needs { files: Files } {
+pub fn create_directory(path: Path) -> Void needs {
+  files: Files
+} {
   files.create_directory(path)
 }
 
 /// Creates the directory at `path` and every missing directory above it.
-/// A directory that already exists is not a failure.
+/// A directory that already exists is not a failure. It works up from `path`
+/// only as far as directories are missing, so a directory above them that it
+/// may not read or change is never touched.
 ///
 /// Fails with: `FsError`; `AlreadyExists` when a file is where a directory
 /// should be.
-pub fn create_directories(path: Path) -> Void needs { files: Files } {
-  let parts = Path.parts(Path.normalize(path))
-  List.reduce(parts, Path.from(""), fn(above, part) {
-    let next = case Path.to_text(above) {
-      "" -> Path.from(part)
-      _ -> Path.join(above, part)
-    }
-    case part {
-      "/" -> next
-      ".." -> next
-      _ -> {
-        ensure_directory(next)
-        next
+pub fn create_directories(path: Path) -> Void needs {
+  files: Files
+} {
+  let normal = Path.normalize(path)
+  case files.create_directory(normal) {
+    Success(_) -> Void
+    Failure(FsError.NotFound(_)) -> case Path.parent(normal) {
+      Some(parent) -> {
+        create_directories(parent)
+        ensure_directory(normal)
       }
+      None -> Failure(FsError.NotFound(normal))
     }
-  })
-  Void
+    Failure(FsError.AlreadyExists(_)) -> existing_directory(normal)
+    Failure(error) -> Failure(error)
+  }
 }
 
 /// Removes the file or empty directory at `path`.
 ///
 /// Fails with: `FsError`; `NotEmpty` for a directory with entries.
-pub fn remove(path: Path) -> Void needs { files: Files } {
+pub fn remove(path: Path) -> Void needs {
+  files: Files
+} {
   files.remove(path)
 }
 
@@ -264,7 +287,9 @@ pub fn remove(path: Path) -> Void needs { files: Files } {
 /// file system.
 ///
 /// Fails with: `FsError`.
-pub fn rename(from: Path, to: Path) -> Void needs { files: Files } {
+pub fn rename(from: Path, to: Path) -> Void needs {
+  files: Files
+} {
   files.rename(from, to)
 }
 
@@ -356,7 +381,9 @@ fn create_host(path: Path, mode: WriteMode) -> Writer<FsError> {
     WriteMode.New -> 2
   }
   let handle = succeed_with(path, host_create(path, code))
-  Stream.writer(fn(bytes) { succeed(path, host_write(handle, bytes)) }, fn() {
+  Stream.writer(fn(bytes) {
+    succeed(path, host_write(handle, bytes))
+  }, fn() {
     succeed(path, host_close(handle))
   })
 }
@@ -370,13 +397,21 @@ fn host() {
     create: create_host,
     metadata: metadata_host,
     list: list_names,
-    create_directory: fn(path: Path) { succeed(path, host_create_directory(path)) },
-    remove: fn(path: Path) { succeed(path, host_remove(path)) },
-    rename: fn(from: Path, to: Path) { succeed(from, host_rename(from, to)) },
+    create_directory: fn(path: Path) {
+      succeed(path, host_create_directory(path))
+    },
+    remove: fn(path: Path) {
+      succeed(path, host_remove(path))
+    },
+    rename: fn(from: Path, to: Path) {
+      succeed(from, host_rename(from, to))
+    },
   }
 }
 
-fn write_with(path: Path, bytes: Bytes, mode: WriteMode) -> Void needs { files: Files } {
+fn write_with(path: Path, bytes: Bytes, mode: WriteMode) -> Void needs {
+  files: Files
+} {
   let writer = files.create(path, mode)
   case Stream.write(writer, bytes) {
     Success(_) -> Stream.close(writer)
@@ -387,23 +422,32 @@ fn write_with(path: Path, bytes: Bytes, mode: WriteMode) -> Void needs { files: 
   }
 }
 
-fn ensure_directory(path: Path) -> Void needs { files: Files } {
+// Succeeds when `path` is a directory, following symbolic links.
+fn existing_directory(path: Path) -> Void needs {
+  files: Files
+} {
+  let metadata = files.metadata(path)
+  case metadata.kind {
+    Kind.Directory -> Void
+    _ -> Failure(FsError.AlreadyExists(path))
+  }
+}
+
+fn ensure_directory(path: Path) -> Void needs {
+  files: Files
+} {
   case files.create_directory(path) {
     Success(_) -> Void
-    Failure(FsError.AlreadyExists(_)) -> {
-      let metadata = files.metadata(path)
-      case metadata.kind {
-        Kind.Directory -> Void
-        _ -> Failure(FsError.AlreadyExists(path))
-      }
-    }
+    Failure(FsError.AlreadyExists(_)) -> existing_directory(path)
     Failure(error) -> Failure(error)
   }
 }
 
 fn remove_tree_or_fail(path: Path) -> Void {
   case code_of(host_is_directory(path)) {
-    1 -> List.each(list_names(path), fn(name) { remove_tree_or_fail(Path.join(path, name)) })
+    1 -> List.each(list_names(path), fn(name) {
+      remove_tree_or_fail(Path.join(path, name))
+    })
     _ -> Void
   }
   succeed(path, host_remove(path))
@@ -445,12 +489,18 @@ pub fn files_within(root: Path) {
   let host = host()
   {
     open: fn(path: Path) { host.open(check(path)) },
-    create: fn(path: Path, mode: WriteMode) { host.create(check(path), mode) },
+    create: fn(path: Path, mode: WriteMode) {
+      host.create(check(path), mode)
+    },
     metadata: fn(path: Path) { host.metadata(check(path)) },
     list: fn(path: Path) { host.list(check(path)) },
-    create_directory: fn(path: Path) { host.create_directory(check(path)) },
+    create_directory: fn(path: Path) {
+      host.create_directory(check(path))
+    },
     remove: fn(path: Path) { host.remove(check(path)) },
-    rename: fn(from: Path, to: Path) { host.rename(check(from), check(to)) },
+    rename: fn(from: Path, to: Path) {
+      host.rename(check(from), check(to))
+    },
   }
 }
 
