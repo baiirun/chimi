@@ -95,4 +95,29 @@ mod tests {
                 .all(|(_, _, text)| !text.contains("runtime.h"))
         );
     }
+
+    #[test]
+    fn the_archive_key_changes_with_every_input() {
+        use crate::backend::runtime_archive_key::{BindingArchiveInputs, binding_archive_key};
+        let key = |package, header: &[u8], sources: &[(&str, &str)]| {
+            binding_archive_key(&BindingArchiveInputs {
+                package,
+                target_triple: "t",
+                compiler_identity: "cc",
+                binding_header: header,
+                sources,
+            })
+        };
+        let base = key("p", b"h", &[("a.c", "x")]);
+        assert_eq!(base, key("p", b"h", &[("a.c", "x")]));
+        for other in [
+            key("q", b"h", &[("a.c", "x")]),
+            key("p", b"g", &[("a.c", "x")]),
+            key("p", b"h", &[("b.c", "x")]),
+            key("p", b"h", &[("a.c", "y")]),
+            key("p", b"h", &[("a.c", "x"), ("b.c", "")]),
+        ] {
+            assert_ne!(base, other);
+        }
+    }
 }

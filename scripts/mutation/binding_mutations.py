@@ -23,8 +23,8 @@ def mutant(name, file, edits, targets=("bindings",), filter=""):
 
 MUTATIONS = [
     mutant("close does not bump the generation", C, [(
-        "  entry->state = NULL;\n  entry->generation++;",
-        "  entry->state = NULL;",
+        "  if (++entry->generation != UINT32_MAX) {",
+        "  if (entry->generation != UINT32_MAX) {",
     )]),
     mutant("a handle ignores its generation", C, [(
         "  return entry->type != NULL && entry->generation == value->as.handle.generation ? entry : NULL;",
@@ -81,7 +81,7 @@ MUTATIONS = [
     mutant("the binding archive key ignores the sources", "src/backend/runtime_archive_key.rs", [(
         "    for (name, text) in inputs.sources {\n        part(name.as_bytes());\n        part(text.as_bytes());\n    }",
         "    let _ = inputs.sources;",
-    )]),
+    )], targets=("lib",), filter="backend::bindings"),
     mutant("the interpreter calls a binding a success", EXEC, [(
         "            StandardFunction::BindingCall => Control::Defect {\n                message: \"E5204: the interpreter cannot call C bindings; build the program with `chimi build`\".to_owned(),",
         "            StandardFunction::BindingCall => Control::Defect {\n                message: \"binding\".to_owned(),",
