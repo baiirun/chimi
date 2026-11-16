@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 23u
+#define CHIMI_FIBER_ABI_VERSION 24u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -527,6 +527,9 @@ enum {
   /* The request named a channel of another kind (a subscribe to a plain
      channel, a send to a subscription). */
   CHIMI_VIOLATION_WRONG_KIND = 8,
+  /* A send carried the Receiver of the channel it was sent on: once the
+     message is queued, no task could ever receive it. */
+  CHIMI_VIOLATION_OWN_RECEIVER = 9,
 };
 
 enum {

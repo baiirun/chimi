@@ -287,6 +287,7 @@ pub const VIOLATION_CHANNEL_STILL_LIVE: u32 = 5;
 pub const VIOLATION_IN_FLIGHT: u32 = 6;
 pub const VIOLATION_PUBLISHED_CAPABILITY: u32 = 7;
 pub const VIOLATION_WRONG_KIND: u32 = 8;
+pub const VIOLATION_OWN_RECEIVER: u32 = 9;
 pub const CAPABILITY_NONE: u32 = 0;
 pub const CAPABILITY_RECEIVER: u32 = 1;
 pub const CAPABILITY_COMPLETION: u32 = 2;
@@ -354,6 +355,12 @@ impl ChimiCapabilityViolation {
             ChannelError::PublishedCapability(channel) => (
                 VIOLATION_PUBLISHED_CAPABILITY,
                 CAPABILITY_NONE,
+                Some(channel),
+                None,
+            ),
+            ChannelError::OwnReceiver(channel) => (
+                VIOLATION_OWN_RECEIVER,
+                CAPABILITY_RECEIVER,
                 Some(channel),
                 None,
             ),
