@@ -65,6 +65,13 @@ impl IncrementalTypeReport {
         inspect(&self.types.typed, module_path, offset)
     }
 
+    /// The symbol whose name is at `offset` in `module_path`, with its
+    /// declaration and every reference in the project (find references and
+    /// rename), from this report's retained snapshot.
+    pub fn occurrences(&self, module_path: &str, offset: usize) -> Option<crate::SymbolOccurrences> {
+        crate::occurrences::occurrences_at(&self.types.typed, module_path, offset)
+    }
+
     /// Groups this report's diagnostics by owning module.
     ///
     /// Ensures: exactly one entry per analyzed module in module-path order,

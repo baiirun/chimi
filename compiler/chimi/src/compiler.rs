@@ -349,6 +349,12 @@ impl TypeReport {
         crate::doc::document_module(&self.typed, module_path)
     }
 
+    /// The symbol named at `offset` in `module_path`, with every place its
+    /// name is written.
+    pub fn occurrences(&self, module_path: &str, offset: usize) -> Option<crate::SymbolOccurrences> {
+        crate::occurrences::occurrences_at(&self.typed, module_path, offset)
+    }
+
     /// `chimi lint`'s findings for the project's own modules, or with
     /// `include_standard` for the `std/` modules as well. Each is a warning
     /// whose code names its rule.
