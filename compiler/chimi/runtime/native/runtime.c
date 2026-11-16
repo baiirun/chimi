@@ -7857,6 +7857,10 @@ static ProcessDefect *process_defects;
 static size_t process_defect_count;
 
 static void remember_process_defect(const char *message) {
+  /* A body resumed with a terminal cancel already has its end decided by the
+     scheduler, which reports no defect message for it, and a request now would
+     park it and abandon its fiber and heap (CHI-265). */
+  if (chimi_fiber_cancel_is_terminal()) return;
   ChimiProcessRequest self = {.kind = CHIMI_REQUEST_PROCESS_SELF};
   if (scheduler_request(&self) == CHIMI_FIBER_CANCEL || self.status != CHIMI_RESPONSE_OK) return;
   ProcessDefect *grown = realloc(process_defects, (process_defect_count + 1) * sizeof(*grown));
@@ -9199,8 +9203,10 @@ static ChimiControl *run_combinator(ChimiRuntime *runtime, uint32_t intrinsic, C
     if (interrupted) {
       /* A child defect reaches here only when this task absorbs it (a process
          body that is shutting down); the siblings stop now, not when the body
-         ends. A forced body issues no request: the scheduler ends its children
-         with it, and a park now would abandon its fiber and heap (CHI-265). */
+         ends. After a terminal cancel (a forced body, Task.cancel, a parent's
+         end) the scheduler ends the children itself, so no request is issued: a
+         forced body that parked now would have its fiber and heap abandoned
+         (CHI-265). */
       if (!(interrupted->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()))
         cancel_live_children(&children);
       combinator_children_free(&children);

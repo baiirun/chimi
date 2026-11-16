@@ -19,11 +19,17 @@ def m(name, edits, targets, filter=""):
 MUTATIONS = [
     m("a forced combinator cancels its children with requests",
       [(GUARD, "")],
-      ["task_release"], "a_body_forced_inside_a_combinator"),
+      ["task_release"], "a_forced_body_frees"),
     m("an interrupted combinator never cancels its children",
       [(GUARD + "        cancel_live_children(&children);\n", "")],
       ["task_combinators", "task_release"]),
     m("only a forced combinator cancels its children",
       [(GUARD, "      if (interrupted->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal())\n")],
       ["task_combinators", "task_release"]),
+    m("a forced body asks for its address to remember a defect",
+      [("  if (chimi_fiber_cancel_is_terminal()) return;\n  ChimiProcessRequest self", "  ChimiProcessRequest self")],
+      ["task_release"], "a_forced_body_frees"),
+    m("a cancelled combinator cancels its children with requests",
+      [(GUARD, "")],
+      ["task_combinators"], "task_cancel_of_a_task_waiting_in_a_combinator"),
 ]

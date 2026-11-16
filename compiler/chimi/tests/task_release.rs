@@ -255,6 +255,7 @@ fn forced_bodies(wait: &str, stops: u32) -> String {
         concat!(
             "import std/process as Process\n",
             "import std/process.{{Inbox}}\n",
+            "import std/resource as Resource\n",
             "import std/supervisor as Supervisor\n",
             "fn slow() -> Int needs {{ clock: Clock.Clock }} {{\n",
             "  Clock.sleep(Duration.seconds(1000))\n",
@@ -285,13 +286,14 @@ fn forced_bodies(wait: &str, stops: u32) -> String {
     )
 }
 
-// CHI-265: a body forced while a combinator waits must not park again on the
-// way out. If it does, the scheduler abandons its fiber, and the heap with the
-// eight handles is never freed, so each stop leaves nine records and the
-// body's allocations behind. Rejects a combinator that cancels its children
-// with scheduler requests during a forced end.
+// CHI-265: a forced body must not park again on the way out. If it does, the
+// scheduler abandons its fiber, and the heap with the eight handles is never
+// freed, so each stop leaves nine records and the body's allocations behind.
+// Rejects a combinator that cancels its children with scheduler requests
+// during a forced end, and a forced body that asks for its own address to
+// remember a defect.
 #[test]
-fn a_body_forced_inside_a_combinator_frees_its_handles_and_heap() {
+fn a_forced_body_frees_its_handles_and_heap() {
     let waits = [
         ("all", "case Task.all([slow, slow]) { _ -> Void }"),
         ("race", "case Task.race([slow, slow]) { _ -> Void }"),
@@ -299,6 +301,12 @@ fn a_body_forced_inside_a_combinator_frees_its_handles_and_heap() {
         (
             "nested",
             "case Task.result(Task.start(fn() -> Int { case Task.all([slow]) { _ -> 1 } })) { _ -> Void }",
+        ),
+        // The use defects while its release still sleeps, so the body ends
+        // with a defect after it was forced.
+        (
+            "defect",
+            "let r = Resource.scoped(fn() -> Int { 1 }, fn(h: Int) -> Void { Clock.sleep(Duration.seconds(1000)) }, fn(h: Int) -> Int { h / (h - 1) })\n  case r { _ -> Void }",
         ),
         ("sleep", "Clock.sleep(Duration.seconds(1000))"),
     ];
