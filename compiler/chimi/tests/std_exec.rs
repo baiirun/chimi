@@ -943,16 +943,16 @@ test "a cancelled start still stops its child gently" {
 }
 
 test "other tasks run while a child is stopped" {
-  let order = (fn() {
+  let woke = (fn() {
+    let start = Clock.now()
     let ticker = Task.start(fn() {
       Clock.sleep(Duration.milliseconds(200))
-      Clock.now()
+      Clock.since(start)
     })
     leave_running("trap '' TERM; echo ready; while :; do sleep 0.02; done", Duration.seconds(1))
-    let released = Clock.now()
-    Task.result(ticker) < released
+    Task.result(ticker) < Duration.milliseconds(700)
   })() using { commands: Exec.host_for_tests() }
-  order |> Test.assert_equal(True)
+  woke |> Test.assert_equal(True)
 }
 "#,
     );
