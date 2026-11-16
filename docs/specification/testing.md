@@ -15,8 +15,9 @@ exit status, the four `std/test` assertions, `capture_defect`, recorders
 and scripts, fake mailboxes, `T4401`, `T4403`, `std/random` with
 `--seed`, doc-comment examples in `chimi test` and `chimi check`, and
 `--trace`. Not implemented yet: formatting example code, examples in `std/`
-modules, and converting the std-tests programs that check maps, sets, causes,
-JSON and expected failures (54 of 99 are test items so far). The build is tracked
+modules. 85 of the 99 std-tests programs are test items; the other 14 stay
+expected-output programs on purpose (see [Migrating the std-tests
+programs](#migrating-the-std-tests-programs)). The build is tracked
 by CHI-208; the spec was written under CHI-202.
 
 Four choices here touched questions only Byron could settle: the test
@@ -675,8 +676,15 @@ convert to test items once the runner exists:
 - A program that prints `Debug.render` lines and compares them with an
   `.expected` file becomes test items that assert the same values. Its
   directory stays `compiler/chimi/std-tests/<module>/`.
-- A program whose point is the runner's own behaviour, such as how a failure
-  escaping `main` is reported, stays an expected-output program.
+- A program that ends in an expected failure becomes a test asserting
+  `Result.capture(run)` equals `Err` of that failure, and one that ends in a
+  defect asserts the message through `Test.capture_defect`.
+- A program whose point is the runner's own behaviour stays an
+  expected-output program: how a value, failure, or defect is written to the
+  outcome record (`bytes`, `decimal` and `set` outcome programs), how a cause
+  is rendered with its source locations (`cause/`), runner providers
+  (`env/`), `std/test` failing outside the runner (`test/`), and the
+  generated Unicode grapheme test.
 - The Rust integration test runs `chimi test --json` on both backends and
   fails when a test fails or when the two backends disagree on a test's
   outcome. It keeps the rule that every registered operation is reached by

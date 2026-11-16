@@ -2,6 +2,9 @@
 // ascending key order: "m" and "z" would both fail, and "m" escapes.
 import std/map as Map
 import std/map.{Map}
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
 
 enum Rejected {
   Key(name: Text)
@@ -14,6 +17,10 @@ fn keep_before_m(key: Text, _value: Int) -> Bool {
   }
 }
 
-pub fn main() -> Map<Text, Int> {
+fn run() -> Map<Text, Int> {
   Map.filter(Map.from([("z", 1), ("m", 2), ("a", 3)]), keep_before_m)
+}
+
+test "filter failure" {
+  Test.assert_equal(Result.capture(run), Err(Rejected.Key("m")))
 }

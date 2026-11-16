@@ -4,12 +4,13 @@ import std/list as List
 import std/option as Option
 import std/path as Path
 import std/path.{Path}
+import std/test as Test
 
 fn show(paths: List<Path>) -> List<Text> {
   List.map(paths, Path.to_text)
 }
 
-pub fn main() -> List<Text> {
+fn run() -> List<Text> {
   let joined = show([
     Path.join(Path.from("a"), "b"),
     Path.join(Path.from("a/"), "/b"),
@@ -70,4 +71,8 @@ pub fn main() -> List<Text> {
     // std/io's `Path` is this module's.
     Path.to_text(Path.join(IO.path("logs"), "app.log")),
   ]
+}
+
+test "lexical" {
+  Test.assert_equal(run(), ["[\"a/b\", \"a/b\", \"/etc\", \"b\", \"etc\", \"a\"]", "[Some(\"app.log\"), Some(\"logs\"), None, None, Some(\"report.tar\"), Some(\".bashrc\"), Some(\"gz\"), None, None, None]", "[Some(\"/etc\"), Some(\"/\"), None, Some(\".\"), Some(\"a\"), None, None]", "[\"a/b.md\", \"a/b.md\", \"a/b\", \"/\", \"b.md\", \"a/b.md\"]", "[\"a/b/c\", \"..\", \"/a\", \".\", \"a/c\", \"/\", \"../../a\"]", "[[\"/\", \"usr\", \"bin\"], []]", "[True, False]", "[True, False]", "logs/app.log"])
 }

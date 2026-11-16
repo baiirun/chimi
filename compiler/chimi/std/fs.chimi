@@ -1,0 +1,541 @@
+/// Files and directories. Reading and changing the file system needs the
+/// `files: Files` capability, which the runner supplies to `main`; a test
+/// supplies a fake with `using`, or real files confined to a temporary
+/// directory with `Fs.temporary_directory` and `Fs.files_within`.
+///
+/// ```text
+/// pub fn main() -> Void needs { files: Files } {
+///   let config = Fs.read_text(Path.from("app.toml"))
+///   Fs.write_text(Path.from("app.toml.bak"), config)
+/// }
+/// ```
+///
+/// Whole-file functions (`read`, `write`) are for files that fit in memory;
+/// `open` and `create` give a `Stream.Reader` or `Stream.Writer` for the rest,
+/// which `Stream.copy` and `Stream.read_all` work with. Every failure names
+/// the path it happened on.
+
+import std/bytes as Bytes
+import std/bytes.{Bytes, DecodeError}
+import std/clock as Clock
+import std/clock.{Timestamp}
+import std/list as List
+import std/path as Path
+import std/path.{Path}
+import std/resource as Resource
+import std/result as Result
+import std/stream as Stream
+import std/stream.{Reader, Writer}
+import std/text as Text
+
+// 1. Public types.
+
+/// The capability to read and change the file system. The runner's provider
+/// uses the operating system's; a fake is a record of these functions.
+pub interface Files {
+  /// A reader of the file's bytes from the start.
+  open: fn(Path) -> Reader<FsError> errors FsError
+  /// A writer to the file, created when `mode` allows it.
+  create: fn(Path, WriteMode) -> Writer<FsError> errors FsError
+  metadata: fn(Path) -> Metadata errors FsError
+  /// The names in a directory, without `.` and `..`, in ascending order.
+  list: fn(Path) -> List<Text> errors FsError
+  create_directory: fn(Path) -> Void errors FsError
+  /// Removes a file or an empty directory.
+  remove: fn(Path) -> Void errors FsError
+  rename: fn(Path, Path) -> Void errors FsError
+}
+
+/// What `create` does with a file that exists.
+pub enum WriteMode {
+  /// Empty it and write from the start, or create it.
+  Replace
+  /// Write after its end, or create it.
+  Append
+  /// Fail with `FsError.AlreadyExists`; never touch an existing file.
+  New
+}
+
+/// What a path names. A symbolic link is followed, so it is the kind of
+/// what it points to.
+pub enum Kind {
+  File
+  Directory
+  /// A special file: a device, a socket, or a named pipe.
+  Special
+}
+
+/// What `Fs.metadata` reads: the kind, the size in bytes (meaningful for a
+/// file), and when the contents last changed. Read it with `Fs.kind`,
+/// `Fs.size`, and `Fs.modified`; a fake builds one with `Fs.metadata_of`.
+pub struct Metadata {
+  kind: Kind,
+  size: Int,
+  // Unix nanoseconds, made a `Timestamp` only by `Fs.modified`, so reading the
+  // kind and size works where there is no clock (the interpreter).
+  modified: Int,
+}
+
+// 2. Failure types.
+
+/// Why a file-system operation failed. Each variant names the path the
+/// operating system refused.
+pub enum FsError {
+  /// Nothing exists at `path`, or a directory on the way is missing.
+  NotFound(path: Path)
+  PermissionDenied(path: Path)
+  /// `path` exists, and the operation would have replaced it.
+  AlreadyExists(path: Path)
+  /// A component of `path` that must be a directory is not one.
+  NotADirectory(path: Path)
+  /// `path` is a directory where a file was expected.
+  IsADirectory(path: Path)
+  /// The directory at `path` still holds entries.
+  NotEmpty(path: Path)
+  /// The file was already closed: a read after `Stream.stop` or a write after
+  /// `Stream.close`.
+  Closed(path: Path)
+  /// Any other failure, with the operating system's message.
+  Other(path: Path, message: Text)
+}
+
+// 4. Constructors.
+
+/// Returns the metadata of a `kind` of entry holding `size` bytes, last
+/// changed at `modified`, for a fake `Files` provider.
+///
+/// Cost: O(1).
+pub fn metadata_of(kind: Kind, size: Int, modified: Timestamp) -> Metadata {
+  Metadata(kind, size, Clock.unix_nanoseconds(modified))
+}
+
+// 5. Queries: metadata.
+
+/// Returns what kind of entry `metadata` describes.
+///
+/// Cost: O(1).
+pub fn kind(metadata: Metadata) -> Kind {
+  metadata.kind
+}
+
+/// Returns the size in bytes of the file `metadata` describes.
+///
+/// Cost: O(1).
+pub fn size(metadata: Metadata) -> Int {
+  metadata.size
+}
+
+/// Returns when the contents last changed.
+///
+/// Cost: O(1).
+pub fn modified(metadata: Metadata) -> Timestamp {
+  Clock.from_unix_nanoseconds(metadata.modified)
+}
+
+// 5. Queries: reading files.
+
+/// Returns every byte of the file. The whole file is held in memory; read a
+/// large one with `open`.
+///
+/// Fails with: `FsError`.
+/// Cost: O(n) plus the reads.
+pub fn read(path: Path) -> Bytes needs {
+  files: Files
+} {
+  Resource.scoped(fn() { files.open(path) }, Stream.stop, fn(reader) {
+    loop chunks = [] {
+      let next = Stream.read(reader)
+      case next {
+        Some(chunk) -> List.push(chunks, chunk)
+        None -> break Bytes.concat(chunks)
+      }
+    }
+  })
+}
+
+/// Returns the file's contents as text.
+///
+/// Fails with: `FsError`, or `DecodeError.InvalidUtf8` when the file is not
+/// UTF-8.
+/// Cost: O(n) plus the reads.
+pub fn read_text(path: Path) -> Text needs {
+  files: Files
+} {
+  Bytes.to_text(read(path))
+}
+
+/// Returns a reader of the file's bytes. Release it with `Stream.stop`, best
+/// through `Resource.scoped(fn() { Fs.open(path) }, Stream.stop, use)`.
+///
+/// Fails with: `FsError`.
+/// Cost: one system call.
+pub fn open(path: Path) -> Reader<FsError> needs {
+  files: Files
+} {
+  files.open(path)
+}
+
+/// Returns what `path` names, following symbolic links.
+///
+/// Fails with: `FsError`.
+/// Cost: one system call.
+pub fn metadata(path: Path) -> Metadata needs {
+  files: Files
+} {
+  files.metadata(path)
+}
+
+/// Returns the names of the entries of the directory at `path`, without `.`
+/// and `..`, in ascending order. Join one to `path` to use it.
+///
+/// Fails with: `FsError`; `Other` when a name is not UTF-8.
+/// Cost: O(n log n) plus the system calls.
+pub fn list(path: Path) -> List<Text> needs {
+  files: Files
+} {
+  files.list(path)
+}
+
+// 6. Writing and changing.
+
+/// Writes `bytes` as the whole file, creating it or emptying it first. It is
+/// not atomic: a reader at the same time can see part of the new contents,
+/// and a failure partway can leave the file short.
+///
+/// Fails with: `FsError`.
+/// Cost: O(n) plus the writes.
+pub fn write(path: Path, bytes: Bytes) -> Void needs {
+  files: Files
+} {
+  write_with(path, bytes, WriteMode.Replace)
+}
+
+/// Writes `text` as the whole file, encoded as UTF-8, like `write`.
+///
+/// Fails with: `FsError`.
+pub fn write_text(path: Path, text: Text) -> Void needs {
+  files: Files
+} {
+  write(path, Bytes.from_text(text))
+}
+
+/// Writes `bytes` after the end of the file, creating it when it is missing.
+///
+/// Fails with: `FsError`.
+pub fn append(path: Path, bytes: Bytes) -> Void needs {
+  files: Files
+} {
+  write_with(path, bytes, WriteMode.Append)
+}
+
+/// Returns a writer to the file. Every chunk reaches the file in order;
+/// `Stream.close` finishes it.
+///
+/// Fails with: `FsError`; `AlreadyExists` for `WriteMode.New` when the file
+/// exists.
+/// Cost: one system call.
+pub fn create(path: Path, mode: WriteMode) -> Writer<FsError> needs {
+  files: Files
+} {
+  files.create(path, mode)
+}
+
+/// Creates the directory at `path`. Its parent must exist.
+///
+/// Fails with: `FsError`; `AlreadyExists` when something is at `path`.
+pub fn create_directory(path: Path) -> Void needs {
+  files: Files
+} {
+  files.create_directory(path)
+}
+
+/// Creates the directory at `path` and every missing directory above it.
+/// A directory that already exists is not a failure. It works up from `path`
+/// only as far as directories are missing, so a directory above them that it
+/// may not read or change is never touched.
+///
+/// Fails with: `FsError`; `AlreadyExists` when a file is where a directory
+/// should be.
+pub fn create_directories(path: Path) -> Void needs {
+  files: Files
+} {
+  let normal = Path.normalize(path)
+  case files.create_directory(normal) {
+    Success(_) -> Void
+    Failure(FsError.NotFound(_)) -> case Path.parent(normal) {
+      Some(parent) -> {
+        create_directories(parent)
+        ensure_directory(normal)
+      }
+      None -> Failure(FsError.NotFound(normal))
+    }
+    Failure(FsError.AlreadyExists(_)) -> existing_directory(normal)
+    Failure(error) -> Failure(error)
+  }
+}
+
+/// Removes the file or empty directory at `path`.
+///
+/// Fails with: `FsError`; `NotEmpty` for a directory with entries.
+pub fn remove(path: Path) -> Void needs {
+  files: Files
+} {
+  files.remove(path)
+}
+
+/// Moves `from` to `to`, replacing a file at `to`. Both must be on the same
+/// file system.
+///
+/// Fails with: `FsError`.
+pub fn rename(from: Path, to: Path) -> Void needs {
+  files: Files
+} {
+  files.rename(from, to)
+}
+
+// 7. Testing with real files.
+
+/// Runs `use` with a new, empty directory under the system's temporary
+/// directory, and removes it and everything in it afterwards, however `use`
+/// ends. Test-only.
+///
+/// Fails with: what `use` fails with.
+pub fn temporary_directory<T, E, R>(use: fn(Path) -> T errors E needs R) -> T needs R {
+  Resource.scoped(fn() { host_temporary_directory() }, remove_tree, use)
+}
+
+/// A real file-system provider that refuses every path outside `root`, with
+/// `FsError.PermissionDenied`. Relative paths are refused too, since they
+/// depend on the working directory. Test-only: supply it with
+/// `using { files: Fs.files_within(root) }`.
+pub fn files_within(root: Path) {
+  let inside = Path.normalize(test_root(root))
+  let prefix = case Path.to_text(inside) {
+    "/" -> "/"
+    text -> Text.append(text, "/")
+  }
+  let check = fn(path: Path) {
+    let normal = Path.normalize(path)
+    let within = normal == inside or Text.starts_with(Path.to_text(normal), prefix)
+    case within and Path.is_absolute(path) {
+      True -> normal
+      False -> Failure(FsError.PermissionDenied(path))
+    }
+  }
+  let host = host()
+  {
+    open: fn(path: Path) { host.open(check(path)) },
+    create: fn(path: Path, mode: WriteMode) {
+      host.create(check(path), mode)
+    },
+    metadata: fn(path: Path) { host.metadata(check(path)) },
+    list: fn(path: Path) { host.list(check(path)) },
+    create_directory: fn(path: Path) {
+      host.create_directory(check(path))
+    },
+    remove: fn(path: Path) { host.remove(check(path)) },
+    rename: fn(from: Path, to: Path) {
+      host.rename(check(from), check(to))
+    },
+  }
+}
+
+// 8. Private helpers, the runner provider, and the native core.
+
+// The runner provider for `main`'s `files` need (operations.rs
+// `RUNNER_PROVIDERS`). Private, so no other code can take the capability
+// without declaring the need.
+fn host() {
+  {
+    open: open_host,
+    create: create_host,
+    metadata: metadata_host,
+    list: list_names,
+    create_directory: fn(path: Path) {
+      succeed(path, host_create_directory(path))
+    },
+    remove: fn(path: Path) {
+      succeed(path, host_remove(path))
+    },
+    rename: fn(from: Path, to: Path) {
+      succeed(from, host_rename(from, to))
+    },
+  }
+}
+
+// The host's portable failure codes, which both backends map from errno.
+fn failure(path: Path, status: Int, message: Text) -> FsError {
+  case status {
+    -1 -> FsError.NotFound(path)
+    -2 -> FsError.PermissionDenied(path)
+    -3 -> FsError.AlreadyExists(path)
+    -4 -> FsError.NotADirectory(path)
+    -5 -> FsError.IsADirectory(path)
+    -6 -> FsError.NotEmpty(path)
+    -7 -> FsError.Closed(path)
+    _ -> FsError.Other(path, message)
+  }
+}
+
+// The value of a host status: a non-negative status is the result, and a
+// negative one is a failure code with its message.
+fn succeed_with(path: Path, outcome: (Int, Text)) -> Int {
+  let (status, message) = outcome
+  case status >= 0 {
+    True -> status
+    False -> Failure(failure(path, status, message))
+  }
+}
+
+fn succeed(path: Path, outcome: (Int, Text)) -> Void {
+  let _value = succeed_with(path, outcome)
+  Void
+}
+
+fn code_of(outcome: (Int, Text)) -> Int {
+  let (status, _) = outcome
+  status
+}
+
+fn read_chunk(path: Path, handle: Int) -> Option<Bytes> {
+  let (status, chunk, message) = host_read(handle)
+  case status {
+    1 -> Some(chunk)
+    0 -> None
+    _ -> Failure(failure(path, status, message))
+  }
+}
+
+fn list_names(path: Path) -> List<Text> {
+  let (status, names, message) = host_list(path)
+  case status {
+    0 -> names
+    _ -> Failure(failure(path, status, message))
+  }
+}
+
+fn metadata_host(path: Path) -> Metadata {
+  let (status, kind, size, modified, message) = host_metadata(path)
+  case status {
+    0 -> Metadata(
+      case kind {
+        0 -> Kind.File
+        1 -> Kind.Directory
+        _ -> Kind.Special
+      },
+      size,
+      modified,
+    )
+    _ -> Failure(failure(path, status, message))
+  }
+}
+
+fn open_host(path: Path) -> Reader<FsError> {
+  let handle = succeed_with(path, host_open(path))
+  Stream.reader(fn() { read_chunk(path, handle) }, fn() {
+    let _closed = host_close(handle)
+    Void
+  })
+}
+
+fn create_host(path: Path, mode: WriteMode) -> Writer<FsError> {
+  let code = case mode {
+    WriteMode.Replace -> 0
+    WriteMode.Append -> 1
+    WriteMode.New -> 2
+  }
+  let handle = succeed_with(path, host_create(path, code))
+  Stream.writer(fn(bytes) {
+    succeed(path, host_write(handle, bytes))
+  }, fn() {
+    succeed(path, host_close(handle))
+  })
+}
+
+fn write_with(path: Path, bytes: Bytes, mode: WriteMode) -> Void needs {
+  files: Files
+} {
+  let writer = files.create(path, mode)
+  case Stream.write(writer, bytes) {
+    Success(_) -> Stream.close(writer)
+    Failure(error) -> {
+      let _closed = Result.capture(fn() { Stream.close(writer) })
+      Failure(error)
+    }
+  }
+}
+
+// Succeeds when `path` is a directory, following symbolic links.
+fn existing_directory(path: Path) -> Void needs {
+  files: Files
+} {
+  let metadata = files.metadata(path)
+  case metadata.kind {
+    Kind.Directory -> Void
+    _ -> Failure(FsError.AlreadyExists(path))
+  }
+}
+
+fn ensure_directory(path: Path) -> Void needs {
+  files: Files
+} {
+  case files.create_directory(path) {
+    Success(_) -> Void
+    Failure(FsError.AlreadyExists(_)) -> existing_directory(path)
+    Failure(error) -> Failure(error)
+  }
+}
+
+fn remove_tree_or_fail(path: Path) -> Void {
+  case code_of(host_is_directory(path)) {
+    1 -> List.each(list_names(path), fn(name) {
+      remove_tree_or_fail(Path.join(path, name))
+    })
+    _ -> Void
+  }
+  succeed(path, host_remove(path))
+}
+
+// Removes `path` and, for a directory, everything under it, without following
+// symbolic links out of it. A release, so it cannot fail: what cannot be
+// removed is left.
+fn remove_tree(path: Path) -> Void {
+  let _removed = Result.capture(fn() { remove_tree_or_fail(path) })
+  Void
+}
+
+// The host core. A status is non-negative on success (a handle, a flag, or 0)
+// and one of `failure`'s codes otherwise, with the operating system's message.
+
+native fn host_open(path: Path) -> (Int, Text)
+
+native fn host_create(path: Path, mode: Int) -> (Int, Text)
+
+// Status 1 with a chunk, 0 at the end, or a failure code.
+native fn host_read(handle: Int) -> (Int, Bytes, Text)
+
+native fn host_write(handle: Int, bytes: Bytes) -> (Int, Text)
+
+native fn host_close(handle: Int) -> (Int, Text)
+
+// Status 0 with the kind code (0 file, 1 directory, 2 other), the size, and
+// the modification time in Unix nanoseconds, or a failure code.
+native fn host_metadata(path: Path) -> (Int, Int, Int, Int, Text)
+
+native fn host_list(path: Path) -> (Int, List<Text>, Text)
+
+native fn host_create_directory(path: Path) -> (Int, Text)
+
+native fn host_remove(path: Path) -> (Int, Text)
+
+native fn host_rename(from: Path, to: Path) -> (Int, Text)
+
+// Status 1 for a directory (not following a symbolic link), 0 for anything
+// else, or a failure code.
+native fn host_is_directory(path: Path) -> (Int, Text)
+
+// Test-only: creates a new directory under the system's temporary directory.
+native fn host_temporary_directory() -> Path
+
+// Test-only: `root` itself; defects unless it is an absolute path.
+native fn test_root(root: Path) -> Path

@@ -3,6 +3,7 @@
 // each_stops_at_first_failure.
 import std/debug as Debug
 import std/map as Map
+import std/test as Test
 
 fn restock(current: Option<Int>) -> Int {
   case current {
@@ -11,7 +12,7 @@ fn restock(current: Option<Int>) -> Int {
   }
 }
 
-pub fn main() -> List<Text> {
+fn run() -> List<Text> {
   let stock = Map.from([("pear", 3), ("apple", 0), ("fig", 7)])
   let in_stock = Map.map_values(stock, fn(count) { count > 0 })
   let kept = Map.filter(stock, fn(name, count) { count > 0 and name != "pear" })
@@ -22,4 +23,8 @@ pub fn main() -> List<Text> {
     "filter: ${Debug.render(kept)}",
     "reduce, in key order: ${Map.reduce(stock, "", fn(text, name, count) { "${text}${name}=${count};" })}",
   ]
+}
+
+test "callbacks" {
+  Test.assert_equal(run(), ["update, present: Map { \"apple\": 0, \"fig\": 8, \"pear\": 3 }", "update, absent: Map { \"apple\": 0, \"fig\": 7, \"kiwi\": -1, \"pear\": 3 }", "map_values: Map { \"apple\": False, \"fig\": True, \"pear\": True }", "filter: Map { \"fig\": 7 }", "reduce, in key order: apple=0;fig=7;pear=3;"])
 }

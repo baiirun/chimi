@@ -4,6 +4,7 @@
 import std/debug as Debug
 import std/json as Json
 import std/json.{Value}
+import std/test as Test
 
 fn rendered(text: Text) -> Text {
   let value = Json.decode(text)
@@ -13,7 +14,7 @@ fn rendered(text: Text) -> Text {
   }
 }
 
-pub fn main() -> List<List<Text>> {
+fn run() -> List<List<Text>> {
   [
     [rendered("1"), rendered("1.0"), rendered("10e-1"), rendered("0.1e1")],
     [rendered("1e400"), rendered("10e399"), rendered("0.1e401")],
@@ -22,4 +23,8 @@ pub fn main() -> List<List<Text>> {
     [rendered("0"), rendered("-0.0e7"), rendered("-12.50"), rendered("0.000001"), rendered("1e-7")],
     [rendered("100000000000000000000"), rendered("1e21"), rendered("-2.5E-7")],
   ]
+}
+
+test "number rendering" {
+  Test.assert_equal(run(), [["Json.Number(1)", "Json.Number(1)", "Json.Number(1)", "Json.Number(1)"], ["Json.Number(1e400)", "Json.Number(1e400)", "Json.Number(1e400)"], ["Json.Number(1e-400)", "Json.Number(2e-400)", "Json.Number(-1.5e-99999999999999999999)"], ["Json.Number(9007199254740993)", "Json.Number(1.2345678901234567890123e22)"], ["Json.Number(0)", "Json.Number(0)", "Json.Number(-12.5)", "Json.Number(0.000001)", "Json.Number(1e-7)"], ["Json.Number(100000000000000000000)", "Json.Number(1e21)", "Json.Number(-2.5e-7)"]])
 }
