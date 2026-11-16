@@ -286,8 +286,6 @@ fn scan(command: Command, arguments: List<Text>) -> Parsed {
     case state.rest {
       [] -> break state
       ["--", ..rest] -> break Scan([], state.values, List.append(state.positionals, rest))
-      ["--help", .._] -> Failure(Stop.Shown(usage(command)))
-      ["-h", .._] -> Failure(Stop.Shown(usage(command)))
       [word, ..rest] -> case Text.strip_prefix(word, "--") {
         Some(long) -> scan_long(command, state, long, rest)
         None -> case is_cluster(word) {
