@@ -136,6 +136,8 @@ pub(super) fn structural_order(
                 }
                 Ordering::Equal
             }
+            // Opaque to typing; creation order keeps the order total, as natively.
+            (RuntimeValue::TestLog(left), RuntimeValue::TestLog(right)) => left.id.cmp(&right.id),
             (RuntimeValue::Set(left), RuntimeValue::Set(right)) => {
                 let (left, right) = (left.entry_refs(), right.entry_refs());
                 steps.push(Step::Decide(left.len().cmp(&right.len())));
@@ -181,6 +183,7 @@ const fn rank(value: &RuntimeValue) -> u8 {
         RuntimeValue::Set(_) => 16,
         RuntimeValue::Bytes(_) => 17,
         RuntimeValue::Cause(_) => 18,
+        RuntimeValue::TestLog(_) => 19,
     }
 }
 

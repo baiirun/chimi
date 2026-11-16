@@ -3,6 +3,7 @@
 //! controlled environment and working directory. Each test compares the two
 //! backends' outcome records with the expected one.
 
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -15,13 +16,17 @@ fn scratch_directory(name: &str) -> PathBuf {
     path.canonicalize().unwrap()
 }
 
-/// A command with an empty environment except `variables`, run in `directory`.
+/// A command with an empty environment except `variables`, run in `directory`,
+/// plus two variables that are not UTF-8 (a value and a name), which both
+/// backends leave out.
 fn command(program: &Path, directory: &Path, variables: &[(&str, &str)]) -> Command {
     let mut command = Command::new(program);
     command
         .current_dir(directory)
         .env_clear()
-        .envs(variables.iter().copied());
+        .envs(variables.iter().copied())
+        .env("BROKEN", std::ffi::OsStr::from_bytes(b"\xff"))
+        .env(std::ffi::OsStr::from_bytes(b"\xfeNAME"), "value");
     command
 }
 

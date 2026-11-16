@@ -58,8 +58,8 @@ MUTATIONS = [
         ("import std/list as List\n", "import std/list as List\nimport std/text as Text\n")]),
     # std/path.
     programs("join lets an absolute part replace the base", PATH, [
-        ("  let tail = trim_leading_separators(part)\n  case (base, tail) {\n    (\"\", _) -> from(part)",
-         "  let tail = trim_leading_separators(part)\n  case (base, tail) {\n    _ if Text.starts_with(part, \"/\") -> from(part)\n    (\"\", _) -> from(part)")]),
+        ("  let tail = trim_leading_separators(part)\n  case (base, tail) {\n    (\"\", _) -> from(tail)",
+         "  let tail = trim_leading_separators(part)\n  case (base, tail) {\n    _ if Text.starts_with(part, \"/\") -> from(part)\n    (\"\", _) -> from(tail)")]),
     programs("join from an empty base keeps an absolute part", PATH, [
         ('    ("", _) -> from(tail)', '    ("", _) -> from(part)')]),
     programs("replace_extension keeps trailing dot components", PATH, [
