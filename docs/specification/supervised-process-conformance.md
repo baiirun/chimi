@@ -1184,7 +1184,7 @@ scenarios pass and `CURRENT_STAGE` names it.
 | U10 | `programs/supervised-pool` and the performance harness | FP01, MF02, MF03, PG01–PG10 |
 | U11 | G27: `Process.address`, `queued`, `capacity`, `monitor`, and `unmonitor` ([process monitors and metrics](process-monitors-and-metrics.md), CHI-220), fiber ABI 9 | SF27, SF28, MB12–MB18 |
 | U12 | G28 and CHI-213: capabilities in a `Process.send` message move to the receiving incarnation, and `Process.handoff_spec` and `Supervisor.start_handoff` start a one-shot process that owns its argument, fiber ABI 10 | SP10, SF29–SF31, MB19–MB21, CB09–CB12 |
-| U13 | G22: drain before cancel, ordered shutdown, SIGINT and SIGTERM, the exit status after a signal, and `--signal` ([application lifecycle](application-lifecycle.md)), fiber ABI 12, runtime ABI 30. RR05 and SD06 move here because their rule changed | MB22, RR05, SD06, SD10–SD13, SG01–SG03, FP02 |
+| U13 | G22: drain before cancel, ordered shutdown, SIGINT and SIGTERM, the exit status after a signal, and `--signal` ([application lifecycle](application-lifecycle.md)), fiber ABI 14, runtime ABI 32. RR05 and SD06 move here because their rule changed | MB22, RR05, SD06, SD10–SD13, SG01–SG03, FP02 |
 
 Two scenarios moved stage (coordinator decisions on `ts-6ccbc9`). MF06
 moved from U3 to U5, because a process program cannot be built natively

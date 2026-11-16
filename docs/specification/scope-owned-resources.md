@@ -114,14 +114,13 @@ pub native fn scoped<H, T, EA, ER, EU, RA, RR, RU>(
   cancelled part are cancelled at once.
 - **Processes.** A process body gets the same rules. A graceful stop
   (`Supervisor.remove_process`, a restart, a parent supervisor stopping)
-  that arrives during `use` cancels `use`, and the release then runs with
-  shutdown held off. A stop that arrives during a release is told to the body
-  only once the release returns. While the body holds a resource, the stop
-  leaves running the children a release may need: those started in a
-  release and those started outside every scope. A `Process.receive` or an
-  inbox select inside a release answers the stop as it would after it, with
-  `Cancelled`. `shutdown_within` still bounds all of it: at the deadline the
-  body and every descendant still running end at once.
+  drains the body before it cancels it
+  ([application lifecycle](application-lifecycle.md), G22): `use` and any
+  release keep running, and so do the body's children. A `Process.receive`
+  or an inbox select, inside a release or not, returns the accepted messages
+  and then answers the stop with `Cancelled`. `shutdown_within` still bounds
+  all of it: at the deadline the body and every descendant still running end
+  at once.
 - **The program's end.** When `main` returns, its children are cancelled
   like any parent's, so they run their releases before the program ends.
   A release that can never return then ends the program in the deadlock
@@ -184,7 +183,7 @@ with that call's span.
 | A receive inside a release answers the stop | `a_process_receive_in_a_release_answers_the_stop` |
 | A stopping release selecting on a helper that defects is woken | `a_stopping_release_selecting_on_a_defecting_helper_is_woken` |
 | A process stopped during use finishes its release before the deadline | `a_process_stopped_in_use_finishes_its_release_before_the_deadline` |
-| A process stopped during a release lets it finish, helpers included | `a_process_stopped_in_its_release_lets_the_release_finish`, `a_process_stop_leaves_a_release_helper_running` |
+| A process stopped during use keeps working, then finishes its release, helpers included | `a_process_stopped_in_its_release_lets_the_release_finish`, `a_process_stop_leaves_a_release_helper_running` |
 | A process child stuck in a release is forced at the deadline | `a_process_child_stuck_in_its_release_is_forced_at_the_deadline` |
 | A process body runs its release when a child defects | `a_process_body_runs_its_release_when_a_child_defects` |
 | A defect in `use` outranks a defect in `release`; a failed acquire runs no release | `std-tests/resource/use_defect_outranks_release_defect.chimi`, `failed_acquire_skips_release.chimi` |

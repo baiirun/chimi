@@ -592,10 +592,10 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
     assert_eq!(result.outcome, success("702"), "{}", result.outcome);
 }
 
-// Rejects a graceful process stop delivered into a running release, and one
-// never delivered after it: stopped 1 s into a 2 s release, the body reports 7
-// 1 s later, and `scoped` then returns the stop, so its 99 is never sent
-// (7001).
+// Rejects a graceful process stop delivered into running work: stopped 1 s
+// into a 2 s use of the resource, the body drains (G22), so it reports 7 1 s
+// later, `scoped` returns normally and its 99 is sent, and the next receive
+// ends the body; the removal waits the 1 s (7991).
 #[test]
 fn a_process_stopped_in_its_release_lets_the_release_finish() {
     let result = run_virtual(
@@ -645,7 +645,7 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
 }
 "#,
     );
-    assert_eq!(result.outcome, success("7001"), "{}", result.outcome);
+    assert_eq!(result.outcome, success("7991"), "{}", result.outcome);
 }
 
 // Rejects a shutdown that waits forever for a child's release: the child's
