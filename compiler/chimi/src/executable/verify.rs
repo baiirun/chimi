@@ -5,7 +5,7 @@
 //! builds by hand (CO02, CO04). Release builds trust the frontend. A violation is a
 //! compiler bug, never a user diagnostic.
 
-use super::{CoreNode, CoreOperation, CoreProgram, CoreSymbolKind};
+use super::{CoreNode, CoreOperation, CorePattern, CoreProgram, CoreStep, CoreSymbolKind};
 use crate::ids::{CoreNodeId, SymbolId, TypeId};
 use crate::standard::{StandardFunction, StandardSymbol, StandardType};
 use crate::typing::{CanonicalType, PropertyDerivation, TypedProject};
@@ -168,8 +168,16 @@ impl<'a> Verifier<'a> {
                 }
                 self.check_spec_body(call, *expression)
             }
-            CoreOperation::Closure { captures, .. } => {
-                for capture in captures {
+            CoreOperation::Closure {
+                parameters,
+                captures,
+                body: closure_body,
+            } => {
+                // A closure's captures also list the names it binds itself, its
+                // parameters and its locals; only names bound outside it are
+                // snapshotted into the spec.
+                let own = self.bound_within(parameters, *closure_body);
+                for capture in captures.iter().filter(|capture| !own.contains(capture)) {
                     if let Some(type_id) = self.reference_types.get(capture)
                         && let Some(violation) = not_shareable(body, *type_id)
                     {
@@ -180,6 +188,108 @@ impl<'a> Verifier<'a> {
             }
             _ => Ok(()),
         }
+    }
+
+    /// The symbols a closure binds: its parameters and every local, loop state,
+    /// pattern binding, cause and nested closure parameter in its body.
+    fn bound_within(&self, parameters: &[SymbolId], body: CoreNodeId) -> HashSet<SymbolId> {
+        fn pattern_bindings(pattern: &CorePattern, bound: &mut HashSet<SymbolId>) {
+            match pattern {
+                CorePattern::Wildcard | CorePattern::Literal(_) => {}
+                CorePattern::Binding(symbol) => {
+                    bound.insert(*symbol);
+                }
+                CorePattern::Constructor { fields, .. } | CorePattern::Tuple(fields) => {
+                    fields
+                        .iter()
+                        .for_each(|field| pattern_bindings(field, bound));
+                }
+                CorePattern::Outcome { value, .. } => pattern_bindings(value, bound),
+                CorePattern::List {
+                    prefix,
+                    rest,
+                    suffix,
+                } => {
+                    for element in prefix.iter().chain(rest.as_deref()).chain(suffix) {
+                        pattern_bindings(element, bound);
+                    }
+                }
+                CorePattern::Alias { pattern, binding } => {
+                    bound.insert(*binding);
+                    pattern_bindings(pattern, bound);
+                }
+            }
+        }
+        let mut bound = parameters.iter().copied().collect::<HashSet<_>>();
+        let mut pending = vec![body];
+        while let Some(id) = pending.pop() {
+            match &self.node(id).operation {
+                CoreOperation::Constant(_)
+                | CoreOperation::Reference(_)
+                | CoreOperation::DependencyMethod { .. } => {}
+                CoreOperation::Select { receiver, .. } => pending.push(*receiver),
+                CoreOperation::Construct { arguments, .. } => pending.extend(arguments),
+                CoreOperation::Call { callee, arguments } => {
+                    pending.push(*callee);
+                    pending.extend(arguments);
+                }
+                CoreOperation::List(items) | CoreOperation::Tuple(items) => {
+                    pending.extend(items);
+                }
+                CoreOperation::Record(fields) => {
+                    pending.extend(fields.iter().map(|field| field.value));
+                }
+                CoreOperation::Unary { operand, .. } | CoreOperation::Identity(operand) => {
+                    pending.push(*operand);
+                }
+                CoreOperation::Binary { left, right, .. } => pending.extend([*left, *right]),
+                CoreOperation::Provision {
+                    expression,
+                    providers,
+                } => {
+                    pending.push(*expression);
+                    pending.extend(providers.iter().map(|field| field.value));
+                }
+                CoreOperation::Sequence(steps) => {
+                    for step in steps {
+                        match step {
+                            CoreStep::Bind { symbol, value } => {
+                                bound.insert(*symbol);
+                                pending.push(*value);
+                            }
+                            CoreStep::Expression(value) => pending.push(*value),
+                        }
+                    }
+                }
+                CoreOperation::Closure {
+                    parameters, body, ..
+                } => {
+                    bound.extend(parameters.iter().copied());
+                    pending.push(*body);
+                }
+                CoreOperation::Match { subjects, arms } => {
+                    pending.extend(subjects);
+                    for arm in arms {
+                        bound.extend(arm.cause.map(|cause| cause.local));
+                        arm.patterns
+                            .iter()
+                            .for_each(|pattern| pattern_bindings(pattern, &mut bound));
+                        pending.extend(arm.guard);
+                        pending.push(arm.body);
+                    }
+                }
+                CoreOperation::Loop {
+                    state,
+                    initial,
+                    body,
+                } => {
+                    bound.insert(*state);
+                    pending.extend([*initial, *body]);
+                }
+                CoreOperation::Break { value, .. } => pending.extend(value),
+            }
+        }
+        bound
     }
 
     fn node(&self, id: CoreNodeId) -> &CoreNode {
