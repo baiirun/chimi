@@ -14,7 +14,8 @@ import std/duration.{Duration}
 // 1. Public types.
 
 /// The shape of a schedule. Build one with `immediate`, `fixed`, or
-/// `exponential`, which check their arguments.
+/// `exponential`, which check their arguments; `delay` checks a schedule
+/// built from a variant directly.
 pub enum Schedule {
   /// `attempts` tries with no wait between them.
   Immediate(attempts: Int)
@@ -60,17 +61,18 @@ pub fn exponential(attempts: Int, first: Duration, limit: Duration) -> Schedule 
 /// have used up the schedule. Attempts count from 1, so
 /// `Schedule.delay(schedule, 1)` is the wait before the second try.
 ///
-/// Defects when `attempt` is below 1.
+/// Defects when `attempt` is below 1, or when `schedule` was built directly
+/// from a variant with an attempt count below 1 or a negative wait.
 /// Cost: O(1) for `immediate` and `fixed`; for `exponential`, O(log(limit /
 /// first)) doublings at most, since doubling stops at `limit`.
 pub fn delay(schedule: Schedule, attempt: Int) -> Option<Duration> {
   let used = checked_attempts(attempt)
-  case used < attempts(schedule) {
+  case used < checked_attempts(attempts(schedule)) {
     False -> None
     True -> Some(case schedule {
       Immediate(_) -> Duration.zero
-      Fixed(_, wait) -> wait
-      Exponential(_, first, limit) -> doubled(first, limit, used)
+      Fixed(_, wait) -> checked_wait(wait)
+      Exponential(_, first, limit) -> doubled(checked_wait(first), checked_wait(limit), used)
     })
   }
 }

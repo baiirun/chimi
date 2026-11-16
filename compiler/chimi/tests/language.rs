@@ -11232,6 +11232,27 @@ fn a_type_argument_used_as_input_and_output_takes_only_its_own_set() {
 }
 
 #[test]
+fn a_generic_failure_enum_fits_only_at_its_own_type_arguments() {
+    // `W<Text>.Bad` and `W<Int>.Bad` are different failures: a callback over
+    // `W<Int>` must not take an operation's `W<Text>`, whichever argument the
+    // call matches first. Both used to type-check and then defect adding 1 to
+    // a text.
+    let prelude = "enum W<T> { Bad(x: T) }\n\
+        fn fail_text() -> Int {\n  let w: W<Text> = W.Bad(\"hello\")\n  Failure(w)\n}\n\
+        fn plus(e: W<Int>) -> Int {\n  case e {\n    W.Bad(x) -> x + 1\n  }\n}\n";
+    let operation_first = format!(
+        "{prelude}fn run<T, E>(op: fn() -> T errors E, f: fn(E) -> Int) -> Int {{\n  case op() {{\n    Success(_) -> 0\n    Failure(e) -> f(e)\n  }}\n}}\n\
+         pub fn main() -> Int {{ run(fail_text, plus) }}\n"
+    );
+    assert_eq!(check_codes(&operation_first), ["T4203"]);
+    let callback_first = format!(
+        "{prelude}fn run<T, E>(f: fn(E) -> Int, op: fn() -> T errors E) -> Int {{\n  case op() {{\n    Success(_) -> 0\n    Failure(e) -> f(e)\n  }}\n}}\n\
+         pub fn main() -> Int {{ run(plus, fail_text) }}\n"
+    );
+    assert_eq!(check_codes(&callback_first), ["T4203"]);
+}
+
+#[test]
 fn a_set_already_checked_against_a_narrower_one_does_not_widen_later() {
     // The lambda's `v` is first checked to fit `A | C` inside `score(v)`; a
     // later call with `B | C` must not widen `v` past that check.

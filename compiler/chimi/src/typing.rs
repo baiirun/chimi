@@ -7786,10 +7786,27 @@ impl ProjectTypeChecker {
     fn failure_row_is_subset(&self, actual: FailureRowId, expected: FailureRowId) -> bool {
         let actual = &self.failure_rows[actual.raw() as usize];
         let expected = &self.failure_rows[expected.raw() as usize];
+        // A variant of a generic enum is the same member only at the same type
+        // arguments: `W<Text>.Bad` is not in a set that holds `W<Int>.Bad`.
+        let arguments = |row: &FailureRow, variant: SymbolId| {
+            row.variant_arguments
+                .iter()
+                .find(|arguments| arguments.variant == variant)
+                .map(|arguments| {
+                    arguments
+                        .arguments
+                        .iter()
+                        .map(|argument| self.resolve_inference_type(*argument))
+                        .collect::<Vec<_>>()
+                })
+        };
         actual
             .variants
             .iter()
-            .all(|variant| expected.variants.contains(variant))
+            .all(|variant| {
+                expected.variants.contains(variant)
+                    && arguments(actual, *variant) == arguments(expected, *variant)
+            })
             && actual.parameters.iter().all(|parameter| {
                 if !expected.parameters.contains(parameter) {
                     return false;

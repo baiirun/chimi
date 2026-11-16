@@ -74,3 +74,10 @@ MUTATIONS = [
          "")],
         "a_type_argument_used_as_input_and_output"),
 ]
+MUTATIONS += [
+    language("generic variants fit at any type arguments", TYPING, [
+        ("                    && arguments(actual, *variant) == arguments(expected, *variant)\n", "")],
+        "a_generic_failure_enum_fits_only_at_its_own_type_arguments"),
+    programs("delay trusts a directly built schedule", SCHEDULE, [
+        ("      Fixed(_, wait) -> checked_wait(wait)", "      Fixed(_, wait) -> wait")]),
+]
