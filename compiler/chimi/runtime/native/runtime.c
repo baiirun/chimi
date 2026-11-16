@@ -19,6 +19,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 /* The stack of every scheduler fiber: the root task, child tasks, and incarnations. */
 #define CHIMI_FIBER_STACK_BYTES (1024u * 1024u)
@@ -288,8 +289,11 @@ struct ChimiRuntime {
      (ALLOCATION_FRAME_ENVIRONMENT). No value points to one; marking and copying
      check the kind of every allocation they reach, so a violation aborts.
 
-   Collection does not move anything, so pointers held in C frames stay valid.
-   The runtime switches the current heap around every scheduler request
+   A pass boundary moves the young chunk allocations that the roots reach into
+   survivor blocks (forward_survivors) and rewrites the roots, which are passed by
+   address. So across allocation_scope_collect or allocation_scope_end, a C frame may
+   keep a pointer to a value of that region's current pass only through those roots;
+   everything older never moves. The runtime switches the current heap around every scheduler request
    (scheduler_request), because a fiber resumes only by returning from one. */
 typedef struct AllocationHeader AllocationHeader;
 typedef struct AllocationArea AllocationArea;
@@ -299,12 +303,28 @@ typedef struct RuntimeHeap RuntimeHeap;
 typedef enum { AREA_YOUNG, AREA_SURVIVOR, AREA_BASE, AREA_FRAGMENT, AREA_STATIC } AreaRole;
 
 struct AllocationHeader {
+  /* The area's list link; for a chunk allocation (see YoungChunk), which is in no
+     list, the copy it was moved to at its pass boundary, or NULL. */
   AllocationHeader *next;
   AllocationArea *area;
   size_t bytes;
   uint64_t mark_epoch;
   AllocationKind kind;
+  bool in_chunk;
 };
+
+/* A region's young allocations are bumped out of chunks it owns (CHI-219,
+   docs/performance/native-bump-allocation-design.md). A chunk allocation is in no
+   area list: a walk of the chunk finds it, by its header's size. */
+enum { YOUNG_CHUNK_BYTES = 16 * 1024, YOUNG_CHUNK_CACHE = 16 };
+typedef struct YoungChunk {
+  struct YoungChunk *next;
+  /* Where the allocations of a filled chunk end; the region's `bump` for the last. */
+  unsigned char *used;
+  _Alignas(16) unsigned char data[];
+} YoungChunk;
+enum { YOUNG_CHUNK_CAPACITY = YOUNG_CHUNK_BYTES - offsetof(YoungChunk, data),
+       YOUNG_CHUNK_LARGEST = YOUNG_CHUNK_CAPACITY / 4 };
 
 struct AllocationArea {
   AreaRole role;
@@ -333,6 +353,19 @@ struct AllocationScope {
      pass does not run a full pass on every other pass. */
   size_t full_baseline;
   bool has_baseline;
+  /* The young area's chunks, oldest first, and the free space of the last one. */
+  YoungChunk *first_chunk;
+  YoungChunk *last_chunk;
+  unsigned char *bump;
+  unsigned char *bump_end;
+  /* Payload bytes and count of the chunk allocations not yet added to the memory
+     counters (see flush_young_counts). */
+  size_t pending_bytes;
+  size_t pending_count;
+  /* Most of the last pass's young bytes survived it. Moving survivors out of the
+     chunks would then cost more than bumping saves, so this pass links its
+     allocations to the young list instead, as they would have to be anyway. */
+  bool links_young;
   size_t live_bytes;
   size_t peak_live_bytes;
   size_t total_allocated_bytes;
@@ -467,10 +500,30 @@ static AllocationArea *current_area(void) {
   return current_heap->innermost ? &current_heap->innermost->young : &current_heap->base;
 }
 
+/* Footprint of the young chunk allocations whose counters are still deferred to
+   their scope's next flush. Bumping one only adds to this, so the true footprint
+   (footprint_bytes plus this) peaks just before it falls: footprint_sub and
+   footprint_add record the peak there, and the report reads footprint_peak(). */
+static size_t pending_footprint_bytes;
+
+static void footprint_record_peak(void) {
+  size_t footprint = heap_totals.footprint_bytes + pending_footprint_bytes;
+  if (footprint > heap_totals.peak_footprint_bytes) heap_totals.peak_footprint_bytes = footprint;
+}
+
 static void footprint_add(size_t bytes) {
   heap_totals.footprint_bytes += bytes;
-  if (heap_totals.footprint_bytes > heap_totals.peak_footprint_bytes)
-    heap_totals.peak_footprint_bytes = heap_totals.footprint_bytes;
+  footprint_record_peak();
+}
+
+static void footprint_sub(size_t bytes) {
+  footprint_record_peak();
+  heap_totals.footprint_bytes -= bytes;
+}
+
+static size_t footprint_peak(void) {
+  footprint_record_peak();
+  return heap_totals.peak_footprint_bytes;
 }
 
 static void fragment_footprint_add(size_t bytes) {
@@ -497,18 +550,116 @@ static void area_link(AllocationArea *area, AllocationHeader *header) {
   ++area->count;
 }
 
+static YoungChunk *young_chunk_cache;
+static uint32_t young_chunk_cache_count;
+
+static YoungChunk *young_chunk_take(void) {
+  YoungChunk *chunk = young_chunk_cache;
+  if (chunk) {
+    young_chunk_cache = chunk->next;
+    --young_chunk_cache_count;
+  } else {
+    chunk = calloc(1, YOUNG_CHUNK_BYTES);
+    if (!chunk) exhausted_memory();
+  }
+  chunk->next = NULL;
+  chunk->used = chunk->data;
+  return chunk;
+}
+
+/* CHIMI_POISON_YOUNG_CHUNKS is a checking build: every pass boundary frees its
+   chunks after filling them with a pattern, so a pointer kept across the boundary
+   reads garbage, or fails as a use after free under AddressSanitizer. */
+/* Requires: `chunk->used` marks the end of its allocations. Cached chunks are
+   zero, so a bump needs no zeroing of its own. */
+static void young_chunk_give(YoungChunk *chunk) {
+#ifdef CHIMI_POISON_YOUNG_CHUNKS
+  memset(chunk->data, 0xdb, YOUNG_CHUNK_CAPACITY);
+  free(chunk);
+  return;
+#endif
+  if (young_chunk_cache_count < YOUNG_CHUNK_CACHE) {
+    memset(chunk->data, 0, (size_t)(chunk->used - chunk->data));
+    chunk->next = young_chunk_cache;
+    young_chunk_cache = chunk;
+    ++young_chunk_cache_count;
+    return;
+  }
+  free(chunk);
+}
+
+/* Adds the chunk allocations made since the last call to the memory counters. A
+   pass only adds to its scope's and heap's counters until its boundary, so
+   deferring the additions to the boundary (or to a nested region's start) leaves
+   those peaks the same. The global footprint can fall mid-pass, so its peak
+   counts the deferred bytes through pending_footprint_bytes. */
+static void flush_young_counts(AllocationScope *scope) {
+  size_t bytes = scope->pending_bytes, count = scope->pending_count;
+  if (count == 0) return;
+  scope->pending_bytes = 0;
+  scope->pending_count = 0;
+  scope->young.bytes += bytes;
+  scope->young.count += count;
+  heap_add_live(scope->heap, bytes);
+  scope_add_live(scope, bytes);
+  scope->total_allocated_bytes += bytes;
+  scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
+  heap_totals.live_allocations += count;
+  pending_footprint_bytes -= count * sizeof(AllocationHeader) + bytes;
+  footprint_add(count * sizeof(AllocationHeader) + bytes);
+}
+
+/* A zeroed block of `rounded` bytes (a multiple of SMALL_BLOCK_GRAIN, at most
+   YOUNG_CHUNK_LARGEST) from `scope`'s chunks. */
+static AllocationHeader *young_bump(AllocationScope *scope, size_t rounded) {
+  if ((size_t)(scope->bump_end - scope->bump) < rounded) {
+    YoungChunk *chunk = young_chunk_take();
+    if (scope->last_chunk) {
+      scope->last_chunk->used = scope->bump;
+      scope->last_chunk->next = chunk;
+    } else {
+      scope->first_chunk = chunk;
+    }
+    scope->last_chunk = chunk;
+    scope->bump = chunk->data;
+    scope->bump_end = chunk->data + YOUNG_CHUNK_CAPACITY;
+  }
+  AllocationHeader *header = (AllocationHeader *)scope->bump;
+  scope->bump += rounded;
+  return header;
+}
+
+static size_t young_rounded(size_t bytes) {
+  return (sizeof(AllocationHeader) + bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
+}
+
 static void *allocate(size_t count, size_t size) {
   if (count == 0) count = 1;
-  if (size != 0 && count > SIZE_MAX / size) {
+  size_t bytes;
+  if (__builtin_mul_overflow(count, size, &bytes) ||
+      bytes > SIZE_MAX - sizeof(AllocationHeader) - SMALL_BLOCK_GRAIN) {
     fputs("Chimi runtime allocation overflow\n", stderr); exit(70);
   }
-  size_t bytes = count * size;
-  if (bytes > SIZE_MAX - sizeof(AllocationHeader) - SMALL_BLOCK_GRAIN) {
-    fputs("Chimi runtime allocation overflow\n", stderr); exit(70);
+  AllocationScope *innermost = allocation_target ? NULL : current_heap->innermost;
+  if (innermost && !innermost->links_young && bytes <= YOUNG_CHUNK_LARGEST) {
+    size_t rounded = young_rounded(bytes);
+    AllocationHeader *header = young_bump(innermost, rounded);
+    header->bytes = bytes;
+    header->area = &innermost->young;
+    header->in_chunk = true;
+    innermost->pending_bytes += bytes;
+    ++innermost->pending_count;
+    pending_footprint_bytes += sizeof(AllocationHeader) + bytes;
+    if (profile_rows && current_heap->profiled_node_plus_one) {
+      ProfileRow *row = &profile_rows[current_heap->profiled_node_plus_one - 1];
+      ++row->allocations;
+      row->allocated_bytes += bytes;
+    }
+    return header + 1;
   }
+  AllocationArea *area = current_area();
   AllocationHeader *header = small_block_take(sizeof(*header) + bytes);
   header->bytes = bytes;
-  AllocationArea *area = current_area();
   area_link(area, header);
   if (area->heap) heap_add_live(area->heap, bytes);
   if (area->scope) {
@@ -649,7 +800,7 @@ static void release_allocation(AllocationHeader *header) {
   if (header->area->heap) header->area->heap->live_bytes -= header->bytes;
   if (header->area->role != AREA_STATIC) {
     --heap_totals.live_allocations;
-    heap_totals.footprint_bytes -= sizeof(*header) + header->bytes;
+    footprint_sub(sizeof(*header) + header->bytes);
   }
   small_block_give(header, sizeof(*header) + header->bytes);
 }
@@ -693,7 +844,7 @@ typedef struct RuntimeFragment {
 
 /* Frees an emptied adopted area, which is the record of the fragment it came from. */
 static void area_free(AllocationArea *area) {
-  heap_totals.footprint_bytes -= sizeof(RuntimeFragment);
+  footprint_sub(sizeof(RuntimeFragment));
   small_block_give(area, sizeof(RuntimeFragment));
 }
 
@@ -742,6 +893,51 @@ static ChimiControl *new_control(ControlKind kind, ChimiValue *value, const char
 static ChimiControl *success(ChimiValue *value) { return new_control(CONTROL_SUCCESS, value, NULL, -1); }
 static ChimiControl *failure(ChimiValue *value) { return new_control(CONTROL_FAILURE, value, NULL, -1); }
 static ChimiControl *defect(const char *message, int64_t node) { return new_control(CONTROL_DEFECT, NULL, message, node); }
+
+/* A program without tasks runs main on the host thread, which has no overflow guard
+   of its own: past its stack the program would die with SIGSEGV. Instead each call
+   checks the stack against this address and defects while STACK_HEADROOM_BYTES
+   remain, enough for the runtime frames between two calls and for reporting the
+   defect. An unlimited stack (glibc then reports the end of the previous mapping)
+   is held to STACK_UNLIMITED_BYTES, so the program defects before memory runs
+   out. Finding the bottom reads /proc/self/maps on Linux, so it runs once at
+   startup, not per benchmark repeat. Zero disables the check: on a fiber the guard page catches overflow, and
+   on a host whose stack bounds are unknown nothing better is available. */
+static uintptr_t host_stack_limit;
+enum { STACK_HEADROOM_BYTES = 256 * 1024 };
+#define STACK_UNLIMITED_BYTES ((uintptr_t)1 << 30)
+
+/* The lowest address of the calling thread's stack, or 0 when it is unknown. */
+static uintptr_t host_stack_bottom(void) {
+#if defined(__APPLE__)
+  pthread_t self = pthread_self();
+  uintptr_t top = (uintptr_t)pthread_get_stackaddr_np(self);
+  size_t size = pthread_get_stacksize_np(self);
+  return size < top ? top - size : 0;
+#elif defined(__linux__)
+  pthread_attr_t attributes;
+  if (pthread_getattr_np(pthread_self(), &attributes) != 0) return 0;
+  void *bottom = NULL;
+  size_t size = 0;
+  int status = pthread_attr_getstack(&attributes, &bottom, &size);
+  pthread_attr_destroy(&attributes);
+  return status == 0 ? (uintptr_t)bottom : 0;
+#else
+  return 0;
+#endif
+}
+
+static void guard_host_stack(void) {
+  uintptr_t bottom = host_stack_bottom();
+  uintptr_t here = (uintptr_t)__builtin_frame_address(0);
+  if (bottom == 0 || here <= bottom || here - bottom <= 2 * (uintptr_t)STACK_HEADROOM_BYTES) return;
+  host_stack_limit = here - bottom > STACK_UNLIMITED_BYTES ? here - STACK_UNLIMITED_BYTES
+                                                         : bottom + STACK_HEADROOM_BYTES;
+}
+
+static bool host_stack_exhausted(void) {
+  return (uintptr_t)__builtin_frame_address(0) < host_stack_limit;
+}
 static ChimiControl *cancelled(void) { return new_control(CONTROL_CANCEL, NULL, NULL, -1); }
 
 /* Timestamps (time-and-outcomes.md, "Timestamp"): signed nanoseconds since
@@ -1227,9 +1423,179 @@ static void mark_children(void *pointer) {
   }
 }
 
+/* Moving the survivors of a pass out of its chunks (see YoungChunk). After marking,
+   the collector copies each marked chunk allocation it reaches into a survivor
+   block and leaves the copy's address in the old header, then rewrites every
+   pointer the copies and the marked list allocations hold. Only this region's
+   chunk allocations move: everything else a pass reaches is older than the pass
+   or in a list, and nothing older points into a chunk. */
+static PointerStack copy_stack;
+
+static void *forward_young(void *pointer) {
+  if (!pointer) return NULL;
+  AllocationHeader *header = allocation_header(pointer);
+  if (!header->in_chunk || header->area->scope != collecting_scope) return pointer;
+  if (header->next) return header->next + 1;
+  if (header->mark_epoch != collecting_epoch) allocation_graph_inconsistent();
+  size_t total = sizeof(*header) + header->bytes;
+  AllocationHeader *copy = small_block_take(total);
+  memcpy(copy, header, total);
+  copy->in_chunk = false;
+  area_link(&collecting_scope->survivors, copy);
+  collecting_scope->promoted_bytes += copy->bytes;
+  header->next = copy;
+  pointer_stack_push(&copy_stack, copy + 1);
+  return copy + 1;
+}
+
+#define FORWARD(slot) ((slot) = (void *)forward_young((void *)(slot)))
+
+/* Rewrites the pointers `pointer` holds to the copies of moved allocations. It
+   follows the same pointers as mark_children. */
+static void forward_children(void *pointer) {
+  AllocationHeader *header = allocation_header(pointer);
+  switch (header->kind) {
+    case ALLOCATION_VALUE: {
+      ChimiValue *value = pointer;
+      switch (value->kind) {
+        case VALUE_TEXT:
+        case VALUE_BYTES: FORWARD(value->as.text.bytes); break;
+        case VALUE_JSON_NUMBER: FORWARD(value->as.json_number); break;
+        case VALUE_LIST:
+          FORWARD(value->as.list.vector.root);
+          FORWARD(value->as.list.vector.tail);
+          break;
+        case VALUE_RECORD:
+        case VALUE_TUPLE:
+        case VALUE_CAUSE: FORWARD(value->as.record.fields); break;
+        case VALUE_CONSTRUCTED: FORWARD(value->as.constructed.fields); break;
+        case VALUE_CALLABLE: FORWARD(value->as.callable); break;
+        case VALUE_MAP:
+        case VALUE_SET: FORWARD(value->as.map); break;
+        default: break;
+      }
+      break;
+    }
+    case ALLOCATION_LIST_NODE: {
+      ListNode *node = pointer;
+      for (uint32_t index = 0; index < node->count; ++index) FORWARD(node->slots[index]);
+      break;
+    }
+    case ALLOCATION_FIELDS: {
+      RuntimeField *fields = pointer;
+      size_t length = header->bytes / sizeof(*fields);
+      for (size_t index = 0; index < length; ++index) FORWARD(fields[index].value);
+      break;
+    }
+    case ALLOCATION_VALUE_POINTERS: {
+      ChimiValue **values = pointer;
+      size_t length = header->bytes / sizeof(*values);
+      for (size_t index = 0; index < length; ++index) FORWARD(values[index]);
+      break;
+    }
+    case ALLOCATION_ENVIRONMENT: {
+      ChimiEnvironment *environment = pointer;
+      FORWARD(environment->locals);
+      FORWARD(environment->requirements);
+      break;
+    }
+    case ALLOCATION_CALLABLE: {
+      ChimiCallable *callable = pointer;
+      FORWARD(callable->environment);
+      FORWARD(callable->inner);
+      break;
+    }
+    case ALLOCATION_MAP_NODE: {
+      MapNode *node = pointer;
+      FORWARD(node->key);
+      FORWARD(node->value);
+      FORWARD(node->left);
+      FORWARD(node->right);
+      break;
+    }
+    case ALLOCATION_CONTROL:
+      FORWARD(((ChimiControl *)pointer)->value);
+      FORWARD(((ChimiControl *)pointer)->cause);
+      break;
+    case ALLOCATION_BYTES: break;
+    case ALLOCATION_FRAME_ENVIRONMENT:
+    case ALLOCATION_KIND_COUNT: allocation_graph_inconsistent();
+  }
+}
+#undef FORWARD
+
+static void forward_marked_list(AllocationArea *area) {
+  for (AllocationHeader *header = area->allocations; header; header = header->next)
+    if (header->mark_epoch == collecting_epoch) forward_children(header + 1);
+}
+
+/* Whether this pass of `scope` has bumped an allocation into its chunks. */
+static bool young_chunks_used(const AllocationScope *scope) {
+  return scope->first_chunk && (scope->first_chunk->next || scope->bump != scope->first_chunk->data);
+}
+
+/* Moves what the roots reach out of `scope`'s chunks and updates the roots. */
+static void forward_survivors(AllocationScope *scope, ChimiValue **value, ChimiControl **control) {
+  if (!young_chunks_used(scope)) return;
+  if (value) *value = forward_young(*value);
+  if (control) *control = forward_young(*control);
+  forward_marked_list(&scope->young);
+  for (AllocationArea *area = scope->adopted; area; area = area->next) forward_marked_list(area);
+  while (copy_stack.length) forward_children(copy_stack.items[--copy_stack.length]);
+}
+
+/* Releases the chunk allocations of this pass that were not moved, and empties the
+   chunks for the next pass, keeping the first one. Requires flush_young_counts. */
+static void reset_young_chunks(AllocationScope *scope, bool keep_first) {
+  YoungChunk *first = scope->first_chunk;
+  if (!first || (keep_first && !young_chunks_used(scope))) return;
+  scope->last_chunk->used = scope->bump;
+  size_t dead_bytes = 0, dead_count = 0;
+  for (YoungChunk *chunk = first; chunk; chunk = chunk->next) {
+    for (unsigned char *cursor = chunk->data; cursor < chunk->used;) {
+      AllocationHeader *header = (AllocationHeader *)cursor;
+      cursor += young_rounded(header->bytes);
+      if (header->next) continue;
+      dead_bytes += header->bytes;
+      ++dead_count;
+      if (channel_endpoint_count && header->kind == ALLOCATION_VALUE) {
+        ChimiValue *value = (ChimiValue *)(header + 1);
+        if (is_channel_endpoint(value)) channel_endpoint_drop(value->as.capability.channel);
+      }
+    }
+  }
+  scope->live_bytes -= dead_bytes;
+  scope->heap->live_bytes -= dead_bytes;
+  heap_totals.live_allocations -= dead_count;
+  footprint_sub(dead_count * sizeof(AllocationHeader) + dead_bytes);
+  YoungChunk *rest = first->next;
+#ifdef CHIMI_POISON_YOUNG_CHUNKS
+  keep_first = false;
+#endif
+  if (keep_first) {
+    memset(first->data, 0, (size_t)(first->used - first->data));
+    first->next = NULL;
+    first->used = first->data;
+    scope->last_chunk = first;
+    scope->bump = first->data;
+    scope->bump_end = first->data + YOUNG_CHUNK_CAPACITY;
+  } else {
+    young_chunk_give(first);
+    scope->first_chunk = scope->last_chunk = NULL;
+    scope->bump = scope->bump_end = NULL;
+  }
+  while (rest) {
+    YoungChunk *next = rest->next;
+    young_chunk_give(rest);
+    rest = next;
+  }
+}
+
 static void allocation_scope_begin(AllocationScope *scope) {
   memset(scope, 0, sizeof(*scope));
   RuntimeHeap *heap = current_heap;
+  /* The enclosing region's peak must count what its pass has allocated so far. */
+  if (heap->innermost) flush_young_counts(heap->innermost);
   scope->heap = heap;
   scope->parent = heap->innermost;
   scope->young = (AllocationArea){.role = AREA_YOUNG, .heap = heap, .scope = scope};
@@ -1279,20 +1645,25 @@ static void sweep_survivors(AllocationScope *scope) {
    promotes the marked ones. A full pass also marks and sweeps the survivors.
    Returns HEAP_FOREIGN_POINTER, after collecting as usual, when a root reaches a
    value in another heap or in a fragment. */
-static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue *value,
-                                         ChimiControl *control, bool full) {
+static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **value,
+                                         ChimiControl **control, bool full, bool ending) {
   collecting_epoch = next_mark_epoch++;
   if (next_mark_epoch == 0) {
     fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); exit(70);
   }
+  flush_young_counts(scope);
   collecting_scope = scope;
   collecting_full = full;
   collecting_foreign = false;
-  mark_push(value, ALLOCATION_VALUE);
-  mark_push(control, ALLOCATION_CONTROL);
+  mark_push(value ? *value : NULL, ALLOCATION_VALUE);
+  mark_push(control ? *control : NULL, ALLOCATION_CONTROL);
   while (mark_stack.length) mark_children(mark_stack.items[--mark_stack.length]);
   bool foreign = collecting_foreign;
+  size_t young_bytes = scope->young.bytes, promoted_before = scope->promoted_bytes;
+  forward_survivors(scope, value, control);
+  reset_young_chunks(scope, !ending);
   promote_marked(scope, &scope->young);
+  scope->links_young = 4 * (scope->promoted_bytes - promoted_before) > young_bytes;
   while (scope->adopted) {
     AllocationArea *area = scope->adopted;
     scope->adopted = area->next;
@@ -1309,12 +1680,12 @@ static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue *val
 }
 
 /* A pass boundary: chooses a minor or a full pass (see full_baseline). */
-static HeapStatus allocation_scope_collect(AllocationScope *scope, ChimiValue *value,
-                                           ChimiControl *control) {
+static HeapStatus allocation_scope_collect(AllocationScope *scope, ChimiValue **value,
+                                           ChimiControl **control) {
   size_t survivors = scope->survivors.bytes;
   bool full = scope->has_baseline && survivors >= 2 * scope->full_baseline &&
               survivors - scope->full_baseline >= REGION_FULL_MIN_GROWTH;
-  HeapStatus status = allocation_scope_sweep(scope, value, control, full);
+  HeapStatus status = allocation_scope_sweep(scope, value, control, full, false);
   if (full || (!scope->has_baseline && scope->survivors.bytes != 0)) {
     scope->has_baseline = true;
     scope->full_baseline = scope->survivors.bytes;
@@ -1324,9 +1695,9 @@ static HeapStatus allocation_scope_collect(AllocationScope *scope, ChimiValue *v
 
 /* Region exit: a full pass keeps what `value` and `control` reach, and the survivors
    join the enclosing region's young generation, or the heap's base area. */
-static HeapStatus allocation_scope_end(AllocationScope *scope, ChimiValue *value,
-                                       ChimiControl *control) {
-  HeapStatus status = allocation_scope_sweep(scope, value, control, true);
+static HeapStatus allocation_scope_end(AllocationScope *scope, ChimiValue **value,
+                                       ChimiControl **control) {
+  HeapStatus status = allocation_scope_sweep(scope, value, control, true, true);
   RuntimeHeap *heap = scope->heap;
   AllocationScope *parent = scope->parent;
   heap->innermost = parent;
@@ -5134,6 +5505,44 @@ static ChimiControl *invoke_bytes_operation(uint32_t intrinsic, ChimiValue **arg
   return intrinsic_shape_defect(call_node);
 }
 
+/* std/test. A comparison's message is "<heading>\nactual:\n<render>\nexpected:\n<render>",
+   byte for byte as `comparison_message` in execution/core_operations.rs, because
+   `chimi test` reads the two renderings back from it. */
+static ChimiValue *debug_render(const ChimiValue *value, bool indented);
+
+static ChimiControl *invoke_assertion(uint32_t intrinsic, ChimiValue **arguments,
+                                      uint32_t argument_count, uint32_t call_node) {
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_TEST_ASSERT_EQUAL:
+    case CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL: {
+      if (argument_count != 2) break;
+      bool wanted = intrinsic == CHIMI_INTRINSIC_TEST_ASSERT_EQUAL;
+      if ((chimi_value_compare(arguments[0], arguments[1]) == 0) == wanted)
+        return success(void_value());
+      TextBuffer buffer = {0};
+      const char *heading = wanted ? "Test.assert_equal: the values differ"
+                                    : "Test.assert_not_equal: the values are equal";
+      buffer_bytes(&buffer, heading, strlen(heading));
+      buffer_bytes(&buffer, "\nactual:\n", 9);
+      ChimiValue *actual = debug_render(arguments[0], true);
+      buffer_bytes(&buffer, actual->as.text.bytes, actual->as.text.length);
+      buffer_bytes(&buffer, "\nexpected:\n", 11);
+      ChimiValue *expected = debug_render(arguments[1], true);
+      buffer_bytes(&buffer, expected->as.text.bytes, expected->as.text.length);
+      buffer_char(&buffer, '\0');
+      return defect(buffer.data, call_node);
+    }
+    case CHIMI_INTRINSIC_TEST_ASSERT:
+      if (argument_count != 2 || arguments[0]->kind != VALUE_BOOLEAN || arguments[1]->kind != VALUE_TEXT) break;
+      if (arguments[0]->as.boolean) return success(void_value());
+      return defect(copy_text(arguments[1]->as.text.bytes), call_node);
+    case CHIMI_INTRINSIC_TEST_FAIL:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
+      return defect(copy_text(arguments[0]->as.text.bytes), call_node);
+  }
+  return intrinsic_shape_defect(call_node);
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
@@ -5211,7 +5620,7 @@ static const char *const FOREIGN_POINTER_DEFECT =
 static ChimiControl *end_measured_allocation_scope(ChimiRuntime *runtime, AllocationScope *scope,
                                                    ChimiControl *control) {
   bool top_scope = scope->parent == NULL;
-  HeapStatus status = allocation_scope_end(scope, NULL, control);
+  HeapStatus status = allocation_scope_end(scope, NULL, &control);
   if (top_scope) {
     runtime->scoped_total_allocated_bytes += scope->total_allocated_bytes;
     for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
@@ -5252,7 +5661,7 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
   for (;;) {
     if (runtime->cancel) {
       control = cancelled();
-      allocation_scope_collect(&allocation_scope, NULL, control);
+      allocation_scope_collect(&allocation_scope, NULL, &control);
       break;
     }
     errno = 0;
@@ -5262,14 +5671,14 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
         control = runtime->cancel && errno == EINTR
           ? cancelled()
           : host_file_message(CHIMI_CONSTRUCTOR_FILE_READ, path, strerror(errno));
-        allocation_scope_collect(&allocation_scope, NULL, control);
+        allocation_scope_collect(&allocation_scope, NULL, &control);
       } else if (length > 0) {
         control = invoke_line_callback(runtime, arguments[2]->as.callable, state, line, length,
                                        line_number, path, span, call_node, environment);
-        allocation_scope_collect(&allocation_scope, NULL, control);
+        allocation_scope_collect(&allocation_scope, NULL, &control);
       } else {
         control = success(state);
-        allocation_scope_collect(&allocation_scope, NULL, control);
+        allocation_scope_collect(&allocation_scope, NULL, &control);
       }
       break;
     }
@@ -5279,11 +5688,11 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
                                      content_length, line_number, path, span, call_node,
                                      environment);
       if (control->kind != CONTROL_SUCCESS) {
-        allocation_scope_collect(&allocation_scope, NULL, control);
+        allocation_scope_collect(&allocation_scope, NULL, &control);
         break;
       }
       state = control->value;
-      allocation_scope_collect(&allocation_scope, state, NULL);
+      allocation_scope_collect(&allocation_scope, &state, NULL);
       length = 0;
       ++line_number;
       continue;
@@ -5291,7 +5700,7 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
     if (length == runtime->max_line_bytes) {
       ChimiValue *fields[] = {text_value(path), integer_value(runtime->max_line_bytes)};
       control = failure(standard_value(CHIMI_CONSTRUCTOR_FILE_LINE_TOO_LONG, fields, 2));
-      allocation_scope_collect(&allocation_scope, NULL, control);
+      allocation_scope_collect(&allocation_scope, NULL, &control);
       break;
     }
     line[length++] = (unsigned char)byte;
@@ -5299,7 +5708,7 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
   if (owns_file && fclose(input) != 0 &&
       (control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE)) {
     control = host_file_message(CHIMI_CONSTRUCTOR_FILE_CLOSE, path, strerror(errno));
-    allocation_scope_collect(&allocation_scope, NULL, control);
+    allocation_scope_collect(&allocation_scope, NULL, &control);
   }
   return end_measured_allocation_scope(runtime, &allocation_scope, control);
 }
@@ -5350,6 +5759,7 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
   if (callable->kind == CALL_HOST)
     return invoke_host(runtime, callable->host, arguments, argument_count,
                        span, call_node, call_environment);
+  if (host_stack_exhausted()) return defect("Stack overflow", -1);
   ChimiEnvironment *environment;
   if (callable->kind == CALL_DECLARED) {
     // Declared functions capture provisioned requirements, but never local
@@ -7930,6 +8340,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_bytes_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_CAUSE_CONTEXT && intrinsic <= CHIMI_INTRINSIC_CAUSE_TO_TEXT)
     return invoke_cause_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+  if (intrinsic >= CHIMI_INTRINSIC_TEST_ASSERT_EQUAL && intrinsic <= CHIMI_INTRINSIC_TEST_FAIL)
+    return invoke_assertion(intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_RESOURCE_SCOPED)
     return resource_scoped(runtime, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
@@ -8923,7 +9335,7 @@ static ChimiControl *run_loop_passes(ChimiRuntime *runtime, uint32_t node_id,
     ChimiControl *pass = RUN(node->c);
     if (pass->kind == CONTROL_SUCCESS) {
       state = pass->value;
-      if (allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {
+      if (allocation_scope_collect(&passes, &state, NULL) != HEAP_OK) {
         result = defect(FOREIGN_POINTER_DEFECT, (int64_t)node_id);
         break;
       }
@@ -8993,7 +9405,14 @@ static void print_outcome(FILE *output, const ChimiControl *control) {
     case CONTROL_SUCCESS:
       fputs("\"outcome\":\"success\",\"value\":", output); json_value(output, control->value); break;
     case CONTROL_FAILURE:
-      fputs("\"outcome\":\"expected_failure\",\"error\":", output); json_value(output, control->value); break;
+      fputs("\"outcome\":\"expected_failure\",\"error\":", output); json_value(output, control->value);
+      /* A test build also writes the debug rendering `chimi test` reports. */
+      if (CHIMI_TEST_COUNT > 0) {
+        ChimiValue *rendered = debug_render(control->value, true);
+        fputs(",\"rendering\":", output);
+        json_string(output, rendered->as.text.bytes);
+      }
+      break;
     case CONTROL_DEFECT:
       fputs("\"outcome\":\"defect\",\"message\":", output); json_string(output, control->message);
       if (control->node < 0) fputs(",\"core_node_id\":null,\"origin_id\":null", output);
@@ -9099,12 +9518,12 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           runtime->scoped_full_collections,
           runtime->scoped_scanned_allocations,
           unscoped_allocated_bytes,
-          heap_totals.peak_footprint_bytes,
+          footprint_peak(),
           heap_totals.peak_fragment_footprint_bytes,
           capture_transfer_probes,
-          /* runtime.c has no chunks: an allocation is its unit of heap memory. */
+          /* Reported per allocation: young chunks are not counted separately. */
           heap_totals.live_allocations,
-          heap_totals.peak_footprint_bytes,
+          footprint_peak(),
           heap_totals.live_fragments,
           heap_totals.peak_fragment_footprint_bytes,
 #if CHIMI_PROCESS_KERNEL
@@ -9467,8 +9886,18 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
 #endif
   };
   channel_endpoints_reset();
+  AllocationScope *entry_scope = main_heap.innermost;
+  AllocationArea *entry_target = allocation_target;
   ChimiSchedulerOutcome outcome = chimi_scheduler_run(&config);
   current_heap = &main_heap;
+  /* The root runs on main_heap, and each region it enters records its scope in
+     its own fiber frame. A root that overflowed, parked or was ended by the
+     scheduler never closed those regions, and its frames will never run again,
+     so drop them before the outcome below allocates; an overflow during an
+     in-place list compaction also left allocation_target in such a region.
+     Their allocations are left to exit. */
+  main_heap.innermost = entry_scope;
+  allocation_target = entry_target;
   /* The outcome's word is ours: copy a child's result fragment, then free it. */
   if (outcome.state == CHIMI_FIBER_SUCCEEDED || outcome.state == CHIMI_FIBER_DEFECTED) {
     int64_t word = outcome.state == CHIMI_FIBER_SUCCEEDED ? outcome.value : outcome.defect_code;
@@ -9525,12 +9954,14 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     .next_span = 2,
   };
   uint32_t benchmark_repeats = 0;
+  int64_t test_index = -1;
   bool clock_start_given = false;
   const char *telemetry_path = NULL;
   const char *outcome_path = NULL;
   const char *memory_report_path = NULL;
   const char *profile_path = NULL;
   decode_constants();
+  if (!CHIMI_REQUIRES_SCHEDULER) guard_host_stack();
   int32_t index = 1;
   if (index < argc && strcmp(argv[index], "--chimi-runner") == 0) {
     ++index;
@@ -9550,6 +9981,16 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     else if (strncmp(argv[index], "--profile-file=", 15) == 0) profile_path = argv[index] + 15;
     else if (strncmp(argv[index], "--execution-id=", 15) == 0) runtime.execution_id = argv[index] + 15;
     else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = true;
+    else if (strncmp(argv[index], "--test=", 7) == 0) {
+      errno = 0;
+      char *end = NULL;
+      unsigned long value = strtoul(argv[index] + 7, &end, 10);
+      if (errno == ERANGE || end == argv[index] + 7 || *end != '\0' || value >= CHIMI_TEST_COUNT) {
+        fprintf(stderr, "--test requires a test index below %u\n", CHIMI_TEST_COUNT);
+        return 64;
+      }
+      test_index = (int64_t)value;
+    }
     else if (strcmp(argv[index], "--clock=real") == 0) runtime.virtual_clock = false;
     else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;
     else if (strncmp(argv[index], "--clock-start=", 14) == 0) {
@@ -9628,7 +10069,12 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   }
   uint32_t entry_node = 0;
   const ChimiFunction *entry_function = NULL;
-  for (uint32_t i = 0; i < CHIMI_FUNCTION_COUNT; ++i)
+  if (test_index >= 0) {
+    entry_function = &CHIMI_FUNCTIONS[CHIMI_TEST_FUNCTIONS[test_index]];
+    entry_node = entry_function->body;
+    entry = CHIMI_NODE_FUNCTIONS[entry_node];
+  }
+  for (uint32_t i = 0; entry_function == NULL && i < CHIMI_FUNCTION_COUNT; ++i)
     if (CHIMI_NODE_FUNCTIONS[CHIMI_FUNCTIONS[i].body] == entry) {
       entry_node = CHIMI_FUNCTIONS[i].body;
       entry_function = &CHIMI_FUNCTIONS[i];

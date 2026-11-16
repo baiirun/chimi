@@ -1,0 +1,9 @@
+// A schedule built from a variant skips the constructor's checks, so delay
+// checks it: a negative wait defects there instead of reaching a sleep.
+import std/duration as Duration
+import std/schedule as Schedule
+
+pub fn main() -> Bool {
+  let broken = Schedule.Schedule.Fixed(3, Duration.seconds(-5))
+  Schedule.delay(broken, 1) == None
+}

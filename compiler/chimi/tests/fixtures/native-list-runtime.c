@@ -18,6 +18,8 @@ const uint32_t CHIMI_CLOCK_REQUIREMENT_SLOT = 0;
 const uint32_t CHIMI_REQUIREMENT_SLOT_COUNT = 1;
 const ChimiFunction CHIMI_FUNCTIONS[] = {{0}};
 const uint32_t CHIMI_FUNCTION_COUNT = 0;
+const uint32_t CHIMI_TEST_FUNCTIONS[] = {0};
+const uint32_t CHIMI_TEST_COUNT = 0;
 const ChimiConstructor CHIMI_CONSTRUCTORS[] = {{0}};
 const ChimiNamedNode CHIMI_NAMED_NODES[] = {{0}};
 const ChimiStep CHIMI_STEPS[] = {{0}};
@@ -114,7 +116,7 @@ static void measure_accumulation(uint32_t length, double *allocated_per_element,
   clock_gettime(CLOCK_MONOTONIC, &started);
   ChimiValue *list = push_sequence(list_from_values(NULL, 0), length, 0);
   clock_gettime(CLOCK_MONOTONIC, &finished);
-  allocation_scope_collect(&scope, list, NULL);
+  allocation_scope_collect(&scope, &list, NULL);
   /* Reading every element after collection proves marking kept all list nodes. */
   expect_sequence(list, length, 0);
   double elapsed = (double)(finished.tv_sec - started.tv_sec) * 1e9 +
@@ -125,7 +127,7 @@ static void measure_accumulation(uint32_t length, double *allocated_per_element,
          "live_bytes_per_element=%.1f\n",
          length, elapsed / length, *allocated_per_element, *live_per_element);
   /* A full pass, because a minor one never revisits the list once it survived. */
-  allocation_scope_sweep(&scope, NULL, NULL, true);
+  allocation_scope_sweep(&scope, NULL, NULL, true, false);
   CHECK(scope.live_bytes == 0, "dropped list left %zu live bytes", scope.live_bytes);
   allocation_scope_end(&scope, NULL, NULL);
 }
@@ -147,8 +149,10 @@ static void test_collection_keeps_shared_old_version(void) {
   allocation_scope_begin(&scope);
   ChimiValue *old = push_sequence(list_from_values(NULL, 0), 5000, 0);
   ChimiValue *newer = push_sequence(old, 5000, 5000);
+  /* A pass adds its chunk allocations to the counters at its boundary. */
+  flush_young_counts(&scope);
   size_t before = scope.live_bytes;
-  allocation_scope_collect(&scope, old, NULL);
+  allocation_scope_collect(&scope, &old, NULL);
   CHECK(scope.live_bytes < before, "collecting the newer version freed nothing");
   expect_sequence(old, 5000, 0);
   (void)newer;
@@ -236,7 +240,7 @@ static void test_a_small_window_does_not_retain_its_source(void) {
   allocation_scope_begin(&scope);
   ChimiValue *list = push_sequence(list_from_values(NULL, 0), 100000, 0);
   ChimiValue *small = list_slice(list, 50000, 50100);
-  allocation_scope_collect(&scope, small, NULL);
+  allocation_scope_collect(&scope, &small, NULL);
   expect_window(small, 50000, 100);
   /* The 100 elements and their copy stay live (about 6 KB); sharing would keep all
      100,000 elements, about 6 MB. */
@@ -258,6 +262,7 @@ static void test_drop_front_is_constant_cost(void) {
     rest = list_slice(rest, 1, list_length(rest));
   }
   CHECK(list_length(rest) == 0, "drained");
+  flush_young_counts(&scope);
   double per_step = (double)scope.total_allocated_bytes / length;
   printf("drop_front length=%u allocated_bytes_per_step=%.1f\n", length, per_step);
   /* One header per step, plus copies of under length / 3 slots of one pointer each,
@@ -271,7 +276,7 @@ static void test_collection_keeps_a_window_readable(void) {
   allocation_scope_begin(&scope);
   ChimiValue *list = push_sequence(list_from_values(NULL, 0), 5000, 0);
   ChimiValue *window = list_slice(list, 1234, 4321);
-  allocation_scope_collect(&scope, window, NULL);
+  allocation_scope_collect(&scope, &window, NULL);
   expect_window(window, 1234, 4321 - 1234);
   allocation_scope_end(&scope, NULL, NULL);
 }

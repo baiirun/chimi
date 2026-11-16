@@ -20,7 +20,11 @@ use std::process::Command;
 
 const DEFAULT_SEED: u64 = 88_172_645_463_325_252;
 const DEFAULT_OPERATIONS: u64 = 40_000;
-const SANITIZERS: &[&str] = &["-fsanitize=address,undefined", "-fno-omit-frame-pointer"];
+const SANITIZERS: &[&str] = &[
+    "-fsanitize=address,undefined",
+    "-fno-omit-frame-pointer",
+    "-DCHIMI_POISON_YOUNG_CHUNKS",
+];
 
 fn repository_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

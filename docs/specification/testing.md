@@ -7,8 +7,14 @@ This is the contract for test declarations, the `chimi test` runner,
 runnable documentation examples. It covers T1 and G16 of the
 [language completion plan](../plans/language-completion-plan.md) and the
 testing row of the [standard library map](../plans/standard-library-map.md).
-Nothing here is implemented. The build is tracked by CHI-208; the spec was
-written under CHI-202.
+Implemented: test declarations (they parse, format, and type-check, and
+builds drop them), the `chimi test` runner on both backends with the human
+report, `--json`, filters, jobs, the time limit, the clock options, and the
+exit status, and the four `std/test` assertions. Not implemented yet:
+`capture_defect` and `T4401`, recorders and scripts, `std/random` and
+`--seed`, fake mailboxes, `--trace`, directory inputs, doc-comment examples,
+and the std-tests migration. The build is tracked
+by CHI-208; the spec was written under CHI-202.
 
 Four choices here touched questions only Byron could settle: the test
 declaration form, stateful fakes and mutation, a built-in assertion form, and
@@ -123,8 +129,8 @@ test "<name>" { <block> }
   ([decision](../decisions.md), 2026-11-12). It is read as a keyword only at
   module item position when a text literal follows it, so `test` stays usable
   as an identifier everywhere else.
-- The name is a plain text literal, without interpolation. It MUST be unique
-  within its module (`N3120`). It is the test's name in reports and filters.
+- The name is a plain text literal, without interpolation (`L2121`). It MUST
+  be unique within its module (`N3120`). It is the test's name in reports and filters.
 - A test item takes no visibility modifier (`L2120`) and is not a value. Code
   cannot reference, call, or import a test.
 - A test MAY appear in any module, including a module that also declares
@@ -347,9 +353,10 @@ time](time-and-outcomes.md#virtual-time):
 - Supervisor restart windows and `shutdown_within` deadlines use the same
   source, so supervision is tested without passing a clock anywhere.
 
-<!-- chimi: pending CHI-208 CHI-201 -->
+<!-- chimi: check -->
 ```chimi
 import std/clock as Clock
+import std/clock.{Clock}
 import std/duration as Duration
 import std/test as Test
 
@@ -633,9 +640,11 @@ Codes are provisional until the runner lands. This specification claims
 | --- | --- |
 | `N3120` | two tests in one module have the same name |
 | `L2120` | a test item has a visibility modifier |
+| `L2121` | a test name is an interpolated text literal |
 | `T4400` | a test body needs something the test provider plan does not close and no `using` supplies |
 | `T4401` | a test-only `std/test` operation is reachable from a program's `main` |
 | `T4402` | a test body's success type is not `Void` |
+| `E5009` | `chimi test` found no test item in the project |
 
 Each message names the fix: `T4400` names the need and suggests `using`;
 `T4401` names the call path from `main` to the operation; `T4402` shows the

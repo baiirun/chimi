@@ -290,6 +290,48 @@ fn build_links_a_runnable_executable_and_reports_its_artifacts() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// testing.md: `chimi build` drops test items before lowering, so appending
+// tests to a module changes nothing in the executable.
+#[test]
+fn build_output_is_identical_with_and_without_test_items() {
+    let scratch = scratch_directory("build-without-tests");
+    let program = concat!(
+        "import std/debug as Debug\n\n",
+        "fn double(value: Int) -> Int {\n  value * 2\n}\n\n",
+        "pub fn main() -> Int {\n  double(21)\n}\n",
+    );
+    let with_tests = format!(
+        "{program}\ntest \"doubles\" {{\n  let rendered = Debug.render(double(2))\n  Void\n}}\n"
+    );
+    let mut executables = Vec::new();
+    for (name, text) in [("plain", program.to_owned()), ("tested", with_tests)] {
+        let source = scratch.join(format!("{name}.chimi"));
+        std::fs::write(&source, text).unwrap();
+        // One file name for both: macOS signs an executable with its name.
+        std::fs::create_dir_all(scratch.join(name)).unwrap();
+        let executable = scratch.join(name).join("program");
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .arg("build")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .expect("build Chimi source");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        executables.push(std::fs::read(executable).unwrap());
+    }
+    assert!(
+        executables[0] == executables[1],
+        "test items changed the executable"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 /// A copy of the embedded standard tree in `directory`, for `--std-dir`.
 fn copy_standard_tree(directory: &Path) {
     std::fs::create_dir_all(directory).unwrap();
@@ -3044,8 +3086,11 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi check [--json] --root <project-dir> <entry-module> | ",
             "chimi run --root <project-dir> <entry-module> [-- <argument>...] | ",
             "chimi build --root <project-dir> <entry-module> ",
-            "[-o <executable>] | chimi std check; a compiler developer may put ",
-            "--std-dir <directory> before inspect, check, run, build, or std check\n"
+            "[-o <executable>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
+            "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
+            "[--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] | ",
+            "chimi std check; a compiler developer may put ",
+            "--std-dir <directory> before inspect, check, run, build, test, or std check\n"
         )
     );
 }
@@ -3944,9 +3989,15 @@ fn native_per_owner_heaps_meet_the_prototype_heap_contracts() {
             .output()
             .expect("compile native heap test")
     };
-    let sanitized = compile(&["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]);
+    // A checking build frees every young chunk at its pass boundary, so a pointer
+    // kept across one fails as a use after free.
+    let sanitized = compile(&[
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-DCHIMI_POISON_YOUNG_CHUNKS",
+    ]);
     if !sanitized.status.success() {
-        let plain = compile(&[]);
+        let plain = compile(&["-DCHIMI_POISON_YOUNG_CHUNKS"]);
         assert!(
             plain.status.success(),
             "{}",
@@ -4430,6 +4481,53 @@ fn memory_report_over_rounds(name: &str, source: &str, runner: &[&str], rounds: 
     let report = std::fs::read_to_string(memory_report).unwrap();
     std::fs::remove_dir_all(scratch).unwrap();
     report
+}
+
+// Guards: a pass's young chunk allocations are counted at its boundary, while a
+// child task's heap is freed in the middle of the pass. The peak footprint must
+// still count both at once: here the 1000 pushes still live in the pass while
+// the child maps a 20000-element list (CHI-219 review).
+#[test]
+fn native_peak_footprint_counts_a_pass_and_a_child_task_together() {
+    let source = |pushes: usize| {
+        format!(
+            concat!(
+                "import std/list as List\n",
+                "import std/task as Task\n",
+                "fn heavy(seed: Int) -> Int {{\n",
+                "  List.length(List.map(List.repeat(seed, 20000), fn(n: Int) -> Int {{ n + 1 }}))\n",
+                "}}\n",
+                "fn build(n: Int, acc: List<Int>) -> List<Int> {{\n",
+                "  case n <= 0 {{\n",
+                "    True -> acc\n",
+                "    False -> build(n - 1, List.push(acc, n))\n",
+                "  }}\n",
+                "}}\n",
+                "pub fn main() -> Int {{\n",
+                "  loop s = 0 {{\n",
+                "    case s >= 50000 {{\n",
+                "      True -> break s\n",
+                "      False -> {{\n",
+                "        let big = build({pushes}, [])\n",
+                "        let r = Task.result(Task.start(fn() -> Int {{ heavy(s) }}))\n",
+                "        s + r + List.length(big)\n",
+                "      }}\n",
+                "    }}\n",
+                "  }}\n",
+                "}}\n",
+            ),
+            pushes = pushes
+        )
+    };
+    let alone = memory_report_over_rounds("peak-child-alone", &source(1), &[], 0);
+    let together = memory_report_over_rounds("peak-child-together", &source(1000), &[], 0);
+    let alone_peak = json_u64_field(&alone, "peak_footprint_bytes");
+    let together_peak = json_u64_field(&together, "peak_footprint_bytes");
+    // The pushes alone keep about as much live as the child does.
+    assert!(
+        together_peak > alone_peak * 3 / 2,
+        "peak footprint {together_peak} with the pushes, {alone_peak} without"
+    );
 }
 
 fn assert_flat_fragment_peak(small: &str, large: &str) {
@@ -5254,6 +5352,118 @@ fn native_backstop_a_stale_capability_whose_owner_has_ended_defects() {
         "channel capability violation: task 1 cannot use the Receiver of channel 1 \
          in Channel.receive: the task it was handed to has ended"
     );
+}
+
+// A root task that overflows its guarded fiber stack while inside a loop region
+// ends with the "Task stack overflow" defect. The region's scope lived in the
+// root's abandoned frames, and building the defect allocated through it, so
+// before the fix the program crashed with SIGSEGV instead. Recursing 20,000
+// calls deep overflows the 1 MiB root stack whatever a frame costs, and the
+// Task in the loop is what puts main on a fiber.
+#[test]
+fn native_a_root_overflowing_inside_a_loop_ends_with_a_stack_overflow_defect() {
+    let scratch = scratch_directory("native-root-overflow-in-loop");
+    let executable = build_native(
+        &scratch,
+        "root-overflow",
+        concat!(
+            "import std/list as List\n",
+            "import std/task as Task\n",
+            "fn build(n: Int, acc: List<Int>) -> List<Int> {\n",
+            "  case n {\n",
+            "    0 -> acc\n",
+            "    _ -> build(n - 1, List.push(acc, n))\n",
+            "  }\n",
+            "}\n",
+            "struct Round { left: Int, total: Int }\n",
+            "pub fn main() -> Int {\n",
+            "  loop state = Round(2, 0) {\n",
+            "    case state.left {\n",
+            "      0 -> break state.total\n",
+            "      _ -> {\n",
+            "        let items = build(20000, [])\n",
+            "        let child = Task.start(fn() -> Int { List.length(items) })\n",
+            "        Round(state.left - 1, state.total + Task.result(child))\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "root-overflow", "off");
+    assert_eq!(
+        execution.process.status.code(),
+        Some(70),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert!(
+        execution
+            .outcome
+            .contains(r#""outcome":"defect","message":"Task stack overflow""#),
+        "{}",
+        execution.outcome
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// A program without tasks runs main on the host thread, which has no guard page
+// of Chimi's own. Recursing past that stack ends with the "Stack overflow" defect
+// rather than SIGSEGV (CHI-230), inside a loop region as well, while recursion
+// that fits still succeeds: 5,000 calls fit an 8 MiB stack with room to spare.
+#[test]
+fn native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect() {
+    let scratch = scratch_directory("native-host-stack-overflow");
+    let executable = build_native(
+        &scratch,
+        "host-overflow",
+        concat!(
+            "import std/int as Int\n",
+            "import std/list as List\n",
+            "fn build(n: Int, acc: List<Int>) -> List<Int> {\n",
+            "  case n {\n",
+            "    0 -> acc\n",
+            "    _ -> build(n - 1, List.push(acc, n))\n",
+            "  }\n",
+            "}\n",
+            "struct Round { left: Int, total: Int }\n",
+            "pub fn main(arguments: List<Text>) -> Int {\n",
+            "  let depth = case List.first(arguments) {\n",
+            "    Some(text) -> Int.parse(text)\n",
+            "    None -> 0\n",
+            "  }\n",
+            "  loop state = Round(2, 0) {\n",
+            "    case state.left {\n",
+            "      0 -> break state.total\n",
+            "      _ -> Round(state.left - 1, state.total + List.length(build(depth, [])))\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let run = |depth: &str| {
+        let outcome_path = scratch.join(format!("host-overflow-{depth}-outcome.jsonl"));
+        let process = Command::new(&executable)
+            .arg("--chimi-runner")
+            .arg("--trace=off")
+            .arg(format!("--outcome-file={}", outcome_path.display()))
+            .arg("--")
+            .arg(depth)
+            .output()
+            .expect("execute native Chimi program");
+        let outcome = std::fs::read_to_string(&outcome_path).unwrap_or_default();
+        (process.status.code(), outcome)
+    };
+    let (fits_status, fits) = run("5000");
+    assert_eq!(fits_status, Some(0), "{fits}");
+    assert!(fits.contains(r#""outcome":"success","value":10000"#), "{fits}");
+    let (overflow_status, overflow) = run("1000000");
+    assert_eq!(overflow_status, Some(70), "{overflow}");
+    assert!(
+        overflow.contains(r#""outcome":"defect","message":"Stack overflow""#),
+        "{overflow}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
 }
 
 // E18 across tasks and channels on native, where each task runs on a 64 KiB fiber

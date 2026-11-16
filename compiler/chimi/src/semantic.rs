@@ -451,7 +451,23 @@ pub(crate) struct ModuleDeclaration {
     pub(crate) body: Option<ModuleExpression>,
     /// The declared type of a constant; `None` for every other declaration.
     pub(crate) annotation: Option<TypeUse>,
+    /// A `test "<name>" { ... }` item: a private, parameterless function whose
+    /// `name` is [`test_symbol_name`] of the test's name, which no source can spell,
+    /// so code cannot reference it.
+    pub(crate) test: bool,
 }
+
+/// The symbol name a test item's function carries: `test "<name>"`. It contains a
+/// space and quotes, so no identifier collides with it or can refer to it.
+pub(crate) fn test_symbol_name(name: &str) -> String {
+    format!("test \"{name}\"")
+}
+
+/// The test's own name when `symbol_name` is a [`test_symbol_name`].
+pub(crate) fn test_name_of(symbol_name: &str) -> Option<&str> {
+    symbol_name.strip_prefix("test \"")?.strip_suffix('"')
+}
+
 
 #[derive(Clone, Debug)]
 pub(crate) enum TypeUse {
@@ -999,7 +1015,7 @@ pub(crate) struct ModuleCaseArm {
     pub(crate) range: TextRange,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct SemanticModule {
     pub(crate) id: ModuleId,
     pub(crate) path: String,
@@ -1013,6 +1029,29 @@ pub(crate) struct SemanticModule {
 #[derive(Debug)]
 pub(crate) struct SemanticProject {
     pub(crate) modules: Vec<Arc<SemanticModule>>,
+}
+
+impl SemanticProject {
+    /// The project a program build sees: every `test` item removed.
+    pub(crate) fn without_tests(self) -> Self {
+        let modules = self
+            .modules
+            .into_iter()
+            .map(|module| {
+                if !module
+                    .declarations
+                    .iter()
+                    .any(|declaration| declaration.test)
+                {
+                    return module;
+                }
+                let mut module = Arc::unwrap_or_clone(module);
+                module.declarations.retain(|declaration| !declaration.test);
+                Arc::new(module)
+            })
+            .collect();
+        Self { modules }
+    }
 }
 
 pub(crate) fn lower_project(mut inputs: Vec<ModuleSource>) -> SemanticProject {
@@ -1151,6 +1190,11 @@ impl ProjectLowerer {
                         declarations.push(declaration);
                     }
                 }
+                NodeKind::TestDeclaration => {
+                    if let Some(declaration) = lowerer.lower_test(&node, &declarations) {
+                        declarations.push(declaration);
+                    }
+                }
                 // Module-level `let` was replaced by `const` (`L2101`). It still lowers as
                 // a constant so references to it resolve and report nothing further.
                 NodeKind::LetBinding => {
@@ -1284,6 +1328,7 @@ impl ProjectLowerer {
             function,
             body,
             annotation: None,
+            test: false,
         })
     }
 
@@ -1355,6 +1400,7 @@ impl ProjectLowerer {
             function: Some(signature),
             body: Some(body),
             annotation: None,
+            test: false,
         })
     }
 
@@ -1522,6 +1568,7 @@ impl ProjectLowerer {
             function: None,
             body,
             annotation,
+            test: false,
         })
     }
 
@@ -1550,6 +1597,104 @@ impl ProjectLowerer {
             function: None,
             body: None,
             annotation,
+            test: false,
+        })
+    }
+
+    /// Lowers a `TestDeclaration` to a private function with no parameters and an
+    /// inferred contract. Ensures: `L2120` for `pub` and `N3120` for a name that an
+    /// earlier test of the module already took; a duplicate or an interpolated name
+    /// lowers to nothing.
+    fn lower_test(
+        &mut self,
+        node: &SyntaxNode<'_>,
+        earlier: &[ModuleDeclaration],
+    ) -> Option<ModuleDeclaration> {
+        if let Some(visibility) = node
+            .child_tokens()
+            .into_iter()
+            .find(|token| token.kind() == TokenKind::Pub)
+        {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticStage::Lowering,
+                    "L2120",
+                    FileId::new(0),
+                    visibility.range(),
+                    "a test is not a value and takes no visibility; remove `pub`",
+                )
+                .with_fix(
+                    TextRange::new(
+                        visibility.range().start() as usize,
+                        test_keyword_start(node).unwrap_or(visibility.range().end() as usize),
+                    ),
+                    "",
+                ),
+            );
+        }
+        let name = if let Some(literal) = direct_child(node, NodeKind::Literal) {
+            let token = literal
+                .child_tokens()
+                .into_iter()
+                .find(|token| token.kind() == TokenKind::Text)?;
+            Name {
+                text: test_symbol_name(&text_literal_value(token.text())),
+                range: token.range(),
+            }
+        } else {
+            let interpolated = direct_child(node, NodeKind::InterpolatedText)?;
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::Lowering,
+                "L2121",
+                FileId::new(0),
+                significant_range(&interpolated),
+                "a test name is a plain text literal; remove the `${...}` interpolation",
+            ));
+            return None;
+        };
+        if let Some(first) = earlier
+            .iter()
+            .find(|declaration| declaration.test && declaration.name.text == name.text)
+        {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticStage::Name,
+                    "N3120",
+                    FileId::new(0),
+                    name.range,
+                    format!(
+                        "this module already has a test named {}; give each test its own name",
+                        &name.text["test ".len()..]
+                    ),
+                )
+                .with_label(
+                    FileId::new(0),
+                    first.name.range,
+                    "the first test with this name",
+                ),
+            );
+            return None;
+        }
+        let body =
+            direct_child(node, NodeKind::BlockExpression).map(|body| self.lower_expression(&body));
+        Some(ModuleDeclaration {
+            semantic_id: self.allocate_semantic_id(),
+            kind: ModuleDeclarationKind::Function,
+            public: false,
+            name,
+            generic_parameters: Vec::new(),
+            fields: Vec::new(),
+            variants: Vec::new(),
+            function: Some(FunctionSignature {
+                parameters: Vec::new(),
+                success: None,
+                failures: None,
+                requirements: RequirementRowUse::default(),
+                native: false,
+            }),
+            body,
+            annotation: None,
+            test: true,
         })
     }
 
@@ -2915,6 +3060,15 @@ fn clause_head_range(node: &SyntaxNode<'_>) -> TextRange {
         significant_range(&parameters).end()
     });
     TextRange::new(start as usize, end as usize)
+}
+
+/// Where the `test` word of a `TestDeclaration` starts, so a fix that removes
+/// `pub` also removes the space after it.
+fn test_keyword_start(node: &SyntaxNode<'_>) -> Option<usize> {
+    node.child_tokens()
+        .into_iter()
+        .find(|token| token.kind() == TokenKind::Identifier)
+        .map(|token| token.range().start() as usize)
 }
 
 fn direct_child<'tree>(node: &SyntaxNode<'tree>, kind: NodeKind) -> Option<SyntaxNode<'tree>> {

@@ -1,0 +1,1 @@
+{"schema":"chimi.runtime.v1","outcome":"defect","message":"Test.assert_equal: the values differ\nactual:\n[\n  Money {\n    cents: 1,\n  },\n]\nexpected:\n[\n  Money {\n    cents: 2,\n  },\n]"}
