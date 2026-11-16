@@ -202,9 +202,35 @@ busy loop does: each ready answer resumes it first, so other tasks run and
 timers fire only when its line callback parks or the input stalls. That is
 no worse than the blocking read it replaces.
 
-Not yet covered: writes to standard output and standard error still block
-the scheduler thread, so a program writing to a stalled pipe is ended only
-by a second signal. Phase 7b's sockets own their descriptors, make them
+`write_line` and `write_error` write through the same wait under the real
+clock (CHI-266), so a task writing to a pipe, a terminal or a socket that
+is not being read parks while the other tasks run:
+
+- Standard output and standard error are never made non-blocking, for the
+  same reason as standard input. After the wait answers writable, the
+  runtime writes at most `PIPE_BUF` bytes with one write(2), which poll's
+  answer guarantees fits in a pipe. A socket is written with
+  `send(MSG_DONTWAIT)`. A terminal may still hold such a write briefly.
+- Each line goes whole onto its stream's queue before its writer waits, and
+  whichever writer wakes writes the front of the queue, so lines from
+  different tasks never interleave. Standard error shares standard output's
+  queue when both name the same open file (`2>&1`, one terminal). A call returns once its whole line is
+  written. The queue holds at most 1 MiB; a writer waits before queueing a
+  line that would pass that, except into an empty queue.
+- A line once queued is written whole even if its writer is cancelled while
+  it waits (a `Task.timeout`, a stop signal): a later write, or the end of
+  the program, writes it. A body ending under a terminal cancel (CHI-265)
+  queues its line and returns without waiting. A second stop signal ends the program at once and
+  drops what is still queued.
+- A failed write, or an ERROR answer from the wait, drops the queue and
+  fails every line not yet fully written with `WriteFailed`. SIGPIPE keeps its default
+  action, so a closed pipe still ends the program as it did.
+- A regular file, a program without the scheduler, and every program under
+  `--clock=virtual` write directly and block as before. Under the virtual
+  clock the order tasks run in must not depend on how fast the reader drains
+  the pipe, and a parked writer would hold virtual time anyway.
+
+Phase 7b's sockets own their descriptors, make them
 non-blocking, and wait with the same request. Phase 7b decides whether an
 idle `accept` should hold virtual time.
 
