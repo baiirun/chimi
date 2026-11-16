@@ -17,7 +17,10 @@ const IMPORTS: &str = concat!(
     "import std/channel.{ChannelError, Receive, Receiver, SendError}\n",
     "import std/clock as Clock\n",
     "import std/duration as Duration\n",
+    "import std/process as Process\n",
+    "import std/process.{Inbox}\n",
     "import std/select as Select\n",
+    "import std/supervisor as Supervisor\n",
     "import std/task as Task\n",
     "import std/watch as Watch\n",
 );
@@ -498,6 +501,128 @@ fn an_exclusive_value_cannot_be_published() {
         "}\n",
     ));
     assert_eq!(codes, ["T4244", "T4244", "T4244"]);
+}
+
+// The run-time backstop for managed handles (CHI-240): generic code can hand a
+// managed process handle to a broadcast or watch, which would give every
+// subscriber a copy of a handle that has one owner. The publish defects and
+// names the handle. A watch that starts with `None` and is then given
+// `Some(handle)` reaches the check in `Watch.publish`. A plain-data generic
+// publish still goes through, and a
+// managed handle sent on an ordinary channel still moves, since it has one
+// receiver. Rejects a backstop that skips managed handles, and one that
+// refuses them on every channel.
+const IDLE_PROCESS: &str = concat!(
+    "fn idle(inbox: Inbox<Int>) -> Void {\n",
+    "  let _ = Process.receive(inbox)\n",
+    "  Void\n",
+    "}\n",
+    "fn managed_idle(root: Supervisor.Running) -> Supervisor.ManagedProcess<Int> {\n",
+    "  Supervisor.start_process(root, Process.spec(idle, 1, Duration.zero), Supervisor.Restart.Never)\n",
+    "}\n",
+    "fn root() -> Supervisor.Running {\n",
+    "  Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(1, Duration.seconds(30))))\n",
+    "}\n",
+    "fn publish<T>(news: Broadcast.Publisher<T>, value: T) -> Int { Broadcast.publish(news, value) }\n",
+    "fn start_with<T>(value: T) -> Watch.Publisher<T> { Watch.starting_with(value).publisher }\n",
+    "fn give<T>(state: Watch.Publisher<T>, value: T) -> Void { Watch.publish(state, value) }\n",
+);
+
+#[test]
+fn a_generic_publish_of_a_managed_handle_defects() {
+    let broadcast = run_virtual(
+        "managed-broadcast",
+        &format!(
+            "{IDLE_PROCESS}pub fn main() -> Int {{\n\
+             \x20 let numbers = Broadcast.bounded(2)\n\
+             \x20 let one = Broadcast.subscribe(numbers.publisher)\n\
+             \x20 let two = Broadcast.subscribe(numbers.publisher)\n\
+             \x20 let handles = Broadcast.bounded(2)\n\
+             \x20 let first = Broadcast.subscribe(handles.publisher)\n\
+             \x20 let second = Broadcast.subscribe(handles.publisher)\n\
+             \x20 publish(numbers.publisher, 4) + publish(handles.publisher, managed_idle(root()))\n\
+             }}\n"
+        ),
+    );
+    assert_defect(
+        &broadcast,
+        "Broadcast.publish cannot hold a managed process or supervisor handle",
+    );
+    let watch = run_virtual(
+        "managed-watch",
+        &format!(
+            "{IDLE_PROCESS}pub fn main() -> Int {{\n\
+             \x20 let supervisor = root()\n\
+             \x20 let state = start_with(managed_idle(supervisor))\n\
+             \x20 1\n\
+             }}\n"
+        ),
+    );
+    assert_defect(
+        &watch,
+        "Watch.starting_with cannot hold a managed process or supervisor handle",
+    );
+    let later = run_virtual(
+        "managed-watch-publish",
+        &format!(
+            "{IDLE_PROCESS}pub fn main() -> Int {{\n\
+             \x20 let supervisor = root()\n\
+             \x20 let state = start_with(None)\n\
+             \x20 give(state, Some(managed_idle(supervisor)))\n\
+             \x20 1\n\
+             }}\n"
+        ),
+    );
+    assert_defect(
+        &later,
+        "Watch.publish cannot hold a managed process or supervisor handle",
+    );
+    let moved = run_virtual(
+        "managed-channel",
+        &format!(
+            "{IDLE_PROCESS}fn pass<T>(sender: Channel.Sender<T>, value: T) -> Void {{ Channel.send(sender, value) }}\n\
+             pub fn main() -> Int {{\n\
+             \x20 let supervisor = root()\n\
+             \x20 let handles = Channel.bounded(1)\n\
+             \x20 pass(handles.sender, managed_idle(supervisor))\n\
+             \x20 let next = Channel.receive(handles.receiver)\n\
+             \x20 case next {{\n\
+             \x20   Receive.Received(managed) -> {{\n\
+             \x20     Supervisor.remove_process(supervisor, managed)\n\
+             \x20     Supervisor.stop(supervisor)\n\
+             \x20     6\n\
+             \x20   }}\n\
+             \x20   Receive.Drained -> 0\n\
+             \x20 }}\n\
+             }}\n"
+        ),
+    );
+    assert_eq!(moved, success("6"));
+}
+
+// A generic function can still copy a managed handle inside one task, which
+// neither the checker nor the transfer backstop can see. Removing through the
+// second copy then defects with a message that says so, instead of a generic
+// scheduler failure (CHI-240).
+#[test]
+fn removing_a_copied_managed_handle_twice_names_the_copy() {
+    let outcome = run_virtual(
+        "managed-copy-removed-twice",
+        &format!(
+            "{IDLE_PROCESS}fn dup<T>(value: T) -> (T, T) {{ (value, value) }}\n\
+             pub fn main() -> Int {{\n\
+             \x20 let supervisor = root()\n\
+             \x20 let (first, second) = dup(managed_idle(supervisor))\n\
+             \x20 Supervisor.remove_process(supervisor, first)\n\
+             \x20 Supervisor.remove_process(supervisor, second)\n\
+             \x20 1\n\
+             }}\n"
+        ),
+    );
+    assert_defect(
+        &outcome,
+        "removed already, through this handle or a copy of it",
+    );
 }
 
 // A `Result` is what its arguments are, though `Ok` and `Err` are written in
