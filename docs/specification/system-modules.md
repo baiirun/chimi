@@ -75,7 +75,7 @@ pub fn name(path: Path) -> Option<Text>
 pub fn stem(path: Path) -> Option<Text>
 pub fn extension(path: Path) -> Option<Text>
 pub fn parent(path: Path) -> Option<Path>
-pub fn with_extension(path: Path, extension: Text) -> Path
+pub fn replace_extension(path: Path, extension: Text) -> Path
 pub fn normalize(path: Path) -> Path
 ```
 

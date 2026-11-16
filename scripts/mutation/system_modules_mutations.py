@@ -62,7 +62,7 @@ MUTATIONS = [
          "  let tail = trim_leading_separators(part)\n  case (base, tail) {\n    _ if Text.starts_with(part, \"/\") -> from(part)\n    (\"\", _) -> from(part)")]),
     programs("join from an empty base keeps an absolute part", PATH, [
         ('    ("", _) -> from(tail)', '    ("", _) -> from(part)')]),
-    programs("with_extension keeps trailing dot components", PATH, [
+    programs("replace_extension keeps trailing dot components", PATH, [
         ('      None -> case Text.strip_suffix(rest, "/.") {\n        Some(shorter) -> shorter\n        None -> break rest\n      }',
          '      None -> break rest')]),
     programs("join doubles the separator", PATH, [
@@ -81,6 +81,6 @@ MUTATIONS = [
         ("        (Some(\"..\"), _) -> (rest, List.push(kept, \"..\"))\n", "")]),
     programs("normalize of the empty path is empty", PATH, [
         ("    (False, \"\") -> from(\".\")\n", "")]),
-    programs("with_extension drops the directory", PATH, [
+    programs("replace_extension drops the directory", PATH, [
         ("      from(Text.append(directory, renamed))", "      from(renamed)")]),
 ]

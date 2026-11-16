@@ -3,7 +3,6 @@
 //! controlled environment and working directory. Each test compares the two
 //! backends' outcome records with the expected one.
 
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

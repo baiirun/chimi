@@ -142,7 +142,7 @@ pub fn parent(path: Path) -> Option<Path> {
 /// returned unchanged.
 ///
 /// Cost: O(n).
-pub fn with_extension(path: Path, extension: Text) -> Path {
+pub fn replace_extension(path: Path, extension: Text) -> Path {
   case (name(path), stem(path)) {
     (Some(name), Some(stem)) -> {
       let renamed = case extension {
