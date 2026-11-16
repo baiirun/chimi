@@ -10029,6 +10029,7 @@ fn a_qualified_constructor_is_a_declaration_not_a_field_read() {
                 "import std/task as Task\n",
                 "pub struct Conn {{\n  run: fn(Int) -> Int,\n}}\n",
                 "enum Ask {{\n  Return(connection: Conn)\n  Done\n}}\n",
+                "enum Hold {{\n  Task(running: Task.Task<Int, Never>)\n}}\n",
                 "pub fn main() -> Int {{\n",
                 "  let made = Channel.bounded(4)\n",
                 "  let asks = made.sender\n",
@@ -10048,6 +10049,15 @@ fn a_qualified_constructor_is_a_declaration_not_a_field_read() {
             "  let running = Task.start(fn() { 1 })\n",
             "  let tasks = Channel.bounded(1)\n",
             "  Channel.send(tasks.sender, running)\n",
+        ))),
+        ["T4243"]
+    );
+    assert!(check_codes(&program("  Channel.send(asks, Task.start)\n")).is_empty());
+    assert_eq!(
+        check_codes(&program(concat!(
+            "  let running = Task.start(fn() { 1 })\n",
+            "  let holds = Channel.bounded(1)\n",
+            "  Channel.send(holds.sender, Hold.Task(running))\n",
         ))),
         ["T4243"]
     );
