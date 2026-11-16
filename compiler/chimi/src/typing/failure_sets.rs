@@ -13,7 +13,7 @@
 //! equal when they denote the same set. Later checks (`T4346` for retry
 //! predicates, `Task.all` rows) use the subset and join functions here.
 
-use super::{CanonicalType, FailureRow, GenericKind, ProjectTypeChecker};
+use super::{CanonicalType, FailureRow, FailureVariantArguments, GenericKind, ProjectTypeChecker};
 use crate::ids::{FailureRowId, ModuleId, SymbolId, TextRange, TypeId};
 use crate::resolution::ProjectSymbolKind;
 use crate::semantic::TypeUse;
@@ -28,12 +28,14 @@ impl ProjectTypeChecker {
         &mut self,
         module_id: ModuleId,
         type_use: &TypeUse,
-        _generics: &HashMap<String, SymbolId>,
+        generics: &HashMap<String, SymbolId>,
     ) -> FailureRowId {
         match type_use {
-            TypeUse::Union { members, .. } => self.lower_failure_members(module_id, members, false),
+            TypeUse::Union { members, .. } => {
+                self.lower_failure_members(module_id, members, false, generics)
+            }
             TypeUse::Named { path, .. } => {
-                if let Some(row) = self.failure_member_row(module_id, type_use, false) {
+                if let Some(row) = self.failure_member_row(module_id, type_use, false, generics) {
                     return row;
                 }
                 if let Some(name) = path.last() {
@@ -62,8 +64,9 @@ impl ProjectTypeChecker {
         &mut self,
         module_id: ModuleId,
         members: &[TypeUse],
+        generics: &HashMap<String, SymbolId>,
     ) -> TypeId {
-        let row = self.lower_failure_members(module_id, members, true);
+        let row = self.lower_failure_members(module_id, members, true, generics);
         self.failure_set_type(row)
     }
 
@@ -631,10 +634,11 @@ impl ProjectTypeChecker {
         module_id: ModuleId,
         members: &[TypeUse],
         value_position: bool,
+        generics: &HashMap<String, SymbolId>,
     ) -> FailureRowId {
         let mut rows = Vec::new();
         for member in members {
-            let Some(row) = self.failure_member_row(module_id, member, value_position) else {
+            let Some(row) = self.failure_member_row(module_id, member, value_position, generics) else {
                 let found = match member {
                     TypeUse::Named { path, .. } => path
                         .iter()
@@ -673,6 +677,7 @@ impl ProjectTypeChecker {
         module_id: ModuleId,
         member: &TypeUse,
         value_position: bool,
+        generics: &HashMap<String, SymbolId>,
     ) -> Option<FailureRowId> {
         let TypeUse::Named {
             semantic_id, path, ..
@@ -708,15 +713,38 @@ impl ProjectTypeChecker {
                 self.resolved.standard_symbol(symbol),
                 Some(StandardSymbol::Type(kind)) if kind.is_failure_enum()
             );
-        failure_enum.then(|| {
-            let variants = self.enum_variant_symbols(symbol);
-            self.intern_failure_row(FailureRow {
-                variants,
-                variant_arguments: Vec::new(),
-                parameters: Vec::new(),
-                exclusions: Vec::new(),
-            })
-        })
+        if !failure_enum {
+            return None;
+        }
+        let variants = self.enum_variant_symbols(symbol);
+        // A generic enum written with its arguments, as `W<Int>`, keeps them on
+        // every variant, the way a raised `W<Int>.Bad` does, so the set holds
+        // `W<Int>` and not every `W`.
+        let TypeUse::Named { arguments, .. } = member else {
+            unreachable!("checked above");
+        };
+        let declared = self.named_type_generic_parameters(symbol).len();
+        let variant_arguments = if !arguments.is_empty() && arguments.len() == declared {
+            let lowered = arguments
+                .iter()
+                .map(|argument| self.lower_value_type(module_id, argument, generics))
+                .collect::<Vec<_>>();
+            variants
+                .iter()
+                .map(|variant| FailureVariantArguments {
+                    variant: *variant,
+                    arguments: lowered.clone(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Some(self.intern_failure_row(FailureRow {
+            variants,
+            variant_arguments,
+            parameters: Vec::new(),
+            exclusions: Vec::new(),
+        }))
     }
 
     /// Whether `symbol` is a variant of a user enum or of a standard failure enum,
