@@ -4322,7 +4322,7 @@ fn a_stop_of_its_own_root_made_during_the_drain_is_answered_with_cancellation() 
 }
 
 #[test]
-fn survivors_of_teardown_release_their_mailboxes_and_monitors_once() {
+fn releasing_survivors_frees_each_held_mailbox_entry_and_monitor_once() {
     let mut lab = Lab::new();
     lab.scheduler
         .start_supervisor(policy(

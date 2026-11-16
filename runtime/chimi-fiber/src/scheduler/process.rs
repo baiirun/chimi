@@ -2303,7 +2303,9 @@ impl Scheduler {
     /// still hold: an unread argument, every queued message and notice, and
     /// the handle of every monitor left. They never reach
     /// `incarnation_finished`, which would release these, so without this
-    /// they would stay allocated until the process exits.
+    /// they would stay allocated until the process exits. No known program
+    /// leaves a survivor (a draining owner waits on supervisors teardown also
+    /// ends), so this guards the memory report rather than a seen leak.
     pub(super) fn release_surviving_incarnations(&mut self) {
         let survivors: Vec<_> = self.kernel.incarnations.keys().copied().collect();
         for incarnation in survivors {

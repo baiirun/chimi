@@ -8,7 +8,7 @@ Results: scripts/mutation/teardown_survivor_results.txt.
 CRATE = "runtime/chimi-fiber"
 
 PROCESS = "src/scheduler/process.rs"
-FILTER = "survivors_of_teardown"
+FILTER = "releasing_survivors"
 
 
 def survivor(name, edits):
