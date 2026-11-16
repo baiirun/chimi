@@ -11276,6 +11276,21 @@ fn a_variant_raised_at_two_type_arguments_cannot_bind_its_fields() {
         "{prelude}pub fn main() -> Int {{\n  case fail_either(0) {{\n    Success(v) -> v\n    Failure(e) -> case e {{\n      W.Bad(x) -> x + 1\n    }}\n  }}\n}}\n"
     );
     assert_eq!(check_codes(&whole), ["T4230"]);
+    // A pattern that inspects no such field is fine: a wildcard field, a
+    // field whose type is the same at both arguments, or a fieldless variant.
+    let sound = "import std/text as Text\nenum W<T> { Bad(x: T) }\nenum P<A, C> { One(a: A), Two(c: C) }\n\
+        enum B<T> { Back(x: T)\n  Lost }\n\
+        fn fail_w(n: Int) -> Int {\n  case n > 0 {\n    True -> {\n      let w: W<Int> = W.Bad(1)\n      Failure(w)\n    }\n    False -> {\n      let w: W<Text> = W.Bad(\"s\")\n      Failure(w)\n    }\n  }\n}\n\
+        fn fail_p(n: Int) -> Int {\n  case n > 0 {\n    True -> {\n      let p: P<Int, Int> = P.One(1)\n      Failure(p)\n    }\n    False -> {\n      let p: P<Text, Int> = P.Two(2)\n      Failure(p)\n    }\n  }\n}\n\
+        fn fail_b(n: Int) -> Int {\n  case n > 0 {\n    True -> Failure(B.Lost)\n    False -> {\n      let b: B<Text> = B.Back(\"s\")\n      Failure(b)\n    }\n  }\n}\n\
+        fn w(n: Int) -> Int {\n  case fail_w(n) {\n    Success(v) -> v\n    Failure(W.Bad(_)) -> 1\n  }\n}\n\
+        fn p(n: Int) -> Int {\n  case fail_p(n) {\n    Success(v) -> v\n    Failure(P.One(_)) -> 10\n    Failure(P.Two(c)) -> c * 100\n  }\n}\n\
+        fn b(n: Int) -> Int {\n  case fail_b(n) {\n    Success(v) -> v\n    Failure(B.Back(x)) -> Text.byte_length(x)\n    Failure(B.Lost) -> 2000\n  }\n}\n\
+        pub fn main() -> Int { w(0) + p(0) + b(1) + b(0) }\n";
+    assert_eq!(
+        run_both("generic_variant_wildcards", sound),
+        "\"outcome\":\"success\",\"value\":2202"
+    );
 }
 
 #[test]

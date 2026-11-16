@@ -4932,23 +4932,24 @@ impl ProjectTypeChecker {
             );
             return MatchPattern::Wildcard;
         }
-        // A variant raised at two type arguments has no one type for its fields.
+        // A variant raised at two type arguments may give a field two types,
+        // as `W<Int>.Bad` and `W<Text>.Bad` do; a pattern that inspects such a
+        // field has no one type for it. A wildcard there inspects nothing.
         if let CanonicalType::FailureSetValue(failures) =
             self.types[self.resolve_inference_type(expected).raw() as usize]
-            && self.variant_raised_at_several_arguments(failures, constructor)
+            && let Some(field) = self.field_with_several_types(failures, constructor, arguments)
         {
             self.type_error_range(
                 module_id,
                 "T4230",
-                range,
+                arguments[field].range(),
                 format!(
-                    "pattern `{}` cannot bind its fields: the subject may hold this variant at \
-                     more than one type argument, so a field has no one type; raise one type \
-                     argument, or bind the whole error",
+                    "field {} of `{}` has no one type here: the subject may hold this variant \
+                     at more than one type argument; match it with `_`, or raise one type",
+                    field + 1,
                     self.resolved.symbol(constructor).name
                 ),
             );
-            return MatchPattern::Wildcard;
         }
         let Some(inputs) = self.instantiate_pattern_constructor(constructor, expected) else {
             if context.clause_head {
@@ -5035,6 +5036,68 @@ impl ProjectTypeChecker {
                         left != right && *left != poison && *right != poison
                     })
             })
+        })
+    }
+
+    /// The first field of `variant` that a non-wildcard pattern in `arguments`
+    /// inspects and that two of the argument lists `failures` holds for the
+    /// variant give different types.
+    fn field_with_several_types(
+        &mut self,
+        failures: FailureRowId,
+        variant: SymbolId,
+        arguments: &[Pattern],
+    ) -> Option<usize> {
+        if !self.variant_raised_at_several_arguments(failures, variant) {
+            return None;
+        }
+        let owner = self.enum_owner_for_variant(variant)?;
+        let contract = self.contracts.get(&variant)?.clone();
+        let lists = self.failure_rows[failures.raw() as usize]
+            .variant_arguments
+            .iter()
+            .filter(|arguments| arguments.variant == variant)
+            .map(|arguments| arguments.arguments.clone())
+            .collect::<Vec<_>>();
+        let standard = self
+            .resolved
+            .standard_callable_parameters(variant)
+            .iter()
+            .copied()
+            .filter(|parameter| self.generic_kinds.get(parameter) == Some(&GenericKind::Value))
+            .collect::<Vec<_>>();
+        let mut fields = Vec::with_capacity(lists.len());
+        for list in lists {
+            let mut substitution = CallSubstitution::default();
+            if standard.is_empty() {
+                let raised = self.intern_type(CanonicalType::Named {
+                    symbol: owner,
+                    arguments: list,
+                });
+                self.match_call_type(raised, contract.success, &mut substitution);
+            } else {
+                substitution.values.extend(standard.iter().copied().zip(list));
+            }
+            let inputs = contract
+                .inputs
+                .iter()
+                .map(|input| {
+                    let input = self.substitute_call_type(*input, &mut substitution);
+                    self.resolve_inference_type(input)
+                })
+                .collect::<Vec<_>>();
+            fields.push(inputs);
+        }
+        let poison = TypeId::new(0);
+        (0..contract.inputs.len()).find(|index| {
+            !matches!(arguments.get(*index), None | Some(Pattern::Wildcard { .. }))
+                && fields.iter().any(|left| {
+                    fields.iter().any(|right| {
+                        left[*index] != right[*index]
+                            && left[*index] != poison
+                            && right[*index] != poison
+                    })
+                })
         })
     }
 
