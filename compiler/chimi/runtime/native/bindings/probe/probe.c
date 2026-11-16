@@ -2,6 +2,7 @@
    tests. Uses only chimi_binding.h, as every binding must. */
 #define _POSIX_C_SOURCE 200809L
 #include "chimi_binding.h"
+#include "probe_layout.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -23,7 +24,7 @@ ChimiBindingResult *chimi_probe_add(ChimiBindingCall *call) {
   int64_t left, right, sum;
   if (!chimi_binding_integer(call, 0, &left) || !chimi_binding_integer(call, 1, &right))
     return chimi_binding_defect(call, "add takes two Ints");
-  if (__builtin_add_overflow(left, right, &sum))
+  if (!probe_nested_add(left, right, &sum))
     return chimi_binding_defect(call, "Integer overflow");
   return chimi_binding_success(call, chimi_binding_make_integer(call, sum));
 }

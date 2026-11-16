@@ -67,8 +67,25 @@ pub fn runtime_archive_key(inputs: &RuntimeArchiveInputs<'_>) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
+/// The C flags a binding package adds to `RUNTIME_C_FLAGS`, after the
+/// `-I` of its own directory: only `-I<directory>` (inside the package
+/// directory, since only the package's files are in its key; the compile
+/// makes it absolute) and `-D<definition>`, which a
+/// test checks, so no flag resolves against the current directory. A vendored library keeps its upstream layout
+/// and is configured here rather than by editing it.
+pub const BINDING_PACKAGE_FLAGS: &[(&str, &[&str])] =
+    &[("probe", &["-Iinclude", "-DPROBE_PACKAGE_FLAGS=1"])];
+
+/// The extra flags of `package`, in order; empty for most packages.
+pub fn binding_package_flags(package: &str) -> &'static [&'static str] {
+    BINDING_PACKAGE_FLAGS
+        .iter()
+        .find(|(name, _)| *name == package)
+        .map_or(&[], |(_, flags)| flags)
+}
+
 /// The inputs that decide the bytes of one binding package's archive (G20).
-// The build script includes this file and prebuilds no binding archive.
+// The build script uses only some of these items.
 #[allow(dead_code)]
 pub struct BindingArchiveInputs<'a> {
     pub package: &'a str,
@@ -77,11 +94,14 @@ pub struct BindingArchiveInputs<'a> {
     pub compiler_identity: &'a str,
     /// `chimi_binding.h`, the only header a binding includes from the runtime.
     pub binding_header: &'a [u8],
-    /// Each source file's name and text, in the order they are compiled.
+    /// The package's own flags, `binding_package_flags(package)`.
+    pub package_flags: &'a [&'a str],
+    /// Each file's path in its package and text, in path order.
     pub sources: &'a [(&'a str, &'a str)],
 }
 
-/// Ensures: equal keys only for equal inputs, as [`runtime_archive_key`].
+/// Ensures: equal keys only for equal inputs, as [`runtime_archive_key`],
+/// including the package's own flags.
 #[allow(dead_code)]
 pub fn binding_archive_key(inputs: &BindingArchiveInputs<'_>) -> String {
     let flags = RUNTIME_C_FLAGS.join(" ");
@@ -91,7 +111,7 @@ pub fn binding_archive_key(inputs: &BindingArchiveInputs<'_>) -> String {
         hasher.update(bytes);
     };
     for fixed in [
-        b"chimi.binding-archive.v1".as_slice(),
+        b"chimi.binding-archive.v2".as_slice(),
         RUNTIME_C_COMPILER.as_bytes(),
         flags.as_bytes(),
         b"ar:rcs",
@@ -102,9 +122,145 @@ pub fn binding_archive_key(inputs: &BindingArchiveInputs<'_>) -> String {
     ] {
         part(fixed);
     }
+    part(&(inputs.package_flags.len() as u64).to_le_bytes());
+    for flag in inputs.package_flags {
+        part(flag.as_bytes());
+    }
     for (name, text) in inputs.sources {
         part(name.as_bytes());
         part(text.as_bytes());
     }
     hasher.finalize().to_hex().to_string()
+}
+
+/// Compiles one binding package into the archive `archive`, working in
+/// `directory`: writes `sources` there at their package paths, compiles each
+/// `.c` file (several at once) with the package's flags and `-I
+/// header_directory` for `chimi_binding.h`, and archives the objects in path
+/// order. The build script and `chimi build` both call this, so a prebuilt
+/// archive and a per-project one come from the same commands.
+#[allow(dead_code)]
+pub fn compile_binding_archive(
+    package: &str,
+    sources: &[(&str, &str)],
+    header_directory: &std::path::Path,
+    directory: &std::path::Path,
+    archive: &std::path::Path,
+) -> Result<(), String> {
+    // A fresh directory, so a file removed from the package is not compiled.
+    let _ = std::fs::remove_dir_all(directory);
+    // On a case-insensitive filesystem the second write would replace the first.
+    let mut names = std::collections::BTreeSet::new();
+    for (name, _) in sources {
+        if !names.insert(name.to_lowercase()) {
+            return Err(format!(
+                "binding package {package}: two sources differ only in case: {name}"
+            ));
+        }
+    }
+    for (name, text) in sources {
+        let path = directory.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("create {}: {error}", parent.display()))?;
+        }
+        std::fs::write(&path, text)
+            .map_err(|error| format!("write binding source {name}: {error}"))?;
+    }
+    let objects_directory = directory.join("objects");
+    std::fs::create_dir_all(&objects_directory)
+        .map_err(|error| format!("create {}: {error}", objects_directory.display()))?;
+    let units: Vec<(std::path::PathBuf, std::path::PathBuf)> = sources
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| name.ends_with(".c"))
+        .map(|name| {
+            (
+                directory.join(name),
+                objects_directory.join(format!("{}.o", name.replace('/', "__"))),
+            )
+        })
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    for (_, object) in &units {
+        let folded = object.to_string_lossy().to_lowercase();
+        if !seen.insert(folded) {
+            return Err(format!(
+                "binding package {package}: two sources map to the object {}",
+                object.display()
+            ));
+        }
+    }
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(units.len().max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failure = std::sync::Mutex::new(None::<String>);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some((source, object)) = units.get(index) else {
+                        break;
+                    };
+                    if failure.lock().map_or(true, |seen| seen.is_some()) {
+                        break;
+                    }
+                    let output = std::process::Command::new(RUNTIME_C_COMPILER)
+                        .args(RUNTIME_C_FLAGS)
+                        .arg("-I")
+                        .arg(header_directory)
+                        .arg("-I")
+                        .arg(directory)
+                        .args(binding_package_flags(package).iter().map(|flag| {
+                            match flag.strip_prefix("-I") {
+                                Some(relative) => {
+                                    format!("-I{}", directory.join(relative).display())
+                                }
+                                None => (*flag).to_owned(),
+                            }
+                        }))
+                        .arg("-c")
+                        .arg(source)
+                        .arg("-o")
+                        .arg(object)
+                        .output();
+                    let problem = match output {
+                        Ok(output) if output.status.success() => None,
+                        Ok(output) => Some(format!(
+                            "compile {}: {}",
+                            source.display(),
+                            String::from_utf8_lossy(&output.stderr).trim()
+                        )),
+                        Err(error) => Some(format!("run {RUNTIME_C_COMPILER}: {error}")),
+                    };
+                    if let Some(problem) = problem {
+                        if let Ok(mut seen) = failure.lock() {
+                            seen.get_or_insert(problem);
+                        }
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    if let Some(problem) = failure.into_inner().ok().flatten() {
+        return Err(problem);
+    }
+    let _ = std::fs::remove_file(archive);
+    let output = std::process::Command::new("ar")
+        .arg("rcs")
+        .arg(archive)
+        .args(units.iter().map(|(_, object)| object))
+        .output()
+        .map_err(|error| format!("run ar: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "archive binding package {package}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
 }
