@@ -137,8 +137,10 @@ test "a timeout cancels a parked read" {
 test "a closed handle stays closed, and closing again does nothing" {
   let pipe = BindingProbe.open()
   BindingProbe.close(pipe)
-  BindingProbe.close(pipe)
+  // The new pipe takes the closed one's slot and descriptors, so a second
+  // release here would close the new pipe's descriptors.
   let reused = BindingProbe.open()
+  BindingProbe.close(pipe)
   Result.capture(fn() { BindingProbe.read(pipe) })
     |> Debug.render
     |> Test.assert_equal("Result.Err(ProbeError.Closed)")
@@ -173,7 +175,14 @@ fn a_program_links_a_binding_package_only_when_it_reaches_it() {
         report.contains("\"binding_packages\":[{\"name\":\"probe\""),
         "{report}"
     );
-    assert!(report.contains("\"misses\":[") && report.contains("libchimi_bind_probe.a"));
+    let misses = report
+        .split("\"misses\":[")
+        .nth(1)
+        .unwrap()
+        .split(']')
+        .next()
+        .unwrap();
+    assert!(misses.contains("libchimi_bind_probe.a"), "{report}");
 
     // A second build takes the package archive from the cache.
     let again = reaching.chimi(&["test", "cases.chimi"]);
@@ -249,5 +258,20 @@ fn an_application_module_cannot_declare_a_binding() {
         "{}{}",
         run.stdout,
         run.stderr
+    );
+}
+
+#[test]
+fn a_constant_cannot_call_a_binding() {
+    let scratch = Scratch::new(
+        "constant",
+        &suite("const sum = BindingProbe.add(1, 2)\n\ntest \"adds\" {\n  Test.assert_equal(sum, 3)\n}\n"),
+    );
+    let run = scratch.chimi(&["test", "cases.chimi"]);
+    assert_ne!(run.status, Some(0));
+    let output = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        output.contains("E5201") && output.contains("a C binding operation"),
+        "{output}"
     );
 }

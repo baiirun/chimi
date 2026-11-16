@@ -833,6 +833,11 @@ fn constant_value(
                     requirements: constant_requirements(core, closures, &environment.requirements)?,
                 }
             }
+            // Every binding shares one intrinsic, so its symbol cannot be
+            // recovered from the function; a constant cannot hold one.
+            RuntimeCallable::Intrinsic(StandardFunction::BindingCall) => {
+                return Err("a C binding operation".to_owned());
+            }
             RuntimeCallable::Intrinsic(function) => ConstantFunction::Intrinsic(
                 core.symbols
                     .iter()

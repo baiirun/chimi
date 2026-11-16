@@ -396,8 +396,11 @@ what reaches C and what C may do:
   (`chimi_binding_wait`, over `CHIMI_REQUEST_IO_WAIT`) so that scheduler
   threads never block. A binding makes its descriptors non-blocking and
   waits on `EAGAIN`.
-- Text a binding builds MUST be UTF-8. Invalid text, or a value the binding
-  failed to build, makes the call a defect instead of reaching Chimi.
+- Text a binding builds MUST be UTF-8. Invalid text (including a failure or
+  defect message), or a value the binding failed to build, makes the call a
+  defect instead of reaching Chimi. The runtime does not check a result
+  against the `native fn`'s declared type: returning the wrong kind is a bug
+  in the trusted C code.
 - A foreign resource is a `native type` value backed by a runtime-owned
   handle: a slot in the runtime's handle table, with the binding's type
   (`ChimiBindingType`: a name and a release function) and its state. The
@@ -432,6 +435,10 @@ what reaches C and what C may do:
 - Prebuilt binding archives in the compiler, for packages whose cold compile
   is slow (TLS, SQLite).
 - Vendored-module grants (T5).
+- Waking the tasks that wait on a descriptor when its handle closes. Until
+  then a binding must not close a descriptor another task waits on, since the
+  reactor waits on the number and the next open may reuse it; `std/net` adds
+  the wake before sockets can be closed from another task.
 
 ### Conformance
 

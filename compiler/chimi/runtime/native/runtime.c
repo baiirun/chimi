@@ -5991,10 +5991,12 @@ static void release_binding_slot(BindingHandleSlot *entry, uint32_t slot) {
   void *state = entry->state;
   entry->type = NULL;
   entry->state = NULL;
-  entry->generation++;
-  /* The free list threads through `state` of free slots. */
-  entry->state = (void *)(uintptr_t)binding_free_slot;
-  binding_free_slot = slot;
+  /* A slot whose generation would wrap is retired, so a stale copy can never
+     match a later handle. The free list threads through `state`. */
+  if (++entry->generation != UINT32_MAX) {
+    entry->state = (void *)(uintptr_t)binding_free_slot;
+    binding_free_slot = slot;
+  }
   if (type->release) type->release(state);
 }
 
@@ -6065,6 +6067,7 @@ ChimiBindingValue *chimi_binding_make_boolean(ChimiBindingCall *call, int value)
 ChimiBindingValue *chimi_binding_make_text(ChimiBindingCall *call, const char *bytes,
                                            size_t length) {
   (void)call;
+  if (bytes == NULL) return NULL;
   /* Text may hold U+0000, which valid_utf8 refuses, so check between them. */
   for (size_t start = 0; start <= length;) {
     const char *nul = memchr(bytes + start, 0, length - start);
@@ -6177,7 +6180,7 @@ ChimiBindingResult *chimi_binding_failure(ChimiBindingCall *call, int64_t code,
                                           const char *message) {
   ChimiBindingValue *parts[] = {
     chimi_binding_make_integer(call, code),
-    chimi_binding_make_text(call, message, strlen(message)),
+    chimi_binding_make_text(call, message, message ? strlen(message) : 0),
   };
   if (parts[1] == NULL)
     return binding_result(defect("a C binding failed with a message that is not UTF-8",
@@ -6187,6 +6190,9 @@ ChimiBindingResult *chimi_binding_failure(ChimiBindingCall *call, int64_t code,
 }
 
 ChimiBindingResult *chimi_binding_defect(ChimiBindingCall *call, const char *message) {
+  if (message == NULL || !valid_utf8((const unsigned char *)message, strlen(message)))
+    return binding_result(defect("a C binding defected with a message that is not UTF-8",
+                                 call->call_node));
   return binding_result(defect(copy_text(message), call->call_node));
 }
 
@@ -11052,6 +11058,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       ChimiControl *control = runtime.cancel
         ? cancelled()
         : execute_program_entry(&runtime, entry, environment);
+      release_binding_handles();
       if (control == NULL) return 70;
       if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
     }
