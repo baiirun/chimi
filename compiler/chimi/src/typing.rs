@@ -5121,7 +5121,11 @@ impl ProjectTypeChecker {
     /// Whether `failures` holds `variant` at two argument lists that disagree,
     /// as a row that raised both `W<Int>.Bad` and `W<Text>.Bad` does; poison
     /// (an argument the variant does not mention) agrees with any type.
-    fn variant_raised_at_several_arguments(&self, failures: FailureRowId, variant: SymbolId) -> bool {
+    fn variant_raised_at_several_arguments(
+        &self,
+        failures: FailureRowId,
+        variant: SymbolId,
+    ) -> bool {
         let lists = self.failure_rows[failures.raw() as usize]
             .variant_arguments
             .iter()
@@ -5138,9 +5142,10 @@ impl ProjectTypeChecker {
         lists.iter().any(|left| {
             lists.iter().any(|right| {
                 left.len() != right.len()
-                    || left.iter().zip(right).any(|(left, right)| {
-                        left != right && *left != poison && *right != poison
-                    })
+                    || left
+                        .iter()
+                        .zip(right)
+                        .any(|(left, right)| left != right && *left != poison && *right != poison)
             })
         })
     }
@@ -5182,7 +5187,9 @@ impl ProjectTypeChecker {
                 });
                 self.match_call_type(raised, contract.success, &mut substitution);
             } else {
-                substitution.values.extend(standard.iter().copied().zip(list));
+                substitution
+                    .values
+                    .extend(standard.iter().copied().zip(list));
             }
             let inputs = contract
                 .inputs

@@ -4229,8 +4229,9 @@ unsafe extern "C" fn sleeps_before_receiving(_context: *mut c_void) -> ChimiFibe
     ended(PROCESS_END_RETURNED)
 }
 
-// A body stopped before its first run has nothing in flight to drain, so it
-// is cancelled at once: none of its code runs and time does not move.
+// A body stopped before its first run, with nothing in its mailbox, has
+// nothing in flight to drain, so it is cancelled at once: none of its code
+// runs and time does not move.
 #[test]
 fn a_body_stopped_before_its_first_run_is_cancelled_without_running() {
     let mut lab = Lab::new();
@@ -4252,6 +4253,24 @@ fn a_body_stopped_before_its_first_run_is_cancelled_without_running() {
         log(|log| log.outcomes.clone()).is_empty(),
         "the body never ran"
     );
+}
+
+// Messages a process accepted before its first run are work: a stop that
+// arrives before the body runs still lets it drain them (CHI-243).
+#[test]
+fn a_body_stopped_before_its_first_run_still_drains_the_messages_it_accepted() {
+    let mut lab = Lab::new();
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![counter_member(COUNTER)], 0))
+        .expect("root");
+    lab.deliver(named(COUNTER), Msg::Add(1));
+    lab.deliver(named(COUNTER), Msg::Add(2));
+    let _ = lab.scheduler.stop_supervisor(root);
+    let _ = lab.scheduler.run_until_idle();
+    let counter = lab.started()[0].1;
+    assert_eq!(adds_of(counter), [1, 2]);
+    assert_eq!(timed_terminations(&lab), [(0, TerminalCause::Cancelled)]);
 }
 
 /// Sleeps 1 s, then stops the supervisor named by its context and logs the
