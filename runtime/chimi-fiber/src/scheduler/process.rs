@@ -1200,6 +1200,7 @@ impl Scheduler {
             self.cancel_timer(timer);
         }
         self.clear_select(task);
+        self.clear_io_wait(task);
         let transition = self.channels.cancel_pending(task);
         self.apply_channel_transition(transition);
         if let Some(record) = self

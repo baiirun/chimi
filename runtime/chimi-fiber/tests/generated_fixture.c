@@ -412,6 +412,11 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       CHIMI_REQUEST_SCOPE_CANCEL,
       CHIMI_REQUEST_TASK_ANY,
       CHIMI_REQUEST_TASK_DRAIN,
+      CHIMI_REQUEST_IO_WAIT,
+      CHIMI_IO_READABLE,
+      CHIMI_IO_WRITABLE,
+      CHIMI_IO_HANGUP,
+      CHIMI_IO_ERROR,
   };
   size_t count = sizeof(values) / sizeof(*values);
   for (size_t index = 0; index < count; index += 1) out[index] = values[index];

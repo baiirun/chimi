@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 19u
+#define CHIMI_FIBER_ABI_VERSION 20u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -183,6 +183,30 @@ enum {
   /* TASK_ANY for children the caller already cancelled: neither a
      cancellation point nor withdrawn by a firing scope. */
   CHIMI_REQUEST_TASK_DRAIN = 43,
+  /* ChimiSchedulerRequest: waits until descriptor `value` is ready for the
+     CHIMI_IO_READABLE and/or CHIMI_IO_WRITABLE interest in `token`. OK with
+     the ready conditions (CHIMI_IO_*) in `value` once it is ready; PENDING
+     while it is not, so build the request afresh and reissue it after every
+     wake. The OK reply wakes the task before any other runs, so a read or
+     write right after it finds the descriptor as reported. ERROR for a
+     negative or closed descriptor, the signal pipe, or another interest.
+     A cancellation point, withdrawn by a cancellation. A wait is a host
+     operation in flight: virtual time does not advance while one exists, so
+     under the virtual clock no timeout or shutdown deadline fires during it
+     (a real signal still ends it).
+     Closing a descriptor a task waits on is a host bug. Kinds 36 to 39 are
+     the channel-variant requests, 41 cancels a scope, and 42 and 43 are
+     the task combinators'. */
+  CHIMI_REQUEST_IO_WAIT = 48,
+};
+
+/* Interest and ready conditions of CHIMI_REQUEST_IO_WAIT. HANGUP and ERROR
+   are ready conditions only: the next read or write reports them. */
+enum {
+  CHIMI_IO_READABLE = 1,
+  CHIMI_IO_WRITABLE = 2,
+  CHIMI_IO_HANGUP = 4,
+  CHIMI_IO_ERROR = 8,
 };
 
 /* `down` of a RECEIVE reply whose `message` is a notice handle. */
