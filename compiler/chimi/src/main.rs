@@ -9,7 +9,8 @@ use std::process::ExitCode;
 
 const VERSION: &str = concat!("chimi ", env!("CARGO_PKG_VERSION"), "-bootstrap");
 const USAGE: &str = concat!(
-    "usage: chimi --version | chimi format <path> | chimi inspect <path> <byte-offset> | ",
+    "usage: chimi --version | chimi format <path> | chimi doc [--json] <path> | ",
+    "chimi doc [--json] --root <project-dir> <module> | chimi doc [--json] std/<module> | chimi inspect <path> <byte-offset> | ",
     "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
     "chimi check [--json] <path> | chimi run <path> [-- <argument>...] | ",
     "chimi build <path> [-o <executable>] | ",
@@ -36,6 +37,11 @@ enum Command {
     Version,
     Format {
         path: PathBuf,
+    },
+    /// Prints one module's public surface.
+    Doc {
+        target: DocTarget,
+        output: DiagnosticOutput,
     },
     Inspect {
         input: Input,
@@ -65,6 +71,17 @@ enum Command {
         input: Input,
         options: TestOptions,
     },
+}
+
+/// The module `chimi doc` documents.
+#[derive(Debug, Eq, PartialEq)]
+enum DocTarget {
+    /// The `main` module of a single file.
+    File { path: PathBuf },
+    /// `module` of the project rooted at `root`.
+    Project { root: PathBuf, module: String },
+    /// A module of the standard tree, such as `std/option`.
+    Standard { module: String },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -297,6 +314,10 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
         };
     }
 
+    if command == "doc" {
+        return parse_doc_command(arguments);
+    }
+
     if command == "std" {
         return match arguments.next() {
             Some(subcommand) if subcommand == "check" => match arguments.next() {
@@ -485,6 +506,55 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
     })
 }
 
+/// Parses `chimi doc [--json] (<path> | --root <project> <module> | std/<module>)`.
+fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    let mut arguments = arguments.peekable();
+    let output = if arguments.next_if(|argument| argument == "--json").is_some() {
+        DiagnosticOutput::Json
+    } else {
+        DiagnosticOutput::Human
+    };
+    let target = match arguments.next() {
+        None => {
+            return Err(UsageError {
+                message: "doc requires a source path, a project root and module, or a std/ module",
+            });
+        }
+        Some(flag) if flag == "--root" => {
+            let (Some(root), Some(module)) = (arguments.next(), arguments.next()) else {
+                return Err(UsageError {
+                    message: "doc --root requires a project directory and a module",
+                });
+            };
+            let Ok(module) = module.into_string() else {
+                return Err(UsageError {
+                    message: "doc module paths must be valid UTF-8",
+                });
+            };
+            DocTarget::Project {
+                root: PathBuf::from(root),
+                module,
+            }
+        }
+        Some(argument) => match argument.to_str() {
+            Some(module) if module.starts_with("std/") && !module.ends_with(".chimi") => {
+                DocTarget::Standard {
+                    module: module.to_owned(),
+                }
+            }
+            _ => DocTarget::File {
+                path: PathBuf::from(argument),
+            },
+        },
+    };
+    if arguments.next().is_some() {
+        return Err(UsageError {
+            message: "doc received unexpected arguments",
+        });
+    }
+    Ok(Command::Doc { target, output })
+}
+
 fn parse_offset(value: OsString) -> Option<usize> {
     value.into_string().ok()?.parse().ok()
 }
@@ -503,6 +573,7 @@ fn execute(Invocation { std_dir, command }: Invocation) -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Format { path } => format(path),
+        Command::Doc { target, output } => doc(target, &standard, output),
         Command::Inspect {
             input,
             module_path,
@@ -515,6 +586,37 @@ fn execute(Invocation { std_dir, command }: Invocation) -> ExitCode {
         Command::StdTest { options } => std_test(&standard, options),
         Command::Test { input, options } => test(input, &standard, options),
     }
+}
+
+fn doc(target: DocTarget, standard: &StandardTree, output: DiagnosticOutput) -> ExitCode {
+    let (loaded, module) = match target {
+        DocTarget::File { path } => (LoadedProject::single_file(path, standard), "main".to_owned()),
+        DocTarget::Project { root, module } => {
+            (LoadedProject::load(root, module.clone(), standard), module)
+        }
+        DocTarget::Standard { module } => (LoadedProject::standard_tree(standard), module),
+    };
+    let project = match loaded {
+        Ok(project) => project,
+        Err(error) => {
+            eprintln!("chimi: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let report = Compiler::type_project(project.sources());
+    if !report.is_success() {
+        eprint!("{}", project.render_diagnostics(report.diagnostics()));
+        return ExitCode::FAILURE;
+    }
+    let Some(documentation) = report.documentation(&module) else {
+        eprintln!("chimi: no module `{module}`");
+        return ExitCode::FAILURE;
+    };
+    match output {
+        DiagnosticOutput::Human => print!("{}", documentation.render_text()),
+        DiagnosticOutput::Json => print!("{}", documentation.render_json()),
+    }
+    ExitCode::SUCCESS
 }
 
 fn std_check(standard: &StandardTree) -> ExitCode {
@@ -845,12 +947,75 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, DiagnosticOutput, Input, UsageError, parse_command};
+    use super::{Command, DiagnosticOutput, DocTarget, Input, UsageError, parse_command};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn parses_doc_targets() {
+        assert_eq!(
+            parse_command(arguments(&["doc", "app.chimi"])),
+            Ok(Command::Doc {
+                target: DocTarget::File {
+                    path: PathBuf::from("app.chimi")
+                },
+                output: DiagnosticOutput::Human,
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["doc", "--json", "--root", "service", "app/orders"])),
+            Ok(Command::Doc {
+                target: DocTarget::Project {
+                    root: PathBuf::from("service"),
+                    module: "app/orders".to_owned(),
+                },
+                output: DiagnosticOutput::Json,
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&["doc", "std/option"])),
+            Ok(Command::Doc {
+                target: DocTarget::Standard {
+                    module: "std/option".to_owned()
+                },
+                output: DiagnosticOutput::Human,
+            })
+        );
+        // A file under a `std` directory is still a file.
+        assert_eq!(
+            parse_command(arguments(&["doc", "std/option.chimi"])),
+            Ok(Command::Doc {
+                target: DocTarget::File {
+                    path: PathBuf::from("std/option.chimi")
+                },
+                output: DiagnosticOutput::Human,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_doc_commands() {
+        for (command, message) in [
+            (
+                &["doc"][..],
+                "doc requires a source path, a project root and module, or a std/ module",
+            ),
+            (
+                &["doc", "--root", "service"][..],
+                "doc --root requires a project directory and a module",
+            ),
+            (&["doc", "a.chimi", "b.chimi"][..], "doc received unexpected arguments"),
+        ] {
+            assert_eq!(
+                parse_command(arguments(command)),
+                Err(UsageError { message }),
+                "{command:?}"
+            );
+        }
     }
 
     #[test]
