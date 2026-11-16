@@ -254,6 +254,11 @@ fn hold(db: Database, seconds: Int) -> Void needs { clock: Clock } {
   Sql.transaction(db, fn(_) { Clock.sleep(Duration.seconds(seconds)) })
 }
 
+fn later(db: Database, seconds: Int, sql: Text) -> Int needs { clock: Clock } {
+  Clock.sleep(Duration.seconds(seconds))
+  Sql.execute(db, sql, [])
+}
+
 test "the eleventh statement waits for a connection to come free" {
   let calls = Test.recorder()
   Sql.open(recording(calls), "app.db", fn(db) {
@@ -280,7 +285,41 @@ test "a statement that waits too long fails" {
     Sql.execute(db, "later", [Value.Int(1)]) |> Test.assert_equal(1)
     Clock.since(start) |> Test.assert_equal(Duration.seconds(39))
     List.length(Task.result(holders)) |> Test.assert_equal(10)
+    // All ten slots and connections are free again.
+    let again = Clock.now()
+    List.length(Task.all(List.repeat(fn() { hold(db, 5) }, 10))) |> Test.assert_equal(10)
+    Clock.since(again) |> Test.assert_equal(Duration.seconds(5))
   })
+  let opened = List.count(Test.recorded(calls), fn(call) { call == Call.Connected("app.db") })
+  let closed = List.count(Test.recorded(calls), fn(call) { call == Call.Closed })
+  (opened, closed) |> Test.assert_equal((10, 10))
+}
+
+test "waiting statements are served in the order they asked" {
+  let calls = Test.recorder()
+  Sql.open(recording(calls), "app.db", fn(db) {
+    let holders = Task.start(fn() { Task.all(List.repeat(fn() { hold(db, 10) }, 10)) })
+    let first = Task.start(fn() { later(db, 1, "first") })
+    let second = Task.start(fn() { later(db, 2, "second") })
+    let third = Task.start(fn() { later(db, 3, "third") })
+    [Task.result(first), Task.result(second), Task.result(third)] |> Test.assert_equal([0, 0, 0])
+    List.length(Task.result(holders)) |> Test.assert_equal(10)
+  })
+  List.filter(Test.recorded(calls), fn(call) { call == ran("first") or call == ran("second") or call == ran("third") })
+    |> Test.assert_equal([ran("first"), ran("second"), ran("third")])
+}
+
+test "closing waits at most 30 s for connections tasks still hold" {
+  let start = Clock.now()
+  let outer = Task.start(fn() {
+    Sql.open(recording(Test.recorder()), "app.db", fn(db) {
+      let _ = Task.start(fn() { hold(db, 1000) })
+      Clock.sleep(Duration.seconds(1))
+      Void
+    })
+  })
+  Task.result(outer)
+  Clock.since(start) |> Test.assert_equal(Duration.seconds(31))
 }
 test "a connection returned while the pool closes is closed" {
   let calls = Test.recorder()
@@ -322,7 +361,7 @@ test "statements waiting when the pool closes fail at once" {
 }
 "#,
     );
-    assert_passed(&run, 4);
+    assert_passed(&run, 6);
 }
 
 // Rejects a transaction that commits after a failure, leaves one open after
