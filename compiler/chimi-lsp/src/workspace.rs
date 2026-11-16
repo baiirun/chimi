@@ -1199,7 +1199,7 @@ mod tests {
         let fixture = Fixture::new("rename-shadow");
         let app = fixture.write(
             "app.chimi",
-            "const limit = 5\n\nfn f(n: Int) -> Int {\n  n + limit\n}\n\npub fn main() -> Int { f(1) }\n",
+            "const limit = 5\n\nfn f(n: Int) -> Int {\n  n + limit\n}\n\nfn spare() -> Int { 2 }\n\npub fn main() -> Int { f(1) }\n\nfn extra() -> Int { 3 }\n",
         );
         let project = ProjectConfig::new(fixture.root(), "app").unwrap();
         let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
@@ -1224,6 +1224,12 @@ mod tests {
             .collect();
         assert_eq!(spans, vec![(2, 5), (3, 2)]);
         assert!(workspace.rename(&app, at(0, 7), "maximum").is_ok());
+        // An unused function renamed to the name of another, not next to it,
+        // changes no reference but declares the name twice.
+        assert_eq!(
+            workspace.rename(&app, at(6, 4), "extra"),
+            Err(RenameError::Conflict("extra".to_owned()))
+        );
     }
 
     /// A parameter that shares an item's name is not the imported item.
