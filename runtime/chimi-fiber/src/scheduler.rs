@@ -163,6 +163,10 @@ pub const REQUEST_SIGNAL_WAIT: u32 = 45;
 /// unreaped child. Holds virtual time like an IO wait. A cancellation point,
 /// withdrawn by a cancellation (`scheduler/child.rs`).
 pub const REQUEST_CHILD_WAIT: u32 = 47;
+/// No value names `task` any more (`Scheduler::release_task`): OK, or ERROR
+/// for an unknown task, a process body, a live root, or a second release.
+/// Any task may issue it. Never parks, and not a cancellation point.
+pub const REQUEST_TASK_RELEASE: u32 = 46;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -292,6 +296,7 @@ pub const VIOLATION_CHANNEL_STILL_LIVE: u32 = 5;
 pub const VIOLATION_IN_FLIGHT: u32 = 6;
 pub const VIOLATION_PUBLISHED_CAPABILITY: u32 = 7;
 pub const VIOLATION_WRONG_KIND: u32 = 8;
+pub const VIOLATION_OWN_RECEIVER: u32 = 9;
 pub const CAPABILITY_NONE: u32 = 0;
 pub const CAPABILITY_RECEIVER: u32 = 1;
 pub const CAPABILITY_COMPLETION: u32 = 2;
@@ -359,6 +364,12 @@ impl ChimiCapabilityViolation {
             ChannelError::PublishedCapability(channel) => (
                 VIOLATION_PUBLISHED_CAPABILITY,
                 CAPABILITY_NONE,
+                Some(channel),
+                None,
+            ),
+            ChannelError::OwnReceiver(channel) => (
+                VIOLATION_OWN_RECEIVER,
+                CAPABILITY_RECEIVER,
                 Some(channel),
                 None,
             ),
@@ -540,6 +551,9 @@ struct Task {
     fiber: Option<OwnedFiber>,
     phase: TaskPhase,
     observed: bool,
+    /// No value names this task any more (`Scheduler::release_task`): once
+    /// terminal, its record and kept result are removed.
+    handle_released: bool,
     /// The incarnation this task runs, if it is a process body.
     process: Option<IncarnationId>,
     /// The command for the next resume.
@@ -635,8 +649,9 @@ pub struct SchedulerOptions {
     /// Called once for every admitted specification context when no record
     /// needs it any more.
     pub release_spec_context: Option<SpecContextRelease>,
-    /// Called once for every value a non-process task's fiber ended with,
-    /// when the scheduler is dropped. The root's value is released too,
+    /// Called once for every value a non-process task's fiber ended with: a
+    /// result once the task's handle is released (`Scheduler::release_task`),
+    /// otherwise when the scheduler is dropped. The root's value is released too,
     /// unless `chimi_scheduler_execute_with_config` hands it to its caller.
     pub release_task_value: Option<ValueRelease>,
     /// Called once for every value the scheduler accepted from a sender and
@@ -713,8 +728,14 @@ pub struct Scheduler {
     capability_violation_report: Option<(CapabilityViolationReport, *mut c_void)>,
     /// The value each task's fiber ended with, kept only while
     /// `release_task_value` is set. `Task.result` copies a value without
-    /// consuming it, so every one stays until the scheduler is dropped.
+    /// consuming it, so a result stays until its task's handle is released
+    /// and a defect code until the scheduler is dropped.
     task_values: BTreeMap<TaskId, TaskValue>,
+    /// Terminal tasks whose handle was released, removed by `drive` between
+    /// resumes, where no scheduler operation is still using their record.
+    released_terminal: Vec<TaskId>,
+    /// The most task records held at once (`chimi_scheduler_peak_task_records`).
+    peak_tasks: usize,
     next_scope: u64,
     signals: signal::Signals,
     reactor: reactor::Reactor,
@@ -817,6 +838,8 @@ impl Scheduler {
             capability_violation_report: capability_violation_report
                 .map(|report| (report, violation_context)),
             task_values: BTreeMap::new(),
+            released_terminal: Vec::new(),
+            peak_tasks: 0,
             next_scope: 0,
             signals: signal::Signals::default(),
             reactor: reactor::Reactor::default(),
@@ -1067,11 +1090,13 @@ impl Scheduler {
     }
 
     pub fn drive(&mut self) {
+        self.remove_released_terminal();
         self.collect_user_signals();
         self.deliver_signal();
         let mut resumes = 0_u32;
         while let Some(task) = self.runnable.pop_front() {
             self.run(task);
+            self.remove_released_terminal();
             self.collect_user_signals();
             self.deliver_signal();
             resumes = resumes.wrapping_add(1);
@@ -1419,25 +1444,47 @@ impl Scheduler {
             .map_err(SchedulerError::Channel)
     }
 
-    /// Releases an observed terminal task after its handle becomes unreachable.
+    /// Records that no value names `task` any more. Task handles never leave
+    /// the task that started the child, so nothing can observe it again:
+    /// once it is terminal, now or later, its record is removed and its kept
+    /// result value released. A defect code is kept, because the defect may
+    /// still be carrying it to the root. Process bodies have no handle; their
+    /// kernel ends them. A root is released only once it has ended, because
+    /// its runner reads its outcome from the record.
     pub fn release_task(&mut self, task: TaskId) -> Result<(), SchedulerError> {
-        let releasable = self.tasks.get(&task).is_some_and(|record| {
-            matches!(record.phase, TaskPhase::Terminal(_))
-                && record.observed
-                && record.children.is_empty()
-        }) && !self
+        let record = self
             .tasks
-            .values()
-            .any(|record| record.parent == Some(task));
-        if !releasable {
-            return if self.tasks.contains_key(&task) {
-                Err(SchedulerError::TaskStillLive(task))
-            } else {
-                Err(SchedulerError::UnknownTask(task))
-            };
+            .get_mut(&task)
+            .ok_or(SchedulerError::UnknownTask(task))?;
+        let live_root =
+            record.parent.is_none() && !matches!(record.phase, TaskPhase::Terminal(_));
+        if record.process.is_some() || record.handle_released || live_root {
+            return Err(SchedulerError::TaskStillLive(task));
         }
-        self.tasks.remove(&task);
+        record.handle_released = true;
+        if matches!(record.phase, TaskPhase::Terminal(_)) {
+            self.released_terminal.push(task);
+            self.remove_released_terminal();
+        }
         Ok(())
+    }
+
+    fn remove_released_terminal(&mut self) {
+        for task in std::mem::take(&mut self.released_terminal) {
+            let record = self.tasks.remove(&task).expect("a released terminal task");
+            debug_assert!(
+                record.children.is_empty(),
+                "a terminal task has no live children"
+            );
+            if let Some(TaskValue::Result(word)) = self.task_values.get(&task).copied() {
+                self.task_values.remove(&task);
+                if let Some((release, context)) = self.release_task_value {
+                    // SAFETY: as for `release_channel_value`; the value is
+                    // removed from the map before it is released.
+                    unsafe { release(context, word) };
+                }
+            }
+        }
     }
 
     pub fn constructed_events(&self) -> u64 {
@@ -1578,6 +1625,7 @@ impl Scheduler {
                 fiber: Some(fiber),
                 phase: TaskPhase::Runnable,
                 observed: false,
+                handle_released: false,
                 process,
                 command: ChimiFiberCommand::Resume,
                 request: std::ptr::null_mut(),
@@ -1601,9 +1649,15 @@ impl Scheduler {
                 .children
                 .insert(id);
         }
+        self.peak_tasks = self.peak_tasks.max(self.tasks.len());
         self.runnable.push_back(id);
         self.emit(id, TaskEventKind::Started, None, false);
         Ok(id)
+    }
+
+    /// The most task records held at once so far.
+    pub fn peak_tasks(&self) -> usize {
+        self.peak_tasks
     }
 
     fn run(&mut self, task: TaskId) {
@@ -1805,6 +1859,14 @@ impl Scheduler {
             REQUEST_IO_WITHDRAW => self.handle_io_withdraw(owner, request),
             REQUEST_SIGNAL_WAIT => self.handle_signal_wait(owner, request),
             REQUEST_CHILD_WAIT => self.handle_child_wait(owner, request),
+            REQUEST_TASK_RELEASE => {
+                request.status = if self.release_task(TaskId(request.task)).is_ok() {
+                    RESPONSE_OK
+                } else {
+                    RESPONSE_ERROR
+                };
+                let _ = self.wake(owner);
+            }
             REQUEST_TASK_START => {
                 let Some(entry) = request.entry else {
                     request.status = RESPONSE_ERROR;
@@ -2189,6 +2251,9 @@ impl Scheduler {
         let record = self.tasks.get_mut(&task).expect("known task");
         record.phase = TaskPhase::Terminal(outcome);
         record.terminal_sequence = self.next_terminal_sequence;
+        if record.handle_released {
+            self.released_terminal.push(task);
+        }
         if let Some(parent) = parent {
             self.tasks
                 .get_mut(&parent)
@@ -2730,6 +2795,107 @@ mod tests {
             .expect("task");
         scheduler.drive();
         task
+    }
+
+    thread_local! {
+        static RELEASED_VALUES: std::cell::RefCell<Vec<i64>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    unsafe extern "C" fn record_released_value(_context: *mut c_void, value: i64) {
+        RELEASED_VALUES.with(|values| values.borrow_mut().push(value));
+    }
+
+    fn released_values() -> Vec<i64> {
+        RELEASED_VALUES.with(|values| values.borrow().clone())
+    }
+
+    fn releasing_scheduler() -> Scheduler {
+        RELEASED_VALUES.with(|values| values.borrow_mut().clear());
+        let mut options = SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Real);
+        options.release_task_value = Some(record_released_value);
+        Scheduler::with_options(options)
+    }
+
+    #[test]
+    fn a_released_task_is_removed_with_its_result_once_it_ends() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut scheduler = releasing_scheduler();
+        let root = start_parked(&mut scheduler);
+        let child = scheduler
+            .start_child(root, chimi_fixture_generated_entry)
+            .expect("child");
+        scheduler.drive();
+        assert_eq!(scheduler.release_task(child), Ok(()));
+        assert_eq!(scheduler.metrics().tasks, 2, "a parked child stays");
+        assert_eq!(
+            scheduler.release_task(child),
+            Err(SchedulerError::TaskStillLive(child)),
+            "a handle is released once"
+        );
+        scheduler.wake(child).expect("wake child");
+        scheduler.drive();
+        assert_eq!(scheduler.metrics().tasks, 1);
+        assert_eq!(released_values(), [42]);
+        assert_eq!(
+            scheduler.release_task(child),
+            Err(SchedulerError::UnknownTask(child))
+        );
+        drop(scheduler);
+        assert_eq!(released_values(), [42], "released once");
+    }
+
+    #[test]
+    fn releasing_an_observed_terminal_task_removes_it_at_once() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut scheduler = releasing_scheduler();
+        let root = start_parked(&mut scheduler);
+        let child = scheduler
+            .start_child(root, chimi_fixture_generated_entry)
+            .expect("child");
+        scheduler.drive();
+        scheduler.wake(child).expect("wake child");
+        scheduler.drive();
+        assert_eq!(
+            scheduler.result(Some(root), child),
+            Ok(TaskResult::Ready(TaskOutcome::Succeeded(42)))
+        );
+        assert_eq!(scheduler.release_task(child), Ok(()));
+        assert_eq!(scheduler.metrics().tasks, 1);
+        assert_eq!(released_values(), [42]);
+        assert_eq!(
+            scheduler.release_task(child),
+            Err(SchedulerError::UnknownTask(child)),
+            "a handle is released once"
+        );
+        assert_eq!(
+            scheduler.release_task(root),
+            Err(SchedulerError::TaskStillLive(root)),
+            "a live root is released only once it has ended"
+        );
+    }
+
+    #[test]
+    fn a_released_defected_task_keeps_its_defect_code_until_the_end() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut scheduler = releasing_scheduler();
+        let root = start_parked(&mut scheduler);
+        let child = scheduler
+            .start_child(root, chimi_fixture_generated_defect)
+            .expect("child");
+        assert_eq!(scheduler.release_task(child), Ok(()));
+        scheduler.drive();
+        assert!(
+            !scheduler.tasks.contains_key(&child),
+            "the defected child's record goes"
+        );
+        assert!(released_values().is_empty(), "its defect code stays");
+        drop(scheduler);
+        assert_eq!(
+            released_values().len(),
+            1,
+            "the defect code goes at the end"
+        );
     }
 
     #[test]
@@ -3552,10 +3718,6 @@ mod tests {
             )))
         );
         scheduler.cancel(None, owner).expect("cancel owner");
-        assert_eq!(
-            scheduler.release_task(owner),
-            Err(SchedulerError::TaskStillLive(owner))
-        );
         assert_eq!(
             scheduler.result(None, owner),
             Ok(TaskResult::Ready(TaskOutcome::Cancelled))

@@ -338,6 +338,43 @@ the drain makes the end `defected`, inside the shutdown protocol.
 | A child defect during shutdown stays in the protocol | `a_child_defect_during_shutdown_stays_inside_the_shutdown_protocol` | None |
 | Removal waits for termination | `rr01_rt05_removing_a_parked_process_cancels_it_and_frees_its_name` | remove does not wait |
 
+### Task release
+
+A task's record holds its outcome so that `Task.result` can read it again.
+The record has to outlive the task's end for as long as any copy of the
+handle can still be read, and no longer. `runtime.c` counts task handles the
+way it counts channel endpoints: every `Task` value it builds retains a
+counted key, and `release_allocation`, the loop-pass dead sweep and
+`copy_forward` adjust the count. When the last copy goes, the runtime queues
+`CHIMI_REQUEST_TASK_RELEASE` next to the channel releases it already sends.
+
+The scheduler marks the task released. A released task that is still running
+keeps its record until it ends; a released task that has ended is removed at
+the next scheduling step, and its stored result goes back through the
+release hook. A defect code stays until the scheduler is dropped, because
+the root's outcome may still need it. The root itself, and process tasks,
+which the supervision tree owns, refuse release. A program that starts and
+reads tasks in a loop therefore holds a fixed number of records. Hidden
+tasks need no rule of their own: the timer child of a user-clock select is
+an ordinary task whose handle the select drops (CHI-225).
+
+One gap remains (CHI-265): handles are dropped when a task's heap is destroyed
+at its end, and a process body that is force-stopped at its shutdown deadline,
+or a child that overflows its stack, never reaches that point. The records
+its handles named then stay until the program ends.
+
+The memory report's `task_records_peak` is the most records the scheduler
+held at once, from `chimi_scheduler_peak_task_records`.
+
+| Rule | Test | Mutant |
+| --- | --- | --- |
+| A released task is removed with its result once it ends | `a_released_task_is_removed_with_its_result_once_it_ends`, `a_loop_of_finished_tasks_holds_a_bounded_number_of_records` | see `scripts/mutation/task_release_mutations.py` |
+| An observed terminal task is removed at once | `releasing_an_observed_terminal_task_removes_it_at_once` | same |
+| A defect code outlives the record's release | `a_released_defected_task_keeps_its_defect_code_until_the_end` | same |
+| A held, stored or sent handle still reads its result | `a_handle_still_held_reads_the_result_again`, `handles_kept_in_loop_state_survive_each_pass`, `a_handle_sent_through_a_channel_still_reads_its_result` | `scripts/mutation/task_handle_mutations.py` |
+| A handle that survived a pass is released when it dies | `handles_that_die_after_surviving_a_pass_are_released` | same |
+| Losing user-clock timer children are freed | `losing_user_clock_timers_leave_no_records_behind` | same |
+
 ### Signals
 
 The runner (`runtime.c`) owns the SIGINT and SIGTERM handlers. The handler
