@@ -1,1 +1,0 @@
-{"schema":"chimi.runtime.v1","outcome":"success","value":"-42\n\"say \\\"hi\\\"\\n\\t\\\\ \\${x}\"\n[True, False]\nMoney { cents: 2500 }\n[PaymentError.GatewayUnavailable, PaymentError.Declined(\"card\"), PaymentError.Refused(code: 51, message: \"funds\")]\n[Some(3), None]\n{ cents: 1, name: \"a\" }\n(1, \"a\", [])\n[0..3, 0..3]\n<fn checkout>\n<fn>"}

@@ -1,6 +1,11 @@
 // A List.set index outside 0..length is a defect that names the bounds.
 import std/list as List
+import std/test as Test
 
-pub fn main() -> List<Int> {
+fn run() -> List<Int> {
   List.set([1, 2], 2, 0)
+}
+
+test "set outside defects" {
+  Test.assert_equal(Test.capture_defect(run), "List.set: index must be in 0..2, got 2")
 }

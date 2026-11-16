@@ -1,7 +1,12 @@
 // Bytes.from_int defects one past the largest value of an unsigned layout.
 import std/bytes as Bytes
 import std/bytes.{Bytes, IntLayout}
+import std/test as Test
 
-pub fn main() -> Bytes {
+fn run() -> Bytes {
   Bytes.from_int(65536, IntLayout.U16Be)
+}
+
+test "from int unsigned too large defects" {
+  Test.assert_equal(Test.capture_defect(run), "Bytes.from_int: 65536 does not fit IntLayout.U16Be")
 }

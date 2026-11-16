@@ -4,8 +4,9 @@ import std/bytes.{Bytes}
 import std/debug as Debug
 import std/map as Map
 import std/set as Set
+import std/test as Test
 
-pub fn main() -> Text {
+fn run() -> List<Text> {
   let counts = Map.put(Map.put(Map.put(Map.empty(), Bytes.from([0xff]), 1), Bytes.from([0x01, 0x02]), 2), Bytes.from([0x01]), 3)
   let seen = Set.from([Bytes.from([2]), Bytes.from([1]), Bytes.from([2]), Bytes.empty()])
   let results = [
@@ -13,5 +14,9 @@ pub fn main() -> Text {
     Debug.render(Map.get(counts, Bytes.from([0x01, 0x02]))),
     Debug.render(seen),
   ]
-  Debug.render(results)
+  results
+}
+
+test "map keys and set items" {
+  Test.assert_equal(run(), ["[Bytes(01), Bytes(01 02), Bytes(ff)]", "Some(2)", "Set { Bytes(), Bytes(01), Bytes(02) }"])
 }

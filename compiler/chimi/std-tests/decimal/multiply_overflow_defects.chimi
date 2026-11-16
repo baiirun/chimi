@@ -2,8 +2,13 @@
 // even though its coefficient is small.
 import std/decimal as Decimal
 import std/decimal.{Decimal}
+import std/test as Test
 
-pub fn main() -> Decimal {
+fn run() -> Decimal {
   let small = Decimal.of(1, 20)
   small * small
+}
+
+test "multiply overflow defects" {
+  Test.assert_equal(Test.capture_defect(run), "decimal overflow in `*`: 0.00000000000000000001 * 0.00000000000000000001 needs more than 38 digits or scale 38")
 }

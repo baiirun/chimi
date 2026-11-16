@@ -4,6 +4,7 @@ import std/debug as Debug
 import std/decimal as Decimal
 import std/decimal.{Decimal, Rounding}
 import std/list as List
+import std/test as Test
 
 const modes = [
   Rounding.TowardZero,
@@ -23,7 +24,7 @@ fn by_mode(numerator: Int, denominator: Int, scale: Int) -> Text {
   Debug.render(quotients)
 }
 
-pub fn main() -> Text {
+fn run() -> List<Text> {
   let results = [
     by_mode(5, 2, 0),
     by_mode(7, 2, 0),
@@ -54,5 +55,9 @@ pub fn main() -> Text {
       Decimal.divide_checked(Decimal.of(9223372036854775807, 0), Decimal.of(1, 38), 0, Rounding.HalfEven),
     ]),
   ]
-  Debug.render(results)
+  results
+}
+
+test "rounding" {
+  Test.assert_equal(run(), ["[\"2\", \"3\", \"2\", \"3\", \"2\", \"3\", \"2\"]", "[\"3\", \"4\", \"3\", \"4\", \"3\", \"4\", \"4\"]", "[\"2\", \"3\", \"2\", \"3\", \"3\", \"3\", \"3\"]", "[\"2\", \"3\", \"2\", \"3\", \"2\", \"2\", \"2\"]", "[\"-2\", \"-3\", \"-3\", \"-2\", \"-2\", \"-3\", \"-2\"]", "[\"-3\", \"-4\", \"-4\", \"-3\", \"-3\", \"-4\", \"-4\"]", "[\"-2\", \"-3\", \"-3\", \"-2\", \"-3\", \"-3\", \"-3\"]", "[\"-2\", \"-3\", \"-3\", \"-2\", \"-2\", \"-3\", \"-2\"]", "[\"-2\", \"-3\", \"-3\", \"-2\", \"-2\", \"-2\", \"-2\"]", "[\"0.75\", \"0.75\", \"0.75\", \"0.75\", \"0.75\", \"0.75\", \"0.75\"]", "[\"-0.75\", \"-0.75\", \"-0.75\", \"-0.75\", \"-0.75\", \"-0.75\", \"-0.75\"]", "0.25", "0.3333", "14.99", "1000", "[0.12, 0.14]", "[None, None]"])
 }

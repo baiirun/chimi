@@ -1,10 +1,15 @@
 // A product past 128 bits defects too: 2^64 squared would wrap to 0.
 import std/decimal as Decimal
 import std/decimal.{Decimal}
+import std/test as Test
 
-pub fn main() -> Decimal {
+fn run() -> Decimal {
   case Decimal.parse("18446744073709551616") {
     Success(x) -> x * x
     Failure(_) -> Decimal.of(0, 0)
   }
+}
+
+test "multiply wrap defects" {
+  Test.assert_equal(Test.capture_defect(run), "decimal overflow in `*`: 18446744073709551616 * 18446744073709551616 needs more than 38 digits or scale 38")
 }

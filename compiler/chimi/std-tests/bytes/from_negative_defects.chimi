@@ -1,7 +1,12 @@
 // Bytes.from defects on a negative element.
 import std/bytes as Bytes
 import std/bytes.{Bytes}
+import std/test as Test
 
-pub fn main() -> Bytes {
+fn run() -> Bytes {
   Bytes.from([-1])
+}
+
+test "from negative defects" {
+  Test.assert_equal(Test.capture_defect(run), "Bytes.from: element 0 is -1, outside 0..=255")
 }

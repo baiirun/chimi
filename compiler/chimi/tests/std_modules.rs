@@ -1,12 +1,16 @@
-//! The standard library's expected-output programs (`compiler/chimi/std-tests`).
+//! The standard library's own tests (`compiler/chimi/std-tests`).
 //!
-//! Each `<module>/<name>.chimi` is a program with `pub fn main()`; its sibling
-//! `<name>.expected` holds the runner's terminal outcome record. Every program
-//! runs on the reference interpreter and as a native executable: the two
-//! records must be identical, and each must equal the expected file once the
-//! Core node and origin ids, which move whenever std source changes, are
-//! removed. Every registered native operation must be reached by some program,
-//! so each primitive has differential coverage.
+//! Most `<module>/<name>.chimi` files hold `test` items: `chimi test --json`
+//! runs the whole directory on both backends, and every test must pass on
+//! each. The rest are expected-output programs, kept where the point is the
+//! runner's own report, such as an outcome record or a failure escaping
+//! `main`: each has `pub fn main()` and a sibling `<name>.expected` holding the
+//! runner's terminal outcome record. Every such program runs on the reference
+//! interpreter and as a native executable: the two records must be identical,
+//! and each must equal the expected file once the Core node and origin ids,
+//! which move whenever std source changes, are removed. Every registered
+//! native operation must be reached by some test or program, so each
+//! primitive has differential coverage.
 
 use chimi::project::{LoadedProject, StandardTree};
 use chimi::{Compiler, ProjectSource};
@@ -14,9 +18,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn programs() -> Vec<PathBuf> {
+/// Every `.chimi` file under `std-tests`, in path order.
+fn sources() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("std-tests");
-    let mut programs = Vec::new();
+    let mut sources = Vec::new();
     for module in std::fs::read_dir(&root).expect("read std-tests") {
         let module = module.unwrap().path();
         for entry in std::fs::read_dir(&module).unwrap() {
@@ -25,13 +30,79 @@ fn programs() -> Vec<PathBuf> {
                 .extension()
                 .is_some_and(|extension| extension == "chimi")
             {
-                programs.push(path);
+                sources.push(path);
             }
         }
     }
-    programs.sort();
+    sources.sort();
+    sources
+}
+
+/// The expected-output programs: the sources with a sibling `.expected`.
+fn programs() -> Vec<PathBuf> {
+    let programs: Vec<PathBuf> = sources()
+        .into_iter()
+        .filter(|path| path.with_extension("expected").exists())
+        .collect();
     assert!(!programs.is_empty(), "std-tests holds no programs");
     programs
+}
+
+/// The sources that hold `test` items: those without an `.expected` file.
+fn test_modules() -> Vec<PathBuf> {
+    let modules: Vec<PathBuf> = sources()
+        .into_iter()
+        .filter(|path| !path.with_extension("expected").exists())
+        .collect();
+    assert!(!modules.is_empty(), "std-tests holds no test modules");
+    modules
+}
+
+/// `(test identity, outcome)` for each `test_finished` record of `chimi test
+/// --json` on `std-tests` under `backend`, in report order.
+fn test_outcomes(backend: &str) -> Vec<(String, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("std-tests");
+    let scratch = std::env::temp_dir().join(format!(
+        "chimi-std-tests-{}-runner-{backend}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("test")
+        .arg(&root)
+        .arg(format!("--backend={backend}"))
+        .arg("--json")
+        .output()
+        .expect("run chimi test");
+    std::fs::remove_dir_all(&scratch).unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.code().is_some_and(|code| code <= 1),
+        "{backend}: chimi test could not run: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let field = |line: &str, name: &str| {
+        let start = line.find(&format!("\"{name}\":\"")).map(|start| start + name.len() + 4)?;
+        let end = line[start..].find('"')? + start;
+        Some(line[start..end].to_owned())
+    };
+    stdout
+        .lines()
+        .filter(|line| line.contains("\"test_finished\""))
+        .map(|line| {
+            let identity = format!(
+                "{} {}",
+                field(line, "module").unwrap_or_default(),
+                field(line, "name").unwrap_or_default()
+            );
+            let outcome = match field(line, "outcome").as_deref() {
+                Some("passed") => "passed".to_owned(),
+                _ => format!("failed: {line}"),
+            };
+            (identity, outcome)
+        })
+        .collect()
 }
 
 fn scratch_directory(program: &Path) -> PathBuf {
@@ -158,8 +229,36 @@ fn standard_programs_match_their_expected_outcomes_on_both_backends() {
 }
 
 #[test]
-fn every_registered_operation_is_reached_by_a_standard_program() {
+fn standard_tests_pass_on_both_backends() {
+    let native = test_outcomes("native");
+    let interpreted = test_outcomes("interpreter");
+    assert_eq!(native.len(), test_modules().len(), "one test per module: {native:?}");
+    let failures: Vec<String> = native
+        .iter()
+        .chain(&interpreted)
+        .filter(|(_, outcome)| outcome != "passed")
+        .map(|(identity, outcome)| format!("{identity}: {outcome}"))
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(
+        native.iter().map(|(identity, _)| identity).collect::<Vec<_>>(),
+        interpreted.iter().map(|(identity, _)| identity).collect::<Vec<_>>(),
+        "the backends ran different tests"
+    );
+}
+
+#[test]
+fn every_registered_operation_is_reached_by_a_standard_test_or_program() {
     let mut reached = BTreeSet::new();
+    for module in test_modules() {
+        let sources: Vec<ProjectSource> =
+            LoadedProject::single_file(&module, &StandardTree::embedded())
+                .expect("load test module")
+                .sources();
+        let operations = Compiler::standard_operations_reached_by_tests(sources)
+            .unwrap_or_else(|diagnostics| panic!("{}: {diagnostics:?}", module.display()));
+        reached.extend(operations);
+    }
     for program in programs() {
         let sources: Vec<ProjectSource> =
             LoadedProject::single_file(&program, &StandardTree::embedded())
@@ -175,7 +274,7 @@ fn every_registered_operation_is_reached_by_a_standard_program() {
         .collect::<Vec<_>>();
     assert!(
         unreached.is_empty(),
-        "no std-tests program reaches {unreached:?}"
+        "no std-tests test or program reaches {unreached:?}"
     );
 }
 

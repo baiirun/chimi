@@ -3,6 +3,7 @@
 // one line of the result.
 import std/debug as Debug
 import std/text as Text
+import std/test as Test
 
 struct Money {
   cents: Int,
@@ -18,7 +19,7 @@ fn checkout(cents: Int) -> Money {
   Money(cents)
 }
 
-pub fn main() -> Text {
+fn run() -> Text {
   let results = [
     Debug.render(-42),
     Debug.render("say \"hi\"\n\t\\ \${x}"),
@@ -40,4 +41,8 @@ pub fn main() -> Text {
     True -> Text.join(results, "\n")
     False -> "equal ranges rendered differently"
   }
+}
+
+test "render" {
+  Test.assert_equal(run(), "-42\n\"say \\\"hi\\\"\\n\\t\\\\ \\\${x}\"\n[True, False]\nMoney { cents: 2500 }\n[PaymentError.GatewayUnavailable, PaymentError.Declined(\"card\"), PaymentError.Refused(code: 51, message: \"funds\")]\n[Some(3), None]\n{ cents: 1, name: \"a\" }\n(1, \"a\", [])\n[0..3, 0..3]\n<fn checkout>\n<fn>")
 }
