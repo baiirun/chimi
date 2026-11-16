@@ -314,9 +314,12 @@ impl ChimiCapabilityViolation {
                 Some(channel),
                 None,
             ),
-            ChannelError::WrongKind(channel) => {
-                (VIOLATION_WRONG_KIND, CAPABILITY_NONE, Some(channel), None)
-            }
+            ChannelError::WrongKind(channel) => (
+                VIOLATION_WRONG_KIND,
+                CAPABILITY_NONE,
+                Some(channel),
+                None,
+            ),
             ChannelError::CapabilityInFlight { channel, kind } => (
                 VIOLATION_IN_FLIGHT,
                 match kind {
@@ -1108,7 +1111,9 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(receiver)
             }
-            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_SUBSCRIBE, None),
+            Err(error) => {
+                self.channel_violation(task, error, REQUEST_CHANNEL_SUBSCRIBE, None)
+            }
         }
     }
 
@@ -1124,7 +1129,9 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(added)
             }
-            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_ADD_RECEIVER, None),
+            Err(error) => {
+                self.channel_violation(task, error, REQUEST_CHANNEL_ADD_RECEIVER, None)
+            }
         }
     }
 

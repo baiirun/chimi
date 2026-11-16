@@ -1946,11 +1946,14 @@ fn sd01_stop_runs_newest_dynamic_first_then_declared_in_reverse_and_frees_unread
     lab.scheduler
         .start_process(root, spec(None, 8), Restart::Never)
         .unwrap();
-    // Queued before any body runs, so nothing receives it.
+    // COUNTER drains its mailbox during the stop, returns at `Return`, and
+    // never reads the message queued behind it.
+    lab.deliver(named(COUNTER), Msg::Return);
     let unread = message(Msg::Add(9));
     lab.scheduler.process_send(named(COUNTER), unread).unwrap();
     let memberships: Vec<_> = lab.started().into_iter().map(|(m, _)| m).collect();
     lab.scheduler.stop_supervisor(root).unwrap();
+    let _ = lab.scheduler.run_until_idle();
     let order: Vec<_> = lab.terminations().into_iter().map(|(m, _)| m).collect();
     assert_eq!(order, memberships.iter().rev().copied().collect::<Vec<_>>());
     assert!(

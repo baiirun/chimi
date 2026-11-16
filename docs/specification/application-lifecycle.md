@@ -68,7 +68,8 @@ Three cases skip the drain:
 
 - a body that has not run yet and has no accepted messages is cancelled at
   once, since nothing is in flight (a body that has not run but already
-  accepted messages runs and drains them, like any other);
+  accepted messages or monitor notices runs and drains them, like any
+  other);
 - `shutdown_within = Duration.zero` forces at once;
 - a supervisor operation the process (or one of its tasks) is parked in that
   waits on its own shutdown, such as `Supervisor.stop` of its own root, is
