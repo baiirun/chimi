@@ -681,3 +681,141 @@ fn a_test_only_operation_reachable_from_main_fails_the_build_but_not_the_tests()
     let tests = both_backends("test-only-tests", TEST_ONLY, &[]);
     assert_eq!(tests.status, Some(0), "{}", tests.stderr);
 }
+
+/// A fake `Payments` provider that records each charge and replies from a script.
+const RECORDERS: &str = concat!(
+    "import std/debug as Debug\n",
+    "import std/int as Int\n",
+    "import std/list as List\n",
+    "import std/test as Test\n",
+    "\n",
+    "interface Payments {\n",
+    "  charge: fn(Int) -> Text\n",
+    "}\n",
+    "\n",
+    "fn checkout(cents: List<Int>) -> List<Text> needs { payments: Payments } {\n",
+    "  List.map(cents, fn(each) { payments.charge(each) })\n",
+    "}\n",
+    "\n",
+    "test \"records each call in order\" {\n",
+    "  let calls = Test.recorder()\n",
+    "  let payments = {\n",
+    "    charge: fn(cents: Int) -> Text {\n",
+    "      Test.record(calls, { cents: cents, label: Int.to_text(cents) })\n",
+    "      \"ok\"\n",
+    "    },\n",
+    "  }\n",
+    "  let receipts = checkout([5, 7]) using { payments: payments }\n",
+    "  let expected = [{ cents: 5, label: \"5\" }, { cents: 7, label: \"7\" }]\n",
+    "  Test.assert_equal(Test.recorded(calls), expected)\n",
+    "  Test.assert_equal(Test.recorded(calls), expected)\n",
+    "  Test.assert_equal(Debug.render(calls), \"<Recorder>\")\n",
+    "}\n",
+    "\n",
+    "test \"replies from a script\" {\n",
+    "  let replies = Test.script([\"first\", \"second\"])\n",
+    "  let payments = { charge: fn(_cents: Int) -> Text { Test.next(replies) } }\n",
+    "  Test.assert_equal(checkout([1, 2]) using { payments: payments }, [\"first\", \"second\"])\n",
+    "  Test.assert_equal(Debug.render(replies), \"<Script>\")\n",
+    "}\n",
+    "\n",
+    "test \"an empty recorder records nothing\" {\n",
+    "  Test.assert_equal(Test.recorded(Test.recorder()), [])\n",
+    "}\n",
+    "\n",
+    "test \"a call past the script fails the test\" {\n",
+    "  let replies = Test.script([\"only\"])\n",
+    "  let payments = { charge: fn(_cents: Int) -> Text { Test.next(replies) } }\n",
+    "  let receipts = checkout([1, 2]) using { payments: payments }\n",
+    "  Void\n",
+    "}\n",
+);
+
+#[test]
+fn recorders_keep_calls_in_order_and_scripts_reply_until_exhausted() {
+    let run = both_backends("recorders", RECORDERS, &[]);
+    assert_eq!(run.status, Some(1), "{}{}", run.stdout, run.stderr);
+    assert_eq!(
+        run.stdout,
+        concat!(
+            "test main \"records each call in order\" ... ok\n",
+            "test main \"replies from a script\" ... ok\n",
+            "test main \"an empty recorder records nothing\" ... ok\n",
+            "test main \"a call past the script fails the test\" ... FAILED\n",
+            "  assertion failed at cases.chimi:42:54\n",
+            "  Test.next: script exhausted after 1 values\n",
+            "\n",
+            "3 passed, 1 failed\n",
+        )
+    );
+}
+
+/// Native only: the interpreter runs no tasks alongside a test.
+#[test]
+fn tasks_record_into_one_log_in_the_order_they_ran() {
+    let source = concat!(
+        "import std/channel as Channel\n",
+        "import std/int as Int\n",
+        "import std/task as Task\n",
+        "import std/test as Test\n",
+        "\n",
+        "test \"tasks record into one log in the order they ran\" {\n",
+        "  let events = Test.recorder()\n",
+        "  let channel = Channel.bounded(1)\n",
+        "  let sender = channel.sender\n",
+        "  let receiver = channel.receiver\n",
+        "  Test.record(events, \"before\")\n",
+        "  let child = Task.start(fn() -> Int {\n",
+        "    Test.record(events, Int.to_text(42))\n",
+        "    Channel.send(sender, 1)\n",
+        "    1\n",
+        "  })\n",
+        "  let received = Channel.receive(receiver)\n",
+        "  Test.record(events, \"after\")\n",
+        "  Test.assert_equal(Task.result(child), 1)\n",
+        "  Test.assert_equal(Test.recorded(events), [\"before\", \"42\", \"after\"])\n",
+        "}\n",
+    );
+    let run = chimi_test("recorder-tasks", source, &[]);
+    assert_eq!(run.status, Some(0), "{}{}", run.stdout, run.stderr);
+}
+
+#[test]
+fn a_recorder_or_script_must_hold_shareable_values() {
+    let source = concat!(
+        "import std/channel as Channel\n",
+        "import std/test as Test\n",
+        "\n",
+        "test \"keeps a receiver\" {\n",
+        "  let channel = Channel.bounded(1)\n",
+        "  Test.record(Test.recorder(), channel.receiver)\n",
+        "  let replies = Test.script([channel.receiver])\n",
+        "  Void\n",
+        "}\n",
+    );
+    let run = chimi_test("recorder-shareable", source, &[]);
+    assert_eq!(run.status, Some(2), "{}", run.stdout);
+    let diagnostics: Vec<&str> = run.stderr.lines().filter(|line| line.contains("T4403")).collect();
+    assert_eq!(diagnostics.len(), 2, "{}", run.stderr);
+    assert!(diagnostics[0].starts_with("cases.chimi:6:32: error[T4403] type: Test.record keeps"), "{}", run.stderr);
+    assert!(diagnostics[1].starts_with("cases.chimi:7:29: error[T4403] type: Test.script keeps"), "{}", run.stderr);
+}
+
+#[test]
+fn a_recorder_reachable_from_main_fails_the_build() {
+    let source = concat!(
+        "import std/test as Test\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  Test.record(Test.recorder(), 1)\n",
+        "  0\n",
+        "}\n",
+    );
+    let run = chimi("recorder-main", source, &["run", "cases.chimi"]);
+    assert_eq!(run.status, Some(1), "{}", run.stdout);
+    assert!(
+        run.stderr.contains("error[T4401] execution-setup: `Test.record` is test-only"),
+        "{}",
+        run.stderr
+    );
+}
