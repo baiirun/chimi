@@ -56,10 +56,10 @@ MUTATIONS = [
          edits=[("                Check::Invalid\n            };", "                Check::Ready(interest)\n            };")],
          **fiber("a_ready_descriptor_answers_at_once")),
     dict(name="a scheduled read blocks the scheduler", file=RUNTIME_C,
-         edits=[("    if (CHIMI_REQUIRES_SCHEDULER && !wait_readable(input->fd)) return INPUT_CANCELLED;\n", "")],
+         edits=[("      if (!wait_readable(input)) return INPUT_CANCELLED;\n", "")],
          **signals("a_task_keeps_running_while_main_waits_for_standard_input")),
     dict(name="a cancelled wait reads as a failure", file=RUNTIME_C,
-         edits=[("    if (CHIMI_REQUIRES_SCHEDULER && !wait_readable(input->fd)) return INPUT_CANCELLED;",
-                 "    if (CHIMI_REQUIRES_SCHEDULER && !wait_readable(input->fd)) return INPUT_FAILED;")],
+         edits=[("      if (!wait_readable(input)) return INPUT_CANCELLED;",
+                 "      if (!wait_readable(input)) return INPUT_FAILED;")],
          **signals("the_first_sigint_cancels_a_scheduled_program_while_it_reads_input")),
 ]

@@ -5767,10 +5767,14 @@ enum { INPUT_END = -1, INPUT_FAILED = -2, INPUT_CANCELLED = -3 };
    CHIMI_REQUEST_IO_WAIT, so other tasks run and a signal is delivered meanwhile;
    its OK reply resumes this task before any other, so the read that follows does
    not block unless another OS process drained the descriptor first. A closed
-   descriptor answers ERROR, and the read reports it. False when cancelled. */
-static bool wait_readable(int fd) {
+   descriptor answers ERROR, and the read reports it. It also ends when another
+   task reading "-" has refilled the shared buffer meanwhile. False when
+   cancelled. */
+static bool wait_readable(const ByteInput *input) {
+  int fd = input->fd;
   if (CHIMI_REQUIRES_SCHEDULER) {
     for (;;) {
+      if (input->start < input->end) return true;
       ChimiSchedulerRequest request = {
         .kind = CHIMI_REQUEST_IO_WAIT, .value = fd, .token = CHIMI_IO_READABLE,
       };
@@ -5791,7 +5795,7 @@ static int input_next(ChimiRuntime *runtime, ByteInput *input) {
   for (;;) {
     if (runtime->cancel) return INPUT_CANCELLED;
     if (CHIMI_REQUIRES_SCHEDULER) {
-      if (!wait_readable(input->fd)) return INPUT_CANCELLED;
+      if (!wait_readable(input)) return INPUT_CANCELLED;
       /* Another task reading "-" may have refilled the shared buffer while this
          one waited; reading over it would lose those bytes. */
       if (input->start < input->end) return input->bytes[input->start++];
@@ -5807,7 +5811,7 @@ static int input_next(ChimiRuntime *runtime, ByteInput *input) {
     if (errno == EINTR) continue;
     /* A descriptor a parent left non-blocking: wait for it, then read again. */
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      if (!CHIMI_REQUIRES_SCHEDULER) (void)wait_readable(input->fd);
+      if (!CHIMI_REQUIRES_SCHEDULER) (void)wait_readable(input);
       continue;
     }
     return INPUT_FAILED;

@@ -176,8 +176,9 @@ because its file description is shared with the parent; a descriptor a
 parent left non-blocking is waited on and read again.
 
 A reader whose input is always ready (`yes | program`) keeps the CPU as a
-busy loop does: other runnable tasks still run between its reads, but
-timers fire only when the scheduler idles.
+busy loop does: each ready answer resumes it first, so other tasks run and
+timers fire only when its line callback parks or the input stalls. That is
+no worse than the blocking read it replaces.
 
 Not yet covered: writes to standard output and standard error still block
 the scheduler thread, so a program writing to a stalled pipe is ended only
