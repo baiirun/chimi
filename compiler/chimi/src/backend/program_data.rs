@@ -644,16 +644,12 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         .iter()
         .map(|test| c_string(&core.symbol(*test).name))
         .collect::<Vec<_>>();
-    if computations.is_empty() {
-        output.push_str("const char *const CHIMI_TEST_COMPUTATIONS[] = { 0 };\n");
-    } else {
-        render_array(
-            &mut output,
-            "const char *const CHIMI_TEST_COMPUTATIONS[]",
-            &computations,
-            Clone::clone,
-        );
-    }
+    render_array(
+        &mut output,
+        "const char *const CHIMI_TEST_COMPUTATIONS[]",
+        &computations,
+        Clone::clone,
+    );
     let mut assertion_nodes = core.assertion_calls().into_iter().collect::<Vec<_>>();
     assertion_nodes.sort_unstable();
     render_array(
@@ -851,6 +847,8 @@ fn c_string(value: &str) -> String {
             b'"' => output.push_str("\\\""),
             b'\\' => output.push_str("\\\\"),
             b'\n' => output.push_str("\\n"),
+            // `??/` and the other trigraphs would be rewritten under -std=c11.
+            b'?' => output.push_str("\\?"),
             0x20..=0x7e => output.push(char::from(byte)),
             _ => write!(output, "\\{:03o}", byte).unwrap(),
         }

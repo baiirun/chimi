@@ -1329,14 +1329,14 @@ test "adds" {
   Test.assert_equal(add(1, 2), 3)
 }
 
-test "fails" {
+test "fails ??/ here" {
   Test.assert_equal(add(1, 2), 4)
 }
 "#;
 
 /// `--trace` writes each test's telemetry to its own file, named by the test
-/// and identical on both backends apart from times; a new traced run clears
-/// the last one's files, and `--trace=off` writes none.
+/// and identical on both backends (a `??/` in the name is not a C trigraph);
+/// a new traced run clears the last one's files, and `--trace=off` writes none.
 #[test]
 fn trace_writes_one_telemetry_file_per_test_on_both_backends() {
     let scratch = scratch_directory("trace");
@@ -1360,26 +1360,15 @@ fn trace_writes_one_telemetry_file_per_test_on_both_backends() {
         names
             .iter()
             .map(|name| {
-                let text = std::fs::read_to_string(traces.join(name))
-                    .unwrap_or_else(|error| panic!("{name}: {error}"));
-                text.lines()
-                    .map(|line| {
-                        let at = line.find(",\"time_ns\":");
-                        at.map_or_else(
-                            || line.to_owned(),
-                            |at| {
-                                let end = line[at + 11..]
-                                    .find(|c: char| !c.is_ascii_digit())
-                                    .map_or(line.len(), |end| at + 11 + end);
-                                format!("{}{}", &line[..at], &line[end..])
-                            },
-                        )
-                    })
+                std::fs::read_to_string(traces.join(name))
+                    .unwrap_or_else(|error| panic!("{name}: {error}"))
+                    .lines()
+                    .map(str::to_owned)
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>()
     };
-    let names = ["0-main-adds.jsonl", "1-main-fails.jsonl"];
+    let names = ["0-main-adds.jsonl", "1-main-fails-here.jsonl"];
 
     std::fs::create_dir_all(&traces).unwrap();
     std::fs::write(traces.join("stale.jsonl"), "").unwrap();
@@ -1391,7 +1380,7 @@ fn trace_writes_one_telemetry_file_per_test_on_both_backends() {
         assert!(stdout.contains(&path), "{path} in {stdout}");
     }
     let native = files(&names);
-    for (index, (lines, test)) in native.iter().zip(["adds", "fails"]).enumerate() {
+    for (index, (lines, test)) in native.iter().zip(["adds", "fails ??/ here"]).enumerate() {
         let first = lines.first().expect("a trace has events");
         let last = lines.last().unwrap();
         let computation = format!("\"computation\":\"test \\\"{test}\\\"\"");
@@ -1413,7 +1402,7 @@ fn trace_writes_one_telemetry_file_per_test_on_both_backends() {
     let (status, stdout, stderr) = run(&["--trace=boundaries"]);
     assert_eq!(status, Some(1), "{stdout}{stderr}");
     assert!(
-        stdout.contains("  trace: target/chimi/cases/test/traces/1-main-fails.jsonl\n"),
+        stdout.contains("  trace: target/chimi/cases/test/traces/1-main-fails-here.jsonl\n"),
         "the report names a failing test's trace: {stdout}"
     );
     assert!(!stdout.contains("0-main-adds.jsonl"), "{stdout}");

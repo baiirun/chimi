@@ -598,11 +598,14 @@ under the same names for the two levels.
   from this run. `--trace=off` writes nothing and leaves an earlier run's
   files.
 - The trace's root computation is the test item, as `test "adds"`, and its
-  `execution_id` is `test-<k>`. Both backends write the same events, apart
-  from times.
+  `execution_id` is `test-<k>`. Both backends write the same events.
 - The human report prints `trace: <path>` under a failing test. With
-  `--json`, every `test_finished` record of a traced run has `trace`, the
-  file's path.
+  `--json`, a traced run's `test_finished` record has `trace`, the file's
+  path, whenever the test wrote one. An interpreted test past its time limit
+  writes none.
+- Traces go to one directory per input name, so two traced runs of inputs
+  with the same name at once, from the same directory, clear each other's
+  files.
 
 ### Exit status
 
