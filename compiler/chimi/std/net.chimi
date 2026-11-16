@@ -1,0 +1,374 @@
+/// TCP connections and listeners. Opening a socket needs the `network:
+/// Network` capability, which the runner supplies to `main`; a test supplies a
+/// fake with `using`, or the real one on purpose with `Net.host_for_tests()`.
+///
+/// ```text
+/// pub fn main() -> Void needs { network: Network } {
+///   let use = fn(connection) {
+///     Stream.write(Net.writer(connection), Bytes.from_text("GET / HTTP/1.0\r\n\r\n"))
+///     Stream.close(Net.writer(connection))
+///     Stream.read_all(Net.reader(connection), 1048576)
+///   }
+///   Resource.scoped(fn() { Net.connect("example.com", 80) }, Net.close, use)
+/// }
+/// ```
+///
+/// A connection is a pair of byte streams. Reading gives chunks of at most
+/// 64 KiB as they arrive; writing writes every byte or fails. Closing the
+/// writer ends the sending side only, so the peer reads the end of input
+/// while this side can still read its answer; `Net.close` releases the
+/// socket, and a task waiting on it wakes with `NetError.Closed`. Tie a
+/// connection or listener to the code that uses it with `Resource.scoped`,
+/// releasing it with `Net.close` or `Net.close_listener`.
+/// Deadlines come from `Task.timeout`, not from parameters here.
+///
+/// Sockets are non-blocking and wait through the scheduler, so one slow peer
+/// never stalls another task. Every connection sets `TCP_NODELAY`.
+/// Connecting to a name tries each of its addresses in order and fails with
+/// the last address's failure.
+///
+/// Under the virtual clock a task waiting on a socket holds virtual time, as
+/// every host operation in flight does: a test that combines sockets and
+/// timers runs with `chimi test --clock=real`.
+
+import std/bytes.{Bytes}
+import std/debug as Debug
+import std/result as Result
+import std/result.{Err, Ok, Result}
+import std/stream as Stream
+import std/stream.{Reader, StreamError, Writer}
+
+// 1. Public types.
+
+/// The capability to open sockets. The runner's provider uses the operating
+/// system's network; a test's fake is a record of these two functions.
+pub interface Network {
+  /// A connection to `host` (a name or a numeric address) on `port`.
+  connect: fn(Text, Int) -> Connection errors NetError
+  /// A listener on `host` and `port`. An empty `host` listens on every
+  /// address; port 0 picks a free port, which `Net.listener_address` reports.
+  listen: fn(Text, Int) -> Listener errors NetError
+}
+
+/// One end of a connection, as a numeric host and a port.
+pub struct Address {
+  host: Text,
+  port: Int,
+}
+
+/// An open connection: a reader and a writer (`Net.reader`, `Net.writer`), its
+/// two ends, and `Net.close` to release it.
+pub struct Connection {
+  reader: Reader<NetError>,
+  writer: Writer<NetError>,
+  local: Address,
+  peer: Address,
+  close: fn() -> Void,
+}
+
+/// A socket accepting connections: `Net.accept` waits for the next one, and
+/// `Net.close_listener` stops listening.
+pub struct Listener {
+  accept: fn() -> Connection errors NetError,
+  address: Address,
+  close: fn() -> Void,
+}
+
+// 2. Failure types.
+
+/// Why a network operation failed.
+pub enum NetError {
+  /// Nothing listens at the address.
+  Refused
+  /// No route reaches the address's network or host.
+  Unreachable
+  /// The peer reset or abandoned the connection.
+  Reset
+  /// This side closed the connection or listener.
+  Closed
+  /// The address is taken, or is not this machine's to listen on.
+  AddressInUse
+  /// The name does not resolve.
+  HostNotFound(host: Text)
+  /// The process or the system has no descriptors or memory left for
+  /// another socket.
+  TooManyOpen
+  /// The operating system gave up waiting for the peer.
+  TimedOut
+  /// Any other failure, with the operating system's words.
+  Failed(message: Text)
+}
+
+// 3. Opening.
+
+/// A connection to `host` on `port`.
+///
+/// Fails with: what the network's `connect` fails with; for the real
+/// network, `NetError.Refused`, `Unreachable`, `TimedOut`, `HostNotFound`,
+/// `TooManyOpen` or `Failed`.
+/// Defects when: `port` is outside 0 to 65535.
+pub fn connect(host: Text, port: Int) -> Connection needs {
+  network: Network
+} {
+  network.connect(host, checked_port(port))
+}
+
+/// A listener on `host` and `port`; an empty `host` listens on every address,
+/// and port 0 picks a free port.
+///
+/// Fails with: what the network's `listen` fails with; for the real network,
+/// `NetError.AddressInUse`, `HostNotFound`, `TooManyOpen` or `Failed`.
+/// Defects when: `port` is outside 0 to 65535.
+pub fn listen(host: Text, port: Int) -> Listener needs {
+  network: Network
+} {
+  network.listen(host, checked_port(port))
+}
+
+// 4. Using connections and listeners.
+
+/// The bytes the peer sends, in chunks of at most 64 KiB. It ends once the
+/// peer finishes writing.
+///
+/// Cost: O(1).
+pub fn reader(connection: Connection) -> Reader<NetError> {
+  connection.reader
+}
+
+/// Takes the bytes to send; each write sends every byte or fails.
+/// `Stream.close` on it finishes this side's writing, and the connection stays
+/// open for reading.
+///
+/// Cost: O(1).
+pub fn writer(connection: Connection) -> Writer<NetError> {
+  connection.writer
+}
+
+/// This side's end of the connection.
+///
+/// Cost: O(1).
+pub fn local_address(connection: Connection) -> Address {
+  connection.local
+}
+
+/// The other side's end of the connection.
+///
+/// Cost: O(1).
+pub fn peer_address(connection: Connection) -> Address {
+  connection.peer
+}
+
+/// Releases the connection. A task waiting to read or write on it wakes with
+/// `NetError.Closed`. Closing again does nothing.
+///
+/// Cost: O(1).
+pub fn close(connection: Connection) -> Void {
+  connection.close()
+}
+
+/// The next connection a peer opens, waiting until one arrives.
+///
+/// Fails with: `NetError.Closed` once the listener is closed;
+/// `NetError.TooManyOpen`, `Reset` or `Failed` from the real network.
+pub fn accept(listener: Listener) -> Connection {
+  listener.accept()
+}
+
+/// The address the listener accepts on, with the port it picked for port 0.
+///
+/// Cost: O(1).
+pub fn listener_address(listener: Listener) -> Address {
+  listener.address
+}
+
+/// Stops listening. A task waiting in `accept` wakes with `NetError.Closed`.
+/// Closing again does nothing.
+///
+/// Cost: O(1).
+pub fn close_listener(listener: Listener) -> Void {
+  listener.close()
+}
+
+/// The numeric host of an address, such as `"127.0.0.1"` or `"::1"`.
+///
+/// Cost: O(1).
+pub fn host_of(address: Address) -> Text {
+  address.host
+}
+
+/// The port of an address.
+///
+/// Cost: O(1).
+pub fn port_of(address: Address) -> Int {
+  address.port
+}
+
+// 5. Fakes.
+
+/// An address, for a fake network's connections and listeners.
+///
+/// Cost: O(1).
+pub fn address(host: Text, port: Int) -> Address {
+  Address(host, port)
+}
+
+/// A connection over `reader` and `writer`, which `close` releases, for a fake
+/// network. `Net.pair` builds two connected ones.
+///
+/// Cost: O(1).
+pub fn connection(
+  reader: Reader<NetError>,
+  writer: Writer<NetError>,
+  local: Address,
+  peer: Address,
+  close: fn() -> Void,
+) -> Connection {
+  Connection(reader, writer, local, peer, close)
+}
+
+/// A listener whose connections come from `accept`, which `close` stops, for a
+/// fake network.
+///
+/// Cost: O(1).
+pub fn listener(accept: fn() -> Connection errors NetError, address: Address, close: fn() -> Void) -> Listener {
+  Listener(accept, address, close)
+}
+
+/// Two connected fake connections, each reading what the other writes, with
+/// at most `capacity` chunks buffered in each direction. For tests of code
+/// that takes a `Connection`. Closing one end's writer ends the other end's
+/// reader; `close` ends both of its streams.
+///
+/// Cost: O(1).
+pub fn pair(capacity: Int) -> (Connection, Connection) {
+  let (left_out, right_in) = Stream.pipe(capacity)
+  let (right_out, left_in) = Stream.pipe(capacity)
+  let left = Address("fake", 1)
+  let right = Address("fake", 2)
+  (fake_connection(left_in, left_out, left, right), fake_connection(right_in, right_out, right, left))
+}
+
+fn fake_connection(
+  input: Reader<StreamError>,
+  output: Writer<StreamError>,
+  local: Address,
+  peer: Address,
+) -> Connection {
+  Connection(
+    Stream.reader(fn() {
+      stream_to_net(fn() { Stream.read(input) })
+    }, fn() { Stream.stop(input) }),
+    Stream.writer(
+      fn(bytes) {
+        stream_to_net(fn() { Stream.write(output, bytes) })
+      },
+      fn() {
+        stream_to_net(fn() { Stream.close(output) })
+      },
+    ),
+    local,
+    peer,
+    fn() {
+      Stream.stop(input)
+      let _ = Result.capture(fn() { Stream.close(output) })
+      Void
+    },
+  )
+}
+
+fn stream_to_net<T>(operation: fn() -> T errors StreamError) -> T {
+  case Result.capture(operation) {
+    Ok(value) -> value
+    Err(StreamError.Closed) -> Failure(NetError.Closed)
+    Err(StreamError.Aborted) -> Failure(NetError.Reset)
+    Err(StreamError.TooLarge(limit)) -> Failure(NetError.Failed("more than ${limit} bytes"))
+  }
+}
+
+// 6. Runner provider.
+
+fn checked_port(port: Int) -> Int {
+  case port >= 0 and port <= 65535 {
+    True -> port
+    False -> Debug.crash("Net: the port ${port} is outside 0 to 65535")
+  }
+}
+
+// The binding's failure codes (runtime/native/bindings/net/net.c).
+fn net<T>(result: Result<T, (Int, Text)>) -> T {
+  case result {
+    Ok(value) -> value
+    Err((1, _)) -> Failure(NetError.Refused)
+    Err((2, _)) -> Failure(NetError.Unreachable)
+    Err((3, _)) -> Failure(NetError.Reset)
+    Err((4, _)) -> Failure(NetError.Closed)
+    Err((5, _)) -> Failure(NetError.AddressInUse)
+    Err((6, message)) -> Failure(NetError.HostNotFound(message))
+    Err((7, _)) -> Failure(NetError.TooManyOpen)
+    Err((8, _)) -> Failure(NetError.TimedOut)
+    Err((_, message)) -> Failure(NetError.Failed(message))
+  }
+}
+
+fn found_address(found: Result<(Text, Int), (Int, Text)>) -> Address {
+  let (host, port) = net(found)
+  Address(host, port)
+}
+
+fn host_connection(socket: Socket) -> Connection {
+  Connection(
+    Stream.reader(fn() { net(native_read(socket)) }, fn() { native_close(socket) }),
+    Stream.writer(fn(bytes) { net(native_write(socket, bytes)) }, fn() { net(native_finish(socket)) }),
+    found_address(native_local_address(socket)),
+    found_address(native_peer_address(socket)),
+    fn() { native_close(socket) },
+  )
+}
+
+fn host_connect(host: Text, port: Int) -> Connection {
+  host_connection(net(native_connect(host, port)))
+}
+
+fn host_listen(host: Text, port: Int) -> Listener {
+  let socket = net(native_listen(host, port))
+  Listener(
+    fn() {
+      host_connection(net(native_accept(socket)))
+    },
+    found_address(native_listener_address(socket)),
+    fn() { native_close_listener(socket) },
+  )
+}
+
+native type Socket
+native type ListenSocket
+
+native fn native_connect(host: Text, port: Int) -> Result<Socket, (Int, Text)>
+native fn native_listen(host: Text, port: Int) -> Result<ListenSocket, (Int, Text)>
+native fn native_accept(listener: ListenSocket) -> Result<Socket, (Int, Text)>
+native fn native_read(socket: Socket) -> Result<Option<Bytes>, (Int, Text)>
+native fn native_write(socket: Socket, bytes: Bytes) -> Result<Void, (Int, Text)>
+native fn native_finish(socket: Socket) -> Result<Void, (Int, Text)>
+native fn native_close(socket: Socket) -> Void
+native fn native_close_listener(listener: ListenSocket) -> Void
+native fn native_local_address(socket: Socket) -> Result<(Text, Int), (Int, Text)>
+native fn native_peer_address(socket: Socket) -> Result<(Text, Int), (Int, Text)>
+native fn native_listener_address(listener: ListenSocket) -> Result<(Text, Int), (Int, Text)>
+native fn native_allow_real_network() -> Void
+
+// The provider the runner binds to `main`'s `network` need (operations.rs
+// `RUNNER_PROVIDERS`). Private, so no other code can take the capability
+// without declaring the need. It and `host_for_tests` come last, after every
+// function they reach: an unannotated result is inferred in declaration order
+// (CHI-260).
+fn host() {
+  { connect: host_connect, listen: host_listen }
+}
+
+/// The operating system's network, for a test that means to open real
+/// sockets: `run() using { network: Net.host_for_tests() }`. Test-only
+/// (`T4401`): a program gets the network only by declaring the need.
+pub fn host_for_tests() {
+  native_allow_real_network()
+  host()
+}

@@ -406,6 +406,20 @@ pub(crate) const OPERATIONS: &[Operation] = &[
         "chimi_probe_close_pipe",
         true,
     ),
+    // std/net: TCP sockets (CHI-255). `native_allow_real_network` is test-only,
+    // so only `Net.host_for_tests` in a test reaches it.
+    binding("std/net.native_connect", 2, "net", "chimi_net_connect", false),
+    binding("std/net.native_listen", 2, "net", "chimi_net_listen", false),
+    binding("std/net.native_accept", 1, "net", "chimi_net_accept", false),
+    binding("std/net.native_read", 1, "net", "chimi_net_read", false),
+    binding("std/net.native_write", 2, "net", "chimi_net_write", false),
+    binding("std/net.native_finish", 1, "net", "chimi_net_finish", false),
+    binding("std/net.native_close", 1, "net", "chimi_net_close", false),
+    binding("std/net.native_close_listener", 1, "net", "chimi_net_close_listener", false),
+    binding("std/net.native_local_address", 1, "net", "chimi_net_local_address", false),
+    binding("std/net.native_peer_address", 1, "net", "chimi_net_peer_address", false),
+    binding("std/net.native_listener_address", 1, "net", "chimi_net_listener_address", false),
+    binding("std/net.native_allow_real_network", 0, "net", "chimi_net_allow_real_network", true),
     pure("std/path.from", 1, StandardFunction::PathFrom),
     pure("std/path.to_text", 1, StandardFunction::PathToText),
     host("std/env.host_variables", 0, StandardFunction::EnvHostVariables),
@@ -428,11 +442,18 @@ pub(crate) struct RunnerProvider {
     pub(crate) provider: &'static str,
 }
 
-pub(crate) const RUNNER_PROVIDERS: &[RunnerProvider] = &[RunnerProvider {
-    interface: StandardType::Environment,
-    need: "environment",
-    provider: "std/env.host",
-}];
+pub(crate) const RUNNER_PROVIDERS: &[RunnerProvider] = &[
+    RunnerProvider {
+        interface: StandardType::Environment,
+        need: "environment",
+        provider: "std/env.host",
+    },
+    RunnerProvider {
+        interface: StandardType::Network,
+        need: "network",
+        provider: "std/net.host",
+    },
+];
 
 /// The runner provider for a need on `interface` named `need`, if the runner
 /// closes it.
@@ -492,6 +513,9 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     native_type("std/json.Number", StandardType::JsonNumber),
     native_type("std/cause.Cause", StandardType::Cause),
     native_type("std/binding_probe.Pipe", StandardType::BindingHandle),
+    known_interface("std/net.Network", StandardType::Network),
+    native_type("std/net.Socket", StandardType::BindingHandle),
+    native_type("std/net.ListenSocket", StandardType::BindingHandle),
     known_type("std/result.Result", StandardType::Result),
     known_constructor("std/result.Result.Ok", StandardConstructor::ResultOk),
     known_constructor("std/result.Result.Err", StandardConstructor::ResultErr),

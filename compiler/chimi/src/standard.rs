@@ -168,6 +168,9 @@ pub(crate) enum StandardType {
     /// `std/env.Environment`: the capability to read environment variables and
     /// the working directory; the runner closes `main`'s `environment` need.
     Environment,
+    /// `std/net.Network`: the capability to open sockets; the runner closes
+    /// `main`'s `network` need.
+    Network,
 }
 
 impl StandardType {
@@ -253,6 +256,7 @@ impl StandardType {
             Self::TestMailbox => "Mailbox",
             Self::BindingHandle => "Handle",
             Self::Environment => "Environment",
+            Self::Network => "Network",
         }
     }
 
@@ -264,7 +268,8 @@ impl StandardType {
             | Self::FileSystem
             | Self::Clock
             | Self::Random
-            | Self::Environment => {
+            | Self::Environment
+            | Self::Network => {
                 StandardProperties::Opaque("a provider")
             }
             Self::ProcessAddress
@@ -1502,6 +1507,7 @@ impl StandardConstructor {
             | StandardType::Clock
             | StandardType::Random
             | StandardType::Environment
+            | StandardType::Network
             | StandardType::Instant
             | StandardType::Timestamp
             | StandardType::SelectEvent
