@@ -225,7 +225,7 @@ fn in_use() -> Text needs { network: Network } {
 }
 
 fn not_found() -> Text needs { network: Network } {
-  attempt(fn() { Net.connect("nothing.invalid", 80) })
+  "${attempt(fn() { Net.connect("nothing.invalid", 80) })} ${attempt(fn() { Net.connect("a\u{0}b", 80) })}"
 }
 
 test "refused" {
@@ -240,7 +240,7 @@ test "address in use" {
 
 test "host not found" {
   let outcome = not_found() using { network: Net.host_for_tests() }
-  outcome |> Test.assert_equal("Err(NetError.HostNotFound(\"nothing.invalid\"))")
+  outcome |> Test.assert_equal("Err(NetError.HostNotFound(\"nothing.invalid\")) Err(NetError.HostNotFound(\"a\\u{0}b\"))")
 }
 
 test "a port out of range is a defect" {
@@ -255,8 +255,10 @@ test "a port out of range is a defect" {
 // Rejects a close that leaves another task parked forever: closing a listener
 // wakes a task waiting in `accept`, and closing a connection wakes a task
 // waiting to read, each with `NetError.Closed`; later operations fail the same
-// way. A connection scoped with `Resource.scoped` and `Net.close` is released when
-// `use` returns.
+// way. A connection scoped with `Resource.scoped` and `Net.close` is released
+// when `use` returns. Stopping a reader ends only the reading side, so a
+// server can still answer a request it refused to read whole, and a write to
+// a peer that has gone fails instead of raising SIGPIPE.
 #[test]
 fn closing_wakes_a_waiting_task_with_closed() {
     let run = run_tests(
@@ -268,7 +270,8 @@ fn accept_then_close() -> Text needs { network: Network } {
   Clock.sleep(Duration.milliseconds(20))
   Net.close_listener(listener)
   Net.close_listener(listener)
-  Task.timeout(fn() { Task.result(waiting) }, Duration.seconds(5))
+  let woke = Task.timeout(fn() { Task.result(waiting) }, Duration.seconds(5))
+  "${woke} ${attempt(fn() { Net.accept(listener) })}"
 }
 
 fn read_then_close() -> Text needs { network: Network } {
@@ -280,10 +283,67 @@ fn read_then_close() -> Text needs { network: Network } {
     Clock.sleep(Duration.milliseconds(20))
     Net.close(client)
     let woke = Task.timeout(fn() { Task.result(waiting) }, Duration.seconds(5)) |> Debug.render
-    let after = Result.capture(fn() { Stream.write(Net.writer(client), Bytes.from_text("x")) }) |> Debug.render
+    let wrote = Result.capture(fn() { Stream.write(Net.writer(client), Bytes.from_text("x")) }) |> Debug.render
+    let read = Result.capture(fn() { Stream.read(Net.reader(client)) }) |> Debug.render
     Net.close(server)
-    "${woke} ${after}"
+    "${woke} ${wrote} ${read}"
   })
+}
+
+// The server stops reading a request that is too large and still answers.
+fn stop_then_answer() -> Text needs { network: Network } {
+  Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
+    let port = Net.port_of(Net.listener_address(listener))
+    let client = Net.connect("127.0.0.1", port)
+    let server = Net.accept(listener)
+    Stream.write(Net.writer(client), Bytes.from_text("far too long"))
+    let request = Result.capture(fn() { Stream.read_all(Net.reader(server), 4) }) |> Debug.render
+    Stream.write(Net.writer(server), Bytes.from_text("too large"))
+    Stream.close(Net.writer(server))
+    let answer = Bytes.to_text(Stream.read_all(Net.reader(client), 1024))
+    let again = Result.capture(fn() { Stream.read(Net.reader(server)) }) |> Debug.render
+    Net.close(client)
+    Net.close(server)
+    "${request} ${answer} ${again}"
+  })
+}
+
+// Writing to a peer that has gone fails, and never raises SIGPIPE, which
+// would kill the test process.
+fn write_to_gone_peer() -> Text needs { network: Network } {
+  Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
+    let port = Net.port_of(Net.listener_address(listener))
+    let client = Net.connect("127.0.0.1", port)
+    Net.close(Net.accept(listener))
+    let chunk = Bytes.from_text(Text.repeat("x", 65536))
+    let written = Result.capture(fn() {
+      loop count = 0 {
+        case count > 1000 {
+          True -> break "still writing"
+          False -> {
+            Stream.write(Net.writer(client), chunk)
+            count + 1
+          }
+        }
+      }
+    })
+    Net.close(client)
+    case written {
+      Err(NetError.Reset) -> "failed"
+      Err(NetError.Closed) -> "failed"
+      other -> Debug.render(other)
+    }
+  })
+}
+
+test "a stopped reader leaves the writer working" {
+  let outcome = stop_then_answer() using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("Result.Err(StreamError.TooLarge(4)) too large Result.Err(NetError.Closed)")
+}
+
+test "a write to a gone peer fails" {
+  let outcome = write_to_gone_peer() using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("failed")
 }
 
 fn scoped_then_read() -> Text needs { network: Network } {
@@ -306,16 +366,16 @@ test "a scoped connection is released" {
 
 test "accept" {
   let outcome = accept_then_close() using { network: Net.host_for_tests() }
-  outcome |> Test.assert_equal("Err(NetError.Closed)")
+  outcome |> Test.assert_equal("Err(NetError.Closed) Err(NetError.Closed)")
 }
 
 test "read" {
   let outcome = read_then_close() using { network: Net.host_for_tests() }
-  outcome |> Test.assert_equal("Result.Err(NetError.Closed) Result.Err(NetError.Closed)")
+  outcome |> Test.assert_equal("Result.Err(NetError.Closed) Result.Err(NetError.Closed) Result.Err(NetError.Closed)")
 }
 "#,
     );
-    assert_passed(&run, 3);
+    assert_passed(&run, 5);
 }
 
 // Rejects a fake pair that crosses its wires or does not end: each end reads
@@ -350,6 +410,9 @@ test "a closed end" {
   let (left, _right) = Net.pair(4)
   Net.close(left)
   Result.capture(fn() { Stream.write(Net.writer(left), Bytes.from_text("x")) })
+    |> Debug.render
+    |> Test.assert_equal("Result.Err(NetError.Closed)")
+  Result.capture(fn() { Stream.read(Net.reader(left)) })
     |> Debug.render
     |> Test.assert_equal("Result.Err(NetError.Closed)")
 }

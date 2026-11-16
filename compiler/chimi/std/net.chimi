@@ -237,7 +237,8 @@ pub fn listener(accept: fn() -> Connection errors NetError, address: Address, cl
 /// Two connected fake connections, each reading what the other writes, with
 /// at most `capacity` chunks buffered in each direction. For tests of code
 /// that takes a `Connection`. Closing one end's writer ends the other end's
-/// reader; `close` ends both of its streams.
+/// reader; `close` ends both of its streams. A read after this end stopped
+/// or closed its reader fails with `NetError.Closed`.
 ///
 /// Cost: O(1).
 pub fn pair(capacity: Int) -> (Connection, Connection) {
@@ -256,7 +257,7 @@ fn fake_connection(
 ) -> Connection {
   Connection(
     Stream.reader(fn() {
-      stream_to_net(fn() { Stream.read(input) })
+      read_to_net(fn() { Stream.read(input) })
     }, fn() { Stream.stop(input) }),
     Stream.writer(
       fn(bytes) {
@@ -274,6 +275,18 @@ fn fake_connection(
       Void
     },
   )
+}
+
+// A fake's read aborts when this side stopped or closed its reader, which a
+// real socket reports as `Closed`, or when the peer's task ended without
+// closing its writer, which the fake reports the same way.
+fn read_to_net(operation: fn() -> Option<Bytes> errors StreamError) -> Option<Bytes> {
+  case Result.capture(operation) {
+    Ok(value) -> value
+    Err(StreamError.Aborted) -> Failure(NetError.Closed)
+    Err(StreamError.Closed) -> Failure(NetError.Closed)
+    Err(StreamError.TooLarge(limit)) -> Failure(NetError.Failed("more than ${limit} bytes"))
+  }
 }
 
 fn stream_to_net<T>(operation: fn() -> T errors StreamError) -> T {
@@ -310,34 +323,63 @@ fn net<T>(result: Result<T, (Int, Text)>) -> T {
   }
 }
 
+// `HostNotFound` names the host as the caller wrote it, whole: C sees it only
+// up to a U+0000.
+fn named<T>(host: Text, operation: fn() -> T errors NetError) -> T {
+  case Result.capture(operation) {
+    Ok(value) -> value
+    Err(NetError.HostNotFound(_)) -> Failure(NetError.HostNotFound(host))
+    Err(error) -> Failure(error)
+  }
+}
+
 fn found_address(found: Result<(Text, Int), (Int, Text)>) -> Address {
   let (host, port) = net(found)
   Address(host, port)
 }
 
+// Stopping the reader ends this side's reading only, so the writer can still
+// send an answer, as with a fake. The socket is released if its addresses
+// cannot be read (the peer reset it at once), so it never outlives a failure.
 fn host_connection(socket: Socket) -> Connection {
-  Connection(
-    Stream.reader(fn() { net(native_read(socket)) }, fn() { native_close(socket) }),
-    Stream.writer(fn(bytes) { net(native_write(socket, bytes)) }, fn() { net(native_finish(socket)) }),
-    found_address(native_local_address(socket)),
-    found_address(native_peer_address(socket)),
-    fn() { native_close(socket) },
-  )
+  case Result.capture(fn() {
+    (found_address(native_local_address(socket)), found_address(native_peer_address(socket)))
+  }) {
+    Ok((local, peer)) -> Connection(
+      Stream.reader(fn() { net(native_read(socket)) }, fn() { native_stop_reading(socket) }),
+      Stream.writer(fn(bytes) { net(native_write(socket, bytes)) }, fn() { net(native_finish(socket)) }),
+      local,
+      peer,
+      fn() { native_close(socket) },
+    )
+    Err(error) -> {
+      native_close(socket)
+      Failure(error)
+    }
+  }
 }
 
 fn host_connect(host: Text, port: Int) -> Connection {
-  host_connection(net(native_connect(host, port)))
+  host_connection(named(host, fn() { net(native_connect(host, port)) }))
 }
 
 fn host_listen(host: Text, port: Int) -> Listener {
-  let socket = net(native_listen(host, port))
-  Listener(
-    fn() {
-      host_connection(net(native_accept(socket)))
-    },
-    found_address(native_listener_address(socket)),
-    fn() { native_close_listener(socket) },
-  )
+  let socket = named(host, fn() { net(native_listen(host, port)) })
+  case Result.capture(fn() {
+    found_address(native_listener_address(socket))
+  }) {
+    Ok(address) -> Listener(
+      fn() {
+        host_connection(net(native_accept(socket)))
+      },
+      address,
+      fn() { native_close_listener(socket) },
+    )
+    Err(error) -> {
+      native_close_listener(socket)
+      Failure(error)
+    }
+  }
 }
 
 native type Socket
@@ -349,6 +391,7 @@ native fn native_accept(listener: ListenSocket) -> Result<Socket, (Int, Text)>
 native fn native_read(socket: Socket) -> Result<Option<Bytes>, (Int, Text)>
 native fn native_write(socket: Socket, bytes: Bytes) -> Result<Void, (Int, Text)>
 native fn native_finish(socket: Socket) -> Result<Void, (Int, Text)>
+native fn native_stop_reading(socket: Socket) -> Void
 native fn native_close(socket: Socket) -> Void
 native fn native_close_listener(listener: ListenSocket) -> Void
 native fn native_local_address(socket: Socket) -> Result<(Text, Int), (Int, Text)>

@@ -414,6 +414,7 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     binding("std/net.native_read", 1, "net", "chimi_net_read", false),
     binding("std/net.native_write", 2, "net", "chimi_net_write", false),
     binding("std/net.native_finish", 1, "net", "chimi_net_finish", false),
+    binding("std/net.native_stop_reading", 1, "net", "chimi_net_stop_reading", false),
     binding("std/net.native_close", 1, "net", "chimi_net_close", false),
     binding("std/net.native_close_listener", 1, "net", "chimi_net_close_listener", false),
     binding("std/net.native_local_address", 1, "net", "chimi_net_local_address", false),

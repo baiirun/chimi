@@ -47,6 +47,7 @@ enum { NET_CHUNK = 64 * 1024, NET_BACKLOG = 128, NET_LOOKUPS = 8 };
 
 typedef struct {
   int fd;
+  int reading_stopped; /* native_stop_reading ran: later reads fail */
 } Socket;
 
 static void release_socket(void *state) {
@@ -90,6 +91,18 @@ static ChimiBindingResult *closed(ChimiBindingCall *call) {
   return chimi_binding_failure(call, NET_CLOSED, "the socket is closed");
 }
 
+static ChimiBindingResult *wait_failed(ChimiBindingCall *call) {
+  return chimi_binding_failure(call, NET_FAILED, "cannot wait for the socket");
+}
+
+/* What a wait that did not become ready answers: a cancellation, a closed
+   handle, or a reactor that cannot wait. */
+static ChimiBindingResult *not_ready(ChimiBindingCall *call, int waited) {
+  if (waited == CHIMI_BINDING_WAIT_CANCELLED) return chimi_binding_cancelled(call);
+  if (waited == CHIMI_BINDING_WAIT_CLOSED) return closed(call);
+  return wait_failed(call);
+}
+
 /* Makes `fd` non-blocking and close-on-exec, and keeps a write to a peer
    that is gone from raising SIGPIPE where send cannot say so. */
 static int prepare_descriptor(int fd) {
@@ -111,6 +124,7 @@ static ChimiBindingValue *socket_handle(ChimiBindingCall *call, const ChimiBindi
     return NULL;
   }
   state->fd = fd;
+  state->reading_stopped = 0;
   /* make_handle releases `state` (closing fd) when the table is full. */
   return chimi_binding_make_handle(call, type, state);
 }
@@ -118,7 +132,7 @@ static ChimiBindingValue *socket_handle(ChimiBindingCall *call, const ChimiBindi
 /* ---- Name lookup ---------------------------------------------------- */
 
 /* One lookup, shared by the call and its thread; whichever lets go last
-   frees it. The thread writes only `status`, `result` and `done`. */
+   frees it. The thread writes only `status`, `error`, `result` and `done`. */
 typedef struct {
   atomic_int references;
   atomic_bool done;
@@ -126,6 +140,7 @@ typedef struct {
   char service[8];
   int passive;
   int status;
+  int error; /* the thread's errno, for EAI_SYSTEM */
   struct addrinfo *result;
   int write_fd;
 } Lookup;
@@ -152,6 +167,7 @@ static void *run_lookup(void *argument) {
   Lookup *lookup = argument;
   struct addrinfo hints = lookup_hints(lookup->passive, 0);
   lookup->status = getaddrinfo(lookup->host, lookup->service, &hints, &lookup->result);
+  lookup->error = errno;
   atomic_store_explicit(&lookup->done, true, memory_order_release);
   char byte = 1;
   /* The call may have stopped waiting and closed its end: EPIPE, not
@@ -172,10 +188,10 @@ typedef struct {
   ChimiBindingResult *result;
 } Resolved;
 
-static Resolved resolve_failure(ChimiBindingCall *call, const char *host, int status) {
+static Resolved resolve_failure(ChimiBindingCall *call, const char *host, int status, int error) {
   Resolved resolved = {NULL, NULL, NULL};
   if (status == EAI_SYSTEM) {
-    resolved.result = errno_failure(call, errno);
+    resolved.result = errno_failure(call, error);
   } else if (status == EAI_MEMORY) {
     resolved.result = chimi_binding_failure(call, NET_TOO_MANY_OPEN, gai_strerror(status));
   } else if (status == EAI_NONAME || status == EAI_AGAIN || status == EAI_FAIL
@@ -200,7 +216,7 @@ static Resolved resolve(ChimiBindingCall *call, const char *host, int64_t port, 
   struct addrinfo hints = lookup_hints(passive, 1);
   int status = getaddrinfo(host, service, &hints, &resolved.addresses);
   if (status == 0) return resolved;
-  if (status != EAI_NONAME || host == NULL) return resolve_failure(call, host ? host : "", status);
+  if (status != EAI_NONAME || host == NULL) return resolve_failure(call, host ? host : "", status, errno);
 
   if (atomic_fetch_add(&live_lookups, 1) >= NET_LOOKUPS) {
     atomic_fetch_sub(&live_lookups, 1);
@@ -258,13 +274,13 @@ static Resolved resolve(ChimiBindingCall *call, const char *host, int64_t port, 
       drop_lookup(lookup);
       resolved.result = waited == CHIMI_BINDING_WAIT_CANCELLED
                           ? chimi_binding_cancelled(call)
-                          : chimi_binding_failure(call, NET_FAILED, "cannot wait for a name lookup");
+                          : wait_failed(call);
       return resolved;
     }
   }
   close(ends[0]);
   if (lookup->status != 0) {
-    resolved = resolve_failure(call, host, lookup->status);
+    resolved = resolve_failure(call, host, lookup->status, lookup->error);
     drop_lookup(lookup);
     return resolved;
   }
@@ -281,12 +297,15 @@ static void release_resolved(Resolved *resolved) {
   }
 }
 
-/* The host and port arguments at 0 and 1, checked. */
+/* The host and port arguments at 0 and 1, checked: 0 for arguments of the
+   wrong kind (a defect), -1 for a host holding U+0000, which no name or
+   address can, so it is a host that is not found. */
 static int host_and_port(const ChimiBindingCall *call, const char **host, int64_t *port) {
   size_t length;
-  if (!chimi_binding_text(call, 0, host, &length) || !chimi_binding_integer(call, 1, port))
+  if (!chimi_binding_text(call, 0, host, &length) || !chimi_binding_integer(call, 1, port) ||
+      *port < 0 || *port > 65535)
     return 0;
-  return strlen(*host) == length && *port >= 0 && *port <= 65535;
+  return strlen(*host) == length ? 1 : -1;
 }
 
 /* ---- Connecting ----------------------------------------------------- */
@@ -331,7 +350,9 @@ static int connect_one(ChimiBindingCall *call, const struct addrinfo *address, i
 ChimiBindingResult *chimi_net_connect(ChimiBindingCall *call) {
   const char *host;
   int64_t port;
-  if (!host_and_port(call, &host, &port)) return chimi_binding_defect(call, "connect takes a host and a port");
+  int arguments = host_and_port(call, &host, &port);
+  if (arguments == 0) return chimi_binding_defect(call, "connect takes a host and a port");
+  if (arguments < 0) return chimi_binding_failure(call, NET_HOST_NOT_FOUND, host);
   Resolved resolved = resolve(call, host, port, 0);
   if (resolved.result != NULL) return resolved.result;
   int last = ECONNREFUSED;
@@ -362,7 +383,9 @@ ChimiBindingResult *chimi_net_connect(ChimiBindingCall *call) {
 ChimiBindingResult *chimi_net_listen(ChimiBindingCall *call) {
   const char *host;
   int64_t port;
-  if (!host_and_port(call, &host, &port)) return chimi_binding_defect(call, "listen takes a host and a port");
+  int arguments = host_and_port(call, &host, &port);
+  if (arguments == 0) return chimi_binding_defect(call, "listen takes a host and a port");
+  if (arguments < 0) return chimi_binding_failure(call, NET_HOST_NOT_FOUND, host);
   Resolved resolved = resolve(call, host[0] ? host : NULL, port, 1);
   if (resolved.result != NULL) return resolved.result;
   int last = EADDRNOTAVAIL;
@@ -390,13 +413,40 @@ ChimiBindingResult *chimi_net_listen(ChimiBindingCall *call) {
   return errno_failure(call, last);
 }
 
+static int accept_retries(int error) {
+#ifdef __linux__
+  switch (error) {
+    case ENETDOWN:
+    case EPROTO:
+    case ENOPROTOOPT:
+    case EHOSTDOWN:
+    case ENONET:
+    case EHOSTUNREACH:
+    case EOPNOTSUPP:
+    case ENETUNREACH: return 1;
+    default: return 0;
+  }
+#else
+  (void)error;
+  return 0;
+#endif
+}
+
 /* native_accept(listener) -> Result<Socket, (Int, Text)>: waits for the next
    connection. */
 ChimiBindingResult *chimi_net_accept(ChimiBindingCall *call) {
   for (;;) {
     Socket *listener = chimi_binding_handle(call, 0, &LISTEN_SOCKET);
     if (listener == NULL) return closed(call);
+    struct sockaddr_storage peer;
+    socklen_t peer_size = sizeof(peer);
     int fd = accept(listener->fd, NULL, NULL);
+    if (fd >= 0 && getpeername(fd, (struct sockaddr *)&peer, &peer_size) != 0) {
+      /* The peer reset the connection before it was accepted: it is not this
+         listener's failure, and its addresses cannot be read. */
+      close(fd);
+      continue;
+    }
     if (fd >= 0) {
       if (prepare_descriptor(fd) != 0) {
         int error = errno;
@@ -411,12 +461,12 @@ ChimiBindingResult *chimi_net_accept(ChimiBindingCall *call) {
       return chimi_binding_ok(call, handle);
     }
     /* A connection that was reset before it was accepted is not this
-       listener's failure. */
-    if (errno == EINTR || errno == ECONNABORTED) continue;
+       listener's failure, nor (on Linux, per accept(2)) a network error
+       already pending on the new connection. */
+    if (errno == EINTR || errno == ECONNABORTED || accept_retries(errno)) continue;
     if (errno != EAGAIN && errno != EWOULDBLOCK) return errno_failure(call, errno);
     int waited = chimi_binding_wait(call, 0, listener->fd, CHIMI_BINDING_READABLE);
-    if (waited == CHIMI_BINDING_WAIT_CANCELLED) return chimi_binding_cancelled(call);
-    if (waited != CHIMI_BINDING_READY) return closed(call);
+    if (waited != CHIMI_BINDING_READY) return not_ready(call, waited);
   }
 }
 
@@ -431,7 +481,7 @@ ChimiBindingResult *chimi_net_read(ChimiBindingCall *call) {
   ChimiBindingResult *result;
   for (;;) {
     Socket *socket_state = chimi_binding_handle(call, 0, &SOCKET);
-    if (socket_state == NULL) {
+    if (socket_state == NULL || socket_state->reading_stopped) {
       result = closed(call);
       break;
     }
@@ -451,12 +501,8 @@ ChimiBindingResult *chimi_net_read(ChimiBindingCall *call) {
       break;
     }
     int waited = chimi_binding_wait(call, 0, socket_state->fd, CHIMI_BINDING_READABLE);
-    if (waited == CHIMI_BINDING_WAIT_CANCELLED) {
-      result = chimi_binding_cancelled(call);
-      break;
-    }
     if (waited != CHIMI_BINDING_READY) {
-      result = closed(call);
+      result = not_ready(call, waited);
       break;
     }
   }
@@ -482,8 +528,7 @@ ChimiBindingResult *chimi_net_write(ChimiBindingCall *call) {
     if (count < 0 && errno == EINTR) continue;
     if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK) return errno_failure(call, errno);
     int waited = chimi_binding_wait(call, 0, socket_state->fd, CHIMI_BINDING_WRITABLE);
-    if (waited == CHIMI_BINDING_WAIT_CANCELLED) return chimi_binding_cancelled(call);
-    if (waited != CHIMI_BINDING_READY) return closed(call);
+    if (waited != CHIMI_BINDING_READY) return not_ready(call, waited);
   }
   return chimi_binding_ok(call, chimi_binding_void(call));
 }
@@ -496,6 +541,17 @@ ChimiBindingResult *chimi_net_finish(ChimiBindingCall *call) {
   if (shutdown(socket_state->fd, SHUT_WR) != 0 && errno != ENOTCONN)
     return errno_failure(call, errno);
   return chimi_binding_ok(call, chimi_binding_void(call));
+}
+
+/* native_stop_reading(socket) -> Void: ends this side's reading only, so a
+   stopped reader leaves the writer working; later reads fail with Closed. */
+ChimiBindingResult *chimi_net_stop_reading(ChimiBindingCall *call) {
+  Socket *socket_state = chimi_binding_handle(call, 0, &SOCKET);
+  if (socket_state != NULL && !socket_state->reading_stopped) {
+    socket_state->reading_stopped = 1;
+    (void)shutdown(socket_state->fd, SHUT_RD);
+  }
+  return chimi_binding_success(call, chimi_binding_void(call));
 }
 
 ChimiBindingResult *chimi_net_close(ChimiBindingCall *call) {
