@@ -539,8 +539,10 @@ chimi test [<path> | --root <project> <module>] [options]
 
 `<path>` is a source file or a directory. A directory means every module
 under it: each `.chimi` file is a module named by its path from the
-directory, as `app/checkout` for `app/checkout.chimi`. Hidden directories and
-`target`, where builds write, are skipped. `--root <project> <module>` runs
+directory, as `app/checkout` for `app/checkout.chimi`. Hidden files and
+directories, `target` (where builds write), and symbolic links are skipped. A
+directory with no module, or a file whose path is not a valid module path,
+fails the run with exit status 2. `--root <project> <module>` runs
 the tests in that module and the modules it imports. Options:
 
 | Option | Meaning |

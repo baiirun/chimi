@@ -687,7 +687,15 @@ fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode
 fn default_executable_path(input: &Input) -> PathBuf {
     let name = match input {
         Input::File { path } => path.file_stem().and_then(|name| name.to_str()),
-        Input::Directory { root } => root.file_name().and_then(|name| name.to_str()),
+        Input::Directory { root } => {
+            let root = root.canonicalize().unwrap_or_else(|_| root.clone());
+            return PathBuf::from(
+                root.file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("chimi-program"),
+            );
+        }
         Input::Project { entry, .. } => entry.rsplit('/').next(),
     }
     .filter(|name| !name.is_empty())

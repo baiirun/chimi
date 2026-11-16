@@ -11,7 +11,7 @@ P = "src/project.rs"
 M = "src/main.rs"
 
 
-def mutant(name, file, edits, targets=("testing",), filter="a_directory_input"):
+def mutant(name, file, edits, targets=("testing",), filter="directory"):
     return dict(name=name, file=file, edits=edits, targets=list(targets), filter=filter)
 
 
@@ -35,5 +35,17 @@ MUTATIONS = [
     mutant("a directory is read as a file", M, [(
         "            input = Some(if path.is_dir() {",
         "            input = Some(if false {",
+    )]),
+    mutant("symbolic links are followed", P, [(
+        "            if kind.is_dir() {",
+        "            let kind = std::fs::metadata(&path).map_err(failed)?.file_type();\n            if kind.is_dir() {",
+    )]),
+    mutant("hidden files load", P, [(
+        "                && !name.starts_with('.')\n",
+        "",
+    )]),
+    mutant("an empty directory runs nothing", P, [(
+        "        if module_paths.is_empty() {",
+        "        if false {",
     )]),
 ]

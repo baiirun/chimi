@@ -1165,6 +1165,12 @@ fn a_directory_input_runs_every_module_under_it() {
     write("aardvark.chimi", "import std/test as Test\n\ntest \"first\" {\n  Test.assert(True, \"holds\")\n}\n");
     write(".hidden/broken.chimi", "this is not chimi\n");
     write("target/broken.chimi", "this is not chimi\n");
+    write(".broken.chimi", "this is not chimi\n");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(scratch.join("app"), scratch.join("alias")).unwrap();
+        std::os::unix::fs::symlink(scratch.join("aardvark.chimi"), scratch.join("link.chimi")).unwrap();
+    }
     for backend in ["--backend=native", "--backend=interpreter"] {
         let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
             .current_dir(&scratch)
@@ -1190,5 +1196,35 @@ fn a_directory_input_runs_every_module_under_it() {
             "{backend}"
         );
     }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn a_directory_without_modules_or_with_a_bad_name_fails_the_run() {
+    let scratch = scratch_directory("directory-errors");
+    std::fs::create_dir_all(scratch.join("empty/.hidden")).unwrap();
+    std::fs::write(scratch.join("empty/.hidden/a.chimi"), "").unwrap();
+    std::fs::create_dir_all(scratch.join("named")).unwrap();
+    std::fs::write(scratch.join("named/my-test.chimi"), "").unwrap();
+    let run = |directory: &str| {
+        Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .args(["test", directory])
+            .output()
+            .expect("run chimi")
+    };
+    let empty = run("empty");
+    assert_eq!(empty.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&empty.stderr),
+        "chimi: no .chimi modules under empty\n"
+    );
+    let named = run("named/");
+    assert_eq!(named.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&named.stderr).contains("my-test"),
+        "{}",
+        String::from_utf8_lossy(&named.stderr)
+    );
     std::fs::remove_dir_all(scratch).unwrap();
 }
