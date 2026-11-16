@@ -16,6 +16,7 @@ FIBER = "../../runtime/chimi-fiber/src"
 SCOPE = f"{FIBER}/scheduler/scope.rs"
 SCHEDULER = f"{FIBER}/scheduler.rs"
 CHANNEL = f"{FIBER}/channel.rs"
+PROCESS = f"{FIBER}/scheduler/process.rs"
 RUNTIME = "runtime/native/runtime.c"
 INTERPRETER = "src/execution/resource_operations.rs"
 
@@ -86,4 +87,26 @@ MUTATIONS = [
     outcomes("interpreter: release runs when acquire fails", INTERPRETER, [(
         "            other => return other,",
         "            other => {\n                let _ = self.invoke(release.clone(), vec![RuntimeValue::Void], span, call_node, environment.clone());\n                return other;\n            }")]),
+    # Processes and Select (review findings).
+    resources("a containment cancel does not wake a selecting release", SCHEDULER, [(
+        "            self.cancel_task(parent, outcome);\n            // A parent finishing its releases may be selecting on this child.\n            self.wake_selecting_parent(parent, task);",
+        "            self.cancel_task(parent, outcome);")]),
+    resources("parks inside a release linger under shutdown", PROCESS, [(
+        "            && self.stopping(task).is_some_and(|stopping| stopping.told)\n            && !self.holds_mask(task)",
+        "            && self.stopping(task).is_some_and(|stopping| stopping.told)")]),
+    resources("shutdown is delivered into a running release", PROCESS, [(
+        "        let releasing = !forced && self.holds_mask(task);",
+        "        let releasing = false;")]),
+    resources("a deferred shutdown is never told after the release", SCOPE, [(
+        "            return Some(!self.holds_mask(task) && self.tell_deferred_shutdown(task));",
+        "            return Some(false);")]),
+    resources("the deadline leaves children of a finished body running", PROCESS, [(
+        "        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) && !self.has_live_children(task) {",
+        "        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) {")]),
+    resources("a process body is torn down at once on a child defect", SCOPE, [(
+        "        if self.forcing > 0 || no_fiber || !holds_resource || stopping {",
+        "        if self.forcing > 0 || no_fiber || !holds_resource || process {")]),
+    resources("shutdown cancels the helpers a release started", PROCESS, [(
+        "            .filter(|child| !self.started_in_release(task, *child))",
+        "            .filter(|_| true)")]),
 ]

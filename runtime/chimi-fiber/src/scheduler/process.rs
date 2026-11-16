@@ -1183,9 +1183,12 @@ impl Scheduler {
     /// incarnation was already told it is cancelled and the request is one
     /// that can park, so it waits for the shutdown deadline. Requests that
     /// never park (send, self, now, starts) are still answered, and a
-    /// receive answers `Cancelled` again.
+    /// receive answers `Cancelled` again. A release (`Resource.scoped`) may
+    /// park until the deadline forces it.
     pub(super) fn park_lingers(&self, task: TaskId, kind: u32) -> bool {
-        can_park(kind) && self.stopping(task).is_some_and(|stopping| stopping.told)
+        can_park(kind)
+            && self.stopping(task).is_some_and(|stopping| stopping.told)
+            && !self.holds_mask(task)
     }
 
     /// Delivers shutdown to a request that left its caller blocked on park
@@ -1195,10 +1198,12 @@ impl Scheduler {
     /// request that completed is answered, so a value it took is not lost.
     /// Supervisor operations from a draining handler are served.
     pub(super) fn interrupt_blocked_park(&mut self, task: TaskId, park: u64, kind: u32) {
-        let blocked = self
-            .tasks
-            .get(&task)
-            .is_some_and(|record| record.phase == TaskPhase::Parked && record.park == park);
+        // A release holds shutdown off until it returns (`exit_resource`).
+        let blocked = !self.holds_mask(task)
+            && self
+                .tasks
+                .get(&task)
+                .is_some_and(|record| record.phase == TaskPhase::Parked && record.park == park);
         let Some(incarnation) = self.incarnation_of(task).filter(|_| blocked) else {
             return;
         };
@@ -1925,9 +1930,10 @@ impl Scheduler {
             self.run(task);
         }
         let task = self.kernel.incarnations[&incarnation].task;
-        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) {
+        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) && !self.has_live_children(task) {
             // The body has ended and waits for root supervisors it started;
             // their members' deadlines bound the wait, so no timer is armed.
+            // A child still running its releases keeps the deadline armed.
             return false;
         }
         let now = self.clock.now();
@@ -1985,7 +1991,10 @@ impl Scheduler {
         let phase = self.tasks[&task].phase;
         let receiving =
             phase == TaskPhase::Parked && self.kernel.incarnations[&incarnation].receiving;
-        if phase == TaskPhase::Parked {
+        // A body inside a release keeps waiting; it is told once the release
+        // returns (`exit_resource`), and the deadline still forces it.
+        let releasing = !forced && self.holds_mask(task);
+        if phase == TaskPhase::Parked && !releasing {
             self.disarm_wake_sources(task);
         }
         self.cancel_children(task);
@@ -1997,6 +2006,7 @@ impl Scheduler {
                 (true, false)
             }
             TaskPhase::Runnable => (false, true),
+            TaskPhase::Parked if releasing => (false, true),
             TaskPhase::Parked => {
                 let told = if forced {
                     task_record.command = ChimiFiberCommand::Cancel;
@@ -2027,12 +2037,42 @@ impl Scheduler {
 
     /// Cancels the task's structured children. Each drains before this
     /// returns, except one that holds a resource: it finishes its releases
-    /// first, and the shutdown deadline still forces it.
+    /// first, and the shutdown deadline forces it ([`Self::force`]). A child
+    /// started inside a release belongs to that release and is left running.
     fn cancel_children(&mut self, task: TaskId) {
-        let children: Vec<_> = self.tasks[&task].children.iter().copied().collect();
+        let children: Vec<_> = self.tasks[&task]
+            .children
+            .iter()
+            .copied()
+            .filter(|child| !self.started_in_release(task, *child))
+            .collect();
         for child in children {
             self.cancel_task(child, TaskOutcome::Cancelled);
         }
+    }
+
+    fn has_live_children(&self, task: TaskId) -> bool {
+        self.tasks[&task].children.iter().any(|child| {
+            self.tasks
+                .get(child)
+                .is_some_and(|record| matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked))
+        })
+    }
+
+    /// Tells a stopping body the shutdown that its release held off, if it
+    /// has not been told yet. True when it now is.
+    pub(super) fn tell_deferred_shutdown(&mut self, task: TaskId) -> bool {
+        let Some(stopping) = self
+            .incarnation_of(task)
+            .and_then(|incarnation| self.kernel.incarnations.get_mut(&incarnation))
+            .and_then(|record| record.stopping.as_mut())
+            .filter(|stopping| stopping.pending && !stopping.told)
+        else {
+            return false;
+        };
+        stopping.told = true;
+        stopping.pending = false;
+        true
     }
 
     /// The shutdown deadline passed: answer the pending call with a forced
@@ -2048,8 +2088,15 @@ impl Scheduler {
             .expect("only stopping incarnations are forced");
         stopping.timer = None;
         if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) {
-            // The body finished its cleanup in time; only supervisors it
-            // started are still stopping, each under its own deadlines.
+            // The body finished its cleanup in time. Children still running
+            // their releases end now; supervisors it started are still
+            // stopping, each under its own deadlines.
+            let children: Vec<_> = self.tasks[&task].children.iter().copied().collect();
+            for child in children {
+                if matches!(self.tasks[&child].phase, TaskPhase::Runnable | TaskPhase::Parked) {
+                    self.force_terminal(child, TaskOutcome::Cancelled, false);
+                }
+            }
             return;
         }
         stopping.forced = true;

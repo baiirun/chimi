@@ -259,13 +259,38 @@ impl Scheduler {
     pub(super) fn exit_resource(&mut self, task: TaskId, scope: ScopeId) -> Option<bool> {
         let index = self.entry_index(task, scope, true)?;
         self.pop_entries(task, index);
-        if self.deliverable_scope(task).is_some() && !self.is_stopping(task) {
+        if self.is_stopping(task) {
+            return Some(!self.holds_mask(task) && self.tell_deferred_shutdown(task));
+        }
+        if self.deliverable_scope(task).is_some() {
             let record = self.tasks.get_mut(&task).expect("live task");
             let index = Self::deliverable_in(&record.scopes).expect("checked");
             record.scopes[index].delivered = true;
             return Some(true);
         }
         Some(false)
+    }
+
+    /// True while `task` runs a release: some resource entry is masked.
+    pub(super) fn holds_mask(&self, task: TaskId) -> bool {
+        self.tasks
+            .get(&task)
+            .is_some_and(|record| record.scopes.iter().any(Scope::is_mask))
+    }
+
+    /// True when `child` of `task` was started while one of `task`'s
+    /// releases ran, in that masked entry or in a scope inside it.
+    pub(super) fn started_in_release(&self, task: TaskId, child: TaskId) -> bool {
+        let (Some(record), Some(started)) = (
+            self.tasks.get(&task),
+            self.tasks.get(&child).and_then(|record| record.started_in_scope),
+        ) else {
+            return false;
+        };
+        let Some(mask) = record.scopes.iter().position(Scope::is_mask) else {
+            return false;
+        };
+        record.scopes[mask..].iter().any(|entry| entry.id == started)
     }
 
     fn entry_index(&self, task: TaskId, scope: ScopeId, resource: bool) -> Option<usize> {
@@ -423,8 +448,10 @@ impl Scheduler {
     /// Cancels `task` with `outcome`. A task that holds a `Resource.scoped`
     /// entry keeps running: a root scope fires beneath its other entries, its
     /// releases run, and it ends with `outcome` once its fiber finishes
-    /// ([`Self::begin_terminal`]). Any other task, a process body, and every
-    /// task while a forced end is under way (`forcing`) end now.
+    /// ([`Self::begin_terminal`]). A process body under shutdown is already
+    /// being cancelled by shutdown, so it only records a defect. Any other
+    /// task, and every task while a forced end is under way (`forcing`), ends
+    /// now.
     pub(super) fn cancel_task(&mut self, task: TaskId, outcome: TaskOutcome) {
         let Some(record) = self.tasks.get_mut(&task) else {
             return;
@@ -445,11 +472,23 @@ impl Scheduler {
             .scopes
             .iter()
             .any(|entry| matches!(entry.kind, ScopeKind::Resource { .. }));
-        if self.forcing > 0 || record.process.is_some() || record.fiber.is_none() || !holds_resource {
+        let process = record.process.is_some();
+        let no_fiber = record.fiber.is_none();
+        let stopping = process && self.is_stopping(task);
+        if stopping && !self.is_forced(task) && holds_resource {
+            // Shutdown already cancels this body, holding off while it
+            // releases (`Scheduler::begin_shutdown`); a defect only decides
+            // how it ends.
+            if outcome.is_defect() {
+                self.absorbs_child_defect(task);
+            }
+            return;
+        }
+        if self.forcing > 0 || no_fiber || !holds_resource || stopping {
             self.begin_terminal(task, outcome, false);
             return;
         }
-        record.terminating = Some(outcome);
+        self.tasks.get_mut(&task).expect("live task").terminating = Some(outcome);
         self.next_scope += 1;
         let id = ScopeId(self.next_scope);
         let entered_at = self.channels.tick();

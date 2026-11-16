@@ -1435,7 +1435,12 @@ impl Scheduler {
         }
         self.keep_task_value(task, &event);
         let outcome = self.outcome(task, event);
-        self.begin_terminal(task, outcome, true);
+        if self.tasks[&task].process.is_some() && self.is_forced(task) {
+            // A forced body's children end with it, releases or not.
+            self.force_terminal(task, outcome, true);
+        } else {
+            self.begin_terminal(task, outcome, true);
+        }
     }
 
     fn outcome(&self, task: TaskId, event: ChimiFiberEvent) -> TaskOutcome {
@@ -1921,6 +1926,8 @@ impl Scheduler {
             && !self.absorbs_child_defect(parent)
         {
             self.cancel_task(parent, outcome);
+            // A parent finishing its releases may be selecting on this child.
+            self.wake_selecting_parent(parent, task);
         }
     }
 

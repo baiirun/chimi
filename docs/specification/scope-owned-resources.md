@@ -112,8 +112,20 @@ pub native fn scoped<H, T, EA, ER, EU, RA, RR, RU>(
   cancelled task's releases are done, because a release may still need it
   (the task that serves a pool, a log writer). Children started inside the
   cancelled part are cancelled at once.
+- **Processes.** A process body gets the same rules. A graceful stop
+  (`Supervisor.remove_process`, a restart, a parent supervisor stopping)
+  that arrives during `use` cancels `use`, and the release then runs with
+  shutdown held off. A stop that arrives during a release is told to the body
+  only once the release returns. Children a release started are not
+  cancelled by the stop. `shutdown_within` still bounds all of it: at the
+  deadline the body and every child still running a release end at once.
+- **The program's end.** When `main` returns, its children are cancelled
+  like any parent's, so they run their releases before the program ends.
+  A release that can never return then ends the program in the deadlock
+  defect.
 - **Forced ends.** A deadlock, a capability-contract violation, a process
-  forced after `shutdown_within`, or the end of the program ends every task
+  forced after `shutdown_within`, or the runtime terminating the whole
+  program (`terminate_program`) ends every task
   at once, and releases that have not started do not run. A release that can
   never return therefore ends in the deadlock defect rather than hanging, and
   in a supervised process it is bounded by the child's `shutdown_within`.
@@ -164,6 +176,12 @@ with that call's span.
 | A release waiting on its helper is not cut short | `a_release_waiting_on_its_helper_is_not_cut_short_by_cancel` |
 | A release that never returns ends in the deadlock defect | `a_release_that_never_returns_ends_in_the_deadlock_defect` |
 | A child's defect runs the parent's release, which can still use an earlier sibling, and stays the outcome | `a_child_defect_runs_the_parent_release_and_stays_the_outcome` |
+| A release selecting on a helper that defects is woken | `a_release_selecting_on_a_helper_that_defects_is_woken` |
+| A process stopped during use finishes its release before the deadline | `a_process_stopped_in_use_finishes_its_release_before_the_deadline` |
+| A process stopped during a release lets it finish, helpers included | `a_process_stopped_in_its_release_lets_the_release_finish`, `a_process_stop_leaves_a_release_helper_running` |
+| A process child stuck in a release is forced at the deadline | `a_process_child_stuck_in_its_release_is_forced_at_the_deadline` |
+| A process body runs its release when a child defects | `a_process_body_runs_its_release_when_a_child_defects` |
+| A defect in `use` outranks a defect in `release`; a failed acquire runs no release | `std-tests/resource/use_defect_outranks_release_defect.chimi`, `failed_acquire_skips_release.chimi` |
 | A timed-out scope aborts channels it created | `a_timed_out_scope_aborts_channels_it_created` |
 | A child result handed back inside a timed-out scope stays open | `a_child_result_handed_back_inside_a_timed_out_scope_stays_open` |
 
