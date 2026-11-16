@@ -1,6 +1,8 @@
 // Result.get on an Err fails with the stored error, which joins the caller's
 // failure row like any other failure.
 import std/result as Result
+import std/result.{Err}
+import std/test as Test
 
 enum Lookup {
   Missing(id: Int)
@@ -13,8 +15,12 @@ fn find(id: Int) -> Int {
   }
 }
 
-pub fn main() -> Int {
+fn run() -> Int {
   let first = Result.capture(fn() { find(1) })
   let second = Result.capture(fn() { find(2) })
   Result.get(first) + Result.get(second)
+}
+
+test "get fails" {
+  Test.assert_equal(Result.capture(run), Err(Lookup.Missing(2)))
 }

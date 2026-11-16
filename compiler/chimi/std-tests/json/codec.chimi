@@ -6,6 +6,7 @@
 import std/json as Json
 import std/json.{Value}
 import std/map as Map
+import std/test as Test
 
 fn round_trip(text: Text) -> Text {
   let value = Json.decode(text)
@@ -20,7 +21,7 @@ fn member(text: Text, name: Text) -> Option<Value> {
   }
 }
 
-pub fn main() -> List<Text> {
+fn run() -> List<Text> {
   let built_forward = Map.from([("a", Json.int(1)), ("b", Json.boolean(True)), ("z", Json.text("last"))])
   let built_backward = Map.from([("z", Json.text("last")), ("b", Json.boolean(True)), ("a", Json.int(1))])
   let nested = Json.object(Map.from([
@@ -48,4 +49,8 @@ pub fn main() -> List<Text> {
       Json.boolean(member("{\"a\": null}", "b") == None),
     ])),
   ]
+}
+
+test "codec" {
+  Test.assert_equal(run(), ["{\"a\":{},\"b\":[1,2.50,-0,1E+2,3e-1],\"c\":[]}", "[true,false,null,\"\"]", "\"é / / \\\" \\\\ \\b\\f\\n\\r\\t \\u0001 💥\"", "-12345678901234567890123.4567890e-30", "{\"a\":1,\"b\":true,\"z\":\"last\"}", "{\"a\":1,\"b\":true,\"z\":\"last\"}", "{\"Z\":[{\"x\":1,\"y\":2}],\"e\":null,\"é\":3}", "\"tab\\tquote\\\"del\u{7f}c1\"", "-9223372036854775808", "[]", "true", "true", "false", "true", "[true,true]"])
 }

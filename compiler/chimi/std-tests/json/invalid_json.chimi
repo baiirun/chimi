@@ -5,6 +5,7 @@ import std/debug as Debug
 import std/json as Json
 import std/json.{DecodeError}
 import std/text as Text
+import std/test as Test
 
 fn decoded(text: Text) -> Text {
   case Json.decode(text) {
@@ -29,7 +30,7 @@ fn nested(depth: Int) -> Text {
   "${opening}0${closing}"
 }
 
-pub fn main() -> List<Text> {
+fn run() -> List<Text> {
   [
     decoded(""),
     decoded("   "),
@@ -54,4 +55,8 @@ pub fn main() -> List<Text> {
     Debug.render(Text.starts_with(decoded(nested(128)), "ok [[[")),
     decoded(nested(129)),
   ]
+}
+
+test "invalid json" {
+  Test.assert_equal(run(), ["expected a JSON value at 0", "expected a JSON value at 3", "expected a string key in JSON object at 1", "expected a JSON value at 3", "expected `:` after JSON object key at 5", "duplicate JSON object key `a` at 9", "duplicate JSON object key `a` at 15", "unexpected characters after JSON value at 2", "JSON numbers cannot contain leading zeroes at 1", "expected digits after JSON decimal point at 2", "expected digits in JSON number at 1", "expected digits in JSON exponent at 3", "expected a JSON value at 0", "expected a JSON value at 0", "invalid JSON literal at 0", "invalid JSON escape at 3", "high surrogate must be followed by a low surrogate at 7", "unterminated JSON string at 5", "unescaped control character in JSON string at 2", "expected a string key in JSON object at 1", "True", "JSON nesting exceeds the configured limit at 129"])
 }

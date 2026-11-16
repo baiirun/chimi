@@ -1,7 +1,15 @@
 // A failing Int.parse is an expected failure of its source-declared
 // ParseError enum.
 import std/int as Int
+import std/int.{ParseError}
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
 
-pub fn main() -> Int {
+fn run() -> Int {
   Int.parse("1 2")
+}
+
+test "parse failure escapes" {
+  Test.assert_equal(Result.capture(run), Err(ParseError.InvalidDigit))
 }

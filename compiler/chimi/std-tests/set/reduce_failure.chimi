@@ -2,6 +2,9 @@
 // order, with the state reached so far: 30 and 40 would both fail, and 30
 // escapes after 10 and 20 were added.
 import std/set as Set
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
 
 enum Rejected {
   TooLarge(value: Int, total: Int)
@@ -14,6 +17,10 @@ fn add_small(total: Int, value: Int) -> Int {
   }
 }
 
-pub fn main() -> Int {
+fn run() -> Int {
   Set.reduce(Set.from([40, 20, 30, 10]), 0, add_small)
+}
+
+test "reduce failure" {
+  Test.assert_equal(Result.capture(run), Err(Rejected.TooLarge(30, 30)))
 }

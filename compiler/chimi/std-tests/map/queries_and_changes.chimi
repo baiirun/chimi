@@ -4,10 +4,11 @@
 import std/debug as Debug
 import std/map as Map
 import std/map.{Map}
+import std/test as Test
 
 const limits = Map.from([("burst", 10), ("rate", 2)])
 
-pub fn main() -> List<Text> {
+fn run() -> List<Text> {
   let scores = Map.from([("cy", 3), ("ada", 1), ("bo", 2), ("ada", 4)])
   let same = Map.put(Map.put(Map.put(Map.empty(), "bo", 2), "ada", 4), "cy", 3)
   let without_bo = Map.remove(scores, "bo")
@@ -47,4 +48,8 @@ pub fn main() -> List<Text> {
     "equal whatever the insertion order: ${Debug.render([scores == same, scores == Map.put(same, "cy", 30)])}",
     "constant: ${Debug.render(limits)}",
   ]
+}
+
+test "queries and changes" {
+  Test.assert_equal(run(), ["from, a later pair wins: Map { \"ada\": 4, \"bo\": 2, \"cy\": 3 }", "get: [Some(4), None]", "get with an equal, separately built key: Some(5)", "has_key: [True, False]", "size: [3, 0]", "is_empty: [False, True]", "put replaces: Map { \"ada\": 4, \"bo\": 20, \"cy\": 3 }", "put adds: Map { \"ada\": 4, \"al\": 0, \"bo\": 2, \"cy\": 3 }", "remove: Map { \"ada\": 4, \"cy\": 3 }", "remove of an absent key: True", "remove of the last key: Map {}", "remove of many keys keeps the rest in order: [(1, 1), (3, 9), (5, 25), (7, 49), (9, 81), (11, 121), (13, 169), (15, 225), (17, 289), (19, 361)]", "merge, overrides win: Map { \"ada\": 4, \"bo\": 7, \"cy\": 3, \"di\": 5 }", "keys: [\"ada\", \"bo\", \"cy\"]", "values: [4, 2, 3]", "entries: [(\"ada\", 4), (\"bo\", 2), (\"cy\", 3)]", "equal whatever the insertion order: [True, False]", "constant: Map { \"burst\": 10, \"rate\": 2 }"])
 }

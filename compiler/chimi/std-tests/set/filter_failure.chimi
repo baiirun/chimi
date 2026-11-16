@@ -2,6 +2,9 @@
 // ascending order: 5 and 8 would both fail, and 5 escapes.
 import std/set as Set
 import std/set.{Set}
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
 
 enum Rejected {
   TooLarge(value: Int)
@@ -14,6 +17,10 @@ fn keep_small(value: Int) -> Bool {
   }
 }
 
-pub fn main() -> Set<Int> {
+fn run() -> Set<Int> {
   Set.filter(Set.from([8, 1, 5, 2]), keep_small)
+}
+
+test "filter failure" {
+  Test.assert_equal(Result.capture(run), Err(Rejected.TooLarge(5)))
 }

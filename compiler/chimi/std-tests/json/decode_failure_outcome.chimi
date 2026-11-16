@@ -2,7 +2,15 @@
 // `DecodeError.InvalidJson` with its message and byte offset.
 import std/json as Json
 import std/json.{Value}
+import std/json.{DecodeError}
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
 
-pub fn main() -> Value {
+fn run() -> Value {
   Json.decode("{\"a\": [1, 2}")
+}
+
+test "decode failure outcome" {
+  Test.assert_equal(Result.capture(run), Err(DecodeError.InvalidJson("expected `,` or `]` in JSON array", 11)))
 }

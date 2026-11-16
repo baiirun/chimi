@@ -2,6 +2,9 @@
 // it was given.
 import std/map as Map
 import std/map.{Map}
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
 
 enum Rejected {
   Current(value: Option<Int>)
@@ -11,6 +14,10 @@ fn reject(current: Option<Int>) -> Int {
   Failure(Rejected.Current(current))
 }
 
-pub fn main() -> Map<Text, Int> {
+fn run() -> Map<Text, Int> {
   Map.update(Map.from([("a", 1), ("b", 2)]), "b", reject)
+}
+
+test "update failure" {
+  Test.assert_equal(Result.capture(run), Err(Rejected.Current(Some(2))))
 }
