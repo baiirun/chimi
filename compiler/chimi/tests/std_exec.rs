@@ -384,3 +384,24 @@ fn the_interpreter_cannot_start_real_programs() {
     assert_ne!(run.status, Some(0));
     assert!(run.stdout.contains("E5204"), "{}{}", run.stdout, run.stderr);
 }
+
+// Rejects a child that inherits the parent's ignored signals: a program
+// started under `nohup`-style SIG_IGN for SIGHUP still gives its children the
+// default action, so a child that sends itself SIGHUP dies of it.
+#[test]
+fn a_child_gets_default_signal_actions_whatever_the_parent_ignores() {
+    let scratch = Scratch::new(
+        "defaults",
+        &format!(
+            "{IMPORTS}\npub fn main() -> Void needs {{ commands: Commands }} {{\n  let ended = sh(\"kill -HUP $$; exit 0\")\n  case ended {{\n    Status.Signaled(1) -> Void\n    other -> Debug.crash(\"the child ended with ${{Debug.render(other)}}\")\n  }}\n}}\n"
+        ),
+    );
+    let built = scratch.chimi(&["build", "cases.chimi", "-o", "runner"]);
+    assert_eq!(built.status, Some(0), "{}{}", built.stdout, built.stderr);
+    let output = Command::new("/bin/sh")
+        .current_dir(&scratch.0)
+        .args(["-c", "trap '' HUP; exec ./runner"])
+        .output()
+        .expect("run the program");
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+}

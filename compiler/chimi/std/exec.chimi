@@ -342,7 +342,9 @@ fn host_start(command: Command) -> Child {
     native_spawn(builder, stdio_code(command.stdin), stdio_code(command.stdout), stdio_code(command.stderr)),
   )
   Child(
-    fn() { status(exec(command, native_wait(process))) },
+    fn() {
+      status(exec(command, native_wait(process)))
+    },
     fn() { native_terminate(process) },
     fn() { native_kill(process) },
     fn() { native_release(process) },
