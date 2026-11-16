@@ -17,7 +17,8 @@ const USAGE: &str = concat!(
     "<project-dir> <entry-module> [-- <argument>...] | chimi build --root <project-dir> <entry-module> ",
     "[-o <executable>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
     "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
-    "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] | ",
+    "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] ",
+    "[--trace=off|boundaries|full] | ",
     "chimi std check; a compiler developer may put ",
     "--std-dir <directory> before inspect, check, run, build, test, or std check"
 );
@@ -73,6 +74,8 @@ struct TestOptions {
     jobs: Option<usize>,
     show_output: bool,
     json: bool,
+    /// `None` is `--trace=off`.
+    trace: Option<chimi::testing::TraceLevel>,
 }
 
 impl Default for TestOptions {
@@ -87,6 +90,7 @@ impl Default for TestOptions {
             jobs: None,
             show_output: false,
             json: false,
+            trace: None,
         }
     }
 }
@@ -155,6 +159,13 @@ fn parse_test_command(arguments: impl Iterator<Item = OsString>) -> Result<Comma
             options.show_output = true;
         } else if argument == "--json" {
             options.json = true;
+        } else if let Some(trace) = argument.strip_prefix("--trace=") {
+            options.trace = match trace {
+                "off" => None,
+                "boundaries" => Some(chimi::testing::TraceLevel::Boundaries),
+                "full" => Some(chimi::testing::TraceLevel::Full),
+                _ => return usage("--trace must be off, boundaries, or full"),
+            };
         } else if argument.starts_with("--") {
             return usage("unknown test option");
         } else if input.is_some() {
@@ -638,7 +649,7 @@ fn build(input: Input, standard: &StandardTree, output: Option<PathBuf>) -> Exit
 /// `chimi test`: exits 0 when every selected test passed, 1 when one failed,
 /// and 2 when the run could not start (testing.md, Exit status).
 fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode {
-    use chimi::testing::{Backend, RunOptions, TestSuite, render_json, render_report};
+    use chimi::testing::{Backend, RunOptions, TestSuite, TraceOutput, render_json, render_report};
     let artifact_directory = artifact_directory(&default_executable_path(&input)).join("test");
     let Some(mut project) = load_project(input, standard) else {
         return ExitCode::from(2);
@@ -663,6 +674,22 @@ fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode
         eprintln!("chimi: no test matches the filter");
         return ExitCode::from(2);
     }
+    let trace = match options.trace {
+        None => None,
+        Some(level) => {
+            let directory = artifact_directory.join("traces");
+            // Traces from an earlier run would read as this run's.
+            let cleared = match std::fs::remove_dir_all(&directory) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+                _ => std::fs::create_dir_all(&directory),
+            };
+            if let Err(error) = cleared {
+                eprintln!("chimi: could not prepare {}: {error}", directory.display());
+                return ExitCode::from(2);
+            }
+            Some(TraceOutput { level, directory })
+        }
+    };
     let run = RunOptions {
         backend: options.backend,
         filters: options.filters,
@@ -673,6 +700,7 @@ fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode
         jobs: options.jobs.unwrap_or_else(|| {
             std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
         }),
+        trace,
     };
     let results = match run.backend {
         Backend::Interpreter => suite.run_interpreted(&selected, &run),

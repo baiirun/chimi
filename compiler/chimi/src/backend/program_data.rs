@@ -639,6 +639,17 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         u32::to_string,
     );
     writeln!(output, "const uint32_t CHIMI_TEST_COUNT = {};", tests.len()).unwrap();
+    let computations = core
+        .tests
+        .iter()
+        .map(|test| c_string(&core.symbol(*test).name))
+        .collect::<Vec<_>>();
+    render_array(
+        &mut output,
+        "const char *const CHIMI_TEST_COMPUTATIONS[]",
+        &computations,
+        Clone::clone,
+    );
     let mut assertion_nodes = core.assertion_calls().into_iter().collect::<Vec<_>>();
     assertion_nodes.sort_unstable();
     render_array(
@@ -836,6 +847,8 @@ fn c_string(value: &str) -> String {
             b'"' => output.push_str("\\\""),
             b'\\' => output.push_str("\\\\"),
             b'\n' => output.push_str("\\n"),
+            // `??/` and the other trigraphs would be rewritten under -std=c11.
+            b'?' => output.push_str("\\?"),
             0x20..=0x7e => output.push(char::from(byte)),
             _ => write!(output, "\\{:03o}", byte).unwrap(),
         }

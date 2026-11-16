@@ -5,7 +5,7 @@
 
 #include "chimi_binding.h"
 
-#define CHIMI_RUNTIME_ABI_VERSION 48
+#define CHIMI_RUNTIME_ABI_VERSION 49
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -543,6 +543,7 @@ extern const uint32_t CHIMI_FUNCTION_COUNT;
 /* A test build's tests, as CHIMI_FUNCTIONS indexes in report order; `--test=<k>`
    runs the k-th instead of the entry. Empty for a program. */
 extern const uint32_t CHIMI_TEST_FUNCTIONS[];
+extern const char *const CHIMI_TEST_COMPUTATIONS[];
 extern const uint32_t CHIMI_TEST_COUNT;
 /* Ascending ids of the call nodes that fail a test as an assertion
    (CoreProgram::assertion_calls); Test.capture_defect lets their defects pass. */
