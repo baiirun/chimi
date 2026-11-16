@@ -127,7 +127,8 @@ pub fn variable(command: Command, name: Text, value: Text) -> Command {
 }
 
 /// The command with exactly `variables` as its environment, inheriting none
-/// of the parent's. `Exec.variable` adds to it afterwards.
+/// of the parent's and dropping any set by an earlier `Exec.variable`.
+/// `Exec.variable` adds to it afterwards.
 ///
 /// Cost: O(n).
 pub fn environment(command: Command, variables: Map<Text, Text>) -> Command {
@@ -226,10 +227,12 @@ pub fn arguments(command: Command) -> List<Text> {
 
 /// Starts `command`, hands the running child to `use`, and returns what `use`
 /// returns. When `use` returns or fails, a child still running is killed and
-/// reaped.
+/// reaped. A child's own children are not: a program that starts others
+/// and leaves them running leaves them to outlive it.
 ///
-/// Fails with: `ExecError` when the command cannot start; what `use` fails
-/// with.
+/// Calls: `use` once, with the child, unless the command cannot start.
+/// Fails with: `ExecError.NotFound`, `PermissionDenied`, `InvalidDirectory`
+/// or `Failed` when the command cannot start; what `use` fails with.
 pub fn start<T, E, R>(command: Command, use: fn(Child) -> T errors E needs R) -> T needs R + {
   commands: Commands
 } {
@@ -238,7 +241,8 @@ pub fn start<T, E, R>(command: Command, use: fn(Child) -> T errors E needs R) ->
 
 /// Starts `command` and waits until it ends.
 ///
-/// Fails with: `ExecError` when the command cannot start.
+/// Fails with: `ExecError.NotFound`, `PermissionDenied`, `InvalidDirectory`
+/// or `Failed` when the command cannot start.
 pub fn run(command: Command) -> Status needs {
   commands: Commands
 } {
@@ -246,9 +250,11 @@ pub fn run(command: Command) -> Status needs {
 }
 
 /// Waits until the child ends and returns how. Asking again returns the same
-/// status at once.
+/// status at once. Other tasks run meanwhile, and a cancelled task stops
+/// waiting at once; the child keeps running until its `Exec.start` ends.
 ///
-/// Fails with: `ExecError.Closed` when the child was released.
+/// Fails with: `ExecError.Closed` when the child was released;
+/// `ExecError.Failed` when the operating system cannot wait for it.
 pub fn wait(child: Child) -> Status {
   child.wait()
 }
@@ -298,8 +304,9 @@ fn stdio_code(stdio: Stdio) -> Int {
   }
 }
 
-// The binding's failure codes (runtime/native/bindings/exec/exec.c).
-fn exec<T>(command: Command, result: Result<T, (Int, Text)>) -> T {
+// The binding's failure codes (runtime/native/bindings/exec/exec.c): a
+// spawn fails with 1, 2, 3 or 5, and a wait with 4 or 5.
+fn started<T>(command: Command, result: Result<T, (Int, Text)>) -> T {
   case result {
     Ok(value) -> value
     Err((1, _)) -> Failure(ExecError.NotFound(command.program))
@@ -310,6 +317,13 @@ fn exec<T>(command: Command, result: Result<T, (Int, Text)>) -> T {
         None -> Debug.crash("Exec: an invalid directory without one")
       },
     ))
+    Err((_, message)) -> Failure(ExecError.Failed(command.program, message))
+  }
+}
+
+fn waited<T>(command: Command, result: Result<T, (Int, Text)>) -> T {
+  case result {
+    Ok(value) -> value
     Err((4, _)) -> Failure(ExecError.Closed(command.program))
     Err((_, message)) -> Failure(ExecError.Failed(command.program, message))
   }
@@ -337,13 +351,13 @@ fn host_start(command: Command) -> Child {
     Some(path) -> native_directory(builder, Path.to_text(path))
     None -> Void
   }
-  let process = exec(
+  let process = started(
     command,
     native_spawn(builder, stdio_code(command.stdin), stdio_code(command.stdout), stdio_code(command.stderr)),
   )
   Child(
     fn() {
-      status(exec(command, native_wait(process)))
+      status(waited(command, native_wait(process)))
     },
     fn() { native_terminate(process) },
     fn() { native_kill(process) },

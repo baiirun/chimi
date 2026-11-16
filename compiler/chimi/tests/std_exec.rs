@@ -32,11 +32,17 @@ impl Scratch {
     }
 
     fn chimi(&self, arguments: &[&str]) -> Run {
-        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-            .current_dir(&self.0)
-            .args(arguments)
-            .output()
-            .expect("run chimi");
+        self.chimi_with(arguments, &[])
+    }
+
+    /// Runs the CLI with `variables` set over the inherited environment.
+    fn chimi_with(&self, arguments: &[&str], variables: &[(&str, String)]) -> Run {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_chimi"));
+        command.current_dir(&self.0).args(arguments);
+        for (name, value) in variables {
+            command.env(name, value);
+        }
+        let output = command.output().expect("run chimi");
         Run {
             status: output.status.code(),
             stdout: String::from_utf8(output.stdout).unwrap(),
@@ -142,8 +148,12 @@ test "a second wait answers the same status" {
 }
 
 // Rejects a lookup that ignores PATH or the parent's PATH, a failure that
-// names the wrong program, a missing directory reported only by the child, and
-// an environment that is not replaced or not extended.
+// names the wrong program, a missing directory reported only by the child, an
+// environment that is not replaced or not extended (or holds a variable
+// twice), a relative program looked for in the child's directory, a file the
+// kernel cannot run reported as a permission, and `Stdio.Null` that leaves a
+// stream connected. A directory with no search permission is also invalid,
+// but tests run as root in CI, where `access` grants it, so none covers it.
 #[test]
 fn a_command_that_cannot_start_fails_with_its_reason() {
     let run = run_tests(
@@ -177,7 +187,7 @@ test "a name is found on PATH" {
 }
 
 test "variables are added to the inherited environment" {
-  let command = Exec.variable(Exec.variable(Exec.command("/bin/sh", ["-c", "test \"$X\" = second && test -n \"$PATH\""]), "X", "first"), "X", "second")
+  let command = Exec.variable(Exec.variable(Exec.command("/bin/sh", ["-c", "test \"$X\" = second && test \"$(env | grep -c '^X=')\" = 1 && test -n \"$PATH\""]), "X", "first"), "X", "second")
   let status = Exec.run(command) using { commands: Exec.host_for_tests() }
   status |> Test.assert_equal(Status.Exited(0))
 }
@@ -194,14 +204,38 @@ test "a working directory" {
   status |> Test.assert_equal(Status.Exited(0))
 }
 
+// A test's own standard input is already /dev/null, so only the output
+// streams can tell `Stdio.Null` from `Stdio.Inherit` here; stdin goes through
+// the same code.
 test "standard streams to nothing" {
-  let command = Exec.stdin(Exec.stdout(Exec.command("/bin/sh", ["-c", "read line; test $? -ne 0 && echo gone"]), Stdio.Null), Stdio.Null)
+  let script = "test -c /dev/fd/0 && test -c /dev/fd/1 && ! test -c /dev/fd/2"
+  let nothing = Exec.stdin(Exec.stdout(Exec.command("/bin/sh", ["-c", script]), Stdio.Null), Stdio.Null)
+  let inherited = Exec.command("/bin/sh", ["-c", "! test -c /dev/fd/1"])
+  let statuses = (Exec.run(nothing), Exec.run(inherited)) using { commands: Exec.host_for_tests() }
+  statuses |> Test.assert_equal((Status.Exited(0), Status.Exited(0)))
+}
+
+test "a relative program is found from the parent's directory" {
+  let made = sh("mkdir -p tools && printf '#!/bin/sh\\nexit 5\\n' > tools/five && chmod +x tools/five") using { commands: Exec.host_for_tests() }
+  made |> Test.assert_equal(Status.Exited(0))
+  let command = Exec.directory(Exec.command("tools/five", []), Path.from("/"))
   let status = Exec.run(command) using { commands: Exec.host_for_tests() }
-  status |> Test.assert_equal(Status.Exited(0))
+  status |> Test.assert_equal(Status.Exited(5))
+}
+
+test "a file the kernel cannot run" {
+  let made = sh("printf 'not a program' > junk && chmod +x junk") using { commands: Exec.host_for_tests() }
+  made |> Test.assert_equal(Status.Exited(0))
+  let got = Result.capture(fn() { Exec.run(Exec.command("./junk", [])) }) using { commands: Exec.host_for_tests() }
+  let reason = case got {
+    Err(ExecError.Failed(program, _)) -> "Failed(${program})"
+    other -> Debug.render(other)
+  }
+  reason |> Test.assert_equal("Failed(./junk)")
 }
 "#,
     );
-    assert_passed(&run, 8);
+    assert_passed(&run, 10);
 }
 
 // Rejects a kill or terminate that is not sent, one sent after the child was
@@ -248,6 +282,18 @@ test "a child left running when start ends is killed and reaped" {
       }
     }
   }) using { commands: Exec.host_for_tests() }
+  // Gone, not even a zombie, as soon as start returns.
+  let gone = sh("! kill -0 \"$(cat left.pid)\" 2>/dev/null") using { commands: Exec.host_for_tests() }
+  gone |> Test.assert_equal(Status.Exited(0))
+}
+
+test "two tasks wait for one child" {
+  let both = Exec.start(Exec.command("/bin/sh", ["-c", "sleep 0.2; exit 6"]), fn(child) {
+    let first = Task.start(fn() { Exec.wait(child) })
+    let second = Task.start(fn() { Exec.wait(child) })
+    (Task.result(first), Task.result(second))
+  }) using { commands: Exec.host_for_tests() }
+  both |> Test.assert_equal((Status.Exited(6), Status.Exited(6)))
 }
 
 test "a cancelled wait kills and reaps the child" {
@@ -268,7 +314,7 @@ test "a wait after release is Closed" {
     );
     let started = Instant::now();
     let run = scratch.chimi(&["test", "cases.chimi", "--clock=real"]);
-    assert_passed(&run, 5);
+    assert_passed(&run, 6);
     assert!(started.elapsed() < Duration::from_secs(20), "a sleep 30 child was waited out");
     for file in ["left.pid", "cancelled.pid"] {
         let text = std::fs::read_to_string(scratch.0.join(file)).expect(file);
@@ -385,15 +431,15 @@ fn the_interpreter_cannot_start_real_programs() {
     assert!(run.stdout.contains("E5204"), "{}{}", run.stdout, run.stderr);
 }
 
-// Rejects a child that inherits the parent's ignored signals: a program
-// started under `nohup`-style SIG_IGN for SIGHUP still gives its children the
-// default action, so a child that sends itself SIGHUP dies of it.
+// Rejects a child whose signal actions are reset: a program started under
+// `nohup`-style SIG_IGN for SIGHUP passes that on, as a shell would, so a
+// child that sends itself SIGHUP lives on and exits 0.
 #[test]
-fn a_child_gets_default_signal_actions_whatever_the_parent_ignores() {
+fn a_child_keeps_the_signals_its_parent_ignores() {
     let scratch = Scratch::new(
         "defaults",
         &format!(
-            "{IMPORTS}\npub fn main() -> Void needs {{ commands: Commands }} {{\n  let ended = sh(\"kill -HUP $$; exit 0\")\n  case ended {{\n    Status.Signaled(1) -> Void\n    other -> Debug.crash(\"the child ended with ${{Debug.render(other)}}\")\n  }}\n}}\n"
+            "{IMPORTS}\npub fn main() -> Void needs {{ commands: Commands }} {{\n  let ended = sh(\"kill -HUP $$; exit 0\")\n  case ended {{\n    Status.Exited(0) -> Void\n    other -> Debug.crash(\"the child ended with ${{Debug.render(other)}}\")\n  }}\n}}\n"
         ),
     );
     let built = scratch.chimi(&["build", "cases.chimi", "-o", "runner"]);
@@ -404,4 +450,62 @@ fn a_child_gets_default_signal_actions_whatever_the_parent_ignores() {
         .output()
         .expect("run the program");
     assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+// Rejects a lookup that takes a directory on PATH for the program: a
+// directory named `sh` earlier on PATH is passed over for the real one.
+#[test]
+fn a_directory_on_path_is_not_the_program() {
+    let scratch = Scratch::new(
+        "path",
+        &suite(
+            r#"
+test "a directory named like the program" {
+  let status = Exec.run(Exec.command("sh", ["-c", "exit 4"])) using { commands: Exec.host_for_tests() }
+  status |> Test.assert_equal(Status.Exited(4))
+}
+"#,
+        ),
+    );
+    std::fs::create_dir_all(scratch.0.join("bin/sh")).unwrap();
+    let path = format!("{}:{}", scratch.0.join("bin").display(), std::env::var("PATH").unwrap());
+    let run = scratch.chimi_with(&["test", "cases.chimi", "--clock=real"], &[("PATH", path)]);
+    assert_passed(&run, 1);
+}
+
+// Rejects a child wait that holds the scheduler thread, and one that finds
+// an exit only by polling. The child exits once another task has touched a
+// file, which that task can do only while the wait is parked; and a child
+// that exits after 1.3 s is seen at once, where the rechecks that back a
+// missed SIGCHLD up (10 ms doubling to 1 s) would first look again at 2.27 s.
+#[test]
+fn a_child_wait_lets_other_tasks_run_and_ends_at_the_exit() {
+    let run = run_tests(
+        "parked",
+        r#"
+test "other tasks run while one waits" {
+  let script = "for i in $(seq 100); do test -e go && exit 0; sleep 0.02; done; exit 1"
+  let status = Exec.start(Exec.command("/bin/sh", ["-c", script]), fn(child) {
+    let toucher = Task.start(fn() {
+      Clock.sleep(Duration.milliseconds(50))
+      sh("touch go")
+    })
+    let ended = Exec.wait(child)
+    Task.result(toucher)
+    ended
+  }) using { commands: Exec.host_for_tests() }
+  status |> Test.assert_equal(Status.Exited(0))
+}
+
+test "the exit wakes the wait" {
+  let waited = Exec.start(Exec.command("/bin/sh", ["-c", "exec sleep 1.3"]), fn(child) {
+    let start = Clock.now()
+    Exec.wait(child)
+    Clock.since(start)
+  }) using { commands: Exec.host_for_tests() }
+  (waited < Duration.milliseconds(2000)) |> Test.assert_equal(True)
+}
+"#,
+    );
+    assert_passed(&run, 2);
 }

@@ -8,6 +8,13 @@ the only difference a test can see, and Chimi text rarely holds U+0000), and
 the non-scheduler branch of `chimi_binding_wait_child` (a binding call always
 forces the scheduler).
 
+Not covered by a test: a directory without search permission (`access` in
+the spawn's directory check; tests run as root in CI, where it always
+passes), a child stopped when no handle can be made for it (needs 64K open
+handles), and the report files closed in children (FD_CLOEXEC in
+`open_report`; a child holding one open changes nothing a test can see
+before the runner exits).
+
 Run: scripts/mutation/mutate.py scripts/mutation/exec_binding_mutations.py
 """
 
@@ -47,8 +54,10 @@ MUTATIONS = [
         ("    if (stat(builder->directory, &info) != 0 || !S_ISDIR(info.st_mode)) {", "    if (0) {")]),
     exec_test("Stdio.Null is inherited", EXEC, [
         ("  if (mode == STDIO_NULL)\n    return posix_spawn_file_actions_addopen", "  if (mode == STDIO_NULL)\n    return true || posix_spawn_file_actions_addopen")]),
-    exec_test("ignored signals stay ignored in the child", EXEC, [
-        ("POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK", "POSIX_SPAWN_SETSIGMASK")]),
+    exec_test("a relative program stays relative", EXEC, [
+        ("  if (path == NULL || path[0] == '/') return path;", "  return path;")]),
+    exec_test("a file the kernel cannot run is a permission", EXEC, [
+        ("error == EACCES ? EXEC_PERMISSION_DENIED : EXEC_FAILED;", "error == EACCES || error == ENOEXEC ? EXEC_PERMISSION_DENIED : EXEC_FAILED;")]),
     exec_test("terminate sends SIGKILL", EXEC, [
         ("  if (child != NULL && !child->reaped) kill(child->pid, SIGTERM);", "  if (child != NULL && !child->reaped) kill(child->pid, SIGKILL);")]),
     exec_test("a cancelled wait is not cancelled", EXEC, [

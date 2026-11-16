@@ -1,9 +1,12 @@
 /* std/exec: child processes over the binding API (G20). A command is built
    on a Builder handle one piece at a time, then started with posix_spawn.
    The program is looked up on the parent's PATH here, before the spawn, so a
-   missing or non-executable program fails at once with its own code. The
-   child gets the default action and an empty mask for every signal the
-   runtime handles, so it reacts to them as if a shell had started it.
+   missing or non-executable program fails at once with its own code, and
+   the path found is made absolute, so a relative one still names the same
+   file after the child changes directory. The child starts with an empty
+   signal mask. Its signal actions are what exec leaves: the runtime's
+   handlers reset to the default, and an action the parent inherited as
+   ignored (SIGHUP under nohup) stays ignored, as a shell would leave it.
 
    Waiting goes through chimi_binding_wait_child, which leaves the child
    unreaped; this file is the only one that reaps it, by pid, and records
@@ -79,7 +82,10 @@ static void release_builder(void *state) {
 
 /* A Child still running when its handle is released (its scope ended, or
    the program did) is killed and reaped, so no child outlives its handle
-   and no zombie stays behind. */
+   and no zombie stays behind. The reap blocks the scheduler thread until
+   the kernel has delivered SIGKILL, which is brief for an ordinary child but
+   unbounded for one stuck in uninterruptible sleep (CHI-250 part 4 parks
+   instead). */
 static void release_child(void *state) {
   ChildProcess *child = state;
   if (!child->reaped) {
@@ -187,6 +193,18 @@ static bool executable(const char *path, int *error) {
   return true;
 }
 
+/* `path` made absolute against the parent's working directory; frees `path`.
+   NULL when out of memory or the directory cannot be named. */
+static char *absolute(char *path) {
+  if (path == NULL || path[0] == '/') return path;
+  char *directory = getcwd(NULL, 0);
+  char *joined = directory ? malloc(strlen(directory) + strlen(path) + 2) : NULL;
+  if (joined != NULL) sprintf(joined, "%s/%s", directory, path);
+  free(directory);
+  free(path);
+  return joined;
+}
+
 /* The path to spawn for `program`, looked up on the parent's PATH when it
    names no directory, as a shell does; NULL with `code` set otherwise. A
    program found only without execute permission is PermissionDenied. */
@@ -197,7 +215,11 @@ static char *resolve(const char *program, int *code) {
     return NULL;
   }
   if (strchr(program, '/') != NULL) {
-    if (executable(program, &error)) return strdup(program);
+    if (executable(program, &error)) {
+      char *found = absolute(strdup(program));
+      if (found == NULL) *code = EXEC_FAILED;
+      return found;
+    }
     *code = error == EACCES ? EXEC_PERMISSION_DENIED : EXEC_NOT_FOUND;
     return NULL;
   }
@@ -219,7 +241,11 @@ static char *resolve(const char *program, int *code) {
     memcpy(candidate, directory, directory_length);
     candidate[directory_length] = '/';
     memcpy(candidate + directory_length + 1, program, program_length + 1);
-    if (executable(candidate, &error)) return candidate;
+    if (executable(candidate, &error)) {
+      char *found = absolute(candidate);
+      if (found == NULL) *code = EXEC_FAILED;
+      return found;
+    }
     denied = denied || error == EACCES;
     free(candidate);
     if (end == NULL) break;
@@ -271,12 +297,15 @@ static bool connect_stdio(posix_spawn_file_actions_t *actions, int fd, int64_t m
   return false;
 }
 
-static ChimiBindingResult *spawn_failure(ChimiBindingCall *call, int error, const char *program) {
-  char message[512];
-  snprintf(message, sizeof(message), "%s: %s", program, strerror(error));
-  if (error == ENOENT) return chimi_binding_failure(call, EXEC_NOT_FOUND, message);
-  if (error == EACCES || error == ENOEXEC) return chimi_binding_failure(call, EXEC_PERMISSION_DENIED, message);
-  return chimi_binding_failure(call, EXEC_FAILED, message);
+/* A failure of posix_spawn itself. The program and directory were checked
+   before it, so ENOENT and EACCES here mean they changed in between, or the
+   program's interpreter (a script's #! line) is missing or not executable;
+   ENOEXEC is a file the kernel cannot run, which is not a permission. The
+   message is the operating system's words alone: `ExecError` names the
+   program. */
+static ChimiBindingResult *spawn_failure(ChimiBindingCall *call, int error) {
+  int code = error == ENOENT ? EXEC_NOT_FOUND : error == EACCES ? EXEC_PERMISSION_DENIED : EXEC_FAILED;
+  return chimi_binding_failure(call, code, strerror(error));
 }
 
 /* native_spawn(builder, stdin, stdout, stderr): starts the command and
@@ -290,11 +319,11 @@ ChimiBindingResult *chimi_exec_spawn(ChimiBindingCall *call) {
         modes[index] > STDIO_NULL)
       return chimi_binding_defect(call, "Exec: an unknown Stdio");
   if (builder->directory != NULL) {
+    /* A directory the child could not enter (no search permission) is
+       invalid too, not a failure found only inside the child. */
     struct stat info;
-    if (stat(builder->directory, &info) != 0 || !S_ISDIR(info.st_mode)) {
-      char message[512];
-      snprintf(message, sizeof(message), "%s: not a directory", builder->directory);
-      ChimiBindingResult *failure = chimi_binding_failure(call, EXEC_INVALID_DIRECTORY, message);
+    if (stat(builder->directory, &info) != 0 || !S_ISDIR(info.st_mode) || access(builder->directory, X_OK) != 0) {
+      ChimiBindingResult *failure = chimi_binding_failure(call, EXEC_INVALID_DIRECTORY, "not a directory it can enter");
       chimi_binding_close_handle(call, 0, &BUILDER);
       return failure;
     }
@@ -302,10 +331,7 @@ ChimiBindingResult *chimi_exec_spawn(ChimiBindingCall *call) {
   int code = EXEC_FAILED;
   char *path = resolve(builder->program, &code);
   if (path == NULL) {
-    char message[512];
-    snprintf(message, sizeof(message), "%s: %s", builder->program,
-             code == EXEC_PERMISSION_DENIED ? "not executable" : "not found");
-    ChimiBindingResult *failure = chimi_binding_failure(call, code, message);
+    ChimiBindingResult *failure = chimi_binding_failure(call, code, strerror(code == EXEC_PERMISSION_DENIED ? EACCES : code == EXEC_NOT_FOUND ? ENOENT : ENOMEM));
     chimi_binding_close_handle(call, 0, &BUILDER);
     return failure;
   }
@@ -321,15 +347,10 @@ ChimiBindingResult *chimi_exec_spawn(ChimiBindingCall *call) {
   if (argv != NULL && envp != NULL && child != NULL && actions_ready && attributes_ready) {
     argv[0] = builder->program;
     for (size_t index = 0; index < argc; ++index) argv[index + 1] = builder->arguments.items[index];
-    sigset_t defaults, empty;
-    sigemptyset(&defaults);
-    int reset[] = {SIGINT, SIGTERM, SIGHUP, SIGUSR1, SIGUSR2, SIGPIPE, SIGCHLD};
-    for (size_t index = 0; index < sizeof(reset) / sizeof(*reset); ++index) sigaddset(&defaults, reset[index]);
+    sigset_t empty;
     sigemptyset(&empty);
-    error = posix_spawnattr_setsigdefault(&attributes, &defaults);
-    if (error == 0) error = posix_spawnattr_setsigmask(&attributes, &empty);
-    if (error == 0)
-      error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+    error = posix_spawnattr_setsigmask(&attributes, &empty);
+    if (error == 0) error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK);
     for (int fd = 0; fd < 3 && error == 0; ++fd)
       if (!connect_stdio(&actions, fd, modes[fd])) error = EINVAL;
     if (error == 0 && builder->directory != NULL)
@@ -347,11 +368,16 @@ ChimiBindingResult *chimi_exec_spawn(ChimiBindingCall *call) {
   ChimiBindingResult *result;
   if (error != 0) {
     free(child);
-    result = spawn_failure(call, error, builder->program);
+    result = spawn_failure(call, error);
   } else {
     ChimiBindingValue *handle = chimi_binding_make_handle(call, &CHILD, child);
-    result = handle ? chimi_binding_ok(call, handle)
-                    : chimi_binding_failure(call, EXEC_FAILED, "too many open children");
+    if (handle != NULL) {
+      result = chimi_binding_ok(call, handle);
+    } else {
+      /* No handle to stop it through: stop it now. */
+      release_child(child);
+      result = chimi_binding_failure(call, EXEC_FAILED, strerror(EMFILE));
+    }
   }
   chimi_binding_close_handle(call, 0, &BUILDER);
   return result;
@@ -388,9 +414,7 @@ ChimiBindingResult *chimi_exec_wait(ChimiBindingCall *call) {
       return status_result(call, status);
     }
     if (reaped < 0 && errno != EINTR) {
-      char message[256];
-      snprintf(message, sizeof(message), "waiting for the child failed: %s", strerror(errno));
-      return chimi_binding_failure(call, EXEC_FAILED, message);
+      return chimi_binding_failure(call, EXEC_FAILED, strerror(errno));
     }
     switch (chimi_binding_wait_child(call, 0, child->pid)) {
       case CHIMI_BINDING_WAIT_CANCELLED: return chimi_binding_cancelled(call);

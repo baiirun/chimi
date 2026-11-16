@@ -11085,6 +11085,19 @@ static void print_outcome(FILE *output, const ChimiControl *control) {
   fputs("}\n", output);
 }
 
+/* A report file the runtime writes, closed in every child process it starts
+   (std/exec), so a child cannot hold it open or write into it. */
+static FILE *open_report(const char *path, const char *mode) {
+  FILE *output = fopen(path, mode);
+  if (output && fcntl(fileno(output), F_SETFD, FD_CLOEXEC) != 0) {
+    int error = errno;
+    fclose(output);
+    errno = error;
+    return NULL;
+  }
+  return output;
+}
+
 static bool close_output(FILE *output) {
   if (output == NULL) return false;
   bool failed = fflush(output) != 0;
@@ -11104,7 +11117,7 @@ static int compare_profile_rows(const void *left, const void *right) {
    evaluations, then node id, so the same program always writes the same profile. */
 static bool write_profile(const char *path) {
   if (!path) return false;
-  FILE *output = fopen(path, "wx");
+  FILE *output = open_report(path, "wx");
   if (!output) {
     fprintf(stderr, "cannot open profile file %s: %s\n", path, strerror(errno));
     return true;
@@ -11135,7 +11148,7 @@ static bool write_profile(const char *path) {
 
 static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
   if (!path) return false;
-  FILE *output = fopen(path, "wx");
+  FILE *output = open_report(path, "wx");
   if (!output) {
     fprintf(stderr, "cannot open memory report file %s: %s\n", path, strerror(errno));
     return true;
@@ -11980,14 +11993,14 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     if (!profile_rows) exhausted_memory();
   }
   if (telemetry_path) {
-    runtime.telemetry = fopen(telemetry_path, strcmp(telemetry_path, "/dev/null") == 0 ? "w" : "wx");
+    runtime.telemetry = open_report(telemetry_path, strcmp(telemetry_path, "/dev/null") == 0 ? "w" : "wx");
     if (!runtime.telemetry) {
       fprintf(stderr, "cannot open telemetry file %s: %s\n", telemetry_path, strerror(errno));
       return 74;
     }
   }
   if (outcome_path) {
-    runtime.outcome = fopen(outcome_path, "wx");
+    runtime.outcome = open_report(outcome_path, "wx");
     if (!runtime.outcome) {
       fprintf(stderr, "cannot open outcome file %s: %s\n", outcome_path, strerror(errno));
       if (runtime.telemetry) fclose(runtime.telemetry);
