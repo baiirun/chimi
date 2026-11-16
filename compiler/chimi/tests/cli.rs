@@ -290,6 +290,48 @@ fn build_links_a_runnable_executable_and_reports_its_artifacts() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// testing.md: `chimi build` drops test items before lowering, so appending
+// tests to a module changes nothing in the executable.
+#[test]
+fn build_output_is_identical_with_and_without_test_items() {
+    let scratch = scratch_directory("build-without-tests");
+    let program = concat!(
+        "import std/debug as Debug\n\n",
+        "fn double(value: Int) -> Int {\n  value * 2\n}\n\n",
+        "pub fn main() -> Int {\n  double(21)\n}\n",
+    );
+    let with_tests = format!(
+        "{program}\ntest \"doubles\" {{\n  let rendered = Debug.render(double(2))\n  Void\n}}\n"
+    );
+    let mut executables = Vec::new();
+    for (name, text) in [("plain", program.to_owned()), ("tested", with_tests)] {
+        let source = scratch.join(format!("{name}.chimi"));
+        std::fs::write(&source, text).unwrap();
+        // One file name for both: macOS signs an executable with its name.
+        std::fs::create_dir_all(scratch.join(name)).unwrap();
+        let executable = scratch.join(name).join("program");
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .arg("build")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .expect("build Chimi source");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        executables.push(std::fs::read(executable).unwrap());
+    }
+    assert!(
+        executables[0] == executables[1],
+        "test items changed the executable"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 /// A copy of the embedded standard tree in `directory`, for `--std-dir`.
 fn copy_standard_tree(directory: &Path) {
     std::fs::create_dir_all(directory).unwrap();
@@ -5254,6 +5296,59 @@ fn native_backstop_a_stale_capability_whose_owner_has_ended_defects() {
         "channel capability violation: task 1 cannot use the Receiver of channel 1 \
          in Channel.receive: the task it was handed to has ended"
     );
+}
+
+// A root task that overflows its guarded fiber stack while inside a loop region
+// ends with the "Task stack overflow" defect. The region's scope lived in the
+// root's abandoned frames, and building the defect allocated through it, so
+// before the fix the program crashed with SIGSEGV instead. Recursing 20,000
+// calls deep overflows the 1 MiB root stack whatever a frame costs, and the
+// Task in the loop is what puts main on a fiber.
+#[test]
+fn native_a_root_overflowing_inside_a_loop_ends_with_a_stack_overflow_defect() {
+    let scratch = scratch_directory("native-root-overflow-in-loop");
+    let executable = build_native(
+        &scratch,
+        "root-overflow",
+        concat!(
+            "import std/list as List\n",
+            "import std/task as Task\n",
+            "fn build(n: Int, acc: List<Int>) -> List<Int> {\n",
+            "  case n {\n",
+            "    0 -> acc\n",
+            "    _ -> build(n - 1, List.push(acc, n))\n",
+            "  }\n",
+            "}\n",
+            "struct Round { left: Int, total: Int }\n",
+            "pub fn main() -> Int {\n",
+            "  loop state = Round(2, 0) {\n",
+            "    case state.left {\n",
+            "      0 -> break state.total\n",
+            "      _ -> {\n",
+            "        let items = build(20000, [])\n",
+            "        let child = Task.start(fn() -> Int { List.length(items) })\n",
+            "        Round(state.left - 1, state.total + Task.result(child))\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "root-overflow", "off");
+    assert_eq!(
+        execution.process.status.code(),
+        Some(70),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert!(
+        execution
+            .outcome
+            .contains(r#""outcome":"defect","message":"Task stack overflow""#),
+        "{}",
+        execution.outcome
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
 }
 
 // E18 across tasks and channels on native, where each task runs on a 64 KiB fiber

@@ -876,6 +876,109 @@ impl TypedProject {
         }
     }
 
+    /// Checks each `test` item's inferred contract against the test root: its
+    /// success type is `Void` (or `Never`, `T4402`), and the test provider plan
+    /// closes every need its body leaves open (`T4400`). The failure row is
+    /// unrestricted: an escaping failure fails the test at run time.
+    fn validate_test_roots(&mut self) {
+        let tests = self
+            .resolved
+            .semantic
+            .modules
+            .iter()
+            .flat_map(|module| {
+                module
+                    .declarations
+                    .iter()
+                    .filter(|declaration| declaration.test)
+                    .map(move |declaration| (module, declaration))
+            })
+            .filter_map(|(module, declaration)| {
+                let symbol = self.resolved.symbols.iter().find(|symbol| {
+                    symbol.module_id == Some(module.id)
+                        && symbol.semantic_id == Some(declaration.semantic_id)
+                        && symbol.kind == ProjectSymbolKind::Function
+                })?;
+                let body_range = declaration.body.as_ref()?.range();
+                Some((
+                    module.source.file_id(),
+                    declaration.name.range,
+                    body_range,
+                    symbol.id,
+                ))
+            })
+            .collect::<Vec<_>>();
+        for (file_id, name_range, body_range, symbol) in tests {
+            let Some(contract) = self.contracts.get(&symbol).cloned() else {
+                continue;
+            };
+            let success = self.resolve_type_id(contract.success);
+            let ends_in_void = match &self.types[success.raw() as usize] {
+                CanonicalType::Named { symbol, arguments } => {
+                    let symbol = self.resolved.symbol(*symbol);
+                    arguments.is_empty()
+                        && symbol.kind == ProjectSymbolKind::BuiltinType
+                        && matches!(symbol.name.as_str(), "Void" | "Never")
+                }
+                // An earlier error already explains an unknown body type.
+                CanonicalType::Poison | CanonicalType::InferenceVariable(_) => true,
+                _ => false,
+            };
+            if !ends_in_void {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Type,
+                    "T4402",
+                    file_id,
+                    body_range,
+                    format!(
+                        "a test body must end in `Void`, but this one ends in `{}`; check the \
+                         value with an assertion such as `Test.assert_equal(actual, expected)`",
+                        self.format_type(success)
+                    ),
+                ));
+            }
+            let row = self.needs_rows[contract.needs.raw() as usize].clone();
+            let unclosed = row
+                .entries
+                .into_iter()
+                .filter(|need| !need.explained && !self.test_plan_closes(need))
+                .collect::<Vec<_>>();
+            for need in unclosed {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticStage::Type,
+                    "T4400",
+                    file_id,
+                    name_range,
+                    format!(
+                        "this test needs {}: {}, which a test does not provide; supply it \
+                         inside the test with `using {{ {}: ... }}`",
+                        need.lexical_name,
+                        self.format_type(need.interface),
+                        need.lexical_name
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// Whether the test provider plan closes this need: `clock: Clock` under the
+    /// virtual source and a captured `Console` under any name, as on `main`.
+    /// Unlike `main`, a test gets no `FileSystem`.
+    fn test_plan_closes(&self, need: &Need) -> bool {
+        let CanonicalType::Named { symbol, arguments } = &self.types[need.interface.raw() as usize]
+        else {
+            return false;
+        };
+        if !arguments.is_empty() {
+            return false;
+        }
+        match self.resolved.standard_symbol(*symbol) {
+            Some(StandardSymbol::Type(StandardType::Console)) => true,
+            Some(StandardSymbol::Type(StandardType::Clock)) => need.lexical_name == "clock",
+            _ => false,
+        }
+    }
+
     /// Whether the runner's provider plan closes this need on `main`: the
     /// native `Console` and `FileSystem` under any name, and the execution
     /// clock provider for `clock: Clock` (std/clock), whose need name is fixed.
@@ -2671,6 +2774,7 @@ impl ProjectTypeChecker {
         typed.expression_value_properties = capability_report.expression_properties;
         typed.diagnostics.extend(capability_report.diagnostics);
         typed.validate_closed_roots();
+        typed.validate_test_roots();
         typed.diagnostics.sort_by_key(|diagnostic| {
             (
                 diagnostic_phase_order(diagnostic.stage()),
