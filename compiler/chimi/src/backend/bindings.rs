@@ -182,6 +182,10 @@ mod tests {
             keyed("p", &["-DA", "-DB"], b"h", &[]),
             keyed("p", &["-DA -DB"], b"h", &[])
         );
+        assert_ne!(
+            keyed("p", &["-DA"], b"h", &[]),
+            keyed("p", &["-DB"], b"h", &[])
+        );
         assert_eq!(base, key("p", b"h", &[("a.c", "x")]));
         for other in [
             key("q", b"h", &[("a.c", "x")]),
