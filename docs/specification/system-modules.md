@@ -6,11 +6,9 @@ This is the normative contract for the Phase 6c system modules of the
 [language completion plan](../plans/language-completion-plan.md) (CHI-209):
 the modules a command-line tool or a service uses to reach its operating
 system. It covers runner-provided capabilities, `std/path`, `std/env`,
-`std/fs`, and `std/signal` (CHI-246 to CHI-249), and `std/exec` (CHI-250) as
-far as it has landed: starting, waiting for and stopping programs. Its pipes
-and captured output, and the cleanup of children at exit, come next.
-`std/terminal` and `std/cli` (CHI-251, CHI-252) add their sections as they
-land.
+`std/fs`, and `std/signal` (CHI-246 to CHI-249), `std/exec` (CHI-250) and
+`std/terminal` (CHI-251). `std/cli` (CHI-252) adds its section when it
+lands.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 modules follow the [standard library conventions](standard-library-conventions.md)
@@ -42,6 +40,7 @@ Each one has a **fixed need name**, listed with it in the registry
 | `std/signal.Signals` | `signals` | `std/signal.host` |
 | `std/net.Network` | `network` | `std/net.system` ([network modules](network-modules.md#stdnet)) |
 | `std/exec.Commands` | `commands` | `std/exec.system` |
+| `std/terminal.Terminal` | `terminal` | `std/terminal.host` |
 
 Rules:
 
@@ -295,6 +294,7 @@ pub fn variable(command: Command, name: Text, value: Text) -> Command
 pub fn environment(command: Command, variables: Map<Text, Text>) -> Command
 pub fn directory(command: Command, path: Path) -> Command
 pub fn stdin(command: Command, stdio: Stdio) -> Command   // and stdout, stderr
+pub fn stop_within(command: Command, duration: Duration) -> Command  // 5 s
 pub fn program(command: Command) -> Text
 pub fn arguments(command: Command) -> List<Text>
 
@@ -334,12 +334,30 @@ pub fn host_for_tests() -> Commands                      // test-only
   start. A file the kernel cannot run (no `#!` line, wrong format) is
   `Failed`, and `Failed` carries only the operating system's words.
 - `start(command, use)` is the only way to hold a `Child`: when `use` returns,
-  fails or is cancelled, a child still running MUST be killed with SIGKILL and
-  reaped, so no child and no zombie outlives the `start` that made it. A
+  fails or is cancelled, the child's pipes MUST be closed first, so a child
+  that exits at its input's end needs no signal, and a child still running
+  MUST then get SIGTERM, then the command's `stop_within` time (5 seconds
+  unless set) to exit, then SIGKILL, and MUST be reaped, so no child and no
+  zombie outlives the `start` that made it. A child that writes to a pipe
+  after that gets SIGPIPE or `EPIPE`. Other tasks run while it is stopped.
+  `stop_within` of zero sends SIGKILL at once, and a negative one is a
+  defect where it is set. The time is real time, read from the operating
+  system's monotonic clock about every 10 ms, so it runs out under the
+  virtual clock too. The stop happens in the release, which a cancellation
+  does not cut short, so a `Task.timeout` around `start` can take up to
+  `stop_within` longer than its own time. When the program ends normally or
+  by a defect, any child still held, even outside a `start`, is killed with
+  SIGKILL and reaped. A stop signal cancels `main` like any task, so a
+  `start` in `main` still stops its child gracefully. A program killed by
+  SIGKILL, or by a second stop signal (which ends it at once), runs no
+  release, and its children outlive it. A
   `Child` used after that answers `Closed` from `wait`. The child's own
   children are not stopped: a program that leaves its children running when
-  it dies leaves them to outlive the `start` (process groups are decided
-  with the graceful release in part 4).
+  it dies leaves them to outlive the `start`. The child stays in the
+  parent's process group, as in Rust, Go and Python, so a terminal's Ctrl-C
+  and job control reach it as they would from a shell; a separate group
+  (which would let `start` stop grandchildren) is left until a program needs
+  it.
 - A stream set to `Stdio.Pipe` MUST be connected to the parent by a pipe,
   read with `output` or `error_output` and written with `input`, as
   std/stream readers and writers. Asking for a stream that was not piped is
@@ -355,7 +373,7 @@ pub fn host_for_tests() -> Commands                      // test-only
   by side (so neither pipe fills while the other is read), and returns the
   status and both byte buffers, unbounded. A nonzero exit is in `status`. It
   waits for the end of both streams, so a grandchild that keeps them open
-  delays it (part 4 decides process groups).
+  delays it.
 - `wait` MUST NOT close a piped `input`, since another task may still be
   writing it; a program closes the input itself when done, and a child that
   reads to the end of its input exits only then.
@@ -385,6 +403,54 @@ pub fn host_for_tests() -> Commands                      // test-only
   `host_for_tests` defect there (`E5204`). A test supplies a fake with
   `using`, built with `Exec.child`, on both backends; `program` and
   `arguments` let a fake check what it was asked to run.
+
+## std/terminal
+
+```text
+pub enum Standard { Input, Output, Error }
+pub interface Terminal {
+  is_terminal: fn(Standard) -> Bool
+  size: fn(Standard) -> Option<{ columns: Int, rows: Int }>
+}
+pub enum Color { Black, Red, Green, Yellow, Blue, Magenta, Cyan, White, BrightBlack, … BrightWhite }
+pub enum Style { Bold, Dim, Italic, Underline, Inverse, Strikethrough, Foreground(color: Color), Background(color: Color) }
+
+pub fn is_terminal(stream: Standard) -> Bool needs { terminal: Terminal }
+pub fn size(stream: Standard) -> Option<{ columns: Int, rows: Int }> needs { terminal: Terminal }
+pub fn uses_color(stream: Standard) -> Bool needs { terminal: Terminal, environment: Environment }
+pub fn style(text: Text, styles: List<Style>) -> Text
+pub fn strip(text: Text) -> Text
+```
+
+- `is_terminal` MUST answer whether the stream's descriptor is a terminal
+  (`isatty`), asked afresh each call.
+- `size` MUST return the terminal's columns and rows (`TIOCGWINSZ`), and
+  `None` when the stream is not a terminal or the terminal reports zero for
+  either. It MUST NOT read `COLUMNS` or `LINES` or invent a default.
+- `uses_color` MUST be true only when the stream is a terminal, `NO_COLOR`
+  is unset or empty (no-color.org), and `TERM` is not `dumb`. It reads the
+  environment through `environment`, so a test fixes both with fakes.
+- `style` MUST write one SGR sequence (`ESC [ codes m`) with each style's
+  code in the order given, the text, and one sequence of each style's own
+  closing code (39, 49, 22, 23, 24, 27, 29), each once, never `ESC [ 0 m`,
+  so it closes only what it opened: an outer style of another attribute
+  (bold around underlined text) stays on, while an inner style of the same
+  attribute (a color inside a color, or dim inside bold, which share 22)
+  ends the outer one. Empty `styles` or
+  empty text MUST return the text unchanged. Colors are the 8 named ones
+  (30 to 37, 40 to 47) and their bright forms (90 to 97, 100 to 107).
+- `strip` MUST remove every control sequence: `ESC [`, parameter and
+  intermediate bytes (0x20 to 0x3F), and a final byte (0x40 to 0x7E). An
+  `ESC [` not followed by a complete sequence, and an `ESC` without `[`, are
+  kept.
+- Styling is pure, with no needs. A program decides once with `uses_color`
+  and styles with an empty list when it should not.
+- On the native backend the provider is a binding package
+  (`runtime/native/bindings/terminal`) of two calls that never wait. The
+  interpreter cannot call it (`E5204`); a test supplies a fake record with
+  `using` on both backends, and the pure functions run on both.
+- Not in this module: 256 and RGB colors, `FORCE_COLOR`, visible width,
+  cursor and screen control, raw mode, line editing, and resize events.
 
 ## Decisions
 
@@ -423,6 +489,11 @@ pub fn host_for_tests() -> Commands                      // test-only
   looks at the child, so a waiter cancelled between its wake and its retry
   loses no exit status. Scoped-only children follow `Resource.scoped`, and
   the names avoid `with_` as the conventions ask.
+- **One `style` over a list, not a function per color.** It is Node's
+  `util.styleText` shape; per-color functions would be about forty twins of
+  it. `uses_color` takes `environment` as a second need instead of the
+  provider reading `NO_COLOR` itself, so the signature shows the environment
+  read and the environment fake controls it.
 - **`join` appends.** Replacing on an absolute part is a known source of
   path-traversal bugs, and Chimi prefers the rule a reader can predict.
 
@@ -455,6 +526,13 @@ pub fn host_for_tests() -> Commands                      // test-only
 | A child keeps SIGHUP ignored when the parent inherited it ignored | `tests/std_exec.rs` `a_child_keeps_the_signals_its_parent_ignores` |
 | `capture` returns both streams and the status; more than a pipe holds on both at once; no input | `tests/std_exec.rs` `capture_collects_both_streams_and_the_status` |
 | A round trip through `cat`; `wait` leaves the input to a writer task; a cancelled read; `BrokenPipe` without SIGPIPE; `Closed` after close; a stopped output ends the child with SIGPIPE; a sibling does not hold a child's pipe | `tests/std_exec.rs` `pipes_carry_a_childs_input_and_output` |
+| A child left running gets SIGTERM and exits; one that ignores it is killed after `stop_within`; zero kills at once; a piped input is closed before SIGTERM; a cancelled start stops its child gently; other tasks run meanwhile; a negative `stop_within` is a defect | `tests/std_exec.rs` `a_child_left_running_gets_sigterm_then_sigkill` |
+| A stop signal during a stop in `main` ends the program by the signal (not a scheduler defect) once the stop finishes, and the child is gone | `tests/std_exec.rs` `a_stop_signal_during_a_stop_ends_the_program_by_it` |
+| A defect in `use` stops and reaps its child; a child held outside any `start` is killed and reaped at the program's end | `tests/std_exec.rs` `no_child_outlives_the_program` |
 | A released child leaves no descriptor open (Linux) | `tests/std_exec.rs` `a_released_child_leaves_no_descriptor_open` |
 | A fake's piped streams through `capture`; a fake round trip with a writer task; a fake read after a stop is `Closed`; a fake input whose reader stopped is `BrokenPipe` (a fake also gives `BrokenPipe` for a write after close); an unpiped stream is a defect (native: std/stream needs the bounded channel runtime) | `tests/std_exec.rs` `a_fake_child_pipes_streams` |
 | A fake on both backends; the runner closes `commands` on `main`; `T4401` from `main`; `T4400` without one; the interpreter defects | `tests/std_exec.rs` `a_fake_stands_in_for_real_programs_on_both_backends`, `main_gets_real_programs_by_declaring_the_need_and_nothing_else_does`, `the_interpreter_cannot_start_real_programs` |
+| `style` writes each style's codes, one close per shared code, nothing for empty input, and an outer style of another attribute survives an inner close; `strip` removes sequences next to multibyte text and in a row and keeps the rest, on both backends | `tests/std_terminal.rs` `styles_write_their_codes_and_strip_removes_them` |
+| `uses_color`: a terminal, `NO_COLOR` set or empty, `TERM=dumb`, the stream asked; queries reach a fake; on both backends | `tests/std_terminal.rs` `color_follows_the_terminal_and_no_color` |
+| The runner's provider: pipes are not terminals and have no size; a pseudo-terminal of 100 by 30 is one with its size, zero columns or rows give `None`, and a stream redirected elsewhere is not | `tests/std_terminal.rs` `piped_streams_are_not_terminals`, `a_pseudo_terminal_is_one_and_has_its_size` |
+| A test that does not supply `terminal` fails with `T4400`; the interpreter cannot reach the host terminal (`E5204`) | `tests/std_terminal.rs` `a_test_must_supply_the_terminal`, `the_interpreter_cannot_ask_the_host_terminal` |

@@ -32,6 +32,11 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#if defined(__linux__)
+#include <sys/timerfd.h>
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+#include <sys/event.h>
+#endif
 #include <unistd.h>
 
 extern char **environ;
@@ -89,10 +94,10 @@ static void release_builder(void *state) {
 
 /* A Child still running when its handle is released (its scope ended, or
    the program did) is killed and reaped, so no child outlives its handle
-   and no zombie stays behind. The reap blocks the scheduler thread until
-   the kernel has delivered SIGKILL, which is brief for an ordinary child but
-   unbounded for one stuck in uninterruptible sleep (CHI-250 part 4 parks
-   instead). */
+   and no zombie stays behind. `Exec.start` stops the child first with
+   chimi_exec_stop, which waits parked, so this reap finds it reaped; it
+   blocks only when that could not finish, and at the program's end, for a
+   child whose handle outlived every start (the exit backstop). */
 static void release_child(void *state) {
   ChildProcess *child = state;
   if (!child->reaped) {
@@ -544,6 +549,136 @@ ChimiBindingResult *chimi_exec_terminate(ChimiBindingCall *call) {
 ChimiBindingResult *chimi_exec_kill(ChimiBindingCall *call) {
   ChildProcess *child = chimi_binding_handle(call, 0, &CHILD);
   if (child != NULL && !child->reaped) kill(child->pid, SIGKILL);
+  return chimi_binding_success(call, chimi_binding_void(call));
+}
+
+/* ---- Stopping ------------------------------------------------------- */
+
+/* How often a stopping child is looked at. The scheduler wakes a child
+   waiter only at the exit, so the deadline needs a clock of its own: a
+   descriptor that turns readable every tick (timerfd, or a kqueue timer).
+   It runs in real time, as the child does, whatever the program's clock. */
+#define STOP_TICK_MS 10
+
+static int open_ticker(void) {
+#if defined(__linux__)
+  int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+  if (fd < 0) return -1;
+  struct itimerspec every = {{0, STOP_TICK_MS * 1000000L}, {0, STOP_TICK_MS * 1000000L}};
+  if (timerfd_settime(fd, 0, &every, NULL) != 0) {
+    close(fd);
+    return -1;
+  }
+  return fd;
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+  int fd = kqueue();
+  if (fd < 0) return -1;
+  (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+  struct kevent timer;
+  EV_SET(&timer, 1, EVFILT_TIMER, EV_ADD | EV_ENABLE, 0, STOP_TICK_MS, NULL);
+  if (kevent(fd, &timer, 1, NULL, 0, NULL) != 0) {
+    close(fd);
+    return -1;
+  }
+  return fd;
+#else
+  return -1;
+#endif
+}
+
+static void drain_ticker(int fd) {
+#if defined(__linux__)
+  uint64_t ticks;
+  (void)!read(fd, &ticks, sizeof(ticks));
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+  struct kevent fired;
+  struct timespec now = {0, 0};
+  (void)kevent(fd, NULL, 0, &fired, 1, &now);
+#else
+  (void)fd;
+#endif
+}
+
+static int64_t monotonic_ms(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+/* Reaps the child if it has exited; true once it is reaped. */
+static bool reap_if_exited(ChildProcess *child) {
+  if (child->reaped) return true;
+  int status;
+  pid_t reaped;
+  do {
+    reaped = waitpid(child->pid, &status, WNOHANG);
+  } while (reaped < 0 && errno == EINTR);
+  if (reaped == child->pid) {
+    child->reaped = true;
+    child->status = status;
+  }
+  return child->reaped;
+}
+
+/* How a stop's wait ended. */
+typedef enum { STOP_EXITED, STOP_DEADLINE, STOP_CANCELLED } StopWait;
+
+/* Waits, letting other tasks run, until the child is reaped or `deadline`
+   (monotonic ms) passes. */
+static StopWait await_exit_until(ChimiBindingCall *call, int ticker, int64_t deadline) {
+  for (;;) {
+    ChildProcess *child = chimi_binding_handle(call, 0, &CHILD);
+    if (child == NULL || reap_if_exited(child)) return STOP_EXITED;
+    if (monotonic_ms() >= deadline) return STOP_DEADLINE;
+    if (chimi_binding_wait(call, CHIMI_BINDING_NO_HANDLE, ticker, CHIMI_BINDING_READABLE) != CHIMI_BINDING_READY)
+      return STOP_CANCELLED;
+    drain_ticker(ticker);
+  }
+}
+
+/* Waits, letting other tasks run, until the child is reaped. It wakes at the
+   exit, so no ticker is needed. A wait that does not finish leaves the reap
+   to the release that follows. */
+static void await_exit(ChimiBindingCall *call) {
+  for (;;) {
+    ChildProcess *child = chimi_binding_handle(call, 0, &CHILD);
+    if (child == NULL || reap_if_exited(child)) return;
+    if (chimi_binding_wait_child(call, 0, child->pid) != CHIMI_BINDING_READY) return;
+  }
+}
+
+/* Past this many milliseconds the grace is as good as forever, and adding it
+   to the clock cannot overflow. */
+#define STOP_GRACE_LIMIT_MS ((int64_t)1 << 52)
+
+/* native_stop(child, milliseconds) -> Void: a child still running gets
+   SIGTERM and `milliseconds` to exit, then SIGKILL, and is reaped; zero
+   sends SIGKILL at once, and so does any grace when no ticker can be opened
+   (a SIGTERM cut short at once is worse than none). Other tasks run while it
+   waits. A cancelled wait (a task ended outright, which no release masks,
+   such as a process body forced at its shutdown deadline) must not be
+   followed by another, which would park a task that is unwinding: the child gets SIGKILL, the stop answers cancelled, and the
+   handle's release at the program's end reaps it. */
+ChimiBindingResult *chimi_exec_stop(ChimiBindingCall *call) {
+  int64_t grace;
+  if (!chimi_binding_integer(call, 1, &grace) || grace < 0)
+    return chimi_binding_defect(call, "Exec: a negative stop_within");
+  if (grace > STOP_GRACE_LIMIT_MS) grace = STOP_GRACE_LIMIT_MS;
+  ChildProcess *child = chimi_binding_handle(call, 0, &CHILD);
+  if (child == NULL || reap_if_exited(child)) return chimi_binding_success(call, chimi_binding_void(call));
+  StopWait waited = STOP_DEADLINE;
+  int ticker = grace > 0 ? open_ticker() : -1;
+  if (ticker >= 0) {
+    kill(child->pid, SIGTERM);
+    waited = await_exit_until(call, ticker, monotonic_ms() + grace);
+    close(ticker);
+  }
+  child = chimi_binding_handle(call, 0, &CHILD);
+  if (waited != STOP_EXITED && child != NULL && !child->reaped) {
+    kill(child->pid, SIGKILL);
+    if (waited == STOP_CANCELLED) return chimi_binding_cancelled(call);
+    await_exit(call);
+  }
   return chimi_binding_success(call, chimi_binding_void(call));
 }
 
