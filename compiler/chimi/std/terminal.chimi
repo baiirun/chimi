@@ -205,11 +205,16 @@ fn color_code(color: Color, normal: Int, bright: Int) -> Int {
 // bytes (0x20 to 0x3F), then a final byte (0x40 to 0x7E). Without a final
 // byte, nothing here was a sequence, and the `ESC [` is put back.
 fn after_sequence(part: Text) -> Text {
-  let bytes = Bytes.to_list(Bytes.from_text(part))
-  let end = List.find_index(bytes, fn(byte) { byte < 0x20 or byte > 0x3F })
-  let last = Option.and_then(end, fn(at) { List.first(List.drop(bytes, at)) })
-  case (end, last) {
-    (Some(at), Some(byte)) if byte >= 0x40 and byte <= 0x7E -> Text.byte_slice(part, at + 1..Text.byte_length(part))
+  let bytes = Bytes.from_text(part)
+  let (at, stop) = loop at = 0 {
+    let next = Bytes.get(bytes, at)
+    case next {
+      Some(byte) if byte >= 0x20 and byte <= 0x3F -> at + 1
+      _ -> break (at, next)
+    }
+  }
+  case stop {
+    Some(byte) if byte >= 0x40 and byte <= 0x7E -> Text.byte_slice(part, at + 1..Text.byte_length(part))
     _ -> "\u{1b}[${part}"
   }
 }

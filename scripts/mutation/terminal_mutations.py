@@ -36,7 +36,7 @@ MUTATIONS = [
     terminal_test("strip drops an incomplete escape", MODULE, [
         ('    _ -> "\\u{1b}[${part}"\n', "    _ -> part\n")]),
     terminal_test("strip takes any byte as final", MODULE, [
-        ("(Some(at), Some(byte)) if byte >= 0x40 and byte <= 0x7E ->", "(Some(at), Some(byte)) ->")]),
+        ("    Some(byte) if byte >= 0x40 and byte <= 0x7E -> Text.byte_slice", "    Some(byte) -> Text.byte_slice")]),
     terminal_test("NO_COLOR is ignored", MODULE, [
         ("  Text.is_empty(no_color) and Env.get", "  True and Env.get")]),
     terminal_test("an empty NO_COLOR disables", MODULE, [
