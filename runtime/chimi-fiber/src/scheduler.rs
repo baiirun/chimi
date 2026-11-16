@@ -2782,6 +2782,11 @@ mod tests {
         scheduler.drive();
         assert_eq!(scheduler.release_task(child), Ok(()));
         assert_eq!(scheduler.metrics().tasks, 2, "a parked child stays");
+        assert_eq!(
+            scheduler.release_task(child),
+            Err(SchedulerError::TaskStillLive(child)),
+            "a handle is released once"
+        );
         scheduler.wake(child).expect("wake child");
         scheduler.drive();
         assert_eq!(scheduler.metrics().tasks, 1);
