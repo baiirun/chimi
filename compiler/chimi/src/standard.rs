@@ -171,6 +171,9 @@ pub(crate) enum StandardType {
     /// `std/fs.Files`: the capability to read and change the file system; the
     /// runner closes `main`'s `files` need.
     Files,
+    /// `std/net.Network`: the capability to open sockets; the runner closes
+    /// `main`'s `network` need.
+    Network,
 }
 
 impl StandardType {
@@ -257,6 +260,7 @@ impl StandardType {
             Self::BindingHandle => "Handle",
             Self::Environment => "Environment",
             Self::Files => "Files",
+            Self::Network => "Network",
         }
     }
 
@@ -269,7 +273,8 @@ impl StandardType {
             | Self::Clock
             | Self::Random
             | Self::Environment
-            | Self::Files => {
+            | Self::Files
+            | Self::Network => {
                 StandardProperties::Opaque("a provider")
             }
             Self::ProcessAddress
@@ -1549,6 +1554,7 @@ impl StandardConstructor {
             | StandardType::Random
             | StandardType::Environment
             | StandardType::Files
+            | StandardType::Network
             | StandardType::Instant
             | StandardType::Timestamp
             | StandardType::SelectEvent

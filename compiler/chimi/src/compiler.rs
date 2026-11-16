@@ -673,12 +673,15 @@ impl Compiler {
     /// The id of every registered operation that a program may reach, each of
     /// which a std-tests program must reach. Test-only operations are left out:
     /// no program reaches them (`T4401`), and `tests/testing.rs` covers them
-    /// through `chimi test`.
+    /// through `chimi test`. C bindings are left out too: std-tests programs
+    /// run on both backends and the interpreter cannot call one (`E5204`), so
+    /// each binding package's own conformance tests cover them
+    /// (`tests/bindings.rs`, `tests/net.rs`).
     #[doc(hidden)]
     pub fn standard_operation_ids() -> Vec<&'static str> {
         crate::operations::OPERATIONS
             .iter()
-            .filter(|operation| !operation.test_only)
+            .filter(|operation| !operation.test_only && operation.binding.is_none())
             .map(|operation| operation.id)
             .collect()
     }

@@ -36,6 +36,7 @@ Each one has a **fixed need name**, listed with it in the registry
 | --- | --- | --- |
 | `std/env.Environment` | `environment` | `std/env.host` |
 | `std/fs.Files` | `files` | `std/fs.host` |
+| `std/net.Network` | `network` | `std/net.system` ([network modules](network-modules.md#stdnet)) |
 
 Rules:
 
