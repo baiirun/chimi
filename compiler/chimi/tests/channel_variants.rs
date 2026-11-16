@@ -281,6 +281,52 @@ fn broadcast_reaches_every_subscription_once() {
     assert_eq!(result, success("33223"));
 }
 
+// Each subscription owns its own copy of a heap value: one subscriber
+// dropping its copy leaves the other intact, and a watch replacing an unread
+// list releases the old one. Rejects shared or freed copies.
+#[test]
+fn every_subscription_owns_its_copy_of_a_heap_value() {
+    let result = run_virtual(
+        "copies",
+        concat!(
+            "import std/list as List\n",
+            "struct Order {\n",
+            "  id: Int,\n",
+            "  lines: List<Int>,\n",
+            "}\n",
+            "fn total(receiver: Receiver<Order>) -> Int {\n",
+            "  loop sum = 0 {\n",
+            "    let next = Channel.receive(receiver)\n",
+            "    case next {\n",
+            "      Receive.Received(order) -> sum + order.id * 10 + List.length(order.lines)\n",
+            "      Receive.Drained -> break sum\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let news = Broadcast.bounded(2)\n",
+            "  let a = Broadcast.subscribe(news.publisher)\n",
+            "  let b = Broadcast.subscribe(news.publisher)\n",
+            "  let first = Task.start(fn() { total(a) })\n",
+            "  Broadcast.publish(news.publisher, Order(1, [1, 2, 3]))\n",
+            "  Broadcast.publish(news.publisher, Order(2, [4]))\n",
+            "  Channel.close(news.completion)\n",
+            "  let state = Watch.starting_with([1])\n",
+            "  let follower = Watch.subscribe(state.publisher)\n",
+            "  Watch.publish(state.publisher, [1, 2])\n",
+            "  Watch.publish(state.publisher, [1, 2, 3, 4, 5])\n",
+            "  let latest = case Watch.receive(follower) {\n",
+            "    Success(Receive.Received(lines)) -> List.length(lines)\n",
+            "    Success(Receive.Drained) -> 0\n",
+            "    Failure(_) -> -1\n",
+            "  }\n",
+            "  Task.result(first) * 1000 + total(b) * 10 + latest\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(result, success("34345"));
+}
+
 // A publish waits until every subscription has room, and then reaches all of
 // them at once: while the slow subscription is full, the fast one gets
 // nothing. Rejects a publish that delivers to the subscriptions with room and
