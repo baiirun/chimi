@@ -6,6 +6,8 @@
 /// a fake's method and code under test cannot recover from it. Assertions are
 /// ordinary functions, so a program may also use them to check an invariant.
 
+import std/process as Process
+
 /// Fails unless `actual == expected`, with the same structural equality the
 /// program uses. The actual value comes first, so a pipeline reads in the
 /// order the work happens: `parse("12") |> Test.assert_equal(12)`.
@@ -83,3 +85,24 @@ pub native fn script<T>(replies: List<T>) -> Script<T>
 ///
 /// Cost: O(n) in the size of the reply.
 pub native fn next<T>(script: Script<T>) -> T
+
+/// The receiving end of a fake process address from `mailbox`. It is not a
+/// `Process.Inbox`: `Process.receive` does not take it, and it renders as
+/// `<Mailbox>`. It is shareable, so any task may read it.
+pub native type Mailbox<M>
+
+/// A fake process address that no process owns, and the mailbox that holds
+/// what is sent to it. `Process.send` to the address follows the mailbox rules:
+/// it never parks, and it fails with `SendError.Full(message)` once `capacity`
+/// messages are held. The address equals only itself and renders as
+/// `<address test>`. Test-only (`T4401`), and native-only, as processes are.
+///
+/// Defects when: `capacity` is below 1.
+/// Cost: O(1).
+pub native fn mailbox<M>(capacity: Int) -> (Process.Address<M>, Mailbox<M>)
+
+/// Every message delivered to `mailbox` since the last call, in delivery
+/// order. It removes them, which frees capacity. Test-only (`T4401`).
+///
+/// Cost: O(n) in the size of the messages.
+pub native fn received<M>(mailbox: Mailbox<M>) -> List<M>
