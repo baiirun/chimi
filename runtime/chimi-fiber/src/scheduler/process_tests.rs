@@ -6,6 +6,7 @@
 
 use super::process::Down;
 use super::process_abi::{
+    ChimiInjectedSignal,
     ADDRESS_DIRECT, ADDRESS_NAMED, CLOCK_VIRTUAL, MEMBER_PROCESS, MEMBER_SUPERVISOR, RESTART_NEVER,
     RESTART_ON_DEFECT, chimi_scheduler_run,
 };
@@ -2542,6 +2543,9 @@ fn run_c(entry: ChimiFiberEntry, trace_mode: u32) -> (SchedulerOutcome, Vec<Sche
         injected_signal: 0,
         injected_signal_at: 0,
         copy_channel_value: None,
+        user_signals: std::ptr::null_mut(),
+        injected_user_signals: std::ptr::null(),
+        injected_user_signal_count: 0,
     };
     let outcome = unsafe { chimi_scheduler_run(&config) };
     (outcome, events)
@@ -2709,6 +2713,12 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiSchedulerConfig, injected_signal),
         offset_of!(ChimiSchedulerConfig, injected_signal_at),
         offset_of!(ChimiSchedulerConfig, copy_channel_value),
+        offset_of!(ChimiSchedulerConfig, user_signals),
+        offset_of!(ChimiSchedulerConfig, injected_user_signals),
+        offset_of!(ChimiSchedulerConfig, injected_user_signal_count),
+        size_of::<ChimiInjectedSignal>(),
+        offset_of!(ChimiInjectedSignal, code),
+        offset_of!(ChimiInjectedSignal, at),
         size_of::<ChimiProcessTermination>(),
         offset_of!(ChimiProcessTermination, incarnation),
         offset_of!(ChimiProcessTermination, cause),
@@ -2772,13 +2782,16 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         REQUEST_TASK_DRAIN as usize,
         REQUEST_IO_WAIT as usize,
         REQUEST_IO_WITHDRAW as usize,
+        REQUEST_SIGNAL_WAIT as usize,
+        REQUEST_TASK_RELEASE as usize,
+        VIOLATION_OWN_RECEIVER as usize,
         IO_READABLE as usize,
         IO_WRITABLE as usize,
         IO_HANGUP as usize,
         IO_ERROR as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 21);
+    assert_eq!(crate::chimi_fiber_abi_version(), 25);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------

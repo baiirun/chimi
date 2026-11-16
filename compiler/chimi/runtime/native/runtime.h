@@ -5,7 +5,7 @@
 
 #include "chimi_binding.h"
 
-#define CHIMI_RUNTIME_ABI_VERSION 50
+#define CHIMI_RUNTIME_ABI_VERSION 54
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -302,6 +302,9 @@ enum {
   CHIMI_INTRINSIC_FS_HOST_IS_DIRECTORY,
   CHIMI_INTRINSIC_FS_HOST_TEMPORARY_DIRECTORY,
   CHIMI_INTRINSIC_FS_TEST_ROOT,
+  /* std/signal's host core. */
+  CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL,
+  CHIMI_INTRINSIC_SIGNAL_HOST_WAIT,
 };
 
 enum {

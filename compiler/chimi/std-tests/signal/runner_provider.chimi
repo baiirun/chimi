@@ -1,0 +1,11 @@
+// The runner closes `main`'s `signals` need with the host provider, which
+// installs the handlers. Waiting needs a signal to arrive, so
+// tests/std_signal.rs sends and injects them; this program only builds the
+// provider on both backends.
+import std/signal.{Signals}
+
+pub fn main() -> Text needs {
+  signals: Signals
+} {
+  "handlers installed"
+}

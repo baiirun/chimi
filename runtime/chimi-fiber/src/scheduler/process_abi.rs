@@ -152,6 +152,22 @@ pub struct ChimiSchedulerConfig {
     /// first, with `release_context`. May be null only when no program
     /// publishes to more than one subscription.
     pub copy_channel_value: Option<ValueCopy>,
+    /// The runner's `std/signal` word: its handler sets bit `code - 1`. May
+    /// be null.
+    pub user_signals: *mut u32,
+    /// `std/signal` signals to latch at virtual instants; `count` entries,
+    /// or null and 0.
+    pub injected_user_signals: *const ChimiInjectedSignal,
+    pub injected_user_signal_count: usize,
+}
+
+/// A `std/signal` signal to latch when the clock reaches `at` nanoseconds:
+/// `code` 1 SIGHUP, 2 SIGUSR1, 3 SIGUSR2.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ChimiInjectedSignal {
+    pub code: u32,
+    pub at: i64,
 }
 
 /// One task parked in a detected deadlock and the request kind it waits on
@@ -722,6 +738,16 @@ pub extern "C" fn chimi_scheduler_live_memberships() -> usize {
     LAST_RUN_MEMBERSHIPS.load(Ordering::Relaxed)
 }
 
+/// See `chimi_scheduler_peak_task_records`.
+static LAST_RUN_PEAK_TASKS: AtomicUsize = AtomicUsize::new(0);
+
+#[unsafe(no_mangle)]
+/// The most task records the scheduler held at once during the last
+/// `chimi_scheduler_run`, the root included. Zero before any run.
+pub extern "C" fn chimi_scheduler_peak_task_records() -> usize {
+    LAST_RUN_PEAK_TASKS.load(Ordering::Relaxed)
+}
+
 #[unsafe(no_mangle)]
 /// Executes one root with the configured clock, trace sink, and release
 /// hooks, then stops every supervisor still running.
@@ -778,11 +804,30 @@ pub unsafe extern "C" fn chimi_scheduler_run(
             config.injected_signal,
         );
     }
+    scheduler.set_user_signal_source(config.user_signals);
+    if !config.injected_user_signals.is_null() {
+        // SAFETY: the caller guarantees `count` readable entries.
+        let injections = unsafe {
+            std::slice::from_raw_parts(
+                config.injected_user_signals,
+                config.injected_user_signal_count,
+            )
+        };
+        for injection in injections {
+            scheduler.inject_user_signal_at(
+                super::Instant::ORIGIN.saturating_add(Duration::from_nanos(
+                    u64::try_from(injection.at).unwrap_or(0),
+                )),
+                injection.code,
+            );
+        }
+    }
     let Ok(root) = scheduler.start_root_with_context(entry, config.context) else {
         return defect_outcome(SCHEDULER_DEFECT_CODE);
     };
     let run = scheduler.run_root(root, DEADLOCK_DEFECT_CODE);
     LAST_RUN_MEMBERSHIPS.store(scheduler.process_metrics().memberships, Ordering::Relaxed);
+    LAST_RUN_PEAK_TASKS.store(scheduler.peak_tasks(), Ordering::Relaxed);
     if let Some(report) = config.deadlock_report
         && !run.deadlock.is_empty()
     {

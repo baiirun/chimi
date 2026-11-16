@@ -54,6 +54,7 @@ __attribute__((weak)) ChimiSchedulerOutcome chimi_scheduler_run(
 }
 
 __attribute__((weak)) size_t chimi_scheduler_live_memberships(void) { return 0; }
+__attribute__((weak)) size_t chimi_scheduler_peak_task_records(void) { return 0; }
 /* Without the fiber archive nothing is ever cancelled and no scope fires. */
 __attribute__((weak)) uint32_t chimi_fiber_cancel_is_terminal(void) { return 1; }
 __attribute__((weak)) uint32_t chimi_fiber_scope_cancel_pending(void) { return 0; }
@@ -238,6 +239,8 @@ typedef enum {
   ALLOCATION_KIND_COUNT,
 } AllocationKind;
 
+enum { CHIMI_MAX_INJECTED_SIGNALS = 64 };
+
 struct ChimiRuntime {
   const char *execution_id;
   /* The root computation's name: the program entry's, or under `--test=<k>`
@@ -268,6 +271,10 @@ struct ChimiRuntime {
      `injected_signal_at` nanoseconds; 0 for none. */
   int32_t injected_signal;
   int64_t injected_signal_at;
+  /* `--signal=HUP@...` and the user signals: std/signal signals the virtual
+     clock latches. */
+  ChimiInjectedSignal injected_user_signals[CHIMI_MAX_INJECTED_SIGNALS];
+  size_t injected_user_signal_count;
   bool silent;
   FILE *telemetry;
   FILE *outcome;
@@ -731,7 +738,17 @@ static void allocation_kind(void *value, AllocationKind kind) {
    the channel again, so its id waits in `released_channels` for the next
    scheduler request of any task (flush_channel_releases). A count can reach zero
    inside a collection or a scheduler release hook, where no request may be issued.
-   The table is an open-addressing map keyed by channel id; ids are never 0. */
+   The table is an open-addressing map keyed by channel id; ids are never 0.
+
+   Task handles are counted in the same table, under their task id with
+   TASK_HANDLE_KEY set (channel and task ids stay far below that bit): every live
+   VALUE_TASK value is one reference, task_value creates them, and the same copier
+   and freers keep the counts. At zero the scheduler is told with
+   CHIMI_REQUEST_TASK_RELEASE, and it drops the task's record once the task has
+   ended. A raw task id held without a value (a select's hidden timer, a
+   combinator's children) is safe because no collection runs inside one
+   intrinsic, so the value it came from is still live. */
+#define TASK_HANDLE_KEY (UINT64_C(1) << 63)
 typedef struct { uint64_t channel; size_t endpoints; } ChannelEndpoints;
 static ChannelEndpoints *channel_endpoints;
 static size_t channel_endpoint_capacity;
@@ -743,6 +760,13 @@ static size_t released_channel_capacity;
 static bool is_channel_endpoint(const ChimiValue *value) {
   return value->kind == VALUE_CHANNEL_SENDER || value->kind == VALUE_CHANNEL_RECEIVER ||
          value->kind == VALUE_CHANNEL_COMPLETION;
+}
+
+/* The table key a counted value holds, or 0 for a value that is not counted. */
+static uint64_t counted_handle_key(const ChimiValue *value) {
+  if (is_channel_endpoint(value)) return value->as.capability.channel;
+  if (value->kind == VALUE_TASK) return value->as.task | TASK_HANDLE_KEY;
+  return 0;
 }
 
 static size_t channel_slot(uint64_t channel, size_t capacity) {
@@ -818,8 +842,8 @@ static void channel_endpoints_reset(void) {
 /* Frees one allocation that its area has already unlinked. */
 static void release_allocation(AllocationHeader *header) {
   if (channel_endpoint_count && header->kind == ALLOCATION_VALUE) {
-    ChimiValue *value = (ChimiValue *)(header + 1);
-    if (is_channel_endpoint(value)) channel_endpoint_drop(value->as.capability.channel);
+    uint64_t key = counted_handle_key((ChimiValue *)(header + 1));
+    if (key) channel_endpoint_drop(key);
   }
   if (header->area->heap) header->area->heap->live_bytes -= header->bytes;
   if (header->area->role != AREA_STATIC) {
@@ -1587,8 +1611,8 @@ static void reset_young_chunks(AllocationScope *scope, bool keep_first) {
       dead_bytes += header->bytes;
       ++dead_count;
       if (channel_endpoint_count && header->kind == ALLOCATION_VALUE) {
-        ChimiValue *value = (ChimiValue *)(header + 1);
-        if (is_channel_endpoint(value)) channel_endpoint_drop(value->as.capability.channel);
+        uint64_t key = counted_handle_key((ChimiValue *)(header + 1));
+        if (key) channel_endpoint_drop(key);
       }
     }
   }
@@ -1854,8 +1878,10 @@ static void *copy_forward(FragmentCopy *copy, void *pointer, AllocationKind kind
     copied_bytes += header->bytes;
     if (kind == ALLOCATION_VALUE) ++copied_values;
   }
-  if (kind == ALLOCATION_VALUE && is_channel_endpoint(duplicate))
-    channel_endpoint_retain(((ChimiValue *)duplicate)->as.capability.channel);
+  if (kind == ALLOCATION_VALUE) {
+    uint64_t key = counted_handle_key(duplicate);
+    if (key) channel_endpoint_retain(key);
+  }
   copy_table_insert(copy, pointer, duplicate);
   pointer_stack_push(&copy_pending, duplicate);
   return duplicate;
@@ -2653,7 +2679,12 @@ static ChimiValue *callable_value(ChimiCallable *raw) { ChimiValue *v = new_valu
 static ChimiValue *map_value(MapNode *raw) { ChimiValue *v = new_value(VALUE_MAP); v->as.map = raw; return v; }
 static ChimiValue *set_value(MapNode *raw) { ChimiValue *v = new_value(VALUE_SET); v->as.map = raw; return v; }
 static ChimiValue *json_number_value(const char *raw) { ChimiValue *v = new_value(VALUE_JSON_NUMBER); v->as.json_number = copy_text(raw); return v; }
-static ChimiValue *task_value(uint64_t raw) { ChimiValue *v = new_value(VALUE_TASK); v->as.task = raw; return v; }
+static ChimiValue *task_value(uint64_t raw) {
+  ChimiValue *v = new_value(VALUE_TASK);
+  v->as.task = raw;
+  channel_endpoint_retain(raw | TASK_HANDLE_KEY);
+  return v;
+}
 static ChimiValue *channel_capability_value(ValueKind kind, uint64_t channel,
                                             uint64_t owner, uint64_t token) {
   ChimiValue *value = new_value(kind);
@@ -2695,14 +2726,16 @@ static ChimiValue *publisher_bundle_value(uint64_t channel, uint64_t owner, uint
 }
 
 /* Issues CHIMI_REQUEST_CHANNEL_RELEASE once for each channel whose last endpoint
-   value was freed. The scheduler serves a request as soon as the task parks, so a
-   release is done even when the task resumes with CHIMI_FIBER_CANCEL. */
+   value was freed, and CHIMI_REQUEST_TASK_RELEASE for each task whose last handle
+   was. The scheduler serves a request as soon as the task parks, so a release is
+   done even when the task resumes with CHIMI_FIBER_CANCEL. */
 static ChimiFiberCommand flush_channel_releases(void) {
   while (released_channel_count) {
-    ChimiSchedulerRequest request = {
-      .kind = CHIMI_REQUEST_CHANNEL_RELEASE,
-      .channel = released_channels[--released_channel_count],
-    };
+    uint64_t key = released_channels[--released_channel_count];
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHANNEL_RELEASE, .channel = key};
+    if (key & TASK_HANDLE_KEY)
+      request = (ChimiSchedulerRequest){.kind = CHIMI_REQUEST_TASK_RELEASE,
+                                        .task = key & ~TASK_HANDLE_KEY};
     if (chimi_fiber_request(&request, NULL) == CHIMI_FIBER_CANCEL) return CHIMI_FIBER_CANCEL;
   }
   return CHIMI_FIBER_RESUME;
@@ -2753,6 +2786,9 @@ typedef struct {
   ChimiCarriedCapability *carried;
   size_t carried_count;
   size_t carried_capacity;
+  /* Managed process and supervisor handles met while collecting. Each has one
+     owner, so a value a broadcast or watch would copy must not hold one. */
+  size_t managed_count;
 } CapabilityTransfer;
 
 /* Visited-set slots examined by every capture transfer so far; the memory report's
@@ -2851,6 +2887,12 @@ static bool transfer_captured_capability(CapabilityTransfer *transfer, ChimiValu
   return true;
 }
 
+/* The defect for publishing a managed handle where every subscriber would get a copy:
+   a handle has one owner, so two copies would both look valid. */
+#define MANAGED_COPY_DEFECT(function)                                                    \
+  "channel capability violation: " function " cannot hold a managed process or "         \
+  "supervisor handle, because every subscriber gets a copy"
+
 /* Queues a value's parts, or transfers it when it is a capability the child takes. */
 static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *value) {
   switch (value->kind) {
@@ -2894,13 +2936,15 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
     case VALUE_PROCESS_ADDRESS:
     case VALUE_PROCESS_INBOX:
     case VALUE_SUPERVISOR_RUNNING:
-    case VALUE_MANAGED_PROCESS:
-    case VALUE_MANAGED_SUPERVISOR:
     case VALUE_PROCESS_MONITOR:
     case VALUE_TEST_RECORDER:
     case VALUE_TEST_SCRIPT:
     case VALUE_TEST_MAILBOX: return true;
     case VALUE_NATIVE_HANDLE: return true;
+    case VALUE_MANAGED_PROCESS:
+    case VALUE_MANAGED_SUPERVISOR:
+      if (transfer->collect) ++transfer->managed_count;
+      return true;
   }
   return false;
 }
@@ -8278,7 +8322,11 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
         return defect(numeric_message("%s: the handle belongs to supervisor %" PRIu64 ", not supervisor %" PRIu64,
                                       function, request.owner, arguments[0]->as.managed.supervisor),
                       call_node);
-      return defect(numeric_message("%s scheduler request failed", function), call_node);
+      return defect(numeric_message("%s: the handle names no current member of supervisor %" PRIu64
+                                    "; it was removed already, through this handle or a copy of it, "
+                                    "or the supervisor has stopped",
+                                    function, arguments[0]->as.managed.supervisor),
+                    call_node);
     }
     case CHIMI_INTRINSIC_SUPERVISOR_STOP:
     case CHIMI_INTRINSIC_SUPERVISOR_WAIT: {
@@ -9710,6 +9758,9 @@ static bool fs_path_argument(ChimiValue *const *arguments, uint32_t argument_cou
   return at < argument_count && arguments[at]->kind == VALUE_TEXT;
 }
 
+static ChimiControl *invoke_signal_operation(uint32_t intrinsic, ChimiValue **arguments,
+                                             uint32_t argument_count, uint32_t call_node);
+
 static ChimiControl *invoke_fs_operation(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
                                          uint32_t argument_count, uint32_t call_node) {
   static const uint32_t arity[] = {1, 2, 1, 2, 1, 1, 1, 1, 1, 2, 1, 0, 1};
@@ -9855,6 +9906,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_host_operation(runtime, intrinsic, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_FS_HOST_OPEN && intrinsic <= CHIMI_INTRINSIC_FS_TEST_ROOT)
     return invoke_fs_operation(runtime, intrinsic, arguments, argument_count, call_node);
+  if (intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL || intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_WAIT)
+    return invoke_signal_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
@@ -10126,10 +10179,12 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       transfer_captures(&carried, initial->roots[0]);
       size_t carried_count = carried.carried_count;
       free(carried.carried);
-      if (carried_count) {
+      if (carried_count || carried.managed_count) {
         fragment_free(initial);
-        return defect("channel capability violation: Watch.starting_with cannot hold a value "
-                      "with a Receiver or Completion, because every subscriber gets a copy",
+        return defect(carried_count
+                        ? "channel capability violation: Watch.starting_with cannot hold a value "
+                          "with a Receiver or Completion, because every subscriber gets a copy"
+                        : MANAGED_COPY_DEFECT("Watch.starting_with"),
                       call_node);
       }
       ChimiSchedulerRequest request = {
@@ -10166,6 +10221,14 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
          before anything can receive them. */
       CapabilityTransfer carried = {.collect = true};
       transfer_captures(&carried, message->roots[0]);
+      if (carried.managed_count && intrinsic != CHIMI_INTRINSIC_CHANNEL_SEND) {
+        free(carried.carried);
+        fragment_free(message);
+        return defect(intrinsic == CHIMI_INTRINSIC_BROADCAST_PUBLISH
+                        ? MANAGED_COPY_DEFECT("Broadcast.publish")
+                        : MANAGED_COPY_DEFECT("Watch.publish"),
+                      call_node);
+      }
       ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
       bool first = true;
       for (;;) {
@@ -11081,7 +11144,7 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           ",\"heap_chunks_live\":%zu,\"heap_chunk_bytes_peak\":%zu,\"fragments_live\":%zu"
           ",\"fragment_bytes_peak\":%zu,\"process_heap_peak_value_bytes\":%zu"
           ",\"copied_values\":%" PRIu64 ",\"copied_bytes\":%" PRIu64
-          ",\"trace_events_constructed\":%" PRIu64 ",\"memberships_live\":%zu}\n",
+          ",\"trace_events_constructed\":%" PRIu64 ",\"memberships_live\":%zu,\"task_records_peak\":%zu}\n",
           runtime->scoped_total_allocated_bytes,
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_BYTES],
           runtime->scoped_allocated_bytes_by_kind[ALLOCATION_VALUE],
@@ -11116,10 +11179,11 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           copied_bytes,
           runtime->trace_events_constructed,
 #if CHIMI_PROCESS_KERNEL
-          chimi_scheduler_live_memberships());
+          chimi_scheduler_live_memberships(),
 #else
-          (size_t)0);
+          (size_t)0,
 #endif
+          chimi_scheduler_peak_task_records());
   return close_output(output);
 }
 
@@ -11264,6 +11328,7 @@ static const char *waited_operation(uint32_t request_kind) {
     case CHIMI_REQUEST_CHANNEL_SEND: return "Channel.send";
     case CHIMI_REQUEST_CHANNEL_RECEIVE: return "Channel.receive";
     case CHIMI_REQUEST_SELECT: return "Select.first";
+    case CHIMI_REQUEST_SIGNAL_WAIT: return "Signal.next";
     default: return "a scheduler request";
   }
 }
@@ -11362,6 +11427,12 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
       snprintf(text, sizeof(text),
                "channel capability violation: task %" PRIu64 " cannot publish a value holding a "
                "Receiver or Completion on channel %" PRIu64 ", because every subscriber gets a copy",
+               violation->task, violation->channel);
+      break;
+    case CHIMI_VIOLATION_OWN_RECEIVER:
+      snprintf(text, sizeof(text),
+               "channel capability violation: task %" PRIu64 " cannot send the Receiver of channel %"
+               PRIu64 " through that same channel, because nobody could ever receive the message",
                violation->task, violation->channel);
       break;
     case CHIMI_VIOLATION_WRONG_KIND:
@@ -11514,12 +11585,80 @@ static void install_stop_signals(ChimiRuntime *runtime) {
   sigaction(SIGTERM, &action, NULL);
 }
 
+/* std/signal (CHI-249): SIGHUP, SIGUSR1 and SIGUSR2 as events a task waits
+   for. Their handler never stops the program: it sets bit `code - 1` of
+   `user_signals` and wakes the scheduler through the stop signals' pipe; the
+   scheduler latches the bits and hands each to one CHIMI_REQUEST_SIGNAL_WAIT.
+   The handlers are installed when the program's `signals` provider is built,
+   before main's body, and never removed, so a program that does not need
+   `signals` keeps the default actions (SIGHUP ends it). */
+static volatile uint32_t user_signals = 0;
+static const int user_signal_numbers[] = {SIGHUP, SIGUSR1, SIGUSR2};
+
+static void on_user_signal(int number) {
+  for (uint32_t code = 1; code <= 3; ++code)
+    if (user_signal_numbers[code - 1] == number) __atomic_fetch_or(&user_signals, 1u << (code - 1), __ATOMIC_SEQ_CST);
+  int saved = errno;
+  if (signal_pipe[1] >= 0) (void)!write(signal_pipe[1], "", 1);
+  errno = saved;
+}
+
+static void install_user_signals(void) {
+  static bool installed = false;
+  if (installed) return;
+  installed = true;
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = on_user_signal;
+  sigemptyset(&action.sa_mask);
+  for (size_t index = 0; index < 3; ++index) sigaddset(&action.sa_mask, user_signal_numbers[index]);
+  action.sa_flags = SA_RESTART;
+  for (size_t index = 0; index < 3; ++index) sigaction(user_signal_numbers[index], &action, NULL);
+}
+
+/* host_install() and host_wait(codes). The wait passes the distinct codes in
+   their listed order and returns the one the scheduler hands it. Programs
+   that reach either always run on the scheduler. */
+static ChimiControl *invoke_signal_operation(uint32_t intrinsic, ChimiValue **arguments,
+                                             uint32_t argument_count, uint32_t call_node) {
+  if (intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL) {
+    if (argument_count != 0) return intrinsic_shape_defect(call_node);
+    install_user_signals();
+    return success(void_value());
+  }
+  if (argument_count != 1 || arguments[0]->kind != VALUE_LIST || !CHIMI_REQUIRES_SCHEDULER)
+    return intrinsic_shape_defect(call_node);
+  uint64_t packed = 0;
+  uint32_t count = 0;
+  for (uint32_t index = 0; index < list_length(arguments[0]); ++index) {
+    ChimiValue *code = list_get(arguments[0], index);
+    if (code->kind != VALUE_INTEGER || code->as.integer < 1 || code->as.integer > 3)
+      return intrinsic_shape_defect(call_node);
+    bool seen = false;
+    for (uint32_t earlier = 0; earlier < count; ++earlier)
+      seen = seen || ((packed >> (8 * earlier)) & 0xff) == (uint64_t)code->as.integer;
+    if (!seen) packed |= (uint64_t)code->as.integer << (8 * count++);
+  }
+  if (count == 0) return defect("Signal.next needs at least one signal to wait for", call_node);
+  for (;;) {
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_SIGNAL_WAIT, .value = (int64_t)packed};
+    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+    if (request.status == CHIMI_RESPONSE_OK) return success(integer_value(request.value));
+    if (request.status != CHIMI_RESPONSE_PENDING) return intrinsic_shape_defect(call_node);
+  }
+}
+
 /* `--signal=TERM@2s`: a signal the virtual clock delivers at that instant.
-   The time is an integer with a unit of ns, us, ms, s, m, or h. */
+   The time is an integer with a unit of ns, us, ms, s, m, or h. INT and TERM
+   stop the program; HUP, USR1 and USR2 are std/signal's, latched for its
+   waiters, and may be given more than once. */
 static bool parse_injected_signal(const char *text, int32_t *signal_number, int64_t *at) {
   const char *rest;
   if (strncmp(text, "INT@", 4) == 0) { *signal_number = SIGINT; rest = text + 4; }
   else if (strncmp(text, "TERM@", 5) == 0) { *signal_number = SIGTERM; rest = text + 5; }
+  else if (strncmp(text, "HUP@", 4) == 0) { *signal_number = SIGHUP; rest = text + 4; }
+  else if (strncmp(text, "USR1@", 5) == 0) { *signal_number = SIGUSR1; rest = text + 5; }
+  else if (strncmp(text, "USR2@", 5) == 0) { *signal_number = SIGUSR2; rest = text + 5; }
   else return false;
   if (*rest < '0' || *rest > '9') return false;
   errno = 0;
@@ -11579,6 +11718,9 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .signal_fd = signal_pipe[0],
     .injected_signal = runtime->injected_signal,
     .injected_signal_at = runtime->injected_signal_at,
+    .user_signals = &user_signals,
+    .injected_user_signals = runtime->injected_user_signals,
+    .injected_user_signal_count = runtime->injected_user_signal_count,
   };
   channel_endpoints_reset();
   AllocationScope *entry_scope = main_heap.innermost;
@@ -11688,9 +11830,22 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       test_index = (int64_t)value;
     }
     else if (strncmp(argv[index], "--signal=", 9) == 0) {
-      if (!parse_injected_signal(argv[index] + 9, &runtime.injected_signal, &runtime.injected_signal_at)) {
-        fputs("--signal requires INT or TERM, @, and a time such as 2s or 150ms\n", stderr);
+      int32_t number = 0;
+      int64_t at = 0;
+      if (!parse_injected_signal(argv[index] + 9, &number, &at)) {
+        fputs("--signal requires INT, TERM, HUP, USR1 or USR2, @, and a time such as 2s or 150ms\n", stderr);
         return 64;
+      }
+      if (number == SIGINT || number == SIGTERM) {
+        runtime.injected_signal = number;
+        runtime.injected_signal_at = at;
+      } else if (runtime.injected_user_signal_count == CHIMI_MAX_INJECTED_SIGNALS) {
+        fputs("--signal is given too many times; at most 64 HUP, USR1 and USR2 signals\n", stderr);
+        return 64;
+      } else {
+        uint32_t code = number == SIGHUP ? 1 : number == SIGUSR1 ? 2 : 3;
+        runtime.injected_user_signals[runtime.injected_user_signal_count++] =
+            (ChimiInjectedSignal){.code = code, .at = at};
       }
     }
     else if (strncmp(argv[index], "--random-seed=", 14) == 0) {
@@ -11733,7 +11888,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       fputs("Chimi runner configuration must end with --\n", stderr);
       return 64;
     }
-    if (runtime.injected_signal && !runtime.virtual_clock) {
+    if ((runtime.injected_signal || runtime.injected_user_signal_count) && !runtime.virtual_clock) {
       fputs("--signal requires --clock=virtual; under the real clock, send the signal\n", stderr);
       return 64;
     }

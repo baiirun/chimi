@@ -373,10 +373,12 @@ Every subscriber of a broadcast or watch gets its own copy of each value, so
 shareable (it holds a Receiver, a Completion, a subscription, a task handle,
 or an inbox). When `T` is a generic parameter the checker cannot decide, and
 the runtime backstop applies: publishing a value that holds a Receiver,
-Completion or subscription defects the publisher as a channel capability
-violation. The backstop does not yet cover managed process and supervisor
-handles. A generic publish of one copies it, the same gap any generic
-function that duplicates a `T` has today (CHI-240).
+Completion, subscription, or managed process or supervisor handle defects the
+publisher as a channel capability violation. A managed handle sent on an
+ordinary channel still moves, since only one receiver gets it. A generic
+function can still copy a managed handle within one task, which neither check
+sees; removing a member through the second copy then defects and says the
+handle was removed already, through it or a copy (CHI-240).
 
 ### Choosing among variants
 
@@ -474,6 +476,15 @@ wrong owner or an overlapping exclusive operation defects with a precise
 capability-violation cause and trace event. It is a programmer/runtime contract
 violation, not an expected channel failure. Chimi exposes no unsafe escape hatch
 that disables these checks.
+
+A send that carries every live receiver of the channel it is sent on (its own
+Receiver, and those `Channel.add_receiver` made) also defects, with capability
+violation 9 (fiber ABI 25): once queued, that message could never be received,
+so it would stay in memory until the program ends (CHI-214). A message that
+carries only some of the receivers is still delivered to the others, and a
+send on a closed or aborted channel still returns its usual `SendError`. A cycle
+through two channels, each carrying the other's only receiver, is not
+detected.
 
 ### Where each rule is checked
 
