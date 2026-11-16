@@ -621,41 +621,59 @@ static bool reap_if_exited(ChildProcess *child) {
 }
 
 /* Waits, letting other tasks run, until the child is reaped or `deadline`
-   (monotonic ms, or INT64_MAX) passes; false when the wait cannot go on
-   (cancelled, the handle closed, or no ticker). */
-static bool await_exit(ChimiBindingCall *call, int ticker, int64_t deadline) {
+   (monotonic ms) passes; false when the deadline passed or the wait cannot
+   go on (cancelled). */
+static bool await_exit_until(ChimiBindingCall *call, int ticker, int64_t deadline) {
   for (;;) {
     ChildProcess *child = chimi_binding_handle(call, 0, &CHILD);
     if (child == NULL || reap_if_exited(child)) return true;
-    if (ticker < 0 || monotonic_ms() >= deadline) return false;
+    if (monotonic_ms() >= deadline) return false;
     if (chimi_binding_wait(call, CHIMI_BINDING_NO_HANDLE, ticker, CHIMI_BINDING_READABLE) != CHIMI_BINDING_READY)
       return false;
     drain_ticker(ticker);
   }
 }
 
+/* Waits, letting other tasks run, until the child is reaped. It wakes at the
+   exit, so no ticker is needed. A cancelled wait leaves the reap to the
+   release that follows. */
+static void await_exit(ChimiBindingCall *call) {
+  for (;;) {
+    ChildProcess *child = chimi_binding_handle(call, 0, &CHILD);
+    if (child == NULL || reap_if_exited(child)) return;
+    if (chimi_binding_wait_child(call, 0, child->pid) != CHIMI_BINDING_READY) return;
+  }
+}
+
+/* Past this many milliseconds the grace is as good as forever, and adding it
+   to the clock cannot overflow. */
+#define STOP_GRACE_LIMIT_MS ((int64_t)1 << 52)
+
 /* native_stop(child, milliseconds) -> Void: a child still running gets
    SIGTERM and `milliseconds` to exit, then SIGKILL, and is reaped; zero
-   sends SIGKILL at once. Other tasks run while it waits. If the wait cannot
-   go on, the release that follows kills and reaps the child itself. */
+   sends SIGKILL at once, and so does any grace when no ticker can be opened
+   (a SIGTERM cut short at once is worse than none). Other tasks run while it
+   waits. If the wait cannot go on, the release that follows kills and reaps
+   the child itself. */
 ChimiBindingResult *chimi_exec_stop(ChimiBindingCall *call) {
   int64_t grace;
   if (!chimi_binding_integer(call, 1, &grace) || grace < 0)
     return chimi_binding_defect(call, "Exec: a negative stop_within");
+  if (grace > STOP_GRACE_LIMIT_MS) grace = STOP_GRACE_LIMIT_MS;
   ChildProcess *child = chimi_binding_handle(call, 0, &CHILD);
   if (child == NULL || reap_if_exited(child)) return chimi_binding_success(call, chimi_binding_void(call));
-  int ticker = open_ticker();
   bool ended = false;
-  if (grace > 0) {
+  int ticker = grace > 0 ? open_ticker() : -1;
+  if (ticker >= 0) {
     kill(child->pid, SIGTERM);
-    ended = await_exit(call, ticker, monotonic_ms() + grace);
+    ended = await_exit_until(call, ticker, monotonic_ms() + grace);
+    close(ticker);
   }
   child = chimi_binding_handle(call, 0, &CHILD);
   if (!ended && child != NULL && !child->reaped) {
     kill(child->pid, SIGKILL);
-    (void)await_exit(call, ticker, INT64_MAX);
+    await_exit(call);
   }
-  if (ticker >= 0) close(ticker);
   return chimi_binding_success(call, chimi_binding_void(call));
 }
 

@@ -245,10 +245,16 @@ pub fn stderr(command: Command, stdio: Stdio) -> Command {
 /// The command with `duration` as the time its child has to exit after
 /// SIGTERM when its `Exec.start` ends while it runs, before SIGKILL. It is
 /// 5 seconds unless set; zero sends SIGKILL at once. It is real time, as the
-/// child runs in, under the virtual clock too.
+/// child runs in, under the virtual clock too. A time under a millisecond
+/// counts as zero.
 ///
+/// Defects when: `duration` is negative.
 /// Cost: O(1).
 pub fn stop_within(command: Command, duration: Duration) -> Command {
+  case duration < Duration.zero {
+    True -> Debug.crash("Exec: stop_within must not be negative, got ${Duration.to_text(duration)}")
+    False -> Void
+  }
   Command(
     command.program,
     command.arguments,
@@ -611,11 +617,13 @@ fn host_start(command: Command) -> Child {
     fn() { native_terminate(process) },
     fn() { native_kill(process) },
     fn() {
-      native_stop(process, Duration.to_milliseconds(command.stop_within))
-      native_release(process)
+      // Closed first: input's end is the gentlest stop, and a child flushing
+      // output on SIGTERM must not wait on a reader that is gone.
       close_pipe(input_pipe)
       close_pipe(output_pipe)
       close_pipe(errors_pipe)
+      native_stop(process, Duration.to_milliseconds(command.stop_within))
+      native_release(process)
     },
     Option.map(input_pipe, fn(pipe) {
       fn(_program) { host_writer(command, pipe) }

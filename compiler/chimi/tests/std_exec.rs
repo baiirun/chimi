@@ -863,8 +863,10 @@ test "a fake input whose reader stopped" {
 // scheduler while the child takes its time, or never sends SIGKILL. A child
 // that traps SIGTERM leaves a note and exits; one that ignores SIGTERM is
 // killed once `stop_within` passes; zero kills at once, so the trap never
-// runs; a start cancelled from outside still stops its child gently; and a
-// task started before the release keeps running through it.
+// runs; a piped input is closed before SIGTERM, so a child that exits at its
+// end needs no signal; a start cancelled from outside still stops its child
+// gently; a task started before the release keeps running through it; and a
+// negative `stop_within` is a defect where it is set.
 #[test]
 fn a_child_left_running_gets_sigterm_then_sigkill() {
     let run = run_tests(
@@ -913,6 +915,19 @@ test "zero sends SIGKILL at once" {
   noted |> Test.assert_equal(False)
 }
 
+test "a piped input's end comes before SIGTERM" {
+  let report = (fn() {
+    let start = Clock.now()
+    let command = Exec.stdin(ready(Exec.command("/bin/sh", ["-c", "trap '' TERM; echo ready; cat > /dev/null; echo done > eof.txt"])), Stdio.Pipe)
+    Exec.start(Exec.stop_within(command, Duration.seconds(5)), fn(child) {
+      let _ = Stream.read(Exec.output(child))
+      Void
+    })
+    (Clock.since(start) < Duration.seconds(3), exists("eof.txt"))
+  })() using { commands: Exec.host_for_tests() }
+  report |> Test.assert_equal((True, True))
+}
+
 test "a cancelled start still stops its child gently" {
   let noted = (fn() {
     let _ = Result.capture(fn() {
@@ -941,12 +956,24 @@ test "other tasks run while a child is stopped" {
 }
 "#,
     );
-    assert_passed(&run, 5);
+    assert_passed(&run, 6);
+    let negative = run_tests(
+        "negative-stop",
+        "test \"negative\" {\n  let _ = Exec.stop_within(Exec.command(\"/bin/sh\", []), Duration.milliseconds(-5))\n  Void\n}\n",
+    );
+    assert_ne!(negative.status, Some(0));
+    assert!(
+        negative.stdout.contains("Exec: stop_within must not be negative, got -5ms"),
+        "{}{}",
+        negative.stdout,
+        negative.stderr
+    );
 }
 
 // Rejects a runner that leaves a child behind when the program dies: a
-// defect inside `use` and a SIGTERM to the runner both end it, and the
-// child's process is gone once the runner has exited.
+// defect inside `use` still stops the child, and a child the program holds
+// outside any `Exec.start` (its provider called directly) is killed at the
+// program's end. Each child's process is gone once the runner has exited.
 #[test]
 fn no_child_outlives_the_program() {
     let scratch = build_main(
@@ -967,4 +994,20 @@ fn no_child_outlives_the_program() {
     assert_ne!(output.status.code(), Some(0));
     let pid: i32 = std::fs::read_to_string(scratch.0.join("child.pid")).unwrap().trim().parse().unwrap();
     assert!(!exists(pid), "the child {pid} outlived the program's defect");
+
+    let scratch = build_main(
+        "backstop_unscoped",
+        r#"pub fn main() -> Void needs { commands: Commands } {
+  let _held = commands.start(Exec.command("/bin/sh", ["-c", "echo $$ > child.pid; exec sleep 30"]))
+  let _ = sh("while ! test -s child.pid; do sleep 0.01; done")
+  Void
+}
+"#,
+    );
+    let started = std::time::Instant::now();
+    let output = run_main(&scratch, "");
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "the runner waited out the child");
+    let pid: i32 = std::fs::read_to_string(scratch.0.join("child.pid")).unwrap().trim().parse().unwrap();
+    assert!(!exists(pid), "the held child {pid} outlived the program");
 }

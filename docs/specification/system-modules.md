@@ -335,14 +335,22 @@ pub fn host_for_tests() -> Commands                      // test-only
   start. A file the kernel cannot run (no `#!` line, wrong format) is
   `Failed`, and `Failed` carries only the operating system's words.
 - `start(command, use)` is the only way to hold a `Child`: when `use` returns,
-  fails or is cancelled, a child still running MUST get SIGTERM, then the
-  command's `stop_within` time (5 seconds unless set) to exit, then SIGKILL,
-  and MUST be reaped, so no child and no zombie outlives the `start` that
-  made it. Other tasks run while it is stopped. `stop_within` of zero sends
-  SIGKILL at once. The time is real time, read from the operating system's
-  monotonic clock about every 10 ms, so it runs out under the virtual clock
-  too. When the program itself ends, even by a defect or a stop signal, any
-  child still held is killed with SIGKILL and reaped. A
+  fails or is cancelled, the child's pipes MUST be closed first, so a child
+  that exits at its input's end needs no signal, and a child still running
+  MUST then get SIGTERM, then the command's `stop_within` time (5 seconds
+  unless set) to exit, then SIGKILL, and MUST be reaped, so no child and no
+  zombie outlives the `start` that made it. A child that writes to a pipe
+  after that gets SIGPIPE or `EPIPE`. Other tasks run while it is stopped.
+  `stop_within` of zero sends SIGKILL at once, and a negative one is a
+  defect where it is set. The time is real time, read from the operating
+  system's monotonic clock about every 10 ms, so it runs out under the
+  virtual clock too. The stop happens in the release, which a cancellation
+  does not cut short, so a `Task.timeout` around `start` can take up to
+  `stop_within` longer than its own time. When the program ends normally or
+  by a defect, any child still held, even outside a `start`, is killed with
+  SIGKILL and reaped. A program killed by SIGKILL, or by a second stop
+  signal (which ends it at once), runs no release, and its children
+  outlive it. A
   `Child` used after that answers `Closed` from `wait`. The child's own
   children are not stopped: a program that leaves its children running when
   it dies leaves them to outlive the `start`. The child stays in the
@@ -465,8 +473,8 @@ pub fn host_for_tests() -> Commands                      // test-only
 | A child keeps SIGHUP ignored when the parent inherited it ignored | `tests/std_exec.rs` `a_child_keeps_the_signals_its_parent_ignores` |
 | `capture` returns both streams and the status; more than a pipe holds on both at once; no input | `tests/std_exec.rs` `capture_collects_both_streams_and_the_status` |
 | A round trip through `cat`; `wait` leaves the input to a writer task; a cancelled read; `BrokenPipe` without SIGPIPE; `Closed` after close; a stopped output ends the child with SIGPIPE; a sibling does not hold a child's pipe | `tests/std_exec.rs` `pipes_carry_a_childs_input_and_output` |
-| A child left running gets SIGTERM and exits; one that ignores it is killed after `stop_within`; zero kills at once; a cancelled start stops its child gently; other tasks run meanwhile | `tests/std_exec.rs` `a_child_left_running_gets_sigterm_then_sigkill` |
-| A defect in the program kills and reaps its child | `tests/std_exec.rs` `no_child_outlives_the_program` |
+| A child left running gets SIGTERM and exits; one that ignores it is killed after `stop_within`; zero kills at once; a piped input is closed before SIGTERM; a cancelled start stops its child gently; other tasks run meanwhile; a negative `stop_within` is a defect | `tests/std_exec.rs` `a_child_left_running_gets_sigterm_then_sigkill` |
+| A defect in `use` stops and reaps its child; a child held outside any `start` is killed and reaped at the program's end | `tests/std_exec.rs` `no_child_outlives_the_program` |
 | A released child leaves no descriptor open (Linux) | `tests/std_exec.rs` `a_released_child_leaves_no_descriptor_open` |
 | A fake's piped streams through `capture`; a fake round trip with a writer task; a fake read after a stop is `Closed`; a fake input whose reader stopped is `BrokenPipe` (a fake also gives `BrokenPipe` for a write after close); an unpiped stream is a defect (native: std/stream needs the bounded channel runtime) | `tests/std_exec.rs` `a_fake_child_pipes_streams` |
 | A fake on both backends; the runner closes `commands` on `main`; `T4401` from `main`; `T4400` without one; the interpreter defects | `tests/std_exec.rs` `a_fake_stands_in_for_real_programs_on_both_backends`, `main_gets_real_programs_by_declaring_the_need_and_nothing_else_does`, `the_interpreter_cannot_start_real_programs` |
