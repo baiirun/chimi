@@ -10092,6 +10092,8 @@ fn a_constructor_holding_a_closure_is_no_more_shareable_than_the_closure() {
         format!("  let made = Channel.bounded(1)\n  let conn = Conn({holds})\n  Channel.send(made.sender, conn)\n"),
         format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Ask.Return(Conn({holds})))\n"),
         format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Tagged({holds}, 1))\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Some({holds}))\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Success({holds}))\n"),
     ] {
         assert_eq!(check_codes(&program(&send)), ["T4243"], "{send}");
     }

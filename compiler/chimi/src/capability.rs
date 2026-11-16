@@ -1236,18 +1236,29 @@ impl CapabilityChecker<'_> {
         value
     }
 
-    /// Whether `callee` names a struct or enum constructor, declared in the
-    /// program or by a standard module, such as `Conn`, `Ask.Return` or `Some`.
+    /// Whether `callee` holds its arguments as they are: a struct or enum
+    /// constructor, declared in the program or by a standard module, such as
+    /// `Conn`, `Ask.Return` or `Some`, or the prelude's `Success` or `Failure`,
+    /// whose value is its argument.
     fn is_constructor(&self, module_id: ModuleId, callee: &ModuleExpression) -> bool {
         self.expression_binding_symbol(module_id, callee)
             .is_some_and(|symbol| {
-                matches!(
-                    self.typed.resolved.symbol(symbol).kind,
-                    ProjectSymbolKind::StructConstructor | ProjectSymbolKind::EnumConstructor
-                ) || matches!(
-                    self.typed.resolved.standard_symbol(symbol),
-                    Some(StandardSymbol::Constructor(_))
-                )
+                let declared = self.typed.resolved.symbol(symbol);
+                match declared.kind {
+                    ProjectSymbolKind::StructConstructor | ProjectSymbolKind::EnumConstructor => {
+                        true
+                    }
+                    ProjectSymbolKind::BuiltinValue => match self
+                        .typed
+                        .resolved
+                        .standard_symbol(symbol)
+                    {
+                        Some(StandardSymbol::Constructor(_)) => true,
+                        Some(_) => false,
+                        None => matches!(declared.name.as_str(), "Success" | "Failure"),
+                    },
+                    _ => false,
+                }
             })
     }
 
