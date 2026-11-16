@@ -10101,9 +10101,7 @@ fn a_constructor_holding_a_closure_is_no_more_shareable_than_the_closure() {
     // callback and does not keep it, so its result is judged by its type.
     for send in [
         "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Conn(fn() { 1 }))\n".to_owned(),
-        format!(
-            "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Option.map(Some(1), fn(x: Int) -> Int {{\n    let _ = child\n    x\n  }}))\n"
-        ),
+        "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Option.map(Some(1), fn(x: Int) -> Int {\n    let _ = child\n    x\n  }))\n".to_owned(),
     ] {
         assert!(check_codes(&program(&send)).is_empty(), "{send}");
     }
