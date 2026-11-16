@@ -70,6 +70,7 @@ import std/duration as Duration
 import std/exec as Exec
 import std/exec.{Commands, ExecError, Status, Stdio}
 import std/map as Map
+import std/option as Option
 import std/path as Path
 import std/result as Result
 import std/result.{Err, Ok}
@@ -625,8 +626,8 @@ test "capture reads no input" {
     assert_passed(&run, 3);
 }
 
-// Rejects pipes that do not carry bytes both ways, a wait that does not close
-// the child's input first (cat would never exit), a write to a child that
+// Rejects pipes that do not carry bytes both ways, a wait that closes the
+// input under a writer task (wc would count fewer than 262 144 bytes), a write to a child that
 // stopped reading that kills the runner with SIGPIPE instead of failing with
 // `BrokenPipe`, a stopped output that leaves the child writing forever (it
 // dies of SIGPIPE, the default it starts with), and a pipe end another child
@@ -655,12 +656,28 @@ test "a round trip through cat" {
   got |> Test.assert_equal(("hello, cat", Status.Exited(0)))
 }
 
-test "wait closes the input" {
-  let status = Exec.start(Exec.stdin(Exec.command("/bin/cat", []), Stdio.Pipe), fn(child) {
-    Stream.write(Exec.input(child), Bytes.from_text("left open"))
-    Exec.wait(child)
+test "wait leaves the input to a writer task" {
+  let command = Exec.stdout(Exec.stdin(Exec.command("/bin/sh", ["-c", "wc -c | tr -d ' '"]), Stdio.Pipe), Stdio.Pipe)
+  let got = Exec.start(command, fn(child) {
+    let input = Exec.input(child)
+    let writer = Task.start(fn() {
+      loop count = 0 {
+        case count == 32768 {
+          True -> break Void
+          False -> {
+            Stream.write(input, Bytes.from_text("12345678"))
+            count + 1
+          }
+        }
+      }
+      Stream.close(input)
+    })
+    let reader = Task.start(fn() { Stream.read_all(Exec.output(child), 100) })
+    let status = Exec.wait(child)
+    Task.result(writer)
+    (Bytes.to_text(Task.result(reader)), status)
   }) using { commands: Exec.host_for_tests() }
-  status |> Test.assert_equal(Status.Exited(0))
+  got |> Test.assert_equal(("262144\n", Status.Exited(0)))
 }
 
 test "a write to a child that stopped reading" {
@@ -684,19 +701,17 @@ test "stopping the output ends a child that keeps writing" {
   let status = Exec.start(Exec.stdout(Exec.command("yes", []), Stdio.Pipe), fn(child) {
     let first = Stream.read(Exec.output(child))
     Stream.stop(Exec.output(child))
-    Exec.wait(child)
+    (Option.is_some(first), Exec.wait(child))
   }) using { commands: Exec.host_for_tests() }
-  status |> Test.assert_equal(Status.Signaled(13))
+  status |> Test.assert_equal((True, Status.Signaled(13)))
 }
 
 test "a sibling does not hold a child's pipe" {
-  let waited = Exec.start(Exec.command("/bin/sh", ["-c", "exec sleep 3"]), fn(_sibling) {
-    Exec.start(Exec.stdout(Exec.command("/bin/sh", ["-c", "printf hi"]), Stdio.Pipe), fn(child) {
-      Exec.start(Exec.command("/bin/sh", ["-c", "exec sleep 3"]), fn(_later) {
-        let start = Clock.now()
-        let all = Stream.read_all(Exec.output(child), 100)
-        (Bytes.to_text(all), Clock.since(start) < Duration.seconds(2))
-      })
+  let waited = Exec.start(Exec.stdout(Exec.command("/bin/sh", ["-c", "printf hi"]), Stdio.Pipe), fn(child) {
+    Exec.start(Exec.command("/bin/sh", ["-c", "exec sleep 3"]), fn(_later) {
+      let start = Clock.now()
+      let all = Stream.read_all(Exec.output(child), 100)
+      (Bytes.to_text(all), Clock.since(start) < Duration.seconds(2))
     })
   }) using { commands: Exec.host_for_tests() }
   waited |> Test.assert_equal(("hi", True))
@@ -774,6 +789,45 @@ test "a fake's output is captured" {
   got |> Test.assert_equal("tool 1.0||Status.Exited(0)")
 }
 
+// A fake `cat`: what is written to its input comes out of its output.
+fn fake_cat() {
+  {
+    start: fn(_command) {
+      let made = Result.capture(fn() {
+        let (input, output) = Stream.pipe(4)
+        Exec.piped(fake_child(), input, output, Stream.from_bytes(Bytes.from_text("")))
+      })
+      case made {
+        Ok(child) -> child
+        Err(_) -> Failure(ExecError.Failed("cat", "the fake's streams"))
+      }
+    },
+  }
+}
+
+test "a fake round trip with a writer task" {
+  let got = Exec.start(Exec.command("cat", []), fn(child) {
+    let input = Exec.input(child)
+    let writer = Task.start(fn() {
+      Stream.write(input, Bytes.from_text("through "))
+      Stream.write(input, Bytes.from_text("the fake"))
+      Stream.close(input)
+    })
+    let all = Stream.read_all(Exec.output(child), 100)
+    Task.result(writer)
+    (Bytes.to_text(all), Exec.wait(child))
+  }) using { commands: fake_cat() }
+  got |> Test.assert_equal(("through the fake", Status.Exited(0)))
+}
+
+test "a fake read after a stop is Closed" {
+  let got = Exec.start(Exec.command("tool", []), fn(child) {
+    Stream.stop(Exec.output(child))
+    attempt(fn() { Stream.read(Exec.output(child)) })
+  }) using { commands: fake("unread", False) }
+  got |> Test.assert_equal("Err(ExecError.Closed(\"tool\"))")
+}
+
 test "a fake input whose reader stopped" {
   let got = Exec.start(Exec.command("tool", []), fn(child) {
     attempt(fn() { Stream.write(Exec.input(child), Bytes.from_text("x")) })
@@ -783,7 +837,7 @@ test "a fake input whose reader stopped" {
 "#,
     );
     let run = Scratch::new("fake-pipes", &source).chimi(&["test", "cases.chimi"]);
-    assert_passed(&run, 2);
+    assert_passed(&run, 4);
     let unpiped = run_tests(
         "unpiped",
         "test \"no pipe\" {\n  Exec.start(Exec.command(\"/bin/sh\", [\"-c\", \"exit 0\"]), fn(child) {\n    let _ = Stream.read(Exec.output(child))\n    Void\n  }) using { commands: Exec.host_for_tests() }\n}\n",

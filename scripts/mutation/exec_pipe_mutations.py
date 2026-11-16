@@ -36,8 +36,8 @@ MUTATIONS = [
     exec_test("stdin and stdout pipes swap ends", EXEC, [
         ("  ends[0] = target == STDIN_FILENO ? write_end : read_end;\n  ends[1] = target == STDIN_FILENO ? read_end : write_end;",
          "  ends[0] = read_end;\n  ends[1] = write_end;")]),
-    exec_test("wait leaves the input open", MODULE, [
-        ("      let _ = Result.capture(fn() { Stream.close(make(child.program)) })\n", "")]),
+    exec_test("a fake read after a stop is Failed", MODULE, [
+        ("    StreamError.Aborted -> ExecError.Closed(program)\n", "")]),
     exec_test("release leaves the pipes open", MODULE, [
         ("      close_pipe(input_pipe)\n      close_pipe(output_pipe)\n      close_pipe(errors_pipe)\n", "")]),
     exec_test("capture inherits stdin", MODULE, [

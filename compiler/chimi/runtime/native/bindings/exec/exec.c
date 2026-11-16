@@ -326,7 +326,11 @@ static int private_descriptor(int fd) {
    instead of raising SIGPIPE. 0, or an errno value. */
 static int open_pipe(int target, int ends[2]) {
   int raw[2];
+#ifdef __linux__
+  if (pipe2(raw, O_CLOEXEC) != 0) return errno;
+#else
   if (pipe(raw) != 0) return errno;
+#endif
   int read_end = private_descriptor(raw[0]);
   int write_end = read_end < 0 ? -1 : private_descriptor(raw[1]);
   if (read_end < 0 || write_end < 0) {
@@ -338,15 +342,18 @@ static int open_pipe(int target, int ends[2]) {
   ends[0] = target == STDIN_FILENO ? write_end : read_end;
   ends[1] = target == STDIN_FILENO ? read_end : write_end;
   int flags = fcntl(ends[0], F_GETFL);
-  if (flags < 0 || fcntl(ends[0], F_SETFL, flags | O_NONBLOCK) != 0) {
+  bool ready = flags >= 0 && fcntl(ends[0], F_SETFL, flags | O_NONBLOCK) == 0;
+#ifdef F_SETNOSIGPIPE
+  /* write_quietly relies on it: without it a write would raise SIGPIPE. */
+  if (ready && target == STDIN_FILENO) ready = fcntl(ends[0], F_SETNOSIGPIPE, 1) == 0;
+#endif
+  if (!ready) {
     int error = errno;
     close(ends[0]);
     close(ends[1]);
+    ends[0] = ends[1] = -1;
     return error;
   }
-#ifdef F_SETNOSIGPIPE
-  if (target == STDIN_FILENO) (void)fcntl(ends[0], F_SETNOSIGPIPE, 1);
-#endif
   return 0;
 }
 

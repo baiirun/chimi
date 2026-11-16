@@ -356,8 +356,9 @@ pub fn host_for_tests() -> Commands                      // test-only
   status and both byte buffers, unbounded. A nonzero exit is in `status`. It
   waits for the end of both streams, so a grandchild that keeps them open
   delays it (part 4 decides process groups).
-- `wait` closes a piped `input` first, as a child reading to the end of its
-  input would otherwise never exit.
+- `wait` MUST NOT close a piped `input`, since another task may still be
+  writing it; a program closes the input itself when done, and a child that
+  reads to the end of its input exits only then.
 - `wait` MUST let other tasks run while the child runs, and MUST return the
   same `Status` when asked again. It is a cancellation point. A nonzero exit
   is a `Status`, never an `ExecError`. `terminate` sends SIGTERM and `kill`

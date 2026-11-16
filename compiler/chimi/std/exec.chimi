@@ -299,8 +299,9 @@ pub fn capture(command: Command) -> { status: Status, output: Bytes, error_outpu
 }
 
 /// The child's standard input, when the command set it to `Stdio.Pipe`.
-/// Closing it gives the child the end of its input; `Exec.wait` closes it
-/// first, as a child reading to the end would otherwise never exit.
+/// Close it when done writing: a child reading to the end of its input,
+/// such as `cat`, exits only then, and `Exec.wait` does not close it, since
+/// another task may still be writing.
 ///
 /// Defects when: the command did not set stdin to `Stdio.Pipe`.
 /// Cost: O(1).
@@ -335,20 +336,14 @@ pub fn error_output(child: Child) -> Reader<ExecError> {
   }
 }
 
-/// Waits until the child ends and returns how, after closing its piped
-/// input, if it has one. Asking again returns the same status at once. Other tasks run meanwhile, and a cancelled task stops
+/// Waits until the child ends and returns how. Asking again returns the same
+/// status at once. It leaves a piped input open: close it first if the child
+/// waits for the end of its input. Other tasks run meanwhile, and a cancelled task stops
 /// waiting at once; the child keeps running until its `Exec.start` ends.
 ///
 /// Fails with: `ExecError.Closed` when the child was released;
 /// `ExecError.Failed` when the operating system cannot wait for it.
 pub fn wait(child: Child) -> Status {
-  case child.input {
-    Some(make) -> {
-      let _ = Result.capture(fn() { Stream.close(make(child.program)) })
-      Void
-    }
-    None -> Void
-  }
   child.wait()
 }
 
@@ -393,10 +388,13 @@ pub fn child(
 
 /// The fake `child` with these streams as its piped input, output and
 /// error output, such as a `Stream.pipe` end or `Stream.from_bytes`. Their
-/// `StreamError.Closed` reads as `ExecError.Closed` for the output streams
-/// and `ExecError.BrokenPipe` for the input; any other failure as `Failed`.
-/// Make the streams inside the fake's `start`: a provider goes to every task
-/// its caller starts, and a channel end it held would belong to one of them.
+/// `StreamError.Closed` and `Aborted` read as `ExecError.Closed` for the
+/// output streams (as a host read after a stop does), `Closed` as
+/// `ExecError.BrokenPipe` for the input, and anything else as `Failed`. Make
+/// the streams inside the fake's `start`: a provider goes to every task its
+/// caller starts, and a channel end it held would belong to one of them. For
+/// the same reason a stream of a fake is used by one task: hand a writer
+/// task `Exec.input(child)`, not the child.
 ///
 /// Cost: O(1).
 pub fn piped(
@@ -458,6 +456,15 @@ fn fake_failure(error: StreamError, program: Text, closed: ExecError) -> ExecErr
   }
 }
 
+// A read after the reader was stopped is `Aborted` from std/stream and
+// `Closed` from a host pipe.
+fn fake_read_failure(error: StreamError, program: Text) -> ExecError {
+  case error {
+    StreamError.Aborted -> ExecError.Closed(program)
+    other -> fake_failure(other, program, ExecError.Closed(program))
+  }
+}
+
 // One function per stream, so each closure holds only its own stream: a
 // fake's streams may hold channel ends, which one task at a time owns.
 fn fake_input(writer: Writer<StreamError>) -> fn(Text) -> Writer<ExecError> {
@@ -472,7 +479,7 @@ fn fake_reader(reader: Reader<StreamError>, program: Text) -> Reader<ExecError> 
   Stream.reader(fn() {
     case Result.capture(fn() { Stream.read(reader) }) {
       Ok(chunk) -> chunk
-      Err(error) -> Failure(fake_failure(error, program, ExecError.Closed(program)))
+      Err(error) -> Failure(fake_read_failure(error, program))
     }
   }, fn() { Stream.stop(reader) })
 }
