@@ -7,7 +7,7 @@ use super::process::{
 };
 use super::{
     CapabilityViolationReport, MessageRelease, ProcessDefectReport, SendFailure,
-    SpecContextRelease, TaskContextRelease, ValueRelease,
+    SpecContextRelease, TaskContextRelease, ValueCopy, ValueRelease,
 };
 use super::{
     ClockMode, DEADLOCK_DEFECT_CODE, Idle, ParkedTask, RESPONSE_CANCELLED,
@@ -137,6 +137,10 @@ pub struct ChimiSchedulerConfig {
     pub capability_violation_context: *mut c_void,
     pub process_defect_report: Option<ProcessDefectReport>,
     pub process_defect_context: *mut c_void,
+    /// Copies a value for each broadcast or watch subscription past the
+    /// first, with `release_context`. May be null only when no program
+    /// publishes to more than one subscription.
+    pub copy_channel_value: Option<ValueCopy>,
 }
 
 /// One task parked in a detected deadlock and the request kind it waits on
@@ -734,6 +738,7 @@ pub unsafe extern "C" fn chimi_scheduler_run(
         release_spec_context: config.release_spec_context,
         release_task_value: config.release_task_value,
         release_channel_value: config.release_channel_value,
+        copy_channel_value: config.copy_channel_value,
         release_task_context: config.release_task_context,
         release_context: config.release_context,
         capability_violation_report: config.capability_violation_report,

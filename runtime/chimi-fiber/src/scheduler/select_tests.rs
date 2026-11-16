@@ -210,6 +210,7 @@ fn run_on(entry: ChimiFiberEntry, clock_mode: u32) -> (SchedulerOutcome, Vec<i64
         capability_violation_context: ptr::null_mut(),
         process_defect_report: None,
         process_defect_context: ptr::null_mut(),
+        copy_channel_value: None,
     };
     let outcome = unsafe { process_abi::chimi_scheduler_run(&config) };
     (outcome, SEEN.with(|seen| seen.borrow().clone()))

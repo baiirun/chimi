@@ -26,10 +26,10 @@ use crate::numeric::{
 };
 use crate::semantic::{BinaryOperator, UnaryOperator};
 use crate::standard::{StandardConstructor, StandardFunction, StandardSymbol, StandardType};
+use causes::{Cause, CauseKind};
 pub(crate) use constants::{ConstantLimits, evaluate_constants};
 #[cfg(test)]
 pub(crate) use constants::{evaluate_constants_with, measured_values_to_evaluate};
-use causes::{Cause, CauseKind};
 use persistent_list::PersistentList;
 use std::cmp::Ordering as Comparison;
 use std::collections::HashMap;
@@ -828,7 +828,10 @@ impl Control {
         match self {
             Self::Success(_) | Self::Break { .. } => None,
             Self::Failure(value, trail) => Some(trail.cause.clone().unwrap_or_else(|| {
-                Arc::new(Cause::new(CauseKind::ExpectedFailure(value.clone()), trail.origin))
+                Arc::new(Cause::new(
+                    CauseKind::ExpectedFailure(value.clone()),
+                    trail.origin,
+                ))
             })),
             Self::Defect {
                 message,
@@ -1389,7 +1392,12 @@ impl<'core> Evaluator<'core> {
     }
 
     /// Constructs a value, or a live outcome; a failure's cause starts at `node`.
-    fn construct(&self, constructor: SymbolId, values: Vec<RuntimeValue>, node: CoreNodeId) -> Control {
+    fn construct(
+        &self,
+        constructor: SymbolId,
+        values: Vec<RuntimeValue>,
+        node: CoreNodeId,
+    ) -> Control {
         let symbol = self.core.symbol(constructor);
         let shape = symbol
             .constructor
@@ -1785,7 +1793,8 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::SelectTask
             | StandardFunction::SelectAfter
             | StandardFunction::SelectAt
-            | StandardFunction::SelectFirst => Control::Defect {
+            | StandardFunction::SelectFirst
+            | StandardFunction::SelectWatch => Control::Defect {
                 message: format!(
                     "Select.{} requires the native runtime; build the program with `chimi build`",
                     function.name()
@@ -2123,6 +2132,24 @@ impl<'core> Evaluator<'core> {
                 node: Some(call_node),
                 cause: None,
             },
+            StandardFunction::ChannelAddReceiver
+            | StandardFunction::BroadcastBounded
+            | StandardFunction::BroadcastPublish
+            | StandardFunction::BroadcastSubscribe
+            | StandardFunction::WatchStartingWith
+            | StandardFunction::WatchPublish
+            | StandardFunction::WatchSubscribe
+            | StandardFunction::WatchReceive => Control::Defect {
+                message: format!(
+                    "{}.{} requires the bounded Channel runtime; build the program with `chimi build`",
+                    function
+                        .module()
+                        .map_or_else(String::new, |module| module.qualifier()),
+                    function.name()
+                ),
+                node: Some(call_node),
+                cause: None,
+            },
         }
     }
 
@@ -2387,9 +2414,7 @@ impl<'core> Evaluator<'core> {
     fn public_outcome(&self, control: Control) -> ExecutionOutcome {
         match control {
             Control::Success(value) => ExecutionOutcome::Success(public_value(&value)),
-            Control::Failure(value, _) => {
-                ExecutionOutcome::ExpectedFailure(public_value(&value))
-            }
+            Control::Failure(value, _) => ExecutionOutcome::ExpectedFailure(public_value(&value)),
             Control::Defect { message, node, .. } => {
                 let origin = node.map(|node| {
                     let node = &self.core.nodes[node.raw() as usize];
@@ -2424,14 +2449,12 @@ enum MatchValue {
 /// stored `Err` keeps, or `Void` when it keeps none.
 fn matched_cause(value: &MatchValue) -> RuntimeValue {
     let cause = match value {
-        MatchValue::Failure(error, trail) => Some(
-            trail
-                .cause
-                .clone()
-                .unwrap_or_else(|| {
-                    Arc::new(Cause::new(CauseKind::ExpectedFailure(error.clone()), trail.origin))
-                }),
-        ),
+        MatchValue::Failure(error, trail) => Some(trail.cause.clone().unwrap_or_else(|| {
+            Arc::new(Cause::new(
+                CauseKind::ExpectedFailure(error.clone()),
+                trail.origin,
+            ))
+        })),
         MatchValue::Plain(RuntimeValue::Constructed { cause, .. }) => cause.clone(),
         MatchValue::Plain(_) | MatchValue::Success(_) => None,
     };
@@ -3131,7 +3154,11 @@ mod tests {
                     unreachable!("every key is an Int")
                 };
                 path.push(key);
-                node = if leftmost { current.left.as_deref() } else { current.right.as_deref() };
+                node = if leftmost {
+                    current.left.as_deref()
+                } else {
+                    current.right.as_deref()
+                };
             }
             let removals = (0..COUNT).map(|step| if ascending { step } else { COUNT - 1 - step });
             for value in removals.filter(|value| !path.contains(value)) {

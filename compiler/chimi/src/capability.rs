@@ -88,6 +88,10 @@ struct FlowValue {
     /// arms, `break`, and calls whose result type can hold an argument's type. Taking
     /// the value moves them. Empty for a value read out of a binding's field.
     carries: BTreeSet<SymbolId>,
+    /// The exclusive bindings this value reads without holding them: the receiver
+    /// of a `Select.receive` or `Select.watch` event. Taking the value moves
+    /// nothing, but using it after one of them moved is `T4241`.
+    borrows: BTreeSet<SymbolId>,
 }
 
 impl FlowValue {
@@ -101,6 +105,7 @@ impl FlowValue {
                 .then(|| typed.format_type(type_id)),
             nonshareable_provider: None,
             carries: BTreeSet::new(),
+            borrows: BTreeSet::new(),
         }
     }
 
@@ -111,6 +116,7 @@ impl FlowValue {
             unshared_by: None,
             nonshareable_provider: None,
             carries: BTreeSet::new(),
+            borrows: BTreeSet::new(),
         }
     }
 
@@ -121,11 +127,13 @@ impl FlowValue {
             unshared_by: None,
             nonshareable_provider: None,
             carries: BTreeSet::new(),
+            borrows: BTreeSet::new(),
         }
     }
 
     fn combine(mut self, mut other: Self) -> Self {
         self.carries.append(&mut other.carries);
+        self.borrows.append(&mut other.borrows);
         let properties = self.properties.combine(other.properties);
         let blocked_by = if properties.transferable == PropertyDerivation::Never {
             self.blocked_by.or(other.blocked_by)
@@ -143,6 +151,7 @@ impl FlowValue {
             unshared_by,
             nonshareable_provider: self.nonshareable_provider.or(other.nonshareable_provider),
             carries: self.carries,
+            borrows: self.borrows,
         }
     }
 }
@@ -312,6 +321,7 @@ impl CapabilityChecker<'_> {
                             ),
                         ));
                     }
+                    self.check_borrows(module_id, name, &binding.value, environment);
                     let mut value = binding.value;
                     if !binding.requirement
                         && value.properties.capability == CapabilityClass::Exclusive
@@ -361,7 +371,8 @@ impl CapabilityChecker<'_> {
                         (&argument.value, value)
                     })
                     .collect::<Vec<_>>();
-                match self.standard_function(module_id, callee) {
+                let standard = self.standard_function(module_id, callee);
+                match standard {
                     Some(StandardFunction::TaskStart) => {
                         if let Some((argument, thunk)) = arguments.first() {
                             self.check_task_transfer(module_id, argument, thunk, environment);
@@ -376,6 +387,16 @@ impl CapabilityChecker<'_> {
                                 TransferBoundary::ChannelSend,
                                 environment,
                             );
+                        }
+                    }
+                    Some(
+                        function @ (StandardFunction::BroadcastPublish
+                        | StandardFunction::WatchPublish
+                        | StandardFunction::WatchStartingWith),
+                    ) => {
+                        let index = usize::from(function != StandardFunction::WatchStartingWith);
+                        if let Some((argument, value)) = arguments.get(index) {
+                            self.check_published(module_id, function, argument, value);
                         }
                     }
                     Some(StandardFunction::ProcessSend) => {
@@ -444,22 +465,34 @@ impl CapabilityChecker<'_> {
                 // The callee is not followed: a result that could hold an exclusive
                 // value may hold the closure called and every argument whose type
                 // occurs in the result's type.
+                // `Channel.add_receiver` returns a new Receiver of the same queue and
+                // leaves its argument with its owner, so the result holds nothing.
                 let mut result = self.type_value(module_id, expression);
-                if result.properties.shareable != PropertyDerivation::Always {
+                let holds_carried = result.properties.shareable != PropertyDerivation::Always
+                    && standard != Some(StandardFunction::ChannelAddReceiver);
+                if holds_carried {
                     result.carries = callee_value.carries;
-                    let result_type = self.expression_type(module_id, expression);
-                    for (argument, value) in arguments {
-                        let embeds = match (result_type, self.expression_type(module_id, argument))
-                        {
-                            (Some(result_type), Some(argument_type)) => {
-                                self.typed.type_may_hold(result_type, argument_type)
-                            }
-                            _ => true,
-                        };
-                        if embeds {
-                            result.carries.extend(value.carries);
+                }
+                let result_type = self.expression_type(module_id, expression);
+                for (argument, value) in &arguments {
+                    let embeds = match (result_type, self.expression_type(module_id, argument)) {
+                        (Some(result_type), Some(argument_type)) => {
+                            self.typed.type_may_hold(result_type, argument_type)
                         }
+                        _ => true,
+                    };
+                    if embeds {
+                        if holds_carried {
+                            result.carries.extend(value.carries.iter().copied());
+                        }
+                        result.borrows.extend(value.borrows.iter().copied());
                     }
+                }
+                if let Some(StandardFunction::SelectReceive | StandardFunction::SelectWatch) =
+                    standard
+                    && let Some((_, receiver)) = arguments.first()
+                {
+                    result.borrows.extend(receiver.carries.iter().copied());
                 }
                 result
             }
@@ -793,6 +826,38 @@ impl CapabilityChecker<'_> {
         self.transfer_carried(payload, argument.range(), boundary, environment);
     }
 
+    /// `Broadcast.publish`, `Watch.publish` and `Watch.starting_with`: every
+    /// subscription gets its own copy of the value, so it must be shareable.
+    ///
+    /// Ensures: `T4244` when the value is never shareable. Nothing moves, so the
+    /// publisher keeps every binding the value reads.
+    fn check_published(
+        &mut self,
+        module_id: ModuleId,
+        function: StandardFunction,
+        argument: &ModuleExpression,
+        value: &FlowValue,
+    ) {
+        if value.properties.shareable != PropertyDerivation::Never {
+            return;
+        }
+        let operation = match function {
+            StandardFunction::BroadcastPublish => "Broadcast.publish",
+            StandardFunction::WatchPublish => "Watch.publish",
+            _ => "Watch.starting_with",
+        };
+        self.diagnostics.push(Diagnostic::error(
+            DiagnosticStage::Type,
+            "T4244",
+            self.file_id(module_id),
+            argument.range(),
+            format!(
+                "{operation} cannot share {} with every subscriber because it is exclusive",
+                value.blocked_by.as_deref().unwrap_or("the value")
+            ),
+        ));
+    }
+
     /// `T4260` for a `Process.spec` or `Process.handoff_spec` body: every
     /// incarnation, or every handoff start, runs it again, so its
     /// captures and the providers bound to it must be shareable. Records the needs that
@@ -853,6 +918,37 @@ impl CapabilityChecker<'_> {
                  incarnation of the process uses it"
             ),
         ));
+    }
+
+    /// `T4241` at a read of `name` when its value borrows a binding that has moved:
+    /// an event outlived the receiver it would receive from.
+    fn check_borrows(
+        &mut self,
+        module_id: ModuleId,
+        name: &crate::semantic::Name,
+        value: &FlowValue,
+        environment: &FlowEnvironment,
+    ) {
+        for symbol in &value.borrows {
+            let Some(OwnershipState::Transferred { boundary, .. }) =
+                environment.get(symbol).map(|binding| binding.ownership)
+            else {
+                continue;
+            };
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::Type,
+                "T4241",
+                self.file_id(module_id),
+                name.range,
+                format!(
+                    "`{}` receives from `{}`, which was transferred {} and cannot be used by \
+                     its previous owner",
+                    name.text,
+                    self.typed.resolved.symbol(*symbol).name,
+                    boundary.description(self.typed)
+                ),
+            ));
+        }
     }
 
     /// Binds `owner` to `value`: the bindings the value carries move into it, so the

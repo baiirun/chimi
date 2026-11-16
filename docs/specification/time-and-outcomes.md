@@ -553,6 +553,8 @@ nothing.
 ```text
 Select.receive: fn<T, A, F, R>(Receiver<T>, fn(Receive<T>) -> A errors F needs R)
                   -> Event<A, F | Channel.Aborted> needs R
+Select.watch:   fn<T, A, F, R>(Watch.Subscription<T>, fn(Receive<T>) -> A errors F needs R)
+                  -> Event<A, F | Channel.Aborted> needs R
 Select.inbox:   fn<M, A, F, R>(Inbox<M>, fn(M) -> A errors F needs R)
                   -> Event<A, F> needs R
 Select.task:    fn<T, E, A, F, R>(Task<T, E>, fn(T) -> A errors F needs R)
@@ -572,7 +574,10 @@ Select.first:   fn<A, F>(List<Event<A, F>>) -> A errors F
   no needs.
 - A receive event refers to its receiver and does not consume it. Using the
   event after the receiver was transferred is use-after-transfer (`T4241`),
-  with the existing runtime owner-token check as the backstop.
+  with the existing runtime owner-token check as the backstop. A watch event
+  refers to its subscription the same way. `Select.receive` also accepts the
+  receivers of a broadcast and those from `Channel.add_receiver`
+  ([channel variants](task-and-channel-capabilities.md#channel-variants)).
 - `Select.after(d, value)` measures `d` from the start of the
   `Select.first` call that waits on it, not from the time the event was built.
 
@@ -1481,9 +1486,9 @@ program.
 - **Abandoned selects.** Any request from a task first withdraws a select it
   had parked in. A select woken by a source and then refused by a fired scope
   therefore leaves no watcher or wake timer behind.
-- **Gap.** `T4241` is not yet reported for a receive event used after its
-  receiver was transferred; the run-time token check defects instead
-  (follow-up ticket).
+- **Use after transfer.** `T4241` is reported at a receive or watch event
+  used after its receiver was transferred (CHI-224); the run-time token check
+  stays as the backstop.
 - **Errors.** `T4345` rejects an empty list literal at `Select.first`; an
   empty list built at run time defects with "`Select.first` needs at least
   one event". A receiver whose token is stale defects the task as a channel

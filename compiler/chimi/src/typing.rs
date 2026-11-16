@@ -1198,11 +1198,17 @@ impl TypedProject {
                 return ValueProperties::PARENT_LOCAL;
             }
             Some(StandardSymbol::Type(
-                StandardType::ChannelReceiver | StandardType::ChannelCompletion,
+                StandardType::ChannelReceiver
+                | StandardType::ChannelCompletion
+                | StandardType::WatchSubscription,
             )) => {
                 return ValueProperties::EXCLUSIVE;
             }
-            Some(StandardSymbol::Type(StandardType::ChannelSender)) => {
+            Some(StandardSymbol::Type(
+                StandardType::ChannelSender
+                | StandardType::BroadcastPublisher
+                | StandardType::WatchPublisher,
+            )) => {
                 return ValueProperties::SHAREABLE;
             }
             // The static contract's "Types" table.
@@ -1709,6 +1715,26 @@ impl ProjectTypeChecker {
         ]));
         let channel_receive =
             self.standard_named_type(StandardType::ChannelReceive, vec![channel_value]);
+        let broadcast_publisher =
+            self.standard_named_type(StandardType::BroadcastPublisher, vec![channel_value]);
+        let watch_publisher =
+            self.standard_named_type(StandardType::WatchPublisher, vec![channel_value]);
+        let watch_subscription =
+            self.standard_named_type(StandardType::WatchSubscription, vec![channel_value]);
+        let publisher_bundle = |checker: &mut Self, publisher| {
+            checker.intern_type(CanonicalType::Record(vec![
+                StructuralField {
+                    name: "completion".to_owned(),
+                    type_id: channel_completion,
+                },
+                StructuralField {
+                    name: "publisher".to_owned(),
+                    type_id: publisher,
+                },
+            ]))
+        };
+        let broadcast_bundle = publisher_bundle(self, broadcast_publisher);
+        let watch_bundle = publisher_bundle(self, watch_publisher);
         let channel_send_variants = [
             StandardConstructor::ChannelSendClosed,
             StandardConstructor::ChannelSendAborted,
@@ -1800,6 +1826,78 @@ impl ProjectTypeChecker {
                     inputs: vec![channel_receiver],
                     success: void,
                     failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::ChannelAddReceiver,
+                CallableContract {
+                    inputs: vec![channel_receiver],
+                    success: channel_receiver,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::BroadcastBounded,
+                CallableContract {
+                    inputs: vec![int],
+                    success: broadcast_bundle,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::BroadcastPublish,
+                CallableContract {
+                    inputs: vec![broadcast_publisher, channel_value],
+                    success: int,
+                    failures: channel_send_failures,
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::BroadcastSubscribe,
+                CallableContract {
+                    inputs: vec![broadcast_publisher],
+                    success: channel_receiver,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::WatchStartingWith,
+                CallableContract {
+                    inputs: vec![channel_value],
+                    success: watch_bundle,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::WatchPublish,
+                CallableContract {
+                    inputs: vec![watch_publisher, channel_value],
+                    success: void,
+                    failures: channel_send_failures,
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::WatchSubscribe,
+                CallableContract {
+                    inputs: vec![watch_publisher],
+                    success: watch_subscription,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::WatchReceive,
+                CallableContract {
+                    inputs: vec![watch_subscription],
+                    success: channel_receive,
+                    failures: channel_receive_failures,
                     needs: NeedsRowId::new(0),
                 },
             ),
@@ -7764,7 +7862,9 @@ impl ProjectTypeChecker {
         match &self.types[self.resolve_inference_type(type_id).raw() as usize] {
             CanonicalType::Generic(symbol) => generics.contains(symbol),
             CanonicalType::Named { arguments, .. } => arguments.iter().copied().any(mentions),
-            CanonicalType::FailureSetValue(row) => self.failure_row_mentions_generics(*row, generics),
+            CanonicalType::FailureSetValue(row) => {
+                self.failure_row_mentions_generics(*row, generics)
+            }
             CanonicalType::Function(contract)
             | CanonicalType::PolymorphicFunction { contract, .. } => contract_mentions(contract),
             CanonicalType::Record(fields) => fields.iter().any(|field| mentions(field.type_id)),
@@ -7775,8 +7875,13 @@ impl ProjectTypeChecker {
 
     fn failure_row_mentions_generics(&self, row: FailureRowId, generics: &[SymbolId]) -> bool {
         let row = &self.failure_rows[row.raw() as usize];
-        row.parameters.iter().any(|parameter| generics.contains(parameter))
-            || row.exclusions.iter().any(|exclusion| generics.contains(&exclusion.parameter))
+        row.parameters
+            .iter()
+            .any(|parameter| generics.contains(parameter))
+            || row
+                .exclusions
+                .iter()
+                .any(|exclusion| generics.contains(&exclusion.parameter))
             || row.variant_arguments.iter().any(|arguments| {
                 arguments
                     .arguments
@@ -7787,7 +7892,9 @@ impl ProjectTypeChecker {
 
     fn needs_row_mentions_generics(&self, row: NeedsRowId, generics: &[SymbolId]) -> bool {
         let row = &self.needs_rows[row.raw() as usize];
-        row.parameters.iter().any(|parameter| generics.contains(parameter))
+        row.parameters
+            .iter()
+            .any(|parameter| generics.contains(parameter))
             || row
                 .entries
                 .iter()
@@ -7871,7 +7978,9 @@ impl ProjectTypeChecker {
                             // there also denotes the task's failure row.
                             let failures_index = match self.resolved.standard_symbol(symbol) {
                                 Some(StandardSymbol::Type(
-                                    StandardType::Task | StandardType::ProcessSpec | StandardType::SelectEvent,
+                                    StandardType::Task
+                                    | StandardType::ProcessSpec
+                                    | StandardType::SelectEvent,
                                 )) => Some(1),
                                 Some(StandardSymbol::Type(StandardType::ProcessHandoffSpec)) => {
                                     Some(2)
@@ -7880,10 +7989,10 @@ impl ProjectTypeChecker {
                             };
                             if let Some(index) = failures_index
                                 && let Some(TypeUse::Named {
-                                semantic_id: failures_id,
-                                path: failures_path,
-                                ..
-                            }) = arguments.get(index)
+                                    semantic_id: failures_id,
+                                    path: failures_path,
+                                    ..
+                                }) = arguments.get(index)
                                 && let (Some(name), Some(failures)) = (
                                     failures_path.last(),
                                     self.resolved_type_symbol(module_id, *failures_id),
@@ -9491,16 +9600,14 @@ impl ProjectTypeChecker {
                 // Every generic the contract mentions that `inner` leaves open
                 // is kept, the value's own parameters among them.
                 let mut inner_preserved = preserved.to_vec();
-                inner_preserved.extend(
-                    mentioned
-                        .into_iter()
-                        .filter(|generic| {
-                            !inner.values.contains_key(generic)
-                                && !inner.failures.contains_key(generic)
-                        }),
+                inner_preserved.extend(mentioned.into_iter().filter(|generic| {
+                    !inner.values.contains_key(generic) && !inner.failures.contains_key(generic)
+                }));
+                let contract = self.substitute_call_contract_preserving(
+                    contract,
+                    &mut inner,
+                    &inner_preserved,
                 );
-                let contract =
-                    self.substitute_call_contract_preserving(contract, &mut inner, &inner_preserved);
                 self.intern_type(CanonicalType::PolymorphicFunction {
                     parameters,
                     contract,

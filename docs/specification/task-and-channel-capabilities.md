@@ -233,6 +233,185 @@ holding one leaves the membership running.
 `Channel.Receive<T>` does, so the checker treats a refused exclusive value as
 exclusive (ts-f704d3).
 
+## Channel variants
+
+`Channel.bounded` gives one queue with one receiver. Services also need a
+queue that several workers take from, a stream that every subscriber sees,
+and a latest value that subscribers follow. These are three variants (G29).
+They reuse the channel vocabulary: `Channel.Receive<T>`,
+`Channel.SendError<T>`, `ChannelError`, `Channel.Completion<T>`, and
+`Channel.close`. A variant that can lose values has its own module and types,
+so a reader sees the loss where the value is sent and where it is received
+([bounded channel semantics](../research/channel-semantics.md#deferred-surfaces)).
+
+```text
+Channel.add_receiver: fn<T>(Receiver<T>) -> Receiver<T>
+
+Broadcast.bounded:    fn<T>(Int) -> { publisher: Broadcast.Publisher<T>,
+                                      completion: Channel.Completion<T> }
+Broadcast.publish:    fn<T>(Broadcast.Publisher<T>, T) -> Int errors Channel.SendError<T>
+Broadcast.subscribe:  fn<T>(Broadcast.Publisher<T>) -> Channel.Receiver<T>
+
+Watch.starting_with:  fn<T>(T) -> { publisher: Watch.Publisher<T>,
+                                    completion: Channel.Completion<T> }
+Watch.publish:        fn<T>(Watch.Publisher<T>, T) errors Channel.SendError<T>
+Watch.subscribe:      fn<T>(Watch.Publisher<T>) -> Watch.Subscription<T>
+Watch.receive:        fn<T>(Watch.Subscription<T>) -> Channel.Receive<T> errors ChannelError
+
+Select.watch:         fn<T, A, F, R>(Watch.Subscription<T>, fn(Receive<T>) -> A errors F needs R)
+                        -> Event<A, F | ChannelError> needs R
+```
+
+| Capability | Property | Authority |
+| --- | --- | --- |
+| `Broadcast.Publisher<T>` | shareable | publish, subscribe |
+| `Watch.Publisher<T>` | shareable | publish, subscribe |
+| `Watch.Subscription<T>` | exclusive and transferable | receive the latest value |
+
+A broadcast subscription is an ordinary `Channel.Receiver<T>`, and a watch
+subscription follows every Receiver rule: one owning task, moved by a send,
+`Task.start` or a `using` provider, handed back as a `Task.result`, ended by
+its owner's exit.
+
+### Several receivers
+
+`Channel.add_receiver(receiver)` returns another receiver of the same queue,
+owned by the calling task. The argument is not moved: the result is a new
+capability, not the argument, so the
+[carry rule](#moving-exclusive-values) does not apply to this call. A pool
+adds one receiver per worker and moves each into its worker:
+
+```text
+loop count = 0 {
+  if count == workers { break count }
+  let mine = Channel.add_receiver(jobs.receiver)
+  let _ = Task.start(fn() { work(mine) })
+  count + 1
+}
+```
+
+- Each accepted value goes to exactly one receiver. Receivers parked in
+  `Channel.receive` are served in the order they parked. A receiver waiting
+  in `Select.first` is woken and competes when it polls again; a parked
+  plain receive is served before any select. There is no fairness between
+  receivers beyond that.
+- `Channel.abort(receiver)` ends that receiver. Its later receives fail with
+  `Channel.Aborted`, and so does a select on it. An owner's exit ends the
+  receivers it owns, and so does discarding a message that carries one.
+- The queue is aborted when its last receiver ends, by any of these routes.
+  A receiver in flight inside a message counts as live. For a channel that
+  never calls `add_receiver` this is exactly the one-receiver rule: aborting
+  or abandoning the receiver aborts the channel.
+- A receiver added to an aborted queue, or through a receiver that has
+  ended, is ended at once.
+- A value handed to a parked receiver belongs to that receiver, as on a
+  one-receiver channel. If its task is cancelled before it resumes, the value
+  is dropped, not requeued: the delivery linearized first.
+
+### Broadcast
+
+`Broadcast.bounded(capacity)` creates a broadcast whose subscriptions each
+buffer up to `capacity` values. The capacity MUST be positive; zero or a
+negative capacity defects.
+
+- `Broadcast.subscribe(publisher)` returns a new receiver. It receives every
+  value whose publish is accepted after it subscribed, in publish order, and
+  no value accepted before.
+- `Broadcast.publish(publisher, value)` is accepted when every current
+  subscription has room and no earlier publish is parked. At acceptance each
+  subscription receives its own copy, and the call returns how many
+  subscriptions it reached. Otherwise the publish parks; parked publishes are
+  accepted in the order they parked. A slow subscriber therefore slows every
+  publisher: nothing is dropped.
+- A publish with no subscriptions is accepted and returns `0`. No subscriber
+  is promised a value published before it subscribed, so this loses nothing
+  a subscriber was owed, and the count keeps it visible.
+- Cancelling a parked publish removes it. Nothing was delivered.
+- A subscription ends when its last receiver ends (`Channel.abort`, owner
+  exit, or `Channel.add_receiver` receivers all ending). It leaves the
+  broadcast, and a parked publish is checked again, so a publish that
+  waited only on that subscription is accepted.
+- `Channel.close(completion)` closes the broadcast. Parked and later
+  publishes fail with `SendError.Closed(value)`. Each subscription drains
+  its buffered values, then answers `Drained`. A subscription made after the
+  close answers `Drained` at once.
+- An abandoned completion (its owner ends while the broadcast is open, or
+  every publisher and the completion are dropped) aborts the broadcast.
+  Parked and later publishes fail with `SendError.Aborted(value)`, every
+  subscription is aborted, and a later subscription is aborted at once.
+- A task that publishes while its own subscription is full parks until
+  someone else receives from it. If nobody does, the program deadlocks, and
+  the deadlock report shows the task waiting in a channel send.
+
+### Watch
+
+`Watch.starting_with(initial)` creates a watch whose current value is
+`initial`.
+
+- `Watch.publish(publisher, value)` never parks. It makes `value` the current
+  value. A subscription that has not yet received the previous current value
+  will now receive `value` instead: older unseen values are replaced, never
+  queued.
+- `Watch.subscribe(publisher)` returns a subscription that has not seen the
+  current value, so its first receive returns it at once.
+- `Watch.receive(subscription)` returns `Received(value)` with the newest
+  value the subscription has not seen. It parks when the subscription has
+  seen the current value, until the next publish. After the watch is closed
+  it returns the final value if unseen, and then `Drained`. It fails with
+  `Channel.Aborted` once the watch is aborted.
+- `Channel.close(completion)` closes the watch; later publishes fail with
+  `SendError.Closed(value)`. An abandoned completion aborts it, as for a
+  broadcast; later publishes fail with `SendError.Aborted(value)`.
+- A subscription ends with its owner, like a receiver. There is no
+  `Watch.abort`: ending a subscription affects no one else.
+
+### Values
+
+Every subscriber of a broadcast or watch gets its own copy of each value, so
+`T` MUST be shareable. `Broadcast.publish`, `Watch.publish` and
+`Watch.starting_with` report `T4244` at the value when its type is never
+shareable (it holds a Receiver, a Completion, a subscription, a task handle,
+or an inbox). When `T` is a generic parameter
+the checker cannot decide, the runtime backstop applies: publishing a value
+that holds an exclusive capability defects the publisher as a channel
+capability violation.
+
+### Choosing among variants
+
+`Select.receive` accepts any Receiver, including a broadcast subscription and
+a receiver from `Channel.add_receiver`. `Select.watch` is the watch
+subscription's event. Readiness is the same as for a receive: a value,
+`Drained`, or `Aborted` makes the event ready. Several tasks may select on
+receivers of one queue; each value still goes to one of them.
+
+### Variants as implemented (CHI-231)
+
+- **Native only**, like the rest of the channel runtime. The interpreter
+  reports each new function with "requires the bounded Channel runtime".
+- **Receivers.** Every receiver is its own registry entry with its own owner
+  and token, so transfer, hand-back, parcels and owner cleanup are the
+  one-receiver code. A receiver from `add_receiver` points at the queue's
+  entry; a broadcast or watch subscription is a queue of its own, fed by
+  the broadcast or watch entry.
+- **Copies.** The scheduler copies a value for every subscription past the
+  first through a new host hook, `copy_channel_value`, so each subscription
+  owns its value as an ordinary queued message.
+- **Watch subscriptions** are conflating queues of capacity one: a publish
+  replaces an unread value and releases the old one.
+- **Select commit.** A select still consumes nothing. After it answers with
+  a ready receiver, the host's receive is served before any other task runs
+  (the reply puts the task at the front of the run queue), so another
+  receiver of the same queue cannot take the value in between.
+- **Events borrow their receiver.** A `Select.receive` or `Select.watch`
+  event reads its receiver without holding it, so building one moves
+  nothing, but using the event after the receiver moved is `T4241` at the
+  event (CHI-224). A select's answer borrows nothing.
+- **ABI.** Fiber ABI 12 adds requests 33 to 36 (add receiver, broadcast,
+  watch, subscribe), capability violations 7 (a published value holds a
+  capability) and 8 (an operation on the wrong kind of channel), and the
+  `copy_channel_value` hook at the end of `ChimiSchedulerConfig`. Native
+  runtime ABI 30 adds the nine intrinsics after `Select.first`.
+
 ## Owner exit and automatic cleanup
 
 The runtime tracks children and exclusive capabilities as part of task

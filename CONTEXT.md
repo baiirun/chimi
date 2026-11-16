@@ -332,7 +332,7 @@ An internal stackful execution context that may back a scoped task and preserve 
 _Avoid_: Task API, operating-system thread, public fiber primitive
 
 **Bounded Channel**:
-A typed MPSC communication path with finite declared capacity and distinct sender, receiver, and producer-completion capabilities backed by one runtime queue. Graceful close drains accepted values into an explicit `Drained` result, while abort discards unread values; both are channel state rather than values sent through it.
+A typed communication path with finite declared capacity and distinct sender, receiver, and producer-completion capabilities backed by one runtime queue. It starts with one receiver; `Channel.add_receiver` adds more, and each value goes to exactly one of them. Graceful close drains accepted values into an explicit `Drained` result, while abort discards unread values; both are channel state rather than values sent through it.
 _Avoid_: Unbounded queue, `None` sentinel, implicit drop policy, process identity
 
 **Concurrency Conformance Lab**:
