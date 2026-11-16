@@ -165,6 +165,9 @@ pub(crate) enum StandardType {
     /// A `native type` of a C binding (G20): a handle the runtime owns, whose
     /// release function the binding supplies. Each declaration is its own type.
     BindingHandle,
+    /// `std/env.Environment`: the capability to read environment variables and
+    /// the working directory; the runner closes `main`'s `environment` need.
+    Environment,
 }
 
 impl StandardType {
@@ -249,6 +252,7 @@ impl StandardType {
             Self::TestScript => "Script",
             Self::TestMailbox => "Mailbox",
             Self::BindingHandle => "Handle",
+            Self::Environment => "Environment",
         }
     }
 
@@ -256,7 +260,11 @@ impl StandardType {
     /// Its private representation grants neither silently.
     pub(crate) const fn properties(self) -> StandardProperties {
         match self {
-            Self::Console | Self::FileSystem | Self::Clock | Self::Random => {
+            Self::Console
+            | Self::FileSystem
+            | Self::Clock
+            | Self::Random
+            | Self::Environment => {
                 StandardProperties::Opaque("a provider")
             }
             Self::ProcessAddress
@@ -598,6 +606,12 @@ pub(crate) enum StandardFunction {
     /// Every C binding operation (G20). The symbol's binding names which one;
     /// the interpreter cannot call C, so it reports `E5204` instead.
     BindingCall,
+    // `std/path`: a `Path` is its text at run time on both backends.
+    PathFrom,
+    PathToText,
+    // `std/env`'s host core, which only its runner provider calls.
+    EnvHostVariables,
+    EnvHostCurrentDirectory,
 }
 
 impl StandardFunction {
@@ -900,6 +914,8 @@ impl StandardFunction {
             | Self::TestMailbox
             | Self::TestReceived
             | Self::BindingCall => None,
+            Self::PathFrom | Self::PathToText => None,
+            Self::EnvHostVariables | Self::EnvHostCurrentDirectory => None,
         }
     }
 
@@ -1089,6 +1105,10 @@ impl StandardFunction {
             Self::TestMailbox => "mailbox",
             Self::TestReceived => "received",
             Self::BindingCall => "binding",
+            Self::PathFrom => "from",
+            Self::PathToText => "to_text",
+            Self::EnvHostVariables => "host_variables",
+            Self::EnvHostCurrentDirectory => "host_current_directory",
         }
     }
 
@@ -1481,6 +1501,7 @@ impl StandardConstructor {
             | StandardType::SupervisorManagedSupervisor
             | StandardType::Clock
             | StandardType::Random
+            | StandardType::Environment
             | StandardType::Instant
             | StandardType::Timestamp
             | StandardType::SelectEvent

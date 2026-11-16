@@ -63,8 +63,12 @@ impl Operation {
                 _ if function == StandardFunction::BindingCall => {
                     Some("a C binding operation".to_owned())
                 }
-                _ => crate::operations::intrinsic_operation(function)
-                    .and_then(crate::operations::test_only_name),
+                _ => crate::operations::host_operation_name(function)
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        crate::operations::intrinsic_operation(function)
+                            .and_then(crate::operations::test_only_name)
+                    }),
             },
             Self::Host(function) => Some(
                 match function {

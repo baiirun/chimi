@@ -72,6 +72,15 @@ provider plan before execution, and supplies trace, identity, cancellation, and
 limit configuration separately. Missing or incompatible providers are setup
 failures rather than expected values produced by the program body.
 
+## Runner-provided capabilities
+
+The system modules (`std/env` first) declare their capability interfaces in
+standard source, each with a fixed need name the runner closes on `main` from
+a private provider written in the module. The rules are in
+[system modules](system-modules.md#runner-provided-capabilities); `Console`
+and `FileSystem` below keep their built-in rules until `std/io` moves to
+source.
+
 ## Synchronous files and console
 
 The first standard-library boundary remains explicit and module-qualified:

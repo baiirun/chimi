@@ -73,7 +73,8 @@ pub(crate) enum RuntimeIdentity {
     /// A `native type`: opaque in source, represented by the runtime.
     NativeType(StandardType),
     /// An `interface` written in source that the runner provides at the root,
-    /// as `std/random.Random`.
+    /// as `std/random.Random`, or that a runner provider builds
+    /// (`RUNNER_PROVIDERS`), as `std/env.Environment`.
     Interface(StandardType),
 }
 
@@ -93,6 +94,17 @@ const fn runtime(id: &'static str, arity: usize, implementation: StandardFunctio
         id,
         arity,
         class: OperationClass::Runtime,
+        implementation,
+        test_only: false,
+        binding: None,
+    }
+}
+
+const fn host(id: &'static str, arity: usize, implementation: StandardFunction) -> Operation {
+    Operation {
+        id,
+        arity,
+        class: OperationClass::Host,
         implementation,
         test_only: false,
         binding: None,
@@ -394,7 +406,54 @@ pub(crate) const OPERATIONS: &[Operation] = &[
         "chimi_probe_close_pipe",
         true,
     ),
+    pure("std/path.from", 1, StandardFunction::PathFrom),
+    pure("std/path.to_text", 1, StandardFunction::PathToText),
+    host("std/env.host_variables", 0, StandardFunction::EnvHostVariables),
+    host(
+        "std/env.host_current_directory",
+        0,
+        StandardFunction::EnvHostCurrentDirectory,
+    ),
 ];
+
+/// A capability the runner closes on `main` with a provider written in the
+/// standard module that declares it (host-capabilities-and-execution-properties.md,
+/// "Runner-provided capabilities"). The need name is fixed, as `clock` is, so
+/// every function that reads the capability names the same need.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RunnerProvider {
+    pub(crate) interface: StandardType,
+    pub(crate) need: &'static str,
+    /// The qualified name of the private function that builds the provider.
+    pub(crate) provider: &'static str,
+}
+
+pub(crate) const RUNNER_PROVIDERS: &[RunnerProvider] = &[RunnerProvider {
+    interface: StandardType::Environment,
+    need: "environment",
+    provider: "std/env.host",
+}];
+
+/// The runner provider for a need on `interface` named `need`, if the runner
+/// closes it.
+pub(crate) fn runner_provider(interface: StandardType, need: &str) -> Option<&'static RunnerProvider> {
+    RUNNER_PROVIDERS
+        .iter()
+        .find(|provider| provider.interface == interface && provider.need == need)
+}
+
+/// The qualified name of a host operation, which a constant must not call;
+/// `None` for any other operation.
+pub(crate) fn host_operation_name(function: StandardFunction) -> Option<&'static str> {
+    OPERATIONS
+        .iter()
+        .find(|operation| {
+            operation.binding.is_none()
+                && operation.implementation == function
+                && operation.class == OperationClass::Host
+        })
+        .map(|operation| operation.id)
+}
 
 pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     known_type("std/option.Option", StandardType::Option),
@@ -428,6 +487,8 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     native_type("std/set.Set", StandardType::Set),
     native_type("std/decimal.Decimal", StandardType::Decimal),
     native_type("std/bytes.Bytes", StandardType::Bytes),
+    native_type("std/path.Path", StandardType::Path),
+    known_interface("std/env.Environment", StandardType::Environment),
     native_type("std/json.Number", StandardType::JsonNumber),
     native_type("std/cause.Cause", StandardType::Cause),
     native_type("std/binding_probe.Pipe", StandardType::BindingHandle),
@@ -525,17 +586,17 @@ const fn native_type(id: &'static str, kind: StandardType) -> RuntimeKnownDeclar
     }
 }
 
-const fn known_type(id: &'static str, kind: StandardType) -> RuntimeKnownDeclaration {
-    RuntimeKnownDeclaration {
-        id,
-        identity: RuntimeIdentity::Type(kind),
-    }
-}
-
 const fn known_interface(id: &'static str, kind: StandardType) -> RuntimeKnownDeclaration {
     RuntimeKnownDeclaration {
         id,
         identity: RuntimeIdentity::Interface(kind),
+    }
+}
+
+const fn known_type(id: &'static str, kind: StandardType) -> RuntimeKnownDeclaration {
+    RuntimeKnownDeclaration {
+        id,
+        identity: RuntimeIdentity::Type(kind),
     }
 }
 

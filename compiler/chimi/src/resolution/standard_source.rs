@@ -7,7 +7,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::ids::{ModuleId, SemanticId, SymbolId};
 use crate::operations::{self, OperationClass, RUNTIME_KNOWN, RuntimeIdentity};
 use crate::semantic::{FunctionSignature, ModuleDeclaration, ModuleDeclarationKind};
-use crate::standard::{StandardConstructor, StandardSymbol, StandardType};
+use crate::standard::{StandardConstructor, StandardModule, StandardSymbol, StandardType};
 use crate::standard_tree;
 
 impl ProjectResolver {
@@ -135,6 +135,15 @@ impl ProjectResolver {
                 self.standard_types.insert(kind, symbol);
                 if kind == StandardType::Option {
                     self.builtin_types.insert("Option".to_owned(), symbol);
+                }
+                // `Path`'s home is std/path; std/io keeps exporting it, so
+                // `import std/io.{Path}` names the same type.
+                if kind == StandardType::Path {
+                    self.standard_modules
+                        .get_mut(&StandardModule::Io)
+                        .expect("standard module is indexed")
+                        .types
+                        .insert(kind.name().to_owned(), symbol);
                 }
             }
             StandardSymbol::Constructor(

@@ -1006,6 +1006,9 @@ impl TypedProject {
             Some(StandardSymbol::Type(StandardType::Console | StandardType::FileSystem)) => true,
             Some(StandardSymbol::Type(StandardType::Clock)) => need.lexical_name == "clock",
             Some(StandardSymbol::Type(StandardType::Random)) => need.lexical_name == "random",
+            Some(StandardSymbol::Type(interface)) => {
+                crate::operations::runner_provider(interface, &need.lexical_name).is_some()
+            }
             _ => false,
         }
     }
