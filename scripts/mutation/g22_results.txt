@@ -1,18 +1,17 @@
-# mutation run at c02cc803bb6632bd46d8c5db1fdbdc21720816c4
-# g22_mutations.py: 15 mutants against compiler/chimi (the three re-pointed mutants re-run at this commit)
 KILLED       shutdown interrupts a sleeping handler [cargo run --quiet --bin chimi-process-lab -- --scenario RR05] (5s)
 KILLED       shutdown cancels a running body [cargo test --quiet -p chimi-fiber --lib -- an_incarnation_running_when_shutdown_begins_is_not_cancelled_at_its_next_park] (3s)
 KILLED       a body that never ran is left to run [cargo test --quiet -p chimi-fiber --lib -- a_body_stopped_before_its_first_run_is_cancelled_without_running] (3s)
+KILLED       a body that never ran drops the messages it accepted [cargo test --quiet -p chimi-fiber --lib -- a_body_stopped_before_its_first_run_still_drains_the_messages_it_accepted] (3s)
 KILLED       a self-stop is not interrupted [cargo run --quiet --bin chimi-process-lab -- --scenario SD08] (8s)
 KILLED       a self-stop made during the drain waits for the deadline [cargo test --quiet -p chimi-fiber --lib -- a_stop_of_its_own_root_made_during_the_drain_is_answered_with_cancellation] (3s)
-KILLED       stop unroutes every member first [cargo run --quiet --bin chimi-process-lab -- --scenario SD06] (10s)
-KILLED       a drain silences timeout scopes [cargo run --quiet --bin chimi-process-lab -- --scenario SD12] (11s)
-KILLED       an idle service reports a deadlock [signals -- an_idle_service_waits_for_a_signal_instead_of_reporting_a_deadlock] (11s)
-KILLED       an injected signal exits 130 [cargo run --quiet --bin chimi-process-lab -- --scenario SG01] (10s)
-KILLED       a real signal exits instead of re-raising [signals -- sigterm_lets_the_worker_drain_its_jobs_then_ends_the_program_by_sigterm] (10s)
-KILLED       a second signal waits for the drain [signals -- a_second_signal_ends_the_program_at_once] (71s)
+KILLED       a draining body's receive is not woken [cargo run --quiet --bin chimi-process-lab -- --scenario SD13] (7s)
+KILLED       stop unroutes every member first [cargo run --quiet --bin chimi-process-lab -- --scenario SD06] (9s)
+KILLED       a drain silences timeout scopes [cargo run --quiet --bin chimi-process-lab -- --scenario SD12] (9s)
+KILLED       a signal does not cancel the root [cargo run --quiet --bin chimi-process-lab -- --scenario SG02] (4s)
+KILLED       a signal timer outlives the root [cargo run --quiet --bin chimi-process-lab -- --scenario SG03] (5s)
+KILLED       an idle service reports a deadlock [signals -- an_idle_service_waits_for_a_signal_instead_of_reporting_a_deadlock] (10s)
+KILLED       an injected signal exits 130 [cargo run --quiet --bin chimi-process-lab -- --scenario SG01] (13s)
+KILLED       a real signal exits instead of re-raising [signals -- sigterm_lets_the_worker_drain_its_jobs_then_ends_the_program_by_sigterm] (11s)
+KILLED       a second signal waits for the drain [signals -- a_second_signal_ends_the_program_at_once] (69s)
 KILLED       a blocking read restarts after a signal [signals -- sigint_cancels_a_program_without_the_scheduler_while_it_reads_input] (69s)
-KILLED       a draining body's receive is not woken [cargo run --quiet --bin chimi-process-lab -- --scenario SD13]
-KILLED       a signal does not cancel the root [cargo run --quiet --bin chimi-process-lab -- --scenario SG02]
-KILLED       a signal timer outlives the root [cargo run --quiet --bin chimi-process-lab -- --scenario SG03]
 # result: every mutant killed
