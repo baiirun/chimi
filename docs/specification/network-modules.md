@@ -246,6 +246,15 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 - A handler's expected failure answers 500 and the connection carries on.
   A handler's defect closes its connection without an answer, and the server
   and its other connections carry on (as Go's `net/http` does with a panic).
+- Every response carries `date` in IMF-fixdate form (RFC 9110 section
+  6.6.1), read from the clock as it is written; a handler's own `date`
+  stands.
+- After an answer that closes the connection, the server stops writing and
+  reads and drops what the client still sends, for up to 2 s, before it
+  closes. Closing with unread input would make the client's system answer
+  with a reset, which can throw the answer away before the client reads it
+  (RFC 9112 section 9.6). A client that closes its side ends the wait at
+  once.
 - `serve_connection` closes its connection however it ends, including by
   cancellation or a defect.
 - `serve` runs each connection in its own process, started with
@@ -269,9 +278,11 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
   by the stop without being closed, so its client waits until the program
   exits. This is a runtime gap: a discarded start argument or task capture
   frees its memory but does not release the host handles it holds.
-- `Date` headers, streamed request and response bodies, a graceful drain of
-  open connections when serving stops, and a close that drains unread input
-  before it closes (so a peer that is still sending does not see a reset).
+- Streamed request and response bodies (they change the handler's shape,
+  which is still an open decision), and a graceful drain that lets open
+  connections finish their current request when serving stops. A drain
+  through `Supervisor.stop` would wait for connections one after another, so
+  it needs a signal every connection sees at once (CHI-263).
 - The HTTP client, and HTTPS after `std/tls`.
 
 ## std/sql (driver-independent layer)
@@ -401,7 +412,8 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
 | HTTP: control characters, bare CR and LF, two hosts, transfer codings across headers, transfer-encoding on HTTP/1.0, ASCII-only case folding, versions | `tests/http.rs` `ambiguous_requests_are_refused` |
 | HTTP: heads, bodies and chunks split across reads; a head that never ends is 431 in one read or many; empty lines skipped; 100 header lines accepted; repeated equal lengths; absolute and `*` targets; `100 Continue` before the body is sent, and not on HTTP/1.0 | `tests/http.rs` `requests_arrive_however_they_are_split_and_in_every_target_form` |
 | HTTP: the handler's framing headers are replaced; 204 and 304 lengths | `tests/http.rs` `the_server_frames_every_response_itself` |
-| HTTP: the write limit; a handler's defect closes the connection; failed accepts are retried with a growing pause | `tests/http.rs` `slow_clients_and_failed_accepts_do_not_stop_the_server_and_a_defect_closes_its_connection` |
+| HTTP: the write limit; a closing answer lingers up to 2 s for a client still sending; a handler's defect closes the connection; failed accepts are retried with a growing pause | `tests/http.rs` `slow_clients_and_failed_accepts_do_not_stop_the_server_and_a_defect_closes_its_connection` |
+| HTTP: `date` on every response at four clock starts (leap day, before 1970, 2100), and a handler's own `date` stands | `tests/http.rs` `every_response_carries_the_date` |
 | HTTP: a handler failure is 500; the idle limit; status and header defects; `Http.request` for handler tests | `tests/http.rs` `a_handler_failure_answers_500_and_an_idle_client_is_closed` |
 | HTTP: connections served at once over loopback (within a time limit, so a server that answers one at a time fails); closing the listener ends `serve` and closes open connections; a handler's defect closes only its connection; past `max_connections` a client waits | `tests/http.rs` `a_server_on_loopback_serves_clients_at_once_and_stops_with_its_listener` |
 | SQL: rows read by name, each typed accessor, nulls, missing columns, wrong kinds, `one` and `first` | `tests/sql.rs` `rows_are_read_by_column_name_with_typed_accessors` |

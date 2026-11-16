@@ -344,23 +344,50 @@ fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request
       Next.Ended -> break Void
       Next.Refused(refusal) -> {
         Task.timeout(fn() {
-          write_response(writer, refusal_response(refusal), False, 1, False)
+          write_response(writer, refusal_response(refusal), now(), False, 1, False)
         }, bounds.write)
+        linger(reader, writer)
         break Void
       }
       Next.Arrived(request, keep_alive, minor, rest) -> {
         let answer = answer(request, handle)
         let keep = keep_alive and not List.contains(header_tokens(answer.headers, "connection"), "close")
         Task.timeout(fn() {
-          write_response(writer, answer, keep, minor, request.method == Method.Head)
+          write_response(writer, answer, now(), keep, minor, request.method == Method.Head)
         }, bounds.write)
         case keep {
           True -> rest
-          False -> break Void
+          False -> {
+            linger(reader, writer)
+            break Void
+          }
         }
       }
     }
   }
+}
+
+// After a closing answer, stops writing and drops what the client still
+// sends, for up to 2 s, before the connection closes. Closing with unread
+// input would make the client's system answer with a reset, which can throw
+// away the answer before the client reads it (RFC 9112 section 9.6; Go waits
+// 500 ms, nginx up to 5 s).
+fn linger(reader: Reader<NetError>, writer: Writer<NetError>) -> Void needs {
+  clock: Clock
+} {
+  let _ = Result.capture(fn() {
+    Stream.close(writer)
+    Task.timeout(fn() {
+      loop _more = True {
+        let chunk = Stream.read(reader)
+        case chunk {
+          Some(_) -> True
+          None -> break Void
+        }
+      }
+    }, Duration.seconds(2))
+  })
+  Void
 }
 
 fn answer<E, R>(request: Request, handle: fn(Request) -> Response errors E needs R) -> Response needs R {
@@ -927,11 +954,17 @@ fn is_framing_header(name: Text) -> Bool {
   List.contains(["content-length", "connection", "transfer-encoding", "te", "trailer", "upgrade", "keep-alive", "proxy-connection"], name)
 }
 
-fn write_response(writer: Writer<NetError>, response: Response, keep_alive: Bool, minor: Int, head_only: Bool) -> Void {
+fn write_response(writer: Writer<NetError>, response: Response, date: Text, keep_alive: Bool, minor: Int, head_only: Bool) -> Void {
   let given = List.filter(response.headers, fn(header) {
     let (name, _) = header
     not is_framing_header(name)
   })
+  // RFC 9110 section 6.6.1: an origin server with a clock sends `Date`; a
+  // handler's own `Date` stands.
+  let dated = case find_header(response.headers, "date") {
+    Some(_) -> []
+    None -> [("date", date)]
+  }
   // A 204 has no body to measure; a 304's length is that of the body it
   // stands for, which only the handler knows.
   let framing = case response.status {
@@ -947,7 +980,7 @@ fn write_response(writer: Writer<NetError>, response: Response, keep_alive: Bool
     (True, 0) -> [("connection", "keep-alive")]
     _ -> []
   }
-  let lines = List.map(List.concat([given, framing, connection]), fn(header) {
+  let lines = List.map(List.concat([given, dated, framing, connection]), fn(header) {
     let (name, value) = header
     "${name}: ${value}\r\n"
   })
@@ -957,6 +990,56 @@ fn write_response(writer: Writer<NetError>, response: Response, keep_alive: Bool
     False -> response.body
   }
   Stream.write(writer, Bytes.append(Bytes.from_text(head), body))
+}
+
+// The current time as an HTTP date.
+fn now() -> Text needs {
+  clock: Clock
+} {
+  http_date(Clock.unix_nanoseconds(Clock.timestamp()))
+}
+
+// `nanoseconds` since 1970 as an IMF-fixdate (RFC 9110 section 5.6.7), such
+// as `Sun, 06 Nov 1994 08:49:37 GMT`. The calendar is Howard Hinnant's
+// `civil_from_days`, which holds for every proleptic Gregorian date.
+fn http_date(nanoseconds: Int) -> Text {
+  let seconds = floor_divide(nanoseconds, 1000000000)
+  let days = floor_divide(seconds, 86400)
+  let of_day = Int.modulo(seconds, 86400)
+  let shifted = days + 719468
+  let era = floor_divide(shifted, 146097)
+  let of_era = shifted - era * 146097
+  let year_of_era = (of_era - of_era / 1460 + of_era / 36524 - of_era / 146096) / 365
+  let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100)
+  let shifted_month = (5 * of_year + 2) / 153
+  let day = of_year - (153 * shifted_month + 2) / 5 + 1
+  let month = case shifted_month < 10 {
+    True -> shifted_month + 3
+    False -> shifted_month - 9
+  }
+  let year = case month <= 2 {
+    True -> year_of_era + era * 400 + 1
+    False -> year_of_era + era * 400
+  }
+  let weekday = List.get(["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"], Int.modulo(days, 7))
+  let month_name = List.get(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], month - 1)
+  case (weekday, month_name) {
+    (Some(weekday), Some(month_name)) -> "${weekday}, ${two(day)} ${month_name} ${Text.pad_start(Int.to_text(year), 4, "0")} ${two(of_day / 3600)}:${two(of_day / 60 % 60)}:${two(of_day % 60)} GMT"
+    _ -> Debug.crash("Http: no calendar name for day ${days}")
+  }
+}
+
+fn two(value: Int) -> Text {
+  Text.pad_start(Int.to_text(value), 2, "0")
+}
+
+// `left / right` rounded toward negative infinity, for a positive `right`,
+// without an intermediate below the smallest `Int`.
+fn floor_divide(left: Int, right: Int) -> Int {
+  case left % right < 0 {
+    True -> left / right - 1
+    False -> left / right
+  }
 }
 
 fn refusal_response(refusal: Refusal) -> Response {
