@@ -997,7 +997,7 @@ impl Scheduler {
         while let Some(task) = self.runnable.pop_front() {
             self.run(task);
             self.deliver_signal();
-            resumes += 1;
+            resumes = resumes.wrapping_add(1);
             if resumes.is_multiple_of(reactor::IO_POLL_INTERVAL) && !self.reactor.is_empty() {
                 self.poll_io_now();
             }

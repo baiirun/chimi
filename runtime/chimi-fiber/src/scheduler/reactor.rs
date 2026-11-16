@@ -282,10 +282,17 @@ impl Scheduler {
     /// The idle wait while a registration exists. Under the real clock it
     /// ends by the earliest timer deadline; under the virtual clock time is
     /// held, so it waits for a descriptor or a signal only. Wakes the ready
-    /// tasks, then fires due timers.
+    /// tasks, then fires the timers due by now, which under the virtual
+    /// clock are only those at the current instant.
     pub(super) fn wait_for_io(&mut self) {
         let timeout = match self.clock.mode() {
-            super::ClockMode::Virtual => None,
+            // A timer already due fires without moving time, so it must not
+            // wait behind the descriptors.
+            super::ClockMode::Virtual => self
+                .timers
+                .earliest()
+                .filter(|deadline| *deadline <= self.clock.now())
+                .map(|_| Duration::ZERO),
             super::ClockMode::Real => self.timers.earliest().map(|deadline| {
                 let now = self.clock.now();
                 Duration::from_nanos(
@@ -297,9 +304,7 @@ impl Scheduler {
             self.clear_io_wait(task);
             let _ = self.wake(task);
         }
-        if self.clock.mode() == super::ClockMode::Real {
-            self.fire_due_timers();
-        }
+        self.fire_due_timers();
     }
 
     /// Wakes the tasks whose descriptors are ready now, so a program that

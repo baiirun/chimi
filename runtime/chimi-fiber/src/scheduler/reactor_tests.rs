@@ -288,6 +288,31 @@ fn a_timeout_scope_withdraws_a_parked_wait() {
     assert_eq!(seen, [1, 1, i64::from(IO_READABLE)]);
 }
 
+unsafe extern "C" fn time_out_at_once(_context: *mut c_void) -> ChimiFiberResult {
+    let (read, write) = pipe();
+    let mut enter = blank(REQUEST_SCOPE_ENTER);
+    enter.value = now();
+    call(&mut enter);
+    // The deadline is the current instant: firing it moves no time, so it
+    // fires although a descriptor wait holds the clock.
+    note(i64::from(wait_io(read, IO_READABLE).is_none()));
+    let mut exit = blank(REQUEST_SCOPE_EXIT);
+    exit.token = enter.token;
+    exit.value = 1;
+    call(&mut exit);
+    note(now());
+    close(read);
+    close(write);
+    succeeded(0)
+}
+
+#[test]
+fn a_deadline_already_due_fires_during_a_virtual_clock_wait() {
+    let (outcome, seen) = run(time_out_at_once, process_abi::CLOCK_VIRTUAL);
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_eq!(seen, [1, 0]);
+}
+
 /// Plays the runner's signal handler: stores SIGTERM in the word and
 /// writes to the wake pipe whose write end is `context`.
 unsafe extern "C" fn raise_after_a_sleep(context: *mut c_void) -> ChimiFiberResult {

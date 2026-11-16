@@ -149,9 +149,13 @@ through the scheduler's IO reactor instead of blocking the scheduler thread.
 - **Virtual time.** A descriptor wait is a host operation in flight, so
   virtual time does not advance while one exists ([virtual
   time](time-and-outcomes.md#virtual-time)). Timeouts, `shutdown_within`
-  deadlines and `--signal` injections therefore wait for the descriptor; a
-  real signal still ends the wait, because the signal pipe is in the same
-  wait. A parked task waiting on a descriptor is never a deadlock.
+  deadlines and `--signal` injections later than the current instant
+  therefore wait for the descriptor (one due at the current instant still
+  fires). A real signal still ends the wait while `main` runs, because the
+  signal pipe is in the same wait; once `main` has ended, signals are
+  retired, so a process body still draining in a descriptor wait under the
+  virtual clock ends only with a second signal. A parked task waiting on a
+  descriptor is never a deadlock.
 - **Cancellation.** The wait is a cancellation point. A cancellation, a
   timeout scope's deadline, or a forced shutdown withdraws it.
 - **Closing.** Closing a descriptor while a task waits on it is a host bug.
@@ -162,14 +166,18 @@ through the scheduler's IO reactor instead of blocking the scheduler thread.
   connections; the reactor's wait is the one place an epoll or kqueue
   backend replaces it.
 
-`process_utf8_lines` reads through this wait under the scheduler: a program
-reading standard input lets its other tasks run, and the first SIGINT or
+`process_utf8_lines` reads through this wait under the scheduler: while a
+read waits for input, the program's other tasks run, and the first SIGINT or
 SIGTERM ends the read as it cancels `main`. Standard input is read with
 read(2) into a process-wide buffer, so bytes read past an early exit wait
 for the next read of `"-"`. Regular files go through the same path, where
 the wait answers at once. Standard input is never made non-blocking,
 because its file description is shared with the parent; a descriptor a
 parent left non-blocking is waited on and read again.
+
+A reader whose input is always ready (`yes | program`) keeps the CPU as a
+busy loop does: other runnable tasks still run between its reads, but
+timers fire only when the scheduler idles.
 
 Not yet covered: writes to standard output and standard error still block
 the scheduler thread, so a program writing to a stalled pipe is ended only
