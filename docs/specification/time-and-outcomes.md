@@ -1541,9 +1541,9 @@ program.
   runs `sleep_until(deadline)` in a child task that the select waits on as a
   task source. Timer children that did not commit are cancelled, but
   only after the committed source's operation has taken its value: a cancel
-  reply lets other tasks run, which would break the commit. Cancelled timer
-  children are not yet observed, so each select with a user-clock timer
-  leaves one terminal task record behind (follow-up ticket).
+  reply lets other tasks run, which would break the commit. A cancelled
+  timer child's handle becomes unreachable when the select returns, so its
+  record is freed once the child drains, like any released task.
 - **Abandoned selects.** Any request from a task first withdraws a select it
   had parked in. A select woken by a source and then refused by a fired scope
   therefore leaves no watcher or wake timer behind.

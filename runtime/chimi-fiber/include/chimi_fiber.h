@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 22u
+#define CHIMI_FIBER_ABI_VERSION 23u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -216,6 +216,14 @@ enum {
      oldest that wants it. A cancellation point, withdrawn by a cancellation;
      unlike an IO wait it does not hold virtual time. */
   CHIMI_REQUEST_SIGNAL_WAIT = 45,
+  /* ChimiSchedulerRequest: no value names task `task` any more, so nothing
+     can read its outcome again. Once the task is terminal, now or later, the
+     scheduler removes its record and releases its kept result value; a kept
+     defect code stays until the scheduler ends. Any task may issue it, since
+     the last copy of a handle can die in any heap. OK, or ERROR for an
+     unknown task, a process body, a live root, or a second release. Never
+     parks, and not a cancellation point. */
+  CHIMI_REQUEST_TASK_RELEASE = 46,
 };
 
 /* Interest and ready conditions of CHIMI_REQUEST_IO_WAIT. HANGUP and ERROR
@@ -776,5 +784,10 @@ ChimiSchedulerOutcome chimi_scheduler_run(const ChimiSchedulerConfig *config);
    chimi_scheduler_run finished its root and stopped every supervisor: zero
    unless a removal or stop leaked one. Zero before any run. */
 size_t chimi_scheduler_live_memberships(void);
+/* The most task records the scheduler held at once during the last
+   chimi_scheduler_run, the root included. A loop that starts and drops
+   tasks keeps it bounded, because each record goes once its task is
+   released (CHIMI_REQUEST_TASK_RELEASE) and terminal. Zero before any run. */
+size_t chimi_scheduler_peak_task_records(void);
 
 #endif

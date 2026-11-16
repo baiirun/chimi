@@ -154,6 +154,10 @@ pub const REQUEST_IO_WITHDRAW: u32 = 44;
 /// for an empty list or another code. A cancellation point, withdrawn by a
 /// cancellation (`scheduler/signal.rs`).
 pub const REQUEST_SIGNAL_WAIT: u32 = 45;
+/// No value names `task` any more (`Scheduler::release_task`): OK, or ERROR
+/// for an unknown task, a process body, a live root, or a second release.
+/// Any task may issue it. Never parks, and not a cancellation point.
+pub const REQUEST_TASK_RELEASE: u32 = 46;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -714,6 +718,8 @@ pub struct Scheduler {
     /// Terminal tasks whose handle was released, removed by `drive` between
     /// resumes, where no scheduler operation is still using their record.
     released_terminal: Vec<TaskId>,
+    /// The most task records held at once (`chimi_scheduler_peak_task_records`).
+    peak_tasks: usize,
     next_scope: u64,
     signals: signal::Signals,
     reactor: reactor::Reactor,
@@ -816,6 +822,7 @@ impl Scheduler {
                 .map(|report| (report, violation_context)),
             task_values: BTreeMap::new(),
             released_terminal: Vec::new(),
+            peak_tasks: 0,
             next_scope: 0,
             signals: signal::Signals::default(),
             reactor: reactor::Reactor::default(),
@@ -1620,9 +1627,15 @@ impl Scheduler {
                 .children
                 .insert(id);
         }
+        self.peak_tasks = self.peak_tasks.max(self.tasks.len());
         self.runnable.push_back(id);
         self.emit(id, TaskEventKind::Started, None, false);
         Ok(id)
+    }
+
+    /// The most task records held at once so far.
+    pub fn peak_tasks(&self) -> usize {
+        self.peak_tasks
     }
 
     fn run(&mut self, task: TaskId) {
@@ -1822,6 +1835,14 @@ impl Scheduler {
             REQUEST_IO_WAIT => self.handle_io_wait(owner, request),
             REQUEST_IO_WITHDRAW => self.handle_io_withdraw(owner, request),
             REQUEST_SIGNAL_WAIT => self.handle_signal_wait(owner, request),
+            REQUEST_TASK_RELEASE => {
+                request.status = if self.release_task(TaskId(request.task)).is_ok() {
+                    RESPONSE_OK
+                } else {
+                    RESPONSE_ERROR
+                };
+                let _ = self.wake(owner);
+            }
             REQUEST_TASK_START => {
                 let Some(entry) = request.entry else {
                     request.status = RESPONSE_ERROR;
