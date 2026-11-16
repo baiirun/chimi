@@ -32,6 +32,9 @@ use super::{
 /// The `std/signal` signal codes, 1 to `USER_SIGNAL_CODES`; code `n` is
 /// latch bit `n - 1`.
 const USER_SIGNAL_CODES: u32 = 3;
+/// The latch bits of the `std/signal` codes. The word's other bits are the
+/// scheduler's own, such as `CHILD_EXITED_SIGNAL_BIT`.
+const USER_SIGNAL_MASK: u32 = (1 << USER_SIGNAL_CODES) - 1;
 
 /// A task parked in `REQUEST_SIGNAL_WAIT`.
 struct SignalWaiter {
@@ -87,6 +90,12 @@ impl Signals {
     pub(super) fn wake_fd(&self) -> Option<i32> {
         self.wake_fd
     }
+
+    /// True when the runner's handlers set bits in a `std/signal` word and
+    /// write to the wake pipe, so a SIGCHLD wakes an idle wait.
+    pub(super) fn has_user_source(&self) -> bool {
+        self.user_word.is_some() && self.wake_fd.is_some()
+    }
 }
 
 impl Scheduler {
@@ -138,13 +147,16 @@ impl Scheduler {
         // SAFETY: the runner keeps the word valid and 4-byte aligned while
         // the scheduler runs; its handler sets bits with an atomic OR.
         let bits = unsafe { AtomicU32::from_ptr(word) }.swap(0, Ordering::SeqCst);
+        if bits & super::CHILD_EXITED_SIGNAL_BIT != 0 {
+            self.recheck_children();
+        }
+        let bits = bits & USER_SIGNAL_MASK;
         if bits != 0 {
             self.latch_user_signals(bits);
         }
     }
 
     fn latch_user_signals(&mut self, bits: u32) {
-        let bits = bits & ((1 << USER_SIGNAL_CODES) - 1);
         let now = self.clock.now();
         for code in 1..=USER_SIGNAL_CODES {
             if bits & (1 << (code - 1)) != 0 {

@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 22u
+#define CHIMI_FIBER_ABI_VERSION 24u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -216,7 +216,22 @@ enum {
      oldest that wants it. A cancellation point, withdrawn by a cancellation;
      unlike an IO wait it does not hold virtual time. */
   CHIMI_REQUEST_SIGNAL_WAIT = 45,
+  /* ChimiSchedulerRequest: waits until the child process whose pid is in
+     `value` has exited. OK once it has; the scheduler only looks (waitid
+     with WNOWAIT), so the host reaps it with its own waitpid. PENDING while
+     it runs, so reissue after every wake. ERROR for a pid that is not
+     positive or not an unreaped child. The runner's SIGCHLD handler sets
+     CHIMI_CHILD_EXITED_SIGNAL_BIT in `user_signals` and writes to
+     `signal_fd`; without it the scheduler still rechecks every 10
+     milliseconds while idle. Like an IO wait it is a host operation in
+     flight, so it holds virtual time. A cancellation point, withdrawn by a
+     cancellation. */
+  CHIMI_REQUEST_CHILD_WAIT = 47,
 };
+
+/* The bit the runner's SIGCHLD handler sets in `user_signals`, above the
+   std/signal codes, so CHIMI_REQUEST_CHILD_WAIT waiters are checked. */
+#define CHIMI_CHILD_EXITED_SIGNAL_BIT (1u << 8)
 
 /* Interest and ready conditions of CHIMI_REQUEST_IO_WAIT. HANGUP and ERROR
    are ready conditions only: the next read or write reports them. */

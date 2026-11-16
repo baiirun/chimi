@@ -1,6 +1,9 @@
 //! Deterministic structured lifecycle for finite Chimi tasks, supervised
 //! processes, and the execution clock.
 
+mod child;
+#[cfg(test)]
+mod child_tests;
 mod clock;
 mod process;
 mod process_abi;
@@ -18,6 +21,7 @@ mod select_tests;
 mod signal;
 
 use self::clock::{Clock, TimerQueue, TimerTarget};
+pub use self::child::CHILD_EXITED_SIGNAL_BIT;
 pub use self::clock::{ClockMode, Instant, TimerId};
 pub use self::reactor::{IO_ERROR, IO_HANGUP, IO_READABLE, IO_WRITABLE};
 use self::process::ProcessKernel;
@@ -154,6 +158,12 @@ pub const REQUEST_IO_WITHDRAW: u32 = 44;
 /// for an empty list or another code. A cancellation point, withdrawn by a
 /// cancellation (`scheduler/signal.rs`).
 pub const REQUEST_SIGNAL_WAIT: u32 = 45;
+/// Waits until the child process whose pid is in `value` has exited: OK
+/// once it has, leaving it unreaped for the host's `waitpid`; PENDING while
+/// it runs, so reissue after every wake; ERROR for a pid that is not an
+/// unreaped child. Holds virtual time like an IO wait. A cancellation point,
+/// withdrawn by a cancellation (`scheduler/child.rs`).
+pub const REQUEST_CHILD_WAIT: u32 = 47;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -709,6 +719,7 @@ pub struct Scheduler {
     next_scope: u64,
     signals: signal::Signals,
     reactor: reactor::Reactor,
+    children: child::Children,
     /// Nonzero while a forced end runs: cancellation then never waits for
     /// releases (`force_terminal`).
     forcing: u32,
@@ -810,6 +821,7 @@ impl Scheduler {
             next_scope: 0,
             signals: signal::Signals::default(),
             reactor: reactor::Reactor::default(),
+            children: child::Children::default(),
             forcing: 0,
             next_terminal_sequence: 0,
         }
@@ -894,9 +906,10 @@ impl Scheduler {
             if self.host_operations > 0 {
                 return Idle::AwaitingHost;
             }
-            // A descriptor wait is a host operation in flight: it holds
-            // virtual time, and no parked task is stuck while one exists.
-            if !self.reactor.is_empty() {
+            // A descriptor or child wait is a host operation in flight: it
+            // holds virtual time, and no parked task is stuck while one
+            // exists.
+            if !self.reactor.is_empty() || !self.children.is_empty() {
                 self.wait_for_io();
                 continue;
             }
@@ -1063,8 +1076,11 @@ impl Scheduler {
             self.collect_user_signals();
             self.deliver_signal();
             resumes = resumes.wrapping_add(1);
-            if resumes.is_multiple_of(reactor::IO_POLL_INTERVAL) && !self.reactor.is_empty() {
-                self.poll_io_now();
+            if resumes.is_multiple_of(reactor::IO_POLL_INTERVAL) {
+                if !self.reactor.is_empty() {
+                    self.poll_io_now();
+                }
+                self.recheck_children();
             }
         }
     }
@@ -1676,6 +1692,7 @@ impl Scheduler {
         // leave its watchers and wake timer behind.
         self.clear_select(owner);
         self.clear_io_wait(owner);
+        self.clear_child_wait(owner);
         // A reissued signal wait keeps the task's place among the waiters
         // and any bit it was woken for; anything else leaves the wait.
         if kind != REQUEST_SIGNAL_WAIT {
@@ -1788,6 +1805,7 @@ impl Scheduler {
             REQUEST_IO_WAIT => self.handle_io_wait(owner, request),
             REQUEST_IO_WITHDRAW => self.handle_io_withdraw(owner, request),
             REQUEST_SIGNAL_WAIT => self.handle_signal_wait(owner, request),
+            REQUEST_CHILD_WAIT => self.handle_child_wait(owner, request),
             REQUEST_TASK_START => {
                 let Some(entry) = request.entry else {
                     request.status = RESPONSE_ERROR;
@@ -2076,6 +2094,7 @@ impl Scheduler {
         }
         self.clear_select(task);
         self.clear_io_wait(task);
+        self.clear_child_wait(task);
         self.withdraw_signal_wait(task);
         self.clear_scopes(task);
         self.unroute_task(task);
