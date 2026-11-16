@@ -16,7 +16,7 @@ def m(name, edits):
 
 MUTATIONS = [
  m("a node does not hand allocations back to its parent",
-   [("  if (profile_rows) current_heap->profiled_node_plus_one = outer;", "  (void)outer;")]),
+   [("  if (profile_rows) carrier->fiber.heap->profiled_node_plus_one = outer;", "  (void)outer;")]),
  m("profiling leaves direct loops on",
    [("  if (!runtime->silent || profile_rows) return chimi_rt_loop(", "  if (!runtime->silent) return chimi_rt_loop(")]),
  m("profiling leaves direct integer roots on",

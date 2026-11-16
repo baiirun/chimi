@@ -63,13 +63,13 @@ static int64_t integer(const ChimiValue *value) {
   return value->as.integer;
 }
 static RuntimeHeap *enter(RuntimeHeap *heap) {
-  RuntimeHeap *previous = current_heap;
-  current_heap = heap;
+  RuntimeHeap *previous = carrier->fiber.heap;
+  carrier->fiber.heap = heap;
   return previous;
 }
 static RuntimeHeap *owner_of(const void *value) { return allocation_header(value)->area->heap; }
 /* Starts a new peak, so a check sees this test's memory, not an earlier test's. */
-static void reset_peak(void) { heap_totals.peak_footprint_bytes = heap_totals.footprint_bytes; }
+static void reset_peak(void) { carrier->heap_totals.peak_footprint_bytes = carrier->heap_totals.footprint_bytes; }
 
 static RuntimeFragment *copy_value(ChimiValue *value) {
   void *roots[] = {value};
@@ -146,14 +146,14 @@ static void test_a_million_passes_keep_peak_memory_flat(void) {
     state = int_value(next);
     CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_OK, "pass %u", pass);
     if (pass == 10000) {
-      peak_after_warmup = heap_totals.peak_footprint_bytes;
+      peak_after_warmup = carrier->heap_totals.peak_footprint_bytes;
       allocations_after_warmup = region.survivors.count;
     }
   }
   CHECK(integer(state) == passes, "state %lld", (long long)integer(state));
-  CHECK(heap_totals.peak_footprint_bytes == peak_after_warmup,
+  CHECK(carrier->heap_totals.peak_footprint_bytes == peak_after_warmup,
         "peak footprint grew from %zu to %zu bytes", peak_after_warmup,
-        heap_totals.peak_footprint_bytes);
+        carrier->heap_totals.peak_footprint_bytes);
   CHECK(region.survivors.count <= 2 * allocations_after_warmup + 1,
         "survivors grew from %zu to %zu", allocations_after_warmup, region.survivors.count);
   CHECK(region.full_collections > 0 && region.full_collections <= passes / 64,
@@ -185,7 +185,7 @@ static void test_values_allocated_before_the_loop_survive_its_collections(void) 
    survivors_out. Under AddressSanitizer a freed outer value or a survivor dropped at
    exit fails as a use after free. */
 static void test_inner_passes_keep_outer_values_and_exit_hands_survivors_out(void) {
-  HeapTotals before = heap_totals;
+  HeapTotals before = carrier->heap_totals;
   RuntimeHeap *heap = heap_create();
   RuntimeHeap *previous = enter(heap);
   AllocationScope outer_region, inner_region;
@@ -215,9 +215,9 @@ static void test_inner_passes_keep_outer_values_and_exit_hands_survivors_out(voi
     (void)text_value(text);
     (void)pair(int_value(pass), int_value(pass));
     CHECK(allocation_scope_collect(&outer_region, &outer_state, NULL) == HEAP_OK, "outer %d", pass);
-    if (pass == 100) peak_at_warmup = heap_totals.peak_footprint_bytes;
+    if (pass == 100) peak_at_warmup = carrier->heap_totals.peak_footprint_bytes;
   }
-  CHECK(heap_totals.peak_footprint_bytes == peak_at_warmup, "outer garbage was not reclaimed");
+  CHECK(carrier->heap_totals.peak_footprint_bytes == peak_at_warmup, "outer garbage was not reclaimed");
   ChimiValue *inner_result = item(outer_state, 0);
   ChimiValue *kept = item(inner_result, 0);
   CHECK(integer(item(kept, 0)) == 7 && integer(item(kept, 1)) == 8, "kept outer value changed");
@@ -226,8 +226,8 @@ static void test_inner_passes_keep_outer_values_and_exit_hands_survivors_out(voi
   CHECK(heap->innermost == NULL, "regions left open");
   enter(previous);
   heap_destroy(heap);
-  CHECK(heap_totals.live_allocations == before.live_allocations &&
-          heap_totals.footprint_bytes == before.footprint_bytes,
+  CHECK(carrier->heap_totals.live_allocations == before.live_allocations &&
+          carrier->heap_totals.footprint_bytes == before.footprint_bytes,
         "a region exit lost or leaked allocations");
 }
 
@@ -252,10 +252,10 @@ static void test_adopted_fragments_join_the_innermost_region_and_are_reclaimed(v
     CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_OK, "round %d", round);
     ChimiValue *message = item(state, 0);
     CHECK(integer(item(message, 0)) + integer(item(message, 1)) == 42, "round %d message", round);
-    if (round == 3000) peak_at_warmup = heap_totals.peak_footprint_bytes;
+    if (round == 3000) peak_at_warmup = carrier->heap_totals.peak_footprint_bytes;
   }
-  CHECK(heap_totals.peak_footprint_bytes == peak_at_warmup, "adopted fragments were not reclaimed");
-  CHECK(heap_totals.live_fragments == 0, "%zu fragments in transit", heap_totals.live_fragments);
+  CHECK(carrier->heap_totals.peak_footprint_bytes == peak_at_warmup, "adopted fragments were not reclaimed");
+  CHECK(carrier->heap_totals.live_fragments == 0, "%zu fragments in transit", carrier->heap_totals.live_fragments);
   allocation_scope_end(&region, NULL, NULL);
   enter(previous);
   heap_destroy(receiver);
@@ -294,10 +294,10 @@ static void test_a_pointer_into_another_heap_is_reported_not_followed(void) {
   void *roots[] = {mixed};
   AllocationKind kinds[] = {ALLOCATION_VALUE};
   RuntimeFragment *fragment = (RuntimeFragment *)1;
-  size_t fragments = heap_totals.live_fragments;
+  size_t fragments = carrier->heap_totals.live_fragments;
   CHECK(fragment_copy(roots, kinds, 1, &fragment) == HEAP_FOREIGN_POINTER && fragment == NULL,
         "a copy followed a pointer into another heap");
-  CHECK(heap_totals.live_fragments == fragments, "a failed copy kept its fragment");
+  CHECK(carrier->heap_totals.live_fragments == fragments, "a failed copy kept its fragment");
   AllocationScope region;
   allocation_scope_begin(&region);
   ChimiValue *state = items((ChimiValue *[]){foreign}, 1);
@@ -312,7 +312,7 @@ static void test_a_pointer_into_another_heap_is_reported_not_followed(void) {
 
 /* Prototype: destroying_heaps_and_unadopted_fragments_frees_every_chunk. */
 static void test_destroying_heaps_and_unadopted_fragments_frees_everything(void) {
-  HeapTotals before = heap_totals;
+  HeapTotals before = carrier->heap_totals;
   RuntimeHeap *heap = heap_create();
   RuntimeHeap *previous = enter(heap);
   ChimiValue *value = pair(int_value(1), int_value(2));
@@ -322,14 +322,14 @@ static void test_destroying_heaps_and_unadopted_fragments_frees_everything(void)
   enter(previous);
   heap_destroy(heap);
   fragment_free(unread);
-  CHECK(heap_totals.live_allocations == before.live_allocations, "%zu allocations leaked",
-        heap_totals.live_allocations - before.live_allocations);
-  CHECK(heap_totals.footprint_bytes == before.footprint_bytes, "%zu bytes leaked",
-        heap_totals.footprint_bytes - before.footprint_bytes);
-  CHECK(heap_totals.live_fragments == before.live_fragments, "fragments leaked");
-  CHECK(heap_totals.fragment_footprint_bytes == before.fragment_footprint_bytes,
+  CHECK(carrier->heap_totals.live_allocations == before.live_allocations, "%zu allocations leaked",
+        carrier->heap_totals.live_allocations - before.live_allocations);
+  CHECK(carrier->heap_totals.footprint_bytes == before.footprint_bytes, "%zu bytes leaked",
+        carrier->heap_totals.footprint_bytes - before.footprint_bytes);
+  CHECK(carrier->heap_totals.live_fragments == before.live_fragments, "fragments leaked");
+  CHECK(carrier->heap_totals.fragment_footprint_bytes == before.fragment_footprint_bytes,
         "fragment bytes leaked");
-  CHECK(heap_totals.live_heaps == before.live_heaps, "heaps leaked");
+  CHECK(carrier->heap_totals.live_heaps == before.live_heaps, "heaps leaked");
 }
 
 /* Port requirement (Task.result adoption): copying a fragment into a heap leaves it
@@ -361,7 +361,7 @@ static void test_a_fragment_copies_into_a_heap_without_being_consumed(void) {
     CHECK(allocation_scope_collect(&region, &state, NULL) == HEAP_OK, "pass %d", call);
   }
   allocation_scope_end(&region, NULL, NULL);
-  CHECK(heap_totals.live_fragments >= 1, "copying consumed the fragment");
+  CHECK(carrier->heap_totals.live_fragments >= 1, "copying consumed the fragment");
   fragment_free(result);
   enter(previous);
   heap_destroy(caller);
@@ -380,9 +380,9 @@ static void test_a_copy_of_a_window_copies_only_the_window(void) {
   ChimiValue *window = list_slice(list, 40000, 65000);
   CHECK(window->as.list.vector.root == list->as.list.vector.root, "the window should share");
   ChimiValue *tiny = list_value(list->as.list.vector, 50000, 10);
-  size_t before = heap_totals.fragment_footprint_bytes;
+  size_t before = carrier->heap_totals.fragment_footprint_bytes;
   RuntimeFragment *fragment = copy_value(tiny);
-  size_t bytes = heap_totals.fragment_footprint_bytes - before;
+  size_t bytes = carrier->heap_totals.fragment_footprint_bytes - before;
   CHECK(bytes < 4096, "a 10-element window copied %zu bytes", bytes);
   ChimiValue *copied = fragment->roots[0];
   for (uint32_t index = 0; index < 10; ++index)
@@ -399,9 +399,9 @@ static void test_queued_small_messages_cost_bytes_proportional_to_their_size(voi
   RuntimeHeap *previous = enter(sender);
   enum { QUEUED = 1000 };
   RuntimeFragment *queue[QUEUED];
-  size_t before = heap_totals.fragment_footprint_bytes;
+  size_t before = carrier->heap_totals.fragment_footprint_bytes;
   for (int index = 0; index < QUEUED; ++index) queue[index] = copy_value(int_value(index));
-  size_t queued = heap_totals.fragment_footprint_bytes - before;
+  size_t queued = carrier->heap_totals.fragment_footprint_bytes - before;
   CHECK(queued < 256 * 1024, "1000 queued Int messages hold %zu bytes", queued);
   enter(receiver);
   AllocationScope region;
@@ -412,7 +412,7 @@ static void test_queued_small_messages_cost_bytes_proportional_to_their_size(voi
     sum += integer(message);
   }
   CHECK(sum == (int64_t)QUEUED * (QUEUED - 1) / 2, "sum %lld", (long long)sum);
-  CHECK(heap_totals.fragment_footprint_bytes == before, "adopted messages still count as queued");
+  CHECK(carrier->heap_totals.fragment_footprint_bytes == before, "adopted messages still count as queued");
   allocation_scope_end(&region, NULL, NULL);
   enter(previous);
   heap_destroy(receiver);
@@ -455,7 +455,7 @@ static ChimiValue *large_value(uint32_t length, ChimiValue *fill) {
   return value;
 }
 static void test_regions_fragments_and_passes_compose(void) {
-  HeapTotals before = heap_totals;
+  HeapTotals before = carrier->heap_totals;
   RuntimeHeap *heap = heap_create(), *peer = heap_create();
   RuntimeHeap *previous = enter(heap);
   ChimiValue *outer = int_value(7);
@@ -504,9 +504,9 @@ static void test_regions_fragments_and_passes_compose(void) {
   enter(previous);
   heap_destroy(peer);
   heap_destroy(heap);
-  CHECK(heap_totals.live_allocations == before.live_allocations &&
-          heap_totals.footprint_bytes == before.footprint_bytes &&
-          heap_totals.live_fragments == before.live_fragments,
+  CHECK(carrier->heap_totals.live_allocations == before.live_allocations &&
+          carrier->heap_totals.footprint_bytes == before.footprint_bytes &&
+          carrier->heap_totals.live_fragments == before.live_fragments,
         "allocations leaked");
 }
 
@@ -581,10 +581,10 @@ static void measure_messages(void) {
   RuntimeHeap *sender = heap_create(), *receiver = heap_create();
   RuntimeHeap *previous = enter(sender);
   RuntimeFragment *queue[1000];
-  size_t before = heap_totals.fragment_footprint_bytes;
+  size_t before = carrier->heap_totals.fragment_footprint_bytes;
   for (int index = 0; index < 1000; ++index) queue[index] = copy_value(int_value(index));
   printf("measure queued_int_messages=1000 fragment_footprint_bytes=%zu\n",
-         heap_totals.fragment_footprint_bytes - before);
+         carrier->heap_totals.fragment_footprint_bytes - before);
   for (int index = 0; index < 1000; ++index) fragment_free(queue[index]);
   /* Both sides run in a loop region, as a sending and a receiving loop would. */
   AllocationScope sending;
@@ -606,7 +606,7 @@ static void measure_messages(void) {
   }
   double elapsed = seconds_now() - started;
   printf("measure int_message_ns=%.1f peak_footprint_bytes=%zu full_passes=%llu\n",
-         elapsed * 1e9 / MESSAGES, heap_totals.peak_footprint_bytes,
+         elapsed * 1e9 / MESSAGES, carrier->heap_totals.peak_footprint_bytes,
          (unsigned long long)region.full_collections);
   allocation_scope_end(&region, NULL, NULL);
   enter(sender);

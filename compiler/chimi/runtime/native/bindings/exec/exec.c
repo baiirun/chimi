@@ -655,9 +655,9 @@ static void await_exit(ChimiBindingCall *call) {
    SIGTERM and `milliseconds` to exit, then SIGKILL, and is reaped; zero
    sends SIGKILL at once, and so does any grace when no ticker can be opened
    (a SIGTERM cut short at once is worse than none). Other tasks run while it
-   waits. A cancelled wait (a stop signal ending main, which no release
-   masks) must not be followed by another, which would park a task that is
-   unwinding: the child gets SIGKILL, the stop answers cancelled, and the
+   waits. A cancelled wait (a task ended outright, which no release masks,
+   such as a process body forced at its shutdown deadline) must not be
+   followed by another, which would park a task that is unwinding: the child gets SIGKILL, the stop answers cancelled, and the
    handle's release at the program's end reaps it. */
 ChimiBindingResult *chimi_exec_stop(ChimiBindingCall *call) {
   int64_t grace;
