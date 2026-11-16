@@ -1,0 +1,16 @@
+# mutation run at cdde4bf0a9c5055a0cab95ee86bae277a2b88350
+# carrier_state_mutations.py: 5 mutants against compiler/chimi
+KILLED       a resumed fiber keeps the heap another fiber left current [task_release task_combinators] (13s)
+SURVIVED     a resumed fiber gets its heap back but not its allocation target [task_release task_combinators cli] (33s)
+KILLED       the carrier starts with no current heap [language -- booleans_stay_booleans] (11s)
+KILLED       a new file-scope counter is added outside the carrier [runtime_state] (13s)
+KILLED       a function-local static is added outside the carrier [runtime_state] (14s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+
+# The surviving mutant drops the allocation-target half of the restore that
+# CHI-229 (PR 70) added without a test. The target is NULL at every park, so
+# it goes stale only when a child overflows its stack inside a fragment copy or
+# a list compaction, which can happen only in an allocator call made right at
+# the stack limit. No test can place an overflow there deterministically, so
+# the mutant survives. The restore stays, and it is now one struct copy of the
+# fiber context, so it can no longer be dropped one field at a time.

@@ -674,3 +674,35 @@ test \"the fake hands out hangups\" {{
     assert!(stderr.contains("T4400"), "{stderr}");
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+// A stop signal cancels `main` like any other task (scope-owned-resources.md,
+// "Cancelling the task"): a `main` inside `Resource.scoped` runs its release,
+// which sleeps 2 s, before it ends. Rejects ending `main` at
+// once, which skipped the release, so an `Exec.start` written in `main` lost
+// its graceful stop on Ctrl-C.
+#[test]
+fn a_stop_signal_runs_the_releases_of_main_itself() {
+    let run = run_virtual(
+        "main-release",
+        "import std/resource as Resource
+
+pub fn main() -> Int needs { clock: Clock, console: Console } {
+  Resource.scoped(
+    fn() { 3 },
+    fn(held) {
+      Clock.sleep(Duration.seconds(2))
+      console.write_line(\"released\")
+    },
+    fn(held) {
+      Clock.sleep(Duration.seconds(10))
+      held
+    },
+  )
+}
+",
+        &["TERM@1s"],
+    );
+    assert_eq!(run.output.status.code(), Some(143), "{:?}", run.output);
+    assert!(run.outcome.contains("\"outcome\":\"cancellation\""), "{}", run.outcome);
+    assert_eq!(String::from_utf8_lossy(&run.output.stdout), "released\n");
+}
