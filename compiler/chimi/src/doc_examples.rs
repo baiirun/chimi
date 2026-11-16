@@ -151,6 +151,42 @@ fn example_blocks(lines: &[&str]) -> Vec<(String, Block)> {
     blocks
 }
 
+/// The doc comment directly before the item whose first line starts at byte
+/// `item_line`: its `///` lines with the markers removed, or `None` when the
+/// line before the item is not a doc comment.
+pub(crate) fn doc_comment_before(text: &str, item_line: usize) -> Option<String> {
+    let before: Vec<&str> = text[..item_line].split('\n').collect();
+    // `before` ends with the empty text after the item line's preceding newline.
+    let lines = &before[..before.len().saturating_sub(1)];
+    let first = lines
+        .iter()
+        .rposition(|line| doc_content(line).is_none())
+        .map_or(0, |index| index + 1);
+    doc_text(&lines[first..])
+}
+
+/// The module's own doc comment: a `///` run before the first item that a
+/// blank line separates from what follows, so it documents no item.
+pub(crate) fn module_comment(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let start = lines.iter().position(|line| !line.trim().is_empty())?;
+    let end = (start..lines.len())
+        .find(|&index| doc_content(lines[index]).is_none())
+        .unwrap_or(lines.len());
+    let follows = lines.get(end).copied().unwrap_or_default();
+    (end > start && follows.trim().is_empty())
+        .then(|| doc_text(&lines[start..end]))
+        .flatten()
+}
+
+fn doc_text(lines: &[&str]) -> Option<String> {
+    let content: Vec<&str> = lines
+        .iter()
+        .map(|line| doc_content(line).unwrap_or_default().trim_end())
+        .collect();
+    (!content.is_empty()).then(|| content.join("\n"))
+}
+
 /// The lines of one ```` ```chimi ```` block: the opening fence, the code, and
 /// the closing fence.
 struct Block {

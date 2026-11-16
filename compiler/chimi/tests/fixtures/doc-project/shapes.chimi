@@ -1,0 +1,52 @@
+/// Plane shapes and what they measure.
+///
+/// Sizes are whole units.
+
+/// A shape on the plane.
+pub enum Shape {
+  Circle(radius: Int)
+  Square(side: Int)
+}
+
+pub enum ShapeError {
+  Negative(size: Int)
+}
+
+/// How many sides a square has.
+pub const square_sides: Int = 4
+
+/// The shapes the examples use.
+pub const examples: List<Shape> = [
+  Circle(1),
+  Square(2),
+]
+
+// A plain comment is not a doc comment.
+pub fn sides(shape: Shape) -> Int {
+  case shape {
+    Circle(_) -> 0
+    Square(_) -> square_sides
+  }
+}
+
+/// A run that a blank line ends documents nothing.
+
+/// The area, rounded down, or `Negative` for a negative size.
+pub fn area(shape: Shape) -> Int {
+  case shape {
+    Circle(radius) -> checked(radius) * checked(radius) * 3
+    Square(side) -> checked(side) * checked(side)
+  }
+}
+
+/// Private items are not documented.
+fn checked(size: Int) -> Int {
+  case size < 0 {
+    True -> Failure(ShapeError.Negative(size))
+    False -> size
+  }
+}
+
+test "a square has four sides" {
+  Void
+}

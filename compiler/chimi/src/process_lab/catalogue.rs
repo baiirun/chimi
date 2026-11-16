@@ -176,7 +176,7 @@ const TASK_TERMINAL: &[&str] = &["task_terminal"];
 
 use Stage::*;
 
-pub static SCENARIOS: [Scenario; 161] = [
+pub static SCENARIOS: [Scenario; 163] = [
     // Static: compile-pass.
     fixture("SP01", "static-contract-example", U1),
     fixture("SP02", "spec-inside-using-shareable-provider", U2),
@@ -360,6 +360,8 @@ pub static SCENARIOS: [Scenario; 161] = [
     fixture("CB10", "unread-message-aborts-carried-channel", U12),
     fixture("CB11", "unstarted-handoff-argument-aborts-its-channel", U12),
     fixture("CB12", "refused-send-hands-the-receiver-back", U12),
+    fixture("CB13", "unmonitored-notice-aborts-carried-channel", U12),
+    fixture("CB14", "received-notice-gives-back-its-receiver", U12),
     // Heap: memory flatness.
     fixture("MF01", "mailbox-memory-flat-over-uptime", U5).runs(&["10000", "1000000"]),
     fixture("MF02", "memory-flat-over-restarts", U10).runs(&["100", "10000"]),

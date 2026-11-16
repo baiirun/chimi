@@ -11,6 +11,8 @@ pub enum DiagnosticStage {
     Name,
     Type,
     ExecutionSetup,
+    /// `chimi lint`: a convention finding, never an error.
+    Lint,
 }
 
 impl fmt::Display for DiagnosticStage {
@@ -21,6 +23,7 @@ impl fmt::Display for DiagnosticStage {
             Self::Name => "name",
             Self::Type => "type",
             Self::ExecutionSetup => "execution-setup",
+            Self::Lint => "lint",
         };
         formatter.write_str(name)
     }

@@ -1,5 +1,4 @@
 import std/cause as Cause
-import std/clock as Clock
 import std/clock.{Clock, Instant}
 import std/debug as Debug
 import std/duration as Duration

@@ -335,6 +335,23 @@ impl Scheduler {
                 ) else {
                     return self.respond(waiter, RESPONSE_ERROR, |_| {});
                 };
+                // SAFETY: the host's record names capabilities that stay
+                // valid while it is suspended on the request.
+                let carried =
+                    unsafe { super::carried_capabilities(input.carried.cast_mut().cast()) };
+                if let Err(error) = self.channels.check_carried(owner, &carried) {
+                    let _ = self.channel_violation::<()>(
+                        owner,
+                        error,
+                        super::REQUEST_PROCESS_MONITOR,
+                        None,
+                    );
+                    return;
+                }
+                // The notice carries its capabilities as a message does: in
+                // flight until the watcher receives it, ended if it is
+                // dropped unread.
+                self.channels.dispatch_carried(owner, input.message as usize, &carried);
                 let monitor = self.process_monitor(watcher, target, input.message);
                 self.respond(waiter, RESPONSE_OK, |r| r.monitor = monitor.get());
             }

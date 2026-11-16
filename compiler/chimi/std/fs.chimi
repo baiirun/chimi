@@ -16,7 +16,7 @@
 /// the path it happened on.
 
 import std/bytes as Bytes
-import std/bytes.{Bytes, DecodeError}
+import std/bytes.{Bytes}
 import std/clock as Clock
 import std/clock.{Timestamp}
 import std/list as List
