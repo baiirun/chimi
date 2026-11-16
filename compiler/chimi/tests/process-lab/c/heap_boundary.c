@@ -71,8 +71,8 @@ const uint32_t CHIMI_BINDING_COUNT = 0;
   } while (0)
 
 static RuntimeHeap *enter(RuntimeHeap *heap) {
-  RuntimeHeap *previous = current_heap;
-  current_heap = heap;
+  RuntimeHeap *previous = carrier->fiber.heap;
+  carrier->fiber.heap = heap;
   return previous;
 }
 
@@ -138,15 +138,15 @@ static BoundaryWork cross_into_foreign_values(uint32_t size) {
   void *roots[] = {graph};
   AllocationKind kinds[] = {ALLOCATION_VALUE};
   RuntimeFragment *fragment = (RuntimeFragment *)1;
-  size_t fragments = heap_totals.live_fragments, footprint = heap_totals.footprint_bytes;
-  heap_totals.peak_footprint_bytes = footprint;
+  size_t fragments = carrier->heap_totals.live_fragments, footprint = carrier->heap_totals.footprint_bytes;
+  carrier->heap_totals.peak_footprint_bytes = footprint;
   CHECK(fragment_copy(roots, kinds, 1, &fragment) == HEAP_FOREIGN_POINTER,
         "a fragment copy accepted a pointer into another heap");
   CHECK(fragment == NULL, "a failed copy returned a fragment");
-  CHECK(heap_totals.live_fragments == fragments, "a failed copy kept its fragment");
-  CHECK(heap_totals.footprint_bytes == footprint, "a failed copy kept %zu bytes",
-        heap_totals.footprint_bytes - footprint);
-  work.copy_peak_bytes = heap_totals.peak_footprint_bytes - footprint;
+  CHECK(carrier->heap_totals.live_fragments == fragments, "a failed copy kept its fragment");
+  CHECK(carrier->heap_totals.footprint_bytes == footprint, "a failed copy kept %zu bytes",
+        carrier->heap_totals.footprint_bytes - footprint);
+  work.copy_peak_bytes = carrier->heap_totals.peak_footprint_bytes - footprint;
   CHECK(list_sum(foreign) == foreign_sum, "the copy changed the foreign list");
   CHECK(foreign_text->as.text.length == size, "the copy changed the foreign Text");
 
@@ -192,7 +192,7 @@ static void cb07_foreign_pointer_send_defects_in_the_sender(void) {
   ChimiRuntime runtime = {0};
   ChimiValue *arguments[] = {process_address_value(CHIMI_ADDRESS_DIRECT, 1),
                              triple(integer_value(1), foreign, integer_value(2))};
-  size_t fragments = heap_totals.live_fragments;
+  size_t fragments = carrier->heap_totals.live_fragments;
   ChimiControl *sent = invoke_process(&runtime, CHIMI_INTRINSIC_PROCESS_SEND, arguments, 2, 0, 0, NULL);
   CHECK(sent->kind == CONTROL_DEFECT, "a send with a foreign pointer did not defect (control %d)",
         (int)sent->kind);
@@ -203,7 +203,7 @@ static void cb07_foreign_pointer_send_defects_in_the_sender(void) {
         "the defect does not name both owners: %s", sent->message);
   CHECK(scheduler_request_count == 0, "the send reached the scheduler (%zu requests)",
         scheduler_request_count);
-  CHECK(heap_totals.live_fragments == fragments, "the refused send left a fragment");
+  CHECK(carrier->heap_totals.live_fragments == fragments, "the refused send left a fragment");
   ChimiValue *own[] = {arguments[0], triple(integer_value(1), integer_value(2), integer_value(3))};
   ChimiControl *accepted = invoke_process(&runtime, CHIMI_INTRINSIC_PROCESS_SEND, own, 2, 0, 0, NULL);
   CHECK(accepted->kind == CONTROL_SUCCESS, "a send of an owned message failed");

@@ -446,16 +446,8 @@ typedef struct {
 enum { REGION_FULL_MIN_GROWTH = 4 * 1024 };
 
 static RuntimeHeap main_heap = {.owner = 1, .base = {.role = AREA_BASE, .heap = &main_heap}};
-static RuntimeHeap *current_heap = &main_heap;
 static uint64_t next_heap_owner = 2;
 static AllocationArea static_area = {.role = AREA_STATIC};
-/* When set, allocate() uses this area instead of the current heap's innermost one:
-   for static constants, fragment copies, and list_slice's in-place compaction. */
-static AllocationArea *allocation_target;
-static HeapTotals heap_totals;
-/* Bytes allocated outside every region, static constants included. Nothing reclaims
-   them before exit. */
-static size_t unscoped_allocated_bytes;
 static uint64_t next_mark_epoch = 1;
 
 /* The operation profile (--profile-file): per Core node, how often it was evaluated
@@ -468,7 +460,6 @@ typedef struct {
   uint64_t allocations;
   uint64_t allocated_bytes;
 } ProfileRow;
-static ProfileRow *profile_rows;
 
 static void exhausted_memory(void) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
 
@@ -489,19 +480,89 @@ enum { SMALL_BLOCK_GRAIN = 16, SMALL_BLOCK_LIMIT = 256, SMALL_BLOCK_CACHE = 4096
 #define CHIMI_SMALL_BLOCK_CACHE 1
 #endif
 typedef struct SmallBlock { struct SmallBlock *next; } SmallBlock;
-static SmallBlock *small_blocks[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
-static uint32_t small_block_counts[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
+
+/* A growable stack of allocations, used by marking and copying so neither recurses:
+   both run on 64 KiB fiber stacks. */
+typedef struct { void **items; size_t length; size_t capacity; } PointerStack;
+
+/* The state of the fiber that is running: the heap it allocates in and, when set, the
+   area allocate() uses instead of that heap's innermost one (static constants,
+   fragment copies, and list_slice's in-place compaction). It belongs to the fiber,
+   not to the thread, so scheduler_request saves it before a park and restores it on
+   resume. */
+typedef struct {
+  RuntimeHeap *heap;
+  AllocationArea *target;
+} FiberContext;
+
+/* Everything one carrier thread mutates while it runs fibers (R4 step 1,
+   docs/architecture/parallel-scheduler.md "Runtime state by owner"). There is one
+   carrier today, so `carrier` names one static instance and every access folds to a
+   fixed address, as the statics it replaced did. A field here may be scratch that a
+   run leaves clean, a cache, or a counter that a later step sums across carriers;
+   none of it may be held across a scheduler request, because once fibers move
+   between carriers the fiber may resume on another one. Process-wide tables whose
+   ids travel inside values (handle counts, files, bindings, test logs), signal state
+   and constants stay file-scope globals. */
+typedef struct {
+  FiberContext fiber;
+  /* Process-wide accounting, so tests can prove that memory stays flat and that
+     destroying heaps and fragments returns every allocation. */
+  HeapTotals heap_totals;
+  /* Footprint of the young chunk allocations whose counters are still deferred to
+     their scope's next flush. Bumping one only adds to this, so the true footprint
+     (footprint_bytes plus this) peaks just before it falls: footprint_sub and
+     footprint_add record the peak there, and the report reads footprint_peak(). */
+  size_t pending_footprint_bytes;
+  /* Bytes allocated outside every region, static constants included. Nothing
+     reclaims them before exit. */
+  size_t unscoped_allocated_bytes;
+  /* Visited-set slots examined by every capture transfer so far; the memory
+     report's `capture_transfer_probes`, so a test can bound transfer work without
+     timing it. */
+  uint64_t capture_transfer_probes;
+  /* The largest peak of live payload bytes of any incarnation's heap. */
+  size_t process_heap_peak_value_bytes;
+  /* Values and payload bytes that message copies (Process.send) duplicated: the
+     memory report's `copied_values` and `copied_bytes`. Only a copy made with
+     `copy_counting` set adds to them. */
+  bool copy_counting;
+  uint64_t copied_values;
+  uint64_t copied_bytes;
+  /* The foreign owner the last failed fragment_copy reached. */
+  uint64_t fragment_copy_foreign_owner;
+  ProfileRow *profile_rows;
+  SmallBlock *small_blocks[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
+  uint32_t small_block_counts[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
+  YoungChunk *young_chunk_cache;
+  uint32_t young_chunk_cache_count;
+  /* The pass in progress. Marking reaches only this region's young allocations, plus
+     its survivors in a full pass: everything else is older than the region's values
+     or than the pass, so it cannot reach them. */
+  AllocationScope *collecting_scope;
+  bool collecting_full;
+  bool collecting_foreign;
+  uint64_t collecting_epoch;
+  PointerStack mark_stack;
+  PointerStack copy_stack;
+  /* Copies that copy_scan still has to redirect. Copying never yields, so one stack,
+     kept between copies, serves every heap. */
+  PointerStack copy_pending;
+} Carrier;
+
+static Carrier carrier_state = {.fiber = {.heap = &main_heap}};
+static Carrier *const carrier = &carrier_state;
 
 /* A zeroed block of at least `bytes` bytes, to be returned with small_block_give. */
 static void *small_block_take(size_t bytes) {
   size_t rounded = (bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
   if (CHIMI_SMALL_BLOCK_CACHE && rounded <= SMALL_BLOCK_LIMIT) {
     size_t class = rounded / SMALL_BLOCK_GRAIN - 1;
-    SmallBlock *block = small_blocks[class];
+    SmallBlock *block = carrier->small_blocks[class];
     if (block) {
-      small_blocks[class] = block->next;
-      --small_block_counts[class];
-      heap_totals.cached_bytes -= rounded;
+      carrier->small_blocks[class] = block->next;
+      --carrier->small_block_counts[class];
+      carrier->heap_totals.cached_bytes -= rounded;
       memset(block, 0, rounded);
       return block;
     }
@@ -515,12 +576,12 @@ static void small_block_give(void *pointer, size_t bytes) {
   size_t rounded = (bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
   if (CHIMI_SMALL_BLOCK_CACHE && rounded <= SMALL_BLOCK_LIMIT) {
     size_t class = rounded / SMALL_BLOCK_GRAIN - 1;
-    if (small_block_counts[class] < SMALL_BLOCK_CACHE) {
+    if (carrier->small_block_counts[class] < SMALL_BLOCK_CACHE) {
       SmallBlock *block = pointer;
-      block->next = small_blocks[class];
-      small_blocks[class] = block;
-      ++small_block_counts[class];
-      heap_totals.cached_bytes += rounded;
+      block->next = carrier->small_blocks[class];
+      carrier->small_blocks[class] = block;
+      ++carrier->small_block_counts[class];
+      carrier->heap_totals.cached_bytes += rounded;
       return;
     }
   }
@@ -528,40 +589,35 @@ static void small_block_give(void *pointer, size_t bytes) {
 }
 
 static AllocationArea *current_area(void) {
-  if (allocation_target) return allocation_target;
-  return current_heap->innermost ? &current_heap->innermost->young : &current_heap->base;
+  if (carrier->fiber.target) return carrier->fiber.target;
+  return carrier->fiber.heap->innermost ? &carrier->fiber.heap->innermost->young : &carrier->fiber.heap->base;
 }
 
-/* Footprint of the young chunk allocations whose counters are still deferred to
-   their scope's next flush. Bumping one only adds to this, so the true footprint
-   (footprint_bytes plus this) peaks just before it falls: footprint_sub and
-   footprint_add record the peak there, and the report reads footprint_peak(). */
-static size_t pending_footprint_bytes;
 
 static void footprint_record_peak(void) {
-  size_t footprint = heap_totals.footprint_bytes + pending_footprint_bytes;
-  if (footprint > heap_totals.peak_footprint_bytes) heap_totals.peak_footprint_bytes = footprint;
+  size_t footprint = carrier->heap_totals.footprint_bytes + carrier->pending_footprint_bytes;
+  if (footprint > carrier->heap_totals.peak_footprint_bytes) carrier->heap_totals.peak_footprint_bytes = footprint;
 }
 
 static void footprint_add(size_t bytes) {
-  heap_totals.footprint_bytes += bytes;
+  carrier->heap_totals.footprint_bytes += bytes;
   footprint_record_peak();
 }
 
 static void footprint_sub(size_t bytes) {
   footprint_record_peak();
-  heap_totals.footprint_bytes -= bytes;
+  carrier->heap_totals.footprint_bytes -= bytes;
 }
 
 static size_t footprint_peak(void) {
   footprint_record_peak();
-  return heap_totals.peak_footprint_bytes;
+  return carrier->heap_totals.peak_footprint_bytes;
 }
 
 static void fragment_footprint_add(size_t bytes) {
-  heap_totals.fragment_footprint_bytes += bytes;
-  if (heap_totals.fragment_footprint_bytes > heap_totals.peak_fragment_footprint_bytes)
-    heap_totals.peak_fragment_footprint_bytes = heap_totals.fragment_footprint_bytes;
+  carrier->heap_totals.fragment_footprint_bytes += bytes;
+  if (carrier->heap_totals.fragment_footprint_bytes > carrier->heap_totals.peak_fragment_footprint_bytes)
+    carrier->heap_totals.peak_fragment_footprint_bytes = carrier->heap_totals.fragment_footprint_bytes;
 }
 
 static void scope_add_live(AllocationScope *scope, size_t bytes) {
@@ -582,14 +638,12 @@ static void area_link(AllocationArea *area, AllocationHeader *header) {
   ++area->count;
 }
 
-static YoungChunk *young_chunk_cache;
-static uint32_t young_chunk_cache_count;
 
 static YoungChunk *young_chunk_take(void) {
-  YoungChunk *chunk = young_chunk_cache;
+  YoungChunk *chunk = carrier->young_chunk_cache;
   if (chunk) {
-    young_chunk_cache = chunk->next;
-    --young_chunk_cache_count;
+    carrier->young_chunk_cache = chunk->next;
+    --carrier->young_chunk_cache_count;
   } else {
     chunk = calloc(1, YOUNG_CHUNK_BYTES);
     if (!chunk) exhausted_memory();
@@ -610,11 +664,11 @@ static void young_chunk_give(YoungChunk *chunk) {
   free(chunk);
   return;
 #endif
-  if (young_chunk_cache_count < YOUNG_CHUNK_CACHE) {
+  if (carrier->young_chunk_cache_count < YOUNG_CHUNK_CACHE) {
     memset(chunk->data, 0, (size_t)(chunk->used - chunk->data));
-    chunk->next = young_chunk_cache;
-    young_chunk_cache = chunk;
-    ++young_chunk_cache_count;
+    chunk->next = carrier->young_chunk_cache;
+    carrier->young_chunk_cache = chunk;
+    ++carrier->young_chunk_cache_count;
     return;
   }
   free(chunk);
@@ -636,8 +690,8 @@ static void flush_young_counts(AllocationScope *scope) {
   scope_add_live(scope, bytes);
   scope->total_allocated_bytes += bytes;
   scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
-  heap_totals.live_allocations += count;
-  pending_footprint_bytes -= count * sizeof(AllocationHeader) + bytes;
+  carrier->heap_totals.live_allocations += count;
+  carrier->pending_footprint_bytes -= count * sizeof(AllocationHeader) + bytes;
   footprint_add(count * sizeof(AllocationHeader) + bytes);
 }
 
@@ -672,7 +726,7 @@ static void *allocate(size_t count, size_t size) {
       bytes > SIZE_MAX - sizeof(AllocationHeader) - SMALL_BLOCK_GRAIN) {
     fputs("Chimi runtime allocation overflow\n", stderr); exit(70);
   }
-  AllocationScope *innermost = allocation_target ? NULL : current_heap->innermost;
+  AllocationScope *innermost = carrier->fiber.target ? NULL : carrier->fiber.heap->innermost;
   if (innermost && !innermost->links_young && bytes <= YOUNG_CHUNK_LARGEST) {
     size_t rounded = young_rounded(bytes);
     AllocationHeader *header = young_bump(innermost, rounded);
@@ -681,9 +735,9 @@ static void *allocate(size_t count, size_t size) {
     header->in_chunk = true;
     innermost->pending_bytes += bytes;
     ++innermost->pending_count;
-    pending_footprint_bytes += sizeof(AllocationHeader) + bytes;
-    if (profile_rows && current_heap->profiled_node_plus_one) {
-      ProfileRow *row = &profile_rows[current_heap->profiled_node_plus_one - 1];
+    carrier->pending_footprint_bytes += sizeof(AllocationHeader) + bytes;
+    if (carrier->profile_rows && carrier->fiber.heap->profiled_node_plus_one) {
+      ProfileRow *row = &carrier->profile_rows[carrier->fiber.heap->profiled_node_plus_one - 1];
       ++row->allocations;
       row->allocated_bytes += bytes;
     }
@@ -700,15 +754,15 @@ static void *allocate(size_t count, size_t size) {
     scope->total_allocated_bytes += bytes;
     scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
   } else if (area->role != AREA_FRAGMENT) {
-    unscoped_allocated_bytes += bytes;
+    carrier->unscoped_allocated_bytes += bytes;
   }
-  if (profile_rows && current_heap->profiled_node_plus_one) {
-    ProfileRow *row = &profile_rows[current_heap->profiled_node_plus_one - 1];
+  if (carrier->profile_rows && carrier->fiber.heap->profiled_node_plus_one) {
+    ProfileRow *row = &carrier->profile_rows[carrier->fiber.heap->profiled_node_plus_one - 1];
     ++row->allocations;
     row->allocated_bytes += bytes;
   }
   if (area->role != AREA_STATIC) {
-    ++heap_totals.live_allocations;
+    ++carrier->heap_totals.live_allocations;
     footprint_add(sizeof(*header) + bytes);
     if (area->role == AREA_FRAGMENT) fragment_footprint_add(sizeof(*header) + bytes);
   }
@@ -848,7 +902,7 @@ static void release_allocation(AllocationHeader *header) {
   }
   if (header->area->heap) header->area->heap->live_bytes -= header->bytes;
   if (header->area->role != AREA_STATIC) {
-    --heap_totals.live_allocations;
+    --carrier->heap_totals.live_allocations;
     footprint_sub(sizeof(*header) + header->bytes);
   }
   small_block_give(header, sizeof(*header) + header->bytes);
@@ -903,7 +957,7 @@ static RuntimeHeap *heap_create(void) {
   heap->owner = next_heap_owner++;
   heap->base.role = AREA_BASE;
   heap->base.heap = heap;
-  ++heap_totals.live_heaps;
+  ++carrier->heap_totals.live_heaps;
   return heap;
 }
 
@@ -919,7 +973,7 @@ static void heap_destroy(RuntimeHeap *heap) {
     area_free(area);
   }
   free(heap);
-  --heap_totals.live_heaps;
+  --carrier->heap_totals.live_heaps;
 }
 
 static void *reallocate_bytes(void *value, size_t old_bytes, size_t new_bytes) {
@@ -1296,10 +1350,10 @@ static ListVector list_copy_window(const ChimiValue *list, uint32_t from, uint32
   ChimiValue **values = malloc((size_t)length * sizeof(*values));
   if (!values) exhausted_memory();
   for (uint32_t index = 0; index < length; ++index) values[index] = list_get(list, from + index);
-  AllocationArea *previous = allocation_target;
-  if (area) allocation_target = area;
+  AllocationArea *previous = carrier->fiber.target;
+  if (area) carrier->fiber.target = area;
   ListVector copy = vector_from_values(values, length);
-  allocation_target = previous;
+  carrier->fiber.target = previous;
   free(values);
   return copy;
 }
@@ -1343,9 +1397,6 @@ static void allocation_graph_inconsistent(void) {
   fputs("Chimi runtime allocation graph is inconsistent\n", stderr); exit(70);
 }
 
-/* A growable stack of allocations, used by marking and copying so neither recurses:
-   both run on 64 KiB fiber stacks. */
-typedef struct { void **items; size_t length; size_t capacity; } PointerStack;
 static void pointer_stack_push(PointerStack *stack, void *pointer) {
   if (stack->length == stack->capacity) {
     size_t capacity = stack->capacity ? stack->capacity * 2 : 256;
@@ -1357,29 +1408,21 @@ static void pointer_stack_push(PointerStack *stack, void *pointer) {
   stack->items[stack->length++] = pointer;
 }
 
-/* The pass in progress. Marking reaches only this region's young allocations, plus
-   its survivors in a full pass: everything else is older than the region's values
-   or than the pass, so it cannot reach them. */
-static AllocationScope *collecting_scope;
-static bool collecting_full;
-static bool collecting_foreign;
-static uint64_t collecting_epoch;
-static PointerStack mark_stack;
 
 static void mark_push(void *pointer, AllocationKind kind) {
   if (!pointer) return;
   AllocationHeader *header = allocation_header(pointer);
   if (header->kind != kind) allocation_graph_inconsistent();
   AllocationArea *area = header->area;
-  if (area->scope != collecting_scope) {
-    if (area->heap != collecting_scope->heap && area->role != AREA_STATIC) collecting_foreign = true;
+  if (area->scope != carrier->collecting_scope) {
+    if (area->heap != carrier->collecting_scope->heap && area->role != AREA_STATIC) carrier->collecting_foreign = true;
     return;
   }
-  if (area->role == AREA_SURVIVOR && !collecting_full) return;
-  if (header->mark_epoch == collecting_epoch) return;
-  header->mark_epoch = collecting_epoch;
-  ++collecting_scope->scanned_allocations;
-  pointer_stack_push(&mark_stack, pointer);
+  if (area->role == AREA_SURVIVOR && !carrier->collecting_full) return;
+  if (header->mark_epoch == carrier->collecting_epoch) return;
+  header->mark_epoch = carrier->collecting_epoch;
+  ++carrier->collecting_scope->scanned_allocations;
+  pointer_stack_push(&carrier->mark_stack, pointer);
 }
 
 static void mark_children(void *pointer) {
@@ -1482,22 +1525,21 @@ static void mark_children(void *pointer) {
    pointer the copies and the marked list allocations hold. Only this region's
    chunk allocations move: everything else a pass reaches is older than the pass
    or in a list, and nothing older points into a chunk. */
-static PointerStack copy_stack;
 
 static void *forward_young(void *pointer) {
   if (!pointer) return NULL;
   AllocationHeader *header = allocation_header(pointer);
-  if (!header->in_chunk || header->area->scope != collecting_scope) return pointer;
+  if (!header->in_chunk || header->area->scope != carrier->collecting_scope) return pointer;
   if (header->next) return header->next + 1;
-  if (header->mark_epoch != collecting_epoch) allocation_graph_inconsistent();
+  if (header->mark_epoch != carrier->collecting_epoch) allocation_graph_inconsistent();
   size_t total = sizeof(*header) + header->bytes;
   AllocationHeader *copy = small_block_take(total);
   memcpy(copy, header, total);
   copy->in_chunk = false;
-  area_link(&collecting_scope->survivors, copy);
-  collecting_scope->promoted_bytes += copy->bytes;
+  area_link(&carrier->collecting_scope->survivors, copy);
+  carrier->collecting_scope->promoted_bytes += copy->bytes;
   header->next = copy;
-  pointer_stack_push(&copy_stack, copy + 1);
+  pointer_stack_push(&carrier->copy_stack, copy + 1);
   return copy + 1;
 }
 
@@ -1579,7 +1621,7 @@ static void forward_children(void *pointer) {
 
 static void forward_marked_list(AllocationArea *area) {
   for (AllocationHeader *header = area->allocations; header; header = header->next)
-    if (header->mark_epoch == collecting_epoch) forward_children(header + 1);
+    if (header->mark_epoch == carrier->collecting_epoch) forward_children(header + 1);
 }
 
 /* Whether this pass of `scope` has bumped an allocation into its chunks. */
@@ -1594,7 +1636,7 @@ static void forward_survivors(AllocationScope *scope, ChimiValue **value, ChimiC
   if (control) *control = forward_young(*control);
   forward_marked_list(&scope->young);
   for (AllocationArea *area = scope->adopted; area; area = area->next) forward_marked_list(area);
-  while (copy_stack.length) forward_children(copy_stack.items[--copy_stack.length]);
+  while (carrier->copy_stack.length) forward_children(carrier->copy_stack.items[--carrier->copy_stack.length]);
 }
 
 /* Releases the chunk allocations of this pass that were not moved, and empties the
@@ -1619,7 +1661,7 @@ static void reset_young_chunks(AllocationScope *scope, bool keep_first) {
   }
   scope->live_bytes -= dead_bytes;
   scope->heap->live_bytes -= dead_bytes;
-  heap_totals.live_allocations -= dead_count;
+  carrier->heap_totals.live_allocations -= dead_count;
   footprint_sub(dead_count * sizeof(AllocationHeader) + dead_bytes);
   YoungChunk *rest = first->next;
 #ifdef CHIMI_POISON_YOUNG_CHUNKS
@@ -1646,7 +1688,7 @@ static void reset_young_chunks(AllocationScope *scope, bool keep_first) {
 
 static void allocation_scope_begin(AllocationScope *scope) {
   memset(scope, 0, sizeof(*scope));
-  RuntimeHeap *heap = current_heap;
+  RuntimeHeap *heap = carrier->fiber.heap;
   /* The enclosing region's peak must count what its pass has allocated so far. */
   if (heap->innermost) flush_young_counts(heap->innermost);
   scope->heap = heap;
@@ -1661,7 +1703,7 @@ static void promote_marked(AllocationScope *scope, AllocationArea *area) {
   AllocationHeader *header = area->allocations;
   while (header) {
     AllocationHeader *next = header->next;
-    if (header->mark_epoch == collecting_epoch) {
+    if (header->mark_epoch == carrier->collecting_epoch) {
       area_link(&scope->survivors, header);
       scope->promoted_bytes += header->bytes;
     } else {
@@ -1681,7 +1723,7 @@ static void sweep_survivors(AllocationScope *scope) {
   AllocationHeader **link = &area->allocations;
   while (*link) {
     AllocationHeader *header = *link;
-    if (header->mark_epoch == collecting_epoch) {
+    if (header->mark_epoch == carrier->collecting_epoch) {
       link = &header->next;
       continue;
     }
@@ -1700,18 +1742,18 @@ static void sweep_survivors(AllocationScope *scope) {
    value in another heap or in a fragment. */
 static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **value,
                                          ChimiControl **control, bool full, bool ending) {
-  collecting_epoch = next_mark_epoch++;
+  carrier->collecting_epoch = next_mark_epoch++;
   if (next_mark_epoch == 0) {
     fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); exit(70);
   }
   flush_young_counts(scope);
-  collecting_scope = scope;
-  collecting_full = full;
-  collecting_foreign = false;
+  carrier->collecting_scope = scope;
+  carrier->collecting_full = full;
+  carrier->collecting_foreign = false;
   mark_push(value ? *value : NULL, ALLOCATION_VALUE);
   mark_push(control ? *control : NULL, ALLOCATION_CONTROL);
-  while (mark_stack.length) mark_children(mark_stack.items[--mark_stack.length]);
-  bool foreign = collecting_foreign;
+  while (carrier->mark_stack.length) mark_children(carrier->mark_stack.items[--carrier->mark_stack.length]);
+  bool foreign = carrier->collecting_foreign;
   size_t young_bytes = scope->young.bytes, promoted_before = scope->promoted_bytes;
   forward_survivors(scope, value, control);
   reset_young_chunks(scope, !ending);
@@ -1727,7 +1769,7 @@ static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **va
     sweep_survivors(scope);
     ++scope->full_collections;
   }
-  collecting_scope = NULL;
+  carrier->collecting_scope = NULL;
   ++scope->collections;
   return foreign ? HEAP_FOREIGN_POINTER : HEAP_OK;
 }
@@ -1791,18 +1833,6 @@ typedef struct {
   void *inline_copies[COPY_INLINE_SLOTS];
 } FragmentCopy;
 
-/* Copies that copy_scan still has to redirect. Copying never yields, so one stack,
-   kept between copies, serves every heap. */
-static PointerStack copy_pending;
-
-/* Values and payload bytes that message copies (Process.send) duplicated: the memory
-   report's `copied_values` and `copied_bytes`. Only a copy made with
-   `copy_counting` set adds to them. */
-static bool copy_counting;
-static uint64_t copied_values;
-static uint64_t copied_bytes;
-/* The foreign owner the last failed fragment_copy reached. */
-static uint64_t fragment_copy_foreign_owner;
 
 static void copy_foreign(FragmentCopy *copy, const AllocationArea *area) {
   if (copy->status == HEAP_OK) copy->foreign_owner = area->heap ? area->heap->owner : 0;
@@ -1869,22 +1899,22 @@ static void *copy_forward(FragmentCopy *copy, void *pointer, AllocationKind kind
   }
   void *existing = copy_table_find(copy, pointer);
   if (existing) return existing;
-  AllocationArea *previous = allocation_target;
-  allocation_target = copy->target;
+  AllocationArea *previous = carrier->fiber.target;
+  carrier->fiber.target = copy->target;
   void *duplicate = allocate(header->bytes, 1);
-  allocation_target = previous;
+  carrier->fiber.target = previous;
   allocation_kind(duplicate, kind);
   memcpy(duplicate, pointer, header->bytes);
-  if (copy_counting) {
-    copied_bytes += header->bytes;
-    if (kind == ALLOCATION_VALUE) ++copied_values;
+  if (carrier->copy_counting) {
+    carrier->copied_bytes += header->bytes;
+    if (kind == ALLOCATION_VALUE) ++carrier->copied_values;
   }
   if (kind == ALLOCATION_VALUE) {
     uint64_t key = counted_handle_key(duplicate);
     if (key) channel_endpoint_retain(key);
   }
   copy_table_insert(copy, pointer, duplicate);
-  pointer_stack_push(&copy_pending, duplicate);
+  pointer_stack_push(&carrier->copy_pending, duplicate);
   return duplicate;
 }
 
@@ -1903,10 +1933,10 @@ static void copy_list_window(FragmentCopy *copy, ChimiValue *list) {
   if (!values) exhausted_memory();
   for (uint32_t index = 0; index < length; ++index)
     values[index] = copy_forward(copy, list_get(list, index), ALLOCATION_VALUE);
-  AllocationArea *previous = allocation_target;
-  allocation_target = copy->target;
+  AllocationArea *previous = carrier->fiber.target;
+  carrier->fiber.target = copy->target;
   list->as.list.vector = vector_from_values(values, length);
-  allocation_target = previous;
+  carrier->fiber.target = previous;
   list->as.list.start = 0;
   free(values);
 }
@@ -2021,7 +2051,7 @@ static HeapStatus copy_graph(FragmentCopy *copy, void *const *roots, const Alloc
   copy->capacity = COPY_INLINE_SLOTS;
   for (uint32_t index = 0; index < count; ++index)
     out[index] = copy_forward(copy, roots[index], kinds[index]);
-  while (copy_pending.length) copy_scan(copy, copy_pending.items[--copy_pending.length]);
+  while (carrier->copy_pending.length) copy_scan(copy, carrier->copy_pending.items[--carrier->copy_pending.length]);
   if (copy->keys != copy->inline_keys) {
     free(copy->keys);
     free(copy->copies);
@@ -2043,16 +2073,16 @@ static HeapStatus fragment_copy(void *const *roots, const AllocationKind *kinds,
   RuntimeFragment *fragment = small_block_take(sizeof(*fragment));
   fragment->area.role = AREA_FRAGMENT;
   fragment->root_count = count;
-  ++heap_totals.live_fragments;
+  ++carrier->heap_totals.live_fragments;
   footprint_add(sizeof(*fragment));
   fragment_footprint_add(sizeof(*fragment));
-  FragmentCopy copy = {.source_heap = current_heap, .target = &fragment->area};
+  FragmentCopy copy = {.source_heap = carrier->fiber.heap, .target = &fragment->area};
   HeapStatus status = copy_graph(&copy, roots, kinds, count, fragment->roots);
   if (status != HEAP_OK) {
-    fragment_copy_foreign_owner = copy.foreign_owner;
-    heap_totals.fragment_footprint_bytes -= fragment_footprint(fragment);
+    carrier->fragment_copy_foreign_owner = copy.foreign_owner;
+    carrier->heap_totals.fragment_footprint_bytes -= fragment_footprint(fragment);
     area_release_all(&fragment->area);
-    --heap_totals.live_fragments;
+    --carrier->heap_totals.live_fragments;
     area_free(&fragment->area);
     *out = NULL;
     return status;
@@ -2065,10 +2095,10 @@ static HeapStatus fragment_copy(void *const *roots, const AllocationKind *kinds,
    base area) in O(1), without copying, and writes its roots to `roots`. Consumes it. */
 static void fragment_adopt(RuntimeFragment *fragment, void **roots) {
   for (uint32_t index = 0; index < fragment->root_count; ++index) roots[index] = fragment->roots[index];
-  heap_totals.fragment_footprint_bytes -= fragment_footprint(fragment);
-  --heap_totals.live_fragments;
+  carrier->heap_totals.fragment_footprint_bytes -= fragment_footprint(fragment);
+  --carrier->heap_totals.live_fragments;
   AllocationArea *area = &fragment->area;
-  RuntimeHeap *heap = current_heap;
+  RuntimeHeap *heap = carrier->fiber.heap;
   AllocationScope *scope = heap->innermost;
   area->heap = heap;
   heap_add_live(heap, area->bytes);
@@ -2082,7 +2112,7 @@ static void fragment_adopt(RuntimeFragment *fragment, void **roots) {
     area->role = AREA_BASE;
     area->next = heap->adopted;
     heap->adopted = area;
-    unscoped_allocated_bytes += area->bytes;
+    carrier->unscoped_allocated_bytes += area->bytes;
   }
 }
 
@@ -2103,7 +2133,7 @@ static RuntimeFragment *fragment_duplicate(const RuntimeFragment *source) {
   RuntimeFragment *fragment = small_block_take(sizeof(*fragment));
   fragment->area.role = AREA_FRAGMENT;
   fragment->root_count = source->root_count;
-  ++heap_totals.live_fragments;
+  ++carrier->heap_totals.live_fragments;
   footprint_add(sizeof(*fragment));
   fragment_footprint_add(sizeof(*fragment));
   AllocationKind kinds[FRAGMENT_ROOTS];
@@ -2117,8 +2147,8 @@ static RuntimeFragment *fragment_duplicate(const RuntimeFragment *source) {
 
 /* Discards an unadopted fragment, for example a message handed back to its sender. */
 static void fragment_free(RuntimeFragment *fragment) {
-  heap_totals.fragment_footprint_bytes -= fragment_footprint(fragment);
-  --heap_totals.live_fragments;
+  carrier->heap_totals.fragment_footprint_bytes -= fragment_footprint(fragment);
+  --carrier->heap_totals.live_fragments;
   area_release_all(&fragment->area);
   area_free(&fragment->area);
 }
@@ -2219,16 +2249,16 @@ static void emit_dependency(ChimiRuntime *runtime, uint32_t node_id, uint64_t sp
 
 /* Charges the current heap's allocations to `node` until profile_leave. */
 static uint32_t profile_enter(uint32_t node, const char *operation) {
-  if (!profile_rows) return 0;
-  ProfileRow *row = &profile_rows[node];
+  if (!carrier->profile_rows) return 0;
+  ProfileRow *row = &carrier->profile_rows[node];
   row->operation = operation;
   ++row->evaluations;
-  uint32_t outer = current_heap->profiled_node_plus_one;
-  current_heap->profiled_node_plus_one = node + 1;
+  uint32_t outer = carrier->fiber.heap->profiled_node_plus_one;
+  carrier->fiber.heap->profiled_node_plus_one = node + 1;
   return outer;
 }
 static void profile_leave(uint32_t outer) {
-  if (profile_rows) current_heap->profiled_node_plus_one = outer;
+  if (carrier->profile_rows) carrier->fiber.heap->profiled_node_plus_one = outer;
 }
 
 static uint64_t begin_node(ChimiRuntime *runtime, uint32_t node, uint64_t parent, const char *operation) {
@@ -2253,11 +2283,11 @@ static ChimiValue *range_value(int64_t start, int64_t end) {
 static ChimiValue *shared_values[3];
 static ChimiValue *shared_value(uint32_t index) {
   if (!shared_values[index]) {
-    AllocationArea *previous = allocation_target;
-    allocation_target = &static_area;
+    AllocationArea *previous = carrier->fiber.target;
+    carrier->fiber.target = &static_area;
     ChimiValue *value = new_value(index == 0 ? VALUE_VOID : VALUE_BOOLEAN);
     if (index == 2) value->as.boolean = true;
-    allocation_target = previous;
+    carrier->fiber.target = previous;
     shared_values[index] = value;
   }
   return shared_values[index];
@@ -2750,12 +2780,10 @@ static ChimiFiberCommand flush_channel_releases(void) {
    Pending channel releases go first; if the task is cancelled meanwhile, `request`
    is not issued and keeps status CHIMI_RESPONSE_UNSET. */
 static ChimiFiberCommand scheduler_request(void *request) {
-  RuntimeHeap *heap = current_heap;
-  AllocationArea *target = allocation_target;
+  FiberContext fiber = carrier->fiber;
   ChimiFiberCommand command = flush_channel_releases();
   if (command != CHIMI_FIBER_CANCEL) command = chimi_fiber_request(request, NULL);
-  current_heap = heap;
-  allocation_target = target;
+  carrier->fiber = fiber;
   return command;
 }
 
@@ -2792,9 +2820,6 @@ typedef struct {
   size_t managed_count;
 } CapabilityTransfer;
 
-/* Visited-set slots examined by every capture transfer so far; the memory report's
-   `capture_transfer_probes`, so a test can bound transfer work without timing it. */
-static uint64_t capture_transfer_probes;
 
 /* Fibonacci hashing: the top bits of the product, for a power-of-two capacity. */
 static size_t transfer_slot(const void *pointer, size_t capacity) {
@@ -2821,7 +2846,7 @@ static bool transfer_visit(CapabilityTransfer *transfer, const void *pointer) {
   }
   size_t slot = transfer_slot(pointer, transfer->visited_capacity);
   for (;;) {
-    ++capture_transfer_probes;
+    ++carrier->capture_transfer_probes;
     if (transfer->visited[slot] == pointer) return false;
     if (!transfer->visited[slot]) break;
     slot = (slot + 1) & (transfer->visited_capacity - 1);
@@ -3003,7 +3028,7 @@ static ChimiValue *application_arguments(int32_t count, const char **argv) {
 
 /* Whether a direct integer root must run node by node: full tracing and profiling
    both observe every node. */
-int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace || profile_rows; }
+int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace || carrier->profile_rows; }
 ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t node_count,
                                                int64_t raw) {
   if (!runtime->silent) runtime->next_span += node_count;
@@ -5800,7 +5825,7 @@ static bool test_log_push(TestLog *log, ChimiValue *value, const char *operation
   if (fragment_copy(roots, kinds, 1, &fragment) != HEAP_OK) {
     *failure = defect(numeric_message("%s: the value points into owner %" PRIu64
                                       ", outside the caller's heap (owner %" PRIu64 ")",
-                                      operation, fragment_copy_foreign_owner, current_heap->owner),
+                                      operation, carrier->fragment_copy_foreign_owner, carrier->fiber.heap->owner),
                       call_node);
     return false;
   }
@@ -6650,15 +6675,15 @@ static ChimiFiberResult child_task_result(ChimiControl *control) {
 
 static ChimiFiberResult chimi_task_entry(void *raw_context) {
   ChimiTaskContext *context = raw_context;
-  allocation_target = NULL;
+  carrier->fiber.target = NULL;
   if (context->entry) {
-    current_heap = &main_heap;
+    carrier->fiber.heap = &main_heap;
     return task_fiber_result(context->entry(context->runtime, context->environment, context->span));
   }
   ChimiRuntime *runtime = context->runtime;
   uint64_t span = context->span;
   RuntimeHeap *heap = heap_create();
-  current_heap = heap;
+  carrier->fiber.heap = heap;
   uint64_t parent = context->parent;
   void *captures[FRAGMENT_ROOTS];
   fragment_adopt(context->captures, captures);
@@ -6678,7 +6703,7 @@ static ChimiFiberResult chimi_task_entry(void *raw_context) {
   }
   ChimiFiberResult result = child_task_result(control);
   heap_destroy(heap);
-  current_heap = NULL;
+  carrier->fiber.heap = NULL;
   return result;
 }
 
@@ -6692,7 +6717,7 @@ static ChimiControl *task_reply(int64_t raw) {
 }
 
 /* The scheduler's release hooks. It calls them on the host stack with no task
-   running, so they free fragments without touching current_heap. A task word is
+   running, so they free fragments without touching the fiber context. A task word is
    a child's tagged result fragment or the root's own control, which lives in the
    main heap and is not the scheduler's to free. */
 static void release_task_word(void *context, int64_t word) {
@@ -7645,13 +7670,13 @@ static ChimiControl *send_to_test_mailbox(ChimiValue *address, ChimiValue *messa
   void *roots[] = {message};
   AllocationKind kinds[] = {ALLOCATION_VALUE};
   RuntimeFragment *fragment = NULL;
-  copy_counting = true;
+  carrier->copy_counting = true;
   HeapStatus status = fragment_copy(roots, kinds, 1, &fragment);
-  copy_counting = false;
+  carrier->copy_counting = false;
   if (status != HEAP_OK)
     return defect(numeric_message("Process.send: the message points into owner %" PRIu64
                                   ", outside the sender's heap (owner %" PRIu64 ")",
-                                  fragment_copy_foreign_owner, current_heap->owner),
+                                  carrier->fragment_copy_foreign_owner, carrier->fiber.heap->owner),
                   call_node);
   CapabilityTransfer carried = {.collect = true};
   transfer_captures(&carried, fragment->roots[0]);
@@ -7818,8 +7843,6 @@ typedef struct {
   bool handoff;
 } ProcessSpecContext;
 
-/* The largest peak of live payload bytes of any incarnation's heap. */
-static size_t process_heap_peak_value_bytes;
 
 /* The defect messages of incarnations whose body defected, kept until the
    scheduler reports the incarnation's end (record_process_defect), which
@@ -7853,10 +7876,10 @@ static char *take_process_defect(uint64_t incarnation) {
    is external so a built executable shows that it links the process kernel (MF06). */
 ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
   ProcessSpecContext *context = raw_context;
-  allocation_target = NULL;
+  carrier->fiber.target = NULL;
   ChimiRuntime *runtime = context->runtime;
   RuntimeHeap *heap = heap_create();
-  current_heap = heap;
+  carrier->fiber.heap = heap;
   void *roots[FRAGMENT_ROOTS];
   fragment_copy_into_current(context->body, roots);
   ChimiValue *body = roots[0];
@@ -7894,10 +7917,10 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
       result = (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1};
       break;
   }
-  if (heap->peak_live_bytes > process_heap_peak_value_bytes)
-    process_heap_peak_value_bytes = heap->peak_live_bytes;
+  if (heap->peak_live_bytes > carrier->process_heap_peak_value_bytes)
+    carrier->process_heap_peak_value_bytes = heap->peak_live_bytes;
   heap_destroy(heap);
-  current_heap = NULL;
+  carrier->fiber.heap = NULL;
   return result;
 }
 
@@ -8094,7 +8117,7 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
       if (fragment_copy(roots, kinds, 1, &notice) != HEAP_OK)
         return defect(numeric_message("Process.monitor: the notice points into owner %" PRIu64
                                       ", outside the watcher's heap (owner %" PRIu64 ")",
-                                      fragment_copy_foreign_owner, current_heap->owner),
+                                      carrier->fragment_copy_foreign_owner, carrier->fiber.heap->owner),
                       call_node);
       /* Receivers and Completions the notice captures travel with it, as in a
          Process.send message, until the receive that runs it. */
@@ -8135,13 +8158,13 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
       void *roots[] = {arguments[1]};
       AllocationKind kinds[] = {ALLOCATION_VALUE};
       RuntimeFragment *message = NULL;
-      copy_counting = true;
+      carrier->copy_counting = true;
       HeapStatus status = fragment_copy(roots, kinds, 1, &message);
-      copy_counting = false;
+      carrier->copy_counting = false;
       if (status != HEAP_OK)
         return defect(numeric_message("Process.send: the message points into owner %" PRIu64
                                       ", outside the sender's heap (owner %" PRIu64 ")",
-                                      fragment_copy_foreign_owner, current_heap->owner),
+                                      carrier->fragment_copy_foreign_owner, carrier->fiber.heap->owner),
                       call_node);
       /* Receivers and Completions in the message travel with it, as through a
          channel: an accepted message puts them in flight, and the process that
@@ -10508,12 +10531,12 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
 }
 
 static void decode_constants(void) {
-  AllocationArea *previous = allocation_target;
-  allocation_target = &static_area;
+  AllocationArea *previous = carrier->fiber.target;
+  carrier->fiber.target = &static_area;
   constant_values = allocate(CHIMI_CONSTANT_VALUE_COUNT, sizeof(*constant_values));
   for (uint32_t i = 0; i < CHIMI_CONSTANT_VALUE_COUNT; ++i)
     constant_values[i] = decode_constant(&CHIMI_CONSTANT_VALUES[i]);
-  allocation_target = previous;
+  carrier->fiber.target = previous;
 }
 
 static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
@@ -11020,7 +11043,7 @@ NODE_WRAPPER(loop, "loop", {
 ChimiControl *chimi_rt_direct_loop(ChimiRuntime *runtime, uint32_t node_id,
                                    ChimiEnvironment *incoming, uint64_t parent,
                                    ChimiDirectPass pass) {
-  if (!runtime->silent || profile_rows) return chimi_rt_loop(runtime, node_id, incoming, parent);
+  if (!runtime->silent || carrier->profile_rows) return chimi_rt_loop(runtime, node_id, incoming, parent);
   ChimiControl *initial = run_node(CHIMI_NODES[node_id].b, runtime, incoming, parent);
   if (initial->kind != CONTROL_SUCCESS) return initial;
   /* A body that never reads its state (`loop s = "x" { break 5 }`) lowers whatever
@@ -11107,7 +11130,7 @@ static bool close_output(FILE *output) {
 
 static int compare_profile_rows(const void *left, const void *right) {
   uint32_t a = *(const uint32_t *)left, b = *(const uint32_t *)right;
-  const ProfileRow *x = &profile_rows[a], *y = &profile_rows[b];
+  const ProfileRow *x = &carrier->profile_rows[a], *y = &carrier->profile_rows[b];
   if (x->allocated_bytes != y->allocated_bytes) return x->allocated_bytes > y->allocated_bytes ? -1 : 1;
   if (x->evaluations != y->evaluations) return x->evaluations > y->evaluations ? -1 : 1;
   return a < b ? -1 : a > b;
@@ -11126,12 +11149,12 @@ static bool write_profile(const char *path) {
   if (!order) exhausted_memory();
   uint32_t count = 0;
   for (uint32_t node = 0; node < CHIMI_NODE_COUNT; ++node)
-    if (profile_rows[node].evaluations) order[count++] = node;
+    if (carrier->profile_rows[node].evaluations) order[count++] = node;
   qsort(order, count, sizeof(*order), compare_profile_rows);
   fputs("{\"schema\":\"chimi.runtime-profile.v1\",\"operations\":[", output);
   for (uint32_t index = 0; index < count; ++index) {
     uint32_t node = order[index];
-    const ProfileRow *row = &profile_rows[node];
+    const ProfileRow *row = &carrier->profile_rows[node];
     const ChimiOrigin *origin = &CHIMI_ORIGINS[CHIMI_NODES[node].origin];
     fprintf(output,
             "%s{\"core_node_id\":%u,\"origin_id\":%u,\"file_id\":%u,\"source_start\":%u,"
@@ -11182,22 +11205,22 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           runtime->scoped_collections,
           runtime->scoped_full_collections,
           runtime->scoped_scanned_allocations,
-          unscoped_allocated_bytes,
+          carrier->unscoped_allocated_bytes,
           footprint_peak(),
-          heap_totals.peak_fragment_footprint_bytes,
-          capture_transfer_probes,
+          carrier->heap_totals.peak_fragment_footprint_bytes,
+          carrier->capture_transfer_probes,
           /* Reported per allocation: young chunks are not counted separately. */
-          heap_totals.live_allocations,
+          carrier->heap_totals.live_allocations,
           footprint_peak(),
-          heap_totals.live_fragments,
-          heap_totals.peak_fragment_footprint_bytes,
+          carrier->heap_totals.live_fragments,
+          carrier->heap_totals.peak_fragment_footprint_bytes,
 #if CHIMI_PROCESS_KERNEL
-          process_heap_peak_value_bytes,
+          carrier->process_heap_peak_value_bytes,
 #else
           (size_t)0,
 #endif
-          copied_values,
-          copied_bytes,
+          carrier->copied_values,
+          carrier->copied_bytes,
           runtime->trace_events_constructed,
 #if CHIMI_PROCESS_KERNEL
           chimi_scheduler_live_memberships(),
@@ -11793,17 +11816,17 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
   };
   channel_endpoints_reset();
   AllocationScope *entry_scope = main_heap.innermost;
-  AllocationArea *entry_target = allocation_target;
+  AllocationArea *entry_target = carrier->fiber.target;
   ChimiSchedulerOutcome outcome = chimi_scheduler_run(&config);
-  current_heap = &main_heap;
+  carrier->fiber.heap = &main_heap;
   /* The root runs on main_heap, and each region it enters records its scope in
      its own fiber frame. A root that overflowed, parked or was ended by the
      scheduler never closed those regions, and its frames will never run again,
      so drop them before the outcome below allocates; an overflow during an
-     in-place list compaction also left allocation_target in such a region.
+     in-place list compaction also left the allocation target in such a region.
      Their allocations are left to exit. */
   main_heap.innermost = entry_scope;
-  allocation_target = entry_target;
+  carrier->fiber.target = entry_target;
   /* The outcome's word is ours: copy a child's result fragment, then free it. */
   if (outcome.state == CHIMI_FIBER_SUCCEEDED || outcome.state == CHIMI_FIBER_DEFECTED) {
     int64_t word = outcome.state == CHIMI_FIBER_SUCCEEDED ? outcome.value : outcome.defect_code;
@@ -11990,8 +12013,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     return 64;
   }
   if (profile_path) {
-    profile_rows = calloc(CHIMI_NODE_COUNT ? CHIMI_NODE_COUNT : 1, sizeof(*profile_rows));
-    if (!profile_rows) exhausted_memory();
+    carrier->profile_rows = calloc(CHIMI_NODE_COUNT ? CHIMI_NODE_COUNT : 1, sizeof(*carrier->profile_rows));
+    if (!carrier->profile_rows) exhausted_memory();
   }
   if (telemetry_path) {
     runtime.telemetry = open_report(telemetry_path, strcmp(telemetry_path, "/dev/null") == 0 ? "w" : "wx");
