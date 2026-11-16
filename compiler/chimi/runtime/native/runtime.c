@@ -8095,13 +8095,20 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
                                       ", outside the watcher's heap (owner %" PRIu64 ")",
                                       fragment_copy_foreign_owner, current_heap->owner),
                       call_node);
+      /* Receivers and Completions the notice captures travel with it, as in a
+         Process.send message, until the receive that runs it. */
+      CapabilityTransfer carried = {.collect = true};
+      transfer_captures(&carried, notice->roots[0]);
+      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
       ChimiProcessRequest request = {
         .kind = CHIMI_REQUEST_PROCESS_MONITOR,
         .address_kind = arguments[1]->as.address.kind,
         .address = arguments[1]->as.address.target,
         .message = (uint64_t)(uintptr_t)notice,
+        .carried = capabilities.count ? &capabilities : NULL,
       };
       ChimiFiberCommand command = scheduler_request(&request);
+      free(carried.carried);
       if (request.status != CHIMI_RESPONSE_OK) fragment_free(notice);
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
       if (request.status != CHIMI_RESPONSE_OK) return defect("Process.monitor scheduler request failed", call_node);
