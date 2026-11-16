@@ -102,18 +102,18 @@ MUTATIONS = [
         "            && self.stopping(task).is_some_and(|stopping| stopping.told)\n            && !self.holds_mask(task)",
         "            && self.stopping(task).is_some_and(|stopping| stopping.told)")]),
     resources("shutdown is delivered into a running release", PROCESS, [(
-        "        let releasing = !forced && self.holds_mask(task);",
+        "        let releasing = !forced && !receiving && self.holds_mask(task);",
         "        let releasing = false;")]),
     resources("a deferred shutdown is never told after the release", SCOPE, [(
         "            return Some(!self.holds_mask(task) && self.tell_deferred_shutdown(task));",
         "            return Some(false);")]),
     resources("the deadline leaves children of a finished body running", PROCESS, [(
-        "        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) && !self.has_live_children(task) {",
+        "        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) && !self.has_live_descendants(task) {",
         "        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) {")]),
     resources("a process body is torn down at once on a child defect", SCOPE, [(
         "        if self.forcing > 0 || no_fiber || !holds_resource || stopping {",
         "        if self.forcing > 0 || no_fiber || !holds_resource || process {")]),
     resources("shutdown cancels the helpers a release started", PROCESS, [(
-        "            .filter(|child| !self.started_in_release(task, *child))",
+        "            .filter(|child| !self.kept_for_release(task, *child))",
         "            .filter(|_| true)")]),
 ]
