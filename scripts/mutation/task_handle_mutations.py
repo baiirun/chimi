@@ -24,6 +24,9 @@ MUTATIONS = [
     handle("a copied task handle is not retained", [(
         "    uint64_t key = counted_handle_key(duplicate);\n    if (key) channel_endpoint_retain(key);",
         "    uint64_t key = counted_handle_key(duplicate);\n    if (key && !(key & TASK_HANDLE_KEY)) channel_endpoint_retain(key);")]),
+    handle("a freed allocation keeps its task handle counted", [(
+        "    uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n    if (key) channel_endpoint_drop(key);\n  }\n  if (header->area->heap)",
+        "    uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n    if (key && !(key & TASK_HANDLE_KEY)) channel_endpoint_drop(key);\n  }\n  if (header->area->heap)")]),
     handle("a dead task handle in a loop pass is not dropped", [(
         "      if (channel_endpoint_count && header->kind == ALLOCATION_VALUE) {\n        uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n        if (key) channel_endpoint_drop(key);",
         "      if (channel_endpoint_count && header->kind == ALLOCATION_VALUE) {\n        uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n        if (key && !(key & TASK_HANDLE_KEY)) channel_endpoint_drop(key);")]),

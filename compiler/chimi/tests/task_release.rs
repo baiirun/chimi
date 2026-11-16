@@ -223,3 +223,24 @@ fn a_handle_sent_through_a_channel_still_reads_its_result() {
     let run = run("sent", source);
     assert_eq!(run.outcome, success("42"));
 }
+
+// A handle that survives one pass in the loop state and dies in the next is
+// freed by the survivor sweep, not the young-chunk sweep: the peak stays
+// bounded on that path too.
+#[test]
+fn handles_that_die_after_surviving_a_pass_are_released() {
+    let source = concat!(
+        "pub fn main() -> Int {\n",
+        "  loop state = (0, 0, Task.start(fn() { 0 })) {\n",
+        "    let (count, sum, previous) = state\n",
+        "    case count == 5000 {\n",
+        "      True -> break sum + Task.result(previous)\n",
+        "      False -> (count + 1, sum + Task.result(previous), Task.start(fn() { 1 }))\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+    );
+    let run = run("survivors", source);
+    assert_eq!(run.outcome, success("5000"));
+    assert!(run.peak_task_records <= 64, "{}", run.peak_task_records);
+}
