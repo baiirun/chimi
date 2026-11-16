@@ -709,6 +709,14 @@ test "a closing answer stops writing, then drops what the client still sends for
   Stream.close(Net.writer(other))
   Task.result(closing)
   Clock.since(again) |> Test.assert_equal(Duration.zero)
+  let (sender, receiving) = Net.pair(64)
+  let refused_at = Clock.now()
+  let refusing = Task.start(fn() { Http.serve_connection(receiving, { ..Http.defaults, max_body_bytes: 3 }, handle) })
+  Stream.write(Net.writer(sender), Bytes.from_text("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 9\r\n\r\n"))
+  let _ = Stream.read_all(Net.reader(sender), 1024)
+  Stream.write(Net.writer(sender), Bytes.from_text("123456789"))
+  Task.result(refusing)
+  Clock.since(refused_at) |> Test.assert_equal(Duration.seconds(2))
 }
 
 test "a handler's defect closes the connection" {
