@@ -129,6 +129,9 @@ pub(super) enum TimerTarget {
     ShutdownDeadline(IncarnationId),
     /// Delivers an injected signal (`Scheduler::inject_signal_at`).
     Signal(i32),
+    /// Latches an injected `std/signal` signal by its code
+    /// (`Scheduler::inject_user_signal_at`).
+    UserSignal(u32),
     /// Fires a task's cancellation scope.
     ScopeDeadline(TaskId, super::ScopeId),
 }

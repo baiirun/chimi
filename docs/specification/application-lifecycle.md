@@ -13,7 +13,7 @@ The lab scenarios are RR05, SD06, SD10 to SD13, MB22, SG01 to SG03, and the
 Phase 4 forcing program FP02 (`programs/service-pool`), in the
 [conformance lab](supervised-process-conformance.md) at stage U13.
 
-Custom signal handlers, SIGHUP, and a `std/signal` module stay in Phase 6c.
+SIGHUP, SIGUSR1 and SIGUSR2 are `std/signal`'s ([system modules](system-modules.md#stdsignal)); they never stop a program that needs `signals`.
 
 ## Goals
 
@@ -123,8 +123,9 @@ The native runner handles SIGINT and SIGTERM.
 
 Under the real clock, a program whose root is alive but has nothing to run
 and no timer waits for a signal when a supervisor is running, because it is
-a service waiting for work. Without a running supervisor the same stall is
-still reported as a deadlock defect (exit 70), because nothing can wake it.
+a service waiting for work, and likewise when a task waits in `Signal.next`.
+Otherwise the same stall is still reported as a deadlock defect (exit 70),
+because nothing can wake it.
 
 SIGPIPE keeps its default action. A later contract may change it for
 programs that write to closed pipes.
@@ -138,6 +139,10 @@ For deterministic tests the runner takes `--signal=INT@<duration>` or
 The signal is delivered at that virtual instant as a timer, so a program
 that would otherwise be idle jumps to it. If `main` ends first, the signal is
 never delivered and does not move virtual time (SG03).
+
+The same option takes `HUP`, `USR1`, and `USR2` for `std/signal`, any number
+of times; those are latched for `Signal.next` rather than delivered to
+`main` (system modules, std/signal).
 
 With `--trace` on, delivery emits the boundary event
 `clock_signal_received` with the signal number.

@@ -5,9 +5,9 @@
 This is the normative contract for the Phase 6c system modules of the
 [language completion plan](../plans/language-completion-plan.md) (CHI-209):
 the modules a command-line tool or a service uses to reach its operating
-system. It covers runner-provided capabilities, `std/path`, `std/env`, and
-`std/fs` (CHI-246 to CHI-248). `std/signal`, `std/exec`, `std/terminal`, and
-`std/cli` (CHI-249 to CHI-252) add their sections as they land.
+system. It covers runner-provided capabilities, `std/path`, `std/env`,
+`std/fs`, and `std/signal` (CHI-246 to CHI-249). `std/exec`, `std/terminal`,
+and `std/cli` (CHI-250 to CHI-252) add their sections as they land.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 modules follow the [standard library conventions](standard-library-conventions.md)
@@ -36,6 +36,7 @@ Each one has a **fixed need name**, listed with it in the registry
 | --- | --- | --- |
 | `std/env.Environment` | `environment` | `std/env.host` |
 | `std/fs.Files` | `files` | `std/fs.host` |
+| `std/signal.Signals` | `signals` | `std/signal.host` |
 | `std/net.Network` | `network` | `std/net.system` ([network modules](network-modules.md#stdnet)) |
 
 Rules:
@@ -221,6 +222,54 @@ pub fn files_within(root: Path) -> <a Files record>
   `using { files: Fs.files_within(directory) }`. It checks text, so a
   symbolic link inside `root` that points out of it is followed.
 
+## std/signal
+
+```text
+pub enum Signal { Hangup, User1, User2 }   // SIGHUP, SIGUSR1, SIGUSR2
+pub interface Signals {
+  next: fn(List<Signal>) -> Signal
+}
+
+// needs { signals: Signals }
+pub fn next(wanted: List<Signal>) -> Signal
+```
+
+- `next(wanted)` MUST return a pending signal from `wanted` at once, the first
+  in `wanted`'s order when several are pending, and otherwise wait, letting
+  other tasks run, until one arrives. It defects when `wanted` is empty. It is a
+  cancellation point, so it races a timeout or a channel inside `Select.first`
+  through `Select.task`.
+- Each signal is pending at most once: repeats that arrive before a waiter
+  takes it coalesce, as the operating system's do. A signal that arrives while
+  no task waits for it MUST be kept until one asks for it, and it is never
+  dropped by a waiter that is cancelled before it takes it.
+- One signal MUST wake one waiter, the one that has waited longest among those
+  that want it. Several tasks that must all hear a signal are served by one
+  task that waits and a broadcast channel.
+- The runner's provider installs the handlers for all three signals when it
+  is built, before `main`'s body runs, and never removes them. A program whose
+  `main` does not need `signals` keeps the operating system's default actions,
+  so SIGHUP ends it. A program that needs `signals` catches all three, even
+  those it never waits for, so SIGUSR1 sent to a program that only waits for
+  SIGHUP is kept, not fatal.
+- SIGINT and SIGTERM are not `Signal` variants: the first one drains and stops
+  every program (application lifecycle, G22), and a later one ends it at once.
+  A SIGHUP never changes that.
+- On the native backend the handler sets one bit per signal and wakes the
+  scheduler through the stop signals' pipe; a task waits with
+  `CHIMI_REQUEST_SIGNAL_WAIT`. That wait is not a host operation in flight, so
+  it never holds virtual time. Under the real clock a program whose tasks all
+  wait for signals waits for one instead of reporting a deadlock; under the
+  virtual clock, with no injected signal to come, it is a deadlock that names
+  `Signal.next`.
+- The runner's `--signal=` option takes `HUP`, `USR1`, and `USR2` under the
+  virtual clock, as many times as needed (at most 64). Each is latched at its
+  instant with a `clock_signal_received` event carrying the signal number; one
+  due after `main` ends is never latched and never moves time.
+- The interpreter installs no handlers: `next` with the runner's provider
+  defects there, saying it requires the native runtime. A test supplies a fake
+  `{ next: fn(wanted) { ... } }` with `using`, on both backends.
+
 ## Decisions
 
 - **Interfaces in source, fixed need names, private providers.** The advisor
@@ -240,6 +289,18 @@ pub fn files_within(root: Path) -> <a Files record>
 - **Real files in tests are confined, not ambient.** The test plan never
   closes `files`; `temporary_directory` and `files_within` are test-only, so a
   test reaches real files only inside a directory it owns.
+- **`next(wanted)` over a subscription value.** A one-function interface keeps
+  a fake to one closure, and `Select.task` already composes a waiting call with
+  timeouts and channels, so `std/signal` adds no receiver type.
+- **Latch, one waiter per signal.** One pending bit per signal matches what the
+  kernel can promise (it coalesces too), and handing each signal to one waiter
+  keeps a signal that lands while the loop is busy reloading. Broadcasting to
+  every current waiter would drop it.
+- **Handlers from the provider, default actions otherwise.** Installing them
+  when the need is closed means no startup window where SIGHUP still kills a
+  program that asked for it, and a program that did not ask keeps the
+  behavior `nohup` and process managers expect. Whether an unwatched SIGHUP
+  should drain like SIGTERM is left open; the familiar default stands.
 - **`join` appends.** Replacing on an absolute part is a known source of
   path-traversal bugs, and Chimi prefers the rule a reader can predict.
 
@@ -256,4 +317,10 @@ pub fn files_within(root: Path) -> <a Files record>
 | The runner closes `files` on `main` on both backends | `std-tests/fs/runner_provider.chimi`; `tests/host_modules.rs` `the_runner_provides_the_file_system_to_main` |
 | Reading, writing, appending, streaming past one chunk, listing, renaming, and each error variant on both backends | `tests/host_modules.rs` `the_runner_provides_the_file_system_to_main` |
 | Metadata follows links; `create_directories` accepts existing directories and stops at a file | `tests/host_modules.rs` `metadata_reads_kind_size_and_modification_time` (native) |
+| A waiter wakes; signals coalesce; the first listed pending signal wins; a cancelled `next` in a `Select.first` race takes nothing; an unwanted signal stays latched | `tests/std_signal.rs` `signals_wake_waiters_coalesce_and_wait_their_turn` |
+| One signal wakes the oldest waiter | `tests/std_signal.rs` `each_signal_wakes_the_oldest_waiter` |
+| SIGTERM still drains after a SIGHUP; a second SIGTERM still ends at once | `tests/std_signal.rs` `a_hangup_reloads_and_a_later_terminate_still_drains`, `stop_signals_keep_their_meaning_after_a_hangup` |
+| A waiter with nothing to come is a deadlock under the virtual clock; injected signals after `main` change nothing; `--signal=` rules; empty `wanted` defects | `tests/std_signal.rs` `a_waiter_with_no_signal_coming_is_a_deadlock`, `a_signal_due_after_main_ends_changes_nothing`, `the_signal_option_takes_the_three_signals_under_the_virtual_clock_only`, `waiting_for_no_signal_defects` |
+| Real SIGHUPs reload a waiting service; the handlers cover all three signals from the first line; without `signals` SIGHUP ends the program | `tests/std_signal.rs` `a_service_reloads_on_each_hangup`, `a_program_that_needs_signals_survives_them_from_its_first_line`, `a_program_without_signals_is_ended_by_a_hangup` |
+| The interpreter defects on a wait; a fake on both backends; `T4400` without one | `tests/std_signal.rs` `the_interpreter_needs_the_native_runtime_to_wait`, `a_test_supplies_signals_as_a_fake` |
 | `temporary_directory` is removed after the test; `files_within` refuses paths outside it and relative ones; a fake; `T4400` without one; `T4401` from `main` | `tests/host_modules.rs` `a_test_uses_real_files_in_a_temporary_directory_or_a_fake` |

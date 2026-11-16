@@ -1,0 +1,100 @@
+/// Operating-system signals a service reacts to without stopping: SIGHUP,
+/// the conventional "reload your configuration", and SIGUSR1 and SIGUSR2,
+/// whose meaning a program chooses. Waiting for one needs the
+/// `signals: Signals` capability, which the runner supplies to `main`; a test
+/// supplies a fake with `using`.
+///
+/// ```text
+/// pub fn main() -> Void needs { signals: Signals, console: Console } {
+///   loop count = 1 {
+///     let signal = Signal.next([Signal.Hangup])
+///     console.write_line("reloading")
+///     count + 1
+///   }
+/// }
+/// ```
+///
+/// SIGINT and SIGTERM are not here: the first one always drains and stops the
+/// program, as in every Chimi program. A signal that arrives while no task is
+/// waiting for it is kept until one asks, and repeats of one signal before
+/// then count once, as the operating system's own do. Each signal wakes one
+/// waiter, the one that has waited longest, so a program lets one task own a
+/// signal and passes it on with a broadcast channel when several must hear
+/// it.
+///
+/// A program whose `main` does not need `signals` keeps the operating
+/// system's default actions, so SIGHUP ends it. One that needs `signals`
+/// catches all three from before its first line, even those it never waits
+/// for.
+
+import std/list as List
+
+// 1. Public types.
+
+/// A signal a program can wait for.
+pub enum Signal {
+  /// SIGHUP: by convention, reload the configuration.
+  Hangup
+  /// SIGUSR1, whose meaning the program chooses.
+  User1
+  /// SIGUSR2, whose meaning the program chooses.
+  User2
+}
+
+/// The capability to wait for signals. The runner's provider uses the
+/// operating system's; a fake is a record of this function.
+pub interface Signals {
+  /// Waits until one of the listed signals arrives and returns it.
+  next: fn(List<Signal>) -> Signal
+}
+
+// 5. Queries.
+
+/// Waits until one of `wanted` arrives and returns it. A signal that came
+/// before the call returns at once; when several did, the first in `wanted`
+/// is returned and the others stay for later calls. Other tasks run while it
+/// waits, and inside `Select.task` it can race a timeout or a channel.
+///
+/// Defects when `wanted` is empty.
+/// Cost: no system call while it waits.
+pub fn next(wanted: List<Signal>) -> Signal needs {
+  signals: Signals
+} {
+  signals.next(wanted)
+}
+
+// 8. Private helpers.
+
+// The runner's provider. Building it installs the handlers, before main's
+// body runs, so a signal sent right after the program starts is kept.
+fn host() {
+  host_install()
+  {
+    next: fn(wanted: List<Signal>) {
+      signal_of(host_wait(List.map(wanted, code)))
+    },
+  }
+}
+
+// The host's codes, shared with the runtime's scheduler.
+fn code(signal: Signal) -> Int {
+  case signal {
+    Signal.Hangup -> 1
+    Signal.User1 -> 2
+    Signal.User2 -> 3
+  }
+}
+
+fn signal_of(code: Int) -> Signal {
+  case code {
+    1 -> Signal.Hangup
+    2 -> Signal.User1
+    _ -> Signal.User2
+  }
+}
+
+/// Installs the handlers for SIGHUP, SIGUSR1 and SIGUSR2, once.
+native fn host_install() -> Void
+
+/// Waits for the first pending signal of `codes`, in order, and consumes it.
+native fn host_wait(codes: List<Int>) -> Int

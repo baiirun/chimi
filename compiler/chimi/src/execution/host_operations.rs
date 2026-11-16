@@ -314,6 +314,17 @@ impl Evaluator<'_> {
                     }
                 }
             }
+            (StandardFunction::SignalHostInstall, []) => Control::Success(RuntimeValue::Void),
+            (StandardFunction::SignalHostWait, [RuntimeValue::List(codes)]) => Control::Defect {
+                message: if codes.len() == 0 {
+                    "Signal.next needs at least one signal to wait for".to_owned()
+                } else {
+                    "Signal.next requires the native runtime; build the program with `chimi build`"
+                        .to_owned()
+                },
+                node: Some(call_node),
+                cause: None,
+            },
             (_, []) => self.invoke_environment_operation(function, call_node),
             _ => self.intrinsic_shape_defect(function, call_node),
         }
