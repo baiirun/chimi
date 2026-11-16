@@ -12053,3 +12053,28 @@ fn an_unannotated_record_result_gains_the_failures_of_later_functions() {
         "\"outcome\":\"success\",\"value\":7"
     );
 }
+
+// CHI-260: an unannotated result that names functions declared below it keeps
+// their failures, so declaration order does not decide whether it checks.
+#[test]
+fn an_unannotated_provider_keeps_failures_from_functions_declared_below_it() {
+    let source = concat!(
+        "enum Oops { Bad }\n",
+        "interface Thing { go: fn(Int) -> Int errors Oops }\n",
+        "fn go_host(n: Int) -> Int { check(n) }\n",
+        "fn check<T>(n: T) -> T {\n",
+        "  case n == n {\n",
+        "    True -> n\n",
+        "    False -> Failure(Oops.Bad)\n",
+        "  }\n",
+        "}\n",
+        "fn host() { { go: go_host } }\n",
+        "fn use_it() -> Int needs { thing: Thing } { thing.go(3) }\n",
+        "pub fn main() -> Int { use_it() using { thing: host() } }\n",
+    );
+    assert_eq!(check_codes(source), Vec::<String>::new());
+    assert_eq!(
+        run_both("unannotated-provider-order", source),
+        "\"outcome\":\"success\",\"value\":3"
+    );
+}
