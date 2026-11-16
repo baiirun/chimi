@@ -16,39 +16,47 @@ import std/task.{Timeout}
 // notification failure fail the order. The whole checkout runs under the
 // order's deadline.
 
+/// Why stock could not be reserved.
 pub enum StockError {
   OutOfStock(sku: Text)
 }
 
+/// Why the fraud check did not pass.
 pub enum FraudError {
   Flagged(score: Int)
   Unreachable
 }
 
+/// Why the card could not be charged.
 pub enum PaymentError {
   Declined(reason: Text)
   Unavailable(status: Int)
 }
 
+/// Why a carrier could not quote the order.
 pub enum ShippingError {
   NoRoute(carrier: Text)
 }
 
+/// Why a confirmation could not be sent.
 pub enum NotifyError {
   Bounced(channel: Text)
 }
 
+/// An order to check out: its id, what it buys and its price in cents.
 pub struct Order {
   id: Int,
   sku: Text,
   cents: Int,
 }
 
+/// Stock held for an order until it ships.
 pub struct Reservation {
   sku: Text,
   hold: Int,
 }
 
+/// What a finished checkout did at each step.
 pub struct Receipt {
   order: Int,
   hold: Int,
@@ -57,48 +65,59 @@ pub struct Receipt {
   notified: Int,
 }
 
+/// The stock service.
 pub interface Inventory {
   reserve: fn(Text) -> Reservation errors StockError
 }
 
+/// The fraud scoring service.
 pub interface Fraud {
   score: fn(Order) -> Int errors FraudError
 }
 
+/// The card payment service.
 pub interface Payments {
   charge: fn(Order) -> Text errors PaymentError
 }
 
+/// The two shipping carriers a checkout asks for a quote.
 pub interface Carriers {
   ground: fn(Order) -> Text errors ShippingError
   express: fn(Order) -> Text errors ShippingError
 }
 
+/// The email and SMS confirmation services.
 pub interface Notifier {
   email: fn(Order) -> Void errors NotifyError
   sms: fn(Order) -> Void errors NotifyError
 }
 
+/// An order for `sku` at `cents`.
 pub fn order(id: Int, sku: Text, cents: Int) -> Order {
   Order(id, sku, cents)
 }
 
+/// The order's id.
 pub fn id(order: Order) -> Int {
   order.id
 }
 
+/// What the order buys.
 pub fn sku(order: Order) -> Text {
   order.sku
 }
 
+/// The order's price in cents.
 pub fn cents(order: Order) -> Int {
   order.cents
 }
 
+/// A hold on stock of `sku`.
 pub fn reservation(sku: Text, hold: Int) -> Reservation {
   Reservation(sku, hold)
 }
 
+/// A one-line summary of a receipt for the log.
 pub fn describe(receipt: Receipt) -> Text {
   "hold ${receipt.hold}, ${receipt.charge}, ${receipt.carrier}, ${receipt.notified} of 2 notices"
 }

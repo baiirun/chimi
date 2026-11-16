@@ -8,14 +8,18 @@ import std/process.{Inbox, SendError}
 import std/supervisor as Supervisor
 import std/supervisor.{StartError}
 
+/// What a worker is asked to do.
 pub enum WorkerMessage {
   Add(amount: Int)
   Crash
   Report(reply: Sender<Int>)
 }
 
+/// The first supervised worker.
 pub process name worker_a: WorkerMessage
+/// The second supervised worker.
 pub process name worker_b: WorkerMessage
+/// The third supervised worker.
 pub process name worker_c: WorkerMessage
 
 struct PoolResult {

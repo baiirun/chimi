@@ -10,23 +10,31 @@ import std/supervisor as Supervisor
 // job to a ledger. The program runs as a service until a stop signal, then
 // shuts down gracefully. See README.md for the run and what it shows.
 
+/// A job for a worker: work for a while, or stop.
 pub enum Job {
   Work(id: Int, milliseconds: Int)
   Poison
 }
 
+/// What a worker reports to the ledger.
 pub enum Entry {
   Done(id: Int)
 }
 
+/// A job handed to the dispatcher.
 pub enum Dispatch {
   Submit(job: Job)
 }
 
+/// Counts finished jobs.
 pub process name ledger: Entry
+/// Hands jobs to the workers in turn.
 pub process name dispatcher: Dispatch
+/// The first worker.
 pub process name worker_1: Job
+/// The second worker.
 pub process name worker_2: Job
+/// The third worker.
 pub process name worker_3: Job
 
 fn worker_at(index: Int) -> Address<Job> {

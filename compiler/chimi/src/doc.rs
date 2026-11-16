@@ -219,7 +219,12 @@ pub(crate) fn doc_comment_at(typed: &TypedProject, module_path: &str, offset: us
     item_doc(declaring.source.text(), item_start(declaring, declaration))
 }
 
-const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {
+/// The `///` doc comment of `declaration` in `module`, if it has one.
+pub(crate) fn declaration_doc(module: &SemanticModule, declaration: &ModuleDeclaration) -> Option<String> {
+    item_doc(module.source.text(), item_start(module, declaration))
+}
+
+pub(crate) const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {
     match kind {
         ModuleDeclarationKind::Struct => "struct",
         ModuleDeclarationKind::Enum => "enum",

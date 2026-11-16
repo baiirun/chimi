@@ -8,7 +8,7 @@
 //! - Cursor queries answer from the latest analysis and convert positions with
 //!   the text that analysis saw, never with newer or older text.
 
-use chimi::diagnostic::{Diagnostic, DiagnosticStage};
+use chimi::diagnostic::{Diagnostic, DiagnosticStage, Severity};
 use chimi::line_index::{LineIndex, LinePosition, PositionEncoding};
 use chimi::project::{LoadedProject, SourceReader, StandardTree};
 use chimi::source::SourceSnapshot;
@@ -78,6 +78,8 @@ pub enum DiagnosticOrigin {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EditorDiagnostic {
     pub range: LineRange,
+    /// A lint finding is a warning; everything else is an error.
+    pub severity: Severity,
     pub origin: DiagnosticOrigin,
     pub message: String,
 }
@@ -707,14 +709,18 @@ impl Workspace {
         };
 
         let report = analysis.session.analyze_project(loaded.sources());
+        let lint = report.lint_by_source();
         let mut modules = HashMap::new();
         for module in report.diagnostics_by_module() {
             let document = DocumentPath(module.source_path().to_owned());
             let open = self.documents.get(&document);
             let lines = analyzed_lines(open, module.source_text());
+            let findings = lint.get(module.source_path()).into_iter().flatten();
             let diagnostics = module
                 .diagnostics()
                 .iter()
+                .copied()
+                .chain(findings)
                 .map(|diagnostic| editor_diagnostic(diagnostic, &lines, self.encoding))
                 .collect();
             modules.insert(
@@ -765,11 +771,13 @@ impl Workspace {
             .expect("`main` is a valid module path");
         let report = analysis.session.analyze_project(vec![source]);
         let open = self.documents.get(path);
+        let lint = report.lint_by_source();
         let grouped = report.diagnostics_by_module();
         let module = grouped
             .first()
             .expect("a single-file project has one module");
         let lines = analyzed_lines(open, module.source_text());
+        let findings = lint.get(module.source_path()).into_iter().flatten();
         sets.insert(
             path.clone(),
             FileDiagnostics {
@@ -778,6 +786,8 @@ impl Workspace {
                 diagnostics: module
                     .diagnostics()
                     .iter()
+                    .copied()
+                    .chain(findings)
                     .map(|diagnostic| editor_diagnostic(diagnostic, &lines, self.encoding))
                     .collect(),
             },
@@ -875,6 +885,7 @@ fn load_failure(
         path: path.clone(),
         version: documents.get(path).map(|document| document.version),
         diagnostics: vec![EditorDiagnostic {
+            severity: Severity::Error,
             range: LineRange { start, end: start },
             origin: DiagnosticOrigin::ProjectLoad,
             message,
@@ -892,6 +903,7 @@ fn editor_diagnostic(
             let range = diagnostic.range();
             line_range(range.start(), range.end(), lines, encoding)
         },
+        severity: diagnostic.severity(),
         origin: DiagnosticOrigin::Compiler {
             stage: diagnostic.stage(),
             code: diagnostic.code(),
@@ -903,9 +915,10 @@ fn editor_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::{
-        DocumentPath, DocumentRange, DocumentVersion, ProjectConfig, RenameError, Workspace,
-        alias_before,
+        DiagnosticOrigin, DocumentPath, DocumentRange, DocumentVersion, ProjectConfig, RenameError,
+        Workspace, alias_before,
     };
+    use chimi::diagnostic::{DiagnosticStage, Severity};
     use chimi::line_index::{LinePosition, PositionEncoding};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -964,7 +977,7 @@ mod tests {
         workspace.open(
             lib.clone(),
             DocumentVersion(2),
-            "pub fn value() -> Int { 1 }\n".into(),
+            "/// One.\npub fn value() -> Int { 1 }\n".into(),
         );
         let after = workspace.analyze(&app);
         let lib_after = after
@@ -973,6 +986,58 @@ mod tests {
             .expect("lib republished");
         assert_eq!(lib_after.version, Some(DocumentVersion(2)));
         assert!(lib_after.diagnostics.is_empty());
+    }
+
+    /// Lint findings reach the editor as warnings once the project compiles,
+    /// and never alongside its errors.
+    #[test]
+    fn lint_findings_are_published_as_warnings_when_the_project_compiles() {
+        let fixture = Fixture::new("lint");
+        let app = fixture.write(
+            "app.chimi",
+            "pub fn main() -> Int {\n  let unused = 1\n  0\n}\n",
+        );
+        let project = ProjectConfig::new(fixture.root(), "app").unwrap();
+        let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
+
+        let published = workspace.analyze(&app);
+        let found: Vec<_> = published[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic.severity,
+                    diagnostic.range.start.line,
+                    diagnostic.origin,
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            vec![(
+                Severity::Warning,
+                1,
+                DiagnosticOrigin::Compiler {
+                    stage: DiagnosticStage::Lint,
+                    code: "unused-binding",
+                },
+            )]
+        );
+
+        workspace.open(
+            app.clone(),
+            DocumentVersion(2),
+            "pub fn main() -> Int {\n  let unused = 1\n  missing()\n}\n".into(),
+        );
+        let broken = workspace.analyze(&app);
+        assert!(
+            broken[0]
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity == Severity::Error),
+            "{:?}",
+            broken[0].diagnostics
+        );
     }
 
     /// Guards the formatter contract at the editor boundary: syntax-invalid

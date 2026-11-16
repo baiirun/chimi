@@ -96,6 +96,28 @@ impl IncrementalTypeReport {
         crate::doc::doc_comment_at(&self.types.typed, module_path, offset)
     }
 
+    /// `chimi lint`'s findings for the project's own modules, by source
+    /// file, or none while the project has errors: a finding on code that
+    /// does not compile misleads.
+    pub fn lint_by_source(&self) -> HashMap<&Path, Vec<Diagnostic>> {
+        let mut findings: HashMap<&Path, Vec<Diagnostic>> = HashMap::new();
+        if !self.diagnostics().is_empty() {
+            return findings;
+        }
+        let resolved = &self.types.typed.resolved;
+        for finding in crate::lint::lint(resolved, |module_path| !module_path.starts_with("std/")) {
+            if let Some(module) = resolved
+                .semantic
+                .modules
+                .iter()
+                .find(|module| module.source.file_id() == finding.file_id())
+            {
+                findings.entry(module.source.path()).or_default().push(finding);
+            }
+        }
+        findings
+    }
+
     /// Groups this report's diagnostics by owning module.
     ///
     /// Ensures: exactly one entry per analyzed module in module-path order,
