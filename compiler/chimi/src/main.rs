@@ -769,11 +769,11 @@ fn run_tests(
         Backend::Interpreter => suite.run_interpreted(&selected, &run),
         Backend::Native => {
             let executable = artifact_directory.join("tests");
-            if let Err(error) = suite.build_native(standard, &executable, &artifact_directory) {
+            if let Err(error) = suite.build_native(standard, &executable, artifact_directory) {
                 eprintln!("chimi: test build failed: {error}");
                 return ExitCode::from(2);
             }
-            suite.run_native(&executable, &artifact_directory, &selected, &run)
+            suite.run_native(&executable, artifact_directory, &selected, &run)
         }
     };
     if options.json {
