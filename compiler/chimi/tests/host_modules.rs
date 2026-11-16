@@ -32,6 +32,9 @@ fn run_both(name: &str, source: &str, variables: &[(&str, &str)]) -> String {
     let program = scratch.join("main.chimi");
     std::fs::write(&program, source).unwrap();
 
+    // Each backend starts without the `work` directory a program may make.
+    let fresh_work = || drop(std::fs::remove_dir_all(scratch.join("work")));
+    fresh_work();
     let interpreted = command(Path::new(env!("CARGO_BIN_EXE_chimi")), &scratch, variables)
         .arg("run")
         .arg(&program)
@@ -57,6 +60,7 @@ fn run_both(name: &str, source: &str, variables: &[(&str, &str)]) -> String {
         "{}",
         String::from_utf8_lossy(&build.stderr)
     );
+    fresh_work();
     let outcome = scratch.join("outcome.jsonl");
     let run = command(&executable, &scratch, variables)
         .arg("--chimi-runner")
@@ -224,6 +228,167 @@ fn only_the_environment_need_name_is_closed_by_the_runner() {
     assert!(
         stderr.contains("E5002") && stderr.contains("main needs env"),
         "{stderr}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// ----- std/fs ---------------------------------------------------------------
+
+// The runner closes `main`'s `files` need with the host's file system, and
+// both backends read, write, list, and fail the same way. Metadata is checked
+// on the native backend alone, since the interpreter has no clock to build a
+// `Timestamp` with.
+#[test]
+fn the_runner_provides_the_file_system_to_main() {
+    let record = run_both(
+        "files",
+        r#"
+import std/bytes as Bytes
+import std/debug as Debug
+import std/fs as Fs
+import std/fs.{Files, WriteMode}
+import std/list as List
+import std/path as Path
+import std/path.{Path}
+import std/resource as Resource
+import std/result as Result
+import std/stream as Stream
+import std/text as Text
+
+fn at(name: Text) -> Path {
+  Path.join(Path.from("work"), name)
+}
+
+fn outcome<T, E>(operation: fn() -> T errors E needs { files: Files }) -> Text needs { files: Files } {
+  Debug.render(Result.capture(operation))
+}
+
+pub fn main() -> List<Text> needs { files: Files } {
+  Fs.create_directory(Path.from("work"))
+  Fs.create_directories(at("deep/er/est"))
+  Fs.write_text(at("notes.txt"), "first line\n")
+  Fs.append(at("notes.txt"), Bytes.from_text("second line\n"))
+  let large = Text.repeat("0123456789abcdef", 8192)
+  Fs.write_text(at("large.txt"), large)
+  let writer = Fs.create(at("copy.txt"), WriteMode.New)
+  let copied = Resource.scoped(fn() { Fs.open(at("large.txt")) }, Stream.stop, fn(reader) {
+    Stream.copy(reader, writer)
+  })
+  Stream.close(writer)
+  Fs.write(at("broken.txt"), Bytes.from([255, 254]))
+  Fs.rename(at("notes.txt"), at("renamed.txt"))
+  [
+    Fs.read_text(at("renamed.txt")),
+    Debug.render(Fs.read_text(at("copy.txt")) == large),
+    Debug.render(copied),
+    Debug.render(Fs.list(Path.from("work"))),
+    Debug.render(Fs.list(at("deep"))),
+    outcome(fn() { Fs.read_text(at("broken.txt")) }),
+    outcome(fn() { Fs.read(at("notes.txt")) }),
+    outcome(fn() { Fs.read(at("renamed.txt/inside")) }),
+    outcome(fn() { Fs.read(at("deep")) }),
+    outcome(fn() { Fs.list(at("renamed.txt")) }),
+    outcome(fn() { Fs.create_directory(at("deep")) }),
+    outcome(fn() { Fs.create(at("copy.txt"), WriteMode.New) }),
+    outcome(fn() { Fs.remove(at("deep")) }),
+    outcome(fn() { Fs.remove(at("deep/er/est")) }),
+    Debug.render(Fs.list(at("deep/er"))),
+    outcome(fn() { Fs.read(at(Bytes.to_text(Bytes.from([0])))) }),
+  ]
+}
+"#,
+        &[],
+    );
+    assert_eq!(
+        value(&record),
+        concat!(
+            r#"["first line\nsecond line\n","True","131072","#,
+            r#""[\"broken.txt\", \"copy.txt\", \"deep\", \"large.txt\", \"renamed.txt\"]","#,
+            r#""[\"er\"]","#,
+            r#""Result.Err(DecodeError.InvalidUtf8(0))","#,
+            r#""Result.Err(FsError.NotFound(\"work/notes.txt\"))","#,
+            r#""Result.Err(FsError.NotADirectory(\"work/renamed.txt/inside\"))","#,
+            r#""Result.Err(FsError.IsADirectory(\"work/deep\"))","#,
+            r#""Result.Err(FsError.NotADirectory(\"work/renamed.txt\"))","#,
+            r#""Result.Err(FsError.AlreadyExists(\"work/deep\"))","#,
+            r#""Result.Err(FsError.AlreadyExists(\"work/copy.txt\"))","#,
+            r#""Result.Err(FsError.NotEmpty(\"work/deep\"))","#,
+            r#""Result.Ok(Void)","#,
+            r#""[]","#,
+            r#""Result.Err(FsError.Other(path: \"work/\\u{0}\", message: \"path contains a NUL byte\"))"]"#,
+        )
+    );
+}
+
+// Metadata follows symbolic links, and `create_directories` accepts the
+// directories that exist; native only (the interpreter has no clock).
+#[test]
+fn metadata_reads_kind_size_and_modification_time() {
+    let scratch = scratch_directory("metadata");
+    let program = scratch.join("main.chimi");
+    std::fs::create_dir(scratch.join("work")).unwrap();
+    std::fs::write(scratch.join("work/file.txt"), "12345").unwrap();
+    std::os::unix::fs::symlink("file.txt", scratch.join("work/link")).unwrap();
+    std::fs::write(
+        &program,
+        r#"
+import std/clock as Clock
+import std/debug as Debug
+import std/fs as Fs
+import std/fs.{Files}
+import std/path as Path
+import std/result as Result
+
+fn described(name: Text) -> Text needs { files: Files } {
+  let metadata = Fs.metadata(Path.from(name))
+  Debug.render((Fs.kind(metadata), Clock.unix_nanoseconds(Fs.modified(metadata)) > 1700000000000000000))
+}
+
+pub fn main() -> List<Text> needs { files: Files } {
+  Fs.create_directories(Path.from("work/new/one"))
+  Fs.create_directories(Path.from("work/new/one"))
+  [
+    described("work/file.txt"),
+    described("work/link"),
+    described("work"),
+    described("/dev/null"),
+    Debug.render(Fs.size(Fs.metadata(Path.from("work/file.txt")))),
+    Debug.render(Fs.list(Path.from("work/new"))),
+    Debug.render(Result.capture(fn() { Fs.create_directories(Path.from("work/file.txt/below")) })),
+    Debug.render(Result.capture(fn() { Fs.metadata(Path.from("work/missing")) })),
+  ]
+}
+"#,
+    )
+    .unwrap();
+    let executable = scratch.join("program");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let outcome = scratch.join("outcome.jsonl");
+    command(&executable, &scratch, &[])
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--outcome-file={}", outcome.display()))
+        .arg("--")
+        .output()
+        .unwrap();
+    let record = std::fs::read_to_string(&outcome).unwrap();
+    assert_eq!(
+        value(record.trim_end()),
+        concat!(
+            r#"["(Kind.File, True)","(Kind.File, True)","(Kind.Directory, True)","(Kind.Special, True)","#,
+            r#""5","[\"one\"]","#,
+            r#""Result.Err(FsError.AlreadyExists(\"work/file.txt\"))","#,
+            r#""Result.Err(FsError.NotFound(\"work/missing\"))"]"#,
+        ),
+        "{record}"
     );
     std::fs::remove_dir_all(scratch).unwrap();
 }

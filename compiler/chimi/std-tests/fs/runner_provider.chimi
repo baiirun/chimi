@@ -1,0 +1,32 @@
+// The runner closes `main`'s `files` need with the host provider. Only paths
+// that are the same on every machine are touched (metadata is left out: the
+// interpreter has no clock, so it cannot build a Timestamp); tests/host_modules.rs works
+// in a scratch directory and compares the two backends on real files.
+import std/bytes as Bytes
+import std/debug as Debug
+import std/fs as Fs
+import std/fs.{Files, WriteMode}
+import std/list as List
+import std/path as Path
+import std/result as Result
+import std/stream as Stream
+
+pub fn main() -> List<Text> needs { files: Files } {
+  let missing = Path.from("/nonexistent-chimi-std-test/file")
+  Fs.write_text(Path.from("/dev/null"), "discarded")
+  let writer = Fs.create(Path.from("/dev/null"), WriteMode.Append)
+  [
+    Debug.render(List.contains(Fs.list(Path.from("/")), "tmp")),
+    Debug.render(Bytes.length(Fs.read(Path.from("/dev/null")))),
+    Debug.render(Result.capture(fn() { Fs.read(missing) })),
+    Debug.render(Result.capture(fn() { Fs.list(missing) })),
+    Debug.render(Result.capture(fn() { Fs.create_directory(missing) })),
+    Debug.render(Result.capture(fn() { Fs.remove(missing) })),
+    Debug.render(Result.capture(fn() { Fs.rename(missing, missing) })),
+    Debug.render(Result.capture(fn() { Fs.read(Path.from("/")) })),
+    Debug.render(Result.capture(fn() {
+      Stream.close(writer)
+      Stream.write(writer, Bytes.from_text("late"))
+    })),
+  ]
+}

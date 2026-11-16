@@ -920,6 +920,8 @@ struct Evaluator<'core> {
     application_stderr: String,
     /// `CoreProgram::assertion_calls`, computed on the first `capture_defect`.
     assertion_calls: std::cell::OnceCell<std::collections::HashSet<u32>>,
+    /// The files `std/fs` has open.
+    open_files: host_operations::OpenFiles,
 }
 
 impl<'core> Evaluator<'core> {
@@ -944,6 +946,7 @@ impl<'core> Evaluator<'core> {
             application_stdout: String::new(),
             application_stderr: String::new(),
             assertion_calls: std::cell::OnceCell::new(),
+            open_files: host_operations::OpenFiles::default(),
         }
     }
 
@@ -1906,7 +1909,22 @@ impl<'core> Evaluator<'core> {
             StandardFunction::ResourceScoped => {
                 self.invoke_resource_scoped(arguments, span, call_node, environment)
             }
-            StandardFunction::EnvHostVariables | StandardFunction::EnvHostCurrentDirectory => {
+            StandardFunction::EnvHostVariables
+            | StandardFunction::EnvHostCurrentDirectory
+            | StandardFunction::FsHostOpen
+            | StandardFunction::FsHostCreate
+            | StandardFunction::FsHostRead
+            | StandardFunction::FsHostWrite
+            | StandardFunction::FsHostClose
+            | StandardFunction::FsHostMetadata
+            | StandardFunction::FsHostList
+            | StandardFunction::FsHostCreateDirectory
+            | StandardFunction::FsHostRemove
+            | StandardFunction::FsHostRename
+            | StandardFunction::FsHostIsDirectory
+            | StandardFunction::FsHostTemporaryDirectory
+            | StandardFunction::FsTestRoot
+            => {
                 self.invoke_host_operation(function, arguments, call_node)
             }
             StandardFunction::IoPath
