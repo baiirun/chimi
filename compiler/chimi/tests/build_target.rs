@@ -18,7 +18,10 @@ fn program(name: &str) -> (PathBuf, PathBuf) {
     std::fs::create_dir_all(&directory).unwrap();
     let source = directory.join("main.chimi");
     std::fs::write(&source, "pub fn main() -> Int {\n  7\n}\n").unwrap();
-    (source, directory.join("program"))
+    // `chimi build` keeps its objects under `target/chimi/<executable name>`
+    // in the working directory, which every test here shares, so each test's
+    // executable needs its own name or parallel builds overwrite each other.
+    (source, directory.join(format!("program-{name}")))
 }
 
 fn host_triple() -> String {

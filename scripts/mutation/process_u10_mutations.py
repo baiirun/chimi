@@ -57,8 +57,8 @@ MUTATIONS = [
     # MF02: an incarnation's heap must be destroyed when it ends.
     lab("an ended incarnation keeps its heap", RUNTIME, "MF02",
         ["heap_chunks_live differs"], [(
-            "    process_heap_peak_value_bytes = heap->peak_live_bytes;\n  heap_destroy(heap);\n",
-            "    process_heap_peak_value_bytes = heap->peak_live_bytes;\n")]),
+            "    carrier->process_heap_peak_value_bytes = heap->peak_live_bytes;\n  heap_destroy(heap);\n",
+            "    carrier->process_heap_peak_value_bytes = heap->peak_live_bytes;\n")]),
     # MF03: removal must release the membership record, the capacity slot,
     # and the report must carry the kernel's own count.
     lab("removal keeps the membership record", KERNEL, "MF03",
