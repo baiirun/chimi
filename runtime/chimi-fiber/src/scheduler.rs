@@ -6,6 +6,9 @@ mod process;
 mod process_abi;
 #[cfg(test)]
 mod process_tests;
+mod reactor;
+#[cfg(test)]
+mod reactor_tests;
 #[cfg(test)]
 mod release_tests;
 mod scope;
@@ -16,6 +19,7 @@ mod signal;
 
 use self::clock::{Clock, TimerQueue, TimerTarget};
 pub use self::clock::{ClockMode, Instant, TimerId};
+pub use self::reactor::{IO_ERROR, IO_HANGUP, IO_READABLE, IO_WRITABLE};
 use self::process::ProcessKernel;
 pub use self::process::{
     Address, ChimiProcessTermination, IncarnationId, Member, MembershipId, MessageRelease, NameId,
@@ -103,6 +107,12 @@ pub const REQUEST_SELECT: u32 = 32;
 pub const REQUEST_RESOURCE_ENTER: u32 = 33;
 pub const REQUEST_RESOURCE_RELEASE: u32 = 34;
 pub const REQUEST_RESOURCE_EXIT: u32 = 35;
+/// Waits until the descriptor in `value` is ready for the `token` interest
+/// (`IO_READABLE`, `IO_WRITABLE`): OK with the ready conditions in `value`,
+/// or PENDING until it may be ready; reissue after every wake. A
+/// cancellation point (`scheduler/reactor.rs`). Kinds 36 to 39 are the
+/// channel-variant requests, and 40 to 47 are left for the task combinators.
+pub const REQUEST_IO_WAIT: u32 = 48;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -479,6 +489,8 @@ struct Task {
     started_in_scope: Option<ScopeId>,
     /// What the task's parked `Select.first` waits on.
     select: Option<select::SelectWait>,
+    /// The descriptor wait the task is parked on.
+    io_wait: Option<reactor::IoWaitId>,
     /// The channel registry's arrival stamp when this task started; what it
     /// hands its parent dates from then (`ChannelRegistry::backdate`).
     started_at: u64,
@@ -629,6 +641,7 @@ pub struct Scheduler {
     task_values: BTreeMap<TaskId, TaskValue>,
     next_scope: u64,
     signals: signal::Signals,
+    reactor: reactor::Reactor,
     /// Nonzero while a forced end runs: cancellation then never waits for
     /// releases (`force_terminal`).
     forcing: u32,
@@ -699,6 +712,7 @@ impl Scheduler {
             task_values: BTreeMap::new(),
             next_scope: 0,
             signals: signal::Signals::default(),
+            reactor: reactor::Reactor::default(),
             forcing: 0,
         }
     }
@@ -775,6 +789,12 @@ impl Scheduler {
     pub fn run_until_idle(&mut self) -> Idle {
         loop {
             self.drive();
+            // A descriptor wait is a host operation in flight: it holds
+            // virtual time, and no parked task is stuck while one exists.
+            if !self.reactor.is_empty() {
+                self.wait_for_io();
+                continue;
+            }
             if self.host_operations > 0 {
                 return Idle::AwaitingHost;
             }
@@ -930,9 +950,14 @@ impl Scheduler {
 
     pub fn drive(&mut self) {
         self.deliver_signal();
+        let mut resumes = 0_u32;
         while let Some(task) = self.runnable.pop_front() {
             self.run(task);
             self.deliver_signal();
+            resumes += 1;
+            if resumes % reactor::IO_POLL_INTERVAL == 0 && !self.reactor.is_empty() {
+                self.poll_io_now();
+            }
         }
     }
 
@@ -1388,6 +1413,7 @@ impl Scheduler {
                 started_in_scope: parent
                     .and_then(|parent| self.tasks[&parent].scopes.last().map(|entry| entry.id)),
                 select: None,
+                io_wait: None,
                 started_at,
                 terminating: None,
             },
@@ -1488,6 +1514,7 @@ impl Scheduler {
         // now (a reissued select registers afresh), so a scope refusal cannot
         // leave its watchers and wake timer behind.
         self.clear_select(owner);
+        self.clear_io_wait(owner);
         self.poll_scope_deadlines(owner);
         if self.refuse_for_scope(owner, kind) {
             return;
@@ -1582,6 +1609,7 @@ impl Scheduler {
                 let _ = self.wake_front(owner);
             }
             REQUEST_SELECT => self.handle_select(owner, request),
+            REQUEST_IO_WAIT => self.handle_io_wait(owner, request),
             REQUEST_TASK_START => {
                 let Some(entry) = request.entry else {
                     request.status = RESPONSE_ERROR;
@@ -1798,6 +1826,7 @@ impl Scheduler {
             self.cancel_timer(timer);
         }
         self.clear_select(task);
+        self.clear_io_wait(task);
         self.clear_scopes(task);
         self.unroute_task(task);
 

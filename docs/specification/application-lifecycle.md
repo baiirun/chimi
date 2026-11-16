@@ -112,6 +112,10 @@ The native runner handles SIGINT and SIGTERM.
 - A program with no processes or tasks (no scheduler) is cancelled at its
   next semantic operation, and a blocking read of standard input is
   interrupted.
+- A program on the scheduler that is reading standard input waits for it in
+  the IO reactor
+  ([G21](host-capabilities-and-execution-properties.md#waiting-for-descriptors-g21)),
+  so the first signal ends the read as it cancels `main`.
 - A signal that arrives after `main` has ended changes nothing: the runner
   finishes stopping the remaining supervisors and reports `main`'s outcome.
 
@@ -161,7 +165,8 @@ receives a signal while its supervisors stop dies by that signal.
 - `compiler/chimi/tests/signals.rs` sends real signals to built programs: a
   service drains and dies by SIGTERM, an idle service waits for a signal
   instead of reporting a deadlock, a second signal ends at once, and SIGINT
-  interrupts a program reading standard input.
+  interrupts a program reading standard input, with or without the
+  scheduler; with it, another task keeps running during the read (G21).
 - The lab scenarios listed under Status pin the virtual-clock transcripts.
 - `runtime/chimi-fiber/src/scheduler/process_tests.rs` covers the scheduler
   rules: a sleeping handler finishes, a handler still parked at its deadline

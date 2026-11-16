@@ -20,6 +20,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 
@@ -5643,6 +5644,69 @@ static ChimiControl *end_measured_allocation_scope(ChimiRuntime *runtime, Alloca
   return status == HEAP_OK ? control : defect(FOREIGN_POINTER_DEFECT, -1);
 }
 
+/* Bytes read from a descriptor and not yet consumed. Standard input's buffer is
+   process-wide, so the bytes a read takes past an early exit (a failing callback,
+   a cancellation) wait for the next read of "-", as stdio's buffer kept them. */
+typedef struct {
+  int fd;
+  unsigned char *bytes;
+  size_t capacity;
+  size_t start;
+  size_t end;
+} ByteInput;
+
+enum { INPUT_BUFFER_BYTES = 64 * 1024 };
+static unsigned char standard_input_bytes[INPUT_BUFFER_BYTES];
+static ByteInput standard_input = {STDIN_FILENO, standard_input_bytes, INPUT_BUFFER_BYTES, 0, 0};
+
+enum { INPUT_END = -1, INPUT_FAILED = -2, INPUT_CANCELLED = -3 };
+
+/* Waits until `fd` is readable. Under the scheduler the task parks in
+   CHIMI_REQUEST_IO_WAIT, so other tasks run and a signal is delivered meanwhile;
+   its OK reply resumes this task before any other, so the read that follows does
+   not block unless another OS process drained the descriptor first. A closed
+   descriptor answers ERROR, and the read reports it. False when cancelled. */
+static bool wait_readable(int fd) {
+  if (CHIMI_REQUIRES_SCHEDULER) {
+    for (;;) {
+      ChimiSchedulerRequest request = {
+        .kind = CHIMI_REQUEST_IO_WAIT, .value = fd, .token = CHIMI_IO_READABLE,
+      };
+      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return false;
+      if (request.status != CHIMI_RESPONSE_PENDING) return true;
+    }
+  }
+  /* Without the scheduler a signal interrupts poll with EINTR and sets `cancel`,
+     which the caller checks. */
+  struct pollfd poll_fd = {.fd = fd, .events = POLLIN};
+  (void)poll(&poll_fd, 1, -1);
+  return true;
+}
+
+/* The next byte, INPUT_END, INPUT_CANCELLED, or INPUT_FAILED with errno set. */
+static int input_next(ChimiRuntime *runtime, ByteInput *input) {
+  if (input->start < input->end) return input->bytes[input->start++];
+  for (;;) {
+    if (runtime->cancel) return INPUT_CANCELLED;
+    if (CHIMI_REQUIRES_SCHEDULER && !wait_readable(input->fd)) return INPUT_CANCELLED;
+    errno = 0;
+    ssize_t count = read(input->fd, input->bytes, input->capacity);
+    if (count > 0) {
+      input->start = 0;
+      input->end = (size_t)count;
+      return input->bytes[input->start++];
+    }
+    if (count == 0) return INPUT_END;
+    if (errno == EINTR) continue;
+    /* A descriptor a parent left non-blocking: wait for it, then read again. */
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      if (!CHIMI_REQUIRES_SCHEDULER) (void)wait_readable(input->fd);
+      continue;
+    }
+    return INPUT_FAILED;
+  }
+}
+
 static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **arguments,
                                         uint32_t argument_count, uint64_t span,
                                         uint32_t call_node, ChimiEnvironment *environment) {
@@ -5657,8 +5721,15 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
     return failure(standard_value(CHIMI_CONSTRUCTOR_FILE_OPEN, (ChimiValue *[]){
       arguments[0], text_value("file name contained an unexpected NUL byte")}, 2));
   bool owns_file = strcmp(path, "-") != 0;
-  FILE *input = owns_file ? fopen(path, "rb") : stdin;
-  if (!input) return host_file_message(CHIMI_CONSTRUCTOR_FILE_OPEN, path, strerror(errno));
+  ByteInput file_input = {-1, NULL, INPUT_BUFFER_BYTES, 0, 0};
+  ByteInput *input = &standard_input;
+  if (owns_file) {
+    file_input.fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (file_input.fd < 0)
+      return host_file_message(CHIMI_CONSTRUCTOR_FILE_OPEN, path, strerror(errno));
+    file_input.bytes = allocate(INPUT_BUFFER_BYTES, 1);
+    input = &file_input;
+  }
   unsigned char *line = allocate((size_t)runtime->max_line_bytes + 1, 1);
   size_t length = 0;
   uint64_t line_number = 1;
@@ -5672,13 +5743,13 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
       allocation_scope_collect(&allocation_scope, NULL, &control);
       break;
     }
-    errno = 0;
-    int byte = fgetc(input);
-    if (byte == EOF) {
-      if (ferror(input)) {
-        control = runtime->cancel && errno == EINTR
-          ? cancelled()
-          : host_file_message(CHIMI_CONSTRUCTOR_FILE_READ, path, strerror(errno));
+    int byte = input_next(runtime, input);
+    if (byte < 0) {
+      if (byte == INPUT_CANCELLED) {
+        control = cancelled();
+        allocation_scope_collect(&allocation_scope, NULL, &control);
+      } else if (byte == INPUT_FAILED) {
+        control = host_file_message(CHIMI_CONSTRUCTOR_FILE_READ, path, strerror(errno));
         allocation_scope_collect(&allocation_scope, NULL, &control);
       } else if (length > 0) {
         control = invoke_line_callback(runtime, arguments[2]->as.callable, state, line, length,
@@ -5713,7 +5784,7 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
     }
     line[length++] = (unsigned char)byte;
   }
-  if (owns_file && fclose(input) != 0 &&
+  if (owns_file && close(file_input.fd) != 0 &&
       (control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE)) {
     control = host_file_message(CHIMI_CONSTRUCTOR_FILE_CLOSE, path, strerror(errno));
     allocation_scope_collect(&allocation_scope, NULL, &control);
@@ -10031,8 +10102,8 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
       outcome.defect_code == CHIMI_SCHEDULER_DEFECT_RESTART_LIMIT_EXCEEDED)
     return defect("Supervisor.RestartLimitExceeded", -1);
   /* Under the real clock a root parked with nothing pending stays suspended,
-     because a host event might wake it. The native runtime has no
-     asynchronous host operations, so nothing ever will: report the same
+     because a host event might wake it. The scheduler returns only when no
+     task waits on a descriptor either, so nothing ever will: report the same
      deadlock as before, leaving the suspended tasks to process exit. */
   if (outcome.state == CHIMI_FIBER_PARKED ||
       (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0))
