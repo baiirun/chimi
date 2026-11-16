@@ -541,13 +541,14 @@ fn run_main(scratch: &Scratch, input: &str) -> std::process::Output {
 
 // Rejects `Stdio.Null` on stdin that leaves the parent's input connected, or
 // is opened for writing: the program's own input holds a line, which a child
-// that inherits it reads and one given nothing does not.
+// that inherits it reads and one given nothing does not (and `cat` fails on
+// a descriptor opened only for writing).
 #[test]
 fn standard_input_to_nothing_reads_nothing() {
     let scratch = build_main(
         "stdin",
         r#"pub fn main() -> Void needs { commands: Commands } {
-  let nothing = Exec.run(Exec.stdin(Exec.command("/bin/sh", ["-c", "! read line && test -c /dev/fd/0"]), Stdio.Null))
+  let nothing = Exec.run(Exec.stdin(Exec.command("/bin/sh", ["-c", "cat > got && ! test -s got && test -c /dev/fd/0"]), Stdio.Null))
   let inherited = Exec.run(Exec.command("/bin/sh", ["-c", "read line && test \"$line\" = hello"]))
   case (nothing, inherited) {
     (Status.Exited(0), Status.Exited(0)) -> Void
@@ -561,7 +562,8 @@ fn standard_input_to_nothing_reads_nothing() {
 }
 
 // Rejects a child that inherits the parent's blocked signals: the program is
-// started with SIGUSR1 blocked, and its child's mask is still empty.
+// started with SIGUSR1 blocked, and its child's mask is still empty. The
+// child is grep, not a shell, since dash clears its own mask at startup.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_child_starts_with_no_signal_blocked() {
@@ -572,7 +574,7 @@ fn a_child_starts_with_no_signal_blocked() {
     let scratch = build_main(
         "mask",
         r#"pub fn main() -> Void needs { commands: Commands } {
-  let ended = sh("grep -q '^SigBlk:[[:space:]]*0*$' /proc/self/status")
+  let ended = Exec.run(Exec.command("grep", ["-q", "^SigBlk:[[:space:]]*0*$", "/proc/self/status"]))
   case ended {
     Status.Exited(0) -> Void
     other -> Debug.crash("the child ended with ${Debug.render(other)}")
