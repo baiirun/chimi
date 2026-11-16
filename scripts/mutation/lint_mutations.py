@@ -64,4 +64,12 @@ MUTATIONS = [
         "    let findings = if report.is_success() {\n        report.lint(false)",
         "    let findings = if true {\n        report.lint(false)",
     )]),
+    mutant("a constructor pattern does not name its alias", R, [(
+        "                if let Some(module) = self.alias_module_symbol(module_index, alias) {\n                    self.reference(",
+        "                if let Some(module) = None::<SymbolId> {\n                    self.reference(",
+    )]),
+    mutant("an alias-qualified type uses a member of the same name", L, [(
+        "                    let shadowed = aliases.contains(&member.text.as_str());",
+        "                    let shadowed = false && aliases.contains(&member.text.as_str());",
+    )]),
 ]

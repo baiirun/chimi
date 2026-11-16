@@ -94,8 +94,13 @@ Rules:
 Parameters are never reported, because a callback or a fake often ignores
 one its type requires, as in Go and Gleam.
 
-Known gaps: a private function that only calls itself counts as used; private
-structs, enums and interfaces are not checked yet. A missing doc comment on a
+Known gaps: a use is any reference, not reachability from public items and
+tests, so a private function that only calls itself, two that only call each
+other, or a chain only dead code uses, all count as used. Private structs,
+enums, interfaces and `process name` items, and unused `needs` entries, are
+not checked yet. When a module alias and a member import share a name, as
+`import std/clock as Clock` with `import std/clock.{Clock}`, a qualified path
+such as `Clock.Instant` uses the alias, as the compiler resolves it. A missing doc comment on a
 public item, suggested fixes, and showing findings in the editor come with
 the second linting part.
 

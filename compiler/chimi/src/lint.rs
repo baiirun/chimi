@@ -77,6 +77,14 @@ fn unused_imports(resolved: &ResolvedProject, module: &SemanticModule) -> Vec<Di
         .iter()
         .filter(|reference| reference.file_id == file_id)
         .collect();
+    let aliases: Vec<&str> = module
+        .imports
+        .iter()
+        .filter_map(|import| match &import.binding {
+            ImportBinding::Alias(alias) => Some(alias.text.as_str()),
+            _ => None,
+        })
+        .collect();
     let mut findings = Vec::new();
     for import in &module.imports {
         match &import.binding {
@@ -99,12 +107,15 @@ fn unused_imports(resolved: &ResolvedProject, module: &SemanticModule) -> Vec<Di
             }
             ImportBinding::Members(members) => {
                 for member in members {
-                    // `Error.Variant` names the imported enum `Error`.
+                    // `Error.Variant` names the imported enum `Error`, unless a
+                    // module alias of the same name takes the qualified path,
+                    // as it does for types.
                     let qualified = format!("{}.", member.text);
+                    let shadowed = aliases.contains(&member.text.as_str());
                     let used = references.iter().any(|reference| {
                         reference.namespace != Namespace::Module
                             && (reference.text == member.text
-                                || reference.text.starts_with(&qualified))
+                                || (!shadowed && reference.text.starts_with(&qualified)))
                     });
                     if !used && !is_intentionally_unused(&member.text) {
                         findings.push(finding(

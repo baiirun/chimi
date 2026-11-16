@@ -2336,11 +2336,24 @@ impl ProjectResolver {
             return;
         }
         let qualified_owner = match path {
-            [_, owner, member] => Some((
-                owner,
-                member,
-                self.resolve_qualified_type(module_index, &path[..2]),
-            )),
+            [alias, owner, member] => {
+                // `Alias.Type.Variant` names the alias as a module, as the
+                // expression form does.
+                if let Some(module) = self.alias_module_symbol(module_index, alias) {
+                    self.reference(
+                        module_index,
+                        semantic_id,
+                        Namespace::Module,
+                        alias,
+                        ReferenceResolution::Resolved(module),
+                    );
+                }
+                Some((
+                    owner,
+                    member,
+                    self.resolve_qualified_type(module_index, &path[..2]),
+                ))
+            }
             [owner, member] => Some((
                 owner,
                 member,
@@ -2467,6 +2480,24 @@ impl ProjectResolver {
         })
     }
 
+    /// The module symbol `alias` names in this module, or `None` when it is
+    /// not an alias or is ambiguous.
+    fn alias_module_symbol(&self, module_index: usize, alias: &Name) -> Option<SymbolId> {
+        match self.modules[module_index].aliases.get(&alias.text).copied()? {
+            AliasBinding::Module(target) => Some(
+                self.symbols
+                    .iter()
+                    .find(|symbol| {
+                        symbol.kind == ProjectSymbolKind::Module && symbol.module_id == Some(target)
+                    })
+                    .expect("every module has a symbol")
+                    .id,
+            ),
+            AliasBinding::Standard(target) => Some(self.standard_modules[&target].module),
+            AliasBinding::Ambiguous => None,
+        }
+    }
+
     /// Resolves `Alias.Type.Variant`, a variant of a type that the module aliased as
     /// `Alias` exports, such as `Float.ParseError.OutOfRange`. Returns false, leaving
     /// the expression to ordinary selection, unless `Alias` is a module alias that
@@ -2476,18 +2507,8 @@ impl ProjectResolver {
         module_index: usize,
         [(alias_id, alias), (owner_id, owner), (variant_id, variant)]: [(SemanticId, &Name); 3],
     ) -> bool {
-        let module = match self.modules[module_index].aliases.get(&alias.text).copied() {
-            Some(AliasBinding::Module(target)) => {
-                self.symbols
-                    .iter()
-                    .find(|symbol| {
-                        symbol.kind == ProjectSymbolKind::Module && symbol.module_id == Some(target)
-                    })
-                    .expect("every module has a symbol")
-                    .id
-            }
-            Some(AliasBinding::Standard(target)) => self.standard_modules[&target].module,
-            Some(AliasBinding::Ambiguous) | None => return false,
+        let Some(module) = self.alias_module_symbol(module_index, alias) else {
+            return false;
         };
         let owner_resolution =
             self.resolve_qualified_type(module_index, &[alias.clone(), owner.clone()]);

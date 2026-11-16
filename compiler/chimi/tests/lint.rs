@@ -124,9 +124,26 @@ fn the_standard_tree_is_lint_clean() {
 
 #[test]
 fn a_project_lints_its_own_modules_but_not_std() {
-    let tree = LoadedProject::standard_tree(&StandardTree::default()).unwrap();
-    let report = Compiler::type_project(tree.sources());
-    assert!(report.lint(false).is_empty());
+    // A standard tree with a finding of its own: the project stays clean.
+    let std_dir = std::env::temp_dir().join(format!("chimi-lint-std-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&std_dir);
+    std::fs::create_dir_all(&std_dir).unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let path = entry.unwrap().path();
+        std::fs::copy(&path, std_dir.join(path.file_name().unwrap())).unwrap();
+    }
+    let option = std_dir.join("option.chimi");
+    let text = std::fs::read_to_string(&option).unwrap();
+    std::fs::write(&option, format!("import std/list as Unused\n{text}")).unwrap();
+    let path = scratch_file(
+        "with-std",
+        "import std/option as Option\n\npub fn zero() -> Int {\n  Option.unwrap_or(None, 0)\n}\n",
+    );
+
+    let output = chimi(&["--std-dir", std_dir.to_str().unwrap(), "lint", &path]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
 }
 
 #[test]
@@ -164,6 +181,36 @@ fn a_module_alias_does_not_use_a_member_of_the_same_name() {
         String::from_utf8_lossy(&output.stderr),
         format!(
             "{path}:2:19: warning[unused-import] lint: the imported name Bytes is never used\n"
+        )
+    );
+}
+
+#[test]
+fn an_alias_used_only_in_a_constructor_pattern_is_used() {
+    let path = scratch_file(
+        "pattern-alias",
+        "import std/order as Order\nimport std/order.{Ordering}\n\n\
+         pub fn label(ordering: Ordering) -> Int {\n  case ordering {\n    Order.Ordering.Less -> 1\n    _ -> 0\n  }\n}\n",
+    );
+    let output = chimi(&["lint", &path]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+}
+
+#[test]
+fn an_alias_qualified_type_does_not_use_a_member_of_the_same_name() {
+    let path = scratch_file(
+        "alias-type",
+        "import std/clock as Clock\nimport std/clock.{Clock}\n\n\
+         pub fn same(at: Clock.Instant) -> Clock.Instant {\n  at\n}\n",
+    );
+    let output = chimi(&["lint", &path]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "{path}:2:19: warning[unused-import] lint: the imported name Clock is never used\n"
         )
     );
 }
