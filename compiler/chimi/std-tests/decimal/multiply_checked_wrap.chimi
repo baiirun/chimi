@@ -2,10 +2,15 @@
 // would wrap to 0, which is in range.
 import std/decimal as Decimal
 import std/decimal.{Decimal}
+import std/test as Test
 
-pub fn main() -> Option<Decimal> {
+fn run() -> Option<Decimal> {
   case Decimal.parse("18446744073709551616") {
     Success(x) -> Decimal.multiply_checked(x, x)
     Failure(_) -> Some(Decimal.of(-1, 0))
   }
+}
+
+test "multiply checked wrap" {
+  Test.assert_equal(run(), None)
 }

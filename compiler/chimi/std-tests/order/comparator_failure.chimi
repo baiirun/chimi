@@ -1,6 +1,9 @@
 // A comparator's failure passes through Order.by and List.sort_by unchanged.
 import std/list as List
 import std/order as Order
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
 
 enum KeyError {
   Negative(value: Int)
@@ -13,6 +16,10 @@ fn key(value: Int) -> Int {
   }
 }
 
-pub fn main() -> List<Int> {
+fn run() -> List<Int> {
   List.sort_by([3, 1, -4, 2], Order.by(key))
+}
+
+test "comparator failure" {
+  Test.assert_equal(Result.capture(run), Err(KeyError.Negative(-4)))
 }

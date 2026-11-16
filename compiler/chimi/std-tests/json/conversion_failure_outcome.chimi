@@ -5,11 +5,19 @@ import std/debug as Debug
 import std/decimal.{Decimal}
 import std/json as Json
 import std/json.{Value}
+import std/json.{ConversionError}
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
 
-pub fn main() -> Decimal {
+fn run() -> Decimal {
   let value = Json.decode("[1e-39]")
   case value {
     Value.Array([Value.Number(number)]) -> Json.number_to_decimal(number)
     _ -> Debug.crash("not one number")
   }
+}
+
+test "conversion failure outcome" {
+  Test.assert_equal(Result.capture(run), Err(ConversionError.OutOfRange))
 }

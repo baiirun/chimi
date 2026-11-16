@@ -4,6 +4,7 @@
 import std/debug as Debug
 import std/resource as Resource
 import std/result as Result
+import std/test as Test
 
 enum PoolError {
   Empty
@@ -38,7 +39,7 @@ fn run(handle: Int, use_fails: Bool) -> Int {
   )
 }
 
-pub fn main() -> Text {
+fn all_outcomes() -> Text {
   let results = [
     Result.capture(fn() { run(4, False) }),
     Result.capture(fn() { run(4, True) }),
@@ -47,4 +48,8 @@ pub fn main() -> Text {
     Result.capture(fn() { run(0, False) }),
   ]
   Debug.render(results)
+}
+
+test "outcomes" {
+  Test.assert_equal(all_outcomes(), "[Result.Ok(40), Result.Err(PoolError.Used(4)), Result.Err(PoolError.Released(7)), Result.Err(PoolError.Released(7)), Result.Err(PoolError.Empty)]")
 }

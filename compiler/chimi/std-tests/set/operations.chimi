@@ -4,6 +4,7 @@
 import std/debug as Debug
 import std/set as Set
 import std/set.{Set}
+import std/test as Test
 
 enum Tag {
   Plain
@@ -12,7 +13,7 @@ enum Tag {
 
 const primes = Set.from([7, 2, 5, 3, 2])
 
-pub fn main() -> List<Text> {
+fn run() -> List<Text> {
   let digits = Set.from([3, 1, 2, 3, 1])
   let nothing: Set<Int> = Set.empty()
   let tags = Set.from([Tag.Named("b"), Tag.Plain, Tag.Named("a"), Tag.Named("b")])
@@ -31,4 +32,8 @@ pub fn main() -> List<Text> {
     "equal whatever the insertion order: ${Debug.render([digits == Set.from([2, 3, 1]), digits == Set.from([1, 2])])}",
     "constant: ${Debug.render(primes)}",
   ]
+}
+
+test "operations" {
+  Test.assert_equal(run(), ["from: Set { 1, 2, 3 }", "empty: Set {}", "contains: [True, False]", "size: [3, 0]", "is_empty: [False, True]", "add: [Set { 0, 1, 2, 3 }, Set { 1, 2, 3 }]", "remove: [Set { 1, 3 }, Set { 1, 2, 3 }]", "to_list: [1, 2, 3]", "filter: Set { 1, 3 }", "reduce, in ascending order: 1;2;3;", "equal items are kept once: [3, 3]", "equal whatever the insertion order: [True, False]", "constant: Set { 2, 3, 5, 7 }"])
 }

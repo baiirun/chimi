@@ -1,1 +1,0 @@
-{"schema":"chimi.runtime.v1","outcome":"defect","message":"integer division by zero in `/`: 2 / 0"}

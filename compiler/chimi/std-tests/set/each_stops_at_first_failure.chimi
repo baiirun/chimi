@@ -2,6 +2,9 @@
 // order: 4 is rejected before 9, though 9 went in first, and the failure
 // escapes unchanged.
 import std/set as Set
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
 
 enum Rejected {
   TooLarge(value: Int)
@@ -14,6 +17,10 @@ fn accept_small(value: Int) -> Void {
   }
 }
 
-pub fn main() -> Void {
+fn run() -> Void {
   Set.each(Set.from([9, 1, 4, 2]), accept_small)
+}
+
+test "each stops at first failure" {
+  Test.assert_equal(Result.capture(run), Err(Rejected.TooLarge(4)))
 }
