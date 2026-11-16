@@ -1,5 +1,5 @@
 use chimi::Compiler;
-use chimi::backend::native::build_application;
+use chimi::backend::native::{build_application, check_build_target};
 use chimi::execution::{ExecutionConfig, ExecutionOutcome};
 use chimi::project::{LoadedProject, StandardTree};
 use std::env;
@@ -16,10 +16,10 @@ const USAGE: &str = concat!(
     "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | chimi inspect <path> <byte-offset> | ",
     "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
     "chimi check [--json] <path> | chimi run <path> [-- <argument>...] | ",
-    "chimi build <path> [-o <executable>] | ",
+    "chimi build <path> [-o <executable>] [--target <triple>] | ",
     "chimi check [--json] --root <project-dir> <entry-module> | chimi run --root ",
     "<project-dir> <entry-module> [-- <argument>...] | chimi build --root <project-dir> <entry-module> ",
-    "[-o <executable>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
+    "[-o <executable>] [--target <triple>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
     "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
     "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] ",
     "[--trace=off|boundaries|full] | ",
@@ -75,6 +75,8 @@ enum Command {
     Build {
         input: Input,
         output: Option<PathBuf>,
+        /// The target triple; `None` builds for the host.
+        target: Option<String>,
     },
     /// Checks the whole standard tree against the operation registry.
     StdCheck,
@@ -477,29 +479,33 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
             }
         };
         if command == "build" {
-            let output = match arguments.next() {
-                None => None,
-                Some(flag) if flag == "-o" => {
-                    let Some(path) = arguments.next() else {
-                        return Err(UsageError {
-                            message: "-o requires an executable path",
-                        });
-                    };
-                    Some(PathBuf::from(path))
-                }
-                Some(_) => {
+            let mut output = None;
+            let mut target = None;
+            while let Some(flag) = arguments.next() {
+                let (slot, message) = if flag == "-o" && output.is_none() {
+                    (&mut output, "-o requires an executable path")
+                } else if flag == "--target" && target.is_none() {
+                    (&mut target, "--target requires a target triple")
+                } else {
                     return Err(UsageError {
                         message: "build received unexpected arguments",
                     });
-                }
+                };
+                let Some(value) = arguments.next() else {
+                    return Err(UsageError { message });
+                };
+                *slot = Some(value);
+            }
+            let Some(target) = target.map(OsString::into_string).transpose().ok() else {
+                return Err(UsageError {
+                    message: "--target must be valid UTF-8",
+                });
             };
-            return if arguments.next().is_none() {
-                Ok(Command::Build { input, output })
-            } else {
-                Err(UsageError {
-                    message: "build received unexpected arguments",
-                })
-            };
+            return Ok(Command::Build {
+                input,
+                output: output.map(PathBuf::from),
+                target,
+            });
         }
         if command == "run" {
             let application_arguments = match arguments.next() {
@@ -738,7 +744,11 @@ fn execute(Invocation { std_dir, command }: Invocation) -> ExitCode {
         } => inspect(input, &standard, &module_path, offset),
         Command::Check { input, output } => check(input, &standard, output),
         Command::Run { input, arguments } => run(input, &standard, arguments),
-        Command::Build { input, output } => build(input, &standard, output),
+        Command::Build {
+            input,
+            output,
+            target,
+        } => build(input, &standard, output, target.as_deref()),
         Command::StdCheck => std_check(&standard),
         Command::StdTest { options } => std_test(&standard, options),
         Command::Test { input, options } => test(input, &standard, options),
@@ -1034,7 +1044,16 @@ fn outcome_exit_code(outcome: &ExecutionOutcome) -> ExitCode {
     }
 }
 
-fn build(input: Input, standard: &StandardTree, output: Option<PathBuf>) -> ExitCode {
+fn build(
+    input: Input,
+    standard: &StandardTree,
+    output: Option<PathBuf>,
+    target: Option<&str>,
+) -> ExitCode {
+    if let Some(Err(error)) = target.map(check_build_target) {
+        eprintln!("chimi: build failed: {error}");
+        return ExitCode::FAILURE;
+    }
     let output = output.unwrap_or_else(|| default_executable_path(&input));
     let artifact_directory = artifact_directory(&output);
     let Some(project) = load_project(input, standard) else {
@@ -1597,8 +1616,50 @@ mod tests {
                     entry: "app/main".to_owned()
                 },
                 output: Some(PathBuf::from("dist/app")),
+                target: None,
             })
         );
+    }
+
+    #[test]
+    fn parses_build_targets() {
+        assert_eq!(
+            parse_command(arguments(&[
+                "build",
+                "app.chimi",
+                "--target",
+                "aarch64-apple-darwin",
+                "-o",
+                "dist/app"
+            ])),
+            Ok(Command::Build {
+                input: Input::File {
+                    path: PathBuf::from("app.chimi")
+                },
+                output: Some(PathBuf::from("dist/app")),
+                target: Some("aarch64-apple-darwin".to_owned()),
+            })
+        );
+        for (command, message) in [
+            (
+                &["build", "app.chimi", "--target"][..],
+                "--target requires a target triple",
+            ),
+            (
+                &["build", "app.chimi", "--target", "a", "--target", "b"][..],
+                "build received unexpected arguments",
+            ),
+            (
+                &["build", "app.chimi", "-o", "a", "-o", "b"][..],
+                "build received unexpected arguments",
+            ),
+        ] {
+            assert_eq!(
+                parse_command(arguments(command)),
+                Err(UsageError { message }),
+                "{command:?}"
+            );
+        }
     }
 
     #[test]
@@ -1610,6 +1671,7 @@ mod tests {
                     path: PathBuf::from("program.chimi")
                 },
                 output: None,
+                target: None,
             })
         );
         assert_eq!(
@@ -1619,6 +1681,7 @@ mod tests {
                     path: PathBuf::from("program.chimi")
                 },
                 output: Some(PathBuf::from("dist/program")),
+                target: None,
             })
         );
         assert_eq!(

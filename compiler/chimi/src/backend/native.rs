@@ -756,6 +756,43 @@ fn native_isa() -> Result<OwnedTargetIsa, String> {
         .map_err(|error| format!("finish native Cranelift target: {error}"))
 }
 
+/// Checks that `chimi build --target <triple>` can build for `triple`. Only
+/// the host is supported: another target needs the runtime compiled for it
+/// and a linker and C library for it, which no build ships yet.
+pub fn check_build_target(triple: &str) -> Result<(), String> {
+    use std::str::FromStr;
+    let host = native_isa()?.triple().clone();
+    let Ok(target) = target_lexicon::Triple::from_str(triple) else {
+        return Err(format!(
+            "unknown target `{triple}`; give a target triple such as {host}"
+        ));
+    };
+    if same_platform(&target, &host) {
+        return Ok(());
+    }
+    Err(format!(
+        "cannot build for {target} yet: building for another target needs the \
+         Chimi runtime compiled for it and a linker and C library for it, \
+         which this chimi does not have; it builds for {host}"
+    ))
+}
+
+/// Whether two triples name the same platform: the same architecture,
+/// operating system, environment and object format. The vendor is ignored
+/// (`x86_64-pc-linux-gnu` is the host `x86_64-unknown-linux-gnu`), and so
+/// are `darwin` against `macosx` and a macOS version.
+fn same_platform(left: &target_lexicon::Triple, right: &target_lexicon::Triple) -> bool {
+    use target_lexicon::OperatingSystem;
+    let system = |triple: &target_lexicon::Triple| match triple.operating_system {
+        OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => OperatingSystem::Darwin(None),
+        other => other,
+    };
+    left.architecture == right.architecture
+        && system(left) == system(right)
+        && left.environment == right.environment
+        && left.binary_format == right.binary_format
+}
+
 fn native_target_fingerprint() -> Result<String, String> {
     let isa = native_isa()?;
     let mut fingerprint = format!("{}|{}", isa.triple(), isa.flags());
