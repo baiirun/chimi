@@ -5,8 +5,8 @@
 This is the normative contract for the Phase 7b network modules of the
 [language completion plan](../plans/language-completion-plan.md) (CHI-253):
 the modules a service uses to talk over the network. It covers `std/net`
-(CHI-255). `std/tls`, `std/http`, and `std/sql` (CHI-256 to CHI-258) add their
-sections as they land.
+(CHI-255) and the `std/http` server (CHI-257). `std/tls`, the HTTP client, and
+`std/sql` (CHI-256 to CHI-258) add their sections as they land.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 modules follow the [standard library conventions](standard-library-conventions.md),
@@ -149,6 +149,80 @@ every host operation in flight does, so an idle `accept` keeps a virtual-clock
 test from advancing. A test that combines sockets and timers runs with
 `chimi test --clock=real`.
 
+## std/http (server)
+
+The request shape and how a server takes its settings are **provisional**:
+they follow the recommendations on two open decision cards (a handler is a
+function from `Request` to `Response`, routed with `case`; settings are a
+struct with defaults), and until those are answered the settings are fixed
+defaults with no public way to change them. The wire behaviour below does not
+depend on either answer.
+
+```text
+pub enum Method { Get, Head, Post, Put, Patch, Delete, Options, Other(name: Text) }
+pub struct Request     // Http.method, Http.path, Http.query, Http.header, Http.headers, Http.body
+pub struct Response    // Http.status, Http.response_headers, Http.response_body
+
+pub fn request(method, path, headers, body) -> Request        // for testing handlers
+pub fn response(status: Int, headers, body: Bytes) -> Response
+pub fn text(status: Int, text: Text) -> Response
+pub fn serve(listener: Listener, handle: fn(Request) -> Response errors E needs R)
+  -> Void needs R + { clock: Clock }
+pub fn serve_connection(connection: Connection, handle) -> Void needs R + { clock: Clock }
+```
+
+### Requests
+
+- The server MUST accept HTTP/1.1 and HTTP/1.0 request lines; another
+  `HTTP/x.y` version is answered 505, and anything else on the request line is
+  400. A method is a token; the target MUST start with `/` (origin form).
+- `Http.path` is the target's path split on `/` with empty segments dropped,
+  so `/users/7/` is `["users", "7"]`. Segments are not percent-decoded.
+  `Http.query` is the text after the first `?`.
+- Header names are matched without regard to case and kept lowercase; values
+  are trimmed. An HTTP/1.1 request without `host` is 400.
+- The body is framed by `content-length` (one value, or repeated equal
+  values) or by `transfer-encoding: chunked`; both together, conflicting
+  lengths, or a length that is not digits is 400, and another transfer coding
+  is 501. A chunked body's extensions and trailers are read and dropped.
+- A request with `expect: 100-continue` gets `100 Continue` before its body is
+  read.
+
+### Limits
+
+| Limit | Value | Past it |
+| --- | --- | --- |
+| request line and headers | 64 KiB | 431 |
+| header lines | 100 | 431 |
+| body, after chunked decoding | 8 MiB | 413 |
+| time for a request to arrive, body included | 60 s | the connection closes without an answer |
+
+### Responses and connections
+
+- Every response carries `content-length`; a handler's own `content-length`
+  and `connection` headers are replaced. `HEAD`, 204 and 304 answers send no
+  body. A header name that is not a token, or a value holding CR or LF, is a
+  defect when the response is built, so a value from a request cannot write
+  headers of its own.
+- An HTTP/1.1 connection stays open between requests unless the request or
+  the response says `connection: close`; an HTTP/1.0 connection stays open
+  only when the request says `connection: keep-alive`. A closing answer
+  carries `connection: close`. Pipelined requests are answered in order.
+- A malformed request gets its status with `connection: close`, and the
+  connection closes, so nothing after it is read.
+- A handler's expected failure answers 500 and the connection carries on.
+  A handler's defect is not contained: it ends the connection's task and so
+  `serve`, as any defect ends its task; a supervisor restarts the server.
+- `serve` runs each connection in its own task and returns when the listener
+  is closed. Another accept failure fails `serve`.
+
+### Not yet
+
+`Date` headers, streamed request and response bodies, a graceful drain of
+open connections when serving stops, and a close that drains unread input
+before it closes (so a peer that is still sending does not see a reset) are
+follow-ups, as are the HTTP client and HTTPS (after `std/tls`).
+
 ## Decisions
 
 - **One `network` need covers connecting, listening, and name lookup.** A
@@ -172,6 +246,11 @@ test from advancing. A test that combines sockets and timers runs with
 
 | Rule | Evidence |
 | --- | --- |
+| HTTP: pipelined requests in order, `connection: close` from either side, HTTP/1.0, `HEAD`, other methods | `tests/http.rs` `a_connection_answers_requests_in_order_and_closes_when_asked` |
+| HTTP: chunked bodies with extensions and trailers, `100 Continue` | `tests/http.rs` `chunked_bodies_and_100_continue` |
+| HTTP: 400, 413, 431, 501 and 505, each closing the connection; the body limit is inclusive | `tests/http.rs` `a_malformed_request_gets_its_status_and_closes_the_connection` |
+| HTTP: a handler failure is 500; the idle limit; status and header defects; `Http.request` for handler tests | `tests/http.rs` `a_handler_failure_answers_500_and_an_idle_client_is_closed` |
+| HTTP: connections served at once over loopback; closing the listener ends `serve` | `tests/http.rs` `a_server_on_loopback_serves_clients_at_once_and_stops_with_its_listener` |
 | Bytes cross loopback both ways, a body larger than one read arrives whole, half-close, addresses and port 0 | `tests/net.rs` `a_loopback_connection_carries_bytes_both_ways_after_a_half_close` |
 | A name resolves through the lookup thread (that the scheduler keeps running during a slow lookup is not tested: no lookup in the test environment is slow) | `tests/net.rs` `a_name_resolves_on_the_lookup_thread` |
 | `Refused`, `AddressInUse`, `HostNotFound(host)` (also for a host holding U+0000), and the port defect | `tests/net.rs` `the_operating_systems_failures_become_net_errors` |
