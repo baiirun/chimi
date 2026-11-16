@@ -152,6 +152,9 @@ pub(crate) enum StandardType {
     /// `std/result.Result<T, E>`, which `Task.results` builds. Declared only in
     /// source; `std/task` loads `std/result`.
     Result,
+    /// `std/env.Environment`: the capability to read environment variables and
+    /// the working directory; the runner closes `main`'s `environment` need.
+    Environment,
 }
 
 impl StandardType {
@@ -231,6 +234,7 @@ impl StandardType {
             Self::BroadcastPublisher | Self::WatchPublisher => "Publisher",
             Self::WatchSubscription => "Subscription",
             Self::Result => "Result",
+            Self::Environment => "Environment",
         }
     }
 
@@ -238,7 +242,7 @@ impl StandardType {
     /// Its private representation grants neither silently.
     pub(crate) const fn properties(self) -> StandardProperties {
         match self {
-            Self::Console | Self::FileSystem | Self::Clock => {
+            Self::Console | Self::FileSystem | Self::Clock | Self::Environment => {
                 StandardProperties::Opaque("a provider")
             }
             Self::ProcessAddress
@@ -566,6 +570,12 @@ pub(crate) enum StandardFunction {
     ResourceScoped,
     // Test-only (testing.md, Defects): T4401 when reachable from `main`.
     TestCaptureDefect,
+    // `std/path`: a `Path` is its text at run time on both backends.
+    PathFrom,
+    PathToText,
+    // `std/env`'s host core, which only its runner provider calls.
+    EnvHostVariables,
+    EnvHostCurrentDirectory,
 }
 
 impl StandardFunction {
@@ -860,6 +870,8 @@ impl StandardFunction {
             | Self::TestFail => None,
             Self::ResourceScoped => None,
             Self::TestCaptureDefect => None,
+            Self::PathFrom | Self::PathToText => None,
+            Self::EnvHostVariables | Self::EnvHostCurrentDirectory => None,
         }
     }
 
@@ -1041,6 +1053,10 @@ impl StandardFunction {
             Self::TestFail => "fail",
             Self::ResourceScoped => "scoped",
             Self::TestCaptureDefect => "capture_defect",
+            Self::PathFrom => "from",
+            Self::PathToText => "to_text",
+            Self::EnvHostVariables => "host_variables",
+            Self::EnvHostCurrentDirectory => "host_current_directory",
         }
     }
 
@@ -1431,6 +1447,7 @@ impl StandardConstructor {
             | StandardType::SupervisorManagedProcess
             | StandardType::SupervisorManagedSupervisor
             | StandardType::Clock
+            | StandardType::Environment
             | StandardType::Instant
             | StandardType::Timestamp
             | StandardType::SelectEvent

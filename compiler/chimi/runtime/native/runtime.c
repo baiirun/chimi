@@ -8680,6 +8680,58 @@ static ChimiControl *invoke_select(ChimiRuntime *runtime, uint32_t intrinsic, Ch
   return success(select_event(kind, arguments[0], arguments[1], clock ? clock : void_value()));
 }
 
+extern char **environ;
+
+/* The host core of the system modules (std/env); the interpreter's twin is
+   execution/host_operations.rs. A host call checks cancellation before it enters
+   the operating system. */
+static ChimiControl *invoke_host_operation(ChimiRuntime *runtime, uint32_t intrinsic,
+                                           uint32_t argument_count, uint32_t call_node) {
+  if (argument_count != 0) return intrinsic_shape_defect(call_node);
+  if (runtime->cancel) return cancelled();
+  switch (intrinsic) {
+    case CHIMI_INTRINSIC_ENV_HOST_VARIABLES: {
+      /* environ in order; a pair whose name or value is not UTF-8 is left out. */
+      ChimiValue *list = list_from_values(NULL, 0);
+      for (char **entry = environ; entry && *entry; ++entry) {
+        const char *equals = strchr(*entry, '=');
+        if (!equals) continue;
+        size_t name_length = (size_t)(equals - *entry), value_length = strlen(equals + 1);
+        if (!valid_utf8((const unsigned char *)*entry, name_length) ||
+            !valid_utf8((const unsigned char *)equals + 1, value_length))
+          continue;
+        ChimiValue *pair = new_value(VALUE_TUPLE);
+        pair->as.record.length = 2;
+        pair->as.record.fields = allocate(2, sizeof(*pair->as.record.fields));
+        allocation_kind(pair->as.record.fields, ALLOCATION_FIELDS);
+        pair->as.record.fields[0] = (RuntimeField){NULL, text_from_bytes(*entry, name_length)};
+        pair->as.record.fields[1] = (RuntimeField){NULL, text_from_bytes(equals + 1, value_length)};
+        list = list_push(list, pair);
+      }
+      return success(list);
+    }
+    case CHIMI_INTRINSIC_ENV_HOST_CURRENT_DIRECTORY: {
+      size_t capacity = 256;
+      for (;;) {
+        char *buffer = malloc(capacity);
+        if (!buffer) return defect("out of memory reading the working directory", call_node);
+        if (getcwd(buffer, capacity)) {
+          ChimiValue *path = NULL;
+          if (valid_utf8((const unsigned char *)buffer, strlen(buffer))) path = text_value(buffer);
+          free(buffer);
+          if (!path) return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
+          ChimiValue *fields[] = {path};
+          return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
+        }
+        free(buffer);
+        if (errno != ERANGE) return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
+        capacity *= 2;
+      }
+    }
+    default: return intrinsic_shape_defect(call_node);
+  }
+}
+
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
@@ -8703,6 +8755,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return resource_scoped(runtime, arguments, argument_count, span, call_node, environment);
   if (intrinsic == CHIMI_INTRINSIC_TEST_CAPTURE_DEFECT)
     return capture_defect(runtime, arguments, argument_count, span, call_node, environment);
+  if (intrinsic >= CHIMI_INTRINSIC_ENV_HOST_VARIABLES && intrinsic <= CHIMI_INTRINSIC_ENV_HOST_CURRENT_DIRECTORY)
+    return invoke_host_operation(runtime, intrinsic, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
@@ -8716,6 +8770,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_core_operation(intrinsic, arguments, argument_count, call_node);
   switch (intrinsic) {
     case CHIMI_INTRINSIC_IO_PATH:
+    case CHIMI_INTRINSIC_PATH_FROM:
+    case CHIMI_INTRINSIC_PATH_TO_TEXT:
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT)
         return intrinsic_shape_defect(call_node);
       return success(arguments[0]);

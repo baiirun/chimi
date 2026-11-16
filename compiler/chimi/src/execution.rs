@@ -3,6 +3,7 @@ mod causes;
 mod constants;
 pub(crate) mod core_operations;
 mod debug;
+mod host_operations;
 mod decimal_operations;
 mod durations;
 mod json_operations;
@@ -1905,7 +1906,12 @@ impl<'core> Evaluator<'core> {
             StandardFunction::ResourceScoped => {
                 self.invoke_resource_scoped(arguments, span, call_node, environment)
             }
-            StandardFunction::IoPath => {
+            StandardFunction::EnvHostVariables | StandardFunction::EnvHostCurrentDirectory => {
+                self.invoke_host_operation(function, arguments, call_node)
+            }
+            StandardFunction::IoPath
+            | StandardFunction::PathFrom
+            | StandardFunction::PathToText => {
                 let [RuntimeValue::Text(path)] = arguments.as_slice() else {
                     return self.intrinsic_shape_defect(function, call_node);
                 };

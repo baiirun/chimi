@@ -7,7 +7,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::ids::{ModuleId, SemanticId, SymbolId};
 use crate::operations::{self, OperationClass, RUNTIME_KNOWN, RuntimeIdentity};
 use crate::semantic::{FunctionSignature, ModuleDeclaration, ModuleDeclarationKind};
-use crate::standard::{StandardConstructor, StandardSymbol, StandardType};
+use crate::standard::{StandardConstructor, StandardModule, StandardSymbol, StandardType};
 use crate::standard_tree;
 
 impl ProjectResolver {
@@ -49,6 +49,7 @@ impl ProjectResolver {
                 let (kind, declaration_kind) = match entry.identity {
                     RuntimeIdentity::Type(kind) => (kind, ModuleDeclarationKind::Enum),
                     RuntimeIdentity::NativeType(kind) => (kind, ModuleDeclarationKind::NativeType),
+                    RuntimeIdentity::Interface(kind) => (kind, ModuleDeclarationKind::Interface),
                     RuntimeIdentity::Constructor(_) => continue,
                 };
                 let Some(type_name) = entry
@@ -64,6 +65,7 @@ impl ProjectResolver {
                 let Some(declaration) = declaration else {
                     let form = match declaration_kind {
                         ModuleDeclarationKind::NativeType => "native type",
+                        ModuleDeclarationKind::Interface => "interface",
                         _ => "enum",
                     };
                     self.diagnostics.push(name_error(
@@ -74,7 +76,10 @@ impl ProjectResolver {
                     ));
                     continue;
                 };
-                if declaration_kind == ModuleDeclarationKind::NativeType {
+                if matches!(
+                    declaration_kind,
+                    ModuleDeclarationKind::NativeType | ModuleDeclarationKind::Interface
+                ) {
                     self.source_identities.insert(
                         (module.id, declaration.semantic_id),
                         StandardSymbol::Type(kind),
@@ -129,6 +134,15 @@ impl ProjectResolver {
                 self.standard_types.insert(kind, symbol);
                 if kind == StandardType::Option {
                     self.builtin_types.insert("Option".to_owned(), symbol);
+                }
+                // `Path`'s home is std/path; std/io keeps exporting it, so
+                // `import std/io.{Path}` names the same type.
+                if kind == StandardType::Path {
+                    self.standard_modules
+                        .get_mut(&StandardModule::Io)
+                        .expect("standard module is indexed")
+                        .types
+                        .insert(kind.name().to_owned(), symbol);
                 }
             }
             StandardSymbol::Constructor(

@@ -712,6 +712,43 @@ impl VerifiedRoot {
     }
 }
 
+/// The needs of `main` that a runner provider written in std source closes
+/// (`operations::RUNNER_PROVIDERS`), each with the private function that
+/// builds its provider. Lowering wraps `main`'s body in a provision of them,
+/// as if `main` were called `using` those providers.
+fn runner_provisions(typed: &TypedProject, entry: SymbolId) -> Vec<(String, SymbolId)> {
+    let Some(contract) = typed.contracts.get(&entry) else {
+        return Vec::new();
+    };
+    let resolved = &typed.resolved;
+    typed.needs_rows[contract.needs.raw() as usize]
+        .entries
+        .iter()
+        .filter_map(|need| {
+            let CanonicalType::Named { symbol, .. } = &typed.types[need.interface.raw() as usize]
+            else {
+                return None;
+            };
+            let Some(StandardSymbol::Type(interface)) = resolved.standard_symbol(*symbol) else {
+                return None;
+            };
+            let provider = crate::operations::runner_provider(interface, &need.lexical_name)?;
+            let (module_path, name) = provider
+                .provider
+                .split_once('.')
+                .expect("a provider is a qualified function name");
+            let function = resolved.symbols.iter().find(|symbol| {
+                symbol.kind == ProjectSymbolKind::Function
+                    && symbol.name == name
+                    && symbol.module_id.is_some_and(|module| {
+                        resolved.semantic.modules[module.raw() as usize].path == module_path
+                    })
+            })?;
+            Some((need.lexical_name.clone(), function.id))
+        })
+        .collect()
+}
+
 pub(crate) fn seal_entry(
     typed: impl Into<Arc<TypedProject>>,
 ) -> Result<VerifiedRoot, Vec<Diagnostic>> {
@@ -820,7 +857,13 @@ pub(crate) fn seal_entry(
         )]);
     }
 
-    let reachable = collect_reachable_program(&typed, &[entry])?;
+    let mut roots = vec![entry];
+    roots.extend(
+        runner_provisions(&typed, entry)
+            .into_iter()
+            .map(|(_, provider)| provider),
+    );
+    let reachable = collect_reachable_program(&typed, &roots)?;
     if let Some(found) = &reachable.test_only {
         let mut path = found
             .path
@@ -1402,8 +1445,11 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
             .expect("verified executable declaration owns a body")
             .clone();
         lowerer.at_build_time = kind == ModuleDeclarationKind::Constant;
-        let body = lowerer.expression(module_id, &body);
+        let mut body = lowerer.expression(module_id, &body);
         lowerer.at_build_time = false;
+        if symbol_id == root.entry {
+            body = lowerer.provide_runner_capabilities(body, root.entry);
+        }
         match kind {
             ModuleDeclarationKind::Function => {
                 functions.push(CoreFunction {
@@ -2294,6 +2340,59 @@ impl CoreLowerer {
         self.nodes.push(CoreNode {
             id,
             origin: self.origin_ids[&(module_id, semantic_id)],
+            type_id,
+            operation,
+        });
+        id
+    }
+
+    /// `body` evaluated with each runner-closed need of `entry` bound to its
+    /// std provider, as if `main` were called `using` them. The synthesized
+    /// nodes take the body's origin, so a trace places them at `main`.
+    fn provide_runner_capabilities(&mut self, body: CoreNodeId, entry: SymbolId) -> CoreNodeId {
+        let provisions = runner_provisions(&self.typed, entry);
+        if provisions.is_empty() {
+            return body;
+        }
+        let origin = self.nodes[body.raw() as usize].origin;
+        let body_type = self.nodes[body.raw() as usize].type_id;
+        let mut providers = Vec::new();
+        for (need, provider) in provisions {
+            let symbol = self.typed.resolved.symbol(provider);
+            let function_type = self.typed.declaration_types[&(
+                symbol.module_id.expect("a provider is a module function"),
+                symbol.semantic_id.expect("a provider has semantic identity"),
+            )];
+            let provider_type = self.typed.contracts[&provider].success;
+            let callee = self.synthetic_node(origin, function_type, CoreOperation::Reference(provider));
+            let call = self.synthetic_node(
+                origin,
+                provider_type,
+                CoreOperation::Call {
+                    callee,
+                    arguments: Vec::new(),
+                },
+            );
+            providers.push(CoreField {
+                name: need,
+                value: call,
+            });
+        }
+        self.synthetic_node(
+            origin,
+            body_type,
+            CoreOperation::Provision {
+                expression: body,
+                providers,
+            },
+        )
+    }
+
+    fn synthetic_node(&mut self, origin: OriginId, type_id: TypeId, operation: CoreOperation) -> CoreNodeId {
+        let id = CoreNodeId::new(self.nodes.len() as u32);
+        self.nodes.push(CoreNode {
+            id,
+            origin,
             type_id,
             operation,
         });

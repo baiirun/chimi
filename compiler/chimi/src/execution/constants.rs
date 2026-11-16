@@ -60,7 +60,9 @@ impl Operation {
                 }
                 // A test-only operation observes defects, and constant evaluation
                 // reports its own stops as defects, so a constant must not call it.
-                _ => crate::operations::test_only_name(function),
+                _ => crate::operations::host_operation_name(function)
+                    .map(str::to_owned)
+                    .or_else(|| crate::operations::test_only_name(function)),
             },
             Self::Host(function) => Some(
                 match function {

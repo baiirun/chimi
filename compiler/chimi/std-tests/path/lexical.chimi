@@ -1,0 +1,70 @@
+import std/debug as Debug
+import std/io as IO
+import std/list as List
+import std/option as Option
+import std/path as Path
+import std/path.{Path}
+
+fn show(paths: List<Path>) -> List<Text> {
+  List.map(paths, Path.to_text)
+}
+
+pub fn main() -> List<Text> {
+  let joined = show([
+    Path.join(Path.from("a"), "b"),
+    Path.join(Path.from("a/"), "/b"),
+    Path.join(Path.from("/"), "etc"),
+    Path.join(Path.from(""), "b"),
+    Path.join(Path.from("a"), ""),
+  ])
+  let names = [
+    Path.name(Path.from("logs/app.log")),
+    Path.name(Path.from("logs/")),
+    Path.name(Path.from("/")),
+    Path.name(Path.from("a/..")),
+    Path.stem(Path.from("report.tar.gz")),
+    Path.stem(Path.from(".bashrc")),
+    Path.extension(Path.from("report.tar.gz")),
+    Path.extension(Path.from(".bashrc")),
+    Path.extension(Path.from("notes.")),
+    Path.extension(Path.from("..")),
+  ]
+  let parents = List.map([
+    Path.from("/etc/hosts"),
+    Path.from("/etc"),
+    Path.from("/"),
+    Path.from("a"),
+    Path.from("a/b/"),
+    Path.from("."),
+    Path.from(""),
+  ], fn(path) {
+    Option.map(Path.parent(path), Path.to_text)
+  })
+  let renamed = show([
+    Path.with_extension(Path.from("a/b.txt"), "md"),
+    Path.with_extension(Path.from("a/b"), "md"),
+    Path.with_extension(Path.from("a/b.txt"), ""),
+    Path.with_extension(Path.from("/"), "md"),
+    Path.with_extension(Path.from("b.txt/"), "md"),
+  ])
+  let normalized = show(List.map([
+    Path.from("a//b/./c/"),
+    Path.from("a/../.."),
+    Path.from("/../a"),
+    Path.from(""),
+    Path.from("./a/b/../c"),
+    Path.from("/a/b/../../.."),
+  ], Path.normalize))
+  [
+    Debug.render(joined),
+    Debug.render(names),
+    Debug.render(parents),
+    Debug.render(renamed),
+    Debug.render(normalized),
+    Debug.render([Path.parts(Path.from("/usr//./bin")), Path.parts(Path.from("."))]),
+    Debug.render([Path.is_absolute(Path.from("/a")), Path.is_absolute(Path.from("a"))]),
+    Debug.render([Path.from("a") == Path.from("a"), Path.from("a/") == Path.from("a")]),
+    // std/io's `Path` is this module's.
+    Path.to_text(Path.join(IO.path("logs"), "app.log")),
+  ]
+}
