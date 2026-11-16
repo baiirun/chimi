@@ -1863,6 +1863,14 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::TestRecorded
             | StandardFunction::TestScript
             | StandardFunction::TestNext => self.invoke_test_log(function, arguments, call_node),
+            StandardFunction::TestMailbox | StandardFunction::TestReceived => Control::Defect {
+                message: format!(
+                    "Test.{} requires the native backend, as processes do",
+                    function.name()
+                ),
+                node: Some(call_node),
+                cause: None,
+            },
             // Setup refuses a program that reaches a binding (`E5204`), so only
             // a caller that skipped it gets here.
             StandardFunction::BindingCall => Control::Defect {

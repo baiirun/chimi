@@ -821,6 +821,182 @@ fn a_recorder_reachable_from_main_fails_the_build() {
     );
 }
 
+/// Fake process addresses: a send to a full mailbox is refused, `received`
+/// empties it, and a real process can send to the address.
+const MAILBOXES: &str = r#"import std/clock as Clock
+import std/clock.{Clock}
+import std/debug as Debug
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox, SendError}
+import std/supervisor as Supervisor
+import std/test as Test
+
+enum Message {
+  Ping(number: Int)
+  Note(text: Text, tags: List<Text>)
+}
+
+fn send_all(to: Process.Address<Message>, count: Int) -> Int {
+  loop state = (1, 0) {
+    let (index, refused) = state
+    case index > count {
+      True -> break refused
+      False -> case Process.send(to, Message.Ping(index)) {
+        Success(_) -> (index + 1, refused)
+        Failure(error) -> case error {
+          SendError.Full(Message.Ping(number)) -> (index + 1, refused + number)
+          SendError.Full(_) -> (index + 1, refused + 1000)
+          SendError.Unavailable(_) -> (index + 1, refused + 100)
+        }
+      }
+    }
+  }
+}
+
+fn reporter(to: Process.Address<Message>) -> fn(Inbox<Message>) -> Void {
+  fn(inbox: Inbox<Message>) -> Void {
+    case Process.send(to, Message.Ping(7)) {
+      Success(_) -> Void
+      Failure(_) -> Void
+    }
+  }
+}
+
+fn pause() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.milliseconds(10))
+}
+
+test "a full mailbox refuses and received frees it" {
+  let (address, mailbox) = Test.mailbox(2)
+  Test.assert_equal(send_all(address, 3), 3)
+  Test.assert_equal(Test.received(mailbox), [Message.Ping(1), Message.Ping(2)])
+  Test.assert_equal(Test.received(mailbox), [])
+  Test.assert_equal(send_all(address, 2), 0)
+  Test.assert_equal(Test.received(mailbox), [Message.Ping(1), Message.Ping(2)])
+  let note = Message.Note("held", ["a", "b"])
+  let _ = Process.send(address, note)
+  Test.assert_equal(Test.received(mailbox), [note])
+  Test.assert_equal(Debug.render(address), "<address test>")
+  Test.assert_equal(Debug.render(mailbox), "<Mailbox>")
+}
+
+test "a process sends to a test address" {
+  let (address, mailbox) = Test.mailbox(4)
+  let root = Supervisor.start(Supervisor.policy([], 2, Supervisor.restarts(0, Duration.seconds(1))))
+  let spec = Process.spec(reporter(address), 1, Duration.seconds(1))
+  let _ = Supervisor.start_process(root, spec, Supervisor.Restart.Never)
+  pause()
+  Test.assert_equal(Test.received(mailbox), [Message.Ping(7)])
+}
+
+test "a capacity below one defects" {
+  let (_, mailbox) = Test.mailbox(0)
+  Test.assert_equal(Test.received(mailbox), [])
+}
+"#;
+
+/// Native only, as processes are.
+#[test]
+fn a_test_mailbox_holds_what_is_sent_to_its_address() {
+    let run = chimi_test("mailboxes", MAILBOXES, &[]);
+    assert_eq!(run.status, Some(1), "{}{}", run.stdout, run.stderr);
+    assert!(run.stdout.contains("test main \"a full mailbox refuses and received frees it\" ... ok"), "{}", run.stdout);
+    assert!(run.stdout.contains("test main \"a process sends to a test address\" ... ok"), "{}", run.stdout);
+    assert!(
+        run.stdout.contains("Test.mailbox: the capacity must be at least 1, not 0"),
+        "{}",
+        run.stdout
+    );
+    assert!(run.stdout.contains("2 passed, 1 failed"), "{}", run.stdout);
+}
+
+#[test]
+fn a_test_mailbox_refuses_a_receiver_and_needs_the_native_backend() {
+    let source = concat!(
+        "import std/channel as Channel\n",
+        "import std/channel.{Receiver}\n",
+        "import std/process as Process\n",
+        "import std/test as Test\n",
+        "\n",
+        "enum Message {\n",
+        "  Hand(replies: List<Receiver<Int>>)\n",
+        "}\n",
+        "\n",
+        "test \"hands over a receiver\" {\n",
+        "  let (address, _) = Test.mailbox(1)\n",
+        "  let pair = Channel.bounded(1)\n",
+        "  case Process.send(address, Message.Hand([pair.receiver])) {\n",
+        "    Success(_) -> Void\n",
+        "    Failure(_) -> Void\n",
+        "  }\n",
+        "}\n",
+    );
+    let run = chimi_test("mailbox-receiver", source, &[]);
+    assert_eq!(run.status, Some(1), "{}{}", run.stdout, run.stderr);
+    assert!(
+        run.stdout.contains(
+            "defect at cases.chimi:13:8:\n    Process.send: a test mailbox cannot hold a message with a Receiver or Completion"
+        ),
+        "{}",
+        run.stdout
+    );
+    let run = chimi_test("mailbox-interpreter", source, &["--backend=interpreter"]);
+    assert_eq!(run.status, Some(1), "{}{}", run.stdout, run.stderr);
+    assert!(
+        run.stdout.contains(
+            "defect at cases.chimi:11:22:\n    Test.mailbox requires the native backend, as processes do"
+        ),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn a_mailbox_is_not_an_inbox_and_main_cannot_reach_one() {
+    let source = concat!(
+        "import std/process as Process\n",
+        "import std/process.{Inbox}\n",
+        "import std/test as Test\n",
+        "\n",
+        "enum Message {\n",
+        "  Ping\n",
+        "}\n",
+        "\n",
+        "fn take(inbox: Inbox<Message>) -> Message {\n",
+        "  Process.receive(inbox)\n",
+        "}\n",
+        "\n",
+        "test \"receives from a mailbox\" {\n",
+        "  let (_, mailbox) = Test.mailbox(1)\n",
+        "  let message = take(mailbox)\n",
+        "  Void\n",
+        "}\n",
+    );
+    let run = chimi_test("mailbox-inbox", source, &[]);
+    assert_eq!(run.status, Some(2), "{}", run.stdout);
+    assert!(
+        run.stderr.contains("cases.chimi:15:22: error[T4203] type: call argument has type `Mailbox<_>`, expected `Inbox<Message>`"),
+        "{}",
+        run.stderr
+    );
+    let source = concat!(
+        "import std/test as Test\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  let (_, mailbox) = Test.mailbox(1)\n",
+        "  0\n",
+        "}\n",
+    );
+    let run = chimi("mailbox-main", source, &["run", "cases.chimi"]);
+    assert_eq!(run.status, Some(1), "{}", run.stdout);
+    assert!(
+        run.stderr.contains("error[T4401] execution-setup: `Test.mailbox` is test-only"),
+        "{}",
+        run.stderr
+    );
+}
+
 /// `draws` prints one of each draw; its numbers come from the run seed and its
 /// identity, so the test before it and a filter must not change them.
 const RANDOM: &str = concat!(
