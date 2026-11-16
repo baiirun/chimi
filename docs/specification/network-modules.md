@@ -252,7 +252,7 @@ pub fn serve_connection(connection: Connection, handle) -> Void needs R + { cloc
 - A cap on open connections, and containing a handler's defect to its
   connection (CHI-262). Each connection is a task, and a finished task's
   record is not yet released by the runtime, so a long-running server holds
-  one record per connection it ever served until that is fixed (CHI-261).
+  one record per connection it ever served until that is fixed (CHI-264).
 - `Date` headers, streamed request and response bodies, a graceful drain of
   open connections when serving stops, and a close that drains unread input
   before it closes (so a peer that is still sending does not see a reset).
