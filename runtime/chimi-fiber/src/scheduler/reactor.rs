@@ -383,8 +383,9 @@ impl Scheduler {
     }
 
     /// The idle wait while a registration exists. Under the real clock it
-    /// ends by the earliest timer deadline; under the virtual clock time is
-    /// held, so it waits for a descriptor or a signal only. Wakes the ready
+    /// ends by the earliest timer deadline or after `MAX_REAL_WAIT`; under
+    /// the virtual clock time is held, so it waits for a descriptor or a
+    /// signal only. Wakes the ready
     /// tasks, then fires the timers due by now, which under the virtual
     /// clock are only those at the current instant.
     pub(super) fn wait_for_io(&mut self) {
@@ -396,12 +397,10 @@ impl Scheduler {
                 .earliest()
                 .filter(|deadline| *deadline <= self.clock.now())
                 .map(|_| Duration::ZERO),
-            super::ClockMode::Real => self.timers.earliest().map(|deadline| {
-                let now = self.clock.now();
-                Duration::from_nanos(
-                    u64::try_from(deadline.as_nanos().saturating_sub(now.as_nanos())).unwrap_or(0),
-                )
-            }),
+            super::ClockMode::Real => self
+                .timers
+                .earliest()
+                .map(|deadline| super::clock::real_wait(self.clock.now(), deadline)),
         };
         let woken = self.reactor.wait(timeout, self.signals.wake_fd());
         self.wake_io(woken);
