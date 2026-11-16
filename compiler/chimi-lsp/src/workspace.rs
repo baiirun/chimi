@@ -1209,7 +1209,7 @@ mod tests {
         // A type parameter shares its function's id, not its doc.
         assert!(
             workspace
-                .hover(&lib, at(5, 22))
+                .hover(&lib, at(6, 22))
                 .is_none_or(|hover| !hover.markdown.contains("Adds one."))
         );
         let declared = workspace.hover(&lib, at(1, 8));
