@@ -240,6 +240,9 @@ typedef enum {
 
 struct ChimiRuntime {
   const char *execution_id;
+  /* The root computation's name: the program entry's, or under `--test=<k>`
+     test k's, so each test's telemetry and outcome name the test. */
+  const char *computation;
   bool full_trace;
   /* `--clock=virtual`: the scheduler's deterministic time source. */
   bool virtual_clock;
@@ -2155,7 +2158,7 @@ static void emit_event(ChimiRuntime *runtime, const char *event, uint32_t node_i
   ++runtime->trace_events_constructed;
   fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":", output); json_string(output, event);
   fprintf(output, ",\"sequence\":%" PRIu64 ",\"computation\":", runtime->next_sequence++);
-  json_string(output, CHIMI_COMPUTATION); fputs(",\"execution_id\":", output);
+  json_string(output, runtime->computation); fputs(",\"execution_id\":", output);
   json_string(output, runtime->execution_id);
   fprintf(output, ",\"span_id\":%" PRIu64 ",\"parent_span_id\":", span);
   if (parent < 0) fputs("null", output); else fprintf(output, "%" PRId64, parent);
@@ -2174,7 +2177,7 @@ static void emit_dependency(ChimiRuntime *runtime, uint32_t node_id, uint64_t sp
   ++runtime->trace_events_constructed;
   fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":\"dependency_called\",\"sequence\":", output);
   fprintf(output, "%" PRIu64 ",\"computation\":", runtime->next_sequence++);
-  json_string(output, CHIMI_COMPUTATION);
+  json_string(output, runtime->computation);
   fputs(",\"execution_id\":", output); json_string(output, runtime->execution_id);
   fprintf(output, ",\"span_id\":%" PRIu64 ",\"parent_span_id\":%" PRIu64
          ",\"core_node_id\":%u,\"origin_id\":%u,\"semantic_id\":%u,\"file_id\":%u,"
@@ -11213,7 +11216,7 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
   fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":", output);
   json_string(output, scheduler_event_name(event));
   fprintf(output, ",\"sequence\":%" PRIu64 ",\"computation\":", runtime->next_sequence++);
-  json_string(output, CHIMI_COMPUTATION);
+  json_string(output, runtime->computation);
   fputs(",\"execution_id\":", output);
   json_string(output, runtime->execution_id);
   fputs(",\"task_id\":", output);
@@ -11634,6 +11637,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
            (int64_t)identity_time.tv_sec, identity_time.tv_nsec);
   ChimiRuntime runtime = {
     .execution_id = generated_execution_id,
+    .computation = CHIMI_COMPUTATION,
     .silent = true,
     .max_line_bytes = 1024 * 1024,
     .next_span = 2,
@@ -11777,6 +11781,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   const ChimiFunction *entry_function = NULL;
   if (test_index >= 0) {
     entry_function = &CHIMI_FUNCTIONS[CHIMI_TEST_FUNCTIONS[test_index]];
+    runtime.computation = CHIMI_TEST_COMPUTATIONS[test_index];
     entry_node = entry_function->body;
     entry = CHIMI_NODE_FUNCTIONS[entry_node];
   }

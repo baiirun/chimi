@@ -557,6 +557,7 @@ extern const uint32_t CHIMI_FUNCTION_COUNT;
 /* A test build's tests, as CHIMI_FUNCTIONS indexes in report order; `--test=<k>`
    runs the k-th instead of the entry. Empty for a program. */
 extern const uint32_t CHIMI_TEST_FUNCTIONS[];
+extern const char *const CHIMI_TEST_COMPUTATIONS[];
 extern const uint32_t CHIMI_TEST_COUNT;
 /* Ascending ids of the call nodes that fail a test as an assertion
    (CoreProgram::assertion_calls); Test.capture_defect lets their defects pass. */
