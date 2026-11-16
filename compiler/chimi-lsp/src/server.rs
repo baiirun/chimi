@@ -15,12 +15,14 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
     Notification as _, PublishDiagnostics,
 };
-use lsp_types::request::{Formatting, GotoDefinition, HoverRequest, Request as _};
+use lsp_types::request::{
+    Formatting, GotoDefinition, HoverRequest, References, Rename, Request as _,
+};
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString, Position,
+    InitializeParams, Location, MarkupContent, ReferenceParams, RenameParams, WorkspaceEdit, MarkupKind, NumberOrString, Position,
     PositionEncodingKind, PublishDiagnosticsParams, Range, SaveOptions, ServerCapabilities,
     ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
     TextDocumentSyncSaveOptions, TextEdit, Uri,
@@ -53,6 +55,8 @@ pub fn run(connection: &Connection) -> ServerResult<()> {
         document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
+        references_provider: Some(lsp_types::OneOf::Left(true)),
+        rename_provider: Some(lsp_types::OneOf::Left(true)),
         ..ServerCapabilities::default()
     };
     connection.initialize_finish(
@@ -142,12 +146,80 @@ impl Server<'_> {
                     });
                 Response::new_ok(id, location)
             }
+            References::METHOD => {
+                let (id, params) = request.extract::<ReferenceParams>(References::METHOD)?;
+                let at = params.text_document_position;
+                let locations = document(&at.text_document.uri).and_then(|path| {
+                    self.workspace.references(
+                        &path,
+                        line_position(at.position),
+                        params.context.include_declaration,
+                    )
+                });
+                Response::new_ok(
+                    id,
+                    locations.map(|ranges| {
+                        ranges
+                            .into_iter()
+                            .map(|target| Location {
+                                uri: file_uri(target.path.as_path()),
+                                range: range(target.range),
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+            }
+            Rename::METHOD => {
+                let (id, params) = request.extract::<RenameParams>(Rename::METHOD)?;
+                let at = params.text_document_position;
+                let Some(path) = document(&at.text_document.uri) else {
+                    return self.respond(Response::new_ok(id, None::<WorkspaceEdit>));
+                };
+                match self
+                    .workspace
+                    .rename(&path, line_position(at.position), &params.new_name)
+                {
+                    Ok(files) => Response::new_ok(
+                        id,
+                        WorkspaceEdit {
+                            changes: Some(
+                                files
+                                    .into_iter()
+                                    .map(|(path, replacements)| {
+                                        (
+                                            file_uri(path.as_path()),
+                                            replacements
+                                                .into_iter()
+                                                .map(|replacement| TextEdit {
+                                                    range: range(replacement.range),
+                                                    new_text: replacement.text,
+                                                })
+                                                .collect(),
+                                        )
+                                    })
+                                    .collect(),
+                            ),
+                            ..WorkspaceEdit::default()
+                        },
+                    ),
+                    Err(error) => Response::new_err(
+                        id,
+                        ErrorCode::RequestFailed as i32,
+                        error.to_string(),
+                    ),
+                }
+            }
             _ => Response::new_err(
                 request.id,
                 ErrorCode::MethodNotFound as i32,
                 format!("unsupported request `{}`", request.method),
             ),
         };
+        self.connection.sender.send(response.into())?;
+        Ok(())
+    }
+
+    fn respond(&self, response: Response) -> ServerResult<()> {
         self.connection.sender.send(response.into())?;
         Ok(())
     }

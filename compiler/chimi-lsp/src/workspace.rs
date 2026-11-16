@@ -14,7 +14,7 @@ use chimi::project::{LoadedProject, SourceReader, StandardTree};
 use chimi::source::SourceSnapshot;
 use chimi::{
     CallableInspection, Compiler, CompilerSession, IncrementalTypeReport, InspectionReport,
-    ProjectSource, ReferenceInspection,
+    Occurrence, ProjectSource, ReferenceInspection, SymbolOccurrences,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -141,6 +141,89 @@ struct ProjectAnalysis {
 struct AnalyzedProject {
     report: IncrementalTypeReport,
     modules: HashMap<DocumentPath, AnalyzedModule>,
+}
+
+impl AnalyzedProject {
+    fn document_range(
+        &self,
+        occurrence: &Occurrence,
+        encoding: PositionEncoding,
+    ) -> Option<DocumentRange> {
+        let path = DocumentPath(occurrence.source_path().to_owned());
+        let lines = &self.modules.get(&path)?.lines;
+        let range = occurrence.range();
+        Some(DocumentRange {
+            range: line_range(range.start(), range.end(), lines, encoding),
+            path,
+        })
+    }
+
+    /// How many errors the analyzed modules have with every span in `edits`
+    /// replaced by `text`.
+    fn errors_after(&self, edits: &BTreeMap<DocumentPath, Vec<(u32, u32)>>, text: &str) -> usize {
+        let sources = self
+            .modules
+            .iter()
+            .filter_map(|(path, module)| {
+                let mut edited = module.lines.text().to_owned();
+                let mut spans = edits.get(path).cloned().unwrap_or_default();
+                spans.sort_unstable();
+                for (start, end) in spans.into_iter().rev() {
+                    edited.replace_range(start as usize..end as usize, text);
+                }
+                ProjectSource::new(
+                    module.module_path.clone(),
+                    SourceSnapshot::from_text(path.as_path(), edited),
+                )
+                .ok()
+            })
+            .collect();
+        Compiler::type_project(sources).diagnostics().len()
+    }
+}
+
+/// Why a rename was refused.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RenameError {
+    NothingToRename,
+    /// A standard or built-in symbol, or a module alias.
+    NotRenamable(String),
+    /// Not an identifier, or one whose case differs from the old name's.
+    InvalidName(String),
+    /// The renamed project would not compile: the name collides or shadows.
+    Conflict(String),
+}
+
+impl std::fmt::Display for RenameError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NothingToRename => formatter.write_str("there is no name to rename here"),
+            Self::NotRenamable(name) => {
+                write!(formatter, "`{name}` is not declared in this project's source")
+            }
+            Self::InvalidName(name) => write!(
+                formatter,
+                "`{name}` is not a valid name here; keep the first letter's case"
+            ),
+            Self::Conflict(name) => write!(
+                formatter,
+                "renaming to `{name}` would collide with another name in scope"
+            ),
+        }
+    }
+}
+
+fn is_identifier(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+fn starts_uppercase(name: &str) -> bool {
+    name.trim_start_matches('_')
+        .starts_with(|character: char| character.is_ascii_uppercase())
 }
 
 #[derive(Debug)]
@@ -292,6 +375,95 @@ impl Workspace {
         })
     }
 
+    /// Every place the symbol at `position` in `path` is written: its
+    /// declaration when `include_declaration`, then its references, across the
+    /// whole project that owns `path`.
+    ///
+    /// Ensures: `None` when no symbol's name is under the cursor.
+    pub fn references(
+        &self,
+        path: &DocumentPath,
+        position: LinePosition,
+        include_declaration: bool,
+    ) -> Option<Vec<DocumentRange>> {
+        let (project, occurrences) = self.occurrences(path, position)?;
+        Some(
+            occurrences
+                .occurrences()
+                .iter()
+                .filter(|occurrence| include_declaration || !occurrence.is_declaration())
+                .filter_map(|occurrence| project.document_range(occurrence, self.encoding))
+                .collect(),
+        )
+    }
+
+    /// The edits that rename the symbol at `position` in `path` to `new_name`.
+    ///
+    /// Ensures: the edits cover the declaration and every reference, grouped
+    /// by file; the project with the edits applied has no more errors than
+    /// without them, so a rename never introduces a collision or shadowing.
+    /// Must not: rename a standard or built-in symbol, a module alias, or a
+    /// name to one of another case, such as a type to a lowercase name.
+    pub fn rename(
+        &self,
+        path: &DocumentPath,
+        position: LinePosition,
+        new_name: &str,
+    ) -> Result<BTreeMap<DocumentPath, Vec<TextReplacement>>, RenameError> {
+        let (project, occurrences) = self
+            .occurrences(path, position)
+            .ok_or(RenameError::NothingToRename)?;
+        if !occurrences.is_renamable() {
+            return Err(RenameError::NotRenamable(occurrences.name().to_owned()));
+        }
+        if !is_identifier(new_name)
+            || starts_uppercase(new_name) != starts_uppercase(occurrences.name())
+        {
+            return Err(RenameError::InvalidName(new_name.to_owned()));
+        }
+        let mut edits: BTreeMap<DocumentPath, Vec<(u32, u32)>> = BTreeMap::new();
+        for occurrence in occurrences.occurrences() {
+            let document = DocumentPath(occurrence.source_path().to_owned());
+            edits
+                .entry(document)
+                .or_default()
+                .push((occurrence.range().start(), occurrence.range().end()));
+        }
+        if project.errors_after(&edits, new_name) > project.report.diagnostics().len() {
+            return Err(RenameError::Conflict(new_name.to_owned()));
+        }
+        Ok(edits
+            .into_iter()
+            .filter_map(|(document, spans)| {
+                let lines = &project.modules.get(&document)?.lines;
+                let replacements = spans
+                    .into_iter()
+                    .map(|(start, end)| TextReplacement {
+                        range: line_range(start, end, lines, self.encoding),
+                        text: new_name.to_owned(),
+                    })
+                    .collect();
+                Some((document, replacements))
+            })
+            .collect())
+    }
+
+    /// The latest analysis that covers `path`, and the symbol named at
+    /// `position` there.
+    fn occurrences(
+        &self,
+        path: &DocumentPath,
+        position: LinePosition,
+    ) -> Option<(&AnalyzedProject, SymbolOccurrences)> {
+        let project = self.latest_for(path)?;
+        let module = project.modules.get(path)?;
+        let offset = module.lines.offset(position, self.encoding).ok()?;
+        let occurrences = project
+            .report
+            .occurrences(&module.module_path, offset as usize)?;
+        Some((project, occurrences))
+    }
+
     /// Inspects the latest analysis that covers `path` at `position`.
     ///
     /// Ensures: the project that owns `path` for diagnostics is the one asked,
@@ -301,22 +473,7 @@ impl Workspace {
         path: &DocumentPath,
         position: LinePosition,
     ) -> Option<(&AnalyzedProject, &AnalyzedModule, InspectionReport)> {
-        let configured = self
-            .configured_project_for(path)
-            .and_then(|index| self.analyses.get(&ProjectKey::Configured(index)));
-        // `analyze` drops the single-file analysis whenever a configured project
-        // owns `path`, including after that project fails to load.
-        let project = match configured {
-            Some(ProjectAnalysis {
-                latest: Some(project),
-                ..
-            }) if project.modules.contains_key(path) => project,
-            _ => self
-                .analyses
-                .get(&ProjectKey::SingleFile(path.clone()))?
-                .latest
-                .as_ref()?,
-        };
+        let project = self.latest_for(path)?;
         let module = project.modules.get(path)?;
         let offset = module.lines.offset(position, self.encoding).ok()?;
         let report = project
@@ -324,6 +481,26 @@ impl Workspace {
             .inspect(&module.module_path, offset as usize)
             .ok()?;
         Some((project, module, report))
+    }
+
+    /// The latest analysis of the project that owns `path`.
+    fn latest_for(&self, path: &DocumentPath) -> Option<&AnalyzedProject> {
+        let configured = self
+            .configured_project_for(path)
+            .and_then(|index| self.analyses.get(&ProjectKey::Configured(index)));
+        // `analyze` drops the single-file analysis whenever a configured project
+        // owns `path`, including after that project fails to load.
+        match configured {
+            Some(ProjectAnalysis {
+                latest: Some(project),
+                ..
+            }) if project.modules.contains_key(path) => Some(project),
+            _ => self
+                .analyses
+                .get(&ProjectKey::SingleFile(path.clone()))?
+                .latest
+                .as_ref(),
+        }
     }
 
     /// The configured project with the longest root containing `path`.
@@ -548,7 +725,7 @@ fn editor_diagnostic(
 
 #[cfg(test)]
 mod tests {
-    use super::{DocumentPath, DocumentVersion, ProjectConfig, Workspace};
+    use super::{DocumentPath, DocumentRange, DocumentVersion, ProjectConfig, RenameError, Workspace};
     use chimi::line_index::{LinePosition, PositionEncoding};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -751,5 +928,169 @@ mod tests {
             .expect("scratch published");
         assert!(!scratch_set.diagnostics.is_empty());
         assert_eq!(sets.iter().filter(|set| set.path == scratch).count(), 1);
+    }
+
+    /// The ranges' (line, start column, end column), sorted by path then start.
+    fn spans(ranges: &[DocumentRange]) -> Vec<(PathBuf, u32, u32, u32)> {
+        let mut spans: Vec<_> = ranges
+            .iter()
+            .map(|target| {
+                (
+                    target.path.as_path().to_owned(),
+                    target.range.start.line,
+                    target.range.start.character,
+                    target.range.end.character,
+                )
+            })
+            .collect();
+        spans.sort();
+        spans
+    }
+
+    fn two_module_project(name: &str) -> (Fixture, DocumentPath, DocumentPath, Workspace) {
+        let fixture = Fixture::new(name);
+        let app = fixture.write(
+            "app.chimi",
+            "import lib as Lib\nimport lib.{Point}\n\npub fn main() -> Int {\n  let start = Lib.origin()\n  Lib.total(start) + Lib.total(Point(1, 2))\n}\n",
+        );
+        let lib = fixture.write(
+            "lib.chimi",
+            "pub struct Point {\n  x: Int,\n  y: Int,\n}\n\npub fn origin() -> Point {\n  Point(0, 0)\n}\n\npub fn total(point: Point) -> Int {\n  point.x + point.y\n}\n",
+        );
+        let project = ProjectConfig::new(fixture.root(), "app").unwrap();
+        let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
+        workspace.analyze(&app);
+        (fixture, app, lib, workspace)
+    }
+
+    /// Find references covers every module of the project, from a reference
+    /// or from the declaration, with or without the declaration itself.
+    #[test]
+    fn references_cover_the_declaration_and_every_module() {
+        let (_fixture, app, lib, workspace) = two_module_project("references");
+        let app_path = app.as_path().to_owned();
+        let lib_path = lib.as_path().to_owned();
+
+        // `total` in `Lib.total(start)` on line 5.
+        let all = workspace.references(&app, at(5, 8), true).expect("a symbol");
+        assert_eq!(
+            spans(&all),
+            vec![
+                (app_path.clone(), 5, 6, 11),
+                (app_path.clone(), 5, 25, 30),
+                (lib_path.clone(), 9, 7, 12),
+            ]
+        );
+        // From the declaration, without it.
+        let uses = workspace.references(&lib, at(9, 8), false).expect("a symbol");
+        assert_eq!(
+            spans(&uses),
+            vec![(app_path.clone(), 5, 6, 11), (app_path, 5, 25, 30)]
+        );
+        assert_eq!(workspace.references(&app, at(2, 0), true), None);
+    }
+
+    /// A local binding's references stay in its scope, and the declaration
+    /// is the binding's name.
+    #[test]
+    fn references_of_a_local_binding() {
+        let (_fixture, app, _lib, workspace) = two_module_project("local-references");
+        let app_path = app.as_path().to_owned();
+
+        let all = workspace.references(&app, at(4, 7), true).expect("a symbol");
+
+        assert_eq!(
+            spans(&all),
+            vec![(app_path.clone(), 4, 6, 11), (app_path, 5, 12, 17)]
+        );
+    }
+
+    /// Renaming a struct renames its type uses, its constructor calls, the
+    /// member import and the declaration, in every module.
+    #[test]
+    fn rename_covers_type_constructor_and_import() {
+        let (_fixture, app, lib, workspace) = two_module_project("rename");
+
+        // `Point` in `Point(1, 2)` on line 5.
+        let edits = workspace.rename(&app, at(5, 32), "Spot").expect("renames");
+
+        let lines: Vec<(u32, u32)> = edits[&lib]
+            .iter()
+            .map(|edit| (edit.range.start.line, edit.range.start.character))
+            .collect();
+        assert_eq!(lines, vec![(0, 11), (5, 19), (6, 2), (9, 20)]);
+        let lines: Vec<(u32, u32)> = edits[&app]
+            .iter()
+            .map(|edit| (edit.range.start.line, edit.range.start.character))
+            .collect();
+        assert_eq!(lines, vec![(1, 12), (5, 31)]);
+        assert!(edits.values().flatten().all(|edit| edit.text == "Spot"));
+    }
+
+    #[test]
+    fn rename_refuses_names_outside_the_project_and_bad_names() {
+        let (_fixture, app, _lib, workspace) = two_module_project("rename-refused");
+
+        // The alias `Lib`: a module, not a declaration.
+        assert!(matches!(
+            workspace.rename(&app, at(5, 3), "Library"),
+            Err(RenameError::NotRenamable(_))
+        ));
+        // `total` cannot become a type name, nor a non-identifier.
+        assert_eq!(
+            workspace.rename(&app, at(5, 8), "Total"),
+            Err(RenameError::InvalidName("Total".to_owned()))
+        );
+        assert_eq!(
+            workspace.rename(&app, at(5, 8), "to-tal"),
+            Err(RenameError::InvalidName("to-tal".to_owned()))
+        );
+        // `total` to `origin` collides with the other function.
+        assert_eq!(
+            workspace.rename(&app, at(5, 8), "origin"),
+            Err(RenameError::Conflict("origin".to_owned()))
+        );
+        assert_eq!(
+            workspace.rename(&app, at(2, 0), "anything"),
+            Err(RenameError::NothingToRename)
+        );
+    }
+
+    #[test]
+    fn rename_refuses_a_standard_function() {
+        let fixture = Fixture::new("rename-std");
+        let app = fixture.write(
+            "app.chimi",
+            "import std/list as List\n\npub fn main() -> Int {\n  List.length([1])\n}\n",
+        );
+        let project = ProjectConfig::new(fixture.root(), "app").unwrap();
+        let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
+        workspace.analyze(&app);
+
+        assert_eq!(
+            workspace.rename(&app, at(3, 8), "size"),
+            Err(RenameError::NotRenamable("length".to_owned()))
+        );
+    }
+
+    /// Every clause head of a clause group is the function's name.
+    #[test]
+    fn rename_covers_every_clause_of_a_clause_group() {
+        let fixture = Fixture::new("rename-clauses");
+        let app = fixture.write(
+            "app.chimi",
+            "pub fn main() -> Int {\n  sign(3)\n}\n\nfn sign(0) -> Int { 0 }\nfn sign(n) { 1 }\n",
+        );
+        let project = ProjectConfig::new(fixture.root(), "app").unwrap();
+        let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
+        workspace.analyze(&app);
+
+        let edits = workspace.rename(&app, at(1, 3), "signum").expect("renames");
+
+        let lines: Vec<(u32, u32)> = edits[&app]
+            .iter()
+            .map(|edit| (edit.range.start.line, edit.range.start.character))
+            .collect();
+        assert_eq!(lines, vec![(4, 3), (5, 3), (1, 2)]);
     }
 }
