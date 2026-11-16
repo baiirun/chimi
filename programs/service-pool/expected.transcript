@@ -1,0 +1,34 @@
+@0s supervisor_started supervisor=S1 parent=root
+@0s process_started supervisor=S1 membership=M1 incarnation=I1 name=app/main.ledger
+@0s process_started supervisor=S1 membership=M2 incarnation=I2 name=app/main.dispatcher
+@0s process_started supervisor=S1 membership=M3 incarnation=I3 name=app/main.worker_1
+@0s process_started supervisor=S1 membership=M4 incarnation=I4 name=app/main.worker_2
+@0s process_started supervisor=S1 membership=M5 incarnation=I5 name=app/main.worker_3
+@0s process_send kind=named name=app/main.worker_1 incarnation=I3 outcome=accepted
+@0s process_terminated membership=M3 incarnation=I3 cause=defected
+@0s restart_attempted supervisor=S1 membership=M3 attempts_in_window=1
+@0s process_started supervisor=S1 membership=M3 incarnation=I6 name=app/main.worker_1
+@1ms process_send kind=named name=app/main.dispatcher incarnation=I2 outcome=accepted
+@1ms process_send kind=named name=app/main.dispatcher incarnation=I2 outcome=accepted
+@1ms process_send kind=named name=app/main.dispatcher incarnation=I2 outcome=accepted
+@1ms process_send kind=named name=app/main.dispatcher incarnation=I2 outcome=accepted
+@1ms process_send kind=named name=app/main.dispatcher incarnation=I2 outcome=accepted
+@1ms process_send kind=named name=app/main.dispatcher incarnation=I2 outcome=accepted
+@1ms process_send kind=named name=app/main.worker_1 incarnation=I6 outcome=accepted
+@1ms process_send kind=named name=app/main.worker_2 incarnation=I4 outcome=accepted
+@1ms process_send kind=named name=app/main.worker_3 incarnation=I5 outcome=accepted
+@1ms process_send kind=named name=app/main.worker_1 incarnation=I6 outcome=accepted
+@1ms process_send kind=named name=app/main.worker_2 incarnation=I4 outcome=accepted
+@1ms process_send kind=named name=app/main.worker_3 incarnation=I5 outcome=accepted
+@1.001s process_send kind=named name=app/main.ledger incarnation=I1 outcome=accepted
+@1.001s process_send kind=named name=app/main.ledger incarnation=I1 outcome=accepted
+@1.001s process_send kind=named name=app/main.ledger incarnation=I1 outcome=accepted
+@1.5s clock_signal_received signal=15
+@2.001s process_send kind=named name=app/main.ledger incarnation=I1 outcome=accepted
+@2.001s process_send kind=named name=app/main.ledger incarnation=I1 outcome=accepted
+@6.5s process_terminated membership=M5 incarnation=I5 cause=forced
+@6.5s process_terminated membership=M4 incarnation=I4 cause=cancelled
+@6.5s process_terminated membership=M3 incarnation=I6 cause=cancelled
+@6.5s process_terminated membership=M2 incarnation=I2 cause=cancelled
+@6.5s process_terminated membership=M1 incarnation=I1 cause=cancelled
+@6.5s supervisor_stopped supervisor=S1

@@ -851,9 +851,8 @@ impl ProjectResolver {
                         StandardGeneric::TimeoutNeeds,
                     ],
                 )
-            },
-        ))
-        {
+            }),
+        ) {
             self.standard_callable_parameters.insert(
                 callable,
                 parameters

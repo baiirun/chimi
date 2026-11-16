@@ -60,7 +60,11 @@ fn both_backends(name: &str, source: &str, arguments: &[&str]) -> Run {
     let native = chimi_test(&format!("{name}-native"), source, arguments);
     let mut interpreter_arguments = arguments.to_vec();
     interpreter_arguments.push("--backend=interpreter");
-    let interpreted = chimi_test(&format!("{name}-interpreter"), source, &interpreter_arguments);
+    let interpreted = chimi_test(
+        &format!("{name}-interpreter"),
+        source,
+        &interpreter_arguments,
+    );
     assert_eq!(
         without_wall_time(&native.stdout),
         without_wall_time(&interpreted.stdout),
@@ -225,7 +229,11 @@ fn json_records_one_test_per_line_then_the_run() {
     assert_eq!(run.status, Some(1), "{}", run.stderr);
     let lines = run.stdout.lines().collect::<Vec<_>>();
     assert_eq!(lines.len(), 3, "{}", run.stdout);
-    assert!(lines.iter().all(|line| line.starts_with("{\"schema\":\"chimi.test.v1\",")));
+    assert!(
+        lines
+            .iter()
+            .all(|line| line.starts_with("{\"schema\":\"chimi.test.v1\","))
+    );
     assert!(lines[0].contains(
         "\"event\":\"test_finished\",\"module\":\"main\",\"name\":\"passes\",\"line\":7,\"outcome\":\"passed\""
     ));
@@ -253,7 +261,10 @@ fn reports_keep_suite_order_however_many_tests_run_at_once() {
     let many = chimi_test("order-many", &source, &["--jobs=8"]);
     assert_eq!(one.status, Some(1), "{}", one.stderr);
     assert_eq!(one.stdout, many.stdout);
-    assert!(one.stdout.starts_with("test main \"number 0\" ... ok\ntest main \"number 1\" ... FAILED\n"));
+    assert!(
+        one.stdout
+            .starts_with("test main \"number 0\" ... ok\ntest main \"number 1\" ... FAILED\n")
+    );
     assert!(one.stdout.ends_with("\n4 passed, 8 failed\n"));
 }
 
@@ -261,7 +272,10 @@ fn reports_keep_suite_order_however_many_tests_run_at_once() {
 fn filters_select_tests_by_module_and_name() {
     let run = both_backends("filter", LISTS, &["--filter=main \"pa"]);
     assert_eq!(run.status, Some(0), "{}", run.stderr);
-    assert_eq!(run.stdout, "test main \"passes\" ... ok\n\n1 passed, 0 failed\n");
+    assert_eq!(
+        run.stdout,
+        "test main \"passes\" ... ok\n\n1 passed, 0 failed\n"
+    );
     // The spec's form is `<module> <name>`, without the quotes reports print.
     let plain = both_backends("filter-plain", LISTS, &["--filter=main pa"]);
     assert_eq!(plain.stdout, run.stdout, "{}", plain.stderr);
@@ -282,7 +296,10 @@ fn the_exit_status_is_two_when_the_run_cannot_start() {
     let interpreted = chimi_test(
         "clock-start-interpreter",
         LISTS,
-        &["--backend=interpreter", "--clock-start=2026-11-10T09:30:00Z"],
+        &[
+            "--backend=interpreter",
+            "--clock-start=2026-11-10T09:30:00Z",
+        ],
     );
     assert_eq!(interpreted.status, Some(2));
     let broken = chimi_test(
@@ -348,7 +365,10 @@ fn native_tests_run_on_virtual_time_and_report_deadlocks_and_output() {
     );
     assert_eq!(run.status, Some(1), "{}", run.stderr);
     let lines = run.stdout.lines().collect::<Vec<_>>();
-    assert_eq!(lines[0], "test main \"virtual time passes only by waiting\" ... ok");
+    assert_eq!(
+        lines[0],
+        "test main \"virtual time passes only by waiting\" ... ok"
+    );
     assert_eq!(lines[1], "test main \"waits forever\" ... FAILED");
     assert!(lines[2].starts_with("  deadlock"), "{}", run.stdout);
     assert!(

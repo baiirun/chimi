@@ -214,9 +214,9 @@ impl CoreProgram {
                 cause,
             } => {
                 debug_assert!((constructor.raw() as usize) < self.symbols.len());
-                debug_assert!(cause.is_none_or(|cause| {
-                    (cause.local.raw() as usize) < self.symbols.len()
-                }));
+                debug_assert!(
+                    cause.is_none_or(|cause| { (cause.local.raw() as usize) < self.symbols.len() })
+                );
                 debug_assert!(arguments.iter().all(|argument| node_exists(*argument)));
             }
             CoreOperation::Call { callee, arguments } => {

@@ -73,7 +73,11 @@ fn run_traced(name: &str, body: &str, trace: &str) -> Run {
         .arg(&executable)
         .output()
         .expect("build native resource program");
-    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
     let telemetry_path = scratch.join("telemetry.jsonl");
     let outcome_path = scratch.join("outcome.jsonl");
     let process = Command::new(&executable)
@@ -106,7 +110,10 @@ fn accepted_sends(telemetry: &str) -> Vec<String> {
         .filter(|line| line.contains("\"event\":\"channel_send_accepted\""))
         .map(|line| {
             let start = line.find("\"task_id\":").expect("a send names its task") + 10;
-            let id: String = line[start..].chars().take_while(char::is_ascii_digit).collect();
+            let id: String = line[start..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
             format!("T{id}")
         })
         .collect()
@@ -115,7 +122,9 @@ fn accepted_sends(telemetry: &str) -> Vec<String> {
 // Rejects a release that a firing timeout skips or cuts short: the release sleeps 5 s inside the fired scope and still logs its handle, and only then does the timeout return `TimedOut` (6 s, logged 3, code 100).
 #[test]
 fn release_runs_masked_after_a_timeout_fires_in_use() {
-    let result = run_virtual("release_runs_masked_after_a_timeout_fires_in_use", r#"fn operation(sender: Channel.Sender<Int>) -> Int {
+    let result = run_virtual(
+        "release_runs_masked_after_a_timeout_fires_in_use",
+        r#"fn operation(sender: Channel.Sender<Int>) -> Int {
   Resource.scoped(
     fn() { 3 },
     fn(held) {
@@ -139,14 +148,17 @@ pub fn main() -> Int {
   }
   code + take(log.receiver) * 10 + Duration.to_seconds(Clock.since(start)) * 1000
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("6130"), "{}", result.outcome);
 }
 
 // Rejects a `Task.cancel` that tears the fiber down without its release, or interrupts the release's own park (logged 4 at 3 s).
 #[test]
 fn task_cancel_runs_the_release_of_a_task_parked_in_use() {
-    let result = run_virtual("task_cancel_runs_the_release_of_a_task_parked_in_use", r#"pub fn main() -> Int {
+    let result = run_virtual(
+        "task_cancel_runs_the_release_of_a_task_parked_in_use",
+        r#"pub fn main() -> Int {
   let log = Channel.bounded(4)
   let sender = log.sender
   let start = Clock.now()
@@ -167,14 +179,17 @@ fn task_cancel_runs_the_release_of_a_task_parked_in_use() {
   Task.cancel(child)
   take(log.receiver) * 10 + Duration.to_seconds(Clock.since(start)) * 1000
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("3040"), "{}", result.outcome);
 }
 
 // Rejects a cancellation that interrupts a running release: it arrives at 1 s, the release sleeps until 3 s and logs 5.
 #[test]
 fn cancel_while_masked_waits_for_the_release() {
-    let result = run_virtual("cancel_while_masked_waits_for_the_release", r#"pub fn main() -> Int {
+    let result = run_virtual(
+        "cancel_while_masked_waits_for_the_release",
+        r#"pub fn main() -> Int {
   let log = Channel.bounded(4)
   let sender = log.sender
   let start = Clock.now()
@@ -192,14 +207,17 @@ fn cancel_while_masked_waits_for_the_release() {
   Task.cancel(child)
   take(log.receiver) * 10 + Duration.to_seconds(Clock.since(start)) * 1000
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("3050"), "{}", result.outcome);
 }
 
 // Rejects a mask that also holds off a timeout written inside the release: the outer timeout fired at 1 s, the release's own 2 s timeout ends it at 3 s.
 #[test]
 fn a_timeout_inside_a_release_still_fires() {
-    let result = run_virtual("a_timeout_inside_a_release_still_fires", r#"fn nap() -> Void {
+    let result = run_virtual(
+        "a_timeout_inside_a_release_still_fires",
+        r#"fn nap() -> Void {
   Clock.sleep(Duration.seconds(10))
 }
 
@@ -227,14 +245,17 @@ pub fn main() -> Int {
   }
   code + Duration.to_seconds(Clock.since(start)) * 1000
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("3100"), "{}", result.outcome);
 }
 
 // Rejects an outer timeout that cancels a helper task the release started: it fires at 2 s while the release waits on its helper until 4 s.
 #[test]
 fn a_release_helper_task_survives_the_outer_timeout() {
-    let result = run_virtual("a_release_helper_task_survives_the_outer_timeout", r#"fn operation() -> Int {
+    let result = run_virtual(
+        "a_release_helper_task_survives_the_outer_timeout",
+        r#"fn operation() -> Int {
   Resource.scoped(
     fn() { 7 },
     fn(held) {
@@ -260,14 +281,17 @@ pub fn main() -> Int {
   }
   code + Duration.to_seconds(Clock.since(start)) * 1000
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("4100"), "{}", result.outcome);
 }
 
 // CHI-215. Rejects leaving a channel made inside a timed-out operation open until the task ends: a task outside holds its sender and sees `Aborted` (3).
 #[test]
 fn a_timed_out_scope_aborts_channels_it_created() {
-    let result = run_virtual("a_timed_out_scope_aborts_channels_it_created", r#"fn operation(handoff: Channel.Sender<Channel.Sender<Int>>) -> Int {
+    let result = run_virtual(
+        "a_timed_out_scope_aborts_channels_it_created",
+        r#"fn operation(handoff: Channel.Sender<Channel.Sender<Int>>) -> Int {
   let inner = Channel.bounded(1)
   Channel.send(handoff, inner.sender)
   Clock.sleep(Duration.seconds(10))
@@ -298,14 +322,17 @@ pub fn main() -> Int {
   }
   code + Task.result(watcher)
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("103"), "{}", result.outcome);
 }
 
 // Rejects aborting a receiver a child started before the scope hands back while the scope runs: it is read through `Task.result` after the timeout (42).
 #[test]
 fn a_child_result_handed_back_inside_a_timed_out_scope_stays_open() {
-    let result = run_virtual("a_child_result_handed_back_inside_a_timed_out_scope_stays_open", r#"fn wait() -> Int {
+    let result = run_virtual(
+        "a_child_result_handed_back_inside_a_timed_out_scope_stays_open",
+        r#"fn wait() -> Int {
   Clock.sleep(Duration.seconds(10))
   0
 }
@@ -325,14 +352,17 @@ pub fn main() -> Int {
   let receiver = Task.result(child)
   code + take(receiver)
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("142"), "{}", result.outcome);
 }
 
 // Rejects releases that run out of order or only once under `Task.cancel`: the inner logs 2, then the outer logs 1.
 #[test]
 fn nested_releases_run_innermost_first_under_cancel() {
-    let result = run_virtual("nested_releases_run_innermost_first_under_cancel", r#"pub fn main() -> Int {
+    let result = run_virtual(
+        "nested_releases_run_innermost_first_under_cancel",
+        r#"pub fn main() -> Int {
   let log = Channel.bounded(4)
   let sender = log.sender
   let child = Task.start(fn() {
@@ -358,14 +388,17 @@ fn nested_releases_run_innermost_first_under_cancel() {
   Task.cancel(child)
   take(log.receiver) * 10 + take(log.receiver)
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("21"), "{}", result.outcome);
 }
 
 // Rejects cancelling a release's helper task with its owner, or leaving the release parked forever on it: the helper's 3 reaches the log.
 #[test]
 fn a_release_waiting_on_its_helper_is_not_cut_short_by_cancel() {
-    let result = run_virtual("a_release_waiting_on_its_helper_is_not_cut_short_by_cancel", r#"pub fn main() -> Int {
+    let result = run_virtual(
+        "a_release_waiting_on_its_helper_is_not_cut_short_by_cancel",
+        r#"pub fn main() -> Int {
   let log = Channel.bounded(4)
   let sender = log.sender
   let child = Task.start(fn() {
@@ -385,7 +418,8 @@ fn a_release_waiting_on_its_helper_is_not_cut_short_by_cancel() {
   Task.cancel(child)
   take(log.receiver)
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("3"), "{}", result.outcome);
 }
 
@@ -393,7 +427,9 @@ fn a_release_waiting_on_its_helper_is_not_cut_short_by_cancel() {
 // can never return ends in the deadlock defect instead of hanging the program.
 #[test]
 fn a_release_that_never_returns_ends_in_the_deadlock_defect() {
-    let result = run_virtual("deadlock", r#"
+    let result = run_virtual(
+        "deadlock",
+        r#"
 pub fn main() -> Int {
   let never = Channel.bounded(1)
   let receiver = never.receiver
@@ -416,7 +452,8 @@ pub fn main() -> Int {
   Clock.sleep(Duration.seconds(1))
   Task.result(child)
 }
-"#);
+"#,
+    );
     assert_eq!(result.process.status.code(), Some(70));
     assert!(result.outcome.contains("deadlock"), "{}", result.outcome);
 }
@@ -426,7 +463,9 @@ pub fn main() -> Int {
 // in the child's defect.
 #[test]
 fn a_child_defect_runs_the_parent_release_and_stays_the_outcome() {
-    let result = run_traced("child-defect", r#"
+    let result = run_traced(
+        "child-defect",
+        r#"
 fn divide(left: Int, right: Int) -> Int {
   left / right
 }
@@ -450,10 +489,14 @@ pub fn main() -> Int {
     },
   )
 }
-"#, "full");
+"#,
+        "full",
+    );
     assert_eq!(result.process.status.code(), Some(70));
     assert!(
-        result.outcome.contains("integer division by zero in `/`: 9 / 0"),
+        result
+            .outcome
+            .contains("integer division by zero in `/`: 9 / 0"),
         "{}",
         result.outcome
     );
@@ -465,7 +508,9 @@ pub fn main() -> Int {
 // program ends in that defect rather than the deadlock defect.
 #[test]
 fn a_release_selecting_on_a_helper_that_defects_is_woken() {
-    let result = run_virtual("select-helper-defect", r#"fn divide(left: Int, right: Int) -> Int {
+    let result = run_virtual(
+        "select-helper-defect",
+        r#"fn divide(left: Int, right: Int) -> Int {
   left / right
 }
 
@@ -491,10 +536,13 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
     fn(held) { held },
   )
 }
-"#);
+"#,
+    );
     assert_eq!(result.process.status.code(), Some(70));
     assert!(
-        result.outcome.contains("integer division by zero in `/`: 9 / 0"),
+        result
+            .outcome
+            .contains("integer division by zero in `/`: 9 / 0"),
         "{}",
         result.outcome
     );
@@ -505,7 +553,9 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
 // the 10 s deadline (702).
 #[test]
 fn a_process_stopped_in_use_finishes_its_release_before_the_deadline() {
-    let result = run_virtual("process-stop-in-use", r#"pub enum Message {
+    let result = run_virtual(
+        "process-stop-in-use",
+        r#"pub enum Message {
   Start(report: Sender<Int>)
 }
 
@@ -537,17 +587,20 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
   Supervisor.stop(root)
   take(reports.receiver) * 100 + elapsed
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("702"), "{}", result.outcome);
 }
 
-// Rejects a graceful process stop delivered into a running release, and one
-// never delivered after it: stopped 1 s into a 2 s release, the body reports 7
-// 1 s later, and `scoped` then returns the stop, so its 99 is never sent
-// (7001).
+// Rejects a graceful process stop delivered into running work: stopped 1 s
+// into a 2 s use of the resource, the body drains (G22), so it reports 7 1 s
+// later, `scoped` returns normally and its 99 is sent, and the next receive
+// ends the body; the removal waits the 1 s (7991).
 #[test]
 fn a_process_stopped_in_its_release_lets_the_release_finish() {
-    let result = run_virtual("process-stop-in-release", r#"pub enum Message {
+    let result = run_virtual(
+        "process-stop-in-release",
+        r#"pub enum Message {
   Start(report: Sender<Int>)
 }
 
@@ -590,15 +643,18 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
   let second = Select.first([Select.receive(reports.receiver, read), Select.after(Duration.seconds(1), 0)])
   first * 1000 + second * 10 + elapsed
 }
-"#);
-    assert_eq!(result.outcome, success("7001"), "{}", result.outcome);
+"#,
+    );
+    assert_eq!(result.outcome, success("7991"), "{}", result.outcome);
 }
 
 // Rejects a shutdown that waits forever for a child's release: the child's
 // release can never return, and the stop still ends at the 3 s deadline.
 #[test]
 fn a_process_child_stuck_in_its_release_is_forced_at_the_deadline() {
-    let result = run_virtual("process-child-forced", r#"pub enum Message {
+    let result = run_virtual(
+        "process-child-forced",
+        r#"pub enum Message {
   Start(never: Receiver<Int>)
 }
 
@@ -637,7 +693,8 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
   let keep = never.sender
   elapsed
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("3"), "{}", result.outcome);
 }
 
@@ -645,7 +702,9 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
 // the release gives the handle back (7) before the incarnation ends.
 #[test]
 fn a_process_body_runs_its_release_when_a_child_defects() {
-    let result = run_virtual("process-child-defect", r#"pub enum Message {
+    let result = run_virtual(
+        "process-child-defect",
+        r#"pub enum Message {
   Start(report: Sender<Int>)
 }
 
@@ -676,7 +735,8 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
   Supervisor.stop(root)
   got
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("7"), "{}", result.outcome);
 }
 
@@ -684,7 +744,9 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
 // the helper still returns 7 to the release 1 s after the stop (701).
 #[test]
 fn a_process_stop_leaves_a_release_helper_running() {
-    let result = run_virtual("process-stop-release-helper", r#"pub enum Message {
+    let result = run_virtual(
+        "process-stop-release-helper",
+        r#"pub enum Message {
   Start(report: Sender<Int>)
 }
 
@@ -718,7 +780,8 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
   Supervisor.stop(root)
   take(reports.receiver) * 100 + elapsed
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("701"), "{}", result.outcome);
 }
 
@@ -726,7 +789,9 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
 // on a grandchild stuck in its release, and the stop still ends at 3 s.
 #[test]
 fn a_process_grandchild_stuck_in_its_release_is_forced_at_the_deadline() {
-    let result = run_virtual("process-grandchild-forced", r#"pub enum Message {
+    let result = run_virtual(
+        "process-grandchild-forced",
+        r#"pub enum Message {
   Start(never: Receiver<Int>)
 }
 
@@ -768,7 +833,8 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
   let keep = never.sender
   elapsed
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("3"), "{}", result.outcome);
 }
 
@@ -776,7 +842,9 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
 // receive answers the stop at once, so the stop takes no time.
 #[test]
 fn a_process_receive_in_a_release_answers_the_stop() {
-    let result = run_virtual("process-receive-in-release", r#"pub enum Message {
+    let result = run_virtual(
+        "process-receive-in-release",
+        r#"pub enum Message {
   Start(report: Sender<Int>)
 }
 
@@ -807,7 +875,8 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
   Supervisor.stop(root)
   elapsed
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("0"), "{}", result.outcome);
 }
 
@@ -816,7 +885,9 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
 // then, not at the 10 s deadline.
 #[test]
 fn a_stopping_release_selecting_on_a_defecting_helper_is_woken() {
-    let result = run_virtual("process-select-helper-defect", r#"pub enum Message {
+    let result = run_virtual(
+        "process-select-helper-defect",
+        r#"pub enum Message {
   Start(report: Sender<Int>)
 }
 
@@ -851,6 +922,7 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
   Supervisor.stop(root)
   elapsed
 }
-"#);
+"#,
+    );
     assert_eq!(result.outcome, success("1"), "{}", result.outcome);
 }

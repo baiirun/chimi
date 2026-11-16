@@ -18,10 +18,10 @@ use crate::semantic::{
     CallArgument, Literal, ModuleBlockItem, ModuleExpression, UnaryOperator,
     interpolated_expressions,
 };
-use crate::standard_tree;
 use crate::standard::{
     DurationUnitRole, StandardConstant, StandardFunction, StandardModule, StandardSymbol,
 };
+use crate::standard_tree;
 use std::collections::{HashMap, HashSet};
 
 /// A value known at build time.

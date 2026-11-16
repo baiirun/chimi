@@ -46,7 +46,11 @@ fn clock_start_nanoseconds(text: &str) -> Option<i64> {
             return None;
         }
         *at += count;
-        Some(slice.iter().fold(0, |value, digit| value * 10 + i64::from(digit - b'0')))
+        Some(
+            slice
+                .iter()
+                .fold(0, |value, digit| value * 10 + i64::from(digit - b'0')),
+        )
     };
     let mut at = 0;
     let year = number(&mut at, 4)?;
@@ -94,7 +98,20 @@ fn clock_start_nanoseconds(text: &str) -> Option<i64> {
         return None;
     }
     let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     if !(1678..=2262).contains(&year)
         || !(1..=12).contains(&month)
         || day < 1
@@ -105,7 +122,8 @@ fn clock_start_nanoseconds(text: &str) -> Option<i64> {
     {
         return None;
     }
-    let seconds = days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second - offset;
+    let seconds =
+        days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second - offset;
     seconds.checked_mul(1_000_000_000)?.checked_add(fraction)
 }
 
@@ -367,10 +385,13 @@ impl TestSuite {
         // A test past its limit keeps its thread; the run ends without it.
         match receiver.recv_timeout(limit) {
             Ok(result) => result,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (RawOutcome::TimeLimit, String::new()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                (RawOutcome::TimeLimit, String::new())
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => (
                 RawOutcome::Defect {
-                    message: "the interpreter stopped without an outcome (internal error)".to_owned(),
+                    message: "the interpreter stopped without an outcome (internal error)"
+                        .to_owned(),
                     node: None,
                 },
                 String::new(),
@@ -396,7 +417,9 @@ impl TestSuite {
         Some(match outcome {
             RawOutcome::Success => return None,
             RawOutcome::ExpectedFailure { rendering } => failure(FailureKind::Failure, rendering),
-            RawOutcome::Cancelled => failure(FailureKind::Cancelled, "the test was cancelled".into()),
+            RawOutcome::Cancelled => {
+                failure(FailureKind::Cancelled, "the test was cancelled".into())
+            }
             RawOutcome::TimeLimit => failure(FailureKind::TimeLimit, String::new()),
             RawOutcome::Defect { message, node } => {
                 let location = node.and_then(|node| {
@@ -468,7 +491,8 @@ impl TestSuite {
         options: &RunOptions,
     ) -> (RawOutcome, String) {
         use std::process::{Command, Stdio};
-        let outcome_path = scratch.join(format!("test-{}-{index}.outcome.json", std::process::id()));
+        let outcome_path =
+            scratch.join(format!("test-{}-{index}.outcome.json", std::process::id()));
         let _ = std::fs::remove_file(&outcome_path);
         let mut command = Command::new(executable);
         command.arg("--chimi-runner").arg(if options.virtual_clock {
@@ -658,7 +682,11 @@ pub fn render_report(
     let mut output = String::new();
     for (index, result) in selected.iter().zip(results) {
         let case = &suite.cases[*index];
-        let verdict = if result.failure.is_some() { "FAILED" } else { "ok" };
+        let verdict = if result.failure.is_some() {
+            "FAILED"
+        } else {
+            "ok"
+        };
         writeln!(output, "test {} ... {verdict}", case.identity()).unwrap();
         if let Some(failure) = &result.failure {
             render_failure(&mut output, failure);
@@ -668,7 +696,10 @@ pub fn render_report(
             indent(&mut output, &result.output, 4);
         }
     }
-    let failed = results.iter().filter(|result| result.failure.is_some()).count();
+    let failed = results
+        .iter()
+        .filter(|result| result.failure.is_some())
+        .count();
     writeln!(
         output,
         "\n{} passed, {failed} failed",
@@ -811,7 +842,10 @@ pub fn render_json(suite: &TestSuite, selected: &[usize], results: &[TestResult]
         }
         writeln!(output, "],\"wall_ns\":{}}}", result.wall_ns).unwrap();
     }
-    let failed = results.iter().filter(|result| result.failure.is_some()).count();
+    let failed = results
+        .iter()
+        .filter(|result| result.failure.is_some())
+        .count();
     writeln!(
         output,
         "{{\"schema\":\"chimi.test.v1\",\"event\":\"run_finished\",\"passed\":{},\"failed\":{failed}}}",
@@ -832,7 +866,10 @@ mod tests {
             clock_start_nanoseconds("2026-11-10T09:30:00.5+01:00"),
             Some(1_794_299_400_500_000_000)
         );
-        assert_eq!(clock_start_nanoseconds("2024-02-29t00:00:00z"), Some(1_709_164_800_000_000_000));
+        assert_eq!(
+            clock_start_nanoseconds("2024-02-29t00:00:00z"),
+            Some(1_709_164_800_000_000_000)
+        );
         for rejected in [
             "",
             "2026-11-10",

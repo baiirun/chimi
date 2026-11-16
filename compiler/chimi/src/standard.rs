@@ -786,12 +786,12 @@ impl StandardFunction {
             | Self::CauseSuppressed
             | Self::CauseReasonCode
             | Self::CauseToText => None,
-            | Self::TestAssertEqual
+            Self::TestAssertEqual
             | Self::TestAssertNotEqual
             | Self::TestAssert
             | Self::TestFail => None,
-            | Self::ResourceScoped => None,
-            | Self::TestCaptureDefect => None,
+            Self::ResourceScoped => None,
+            Self::TestCaptureDefect => None,
         }
     }
 
@@ -1662,9 +1662,7 @@ impl StandardGeneric {
             | Self::ProcessSpecNeeds
             | Self::ProcessHandoffSpecNeeds
             | Self::TimeoutNeeds
-            | Self::SelectNeeds => {
-                StandardGenericKind::NeedsRow
-            }
+            | Self::SelectNeeds => StandardGenericKind::NeedsRow,
             _ => StandardGenericKind::Value,
         }
     }

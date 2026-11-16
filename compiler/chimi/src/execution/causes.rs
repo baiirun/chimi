@@ -156,9 +156,15 @@ fn push_bounded<T>(items: &mut Vec<T>, item: T, limit: usize) -> bool {
 fn drop_middle_link(cause: &mut Cause) {
     let keep_newest = (LINK_LIMIT / 2) as usize;
     let mut newer = Vec::with_capacity(keep_newest);
-    let mut below = cause.caused_by.take().expect("a linked cause has caused_by");
+    let mut below = cause
+        .caused_by
+        .take()
+        .expect("a linked cause has caused_by");
     for _ in 1..keep_newest {
-        let next = below.caused_by.clone().expect("the chain is longer than the limit");
+        let next = below
+            .caused_by
+            .clone()
+            .expect("the chain is longer than the limit");
         newer.push(below);
         below = next;
     }
@@ -214,7 +220,12 @@ fn render_into(core: &CoreProgram, cause: &Cause, depth: usize, output: &mut Str
     }
     for (index, suppressed) in cause.suppressed.iter().enumerate() {
         if index == SUPPRESSED_LIMIT / 2 && cause.dropped_suppressed > 0 {
-            push_dropped(&indent, cause.dropped_suppressed, "suppressed cause", output);
+            push_dropped(
+                &indent,
+                cause.dropped_suppressed,
+                "suppressed cause",
+                output,
+            );
         }
         output.push('\n');
         output.push_str(&indent);
@@ -272,7 +283,8 @@ impl super::Evaluator<'_> {
         use super::Control;
         use crate::standard::{StandardConstructor, StandardFunction as F};
         if function == F::CauseContext {
-            let [RuntimeValue::Callable(operation), RuntimeValue::Text(text)] = arguments.as_slice()
+            let [RuntimeValue::Callable(operation), RuntimeValue::Text(text)] =
+                arguments.as_slice()
             else {
                 return self.intrinsic_shape_defect(function, call_node);
             };

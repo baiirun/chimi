@@ -1,0 +1,50 @@
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/select as Select
+import std/supervisor as Supervisor
+
+// SD13: a ticker that never calls `Process.receive` directly. It waits with
+// `Select.first` on its inbox and a 1 s timer, counting ticks, under a 30 s
+// `shutdown_within`. Main stops the root at 2.5s. The drain makes the inbox
+// event ready at once (its mailbox is closed and empty), so the inbox's
+// receive returns cancellation and the ticker ends `cancelled` at 2.5s. A
+// drain that did not wake a select on the inbox would end it at its next
+// tick, 3s, and one that ignored the closed inbox would force it at 32.5s.
+
+pub enum Message {
+  Ping
+}
+
+pub enum Wake {
+  Got(message: Message)
+  Tick
+}
+
+fn ticking(inbox: Inbox<Message>) -> Void needs {
+  clock: Clock
+} {
+  loop ticks = 0 {
+    let wake = Select.first([
+      Select.inbox(inbox, fn(message: Message) { Wake.Got(message) }),
+      Select.after(Duration.seconds(1), Wake.Tick),
+    ])
+    case wake {
+      Wake.Got(_) -> ticks
+      Wake.Tick -> ticks + 1
+    }
+  }
+}
+
+pub fn main() -> Int needs {
+  clock: Clock
+} {
+  let ticker = Process.spec(ticking, 1, Duration.seconds(30))
+  |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([ticker], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  Clock.sleep(Duration.milliseconds(2500))
+  Supervisor.stop(root)
+  1
+}

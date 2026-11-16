@@ -137,14 +137,19 @@ Exact types, failure rows, and compile-time rejections are in
 
 ## Shutdown
 
-- Shutdown is out-of-band cancellation, never a mailbox message.
-- `Supervisor.stop` first removes registered routing, then stops members in
-  reverse order of the policy's members list (dynamic members, most recently added first,
-  before declared ones). For each process it cancels and drains
-  structured child tasks and allows cleanup within `shutdown_within`, then
-  terminates it forcefully.
-- Unread messages are discarded. Requested and forced shutdown are not defects
-  and never restart.
+- Shutdown is out-of-band, never a mailbox message.
+- `Supervisor.stop` closes the supervisor to new members, then stops members
+  one at a time in reverse order of the policy's members list (dynamic
+  members, most recently added first, before declared ones). Each member is
+  unrouted only at its own turn, so a draining member can still reach an
+  older one.
+- Each process drains before it is cancelled: it accepts nothing new, keeps
+  its sleeps, child tasks, and channel operations, and receives the messages
+  it already accepted. At `now + shutdown_within` it is forced and its child
+  tasks are cancelled. [Application lifecycle](application-lifecycle.md)
+  gives the full rules (G22), including SIGINT and SIGTERM.
+- Messages still unread at the end are discarded. Requested and forced
+  shutdown are not defects and never restart.
 
 ## Observability
 

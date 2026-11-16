@@ -463,9 +463,8 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                         .map(|pattern| data.pattern(pattern))
                         .collect::<Vec<_>>();
                     let (offset, length) = data.ids(patterns);
-                    let (cause_subject, cause_local) = arm
-                        .cause
-                        .map_or((u32::MAX, u32::MAX), |cause| {
+                    let (cause_subject, cause_local) =
+                        arm.cause.map_or((u32::MAX, u32::MAX), |cause| {
                             (cause.subject as u32, cause.local.raw())
                         });
                     data.arms.push((
@@ -533,7 +532,11 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
     render_array(
         &mut output,
         "const ChimiOrigin CHIMI_ORIGINS[]",
-        &core.origins.iter().zip(&origin_locations).collect::<Vec<_>>(),
+        &core
+            .origins
+            .iter()
+            .zip(&origin_locations)
+            .collect::<Vec<_>>(),
         |(origin, location)| {
             format!(
                 "{{{}, {}, {}, {}, {}}}",
@@ -1091,7 +1094,10 @@ mod tests {
                 .iter()
                 .map(|symbol| slots.slots[symbol.raw() as usize])
                 .collect::<Vec<_>>();
-            assert!(taken.iter().all(|slot| slot < count), "{taken:?} within {count}");
+            assert!(
+                taken.iter().all(|slot| slot < count),
+                "{taken:?} within {count}"
+            );
             assert_eq!(taken.iter().collect::<HashSet<_>>().len(), taken.len());
             for closure in &body.closures {
                 assert_eq!(slots.closure_count(*closure), *count);
