@@ -307,17 +307,20 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
 ### The pool
 
 - `Sql.open` runs its body with a pool and closes the pool when the body ends,
-  however it ends. Closing closes every idle connection before `open`
-  returns. Using the pool after that fails `PoolClosed`.
+  however it ends. Closing closes every idle connection, fails statements
+  still waiting with `PoolClosed`, and waits up to 30 s for connections that
+  tasks the body started still hold, closing each as it comes back. Using the
+  pool after that fails `PoolClosed`.
 - A connection is opened only when a statement needs one and none is idle,
   and is reused after the statement. At most 10 connections are open at once.
   A statement that waits more than 30 s for one fails `PoolTimedOut`, and a
   statement that gave up holds no place in the pool afterwards.
 - Waiting statements are served in the order they asked.
 - After every use the pool resets the connection (rolling back anything left
-  open) within 5 s before it is reused. A connection whose reset fails or
-  times out, and one whose use was cut off by a cancellation or a defect, is
-  closed instead, and the next statement opens a new one. A failed connect
+  open) within 5 s before it is reused, however its use ended. A connection
+  whose reset fails or times out is closed instead, and the next statement
+  opens a new one; a driver whose connection cannot be trusted after a use
+  was cut off mid-statement fails its reset. A failed connect
   frees its place.
 - The pool can be shared by every task the body starts. The pool's state is
   owned by one task, and other tasks reach it through a channel.
@@ -333,7 +336,10 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
   defects or is cancelled, the pool's reset rolls the transaction back.
 - A transaction inside a transaction is a savepoint (`SAVEPOINT chimi_<n>`,
   then `RELEASE SAVEPOINT` or `ROLLBACK TO SAVEPOINT`), so an inner failure
-  that the outer body catches undoes only the inner statements.
+  that the outer body catches undoes only the inner statements. A savepoint
+  is undone whenever its body does not succeed, including a defect or a
+  cancellation the outer body survives (a `Task.timeout` inside it), and the
+  body's failure stays the outcome even when `ROLLBACK TO SAVEPOINT` fails.
 
 ### Drivers and tests
 

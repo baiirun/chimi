@@ -226,7 +226,9 @@ enum Place {
 /// opened when first needed and reused; at most 10 are open at once, and a
 /// statement that waits more than 30 s for one fails with
 /// `SqlError.PoolTimedOut`. The pool can be shared by every task `use`
-/// starts.
+/// starts; when `use` ends, statements still waiting fail with
+/// `SqlError.PoolClosed`, and closing waits up to 30 s for connections such
+/// tasks still hold, closing each as it comes back.
 ///
 /// Fails with: what `use` fails with.
 pub fn open<T, E, R>(driver: Driver, target: Text, use: fn(Database) -> T errors E needs R) -> T needs R {
@@ -237,7 +239,9 @@ pub fn open<T, E, R>(driver: Driver, target: Text, use: fn(Database) -> T errors
   let asks = made.sender
   Resource.scoped(fn() { asks }, fn(sender) {
     let _ = tell(sender, Ask.Close)
-    let _ = Result.capture(fn() { Task.result(running) })
+    let _ = Result.capture(fn() {
+      Task.timeout(fn() { Task.result(running) }, bounds.wait)
+    })
     Void
   }, fn(sender) {
     use(Database(Place.Pooled(sender, driver, target, bounds)))
@@ -462,24 +466,47 @@ fn outermost<T, E, R>(connection: Connection, body: fn(Database) -> T errors E n
   }
 }
 
-// A savepoint named for its depth, so nested ones never collide. A defect or
-// cancellation inside it ends the outer transaction too, whose connection the
-// pool's reset rolls back.
+// A savepoint named for its depth, so nested ones never collide. It is
+// undone unless its body succeeded and it was released: a failure, defect or
+// cancellation inside it (such as a timeout the outer body survives) rolls
+// back only its own statements, and the body's failure stays the failure even
+// when the rollback itself fails.
 fn savepoint<T, E, R>(connection: Connection, depth: Int, body: fn(Database) -> T errors E needs R) -> T needs R {
   let name = "chimi_${depth}"
-  let _ = connection.run("SAVEPOINT ${name}", [])
-  case Result.capture(fn() {
-    body(Database(Place.Pinned(connection, depth + 1)))
-  }) {
-    Ok(result) -> {
-      let _ = connection.run("RELEASE SAVEPOINT ${name}", [])
-      result
+  Resource.scoped(fn() {
+    let _ = connection.run("SAVEPOINT ${name}", [])
+    Channel.bounded(1)
+  }, fn(settled) {
+    let clean = released(settled.completion, settled.receiver)
+    case clean {
+      True -> Void
+      False -> {
+        let _ = Result.capture(fn() {
+          connection.run("ROLLBACK TO SAVEPOINT ${name}", [])
+        })
+        let _ = Result.capture(fn() {
+          connection.run("RELEASE SAVEPOINT ${name}", [])
+        })
+        Void
+      }
     }
-    Err(error) -> {
-      let _ = connection.run("ROLLBACK TO SAVEPOINT ${name}", [])
-      let _ = connection.run("RELEASE SAVEPOINT ${name}", [])
-      Failure(error)
-    }
+  }, fn(settled) {
+    let result = body(Database(Place.Pinned(connection, depth + 1)))
+    let _ = connection.run("RELEASE SAVEPOINT ${name}", [])
+    // The mark's channel has room for it, so this send cannot fail.
+    let _ = Result.capture(fn() { Channel.send(settled.sender, Void) })
+    result
+  })
+}
+
+// Whether the savepoint's body marked it released: closing the mark's channel
+// first makes the receive answer at once, with the mark or `Drained`.
+fn released(completion: Channel.Completion<Void>, mark: Channel.Receiver<Void>) -> Bool {
+  Channel.close(completion)
+  case Channel.receive(mark) {
+    Success(Receive.Received(_)) -> True
+    Success(Receive.Drained) -> False
+    Failure(_) -> False
   }
 }
 
@@ -546,11 +573,38 @@ fn keep(keeper: Keeper, size: Int) -> Void {
       }
       Receive.Received(Ask.Close) -> {
         List.each(pool.idle, fn(connection) { connection.close() })
-        break Void
+        break shut(keeper, pool.held)
       }
       Receive.Received(Ask.Take(reply)) -> serve_waiting(Pool(pool.idle, pool.held, List.push(pool.waiting, reply)), size)
       Receive.Received(Ask.Return(connection)) -> serve_waiting(Pool(List.push(pool.idle, connection), pool.held, pool.waiting), size)
       Receive.Received(Ask.Done) -> serve_waiting(Pool(pool.idle, pool.held - 1, pool.waiting), size)
+    }
+  }
+}
+
+// Closes the pool once `Ask.Close` came: waiting borrowers are dropped,
+// which fails their waits with `SqlError.PoolClosed`, and each connection
+// that comes back is closed, until no borrower holds a slot.
+fn shut(keeper: Keeper, held: Int) -> Void {
+  loop left = held {
+    case left <= 0 {
+      True -> break Void
+      False -> {
+        let asks = keeper.asks
+        let next = case Channel.receive(asks) {
+          Success(received) -> received
+          Failure(_) -> Receive.Drained
+        }
+        case next {
+          Receive.Drained -> break Void
+          Receive.Received(Ask.Return(connection)) -> {
+            connection.close()
+            left
+          }
+          Receive.Received(Ask.Done) -> left - 1
+          Receive.Received(_) -> left
+        }
+      }
     }
   }
 }
@@ -577,9 +631,9 @@ fn serve_waiting(pool: Pool, size: Int) -> Pool {
 }
 
 // Runs `use` on a connection from the pool. The slot is freed and the
-// connection returned (once reset) or closed on every way out of `use`, so a
-// connection that broke, or was cut off mid-statement by a cancellation, is
-// never reused.
+// connection returned (once reset) or closed on every way out of `use`; the
+// driver's reset fails for a connection that broke or was cut off
+// mid-statement, so such a connection is never reused.
 fn borrow<T, E, R>(db: Database, use: fn(Connection) -> T errors E needs R) -> T needs R {
   case db.place {
     Place.Pinned(connection, _) -> use(connection)

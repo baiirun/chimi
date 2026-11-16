@@ -282,9 +282,21 @@ test "a statement that waits too long fails" {
     List.length(Task.result(holders)) |> Test.assert_equal(10)
   })
 }
+test "a connection returned while the pool closes is closed" {
+  let calls = Test.recorder()
+  let outer = Task.start(fn() {
+    Sql.open(recording(calls), "app.db", fn(db) {
+      let _ = Task.start(fn() { hold(db, 5) })
+      Clock.sleep(Duration.seconds(1))
+      Void
+    })
+  })
+  Task.result(outer)
+  Test.recorded(calls) |> Test.assert_equal([Call.Connected("app.db"), Call.Began, Call.Committed, Call.Reset, Call.Closed])
+}
 "#,
     );
-    assert_passed(&run, 2);
+    assert_passed(&run, 3);
 }
 
 // Rejects a transaction that commits after a failure, leaves one open after
@@ -377,7 +389,44 @@ test "a transaction inside one is a savepoint" {
     Call.Committed, Call.Reset, Call.Closed,
   ])
 }
+test "a savepoint cut off by a timeout the outer body survives is undone" {
+  let calls = Test.recorder()
+  Sql.open(recording(calls), "app.db", fn(db) {
+    Sql.transaction(db, fn(tx) {
+      let _ = Sql.execute(tx, "a", [])
+      let _ = Result.capture(fn() {
+        Task.timeout(fn() {
+          Sql.transaction(tx, fn(nested) {
+            let _ = Sql.execute(nested, "b", [])
+            Clock.sleep(Duration.seconds(5))
+          })
+        }, Duration.seconds(1))
+      })
+      Void
+    })
+  })
+  Test.recorded(calls) |> Test.assert_equal([
+    Call.Connected("app.db"), Call.Began, ran("a"),
+    ran("SAVEPOINT chimi_1"), ran("b"), ran("ROLLBACK TO SAVEPOINT chimi_1"), ran("RELEASE SAVEPOINT chimi_1"),
+    Call.Committed, Call.Reset, Call.Closed,
+  ])
+}
+
+test "a savepoint's failure stays its failure when the rollback fails" {
+  let driver = Sql.fake(fn(call) {
+    case call {
+      Call.Ran("ROLLBACK TO SAVEPOINT chimi_1", _) -> Failure(SqlError.Rejected("25P02", "aborted"))
+      Call.Ran("fail", _) -> Failure(SqlError.ConstraintFailed("c", "duplicate"))
+      _ -> Sql.done()
+    }
+  })
+  Sql.open(driver, "app.db", fn(db) {
+    Sql.transaction(db, fn(tx) {
+      failed(fn() { Sql.transaction(tx, fn(nested) { Sql.execute(nested, "fail", []) }) })
+    })
+  }) |> Test.assert_equal(Some(SqlError.ConstraintFailed("c", "duplicate")))
+}
 "#,
     );
-    assert_passed(&run, 5);
+    assert_passed(&run, 7);
 }
