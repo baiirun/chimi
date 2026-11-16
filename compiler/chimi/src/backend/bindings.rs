@@ -1,7 +1,8 @@
 //! C binding packages (G20): which ones a program reaches, and how each is
 //! compiled into its own archive. The sources live under
-//! `runtime/native/bindings/<package>/`; `build.rs` embeds every `.c` and `.h`
-//! file there, so the compiler ships them as it ships `runtime.c`.
+//! `runtime/native/bindings/<package>/`, at any depth; `build.rs` embeds every
+//! `.c` and `.h` file there, so the compiler ships them as it ships
+//! `runtime.c`, and prebuilds each package's archive.
 
 use crate::operations::Binding;
 
@@ -18,13 +19,14 @@ const SYSTEM_LIBRARIES: &[(&str, &[&str])] = &[("net", &["pthread"])];
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct BindingPackage {
     pub(super) name: &'static str,
-    /// `(file name, text)` of every source and header, in name order.
+    /// `(path in the package, text)` of every source and header, in path order.
     pub(super) files: Vec<(&'static str, &'static str)>,
     pub(super) system_libraries: &'static [&'static str],
 }
 
 impl BindingPackage {
     /// The `.c` files, which compile one object each.
+    #[cfg(test)]
     pub(super) fn sources(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.files
             .iter()
@@ -97,18 +99,66 @@ mod tests {
     }
 
     #[test]
+    fn package_flags_are_only_relative_includes_and_definitions() {
+        use crate::backend::runtime_archive_key::BINDING_PACKAGE_FLAGS;
+        for (package, flags) in BINDING_PACKAGE_FLAGS {
+            for flag in *flags {
+                let include = flag
+                    .strip_prefix("-I")
+                    .is_some_and(|path| !path.is_empty() && !path.starts_with('/'));
+                assert!(
+                    include || (flag.starts_with("-D") && flag.len() > 2),
+                    "package {package}: flag {flag:?} is neither -I<relative> nor -D<definition>"
+                );
+                assert!(
+                    !flag.contains(' '),
+                    "package {package}: flag {flag:?} holds a space"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn two_sources_that_would_share_an_object_are_refused() {
+        use crate::backend::runtime_archive_key::compile_binding_archive;
+        let directory =
+            std::env::temp_dir().join(format!("chimi-binding-collision-{}", std::process::id()));
+        let refused = compile_binding_archive(
+            "p",
+            &[("a/b.c", ""), ("a__b.c", "")],
+            &directory,
+            &directory.join("package"),
+            &directory.join("p.a"),
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("two sources map to the object")),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
     fn the_archive_key_changes_with_every_input() {
         use crate::backend::runtime_archive_key::{BindingArchiveInputs, binding_archive_key};
-        let key = |package, header: &[u8], sources: &[(&str, &str)]| {
+        let keyed = |package, flags: &[&str], header: &[u8], sources: &[(&str, &str)]| {
             binding_archive_key(&BindingArchiveInputs {
                 package,
+                package_flags: flags,
                 target_triple: "t",
                 compiler_identity: "cc",
                 binding_header: header,
                 sources,
             })
         };
+        let key =
+            |package, header: &[u8], sources: &[(&str, &str)]| keyed(package, &[], header, sources);
         let base = key("p", b"h", &[("a.c", "x")]);
+        assert_ne!(
+            keyed("p", &["-DA", "-DB"], b"h", &[]),
+            keyed("p", &["-DA -DB"], b"h", &[])
+        );
         assert_eq!(base, key("p", b"h", &[("a.c", "x")]));
         for other in [
             key("q", b"h", &[("a.c", "x")]),
@@ -116,6 +166,9 @@ mod tests {
             key("p", b"h", &[("b.c", "x")]),
             key("p", b"h", &[("a.c", "y")]),
             key("p", b"h", &[("a.c", "x"), ("b.c", "")]),
+            keyed("p", &["-Iinclude"], b"h", &[("a.c", "x")]),
+            keyed("p", &["-I", "include"], b"h", &[("a.c", "x")]),
+            keyed("p", &["-DA -DB"], b"h", &[("a.c", "x")]),
         ] {
             assert_ne!(base, other);
         }

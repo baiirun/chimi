@@ -27,9 +27,14 @@ impl Scratch {
     }
 
     fn chimi(&self, arguments: &[&str]) -> Run {
+        self.chimi_with_path(arguments, &std::env::var_os("PATH").unwrap())
+    }
+
+    fn chimi_with_path(&self, arguments: &[&str], path: &std::ffi::OsStr) -> Run {
         let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
             .current_dir(&self.0)
             .args(arguments)
+            .env("PATH", path)
             .output()
             .expect("run chimi");
         Run {
@@ -187,6 +192,18 @@ fn build_report(scratch: &Scratch) -> String {
         .expect("the test build writes build.json")
 }
 
+/// The `[...]` list named `field` in a build report's cache object.
+fn cache_list(report: &str, field: &str) -> String {
+    report
+        .split(&format!("\"{field}\":["))
+        .nth(1)
+        .unwrap()
+        .split(']')
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
 #[test]
 fn a_program_links_a_binding_package_only_when_it_reaches_it() {
     let reaching = Scratch::new(
@@ -200,27 +217,17 @@ fn a_program_links_a_binding_package_only_when_it_reaches_it() {
         report.contains("\"binding_packages\":[{\"name\":\"probe\""),
         "{report}"
     );
-    let misses = report
-        .split("\"misses\":[")
-        .nth(1)
-        .unwrap()
-        .split(']')
-        .next()
-        .unwrap();
-    assert!(misses.contains("libchimi_bind_probe.a"), "{report}");
-
-    // A second build takes the package archive from the cache.
-    let again = reaching.chimi(&["test", "cases.chimi"]);
-    assert_eq!(again.status, Some(0), "{}", again.stderr);
-    let report = build_report(&reaching);
-    let hits = report
-        .split("\"hits\":[")
-        .nth(1)
-        .unwrap()
-        .split(']')
-        .next()
-        .unwrap();
-    assert!(hits.contains("libchimi_bind_probe.a"), "{report}");
+    // build.rs prebuilt the package (its nested header and source, with the
+    // package's own flags), so no project compiles it.
+    assert!(
+        cache_list(&report, "prebuilt").contains("libchimi_bind_probe.a"),
+        "precondition: build.rs prebuilt the probe package (no `binding package probe \
+         not prebuilt` cargo warning) with today's `cc`; {report}"
+    );
+    assert!(
+        !cache_list(&report, "misses").contains("libchimi_bind_probe.a"),
+        "{report}"
+    );
 
     // Importing the module is not reaching it.
     let importing = Scratch::new(
@@ -236,6 +243,58 @@ fn a_program_links_a_binding_package_only_when_it_reaches_it() {
             .path()
             .join("target/chimi/cases/test/libchimi_bind_probe.a")
             .exists()
+    );
+}
+
+// With a `cc` unlike the one build.rs used, the prebuilt archive's key no
+// longer matches: the project compiles the package once, nested files and
+// flags included, and takes it from its cache after that.
+#[cfg(unix)]
+#[test]
+fn a_c_compiler_unlike_the_prebuilding_one_compiles_a_package_per_project() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::new(
+        "fallback",
+        &suite("test \"adds\" {\n  BindingProbe.add(1, 2) |> Test.assert_equal(3)\n}\n"),
+    );
+    let real_cc = Command::new("sh")
+        .args(["-c", "command -v cc"])
+        .output()
+        .expect("locate cc");
+    let real_cc = String::from_utf8(real_cc.stdout).unwrap();
+    let bin = scratch.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let wrapper = bin.join("cc");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'updated cc 99'; fi\nexec {} \"$@\"\n",
+            real_cc.trim()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut path = bin.into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap());
+
+    let cold = scratch.chimi_with_path(&["test", "cases.chimi"], &path);
+    assert_eq!(cold.status, Some(0), "{}{}", cold.stdout, cold.stderr);
+    let report = build_report(&scratch);
+    assert!(
+        cache_list(&report, "misses").contains("libchimi_bind_probe.a"),
+        "{report}"
+    );
+    assert!(
+        !cache_list(&report, "prebuilt").contains("libchimi_bind_probe.a"),
+        "{report}"
+    );
+    let warm = scratch.chimi_with_path(&["test", "cases.chimi"], &path);
+    assert_eq!(warm.status, Some(0), "{}", warm.stderr);
+    let report = build_report(&scratch);
+    assert!(
+        cache_list(&report, "hits").contains("libchimi_bind_probe.a"),
+        "{report}"
     );
 }
 
