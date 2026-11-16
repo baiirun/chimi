@@ -81,8 +81,15 @@ pub fn host_for_tests() -> { connect, listen }          // test-only
   are none for streams.
 - Every connection sets `TCP_NODELAY`, since a service writes whole messages
   and waits for answers.
-- A write to a peer that has gone MUST fail with `NetError.Reset` or
-  `NetError.Closed`, never raise `SIGPIPE`.
+- A write to a peer that has gone MUST fail with a `NetError` (`Reset` or
+  `Closed` when the peer reset or closed), never raise `SIGPIPE`.
+- Stopping the reader (`Stream.stop`, which `Stream.read_all` does past its
+  limit) MUST end only this side's reading: the writer keeps working, so a
+  server can still answer a request it refused to read whole, and later reads
+  fail with `NetError.Closed`. A fake pair behaves the same way.
+- A connection whose peer reset it before it was accepted is skipped:
+  `accept` waits for the next one. On Linux the network errors accept(2)
+  reports for a new connection are skipped the same way.
 - Deadlines come from `Task.timeout`; no operation takes a timeout parameter.
   Cancelling a task waiting on a socket withdraws its wait.
 
@@ -93,10 +100,16 @@ pub fn host_for_tests() -> { connect, listen }          // test-only
   every signal and touches nothing of the runtime, while the calling task
   waits through the scheduler; at most 8 lookups run at once, and a further
   one fails with `NetError.TooManyOpen`. A task cancelled during a lookup
-  stops waiting, and the thread's result is dropped when it finishes.
+  stops waiting, and the thread's result is dropped when it finishes; the
+  cancelled lookup keeps its place among the 8 until then.
+- A host holding U+0000 is `HostNotFound(host)`, not a defect: it can come
+  from untrusted input, and no name or address holds one.
+- `EAI_AGAIN`, a resolver that cannot answer now, is also `HostNotFound`.
+  A caller that wants to retry it wraps the call in `Retry`.
 - `connect` tries each address of a name in order and fails with the last
   address's failure.
-- `listen` with an empty `host` listens on every address; port 0 picks a free
+- `listen` with an empty `host` listens on the first wildcard address the
+  system lists (all IPv4 addresses on glibc and macOS); port 0 picks a free
   port, which `Net.listener_address` reports. A listener sets `SO_REUSEADDR`,
   so a restarted service can listen again on a port whose old connections are
   still closing.
@@ -150,9 +163,9 @@ test from advancing. A test that combines sockets and timers runs with
 | Rule | Evidence |
 | --- | --- |
 | Bytes cross loopback both ways, a body larger than one read arrives whole, half-close, addresses and port 0 | `tests/net.rs` `a_loopback_connection_carries_bytes_both_ways_after_a_half_close` |
-| A name resolves on the lookup thread while other tasks run | `tests/net.rs` `a_name_resolves_on_the_lookup_thread` |
-| `Refused`, `AddressInUse`, `HostNotFound(host)`, and the port defect | `tests/net.rs` `the_operating_systems_failures_become_net_errors` |
-| Closing wakes a task in `accept` or a read with `Closed`; later operations fail the same way | `tests/net.rs` `closing_wakes_a_waiting_task_with_closed` |
+| A name resolves through the lookup thread (that the scheduler keeps running during a slow lookup is not tested: no lookup in the test environment is slow) | `tests/net.rs` `a_name_resolves_on_the_lookup_thread` |
+| `Refused`, `AddressInUse`, `HostNotFound(host)` (also for a host holding U+0000), and the port defect | `tests/net.rs` `the_operating_systems_failures_become_net_errors` |
+| Closing wakes a task in `accept` or a read with `Closed`; later accepts, reads and writes fail the same way; a scoped connection is released; a stopped reader keeps the writer; a write to a gone peer fails without SIGPIPE | `tests/net.rs` `closing_wakes_a_waiting_task_with_closed` |
 | A fake pair and a fake network | `tests/net.rs` `a_fake_pair_and_a_fake_network_stand_in_for_sockets` |
 | The runner closes `network` on `main` | `tests/net.rs` `main_gets_the_real_network_by_declaring_the_need` |
 | `host_for_tests` is test-only (`T4401`); a test without `using` is `T4400` | `tests/net.rs` `only_a_test_that_asks_gets_the_real_network` |

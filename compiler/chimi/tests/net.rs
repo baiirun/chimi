@@ -106,7 +106,7 @@ fn echo_once(host: Text, request: Text) -> Text needs { network: Network } {
     let port = Net.port_of(Net.listener_address(listener))
     let server = Task.start(fn() {
       let connection = Net.accept(listener)
-      let got = Stream.read_all(Net.reader(connection), 1048576)
+      let got = Stream.read_all(Net.reader(connection), 33554432)
       Stream.write(Net.writer(connection), got)
       Stream.close(Net.writer(connection))
       Net.close(connection)
@@ -116,7 +116,7 @@ fn echo_once(host: Text, request: Text) -> Text needs { network: Network } {
       // Half-close: the server reads the end of input, and this side still
       // reads the answer.
       Stream.close(Net.writer(connection))
-      Stream.read_all(Net.reader(connection), 1048576)
+      Stream.read_all(Net.reader(connection), 33554432)
     })
     Task.result(server)
     Bytes.to_text(answer)
@@ -126,8 +126,10 @@ fn echo_once(host: Text, request: Text) -> Text needs { network: Network } {
 
 // Rejects a socket path that loses or reorders bytes, a half-close that closes
 // the whole connection, a listener on port 0 that reports port 0, and wrong
-// addresses: the request comes back whole (including a body larger than one
-// 64 KiB read), and each end's addresses name loopback with the right ports.
+// addresses: the request comes back whole (including a
+// 16 MiB body, past every read size and socket buffer, so a short send that
+// is not resent shows), and each end's addresses name loopback with the right
+// ports.
 #[test]
 fn a_loopback_connection_carries_bytes_both_ways_after_a_half_close() {
     let run = run_tests(
@@ -140,8 +142,9 @@ test "echo" {
   answer |> Test.assert_equal("ping")
 }
 
-test "a body larger than one read arrives whole" {
-  let big = Text.repeat("abcdefgh", 40000)
+test "a body larger than the socket buffers arrives whole" {
+  // 16 MiB: more than one read and more than one send can take.
+  let big = Text.repeat("abcdefgh", 2097152)
   let answer = echo_once("127.0.0.1", big) using { network: Net.host_for_tests() }
   answer |> Test.assert_equal(big)
 }
@@ -173,8 +176,9 @@ fn run_addresses() -> Text needs { network: Network } {
     assert_passed(&run, 3);
 }
 
-// Rejects a name lookup that blocks the scheduler or loses its answer: a name
-// (not a numeric address) goes through the lookup thread and connects.
+// Rejects a name lookup that loses its answer: a name (not a numeric address)
+// goes through the lookup thread and connects. A lookup that answers from
+// /etc/hosts is too quick to show whether the scheduler kept running.
 #[test]
 fn a_name_resolves_on_the_lookup_thread() {
     let run = run_tests(
@@ -225,7 +229,7 @@ fn in_use() -> Text needs { network: Network } {
 }
 
 fn not_found() -> Text needs { network: Network } {
-  "${attempt(fn() { Net.connect("nothing.invalid", 80) })} ${attempt(fn() { Net.connect("a\u{0}b", 80) })}"
+  "${attempt(fn() { Net.connect("nothing.invalid", 80) })} ${attempt(fn() { Net.connect("127.0.0.1\u{0}x", 80) })}"
 }
 
 test "refused" {
@@ -240,7 +244,7 @@ test "address in use" {
 
 test "host not found" {
   let outcome = not_found() using { network: Net.host_for_tests() }
-  outcome |> Test.assert_equal("Err(NetError.HostNotFound(\"nothing.invalid\")) Err(NetError.HostNotFound(\"a\\u{0}b\"))")
+  outcome |> Test.assert_equal("Err(NetError.HostNotFound(\"nothing.invalid\")) Err(NetError.HostNotFound(\"127.0.0.1\\u{0}x\"))")
 }
 
 test "a port out of range is a defect" {
@@ -336,6 +340,27 @@ fn write_to_gone_peer() -> Text needs { network: Network } {
   })
 }
 
+// A task parked in a read wakes when another task stops the reader.
+fn stop_while_parked() -> Text needs { network: Network } {
+  Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
+    let port = Net.port_of(Net.listener_address(listener))
+    let client = Net.connect("127.0.0.1", port)
+    let server = Net.accept(listener)
+    let waiting = Task.start(fn() { Result.capture(fn() { Stream.read(Net.reader(server)) }) })
+    Clock.sleep(Duration.milliseconds(20))
+    Stream.stop(Net.reader(server))
+    let woke = Task.timeout(fn() { Task.result(waiting) }, Duration.seconds(5)) |> Debug.render
+    Net.close(client)
+    Net.close(server)
+    woke
+  })
+}
+
+test "stopping a reader wakes a parked read" {
+  let outcome = stop_while_parked() using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("Result.Err(NetError.Closed)")
+}
+
 test "a stopped reader leaves the writer working" {
   let outcome = stop_then_answer() using { network: Net.host_for_tests() }
   outcome |> Test.assert_equal("Result.Err(StreamError.TooLarge(4)) too large Result.Err(NetError.Closed)")
@@ -375,7 +400,7 @@ test "read" {
 }
 "#,
     );
-    assert_passed(&run, 5);
+    assert_passed(&run, 6);
 }
 
 // Rejects a fake pair that crosses its wires or does not end: each end reads

@@ -45,8 +45,9 @@ import std/stream.{Reader, StreamError, Writer}
 pub interface Network {
   /// A connection to `host` (a name or a numeric address) on `port`.
   connect: fn(Text, Int) -> Connection errors NetError
-  /// A listener on `host` and `port`. An empty `host` listens on every
-  /// address; port 0 picks a free port, which `Net.listener_address` reports.
+  /// A listener on `host` and `port`. An empty `host` listens on the wildcard
+  /// address (every IPv4 address); port 0 picks a free port, which
+  /// `Net.listener_address` reports.
   listen: fn(Text, Int) -> Listener errors NetError
 }
 
@@ -113,8 +114,8 @@ pub fn connect(host: Text, port: Int) -> Connection needs {
   network.connect(host, checked_port(port))
 }
 
-/// A listener on `host` and `port`; an empty `host` listens on every address,
-/// and port 0 picks a free port.
+/// A listener on `host` and `port`; an empty `host` listens on the wildcard
+/// address (every IPv4 address), and port 0 picks a free port.
 ///
 /// Fails with: what the network's `listen` fails with; for the real network,
 /// `NetError.AddressInUse`, `HostNotFound`, `TooManyOpen` or `Failed`.
