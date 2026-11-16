@@ -17,9 +17,10 @@ MUTATIONS = [
     variant("parked receivers are served newest first", [(
         "    if let Some(receiver) = channel.waiting_receivers.pop_front() {",
         "    if let Some(receiver) = channel.waiting_receivers.pop_back() {")]),
-    variant("a new publish overtakes a parked one", [(
-        "                    if hub.waiting_senders.is_empty() && self.subscriptions_have_room(id) {",
-        "                    if self.subscriptions_have_room(id) {")]),
+    # Not listed: dropping `waiting_senders.is_empty()` from a publish's check
+    # survives because it is equivalent. Every change that makes room (a
+    # receive, a subscription leaving) admits parked publishes at once, so a
+    # new publish never finds room while one is still parked.
     variant("a subscription that ends does not admit a parked publish", [(
         "            state.subscriptions.retain(|subscription| *subscription != queue);\n        }\n        self.admit_publishers(hub, transition);",
         "            state.subscriptions.retain(|subscription| *subscription != queue);\n        }")]),
@@ -27,6 +28,6 @@ MUTATIONS = [
         "            Some(copy) => copy(value),",
         "            Some(_) => value,")]),
     variant("a select on a shared queue wakes only one watcher", [(
-        "        .extend(std::mem::take(&mut channel.select_watchers));",
-        "        .extend(channel.select_watchers.pop());")]),
+        "    channel.queue.push_back(value);\n    transition\n        .wakes\n        .extend(std::mem::take(&mut channel.select_watchers));",
+        "    channel.queue.push_back(value);\n    transition\n        .wakes\n        .extend(channel.select_watchers.pop());")]),
 ]

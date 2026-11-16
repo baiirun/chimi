@@ -213,6 +213,26 @@ fn the_queue_aborts_only_when_its_last_receiver_ends() {
     assert_eq!(result, success("157"));
 }
 
+// The receiver a channel was made with is one receiver among the others:
+// aborting it leaves the queue to the receiver added from it. Rejects a
+// queue that counts only its first receiver.
+#[test]
+fn an_added_receiver_outlives_the_first_one() {
+    let result = run_virtual(
+        "first-ends",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  let jobs = Channel.bounded(1)\n",
+            "  let other = Channel.add_receiver(jobs.receiver)\n",
+            "  Channel.abort(jobs.receiver)\n",
+            "  Channel.send(jobs.sender, 6)\n",
+            "  value(Channel.receive(other))\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(result, success("6"));
+}
+
 // A task that ends while holding an added receiver gives it up without
 // aborting the queue the other receivers still read.
 #[test]
