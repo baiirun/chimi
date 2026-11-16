@@ -25,8 +25,8 @@ MUTATIONS = [
         "name != \"target\"",
     )]),
     mutant("subdirectories are never walked", P, [(
-        "                    .is_some_and(|name| descend(&name.to_string_lossy()))",
-        "                    .is_some_and(|_| false)",
+        "                if accept(&name) {\n                    pending.push(path);",
+        "                if false {\n                    pending.push(path);",
     )]),
     mutant("only the first module loads", P, [(
         "        for module_path in &module_paths {\n            loader.load_module(module_path)?;",
