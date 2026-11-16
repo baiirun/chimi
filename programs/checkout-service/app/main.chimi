@@ -1,0 +1,161 @@
+import app/checkout as Checkout
+import app/checkout.{FraudError, Order, PaymentError, ShippingError, StockError}
+import app/fakes as Fakes
+import app/worker as Worker
+import app/worker.{Event, Outcome}
+import std/broadcast as Broadcast
+import std/cause as Cause
+import std/channel as Channel
+import std/channel.{Receive, Receiver}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/io.{Console}
+import std/list as List
+import std/order as Order
+import std/result.{Result}
+import std/task as Task
+import std/task.{Timeout}
+import std/watch as Watch
+
+// The Phase 3 forcing program: a checkout service. Two workers share one
+// order queue. Each checkout reserves stock and scores fraud at once,
+// charges the card with a per-attempt timeout and backoff, races two
+// carriers for a quote, and notifies the customer, all under a per-order
+// deadline. Workers follow the service settings through a watch, report on
+// a broadcast that an audit task follows, and send each stored outcome back
+// on a channel. See README.md for the run and what it shows.
+
+fn describe_failure(error: StockError | FraudError.Flagged | PaymentError | ShippingError | Timeout) -> Text {
+  case error {
+    StockError.OutOfStock(sku) -> "out of stock: ${sku}"
+    FraudError.Flagged(score) -> "flagged for review, score ${score}"
+    PaymentError.Declined(reason) -> "card declined: ${reason}"
+    PaymentError.Unavailable(status) -> "payments unavailable: ${status}"
+    ShippingError.NoRoute(carrier) -> "no route with ${carrier}"
+    Timeout.TimedOut(limit) -> "timed out after ${Duration.to_text(limit)}"
+  }
+}
+
+fn describe(outcome: Outcome) -> Text {
+  let id = Worker.order(outcome)
+  let took = Duration.to_text(Worker.took(outcome))
+  case Worker.result(outcome) {
+    Result.Ok(receipt) -> "order ${id}: ok in ${took}, ${Checkout.describe(receipt)}"
+    Result.Err(error) -> "order ${id}: failed in ${took}, ${describe_failure(error)}"
+  }
+}
+
+fn collect(outcomes: Receiver<Outcome>) -> List<Outcome> {
+  loop collected = [] {
+    let next = Channel.receive(outcomes)
+    case next {
+      Receive.Received(outcome) -> List.append(collected, [outcome])
+      Receive.Drained -> break List.sort_by(collected, Order.by(Worker.order))
+    }
+  }
+}
+
+/// Follows the broadcast until it closes: completed orders, rejected orders,
+/// heartbeats, and the cents taken.
+fn audit(feed: Receiver<Event>) -> Text {
+  loop state = (0, 0, 0, 0) {
+    let (completed, rejected, beats, cents) = state
+    let next = Channel.receive(feed)
+    case next {
+      Receive.Received(Event.Completed(_, _, taken)) -> (completed + 1, rejected, beats, cents + taken)
+      Receive.Received(Event.Rejected(_, _)) -> (completed, rejected + 1, beats, cents)
+      Receive.Received(Event.Heartbeat(_)) -> (completed, rejected, beats + 1, cents)
+      Receive.Drained -> break "audit: ${completed} completed, ${rejected} rejected, ${beats} heartbeats, ${cents} cents taken"
+    }
+  }
+}
+
+fn wait(milliseconds: Int) -> Void needs {
+  clock: Clock
+} {
+  Clock.sleep(Duration.milliseconds(milliseconds))
+}
+
+pub fn main() -> Int needs {
+  clock: Clock,
+  console: Console,
+} {
+  let healthy_at = Clock.add(Clock.now(), Duration.milliseconds(120))
+  let inventory = Fakes.inventory()
+  let fraud = Fakes.fraud()
+  let payments = Fakes.payments(healthy_at)
+  let carriers = Fakes.carriers()
+  let notifier = Fakes.notifier()
+
+  let jobs = Channel.bounded(4)
+  let job_sender = jobs.sender
+  let job_completion = jobs.completion
+  let first_jobs = jobs.receiver
+  let second_jobs = Channel.add_receiver(first_jobs)
+  let outcomes = Channel.bounded(16)
+  let outcome_sender = outcomes.sender
+  let outcome_receiver = outcomes.receiver
+  let outcome_completion = outcomes.completion
+  let settings = Watch.starting_with(Worker.settings(False))
+  let settings_publisher = settings.publisher
+  let first_settings = Watch.subscribe(settings_publisher)
+  let second_settings = Watch.subscribe(settings_publisher)
+  let events = Broadcast.bounded(16)
+  let event_publisher = events.publisher
+  let feed = Broadcast.subscribe(event_publisher)
+
+  let auditor = Task.start(fn() { audit(feed) })
+  let first = Task.start(fn() {
+    Worker.work("w1", first_jobs, first_settings, outcome_sender, event_publisher) using {
+      inventory: inventory,
+      fraud: fraud,
+      payments: payments,
+      carriers: carriers,
+      notifier: notifier,
+    }
+  })
+  let second = Task.start(fn() {
+    Worker.work("w2", second_jobs, second_settings, outcome_sender, event_publisher) using {
+      inventory: inventory,
+      fraud: fraud,
+      payments: payments,
+      carriers: carriers,
+      notifier: notifier,
+    }
+  })
+
+  Channel.send(job_sender, Checkout.order(1, "book", 2500))
+  Channel.send(job_sender, Checkout.order(2, "sold-out", 1200))
+  Channel.send(job_sender, Checkout.order(3, "tv", 250000))
+  Channel.send(job_sender, Checkout.order(4, "gift", 666))
+  wait(400)
+  Channel.send(job_sender, Checkout.order(5, "slow", 900))
+  Channel.send(job_sender, Checkout.order(6, "island", 1800))
+  wait(1000)
+  Watch.publish(settings_publisher, Worker.settings(True))
+  Channel.send(job_sender, Checkout.order(7, "mug", 1500))
+  wait(2500)
+  Watch.publish(settings_publisher, Worker.settings(False))
+  // Shut down settings first: the workers keep taking orders after their
+  // watch drains, until the queue drains too.
+  Channel.close(settings.completion)
+  wait(100)
+  Channel.close(job_completion)
+
+  let handled = Task.result(first) + Task.result(second)
+  Channel.close(outcome_completion)
+  let report = collect(outcome_receiver)
+  Channel.close(events.completion)
+  List.each(report, fn(outcome) {
+    console.write_line(describe(outcome))
+  })
+  List.each(report, fn(outcome) {
+    case Cause.of(Worker.result(outcome)) {
+      Some(cause) -> console.write_line("cause of order ${Worker.order(outcome)}: ${Cause.to_text(cause)}")
+      None -> Void
+    }
+  })
+  console.write_line(Task.result(auditor))
+  handled
+}

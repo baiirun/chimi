@@ -1,0 +1,85 @@
+import app/checkout as Checkout
+import app/checkout.{FraudError, PaymentError, ShippingError}
+import app/fakes as Fakes
+import std/clock as Clock
+import std/clock.{Clock, Instant}
+import std/duration as Duration
+import std/result as Result
+import std/result.{Err}
+import std/task.{Timeout}
+import std/test as Test
+
+// Checkout behaviour under the virtual clock: each test reads the time a
+// checkout took, so a retry, a backoff, or a timeout shows in the numbers.
+
+fn checkout(id: Int, sku: Text, cents: Int, healthy_at: Instant, budget_ms: Int) needs {
+  clock: Clock
+} {
+  let deadline = Clock.add(Clock.now(), Duration.milliseconds(budget_ms))
+  Checkout.run(Checkout.order(id, sku, cents), deadline) using {
+    inventory: Fakes.inventory(),
+    fraud: Fakes.fraud(),
+    payments: Fakes.payments(healthy_at),
+    carriers: Fakes.carriers(),
+    notifier: Fakes.notifier(),
+  }
+}
+
+fn elapsed_ms(start: Instant) -> Int needs {
+  clock: Clock
+} {
+  Duration.to_milliseconds(Clock.since(start))
+}
+
+test "a payment outage is retried with backoff until it recovers" {
+  let start = Clock.now()
+  let outcome = checkout(2, "book", 2500, Clock.add(start, Duration.milliseconds(120)), 800)
+  Test.assert_equal(Checkout.describe(Result.get(outcome)), "hold 7004, ch-2, express, 2 of 2 notices")
+  // Checks 20 ms, a refused charge 30 ms, backoff 50 ms, a charge 30 ms,
+  // the express quote 20 ms, notices 5 ms.
+  Test.assert_equal(elapsed_ms(start), 155)
+}
+
+test "a declined card is not retried" {
+  let start = Clock.now()
+  let outcome = checkout(4, "gift", 666, start, 800)
+  Test.assert_equal(outcome, Err(PaymentError.Declined("card refused")))
+  Test.assert_equal(elapsed_ms(start), 50)
+}
+
+test "a slow charge times out on every attempt and the last timeout stands" {
+  let start = Clock.now()
+  let outcome = checkout(5, "slow", 900, start, 5000)
+  Test.assert_equal(outcome, Err(Timeout.TimedOut(Duration.milliseconds(200))))
+  // Checks 20 ms, then four 200 ms attempts with 50, 100 and 200 ms between.
+  Test.assert_equal(elapsed_ms(start), 1170)
+}
+
+test "the order deadline bounds the whole checkout" {
+  let start = Clock.now()
+  let outcome = checkout(5, "slow", 900, start, 800)
+  Test.assert_equal(outcome, Err(Timeout.TimedOut(Duration.milliseconds(800))))
+  Test.assert_equal(elapsed_ms(start), 800)
+}
+
+test "an unreachable fraud service sends the order on for review" {
+  let outcome = checkout(8, "mug", 1500, Clock.now(), 800)
+  Test.assert_equal(Checkout.describe(Result.get(outcome)), "hold 7003, ch-8, express, 2 of 2 notices")
+}
+
+test "a large order is flagged" {
+  let outcome = checkout(3, "tv", 250000, Clock.now(), 800)
+  // `Err(FraudError.Flagged(95))` would have the type of the whole enum,
+  // which the narrowed set does not hold (CHI-218), so the test matches.
+  case outcome {
+    Err(FraudError.Flagged(score)) -> Test.assert_equal(score, 95)
+    _ -> Test.fail("expected the order to be flagged")
+  }
+}
+
+// `Task.race` takes the first child to finish, failed or not, so an express
+// carrier that fails fast beats a ground quote that would have succeeded.
+test "a carrier that fails first decides the race" {
+  let outcome = checkout(6, "island", 1800, Clock.now(), 800)
+  Test.assert_equal(outcome, Err(ShippingError.NoRoute("express")))
+}

@@ -1,0 +1,135 @@
+import app/checkout as Checkout
+import app/checkout.{Carriers, Fraud, FraudError, Inventory, Notifier, Order, PaymentError, Payments, Receipt, ShippingError, StockError}
+import std/broadcast as Broadcast
+import std/channel as Channel
+import std/channel.{Receive, Receiver, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/duration.{Duration}
+import std/list as List
+import std/result.{Result}
+import std/select as Select
+import std/task.{Timeout}
+import std/watch as Watch
+
+// A checkout worker. It takes orders from a queue it shares with the other
+// workers, follows the service's settings through a watch, and reports what
+// it does on a broadcast. While paused it stops taking orders but still
+// follows the settings; while idle it sends a heartbeat every second.
+
+pub struct Settings {
+  paused: Bool,
+}
+
+pub enum Event {
+  Completed(worker: Text, order: Int, cents: Int)
+  Rejected(worker: Text, order: Int)
+  Heartbeat(worker: Text)
+}
+
+/// What a worker sends back for each order: the receipt, or the failure that
+/// ended the checkout, with its cause kept beside it.
+pub struct Outcome {
+  order: Int,
+  took: Duration,
+  result: Result<Receipt, StockError | FraudError.Flagged | PaymentError | ShippingError | Timeout>,
+}
+
+pub fn settings(paused: Bool) -> Settings {
+  Settings(paused)
+}
+
+pub fn order(outcome: Outcome) -> Int {
+  outcome.order
+}
+
+pub fn took(outcome: Outcome) -> Duration {
+  outcome.took
+}
+
+pub fn result(outcome: Outcome) -> Result<Receipt, StockError | FraudError.Flagged | PaymentError | ShippingError | Timeout> {
+  outcome.result
+}
+
+enum Wake {
+  Next(next: Receive<Order>)
+  Changed(next: Receive<Settings>)
+  Beat
+}
+
+const order_budget_ms = 800
+
+const heartbeat_ms = 1000
+
+fn report(events: Broadcast.Publisher<Event>, event: Event) -> Void {
+  case Broadcast.publish(events, event) {
+    Success(_) -> Void
+    Failure(_) -> Void
+  }
+}
+
+fn handle(name: Text, order: Order, outcomes: Sender<Outcome>, events: Broadcast.Publisher<Event>) -> Void needs {
+  inventory: Inventory,
+  fraud: Fraud,
+  payments: Payments,
+  carriers: Carriers,
+  notifier: Notifier,
+  clock: Clock,
+} {
+  let started = Clock.now()
+  let deadline = Clock.add(started, Duration.milliseconds(order_budget_ms))
+  let result = Checkout.run(order, deadline)
+  let event = case result {
+    Result.Ok(_) -> Event.Completed(name, Checkout.id(order), Checkout.cents(order))
+    Result.Err(_) -> Event.Rejected(name, Checkout.id(order))
+  }
+  Channel.send(outcomes, Outcome(Checkout.id(order), Clock.since(started), result))
+  report(events, event)
+}
+
+/// Runs until the order queue drains, and returns how many orders it handled.
+pub fn work(
+  name: Text,
+  jobs: Receiver<Order>,
+  settings: Watch.Subscription<Settings>,
+  outcomes: Sender<Outcome>,
+  events: Broadcast.Publisher<Event>,
+) -> Int needs {
+  inventory: Inventory,
+  fraud: Fraud,
+  payments: Payments,
+  carriers: Carriers,
+  notifier: Notifier,
+  clock: Clock,
+} {
+  loop state = (False, True, 0) {
+    let (paused, following, handled) = state
+    // A drained watch is always ready, so it leaves the list once it drains;
+    // a paused worker leaves out the queue. The heartbeat is always there.
+    let watching = case following {
+      True -> [Select.watch(settings, fn(next) { Wake.Changed(next) })]
+      False -> []
+    }
+    let taking = case paused {
+      True -> []
+      False -> [Select.receive(jobs, fn(next) { Wake.Next(next) })]
+    }
+    let beat = Select.after(Duration.milliseconds(heartbeat_ms), Wake.Beat)
+    let events_now = List.concat([watching, taking, [beat]])
+    let wake = Select.first(events_now)
+    case wake {
+      Wake.Changed(Receive.Received(changed)) -> (changed.paused, following, handled)
+      Wake.Changed(Receive.Drained) -> (paused, False, handled)
+      Wake.Next(Receive.Received(order)) -> {
+        handle(name, order, outcomes, events)
+        (paused, following, handled + 1)
+      }
+      Wake.Next(Receive.Drained) -> break handled
+      Wake.Beat -> {
+        report(events, Event.Heartbeat(name))
+        (paused, following, handled)
+      }
+    }
+  }
+}
