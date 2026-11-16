@@ -1,0 +1,8 @@
+BASELINE ok  [lib -- scheduler::tests] (8s)
+KILLED       a task released before it ends is never removed [lib -- scheduler::tests] (4s)
+KILLED       drive never removes released tasks [lib -- scheduler::tests] (4s)
+KILLED       a released task keeps its result [lib -- scheduler::tests] (4s)
+KILLED       a released defected task gives up its defect code too [lib -- scheduler::tests] (3s)
+KILLED       a handle can be released twice [lib -- scheduler::tests] (3s)
+KILLED       a released terminal task is kept until the next drive [lib -- scheduler::tests] (3s)
+# result: every mutant killed
