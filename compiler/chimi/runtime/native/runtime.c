@@ -23,6 +23,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/wait.h>
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -11652,6 +11653,53 @@ static ChimiControl *invoke_signal_operation(uint32_t intrinsic, ChimiValue **ar
     if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
     if (request.status == CHIMI_RESPONSE_OK) return success(integer_value(request.value));
     if (request.status != CHIMI_RESPONSE_PENDING) return intrinsic_shape_defect(call_node);
+  }
+}
+
+/* Child processes for binding packages (std/exec, CHI-250). SIGCHLD's
+   handler only writes to the stop signals' pipe, which wakes an idle
+   scheduler; CHIMI_REQUEST_CHILD_WAIT then checks every waiting child with
+   waitid(WNOWAIT), so the binding reaps the child itself. Installed once, by
+   the first chimi_binding_prepare_children, before the first spawn: an
+   inherited SIG_IGN would make the kernel reap children on its own. */
+static void on_child_signal(int number) {
+  (void)number;
+  int saved = errno;
+  if (signal_pipe[1] >= 0) (void)!write(signal_pipe[1], "", 1);
+  errno = saved;
+}
+
+void chimi_binding_prepare_children(void) {
+  static bool installed = false;
+  if (installed) return;
+  installed = true;
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = on_child_signal;
+  sigemptyset(&action.sa_mask);
+  action.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+  sigaction(SIGCHLD, &action, NULL);
+}
+
+int chimi_binding_wait_child(ChimiBindingCall *call, uint32_t handle, int pid) {
+  if (pid <= 0) return CHIMI_BINDING_WAIT_FAILED;
+  if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
+  chimi_binding_prepare_children();
+  if (CHIMI_REQUIRES_SCHEDULER) {
+    for (;;) {
+      ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHILD_WAIT, .value = pid};
+      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;
+      if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
+      if (request.status == CHIMI_RESPONSE_ERROR) return CHIMI_BINDING_WAIT_FAILED;
+      if (request.status != CHIMI_RESPONSE_PENDING) return CHIMI_BINDING_READY;
+    }
+  }
+  for (;;) {
+    if (call->runtime->cancel) return CHIMI_BINDING_WAIT_CANCELLED;
+    siginfo_t info;
+    memset(&info, 0, sizeof(info));
+    if (waitid(P_PID, (id_t)pid, &info, WEXITED | WNOWAIT) == 0) return CHIMI_BINDING_READY;
+    if (errno != EINTR) return CHIMI_BINDING_WAIT_FAILED;
   }
 }
 

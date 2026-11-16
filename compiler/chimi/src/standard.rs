@@ -177,6 +177,9 @@ pub(crate) enum StandardType {
     /// `std/net.Network`: the capability to open sockets; the runner closes
     /// `main`'s `network` need.
     Network,
+    /// `std/exec.Commands`: the capability to start programs; the runner
+    /// closes `main`'s `commands` need.
+    Commands,
 }
 
 impl StandardType {
@@ -265,6 +268,7 @@ impl StandardType {
             Self::Files => "Files",
             Self::Signals => "Signals",
             Self::Network => "Network",
+            Self::Commands => "Commands",
         }
     }
 
@@ -279,7 +283,8 @@ impl StandardType {
             | Self::Environment
             | Self::Files
             | Self::Signals
-            | Self::Network => {
+            | Self::Network
+            | Self::Commands => {
                 StandardProperties::Opaque("a provider")
             }
             Self::ProcessAddress
@@ -1569,6 +1574,7 @@ impl StandardConstructor {
             | StandardType::Files
             | StandardType::Signals
             | StandardType::Network
+            | StandardType::Commands
             | StandardType::Instant
             | StandardType::Timestamp
             | StandardType::SelectEvent

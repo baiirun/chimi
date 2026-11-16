@@ -22,6 +22,10 @@
      chimi_binding_handle after every wait. Closing a handle wakes every
      task waiting on its descriptors before `release` runs, so close a
      descriptor only in `release`, never one another task may wait on.
+   - Start a child process only after chimi_binding_prepare_children, and wait
+     for its exit with chimi_binding_wait_child, which leaves it for the
+     binding to reap with waitpid. Reap only the children you started, by
+     pid: never waitpid(-1).
    - A host resource is a handle: chimi_binding_make_handle gives the runtime
      ownership of `state`, and the type's release runs exactly once, at
      chimi_binding_close_handle or when the program ends. Chimi code never sees
@@ -35,7 +39,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_BINDING_ABI_VERSION 1
+#define CHIMI_BINDING_ABI_VERSION 2
 
 typedef struct ChimiBindingCall ChimiBindingCall;
 typedef struct ChimiBindingValue ChimiBindingValue;
@@ -122,5 +126,15 @@ enum {
    (or CHIMI_BINDING_NO_HANDLE for a descriptor private to the call), is ready
    for `interest`, letting other tasks run. */
 int chimi_binding_wait(ChimiBindingCall *call, uint32_t handle, int fd, int interest);
+
+/* Installs the runtime's SIGCHLD handler, once. Call it before starting a
+   child process, so a child's exit wakes the scheduler. */
+void chimi_binding_prepare_children(void);
+/* Waits until the child process `pid`, which belongs to the handle argument
+   at index `handle` (or CHIMI_BINDING_NO_HANDLE), has exited, letting other
+   tasks run. It does not reap the child: on CHIMI_BINDING_READY, reap it
+   with waitpid(pid, &status, WNOHANG). CHIMI_BINDING_WAIT_FAILED when `pid`
+   is not an unreaped child of this process. */
+int chimi_binding_wait_child(ChimiBindingCall *call, uint32_t handle, int pid);
 
 #endif
