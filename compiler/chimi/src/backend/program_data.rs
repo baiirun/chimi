@@ -270,6 +270,9 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
     let mut constructors = Vec::new();
     let mut symbols = Vec::new();
     let mut requirement_slot_count = 0_u32;
+    // Only reached bindings appear, so a program links the archive of a
+    // binding package only when it calls one of its functions.
+    let bindings = core.reached_bindings();
     for symbol in &core.symbols {
         let name = data.string(&symbol.name);
         let function = core
@@ -338,6 +341,10 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
                 _ => u32::MAX,
             },
             environment_slot,
+            symbol
+                .binding
+                .and_then(|binding| bindings.iter().position(|reached| *reached == binding))
+                .map_or(u32::MAX, |index| index as u32),
         ));
     }
 
@@ -561,11 +568,31 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         &symbols,
         |r| {
             format!(
-                "{{{}, {}, {}, {}, {}, {}, {}, {}, {}}}",
-                r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8
+                "{{{}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}",
+                r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9
             )
         },
     );
+    for binding in &bindings {
+        writeln!(
+            output,
+            "extern ChimiBindingResult *{}(ChimiBindingCall *);",
+            binding.symbol
+        )
+        .unwrap();
+    }
+    render_array(
+        &mut output,
+        "const ChimiBinding CHIMI_BINDINGS[]",
+        &bindings,
+        |binding| format!("{{{}, {}}}", c_string(binding.symbol), binding.symbol),
+    );
+    writeln!(
+        output,
+        "const uint32_t CHIMI_BINDING_COUNT = {};",
+        bindings.len()
+    )
+    .unwrap();
     writeln!(
         output,
         "const uint32_t CHIMI_SYMBOL_COUNT = {};",

@@ -152,6 +152,9 @@ pub(crate) enum StandardType {
     /// `std/result.Result<T, E>`, which `Task.results` builds. Declared only in
     /// source; `std/task` loads `std/result`.
     Result,
+    /// A `native type` of a C binding (G20): a handle the runtime owns, whose
+    /// release function the binding supplies. Each declaration is its own type.
+    BindingHandle,
 }
 
 impl StandardType {
@@ -231,6 +234,7 @@ impl StandardType {
             Self::BroadcastPublisher | Self::WatchPublisher => "Publisher",
             Self::WatchSubscription => "Subscription",
             Self::Result => "Result",
+            Self::BindingHandle => "Handle",
         }
     }
 
@@ -297,6 +301,7 @@ impl StandardType {
             Self::Cause => StandardProperties::Opaque(
                 "a `Cause`, diagnostic data that equality and order never read",
             ),
+            Self::BindingHandle => StandardProperties::Opaque("a handle to a host resource"),
         }
     }
 
@@ -566,6 +571,9 @@ pub(crate) enum StandardFunction {
     ResourceScoped,
     // Test-only (testing.md, Defects): T4401 when reachable from `main`.
     TestCaptureDefect,
+    /// Every C binding operation (G20). The symbol's binding names which one;
+    /// the interpreter cannot call C, so it reports `E5204` instead.
+    BindingCall,
 }
 
 impl StandardFunction {
@@ -860,6 +868,7 @@ impl StandardFunction {
             | Self::TestFail => None,
             Self::ResourceScoped => None,
             Self::TestCaptureDefect => None,
+            Self::BindingCall => None,
         }
     }
 
@@ -1041,6 +1050,7 @@ impl StandardFunction {
             Self::TestFail => "fail",
             Self::ResourceScoped => "scoped",
             Self::TestCaptureDefect => "capture_defect",
+            Self::BindingCall => "binding",
         }
     }
 
@@ -1147,6 +1157,7 @@ impl StandardFunction {
                 | Self::ChannelClose
                 | Self::ChannelAbort
                 | Self::ChannelBounded
+                | Self::BindingCall
         ) || self.requires_process_runtime()
             || self.is_select_operation()
             || self.is_channel_variant()
@@ -1448,6 +1459,7 @@ impl StandardConstructor {
             | StandardType::Decimal
             | StandardType::Bytes
             | StandardType::Cause
+            | StandardType::BindingHandle
             | StandardType::JsonValue
             | StandardType::JsonNumber
             | StandardType::DecodeError

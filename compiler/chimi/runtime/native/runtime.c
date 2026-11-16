@@ -79,7 +79,10 @@ typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN
                /* A `std/bytes.Bytes` in `as.text`, which holds any bytes. */
                VALUE_BYTES,
                /* A `std/cause.Cause` in `as.record`: the CAUSE_* fields, unnamed. */
-               VALUE_CAUSE } ValueKind;
+               VALUE_CAUSE,
+               /* A binding `native type` (G20) in `as.handle`: plain data naming a
+                  slot of the runtime's handle table, never the resource itself. */
+               VALUE_NATIVE_HANDLE } ValueKind;
 /* CALL_CONSTRUCTOR is a constructor with fields named as a value; calling it constructs. */
 typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC,
                CALL_CONSTRUCTOR } CallableKind;
@@ -175,6 +178,8 @@ struct ChimiValue {
     /* The magnitude's halves (an `unsigned __int128` member would raise the
        value's alignment), at most 38 digits; zero is never negative. */
     struct { uint64_t high; uint64_t low; uint32_t scale; bool negative; } decimal;
+    /* `name` is the binding type's, for Debug.render. */
+    struct { uint32_t slot; uint32_t generation; const char *name; } handle;
   } as;
 };
 
@@ -1380,7 +1385,8 @@ static void mark_children(void *pointer) {
         case VALUE_SUPERVISOR_RUNNING:
         case VALUE_MANAGED_PROCESS:
         case VALUE_MANAGED_SUPERVISOR:
-        case VALUE_PROCESS_MONITOR: break;
+        case VALUE_PROCESS_MONITOR:
+        case VALUE_NATIVE_HANDLE: break;
       }
       break;
     }
@@ -1910,7 +1916,8 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
         case VALUE_SUPERVISOR_RUNNING:
         case VALUE_MANAGED_PROCESS:
         case VALUE_MANAGED_SUPERVISOR:
-        case VALUE_PROCESS_MONITOR: break;
+        case VALUE_PROCESS_MONITOR:
+        case VALUE_NATIVE_HANDLE: break;
       }
       break;
     }
@@ -2868,7 +2875,8 @@ static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *va
     case VALUE_SUPERVISOR_RUNNING:
     case VALUE_MANAGED_PROCESS:
     case VALUE_MANAGED_SUPERVISOR:
-    case VALUE_PROCESS_MONITOR: return true;
+    case VALUE_PROCESS_MONITOR:
+    case VALUE_NATIVE_HANDLE: return true;
   }
   return false;
 }
@@ -3332,6 +3340,11 @@ static void json_value(FILE *output, const ChimiValue *root) {
         fputs("{\"type\":\"ManagedSupervisor\",\"fields\":{}}", output); break;
       case VALUE_PROCESS_MONITOR: fputs("{\"type\":\"Monitor\",\"fields\":{}}", output); break;
       case VALUE_CAUSE: fputs("{\"type\":\"Cause\",\"fields\":{}}", output); break;
+      case VALUE_NATIVE_HANDLE:
+        fputs("{\"type\":", output);
+        json_string(output, value->as.handle.name);
+        fputs(",\"fields\":{}}", output);
+        break;
     }
   }
   free(steps.items);
@@ -3429,6 +3442,10 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
       /* Routing kind, then the name or incarnation it routes to. */
       case VALUE_PROCESS_MONITOR:
         order = order_of((int64_t)left->as.address.target, (int64_t)right->as.address.target); break;
+      case VALUE_NATIVE_HANDLE:
+        order = order_of(left->as.handle.slot, right->as.handle.slot);
+        if (order == 0) order = order_of(left->as.handle.generation, right->as.handle.generation);
+        break;
       case VALUE_PROCESS_ADDRESS:
         order = order_of(left->as.address.kind, right->as.address.kind);
         if (order == 0)
@@ -5929,6 +5946,300 @@ static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
   return runtime->cancel ? cancelled() : success(void_value());
 }
 
+/* C bindings (G20). A binding function (chimi_binding.h) sees a call, never
+   the runtime: values cross as ChimiBindingValue, which is ChimiValue, and its
+   one result as ChimiBindingResult, which is ChimiControl. */
+struct ChimiBindingCall {
+  ChimiRuntime *runtime;
+  ChimiValue **arguments;
+  uint32_t argument_count;
+  uint32_t call_node;
+};
+
+static ChimiBindingValue *binding_value(ChimiValue *value) { return (ChimiBindingValue *)value; }
+static ChimiValue *runtime_value(ChimiBindingValue *value) { return (ChimiValue *)value; }
+static ChimiBindingResult *binding_result(ChimiControl *control) {
+  return (ChimiBindingResult *)control;
+}
+
+/* Handles: a slot per live resource. A value names its slot and the slot's
+   generation, so a copy of a closed handle stays closed when the slot is reused.
+   Slot 0 is never used, so a zeroed value is never open. */
+typedef struct {
+  const ChimiBindingType *type;
+  void *state;
+  uint32_t generation;
+} BindingHandleSlot;
+
+enum { BINDING_HANDLE_LIMIT = 1u << 20 };
+static BindingHandleSlot *binding_handles;
+static uint32_t binding_handle_count = 1;
+static uint32_t binding_handle_capacity;
+static uint32_t binding_free_slot;
+
+static BindingHandleSlot *binding_handle_slot(const ChimiValue *value) {
+  if (value->kind != VALUE_NATIVE_HANDLE) return NULL;
+  uint32_t slot = value->as.handle.slot;
+  if (slot == 0 || slot >= binding_handle_count) return NULL;
+  BindingHandleSlot *entry = &binding_handles[slot];
+  return entry->type != NULL && entry->generation == value->as.handle.generation ? entry : NULL;
+}
+
+
+static void release_binding_slot(BindingHandleSlot *entry, uint32_t slot) {
+  const ChimiBindingType *type = entry->type;
+  void *state = entry->state;
+  entry->type = NULL;
+  entry->state = NULL;
+  entry->generation++;
+  /* The free list threads through `state` of free slots. */
+  entry->state = (void *)(uintptr_t)binding_free_slot;
+  binding_free_slot = slot;
+  if (type->release) type->release(state);
+}
+
+/* Runs every open handle's release once, when the program ends. */
+static void release_binding_handles(void) {
+  for (uint32_t slot = 1; slot < binding_handle_count; ++slot)
+    if (binding_handles[slot].type != NULL) release_binding_slot(&binding_handles[slot], slot);
+}
+
+static const ChimiValue *binding_argument(const ChimiBindingCall *call, uint32_t index,
+                                          ValueKind kind) {
+  if (index >= call->argument_count || call->arguments[index]->kind != kind) return NULL;
+  return call->arguments[index];
+}
+
+uint32_t chimi_binding_argument_count(const ChimiBindingCall *call) { return call->argument_count; }
+
+int chimi_binding_integer(const ChimiBindingCall *call, uint32_t index, int64_t *out) {
+  const ChimiValue *value = binding_argument(call, index, VALUE_INTEGER);
+  if (value) *out = value->as.integer;
+  return value != NULL;
+}
+
+int chimi_binding_boolean(const ChimiBindingCall *call, uint32_t index, int *out) {
+  const ChimiValue *value = binding_argument(call, index, VALUE_BOOLEAN);
+  if (value) *out = value->as.boolean;
+  return value != NULL;
+}
+
+int chimi_binding_text(const ChimiBindingCall *call, uint32_t index, const char **bytes,
+                       size_t *length) {
+  const ChimiValue *value = binding_argument(call, index, VALUE_TEXT);
+  if (value) { *bytes = value->as.text.bytes; *length = value->as.text.length; }
+  return value != NULL;
+}
+
+int chimi_binding_bytes(const ChimiBindingCall *call, uint32_t index,
+                        const unsigned char **bytes, size_t *length) {
+  const ChimiValue *value = binding_argument(call, index, VALUE_BYTES);
+  if (value) { *bytes = (const unsigned char *)value->as.text.bytes; *length = value->as.text.length; }
+  return value != NULL;
+}
+
+void *chimi_binding_handle(const ChimiBindingCall *call, uint32_t index,
+                           const ChimiBindingType *type) {
+  const ChimiValue *value = binding_argument(call, index, VALUE_NATIVE_HANDLE);
+  BindingHandleSlot *entry = value ? binding_handle_slot(value) : NULL;
+  return entry != NULL && entry->type == type ? entry->state : NULL;
+}
+
+ChimiBindingValue *chimi_binding_void(ChimiBindingCall *call) {
+  (void)call;
+  return binding_value(void_value());
+}
+
+ChimiBindingValue *chimi_binding_make_integer(ChimiBindingCall *call, int64_t value) {
+  (void)call;
+  return binding_value(integer_value(value));
+}
+
+ChimiBindingValue *chimi_binding_make_boolean(ChimiBindingCall *call, int value) {
+  (void)call;
+  return binding_value(boolean_value(value != 0));
+}
+
+/* Text that is not UTF-8 becomes NULL, which the result functions report as a
+   defect: a binding must never hand Chimi invalid Text. */
+ChimiBindingValue *chimi_binding_make_text(ChimiBindingCall *call, const char *bytes,
+                                           size_t length) {
+  (void)call;
+  /* Text may hold U+0000, which valid_utf8 refuses, so check between them. */
+  for (size_t start = 0; start <= length;) {
+    const char *nul = memchr(bytes + start, 0, length - start);
+    size_t end = nul ? (size_t)(nul - bytes) : length;
+    if (!valid_utf8((const unsigned char *)bytes + start, end - start)) return NULL;
+    start = end + 1;
+  }
+  return binding_value(text_from_bytes(bytes, length));
+}
+
+ChimiBindingValue *chimi_binding_make_bytes(ChimiBindingCall *call, const unsigned char *bytes,
+                                            size_t length) {
+  (void)call;
+  return binding_value(bytes_from((const char *)bytes, length));
+}
+
+ChimiBindingValue *chimi_binding_none(ChimiBindingCall *call) {
+  (void)call;
+  return binding_value(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
+}
+
+ChimiBindingValue *chimi_binding_some(ChimiBindingCall *call, ChimiBindingValue *value) {
+  (void)call;
+  if (value == NULL) return NULL;
+  ChimiValue *fields[] = {runtime_value(value)};
+  return binding_value(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
+}
+
+static bool binding_items_present(ChimiBindingValue **items, uint32_t length) {
+  for (uint32_t index = 0; index < length; ++index)
+    if (items[index] == NULL) return false;
+  return true;
+}
+
+ChimiBindingValue *chimi_binding_make_tuple(ChimiBindingCall *call, ChimiBindingValue **items,
+                                            uint32_t length) {
+  (void)call;
+  if (!binding_items_present(items, length)) return NULL;
+  ChimiValue *tuple = new_value(VALUE_TUPLE);
+  tuple->as.record.length = length;
+  tuple->as.record.fields = allocate(length, sizeof(*tuple->as.record.fields));
+  allocation_kind(tuple->as.record.fields, ALLOCATION_FIELDS);
+  for (uint32_t index = 0; index < length; ++index)
+    tuple->as.record.fields[index] = (RuntimeField){NULL, runtime_value(items[index])};
+  return binding_value(tuple);
+}
+
+ChimiBindingValue *chimi_binding_make_list(ChimiBindingCall *call, ChimiBindingValue **items,
+                                           uint32_t length) {
+  (void)call;
+  if (!binding_items_present(items, length)) return NULL;
+  return binding_value(list_from_values((ChimiValue *const *)items, length));
+}
+
+ChimiBindingValue *chimi_binding_make_handle(ChimiBindingCall *call, const ChimiBindingType *type,
+                                             void *state) {
+  (void)call;
+  uint32_t slot = binding_free_slot;
+  if (slot != 0) {
+    binding_free_slot = (uint32_t)(uintptr_t)binding_handles[slot].state;
+  } else {
+    if (binding_handle_count >= BINDING_HANDLE_LIMIT) {
+      if (type->release) type->release(state);
+      return NULL;
+    }
+    if (binding_handle_count >= binding_handle_capacity) {
+      uint32_t capacity = binding_handle_capacity ? binding_handle_capacity * 2 : 64;
+      BindingHandleSlot *grown = realloc(binding_handles, capacity * sizeof(*grown));
+      if (grown == NULL) {
+        if (type->release) type->release(state);
+        return NULL;
+      }
+      memset(grown + binding_handle_capacity, 0,
+             (capacity - binding_handle_capacity) * sizeof(*grown));
+      binding_handles = grown;
+      binding_handle_capacity = capacity;
+    }
+    slot = binding_handle_count++;
+  }
+  BindingHandleSlot *entry = &binding_handles[slot];
+  entry->type = type;
+  entry->state = state;
+  ChimiValue *value = new_value(VALUE_NATIVE_HANDLE);
+  value->as.handle.slot = slot;
+  value->as.handle.generation = entry->generation;
+  value->as.handle.name = type->name;
+  return binding_value(value);
+}
+
+void chimi_binding_close_handle(ChimiBindingCall *call, uint32_t index) {
+  const ChimiValue *value = binding_argument(call, index, VALUE_NATIVE_HANDLE);
+  BindingHandleSlot *entry = value ? binding_handle_slot(value) : NULL;
+  if (entry != NULL) release_binding_slot(entry, value->as.handle.slot);
+}
+
+ChimiBindingResult *chimi_binding_success(ChimiBindingCall *call, ChimiBindingValue *value) {
+  if (value == NULL)
+    return binding_result(defect("a C binding built an invalid value", call->call_node));
+  return binding_result(success(runtime_value(value)));
+}
+
+ChimiBindingResult *chimi_binding_ok(ChimiBindingCall *call, ChimiBindingValue *value) {
+  if (value == NULL)
+    return binding_result(defect("a C binding built an invalid value", call->call_node));
+  ChimiValue *fields[] = {runtime_value(value)};
+  return binding_result(success(standard_value(CHIMI_CONSTRUCTOR_RESULT_OK, fields, 1)));
+}
+
+ChimiBindingResult *chimi_binding_failure(ChimiBindingCall *call, int64_t code,
+                                          const char *message) {
+  ChimiBindingValue *parts[] = {
+    chimi_binding_make_integer(call, code),
+    chimi_binding_make_text(call, message, strlen(message)),
+  };
+  if (parts[1] == NULL)
+    return binding_result(defect("a C binding failed with a message that is not UTF-8",
+                                 call->call_node));
+  ChimiValue *fields[] = {runtime_value(chimi_binding_make_tuple(call, parts, 2))};
+  return binding_result(success(standard_value(CHIMI_CONSTRUCTOR_RESULT_ERR, fields, 1)));
+}
+
+ChimiBindingResult *chimi_binding_defect(ChimiBindingCall *call, const char *message) {
+  return binding_result(defect(copy_text(message), call->call_node));
+}
+
+ChimiBindingResult *chimi_binding_cancelled(ChimiBindingCall *call) {
+  (void)call;
+  return binding_result(cancelled());
+}
+
+int chimi_binding_is_cancelled(const ChimiBindingCall *call) {
+  if (call->runtime->cancel) return 1;
+  if (!CHIMI_REQUIRES_SCHEDULER) return 0;
+  ChimiSchedulerRequest check = {.kind = CHIMI_REQUEST_SCOPE_CHECK};
+  return scheduler_request(&check) == CHIMI_FIBER_CANCEL;
+}
+
+int chimi_binding_wait(ChimiBindingCall *call, int fd, int interest) {
+  if (fd < 0 || interest < CHIMI_BINDING_READABLE ||
+      interest > (CHIMI_BINDING_READABLE | CHIMI_BINDING_WRITABLE))
+    return CHIMI_BINDING_WAIT_FAILED;
+  if (CHIMI_REQUIRES_SCHEDULER) {
+    uint64_t token = ((interest & CHIMI_BINDING_READABLE) ? CHIMI_IO_READABLE : 0) |
+                     ((interest & CHIMI_BINDING_WRITABLE) ? CHIMI_IO_WRITABLE : 0);
+    for (;;) {
+      ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_IO_WAIT, .value = fd, .token = token};
+      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;
+      if (request.status == CHIMI_RESPONSE_ERROR) return CHIMI_BINDING_WAIT_FAILED;
+      if (request.status != CHIMI_RESPONSE_PENDING) return CHIMI_BINDING_READY;
+    }
+  }
+  struct pollfd poll_fd = {
+    .fd = fd,
+    .events = (short)(((interest & CHIMI_BINDING_READABLE) ? POLLIN : 0) |
+                      ((interest & CHIMI_BINDING_WRITABLE) ? POLLOUT : 0)),
+  };
+  for (;;) {
+    if (call->runtime->cancel) return CHIMI_BINDING_WAIT_CANCELLED;
+    int ready = poll(&poll_fd, 1, -1);
+    if (ready > 0) return (poll_fd.revents & POLLNVAL) ? CHIMI_BINDING_WAIT_FAILED : CHIMI_BINDING_READY;
+    if (ready < 0 && errno != EINTR) return CHIMI_BINDING_WAIT_FAILED;
+  }
+}
+
+/* Calls the reached binding `binding`; its result is the call's outcome. */
+static ChimiControl *invoke_binding(ChimiRuntime *runtime, uint32_t binding, ChimiValue **arguments,
+                                    uint32_t argument_count, uint32_t call_node) {
+  if (binding >= CHIMI_BINDING_COUNT) return defect("verified binding call has no binding", call_node);
+  if (runtime->cancel) return cancelled();
+  ChimiBindingCall call = {runtime, arguments, argument_count, call_node};
+  ChimiControl *control = (ChimiControl *)CHIMI_BINDINGS[binding].function(&call);
+  if (control == NULL) return defect("a C binding returned no result", call_node);
+  return control;
+}
+
 static ChimiControl *construct_value(uint32_t symbol, ChimiValue **values);
 static ChimiControl *invoke_clock_host(ChimiRuntime *runtime, ChimiCallable *callable,
                                        ChimiValue **arguments, uint32_t argument_count,
@@ -5946,6 +6257,9 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
     }
     return invoke(runtime, callable->inner, arguments, argument_count, span, call_node, call_environment);
   }
+  if (callable->kind == CALL_INTRINSIC && callable->intrinsic == CHIMI_INTRINSIC_BINDING_CALL)
+    return invoke_binding(runtime, CHIMI_SYMBOLS[callable->symbol].binding, arguments,
+                          argument_count, call_node);
   if (callable->kind == CALL_INTRINSIC)
     return invoke_intrinsic(runtime, callable->intrinsic, arguments, argument_count,
                             span, call_node, call_environment);
@@ -6602,6 +6916,11 @@ static void debug_expand(DebugRenderer *renderer, DebugSteps *steps, const Chimi
     case VALUE_MANAGED_PROCESS: debug_text(buffer, "<ManagedProcess>"); return;
     case VALUE_MANAGED_SUPERVISOR: debug_text(buffer, "<ManagedSupervisor>"); return;
     case VALUE_PROCESS_MONITOR: debug_text(buffer, "<Monitor>"); return;
+    case VALUE_NATIVE_HANDLE:
+      debug_text(buffer, "<");
+      debug_text(buffer, value->as.handle.name);
+      debug_text(buffer, ">");
+      return;
   }
 }
 
@@ -9346,7 +9665,7 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
     }
     case CHIMI_CONSTANT_INTRINSIC:
       callable->kind = CALL_INTRINSIC; callable->intrinsic = shape->intrinsic;
-      callable->name = CHIMI_STRINGS[shape->name];
+      callable->symbol = raw->a; callable->name = CHIMI_STRINGS[shape->name];
       break;
     case CHIMI_CONSTANT_CONSTRUCTOR:
       callable->kind = CALL_CONSTRUCTOR; callable->symbol = raw->a; callable->name = CHIMI_STRINGS[shape->name];
@@ -9412,7 +9731,8 @@ static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
     case CHIMI_SYMBOL_INTRINSIC: {
       ChimiCallable *callable = allocate(1, sizeof(*callable));
       allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_INTRINSIC;
-      callable->intrinsic = shape->intrinsic; callable->name = CHIMI_STRINGS[shape->name];
+      callable->intrinsic = shape->intrinsic; callable->symbol = symbol;
+      callable->name = CHIMI_STRINGS[shape->name];
       return success(callable_value(callable));
     }
     case CHIMI_SYMBOL_PROCESS_NAME:
@@ -10757,6 +11077,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   ChimiControl *control = runtime.cancel
     ? cancelled()
     : execute_program_entry(&runtime, entry, environment);
+  release_binding_handles();
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
   if (runtime.outcome) print_outcome(runtime.outcome, control);
   bool write_failed = write_memory_report(memory_report_path, &runtime);

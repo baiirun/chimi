@@ -89,6 +89,24 @@ impl CoreProgram {
             .collect()
     }
 
+    /// The C binding functions a reachable node references, each once, in
+    /// first-reference order: what the native build declares and links, and
+    /// what the interpreter refuses (`E5204`).
+    pub(crate) fn reached_bindings(&self) -> Vec<crate::operations::Binding> {
+        let mut bindings = Vec::new();
+        for node in &self.nodes {
+            let CoreOperation::Reference(symbol) = node.operation else {
+                continue;
+            };
+            if let Some(binding) = self.symbol(symbol).binding
+                && !bindings.contains(&binding)
+            {
+                bindings.push(binding);
+            }
+        }
+        bindings
+    }
+
     pub(crate) fn symbol(&self, id: SymbolId) -> &CoreSymbol {
         self.symbols
             .get(id.raw() as usize)
@@ -399,6 +417,9 @@ pub(crate) struct CoreSymbol {
     pub(crate) kind: CoreSymbolKind,
     pub(crate) constructor: Option<CoreConstructor>,
     pub(crate) standard: Option<StandardSymbol>,
+    /// The C function of a binding `native fn` (G20), whose `standard` is
+    /// [`StandardFunction::BindingCall`].
+    pub(crate) binding: Option<crate::operations::Binding>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1123,9 +1144,8 @@ fn collect_reachable_expression(
                         if let Some(current) = state.current {
                             if let Some(name) = typed
                                 .resolved
-                                .native_operation(symbol)
+                                .test_only_operation(symbol)
                                 .filter(|_| state.test_only.is_none())
-                                .and_then(crate::operations::test_only_name)
                             {
                                 state.test_only =
                                     Some((current, name, reference.file_id, reference.range));
@@ -1436,6 +1456,7 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
         kind: CoreSymbolKind::Local,
         constructor: None,
         standard: None,
+        binding: None,
     }));
     let bound = bound_locals(&functions, &lowerer.nodes);
     for symbol in &mut symbols {
@@ -2868,6 +2889,7 @@ fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
                         .native_operation(symbol.id)
                         .map(StandardSymbol::Function)
                 }),
+                binding: typed.resolved.native_binding(symbol.id),
             };
             (symbol, owner)
         })

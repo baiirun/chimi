@@ -1821,6 +1821,13 @@ impl<'core> Evaluator<'core> {
             StandardFunction::TestCaptureDefect => {
                 self.invoke_capture_defect(arguments, span, call_node, environment)
             }
+            // Setup refuses a program that reaches a binding (`E5204`), so only
+            // a caller that skipped it gets here.
+            StandardFunction::BindingCall => Control::Defect {
+                message: "E5204: the interpreter cannot call C bindings; build the program with `chimi build`".to_owned(),
+                node: Some(call_node),
+                cause: None,
+            },
             StandardFunction::DebugCrash
             | StandardFunction::OptionUnwrapOrFail
             | StandardFunction::TextConcat

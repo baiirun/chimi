@@ -1,10 +1,12 @@
 //! Native AOT object emission and host linking behind the backend-neutral program boundary.
 
 use super::BackendProgram;
+use super::bindings::{BINDING_HEADER, BindingPackage, packages_for};
 use super::direct_loop::{Pass, direct_loops, emit_pass};
 use super::program_data::{render_program_data, requires_process_runtime};
 use super::runtime_archive_key::{
-    RUNTIME_C_COMPILER, RuntimeArchiveInputs, runtime_archive_key, runtime_c_flags,
+    BindingArchiveInputs, RUNTIME_C_COMPILER, RUNTIME_C_FLAGS, RuntimeArchiveInputs,
+    binding_archive_key, runtime_archive_key, runtime_c_flags,
 };
 use crate::executable::{CoreOperation, CoreProgram};
 use crate::json::write_json_string;
@@ -29,7 +31,7 @@ const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
 const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
 const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
 const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v5-process-kernel;direct-integer-loop-v1";
-const RUNTIME_ABI_VERSION: u32 = 39;
+const RUNTIME_ABI_VERSION: u32 = 42;
 const FIBER_RUNTIME_ABI_VERSION: u32 = chimi_fiber::ABI_VERSION;
 static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -38,6 +40,9 @@ pub struct NativeArtifact {
     pub data_object_path: PathBuf,
     pub runtime_archive_path: PathBuf,
     pub fiber_runtime_archive_path: Option<PathBuf>,
+    /// The C binding packages the program reaches (G20), each linked from its
+    /// own archive.
+    pub binding_packages: Vec<LinkedBindingPackage>,
     pub executable_path: PathBuf,
     pub object_emission: Duration,
     pub runtime_compilation: Duration,
@@ -47,6 +52,15 @@ pub struct NativeArtifact {
     pub cache_misses: Vec<String>,
     /// Artifacts taken from the compiler itself instead of the project cache.
     pub prebuilt: Vec<String>,
+}
+
+/// A binding package linked into an executable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkedBindingPackage {
+    pub name: String,
+    pub archive_path: PathBuf,
+    /// Operating-system libraries the package links (`-l<name>`).
+    pub system_libraries: Vec<String>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -60,6 +74,9 @@ pub struct NativeBuildReport {
     pub metadata_object_path: PathBuf,
     pub runtime_archive_path: PathBuf,
     pub fiber_runtime_archive_path: Option<PathBuf>,
+    /// The C binding packages linked in (G20). A C fault in one ends the
+    /// whole process, so the report names every one.
+    pub binding_packages: Vec<LinkedBindingPackage>,
     pub manifest_path: PathBuf,
     pub dynamic_dependencies: Vec<String>,
     pub fully_static: bool,
@@ -115,6 +132,20 @@ impl NativeBuildReport {
         } else {
             output.push_str("null");
         }
+        output.push_str(",\"binding_packages\":[");
+        for (index, package) in self.binding_packages.iter().enumerate() {
+            if index > 0 {
+                output.push(',');
+            }
+            output.push_str("{\"name\":");
+            write_json_string(&mut output, &package.name);
+            output.push_str(",\"archive\":");
+            write_path(&mut output, &package.archive_path);
+            output.push_str(",\"system_libraries\":[");
+            write_strings(&mut output, &package.system_libraries);
+            output.push_str("]}");
+        }
+        output.push(']');
         output.push_str(",\"manifest\":");
         write_path(&mut output, &self.manifest_path);
         output.push_str("},\"dynamic_dependencies\":[");
@@ -155,6 +186,7 @@ pub fn build_application(
         metadata_object_path: artifact.data_object_path,
         runtime_archive_path: artifact.runtime_archive_path,
         fiber_runtime_archive_path: artifact.fiber_runtime_archive_path,
+        binding_packages: artifact.binding_packages,
         manifest_path: manifest_path.clone(),
         fully_static: dynamic_dependencies.is_empty(),
         dynamic_dependencies,
@@ -246,6 +278,8 @@ fn build_to_path(
         .map_err(|error| format!("write native program data: {error}"))?;
     std::fs::write(output_directory.join("runtime.h"), RUNTIME_HEADER)
         .map_err(|error| format!("write embedded runtime header: {error}"))?;
+    std::fs::write(output_directory.join("chimi_binding.h"), BINDING_HEADER)
+        .map_err(|error| format!("write embedded binding header: {error}"))?;
     std::fs::write(output_directory.join("chimi_fiber.h"), FIBER_RUNTIME_HEADER)
         .map_err(|error| format!("write embedded fiber runtime header: {error}"))?;
     if let Some(path) = &fiber_runtime_archive_path {
@@ -260,6 +294,7 @@ fn build_to_path(
         compiler_identity: &cc,
         runtime_source: RUNTIME_SOURCE.as_bytes(),
         runtime_header: RUNTIME_HEADER.as_bytes(),
+        binding_header: BINDING_HEADER.as_bytes(),
         fiber_header: FIBER_RUNTIME_HEADER.as_bytes(),
         process_kernel,
     });
@@ -297,6 +332,15 @@ fn build_to_path(
             },
         )?;
     }
+    let mut binding_packages = Vec::new();
+    for package in packages_for(&program.core.reached_bindings()) {
+        binding_packages.push(build_binding_archive(
+            &package,
+            output_directory,
+            &mut cache,
+            &cc,
+        )?);
+    }
     let runtime_compilation = started.elapsed();
 
     let started = Instant::now();
@@ -325,9 +369,17 @@ fn build_to_path(
 
     let started = Instant::now();
     let mut link = Command::new("cc");
-    link.args(&object_paths)
-        .arg(&data_object_path)
-        .arg(&runtime_archive_path);
+    // Binding archives call into the runtime, so they come before it.
+    link.args(&object_paths).arg(&data_object_path);
+    for package in &binding_packages {
+        link.arg(&package.archive_path);
+    }
+    link.arg(&runtime_archive_path);
+    for package in &binding_packages {
+        for library in &package.system_libraries {
+            link.arg(format!("-l{library}"));
+        }
+    }
     if let Some(path) = &fiber_runtime_archive_path {
         if cfg!(target_os = "macos") {
             link.arg(format!("-Wl,-force_load,{}", path.display()));
@@ -348,6 +400,7 @@ fn build_to_path(
         data_object_path,
         runtime_archive_path,
         fiber_runtime_archive_path,
+        binding_packages,
         executable_path: executable_path.to_owned(),
         object_emission,
         runtime_compilation,
@@ -356,6 +409,65 @@ fn build_to_path(
         cache_hits,
         cache_misses,
         prebuilt,
+    })
+}
+
+/// Compiles `package` into its own archive in the project cache, keyed by its
+/// sources and flags, and materializes it in `output_directory`.
+fn build_binding_archive(
+    package: &BindingPackage,
+    output_directory: &Path,
+    cache: &mut ArtifactCache,
+    cc: &str,
+) -> Result<LinkedBindingPackage, String> {
+    let archive_name = package.archive_name();
+    let archive_path = output_directory.join(&archive_name);
+    let key = binding_archive_key(&BindingArchiveInputs {
+        package: package.name,
+        target_triple: env!("CHIMI_RUNTIME_TARGET"),
+        compiler_identity: cc,
+        binding_header: BINDING_HEADER.as_bytes(),
+        sources: &package.files,
+    });
+    cache.materialize(&key, "a", &archive_path, &archive_name, |temporary| {
+        let directory = output_directory.join(format!("binding-{}", package.name));
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| format!("create binding package directory: {error}"))?;
+        for (name, text) in &package.files {
+            std::fs::write(directory.join(name), text)
+                .map_err(|error| format!("write binding source {name}: {error}"))?;
+        }
+        let mut objects = Vec::new();
+        for source in package.sources() {
+            let object = directory.join(format!("{source}.o"));
+            run(
+                Command::new(RUNTIME_C_COMPILER)
+                    .args(RUNTIME_C_FLAGS)
+                    .arg("-I")
+                    .arg(output_directory)
+                    .arg("-I")
+                    .arg(&directory)
+                    .arg("-c")
+                    .arg(directory.join(source))
+                    .arg("-o")
+                    .arg(&object),
+                "compile native binding package",
+            )?;
+            objects.push(object);
+        }
+        run(
+            Command::new("ar").arg("rcs").arg(temporary).args(&objects),
+            "archive native binding package",
+        )
+    })?;
+    Ok(LinkedBindingPackage {
+        name: package.name.to_owned(),
+        archive_path,
+        system_libraries: package
+            .system_libraries
+            .iter()
+            .map(|library| (*library).to_owned())
+            .collect(),
     })
 }
 

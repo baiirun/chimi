@@ -27,7 +27,6 @@ pub(crate) enum OperationClass {
     /// Needs the scheduler or creates runtime resources.
     Runtime,
     /// Talks to the operating system; its `native fn` must be private (`N3106`).
-    #[allow(dead_code)]
     Host,
 }
 
@@ -42,6 +41,19 @@ pub(crate) struct Operation {
     /// Only tests may reach it: `chimi build` and `chimi run` reject a program
     /// whose `main` reaches it (`T4401`, testing.md "Defects").
     pub(crate) test_only: bool,
+    /// The C function that implements a binding operation (G20), whose
+    /// `implementation` is [`StandardFunction::BindingCall`].
+    pub(crate) binding: Option<Binding>,
+}
+
+/// A C function of a binding package (`backend/bindings.rs`) that implements
+/// one `native fn`. It has the binding API's one signature
+/// (`chimi_binding.h`), so the registry needs only its name.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct Binding {
+    /// The package whose archive defines `symbol`.
+    pub(crate) package: &'static str,
+    pub(crate) symbol: &'static str,
 }
 
 /// A source declaration whose identity the runtime knows.
@@ -69,6 +81,7 @@ const fn pure(id: &'static str, arity: usize, implementation: StandardFunction) 
         class: OperationClass::Pure,
         implementation,
         test_only: false,
+        binding: None,
     }
 }
 
@@ -79,6 +92,7 @@ const fn runtime(id: &'static str, arity: usize, implementation: StandardFunctio
         class: OperationClass::Runtime,
         implementation,
         test_only: false,
+        binding: None,
     }
 }
 
@@ -89,19 +103,54 @@ const fn test_only(id: &'static str, arity: usize, implementation: StandardFunct
         class: OperationClass::Runtime,
         implementation,
         test_only: true,
+        binding: None,
+    }
+}
+
+/// A `host` operation implemented by `symbol` in binding package `package`.
+/// `test_only` binds it like [`test_only`]: only tests may reach it.
+const fn binding(
+    id: &'static str,
+    arity: usize,
+    package: &'static str,
+    symbol: &'static str,
+    test_only: bool,
+) -> Operation {
+    Operation {
+        id,
+        arity,
+        class: OperationClass::Host,
+        implementation: StandardFunction::BindingCall,
+        test_only,
+        binding: Some(Binding { package, symbol }),
     }
 }
 
 /// The source spelling of a test-only operation (`Test.capture_defect` for
 /// `std/test.capture_defect`), for `T4401`; `None` for any other operation.
-pub(crate) fn test_only_name(function: StandardFunction) -> Option<String> {
-    let operation = OPERATIONS
-        .iter()
-        .find(|operation| operation.implementation == function && operation.test_only)?;
+pub(crate) fn test_only_name(operation: &Operation) -> Option<String> {
+    if !operation.test_only {
+        return None;
+    }
     let (module, name) = operation.id.strip_prefix("std/")?.split_once('.')?;
-    let mut qualifier = module.chars();
-    let first = qualifier.next()?.to_ascii_uppercase();
-    Some(format!("{first}{}.{name}", qualifier.as_str()))
+    let qualifier = module
+        .split('_')
+        .map(|word| {
+            let mut letters = word.chars();
+            letters.next().map_or_else(String::new, |first| {
+                format!("{}{}", first.to_ascii_uppercase(), letters.as_str())
+            })
+        })
+        .collect::<String>();
+    Some(format!("{qualifier}.{name}"))
+}
+
+/// The registry operation an intrinsic implements. `None` for
+/// [`StandardFunction::BindingCall`], which many operations share.
+pub(crate) fn intrinsic_operation(function: StandardFunction) -> Option<&'static Operation> {
+    OPERATIONS
+        .iter()
+        .find(|operation| operation.implementation == function && operation.binding.is_none())
 }
 
 pub(crate) const OPERATIONS: &[Operation] = &[
@@ -276,7 +325,69 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     pure("std/test.fail", 1, StandardFunction::TestFail),
     // std/resource
     runtime("std/resource.scoped", 3, StandardFunction::ResourceScoped),
-    test_only("std/test.capture_defect", 1, StandardFunction::TestCaptureDefect),
+    test_only(
+        "std/test.capture_defect",
+        1,
+        StandardFunction::TestCaptureDefect,
+    ),
+    // std/binding_probe: a test-only binding package that exercises the binding
+    // API (G20) from the compiler's own tests.
+    binding(
+        "std/binding_probe.native_echo",
+        1,
+        "probe",
+        "chimi_probe_echo",
+        true,
+    ),
+    binding(
+        "std/binding_probe.native_add",
+        2,
+        "probe",
+        "chimi_probe_add",
+        true,
+    ),
+    binding(
+        "std/binding_probe.native_try_parse",
+        1,
+        "probe",
+        "chimi_probe_try_parse",
+        true,
+    ),
+    binding(
+        "std/binding_probe.native_crash",
+        1,
+        "probe",
+        "chimi_probe_crash",
+        true,
+    ),
+    binding(
+        "std/binding_probe.native_open_pipe",
+        0,
+        "probe",
+        "chimi_probe_open_pipe",
+        true,
+    ),
+    binding(
+        "std/binding_probe.native_write_pipe",
+        2,
+        "probe",
+        "chimi_probe_write_pipe",
+        true,
+    ),
+    binding(
+        "std/binding_probe.native_read_pipe",
+        1,
+        "probe",
+        "chimi_probe_read_pipe",
+        true,
+    ),
+    binding(
+        "std/binding_probe.native_close_pipe",
+        1,
+        "probe",
+        "chimi_probe_close_pipe",
+        true,
+    ),
 ];
 
 pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
@@ -312,6 +423,7 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     native_type("std/bytes.Bytes", StandardType::Bytes),
     native_type("std/json.Number", StandardType::JsonNumber),
     native_type("std/cause.Cause", StandardType::Cause),
+    native_type("std/binding_probe.Pipe", StandardType::BindingHandle),
     known_type("std/result.Result", StandardType::Result),
     known_constructor("std/result.Result.Ok", StandardConstructor::ResultOk),
     known_constructor("std/result.Result.Err", StandardConstructor::ResultErr),
