@@ -19,6 +19,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 /* The stack of every scheduler fiber: the root task, child tasks, and incarnations. */
 #define CHIMI_FIBER_STACK_BYTES (1024u * 1024u)
@@ -892,6 +893,51 @@ static ChimiControl *new_control(ControlKind kind, ChimiValue *value, const char
 static ChimiControl *success(ChimiValue *value) { return new_control(CONTROL_SUCCESS, value, NULL, -1); }
 static ChimiControl *failure(ChimiValue *value) { return new_control(CONTROL_FAILURE, value, NULL, -1); }
 static ChimiControl *defect(const char *message, int64_t node) { return new_control(CONTROL_DEFECT, NULL, message, node); }
+
+/* A program without tasks runs main on the host thread, which has no overflow guard
+   of its own: past its stack the program would die with SIGSEGV. Instead each call
+   checks the stack against this address and defects while STACK_HEADROOM_BYTES
+   remain, enough for the runtime frames between two calls and for reporting the
+   defect. An unlimited stack (glibc then reports the end of the previous mapping)
+   is held to STACK_UNLIMITED_BYTES, so the program defects before memory runs
+   out. Finding the bottom reads /proc/self/maps on Linux, so it runs once at
+   startup, not per benchmark repeat. Zero disables the check: on a fiber the guard page catches overflow, and
+   on a host whose stack bounds are unknown nothing better is available. */
+static uintptr_t host_stack_limit;
+enum { STACK_HEADROOM_BYTES = 256 * 1024 };
+#define STACK_UNLIMITED_BYTES ((uintptr_t)1 << 30)
+
+/* The lowest address of the calling thread's stack, or 0 when it is unknown. */
+static uintptr_t host_stack_bottom(void) {
+#if defined(__APPLE__)
+  pthread_t self = pthread_self();
+  uintptr_t top = (uintptr_t)pthread_get_stackaddr_np(self);
+  size_t size = pthread_get_stacksize_np(self);
+  return size < top ? top - size : 0;
+#elif defined(__linux__)
+  pthread_attr_t attributes;
+  if (pthread_getattr_np(pthread_self(), &attributes) != 0) return 0;
+  void *bottom = NULL;
+  size_t size = 0;
+  int status = pthread_attr_getstack(&attributes, &bottom, &size);
+  pthread_attr_destroy(&attributes);
+  return status == 0 ? (uintptr_t)bottom : 0;
+#else
+  return 0;
+#endif
+}
+
+static void guard_host_stack(void) {
+  uintptr_t bottom = host_stack_bottom();
+  uintptr_t here = (uintptr_t)__builtin_frame_address(0);
+  if (bottom == 0 || here <= bottom || here - bottom <= 2 * (uintptr_t)STACK_HEADROOM_BYTES) return;
+  host_stack_limit = here - bottom > STACK_UNLIMITED_BYTES ? here - STACK_UNLIMITED_BYTES
+                                                         : bottom + STACK_HEADROOM_BYTES;
+}
+
+static bool host_stack_exhausted(void) {
+  return (uintptr_t)__builtin_frame_address(0) < host_stack_limit;
+}
 static ChimiControl *cancelled(void) { return new_control(CONTROL_CANCEL, NULL, NULL, -1); }
 
 /* Timestamps (time-and-outcomes.md, "Timestamp"): signed nanoseconds since
@@ -5713,6 +5759,7 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
   if (callable->kind == CALL_HOST)
     return invoke_host(runtime, callable->host, arguments, argument_count,
                        span, call_node, call_environment);
+  if (host_stack_exhausted()) return defect("Stack overflow", -1);
   ChimiEnvironment *environment;
   if (callable->kind == CALL_DECLARED) {
     // Declared functions capture provisioned requirements, but never local
@@ -9824,6 +9871,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   const char *memory_report_path = NULL;
   const char *profile_path = NULL;
   decode_constants();
+  if (!CHIMI_REQUIRES_SCHEDULER) guard_host_stack();
   int32_t index = 1;
   if (index < argc && strcmp(argv[index], "--chimi-runner") == 0) {
     ++index;
