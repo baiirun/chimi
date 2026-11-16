@@ -438,6 +438,8 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     binding("std/exec.native_write", 2, "exec", "chimi_exec_write", false),
     binding("std/exec.native_close_pipe", 1, "exec", "chimi_exec_close_pipe", false),
     binding("std/exec.native_allow_real_commands", 0, "exec", "chimi_exec_allow_real_commands", true),
+    binding("std/terminal.native_is_terminal", 1, "terminal", "chimi_terminal_is_terminal", false),
+    binding("std/terminal.native_size", 1, "terminal", "chimi_terminal_size", false),
     pure("std/path.from", 1, StandardFunction::PathFrom),
     pure("std/path.to_text", 1, StandardFunction::PathToText),
     host("std/env.host_variables", 0, StandardFunction::EnvHostVariables),
@@ -495,6 +497,11 @@ pub(crate) const RUNNER_PROVIDERS: &[RunnerProvider] = &[
         interface: StandardType::Commands,
         need: "commands",
         provider: "std/exec.system",
+    },
+    RunnerProvider {
+        interface: StandardType::Terminal,
+        need: "terminal",
+        provider: "std/terminal.host",
     },
     RunnerProvider {
         interface: StandardType::Network,
@@ -565,6 +572,7 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     native_type("std/binding_probe.Pipe", StandardType::BindingHandle),
     known_interface("std/net.Network", StandardType::Network),
     known_interface("std/exec.Commands", StandardType::Commands),
+    known_interface("std/terminal.Terminal", StandardType::Terminal),
     native_type("std/exec.Builder", StandardType::BindingHandle),
     native_type("std/exec.Process", StandardType::BindingHandle),
     native_type("std/exec.Pipe", StandardType::BindingHandle),

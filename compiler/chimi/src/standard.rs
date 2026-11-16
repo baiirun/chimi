@@ -180,6 +180,10 @@ pub(crate) enum StandardType {
     /// `std/exec.Commands`: the capability to start programs; the runner
     /// closes `main`'s `commands` need.
     Commands,
+    /// `std/terminal.Terminal`: the capability to ask whether a standard
+    /// stream is a terminal and its size; the runner closes `main`'s
+    /// `terminal` need.
+    Terminal,
 }
 
 impl StandardType {
@@ -269,6 +273,7 @@ impl StandardType {
             Self::Signals => "Signals",
             Self::Network => "Network",
             Self::Commands => "Commands",
+            Self::Terminal => "Terminal",
         }
     }
 
@@ -284,7 +289,8 @@ impl StandardType {
             | Self::Files
             | Self::Signals
             | Self::Network
-            | Self::Commands => {
+            | Self::Commands
+            | Self::Terminal => {
                 StandardProperties::Opaque("a provider")
             }
             Self::ProcessAddress
@@ -1575,6 +1581,7 @@ impl StandardConstructor {
             | StandardType::Signals
             | StandardType::Network
             | StandardType::Commands
+            | StandardType::Terminal
             | StandardType::Instant
             | StandardType::Timestamp
             | StandardType::SelectEvent

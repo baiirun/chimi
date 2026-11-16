@@ -1,0 +1,251 @@
+/// The terminal: whether a standard stream is one, its size, and styled text.
+/// Asking about the terminal needs the `terminal: Terminal` capability, which
+/// the runner supplies to `main` and a test supplies with `using`. Styling is
+/// plain functions with no needs, and `uses_color` decides once whether to
+/// style at all.
+///
+/// ```text
+/// pub fn main() -> Void needs { terminal: Terminal, environment: Environment, console: Console } {
+///   let warning = case Terminal.uses_color(Standard.Error) {
+///     True -> [Style.Bold, Style.Foreground(Color.Yellow)]
+///     False -> []
+///   }
+///   console.write_error(Terminal.style("warning: disk almost full", warning))
+/// }
+/// ```
+///
+/// Reading lines, raw mode, cursor movement and resize events are not part
+/// of this module.
+
+import std/bytes as Bytes
+import std/env as Env
+import std/env.{Environment}
+import std/int as Int
+import std/list as List
+import std/option as Option
+import std/text as Text
+
+// 1. Public types.
+
+/// One of the program's three standard streams.
+pub enum Standard {
+  Input
+  Output
+  Error
+}
+
+/// The capability to ask about the terminal. The runner's provider asks the
+/// operating system; a test's fake is a record of these two functions.
+pub interface Terminal {
+  /// Whether the stream is attached to a terminal.
+  is_terminal: fn(Standard) -> Bool
+  /// The terminal's size, or `None` when the stream is not a terminal or
+  /// the terminal reports no size.
+  size: fn(Standard) -> Option<{ columns: Int, rows: Int }>
+}
+
+/// A named terminal color: the 8 standard ones and their bright forms, as
+/// the terminal's theme shows them.
+pub enum Color {
+  Black
+  Red
+  Green
+  Yellow
+  Blue
+  Magenta
+  Cyan
+  White
+  BrightBlack
+  BrightRed
+  BrightGreen
+  BrightYellow
+  BrightBlue
+  BrightMagenta
+  BrightCyan
+  BrightWhite
+}
+
+/// One text attribute for `style`.
+pub enum Style {
+  Bold
+  Dim
+  Italic
+  Underline
+  Inverse
+  Strikethrough
+  Foreground(color: Color)
+  Background(color: Color)
+}
+
+// 5. Queries.
+
+/// Whether `stream` is attached to a terminal.
+///
+/// Cost: one system call.
+pub fn is_terminal(stream: Standard) -> Bool needs {
+  terminal: Terminal
+} {
+  terminal.is_terminal(stream)
+}
+
+/// The size of the terminal `stream` is attached to, in columns and rows, or
+/// `None` when it is not a terminal or reports no size. It is read afresh
+/// each call. `COLUMNS` and `LINES` are not read; a program that wants a
+/// default writes `Option.unwrap_or(Terminal.size(Standard.Output),
+/// { columns: 80, rows: 24 })`.
+///
+/// Cost: one system call.
+pub fn size(stream: Standard) -> Option<{ columns: Int, rows: Int }> needs {
+  terminal: Terminal
+} {
+  terminal.size(stream)
+}
+
+/// Whether text written to `stream` should be styled: it is a terminal,
+/// `NO_COLOR` is unset or empty (no-color.org), and `TERM` is not `dumb`.
+///
+/// Cost: one system call and a read of the environment.
+pub fn uses_color(stream: Standard) -> Bool needs {
+  terminal: Terminal,
+  environment: Environment
+} {
+  let no_color = Option.unwrap_or(Env.get("NO_COLOR"), "")
+  Text.is_empty(no_color) and Env.get("TERM") != Some("dumb") and terminal.is_terminal(stream)
+}
+
+// 6. Styling.
+
+/// `text` wrapped in the escape codes for `styles`: one sequence that turns
+/// them on, and after the text each style's own closing code, so it closes
+/// only what it opened. An outer style of another attribute stays on around
+/// inner styled text; one of the same attribute (a color inside a color, or
+/// bold and dim, which share a closing code) ends at the inner close. Empty
+/// `styles` or empty `text` returns `text` unchanged.
+///
+/// Cost: O(n) in the text and styles.
+pub fn style(text: Text, styles: List<Style>) -> Text {
+  case List.is_empty(styles) or Text.is_empty(text) {
+    True -> text
+    False -> {
+      let opens = List.map(styles, fn(each) { Int.to_text(open_code(each)) })
+      let closes = List.map(List.unique(List.map(styles, close_code)), Int.to_text)
+      "${sequence(opens)}${text}${sequence(closes)}"
+    }
+  }
+}
+
+/// `text` with every terminal control sequence (`ESC [`, parameters, a final
+/// byte) removed, such as the ones `style` adds. An `ESC [` not followed by
+/// a complete sequence, and an `ESC` without `[`, are kept.
+///
+/// Cost: O(n).
+pub fn strip(text: Text) -> Text {
+  case Text.split(text, "\u{1b}[") {
+    [] -> text
+    [first, ..rest] -> Text.append(first, Text.concat(List.map(rest, after_sequence)))
+  }
+}
+
+// 7. Escape codes.
+
+fn sequence(codes: List<Text>) -> Text {
+  "\u{1b}[${Text.join(codes, ";")}m"
+}
+
+fn open_code(style: Style) -> Int {
+  case style {
+    Style.Bold -> 1
+    Style.Dim -> 2
+    Style.Italic -> 3
+    Style.Underline -> 4
+    Style.Inverse -> 7
+    Style.Strikethrough -> 9
+    Style.Foreground(color) -> color_code(color, 30, 90)
+    Style.Background(color) -> color_code(color, 40, 100)
+  }
+}
+
+fn close_code(style: Style) -> Int {
+  case style {
+    Style.Bold -> 22
+    Style.Dim -> 22
+    Style.Italic -> 23
+    Style.Underline -> 24
+    Style.Inverse -> 27
+    Style.Strikethrough -> 29
+    Style.Foreground(_) -> 39
+    Style.Background(_) -> 49
+  }
+}
+
+// `normal` is the code of black among the 8 colors, `bright` among the
+// bright ones.
+fn color_code(color: Color, normal: Int, bright: Int) -> Int {
+  case color {
+    Color.Black -> normal
+    Color.Red -> normal + 1
+    Color.Green -> normal + 2
+    Color.Yellow -> normal + 3
+    Color.Blue -> normal + 4
+    Color.Magenta -> normal + 5
+    Color.Cyan -> normal + 6
+    Color.White -> normal + 7
+    Color.BrightBlack -> bright
+    Color.BrightRed -> bright + 1
+    Color.BrightGreen -> bright + 2
+    Color.BrightYellow -> bright + 3
+    Color.BrightBlue -> bright + 4
+    Color.BrightMagenta -> bright + 5
+    Color.BrightCyan -> bright + 6
+    Color.BrightWhite -> bright + 7
+  }
+}
+
+// What follows an `ESC [` split off by `strip`: parameter and intermediate
+// bytes (0x20 to 0x3F), then a final byte (0x40 to 0x7E). Without a final
+// byte, nothing here was a sequence, and the `ESC [` is put back.
+fn after_sequence(part: Text) -> Text {
+  let bytes = Bytes.from_text(part)
+  let (at, stop) = loop at = 0 {
+    let next = Bytes.get(bytes, at)
+    case next {
+      Some(byte) if byte >= 0x20 and byte <= 0x3F -> at + 1
+      _ -> break (at, next)
+    }
+  }
+  case stop {
+    Some(byte) if byte >= 0x40 and byte <= 0x7E -> Text.byte_slice(part, at + 1..Text.byte_length(part))
+    _ -> "\u{1b}[${part}"
+  }
+}
+
+// 8. Runner provider.
+
+// The provider the runner binds to `main`'s `terminal` need
+// (operations.rs `RUNNER_PROVIDERS`). Private, so no other code can take the
+// capability without declaring the need.
+fn host() {
+  { is_terminal: host_is_terminal, size: host_size }
+}
+
+fn host_is_terminal(stream: Standard) -> Bool {
+  native_is_terminal(stream_code(stream))
+}
+
+fn host_size(stream: Standard) -> Option<{ columns: Int, rows: Int }> {
+  Option.map(native_size(stream_code(stream)), fn(size) {
+    let (columns, rows) = size
+    { columns: columns, rows: rows }
+  })
+}
+
+fn stream_code(stream: Standard) -> Int {
+  case stream {
+    Standard.Input -> 0
+    Standard.Output -> 1
+    Standard.Error -> 2
+  }
+}
+
+native fn native_is_terminal(stream: Int) -> Bool
+native fn native_size(stream: Int) -> Option<(Int, Int)>
