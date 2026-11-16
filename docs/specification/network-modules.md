@@ -264,10 +264,11 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 
 ### Not yet
 
-- A connection accepted just before serving ends, whose process has not
-  started yet, is discarded by the stop without being closed, so its client
-  waits until the program exits (a runtime gap: a discarded start argument
-  does not release host handles).
+- A connection accepted just before serving ends, whose serving has not
+  begun (its process, or the task inside it, has not run yet), is discarded
+  by the stop without being closed, so its client waits until the program
+  exits. This is a runtime gap: a discarded start argument or task capture
+  frees its memory but does not release the host handles it holds.
 - `Date` headers, streamed request and response bodies, a graceful drain of
   open connections when serving stops, and a close that drains unread input
   before it closes (so a peer that is still sending does not see a reset).
