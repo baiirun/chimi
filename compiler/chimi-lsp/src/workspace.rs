@@ -173,7 +173,11 @@ impl AnalyzedProject {
 
     /// The analyzed modules type-checked with every span in `edits` replaced
     /// by `text`.
-    fn type_after(&self, edits: &BTreeMap<DocumentPath, Vec<(u32, u32)>>, text: &str) -> TypeReport {
+    fn type_after(
+        &self,
+        edits: &BTreeMap<DocumentPath, Vec<(u32, u32)>>,
+        text: &str,
+    ) -> TypeReport {
         let sources = self
             .modules
             .iter()
@@ -268,7 +272,10 @@ impl std::fmt::Display for RenameError {
         match self {
             Self::NothingToRename => formatter.write_str("there is no name to rename here"),
             Self::NotRenamable(name) => {
-                write!(formatter, "`{name}` is not declared in this project's source")
+                write!(
+                    formatter,
+                    "`{name}` is not declared in this project's source"
+                )
             }
             Self::InvalidName(name) => write!(
                 formatter,
@@ -434,7 +441,11 @@ impl Workspace {
     /// Ensures: `None` when the text before the cursor is not a module alias,
     /// a dot and part of a name. The alias is looked up in the module's last
     /// analysis, so a half-typed `Lib.` that does not parse still completes.
-    pub fn completion(&self, path: &DocumentPath, position: LinePosition) -> Option<Vec<Completion>> {
+    pub fn completion(
+        &self,
+        path: &DocumentPath,
+        position: LinePosition,
+    ) -> Option<Vec<Completion>> {
         let project = self.latest_for(path)?;
         let module = project.modules.get(path)?;
         let offset = module.lines.offset(position, self.encoding).ok()? as usize;
@@ -844,7 +855,10 @@ fn editor_diagnostic(
 
 #[cfg(test)]
 mod tests {
-    use super::{DocumentPath, DocumentRange, DocumentVersion, ProjectConfig, RenameError, Workspace};
+    use super::{
+        DocumentPath, DocumentRange, DocumentVersion, ProjectConfig, RenameError, Workspace,
+        alias_before,
+    };
     use chimi::line_index::{LinePosition, PositionEncoding};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1007,6 +1021,71 @@ mod tests {
         );
     }
 
+    /// `Lib.` completes to the imported module's public items, in source
+    /// order, with their signatures and doc comments, while the line does not
+    /// parse yet.
+    #[test]
+    fn completion_after_an_alias_lists_the_module_public_items() {
+        let fixture = Fixture::new("completion");
+        fixture.write(
+            "lib.chimi",
+            "/// A place on the grid.\npub struct Point {\n  x: Int,\n  y: Int,\n}\n\nfn hidden() -> Int { 0 }\n\n/// The sum of both coordinates.\npub fn total(point: Point) -> Int {\n  point.x + point.y\n}\n\npub const origin = 0\n",
+        );
+        let app = fixture.write(
+            "app.chimi",
+            "import lib as Lib\n\npub fn main() -> Int { 0 }\n",
+        );
+        let project = ProjectConfig::new(fixture.root(), "app").unwrap();
+        let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
+        workspace.open(
+            app.clone(),
+            DocumentVersion(2),
+            "import lib as Lib\nimport std/list as List\n\npub fn main() -> Int {\n  Lib.to\n  List.\n}\n".into(),
+        );
+        workspace.analyze(&app);
+
+        let items = workspace
+            .completion(&app, at(4, 8))
+            .expect("completes `Lib.`");
+        let labels: Vec<(&str, &str)> = items
+            .iter()
+            .map(|item| (item.label.as_str(), item.kind))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![("Point", "struct"), ("total", "fn"), ("origin", "const")]
+        );
+        assert_eq!(items[1].detail, "pub fn total(point: Point) -> Int");
+        assert_eq!(
+            items[1].documentation.as_deref(),
+            Some("The sum of both coordinates.")
+        );
+        assert_eq!(items[2].documentation, None);
+        // Right after the dot, and for a standard module.
+        assert_eq!(
+            workspace
+                .completion(&app, at(4, 6))
+                .map(|items| items.len()),
+            Some(3)
+        );
+        let standard = workspace
+            .completion(&app, at(5, 7))
+            .expect("completes `List.`");
+        assert!(standard.iter().any(|item| item.label == "length"));
+        // Not after an alias.
+        assert_eq!(workspace.completion(&app, at(3, 4)), None);
+    }
+
+    #[test]
+    fn completion_needs_an_alias_before_the_dot() {
+        assert_eq!(alias_before("  Lib.to", 8), Some("Lib"));
+        assert_eq!(alias_before("  Lib.", 6), Some("Lib"));
+        assert_eq!(alias_before("  Lib", 5), None);
+        assert_eq!(alias_before("  point.Lib.", 12), None);
+        assert_eq!(alias_before("  1.", 4), None);
+        assert_eq!(alias_before("  .x", 4), None);
+    }
+
     /// Guards that a failed load never answers from an older report, whose
     /// offsets belong to text the editor no longer shows.
     #[test]
@@ -1091,7 +1170,9 @@ mod tests {
         let lib_path = lib.as_path().to_owned();
 
         // `total` in `Lib.total(start)` on line 5.
-        let all = workspace.references(&app, at(5, 8), true).expect("a symbol");
+        let all = workspace
+            .references(&app, at(5, 8), true)
+            .expect("a symbol");
         assert_eq!(
             spans(&all),
             vec![
@@ -1101,7 +1182,9 @@ mod tests {
             ]
         );
         // From the declaration, without it.
-        let uses = workspace.references(&lib, at(9, 8), false).expect("a symbol");
+        let uses = workspace
+            .references(&lib, at(9, 8), false)
+            .expect("a symbol");
         assert_eq!(
             spans(&uses),
             vec![(app_path.clone(), 5, 6, 11), (app_path, 5, 25, 30)]
@@ -1116,7 +1199,9 @@ mod tests {
         let (_fixture, app, _lib, workspace) = two_module_project("local-references");
         let app_path = app.as_path().to_owned();
 
-        let all = workspace.references(&app, at(4, 7), true).expect("a symbol");
+        let all = workspace
+            .references(&app, at(4, 7), true)
+            .expect("a symbol");
 
         assert_eq!(
             spans(&all),
@@ -1249,7 +1334,9 @@ mod tests {
         workspace.analyze(&app);
         let lib_path = lib.as_path().to_owned();
 
-        let uses = workspace.references(&lib, at(2, 14), true).expect("a symbol");
+        let uses = workspace
+            .references(&lib, at(2, 14), true)
+            .expect("a symbol");
 
         assert_eq!(
             spans(&uses),
