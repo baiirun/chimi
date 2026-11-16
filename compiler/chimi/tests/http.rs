@@ -64,11 +64,14 @@ import std/debug as Debug
 import std/duration as Duration
 import std/http as Http
 import std/http.{Method, Request, Response}
+import std/list as List
 import std/net as Net
-import std/net.{Network}
+import std/net.{Connection, Listener, NetError, Network}
 import std/resource as Resource
 import std/result as Result
+import std/result.{Ok}
 import std/stream as Stream
+import std/stream.{Reader, StreamError}
 import std/task as Task
 import std/test as Test
 import std/text as Text
@@ -85,6 +88,15 @@ fn handle(request: Request) -> Response {
     (Method.Get, ["users", id]) -> Http.text(200, "user ${id} ${Http.query(request)}")
     (Method.Get, ["bye"]) -> Http.response(200, [("Connection", "close")], Bytes.from_text("bye"))
     (Method.Get, ["broken"]) -> Failure(Broken.Broken)
+    (Method.Get, ["crash"]) -> Debug.crash("boom")
+    (Method.Get, ["host"]) -> case Http.header(request, "host") {
+      Some(host) -> Http.text(200, host)
+      None -> Http.text(200, "none")
+    }
+    (Method.Get, ["empty"]) -> Http.response(204, [("Content-Length", "5")], Bytes.from_text("ignored"))
+    (Method.Get, ["cached"]) -> Http.response(304, [("ETag", "\"a\""), ("Content-Length", "10")], Bytes.empty())
+    (Method.Get, ["framed"]) -> Http.response(200, [("Content-Length", "99"), ("Transfer-Encoding", "chunked"), ("Upgrade", "x"), ("Keep-Alive", "timeout=5")], Bytes.from_text("abc"))
+    (Method.Options, ["*"]) -> Http.text(200, "star")
     (Method.Other(name), _) -> Http.text(405, "no ${name}")
     _ -> Http.text(404, "not found")
   }
@@ -106,6 +118,21 @@ fn exchange_open(raw: Text) -> Text {
   let (client, server) = Net.pair(64)
   let serving = Task.start(fn() { Http.serve_connection(server, handle) })
   Stream.write(Net.writer(client), Bytes.from_text(raw))
+  let answer = Stream.read_all(Net.reader(client), 1048576)
+  Task.result(serving)
+  Bytes.to_text(answer)
+}
+
+// Sends each of `pieces` as its own write, so a head arrives split across
+// reads, then closes the client's writing side. Writes after the server
+// closed the connection are dropped, as a refused client's would be.
+fn trickle(pieces: List<Text>) -> Text {
+  let (client, server) = Net.pair(4096)
+  let serving = Task.start(fn() { Http.serve_connection(server, handle) })
+  let _ = Result.capture(fn() {
+    List.each(pieces, fn(piece) { Stream.write(Net.writer(client), Bytes.from_text(piece)) })
+    Stream.close(Net.writer(client))
+  })
   let answer = Stream.read_all(Net.reader(client), 1048576)
   Task.result(serving)
   Bytes.to_text(answer)
@@ -164,7 +191,7 @@ test "HTTP/1.0 closes unless asked to keep alive" {
   exchange_open("GET /health HTTP/1.0\r\n\r\nGET /health HTTP/1.0\r\n\r\n")
     |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
   exchange("GET /health HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /health HTTP/1.0\r\n\r\n")
-    |> Test.assert_equal(Text.concat([ok("ok"), "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok"]))
+    |> Test.assert_equal(Text.concat(["HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 2\r\nconnection: keep-alive\r\n\r\nok", "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok"]))
 }
 
 test "HEAD sends the length but not the body" {
@@ -233,13 +260,13 @@ test "400" {
 }
 
 test "a head cut short is 400, a request never started is no answer" {
-  exchange("GET /health HTTP/1.1\r\nHost:") |> Test.assert_equal(refused(400, "Bad Request", "bad request: the connection ended inside a head"))
+  exchange("GET /health HTTP/1.1\r\nHost:") |> Test.assert_equal(refused(400, "Bad Request", "bad request: the connection ended inside a request"))
   exchange("") |> Test.assert_equal("")
 }
 
 test "501 and 505" {
-  after("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n")
-    |> Test.assert_equal(refused(501, "Not Implemented", "not implemented: transfer-encoding gzip"))
+  after("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n")
+    |> Test.assert_equal(refused(501, "Not Implemented", "not implemented: transfer codings other than chunked"))
   after("GET /health HTTP/2.0\r\nHost: x\r\n\r\n")
     |> Test.assert_equal(refused(505, "HTTP Version Not Supported", "http version not supported"))
 }
@@ -253,7 +280,7 @@ test "413 and 431" {
   after(big_chunk) |> Test.assert_equal(refused(413, "Content Too Large", "content too large"))
   let long_head = "GET /health HTTP/1.1\r\nHost: x\r\nX: ${Text.repeat("a", 70000)}\r\n\r\n"
   after(long_head) |> Test.assert_equal(refused(431, "Request Header Fields Too Large", "request header fields too large"))
-  let many = Text.repeat("X: y\r\n", 101)
+  let many = Text.repeat("X: y\r\n", 100)
   after("GET /health HTTP/1.1\r\nHost: x\r\n${many}\r\n")
     |> Test.assert_equal(refused(431, "Request Header Fields Too Large", "request header fields too large"))
 }
@@ -289,13 +316,16 @@ test "an idle client is closed after a minute" {
   Clock.since(start) |> Test.assert_equal(Duration.seconds(60))
 }
 
-test "a status outside 100 to 599 is a defect" {
-  Test.capture_defect(fn() { Http.text(600, "x") }) |> Test.assert_equal("Http: the status 600 is outside 100 to 599")
+test "a status outside 200 to 599 is a defect" {
+  Test.capture_defect(fn() { Http.text(600, "x") }) |> Test.assert_equal("Http: the status 600 is outside 200 to 599")
+  Test.capture_defect(fn() { Http.text(101, "x") }) |> Test.assert_equal("Http: the status 101 is outside 200 to 599")
 }
 
 test "a header that would split the response is a defect" {
   Test.capture_defect(fn() { Http.response(200, [("Location", "/a\r\nSet-Cookie: x=1")], Bytes.empty()) })
-    |> Test.assert_equal("Http: the value of the header Location holds a line break")
+    |> Test.assert_equal("Http: the value of the header Location holds a control character")
+  Test.capture_defect(fn() { Http.response(200, [("X", Bytes.to_text(Bytes.from([97, 0])))], Bytes.empty()) })
+    |> Test.assert_equal("Http: the value of the header X holds a control character")
   Test.capture_defect(fn() { Http.response(200, [("Bad Name", "x")], Bytes.empty()) })
     |> Test.assert_equal("Http: the header name \"Bad Name\" is not a token")
 }
@@ -337,8 +367,9 @@ fn run_server() -> Text needs { network: Network, clock: Clock } {
   // The first client holds its connection open without a request while the
   // second is answered.
   let idle = Net.connect("127.0.0.1", port)
-  let answer = get(port, "/users/1")
-  let other = get(port, "/health")
+  // A server that answers one connection at a time would never answer
+  // these while the first client waits.
+  let (answer, other) = Task.timeout(fn() { (get(port, "/users/1"), get(port, "/health")) }, Duration.seconds(5))
   Net.close(idle)
   Net.close_listener(listener)
   Task.timeout(fn() { Task.result(server) }, Duration.seconds(5))
@@ -353,4 +384,198 @@ test "two clients and a stop" {
         "real",
     );
     assert_passed(&run, 1);
+}
+
+// Rejects a parser that lets through what a proxy in front could read
+// differently (request smuggling) or what a handler could echo into a
+// response header: bare CR, LF or NUL, a second host, a transfer coding
+// hidden in a second header, or a transfer-encoding on HTTP/1.0.
+#[test]
+fn ambiguous_requests_are_refused() {
+    let run = run_tests(
+        "smuggling",
+        r#"
+fn after(raw: Text) -> Text {
+  exchange(Text.concat([raw, "GET /health HTTP/1.1\r\nHost: x\r\n\r\n"]))
+}
+
+fn bad(reason: Text) -> Text {
+  refused(400, "Bad Request", "bad request: ${reason}")
+}
+
+test "control characters" {
+  let nul = Bytes.to_text(Bytes.from([0]))
+  after("GET /health HTTP/1.1\r\nHost: x\r\nX: a${nul}b\r\n\r\n") |> Test.assert_equal(bad("a control character in the head"))
+  after("GET /health HTTP/1.1\r\nHost: x\r\nX: a\rb\r\n\r\n") |> Test.assert_equal(bad("a line break that is not CRLF"))
+  after("GET /health HTTP/1.1\r\nHost: x\r\nX: a\nY: b\r\n\r\n") |> Test.assert_equal(bad("a line break that is not CRLF"))
+  after("GET /he\talth HTTP/1.1\r\nHost: x\r\n\r\n") |> Test.assert_equal(bad("bad request line"))
+}
+
+test "hosts and transfer codings" {
+  after("GET /health HTTP/1.1\r\nHost: x\r\nHost: y\r\n\r\n") |> Test.assert_equal(bad("more than one host header"))
+  after("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n")
+    |> Test.assert_equal(bad("chunked is not the final transfer coding"))
+  after("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n")
+    |> Test.assert_equal(refused(501, "Not Implemented", "not implemented: transfer codings other than chunked"))
+  after("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n") |> Test.assert_equal(bad("chunked is not the final transfer coding"))
+  after("POST /echo HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n") |> Test.assert_equal(bad("transfer-encoding in HTTP/1.0"))
+  // The Kelvin sign lowercases to k in Unicode, not in HTTP.
+  after("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chun\u{212A}ed\r\n\r\n")
+    |> Test.assert_equal(bad("chunked is not the final transfer coding"))
+}
+
+test "versions" {
+  after("GET /health HTTP/x\r\nHost: x\r\n\r\n") |> Test.assert_equal(bad("bad request line"))
+  after("GET /health HTTP/3.0\r\nHost: x\r\n\r\n") |> Test.assert_equal(refused(505, "HTTP Version Not Supported", "http version not supported"))
+  exchange("GET /health HTTP/1.2\r\nHost: x\r\n\r\n") |> Test.assert_equal(ok("ok"))
+}
+"#,
+        "virtual",
+    );
+    assert_passed(&run, 3);
+}
+
+// Rejects request reading that depends on how the client splits its writes
+// or that loses the bytes after a request, and target forms read wrongly.
+#[test]
+fn requests_arrive_however_they_are_split_and_in_every_target_form() {
+    let run = run_tests(
+        "reading",
+        r#"
+test "a head split across reads" {
+  trickle(["GET /health HTTP/1.1\r\nHost: x\r", "\n\r", "\nGET /users/2 HTTP/1.1\r\nHo", "st: x\r\n\r\n"])
+    |> Test.assert_equal(Text.concat([ok("ok"), ok("user 2 ")]))
+  trickle(["POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\n\r\nab", "cd", "efGET /health HTTP/1.1\r\nHost: x\r\n\r\n"])
+    |> Test.assert_equal(Text.concat(["HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nabcdef", ok("ok")]))
+  trickle(["POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r", "\nabc\r\n0\r", "\n\r\n"])
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nabc")
+}
+
+test "a head that never ends is 431 however it arrives" {
+  let long = refused(431, "Request Header Fields Too Large", "request header fields too large")
+  exchange("GET /health HTTP/1.1\r\nHost: x\r\nX: ${Text.repeat("a", 70000)}") |> Test.assert_equal(long)
+  trickle(List.repeat(Text.repeat("a", 1000), 70)) |> Test.assert_equal(long)
+}
+
+test "empty lines before a request are skipped" {
+  trickle(["\r\n\r", "\nGET /health HTTP/1.1\r\nHost: x\r\n\r\n\r\nGET /health HTTP/1.1\r\nHost: x\r\n\r\n"])
+    |> Test.assert_equal(Text.concat([ok("ok"), ok("ok")]))
+}
+
+test "the header count limit" {
+  let ninety_nine = Text.repeat("X: y\r\n", 99)
+  exchange("GET /health HTTP/1.1\r\nHost: x\r\n${ninety_nine}\r\n") |> Test.assert_equal(ok("ok"))
+}
+
+test "repeated equal lengths are one length" {
+  exchange("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\nhi")
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi")
+  exchange("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 2, 2\r\n\r\nhi")
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi")
+}
+
+test "absolute and asterisk targets" {
+  exchange("GET http://example.com/users/3?a=b HTTP/1.1\r\nHost: x\r\n\r\n") |> Test.assert_equal(ok("user 3 a=b"))
+  exchange("GET HTTP://example.com:8080/host HTTP/1.1\r\nHost: other\r\n\r\n") |> Test.assert_equal(ok("example.com:8080"))
+  exchange("OPTIONS * HTTP/1.1\r\nHost: x\r\n\r\n") |> Test.assert_equal(ok("star"))
+}
+
+test "100-continue waits for the client and is HTTP/1.1 only" {
+  let (client, server) = Net.pair(64)
+  let serving = Task.start(fn() { Http.serve_connection(server, handle) })
+  Stream.write(Net.writer(client), Bytes.from_text("POST /echo HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 2\r\n\r\n"))
+  Stream.read(Net.reader(client)) |> Test.assert_equal(Some(Bytes.from_text("HTTP/1.1 100 Continue\r\n\r\n")))
+  Stream.write(Net.writer(client), Bytes.from_text("hi"))
+  Stream.close(Net.writer(client))
+  Bytes.to_text(Stream.read_all(Net.reader(client), 1024)) |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi")
+  Task.result(serving)
+  exchange("POST /echo HTTP/1.0\r\nExpect: 100-continue\r\nContent-Length: 2\r\n\r\nhi")
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nhi")
+}
+"#,
+        "virtual",
+    );
+    assert_passed(&run, 7);
+}
+
+// Rejects a response writer that trusts the handler's framing headers, sends
+// a length a 204 must not have, or measures a 304's empty body.
+#[test]
+fn the_server_frames_every_response_itself() {
+    let run = run_tests(
+        "framing",
+        r#"
+test "framing headers are the server's" {
+  exchange("GET /framed HTTP/1.1\r\nHost: x\r\n\r\n") |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nabc")
+}
+
+test "204 and 304" {
+  exchange("GET /empty HTTP/1.1\r\nHost: x\r\n\r\nGET /cached HTTP/1.1\r\nHost: x\r\n\r\n")
+    |> Test.assert_equal("HTTP/1.1 204 No Content\r\n\r\nHTTP/1.1 304 Not Modified\r\netag: \"a\"\r\ncontent-length: 10\r\n\r\n")
+}
+"#,
+        "virtual",
+    );
+    assert_passed(&run, 2);
+}
+
+// Rejects a server that a slow or failing peer can stop: a client that never
+// reads its answers is dropped after the write limit, a handler's defect
+// still closes the connection, and failed accepts are retried with a
+// growing pause until the listener closes.
+#[test]
+fn slow_clients_defects_and_failed_accepts_do_not_stop_the_server() {
+    let run = run_tests(
+        "resilience",
+        r#"
+test "a client that never reads is dropped after a minute" {
+  let (client, server) = Net.pair(8)
+  let start = Clock.now()
+  let serving = Task.start(fn() { Http.serve_connection(server, handle) })
+  Stream.write(Net.writer(client), Bytes.from_text(Text.repeat("GET /health HTTP/1.1\r\nHost: x\r\n\r\n", 50)))
+  Task.result(serving)
+  Clock.since(start) |> Test.assert_equal(Duration.seconds(60))
+}
+
+test "a handler's defect closes the connection" {
+  let (client, server) = Net.pair(8)
+  Stream.write(Net.writer(client), Bytes.from_text("GET /crash HTTP/1.1\r\nHost: x\r\n\r\n"))
+  Stream.close(Net.writer(client))
+  Test.capture_defect(fn() { Http.serve_connection(server, handle) }) |> Test.assert_equal("boom")
+  Stream.read_all(Net.reader(client), 1024) |> Test.assert_equal(Bytes.empty())
+}
+
+// A listener that follows `plan`: each 1 fails as if out of file
+// descriptors, a 2 hands over `connection`, and the plan's end closes it.
+fn flaky(connection: Connection, plan: Reader<StreamError>) -> Listener {
+  Net.listener(fn() {
+    case Result.capture(fn() { Stream.read(plan) }) {
+      Ok(Some(step)) -> case step == Bytes.from([1]) {
+        True -> Failure(NetError.TooManyOpen)
+        False -> connection
+      }
+      _ -> Failure(NetError.Closed)
+    }
+  }, Net.address("fake", 3), fn() { Void })
+}
+
+test "failed accepts are retried" {
+  let (client, server) = Net.pair(8)
+  Stream.write(Net.writer(client), Bytes.from_text("GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
+  let (script, plan) = Stream.pipe(8)
+  Stream.write(script, Bytes.from([1]))
+  Stream.write(script, Bytes.from([1]))
+  Stream.write(script, Bytes.from([2]))
+  let start = Clock.now()
+  let serving = Task.start(fn() { Http.serve(flaky(server, plan), handle) })
+  let answer = Bytes.to_text(Stream.read_all(Net.reader(client), 1024))
+  Stream.close(script)
+  Task.result(serving)
+  Clock.since(start) |> Test.assert_equal(Duration.milliseconds(30))
+  answer |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+}
+"#,
+        "virtual",
+    );
+    assert_passed(&run, 3);
 }

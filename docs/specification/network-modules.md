@@ -173,20 +173,37 @@ pub fn serve_connection(connection: Connection, handle) -> Void needs R + { cloc
 
 ### Requests
 
-- The server MUST accept HTTP/1.1 and HTTP/1.0 request lines; another
-  `HTTP/x.y` version is answered 505, and anything else on the request line is
-  400. A method is a token; the target MUST start with `/` (origin form).
+- The server MUST accept `HTTP/1.1` and `HTTP/1.0` request lines, and reads a
+  later `HTTP/1.x` as 1.1. Another `HTTP/d.d` version is 505; anything else on
+  the request line is 400. A method is a token. The target is origin form
+  (`/path?query`), absolute form (`http://host/path`, whose authority then
+  replaces the `host` header), or `*` for `OPTIONS`, which arrives as the path
+  `["*"]`. Empty lines before a request line are skipped.
 - `Http.path` is the target's path split on `/` with empty segments dropped,
-  so `/users/7/` is `["users", "7"]`. Segments are not percent-decoded.
-  `Http.query` is the text after the first `?`.
-- Header names are matched without regard to case and kept lowercase; values
-  are trimmed. An HTTP/1.1 request without `host` is 400.
-- The body is framed by `content-length` (one value, or repeated equal
-  values) or by `transfer-encoding: chunked`; both together, conflicting
-  lengths, or a length that is not digits is 400, and another transfer coding
-  is 501. A chunked body's extensions and trailers are read and dropped.
-- A request with `expect: 100-continue` gets `100 Continue` before its body is
-  read.
+  so `/users/7/` is `["users", "7"]`. Segments are not percent-decoded, and
+  `.` and `..` segments reach the handler as they are, so a handler that maps
+  a path to files MUST check them itself. `Http.query` is the text after the
+  first `?`.
+- A head holding a control character other than HTAB, or a CR or LF that is
+  not part of a CRLF line end, is 400, so neither can reach a handler that
+  echoes it into a response header.
+- Header names are matched without regard to ASCII case and kept lowercase;
+  values are trimmed of spaces and tabs only. Comparisons of header tokens
+  (`chunked`, `close`, `keep-alive`, `100-continue`) fold ASCII case only, so a
+  Unicode character that lowercases to an ASCII letter does not match. An
+  HTTP/1.1 request without `host`, or any request with two, is 400.
+- The body is framed by `content-length` (one value, or repeated equal values
+  in one header or several) or by `transfer-encoding`. Every
+  `transfer-encoding` header counts, joined in order: exactly `chunked` is
+  read; other codings before a final `chunked` are 501; a coding list that
+  does not end in `chunked`, `transfer-encoding` together with
+  `content-length`, `transfer-encoding` on HTTP/1.0, conflicting lengths, or a
+  length that is not digits is 400. A chunked body's extensions and trailers
+  are read and dropped.
+- An HTTP/1.1 request with `expect: 100-continue` gets `100 Continue` before its
+  body is read; HTTP/1.0 has no such status, so it gets none.
+- Reading is linear in the bytes received however the client splits its
+  writes, and a buffer of pipelined requests is not copied once per request.
 
 ### Limits
 
@@ -194,34 +211,50 @@ pub fn serve_connection(connection: Connection, handle) -> Void needs R + { cloc
 | --- | --- | --- |
 | request line and headers | 64 KiB | 431 |
 | header lines | 100 | 431 |
-| body, after chunked decoding | 8 MiB | 413 |
-| time for a request to arrive, body included | 60 s | the connection closes without an answer |
+| body; for a chunked body, its framing and trailers count too | 8 MiB | 413 |
+| trailer lines of a chunked body | 100 | 431 |
+| time for a request to arrive, body included, counted from the previous answer | 60 s | the connection closes without an answer |
+| time to send one response | 60 s | the connection closes |
 
 ### Responses and connections
 
-- Every response carries `content-length`; a handler's own `content-length`
-  and `connection` headers are replaced. `HEAD`, 204 and 304 answers send no
-  body. A header name that is not a token, or a value holding CR or LF, is a
-  defect when the response is built, so a value from a request cannot write
-  headers of its own.
+- A response's status MUST be 200 to 599; the server sends `100 Continue`
+  itself. A header name that is not a token, or a value holding a control
+  character other than HTAB, is a defect when the response is built, so a
+  value from a request cannot write headers of its own.
+- The server frames every response itself: the handler's `content-length`,
+  `transfer-encoding`, `connection`, `te`, `trailer`, `upgrade`, `keep-alive`
+  and `proxy-connection` headers are dropped. A response carries
+  `content-length` of its body, except that a 204 carries none and a 304 keeps
+  only a `content-length` its handler gave (the length of the body it stands
+  for). `HEAD`, 204 and 304 answers send no body.
 - An HTTP/1.1 connection stays open between requests unless the request or
   the response says `connection: close`; an HTTP/1.0 connection stays open
-  only when the request says `connection: keep-alive`. A closing answer
-  carries `connection: close`. Pipelined requests are answered in order.
+  only when the request says `connection: keep-alive`, and its answers then
+  say `connection: keep-alive`. A closing answer carries `connection: close`.
+  Pipelined requests are answered in order.
 - A malformed request gets its status with `connection: close`, and the
   connection closes, so nothing after it is read.
 - A handler's expected failure answers 500 and the connection carries on.
   A handler's defect is not contained: it ends the connection's task and so
   `serve`, as any defect ends its task; a supervisor restarts the server.
-- `serve` runs each connection in its own task and returns when the listener
-  is closed. Another accept failure fails `serve`.
+- `serve_connection` closes its connection however it ends, including by
+  cancellation or a defect.
+- `serve` runs each connection in its own task. A failed accept (out of file
+  descriptors, a client that reset before it was accepted) is retried after a
+  pause that grows from 10 ms to 1 s and starts again at 10 ms after a
+  success; only closing the listener ends serving. Connections still open
+  when the task that called `serve` ends are cancelled, which closes them.
 
 ### Not yet
 
-`Date` headers, streamed request and response bodies, a graceful drain of
-open connections when serving stops, and a close that drains unread input
-before it closes (so a peer that is still sending does not see a reset) are
-follow-ups, as are the HTTP client and HTTPS (after `std/tls`).
+- A cap on open connections. Each connection is a task, and a finished task's
+  record is not yet released by the runtime, so a long-running server holds
+  one record per connection it ever served until that is fixed.
+- `Date` headers, streamed request and response bodies, a graceful drain of
+  open connections when serving stops, and a close that drains unread input
+  before it closes (so a peer that is still sending does not see a reset).
+- The HTTP client, and HTTPS after `std/tls`.
 
 ## Decisions
 
@@ -246,11 +279,15 @@ follow-ups, as are the HTTP client and HTTPS (after `std/tls`).
 
 | Rule | Evidence |
 | --- | --- |
-| HTTP: pipelined requests in order, `connection: close` from either side, HTTP/1.0, `HEAD`, other methods | `tests/http.rs` `a_connection_answers_requests_in_order_and_closes_when_asked` |
+| HTTP: pipelined requests in order, `connection: close` from either side, HTTP/1.0 and its `keep-alive` answer, `HEAD`, other methods | `tests/http.rs` `a_connection_answers_requests_in_order_and_closes_when_asked` |
 | HTTP: chunked bodies with extensions and trailers, `100 Continue` | `tests/http.rs` `chunked_bodies_and_100_continue` |
-| HTTP: 400, 413, 431, 501 and 505, each closing the connection; the body limit is inclusive | `tests/http.rs` `a_malformed_request_gets_its_status_and_closes_the_connection` |
+| HTTP: 400, 413, 431, 501 and 505, each closing the connection; the body limit is inclusive; 101 header lines is 431 | `tests/http.rs` `a_malformed_request_gets_its_status_and_closes_the_connection` |
+| HTTP: control characters, bare CR and LF, two hosts, transfer codings across headers, transfer-encoding on HTTP/1.0, ASCII-only case folding, versions | `tests/http.rs` `ambiguous_requests_are_refused` |
+| HTTP: heads, bodies and chunks split across reads; a head that never ends is 431 in one read or many; empty lines skipped; 100 header lines accepted; repeated equal lengths; absolute and `*` targets; `100 Continue` before the body is sent, and not on HTTP/1.0 | `tests/http.rs` `requests_arrive_however_they_are_split_and_in_every_target_form` |
+| HTTP: the handler's framing headers are replaced; 204 and 304 lengths | `tests/http.rs` `the_server_frames_every_response_itself` |
+| HTTP: the write limit; a handler's defect closes the connection; failed accepts are retried with a growing pause | `tests/http.rs` `slow_clients_defects_and_failed_accepts_do_not_stop_the_server` |
 | HTTP: a handler failure is 500; the idle limit; status and header defects; `Http.request` for handler tests | `tests/http.rs` `a_handler_failure_answers_500_and_an_idle_client_is_closed` |
-| HTTP: connections served at once over loopback; closing the listener ends `serve` | `tests/http.rs` `a_server_on_loopback_serves_clients_at_once_and_stops_with_its_listener` |
+| HTTP: connections served at once over loopback (within a time limit, so a server that answers one at a time fails); closing the listener ends `serve` | `tests/http.rs` `a_server_on_loopback_serves_clients_at_once_and_stops_with_its_listener` |
 | Bytes cross loopback both ways, a body larger than one read arrives whole, half-close, addresses and port 0 | `tests/net.rs` `a_loopback_connection_carries_bytes_both_ways_after_a_half_close` |
 | A name resolves through the lookup thread (that the scheduler keeps running during a slow lookup is not tested: no lookup in the test environment is slow) | `tests/net.rs` `a_name_resolves_on_the_lookup_thread` |
 | `Refused`, `AddressInUse`, `HostNotFound(host)` (also for a host holding U+0000), and the port defect | `tests/net.rs` `the_operating_systems_failures_become_net_errors` |
