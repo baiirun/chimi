@@ -3163,16 +3163,9 @@ impl ProjectTypeChecker {
                         self.value_producing_range(module_id, body),
                         "this function is declared `-> Never`, but this expression produces a value",
                     );
-                } else if signature.success.is_none()
-                    && !self.type_is_determined(self.resolve_inference_type(contract.success))
+                } else if signature.success.is_some()
+                    || !self.type_is_determined(self.resolve_inference_type(contract.success))
                 {
-                    self.unify_expression_result(
-                        module_id,
-                        body,
-                        body_fact.success,
-                        contract.success,
-                    );
-                } else if signature.success.is_some() {
                     self.unify_expression_result(
                         module_id,
                         body,
