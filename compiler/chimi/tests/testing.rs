@@ -1410,6 +1410,9 @@ fn trace_writes_one_telemetry_file_per_test_on_both_backends() {
     assert!(boundaries.iter().all(|lines| {
         lines.len() == 2 && !lines.iter().any(|line| line.contains("operation_started"))
     }));
+    let (status, stdout, stderr) = run(&["--trace=boundaries", "--backend=interpreter"]);
+    assert_eq!(status, Some(1), "{stdout}{stderr}");
+    assert_eq!(files(&names), boundaries, "both backends trace the same boundaries");
 
     std::fs::remove_dir_all(&traces).unwrap();
     for arguments in [&["--json"][..], &["--json", "--trace=off"]] {
