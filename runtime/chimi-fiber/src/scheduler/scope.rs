@@ -204,7 +204,13 @@ fn is_withdrawable(kind: u32) -> bool {
 }
 
 impl Scheduler {
-    fn push_entry(&mut self, task: TaskId, kind: ScopeKind, deadline: Instant, timer: Option<super::TimerId>) -> ScopeId {
+    fn push_entry(
+        &mut self,
+        task: TaskId,
+        kind: ScopeKind,
+        deadline: Instant,
+        timer: Option<super::TimerId>,
+    ) -> ScopeId {
         self.next_scope += 1;
         let id = ScopeId(self.next_scope);
         let entered_at = self.channels.tick();
@@ -227,7 +233,9 @@ impl Scheduler {
     /// Pushes a scope with a deadline timer onto `task`'s stack.
     pub(super) fn enter_scope(&mut self, task: TaskId, deadline: Instant) -> ScopeId {
         let id = self.push_entry(task, ScopeKind::Timeout, deadline, None);
-        let timer = self.timers.insert(deadline, TimerTarget::ScopeDeadline(task, id));
+        let timer = self
+            .timers
+            .insert(deadline, TimerTarget::ScopeDeadline(task, id));
         self.emit_timer(ClockEventKind::TimerStarted, Some(task), deadline);
         let record = self.tasks.get_mut(&task).expect("task inside the scope");
         record.scopes.last_mut().expect("pushed entry").timer = Some(timer);
@@ -259,9 +267,6 @@ impl Scheduler {
     pub(super) fn exit_resource(&mut self, task: TaskId, scope: ScopeId) -> Option<bool> {
         let index = self.entry_index(task, scope, true)?;
         self.pop_entries(task, index);
-        if self.is_stopping(task) {
-            return Some(!self.holds_mask(task) && self.tell_deferred_shutdown(task));
-        }
         if self.deliverable_scope(task).is_some() {
             let record = self.tasks.get_mut(&task).expect("live task");
             let index = Self::deliverable_in(&record.scopes).expect("checked");
@@ -269,45 +274,6 @@ impl Scheduler {
             return Some(true);
         }
         Some(false)
-    }
-
-    /// True while `task` runs a release: some resource entry is masked.
-    pub(super) fn holds_mask(&self, task: TaskId) -> bool {
-        self.tasks
-            .get(&task)
-            .is_some_and(|record| record.scopes.iter().any(Scope::is_mask))
-    }
-
-    /// True when `child` of `task` was started while one of `task`'s
-    /// releases ran, in that masked entry or in a scope inside it.
-    pub(super) fn started_in_release(&self, task: TaskId, child: TaskId) -> bool {
-        let (Some(record), Some(started)) = (
-            self.tasks.get(&task),
-            self.tasks.get(&child).and_then(|record| record.started_in_scope),
-        ) else {
-            return false;
-        };
-        let Some(mask) = record.scopes.iter().position(Scope::is_mask) else {
-            return false;
-        };
-        record.scopes[mask..].iter().any(|entry| entry.id == started)
-    }
-
-    /// True when shutdown should leave `child` of `task` running: `task`
-    /// holds a resource and `child` was started in a release or outside every
-    /// scope, so a release may still need it.
-    pub(super) fn kept_for_release(&self, task: TaskId, child: TaskId) -> bool {
-        let holds_resource = self.tasks.get(&task).is_some_and(|record| {
-            record
-                .scopes
-                .iter()
-                .any(|entry| matches!(entry.kind, ScopeKind::Resource { .. }))
-        });
-        let outside = self
-            .tasks
-            .get(&child)
-            .is_some_and(|record| record.started_in_scope.is_none());
-        holds_resource && (outside || self.started_in_release(task, child))
     }
 
     fn entry_index(&self, task: TaskId, scope: ScopeId, resource: bool) -> Option<usize> {
@@ -337,7 +303,10 @@ impl Scheduler {
         let leaving: Vec<ScopeId> = removed.iter().map(|entry| entry.id).collect();
         let children = self.scope_children(task, &leaving);
         for child in children {
-            self.tasks.get_mut(&child).expect("live child").started_in_scope = below;
+            self.tasks
+                .get_mut(&child)
+                .expect("live child")
+                .started_in_scope = below;
             if below_fired {
                 self.cancel_task(child, TaskOutcome::Cancelled);
             }
@@ -361,7 +330,12 @@ impl Scheduler {
     /// Leaves `scope` and every scope nested in it that unwinding skipped.
     /// When `cancelled`, the operation's values are being discarded, so the
     /// capabilities the task gained inside the scope are aborted.
-    pub(super) fn exit_scope(&mut self, task: TaskId, scope: ScopeId, cancelled: bool) -> ScopeExit {
+    pub(super) fn exit_scope(
+        &mut self,
+        task: TaskId,
+        scope: ScopeId,
+        cancelled: bool,
+    ) -> ScopeExit {
         if !self.tasks.contains_key(&task) {
             return ScopeExit::Unknown;
         }
@@ -369,7 +343,10 @@ impl Scheduler {
             return ScopeExit::Unknown;
         };
         let record = &self.tasks[&task];
-        let leaving: Vec<ScopeId> = record.scopes[index..].iter().map(|entry| entry.id).collect();
+        let leaving: Vec<ScopeId> = record.scopes[index..]
+            .iter()
+            .map(|entry| entry.id)
+            .collect();
         let fired = record.scopes[index..].iter().any(|entry| entry.fired);
         let children = self.scope_children(task, &leaving);
         if fired && !children.is_empty() {
@@ -394,7 +371,9 @@ impl Scheduler {
             return;
         };
         let live = matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked);
-        let stopping = self.is_stopping(task);
+        // A forced incarnation keeps shutdown's own cancellation; a draining
+        // one still times out.
+        let stopping = self.is_forced(task);
         let record = self.tasks.get_mut(&task).expect("live task");
         let Some(index) = record.scopes.iter().position(|entry| entry.id == scope) else {
             return;
@@ -427,7 +406,10 @@ impl Scheduler {
             .iter()
             .position(Scope::is_mask)
             .map_or(record.scopes.len(), |offset| index + 1 + offset);
-        let nested: Vec<ScopeId> = record.scopes[index..end].iter().map(|entry| entry.id).collect();
+        let nested: Vec<ScopeId> = record.scopes[index..end]
+            .iter()
+            .map(|entry| entry.id)
+            .collect();
         // Withdraw the park first: a parent waiting on a child of this scope
         // must not be cancelled by that child's terminal below.
         if withdraw
@@ -443,7 +425,10 @@ impl Scheduler {
             .iter()
             .copied()
             .filter(|child| {
-                let started_in = self.tasks.get(child).and_then(|record| record.started_in_scope);
+                let started_in = self
+                    .tasks
+                    .get(child)
+                    .and_then(|record| record.started_in_scope);
                 match started_in {
                     Some(scope) => nested.contains(&scope),
                     // A child started outside every entry outlives the
@@ -493,9 +478,9 @@ impl Scheduler {
         let no_fiber = record.fiber.is_none();
         let stopping = process && self.is_stopping(task);
         if self.forcing == 0 && stopping && !self.is_forced(task) && holds_resource {
-            // Shutdown already cancels this body, holding off while it
-            // releases (`Scheduler::begin_shutdown`); a defect only decides
-            // how it ends.
+            // A draining body keeps running its releases until its own end
+            // or its deadline (`Scheduler::begin_shutdown`); a defect only
+            // decides how it ends.
             if outcome.is_defect() {
                 self.absorbs_child_defect(task);
             }
@@ -523,7 +508,12 @@ impl Scheduler {
                 delivered: false,
             },
         );
-        self.emit(task, TaskEventKind::CancellationRequested, cause(outcome), false);
+        self.emit(
+            task,
+            TaskEventKind::CancellationRequested,
+            cause(outcome),
+            false,
+        );
         self.fire_entry(task, 0, true);
     }
 
@@ -565,7 +555,7 @@ impl Scheduler {
     pub(super) fn refuse_for_scope(&mut self, task: TaskId, kind: u32) -> bool {
         if !is_cancellation_point(kind)
             || self.deliverable_scope(task).is_none()
-            || self.is_stopping(task)
+            || self.is_forced(task)
         {
             return false;
         }
@@ -595,12 +585,17 @@ impl Scheduler {
     }
 
     fn deliverable_in(scopes: &[Scope]) -> Option<usize> {
-        let base = scopes.iter().rposition(Scope::is_mask).map_or(0, |index| index + 1);
+        let base = scopes
+            .iter()
+            .rposition(Scope::is_mask)
+            .map_or(0, |index| index + 1);
         let open = &scopes[base..];
         if open.iter().any(|entry| entry.delivered) {
             return None;
         }
-        open.iter().position(|entry| entry.fired).map(|index| base + index)
+        open.iter()
+            .position(|entry| entry.fired)
+            .map(|index| base + index)
     }
 
     /// Resumes `task` with the outermost fired scope's cancellation. Its

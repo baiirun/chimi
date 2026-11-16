@@ -210,6 +210,10 @@ fn run_on(entry: ChimiFiberEntry, clock_mode: u32) -> (SchedulerOutcome, Vec<i64
         capability_violation_context: ptr::null_mut(),
         process_defect_report: None,
         process_defect_context: ptr::null_mut(),
+        signal: ptr::null_mut(),
+        signal_fd: -1,
+        injected_signal: 0,
+        injected_signal_at: 0,
         copy_channel_value: None,
     };
     let outcome = unsafe { process_abi::chimi_scheduler_run(&config) };
@@ -343,7 +347,10 @@ unsafe extern "C" fn select_with_a_stale_receiver(_context: *mut c_void) -> Chim
 fn a_receiver_that_is_not_the_callers_defects_it() {
     let (outcome, _) = run(select_with_a_stale_receiver);
     assert_eq!(outcome.state, ChimiFiberState::Defected as u32);
-    assert_eq!(outcome.defect_code, CHANNEL_CAPABILITY_VIOLATION_DEFECT_CODE);
+    assert_eq!(
+        outcome.defect_code,
+        CHANNEL_CAPABILITY_VIOLATION_DEFECT_CODE
+    );
 }
 
 /// Sends on `a` after 5 ms.

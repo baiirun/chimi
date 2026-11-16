@@ -140,6 +140,10 @@ fn execute_once(entry: ChimiFiberEntry, through: Entry) -> (SchedulerOutcome, Lo
                 capability_violation_context: ptr::null_mut(),
                 process_defect_report: None,
                 process_defect_context: ptr::null_mut(),
+                signal: ptr::null_mut(),
+                signal_fd: -1,
+                injected_signal: 0,
+                injected_signal_at: 0,
                 copy_channel_value: None,
             };
             unsafe { process_abi::chimi_scheduler_run(&config) }

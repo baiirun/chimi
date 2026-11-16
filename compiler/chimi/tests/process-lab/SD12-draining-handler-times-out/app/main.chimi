@@ -1,0 +1,69 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/task as Task
+import std/task.{Timeout}
+
+// SD12: the body handles `Nap` by sleeping for 60 s under a 1 s
+// `Task.timeout`, and reports 4 when it times out. Main removes it while it
+// sleeps. A timeout scope still fires during the drain (only forcing stops
+// it): at 1s the handler reports 4, and its next `receive` ends the body
+// `cancelled`, inside its 5 s deadline. A drain that silenced the timeout
+// would force the body at 5.001s with nothing reported (outcome 9).
+
+pub enum Message {
+  Nap(report: Sender<Int>)
+}
+
+fn napping(inbox: Inbox<Message>) -> Void needs {
+  clock: Clock
+} {
+  loop naps = 0 {
+    case Process.receive(inbox) {
+      Message.Nap(report) -> {
+        let nap = fn() -> Int {
+          Clock.sleep(Duration.seconds(60))
+          1
+        }
+        case Task.timeout(nap, Duration.seconds(1)) {
+          Success(value) -> Channel.send(report, value)
+          Failure(Timeout.TimedOut(_)) -> Channel.send(report, 4)
+        }
+        naps + 1
+      }
+    }
+  }
+}
+
+fn settle() -> Void needs {
+  clock: Clock
+} {
+  Clock.sleep(Duration.milliseconds(1))
+}
+
+fn received(value: Receive<Int>) -> Int {
+  case value {
+    Receive.Received(number) -> number
+    Receive.Drained -> 0
+  }
+}
+
+pub fn main() -> Int needs {
+  clock: Clock
+} {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(napping, 1, Duration.seconds(5)), Supervisor.Restart.Never)
+  let reports = Channel.bounded(2)
+  Process.send(Supervisor.address(managed), Message.Nap(reports.sender))
+  settle()
+  Supervisor.remove_process(root, managed)
+  Channel.send(reports.sender, 9)
+  let first = received(Channel.receive(reports.receiver))
+  Supervisor.stop(root)
+  first
+}

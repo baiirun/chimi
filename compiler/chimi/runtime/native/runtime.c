@@ -19,7 +19,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 
 /* The stack of every scheduler fiber: the root task, child tasks, and incarnations. */
 #define CHIMI_FIBER_STACK_BYTES (1024u * 1024u)
@@ -243,7 +245,13 @@ struct ChimiRuntime {
   /* The defect message of each task the scheduler defected for a channel
      capability violation, from its report. */
   struct CapabilityViolationNote *capability_violations;
-  bool cancel;
+  /* Set by --cancel, or asynchronously by a stop signal in a program
+     without the scheduler. */
+  volatile sig_atomic_t cancel;
+  /* `--signal`: a stop signal the virtual clock delivers at
+     `injected_signal_at` nanoseconds; 0 for none. */
+  int32_t injected_signal;
+  int64_t injected_signal_at;
   bool silent;
   FILE *telemetry;
   FILE *outcome;
@@ -9692,7 +9700,7 @@ static const char *scheduler_event_name(const ChimiSchedulerTraceEvent *event) {
   static const char *clock_names[] = {
     "clock_advanced", "clock_timer_started", "clock_timer_fired",
     "clock_timer_cancelled", "clock_deadlock_waiter", "clock_scope_fired",
-    "clock_select_parked", "clock_select_committed",
+    "clock_select_parked", "clock_select_committed", "clock_signal_received",
   };
   if (event->family == CHIMI_SCHEDULER_TRACE_CHANNEL &&
       event->kind > 0 && event->kind <= sizeof(channel_names) / sizeof(*channel_names))
@@ -9994,6 +10002,99 @@ static const char *with_process_defect(ChimiRuntime *runtime, const char *messag
   return combined;
 }
 
+/* SIGINT and SIGTERM (G22). The first one cancels main. In a program on the
+   scheduler, the scheduler delivers it at its next step: main's children are
+   cancelled and every root supervisor it started stops, each member draining
+   within its shutdown_within. A program without the scheduler sets `cancel`,
+   which its host operations poll; blocking reads return EINTR to see it. A
+   second signal ends the program at once. */
+static volatile int32_t received_signal = 0;
+static int signal_pipe[2] = {-1, -1};
+static ChimiRuntime *signal_runtime = NULL;
+
+static void end_by_signal(int number) {
+  /* Dying by the signal tells a parent (a shell, systemd, Kubernetes) that the
+     program stopped because it was asked to. As process 1 in a container a
+     default-action signal is ignored, so fall back to the shell's status. */
+  signal(number, SIG_DFL);
+  /* Inside the handler the signal is blocked; unblock it so it lands now. */
+  sigset_t unblock;
+  sigemptyset(&unblock);
+  sigaddset(&unblock, number);
+  sigprocmask(SIG_UNBLOCK, &unblock, NULL);
+  raise(number);
+  _exit(128 + number);
+}
+
+static void on_stop_signal(int number) {
+  if (received_signal != 0) end_by_signal(number);
+  received_signal = number;
+  int saved = errno;
+  if (signal_pipe[1] >= 0) (void)!write(signal_pipe[1], "", 1);
+  errno = saved;
+  if (signal_runtime) signal_runtime->cancel = 1;
+}
+
+/* A descriptor above standard input, non-blocking and closed on exec. */
+static bool prepare_signal_descriptor(int *descriptor) {
+  if (*descriptor <= STDERR_FILENO) {
+    int moved = fcntl(*descriptor, F_DUPFD, STDERR_FILENO + 1);
+    if (moved < 0) return false;
+    close(*descriptor);
+    *descriptor = moved;
+  }
+  return fcntl(*descriptor, F_SETFL, O_NONBLOCK) == 0 && fcntl(*descriptor, F_SETFD, FD_CLOEXEC) == 0;
+}
+
+static void install_stop_signals(ChimiRuntime *runtime) {
+  bool scheduled = CHIMI_REQUIRES_SCHEDULER != 0;
+  if (scheduled) {
+    if (pipe(signal_pipe) != 0 || !prepare_signal_descriptor(&signal_pipe[0]) ||
+        !prepare_signal_descriptor(&signal_pipe[1])) {
+      fputs("Chimi runtime could not create its signal pipe\n", stderr);
+      exit(70);
+    }
+  } else {
+    signal_runtime = runtime;
+  }
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = on_stop_signal;
+  sigemptyset(&action.sa_mask);
+  sigaddset(&action.sa_mask, SIGINT);
+  sigaddset(&action.sa_mask, SIGTERM);
+  /* The scheduler sees a signal between steps, so interrupted reads restart;
+     without it, a read returns EINTR so the host operation sees `cancel`. */
+  action.sa_flags = scheduled ? SA_RESTART : 0;
+  sigaction(SIGINT, &action, NULL);
+  sigaction(SIGTERM, &action, NULL);
+}
+
+/* `--signal=TERM@2s`: a signal the virtual clock delivers at that instant.
+   The time is an integer with a unit of ns, us, ms, s, m, or h. */
+static bool parse_injected_signal(const char *text, int32_t *signal_number, int64_t *at) {
+  const char *rest;
+  if (strncmp(text, "INT@", 4) == 0) { *signal_number = SIGINT; rest = text + 4; }
+  else if (strncmp(text, "TERM@", 5) == 0) { *signal_number = SIGTERM; rest = text + 5; }
+  else return false;
+  if (*rest < '0' || *rest > '9') return false;
+  errno = 0;
+  char *unit = NULL;
+  unsigned long long amount = strtoull(rest, &unit, 10);
+  if (errno == ERANGE) return false;
+  static const struct { const char *name; uint64_t nanoseconds; } units[] = {
+    {"ns", 1}, {"us", 1000}, {"ms", 1000000}, {"s", 1000000000},
+    {"m", UINT64_C(60000000000)}, {"h", UINT64_C(3600000000000)},
+  };
+  for (size_t index = 0; index < sizeof(units) / sizeof(*units); ++index) {
+    if (strcmp(unit, units[index].name) != 0) continue;
+    if (amount > (uint64_t)INT64_MAX / units[index].nanoseconds) return false;
+    *at = (int64_t)(amount * units[index].nanoseconds);
+    return true;
+  }
+  return false;
+}
+
 static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn entry,
                                            ChimiEnvironment *environment) {
   if (!CHIMI_REQUIRES_SCHEDULER) return entry(runtime, environment, 1);
@@ -10030,6 +10131,10 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .release_message = release_message_word,
     .release_spec_context = release_spec_context_word,
 #endif
+    .signal = &received_signal,
+    .signal_fd = signal_pipe[0],
+    .injected_signal = runtime->injected_signal,
+    .injected_signal_at = runtime->injected_signal_at,
   };
   channel_endpoints_reset();
   AllocationScope *entry_scope = main_heap.innermost;
@@ -10126,7 +10231,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     else if (strncmp(argv[index], "--memory-report-file=", 21) == 0) memory_report_path = argv[index] + 21;
     else if (strncmp(argv[index], "--profile-file=", 15) == 0) profile_path = argv[index] + 15;
     else if (strncmp(argv[index], "--execution-id=", 15) == 0) runtime.execution_id = argv[index] + 15;
-    else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = true;
+    else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = 1;
     else if (strncmp(argv[index], "--test=", 7) == 0) {
       errno = 0;
       char *end = NULL;
@@ -10136,6 +10241,12 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
         return 64;
       }
       test_index = (int64_t)value;
+    }
+    else if (strncmp(argv[index], "--signal=", 9) == 0) {
+      if (!parse_injected_signal(argv[index] + 9, &runtime.injected_signal, &runtime.injected_signal_at)) {
+        fputs("--signal requires INT or TERM, @, and a time such as 2s or 150ms\n", stderr);
+        return 64;
+      }
     }
     else if (strcmp(argv[index], "--clock=real") == 0) runtime.virtual_clock = false;
     else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;
@@ -10164,6 +10275,10 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     }
     if (!found_boundary) {
       fputs("Chimi runner configuration must end with --\n", stderr);
+      return 64;
+    }
+    if (runtime.injected_signal && !runtime.virtual_clock) {
+      fputs("--signal requires --clock=virtual; under the real clock, send the signal\n", stderr);
       return 64;
     }
     if (clock_start_given && !runtime.virtual_clock) {
@@ -10261,6 +10376,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     fprintf(stderr, "%" PRIu64 "\n", elapsed / benchmark_repeats);
     return write_failed ? 74 : 0;
   }
+  install_stop_signals(&runtime);
   if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
   ChimiEnvironment *environment = new_environment(entry_function->local_count);
   if (entry_function->parameters_length == 1) {
@@ -10281,7 +10397,12 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     case CONTROL_SUCCESS: return 0;
     case CONTROL_FAILURE: return 1;
     case CONTROL_DEFECT: return 70;
-    case CONTROL_CANCEL: return 130;
+    case CONTROL_CANCEL:
+      /* A signal ended the program: an injected one reports the shell's
+         status, a real one is re-raised. */
+      if (received_signal != 0 && runtime.injected_signal) return 128 + received_signal;
+      if (received_signal != 0) end_by_signal(received_signal);
+      return 130;
   }
   return 70;
 }

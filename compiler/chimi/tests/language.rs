@@ -11149,7 +11149,10 @@ fn a_failure_set_argument_used_as_a_function_input_does_not_join() {
         ["T4203"]
     );
     assert_eq!(
-        check_codes(&source("struct Handler<E> { run: Option<fn(E) -> Int> }", "Some")),
+        check_codes(&source(
+            "struct Handler<E> { run: Option<fn(E) -> Int> }",
+            "Some"
+        )),
         ["T4203"]
     );
     // An argument of another data type whose parameter is not covariant
@@ -11179,7 +11182,8 @@ fn a_callback_for_a_narrower_failure_set_does_not_fit_a_wider_one() {
         fn takes_either(value: A | B) -> Text {\n  case value {\n    A.XA -> \"a\"\n    B.XB -> \"b\"\n  }\n}\n\
         fn run_a(f: fn(A) -> Text) -> Text { f(A.XA) }\n\
         pub fn main() -> Text { run_a(takes_either) }\n";
-    assert_eq!(run_both("callback_wider_input", accepted),
+    assert_eq!(
+        run_both("callback_wider_input", accepted),
         "\"outcome\":\"success\",\"value\":\"a\""
     );
 }
@@ -11321,7 +11325,9 @@ fn a_written_generic_failure_enum_keeps_its_type_arguments() {
 fn a_set_already_checked_against_a_narrower_one_does_not_widen_later() {
     // The lambda's `v` is first checked to fit `A | C` inside `score(v)`; a
     // later call with `B | C` must not widen `v` past that check.
-    assert_eq!(check_codes(r#"enum A {
+    assert_eq!(
+        check_codes(
+            r#"enum A {
   Alpha
 }
 
@@ -11351,13 +11357,18 @@ pub fn main() -> Int {
   }
   g(beta())
 }
-"#), ["T4346"]);
+"#
+        ),
+        ["T4346"]
+    );
 }
 
 #[test]
 fn a_sender_of_one_enum_does_not_pass_for_a_sender_of_a_wider_set() {
     // A `Sender<A | B>` may send a `B`, so a `Sender<A>` cannot stand in.
-    assert_eq!(check_codes(r#"import std/channel as Channel
+    assert_eq!(
+        check_codes(
+            r#"import std/channel as Channel
 import std/channel.{Sender, Receive}
 
 enum A {
@@ -11389,7 +11400,10 @@ pub fn main() -> Int {
     Receive.Drained -> 0
   }
 }
-"#), ["T4203"]);
+"#
+        ),
+        ["T4203"]
+    );
 }
 
 #[test]
@@ -11397,7 +11411,9 @@ fn a_failure_type_pattern_binds_only_the_variants_the_row_can_hold() {
     // `load` never fails with `FileProblem.Denied`, so a `FileProblem`
     // pattern binds `FileProblem.Missing | FileProblem.TooLong`, which fits
     // a function that takes exactly those two.
-    let program = format!("{FAILURE_KINDS}{}", r#"fn file_only(error: FileProblem.Missing | FileProblem.TooLong) -> Text {
+    let program = format!(
+        "{FAILURE_KINDS}{}",
+        r#"fn file_only(error: FileProblem.Missing | FileProblem.TooLong) -> Text {
   case error {
     FileProblem.Missing(path) -> "missing ${path}"
     FileProblem.TooLong(path, _) -> "long ${path}"
@@ -11411,7 +11427,8 @@ fn label(choice: Int) -> Text {
   }
 }
 pub fn main() -> Text { "${label(0)} ${label(1)} ${label(2)}" }
-"#);
+"#
+    );
     assert_eq!(
         run_both("failure-type-pattern-row", &program),
         "\"outcome\":\"success\",\"value\":\"missing a long b parse\""
@@ -11601,10 +11618,16 @@ fn comparisons_past_the_inline_compare_steps_agree_with_the_interpreter() {
         ),
         same = items(40),
         later = items(41),
-        counts = (1..=40).map(|index| index.to_string()).collect::<Vec<_>>().join(", "),
+        counts = (1..=40)
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
     );
     let outcome = run_both("compare-past-inline-steps", &source);
-    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[true,false,true,true,false]", "{outcome}");
+    assert_eq!(
+        outcome, "\"outcome\":\"success\",\"value\":[true,false,true,true,false]",
+        "{outcome}"
+    );
 }
 
 // Guards: bump allocation (CHI-219). A loop pass's values are moved out of the
@@ -11696,8 +11719,7 @@ fn values_kept_across_bump_allocated_passes_agree_with_the_interpreter() {
         ),
     );
     assert_eq!(
-        outcome,
-        "\"outcome\":\"success\",\"value\":[601,25000,90770,20000]",
+        outcome, "\"outcome\":\"success\",\"value\":[601,25000,90770,20000]",
         "{outcome}"
     );
 }
@@ -11806,7 +11828,11 @@ fn a_crash_message_built_inside_a_loop_survives_the_loop() {
             "}\n",
         ),
     );
-    assert_eq!(defect_message(&outcome), "boom-message-in-chunk", "{outcome}");
+    assert_eq!(
+        defect_message(&outcome),
+        "boom-message-in-chunk",
+        "{outcome}"
+    );
 }
 
 // Guards: a match reads every subject, both when its subjects fit the runtime's

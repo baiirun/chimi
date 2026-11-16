@@ -131,14 +131,18 @@ const counting = Process.spec(counter, 64, Duration.seconds(5))
 
 ## Shutdown
 
-- Shutdown is out-of-band cancellation, not a mailbox message.
-  It wakes a parked `Process.receive`, runs cleanup within the specification's
-  `shutdown_within`, and discards unread messages unless the body drains them
-  first. It never triggers defect restart.
-- From the stop request on, the mailbox accepts no new messages. Each
-  `Process.receive` returns the oldest message accepted before the request,
-  and once the mailbox is empty it returns cancellation immediately, every time
-  it is called, without parking.
+- Shutdown is out-of-band, not a mailbox message. It never triggers defect
+  restart.
+- From the stop request on, the process is unrouted and the mailbox accepts
+  no new messages. The body is not cancelled: it drains within the
+  specification's `shutdown_within`, and its parks (sleeps, child tasks,
+  channel operations) proceed. Each `Process.receive` returns the oldest
+  message accepted before the request, and once the mailbox is empty it
+  returns cancellation immediately, every time it is called, without parking.
+- At the deadline the body is forced and runs no more code; unread messages
+  are discarded. A body that has not run yet is cancelled at once, and a zero
+  `shutdown_within` forces at once. See
+  [application lifecycle](application-lifecycle.md) (G22).
 
 ## Out of scope
 

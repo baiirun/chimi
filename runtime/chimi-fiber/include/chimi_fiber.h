@@ -382,6 +382,9 @@ enum {
   CHIMI_CLOCK_TRACE_SELECT_PARKED = 7,
   /* A Select.first committed; `cause` is the event's index (boundaries). */
   CHIMI_CLOCK_TRACE_SELECT_COMMITTED = 8,
+  /* SIGINT or SIGTERM cancelled the root; `cause` is the signal number
+     (boundaries). */
+  CHIMI_CLOCK_TRACE_SIGNAL_RECEIVED = 9,
 };
 
 typedef struct {
@@ -617,6 +620,20 @@ typedef struct {
   /* Called for each process incarnation that defected; may be null. */
   ChimiProcessDefectReport process_defect_report;
   void *process_defect_context;
+  /* The runner's received-signal word: 0, or the number of the first SIGINT or
+     SIGTERM its handler saw. The scheduler reads it between resumes and
+     cancels the root once; an injected signal is written here when it fires.
+     May be null. */
+  volatile int32_t *signal;
+  /* Read end of a non-blocking pipe the handler writes a byte to, so a
+     real-clock wait wakes; 0 or negative for none, so a zeroed config has
+     none. While a supervisor runs, a real-clock
+     run with nothing to do waits on it instead of reporting a deadlock. */
+  int32_t signal_fd;
+  /* Nonzero: deliver this signal when the execution clock reaches
+     `injected_signal_at` nanoseconds (the runner's --signal option). */
+  int32_t injected_signal;
+  int64_t injected_signal_at;
   /* Copies a message for each broadcast or watch subscription past the
      first; may be null only when no program publishes to more than one. */
   ChimiValueCopy copy_channel_value;
@@ -651,8 +668,9 @@ ChimiFiberCommand chimi_fiber_park(const ChimiRootFrame *roots);
 ChimiFiberCommand chimi_fiber_request(void *request, const ChimiRootFrame *roots);
 /* Read by the running fiber after a resume. 1 when that resume was a
    task-level cancellation: the fiber must unwind without any request that can
-   park, CHIMI_REQUEST_SCOPE_EXIT included. A scope's cancellation, or a
-   process body told to stop, is not terminal. */
+   park, CHIMI_REQUEST_SCOPE_EXIT included. A scope's cancellation, or the
+   cancellation a process body's receive returns once its drain is done, is
+   not terminal. */
 uint32_t chimi_fiber_cancel_is_terminal(void);
 /* 1 when a fired cancellation scope of the running task waits for its next
    cancellation point; a loop pass then issues CHIMI_REQUEST_SCOPE_CHECK. */

@@ -24,11 +24,23 @@ impl Evaluator<'_> {
             return self.intrinsic_shape_defect(StandardFunction::ResourceScoped, call_node);
         };
         let (release, use_resource) = (release.clone(), use_resource.clone());
-        let handle = match self.invoke(acquire.clone(), Vec::new(), span, call_node, environment.clone()) {
+        let handle = match self.invoke(
+            acquire.clone(),
+            Vec::new(),
+            span,
+            call_node,
+            environment.clone(),
+        ) {
             Control::Success(handle) => handle,
             other => return other,
         };
-        let used = self.invoke(use_resource, vec![handle.clone()], span, call_node, environment.clone());
+        let used = self.invoke(
+            use_resource,
+            vec![handle.clone()],
+            span,
+            call_node,
+            environment.clone(),
+        );
         let released = self.invoke(release, vec![handle], span, call_node, environment);
         after_release(used, released)
     }

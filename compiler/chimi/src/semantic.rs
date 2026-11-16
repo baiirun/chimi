@@ -468,7 +468,6 @@ pub(crate) fn test_name_of(symbol_name: &str) -> Option<&str> {
     symbol_name.strip_prefix("test \"")?.strip_suffix('"')
 }
 
-
 #[derive(Clone, Debug)]
 pub(crate) enum TypeUse {
     Named {

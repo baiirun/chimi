@@ -137,6 +137,17 @@ pub struct ChimiSchedulerConfig {
     pub capability_violation_context: *mut c_void,
     pub process_defect_report: Option<ProcessDefectReport>,
     pub process_defect_context: *mut c_void,
+    /// The runner's received-signal word: 0, or the number of the first
+    /// SIGINT or SIGTERM. Read between resumes; an injected signal is
+    /// written here when it fires. May be null.
+    pub signal: *mut i32,
+    /// Read end of the pipe the runner's handler writes to; 0 or negative
+    /// for none, so a zeroed config has none.
+    pub signal_fd: i32,
+    /// Nonzero: deliver this signal when the clock reaches
+    /// `injected_signal_at` nanoseconds.
+    pub injected_signal: i32,
+    pub injected_signal_at: i64,
     /// Copies a value for each broadcast or watch subscription past the
     /// first, with `release_context`. May be null only when no program
     /// publishes to more than one subscription.
@@ -288,6 +299,11 @@ impl Scheduler {
             task: owner,
             park: self.tasks[&owner].park,
         };
+        if self.request_awaits_own_shutdown(owner, &input) {
+            // It could finish only after the caller's own incarnation ends.
+            self.respond_cancel(waiter, super::RESPONSE_CANCELLED);
+            return;
+        }
         match input.kind {
             super::REQUEST_PROCESS_SELF => match self.self_address(owner) {
                 Ok(incarnation) => self.respond(waiter, RESPONSE_OK, |r| {
@@ -336,7 +352,8 @@ impl Scheduler {
                 };
                 // SAFETY: the host's record names capabilities that stay
                 // valid while it is suspended on the request.
-                let carried = unsafe { super::carried_capabilities(input.carried.cast_mut().cast()) };
+                let carried =
+                    unsafe { super::carried_capabilities(input.carried.cast_mut().cast()) };
                 if let Err(error) = self.channels.check_carried(owner, &carried) {
                     let _ = self.channel_violation::<()>(
                         owner,
@@ -624,6 +641,7 @@ impl Scheduler {
     /// still running is stopped and its cleanup is driven to completion.
     pub fn run_root(&mut self, root: TaskId, deadlock_code: i64) -> RootRun {
         let mut deadlock = Vec::new();
+        self.set_signal_root(root);
         loop {
             let root_live = |scheduler: &Self| {
                 matches!(
@@ -645,6 +663,10 @@ impl Scheduler {
                             false,
                         );
                     }
+                }
+                Idle::Stalled(_) if root_live(self) && self.stall_waits_for_signal() => {
+                    self.wait_for_signal();
+                    continue;
                 }
                 Idle::Stalled(_) if root_live(self) => {
                     return RootRun {
@@ -747,6 +769,15 @@ pub unsafe extern "C" fn chimi_scheduler_run(
     scheduler.set_trace_sink(config.trace_sink, config.trace_context);
     scheduler
         .set_process_defect_report(config.process_defect_report, config.process_defect_context);
+    scheduler.set_signal_source(config.signal, config.signal_fd);
+    if config.injected_signal != 0 {
+        scheduler.inject_signal_at(
+            super::Instant::ORIGIN.saturating_add(Duration::from_nanos(
+                u64::try_from(config.injected_signal_at).unwrap_or(0),
+            )),
+            config.injected_signal,
+        );
+    }
     let Ok(root) = scheduler.start_root_with_context(entry, config.context) else {
         return defect_outcome(SCHEDULER_DEFECT_CODE);
     };

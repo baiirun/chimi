@@ -40,10 +40,10 @@ opaque message handles; the runtime's release hook frees handles the
 scheduler discards unread. Supervisors are scheduler records, not fibers:
 admission, named routing, rolling restart accounting (charged before the
 replacement starts), escalation, removal, and shutdown order run between fiber
-resumes. Shutdown first cancels and drains the incarnation's child tasks and
-withdraws whatever its current park waits on; the body is then cancelled at
-that park, or at its next park that would block if it was running, while a
-receive drains the mailbox first. Stops and removals are plans that wait for a
+resumes. Shutdown drains before it cancels: the incarnation is unrouted and its
+mailbox closed, but its sleeps, child tasks, and channel operations proceed,
+and a receive returns the accepted messages, then cancellation. At its
+`shutdown_within` deadline the body is forced and its child tasks cancelled. Stops and removals are plans that wait for a
 lingering incarnation's `shutdown_within` deadline and then force it. Nested
 supervisors, declared or dynamic (`start_nested_supervisor`,
 `remove_supervisor`), take one slot of their parent, escalate to it, and can
