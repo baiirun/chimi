@@ -29,6 +29,8 @@ const ChimiArm CHIMI_ARMS[] = {{0}};
 const ChimiPattern CHIMI_PATTERNS[] = {{0}};
 const ChimiConstantValue CHIMI_CONSTANT_VALUES[] = {{0}};
 const uint32_t CHIMI_CONSTANT_VALUE_COUNT = 0;
+const ChimiBinding CHIMI_BINDINGS[] = {{0}};
+const uint32_t CHIMI_BINDING_COUNT = 0;
 ChimiNodeFn CHIMI_NODE_FUNCTIONS[] = {NULL};
 
 #define CHECK(condition, ...)                                         \

@@ -60,9 +60,15 @@ impl Operation {
                 }
                 // A test-only operation observes defects, and constant evaluation
                 // reports its own stops as defects, so a constant must not call it.
+                _ if function == StandardFunction::BindingCall => {
+                    Some("a C binding operation".to_owned())
+                }
                 _ => crate::operations::host_operation_name(function)
                     .map(str::to_owned)
-                    .or_else(|| crate::operations::test_only_name(function)),
+                    .or_else(|| {
+                        crate::operations::intrinsic_operation(function)
+                            .and_then(crate::operations::test_only_name)
+                    }),
             },
             Self::Host(function) => Some(
                 match function {
@@ -834,6 +840,11 @@ fn constant_value(
                     captures,
                     requirements: constant_requirements(core, closures, &environment.requirements)?,
                 }
+            }
+            // Every binding shares one intrinsic, so its symbol cannot be
+            // recovered from the function; a constant cannot hold one.
+            RuntimeCallable::Intrinsic(StandardFunction::BindingCall) => {
+                return Err("a C binding operation".to_owned());
             }
             RuntimeCallable::Intrinsic(function) => ConstantFunction::Intrinsic(
                 core.symbols

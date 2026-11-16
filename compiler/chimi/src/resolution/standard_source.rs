@@ -128,6 +128,9 @@ impl ProjectResolver {
         }
         self.standard_symbols.insert(symbol, identity);
         match identity {
+            // Every binding `native type` shares one identity, so none is the
+            // symbol of that identity.
+            StandardSymbol::Type(StandardType::BindingHandle) => {}
             StandardSymbol::Type(kind) => {
                 self.standard_types.insert(kind, symbol);
                 if kind == StandardType::Option {
@@ -264,8 +267,7 @@ impl ProjectResolver {
             ));
             return;
         }
-        self.native_operations
-            .insert(symbol, operation.implementation);
+        self.native_operations.insert(symbol, operation);
     }
 }
 

@@ -162,6 +162,9 @@ pub(crate) enum StandardType {
     /// `std/test.Mailbox<M>`: the receiving end of a fake process address
     /// (testing.md, "Fake process addresses").
     TestMailbox,
+    /// A `native type` of a C binding (G20): a handle the runtime owns, whose
+    /// release function the binding supplies. Each declaration is its own type.
+    BindingHandle,
     /// `std/env.Environment`: the capability to read environment variables and
     /// the working directory; the runner closes `main`'s `environment` need.
     Environment,
@@ -248,6 +251,7 @@ impl StandardType {
             Self::TestRecorder => "Recorder",
             Self::TestScript => "Script",
             Self::TestMailbox => "Mailbox",
+            Self::BindingHandle => "Handle",
             Self::Environment => "Environment",
         }
     }
@@ -322,6 +326,7 @@ impl StandardType {
             Self::Cause => StandardProperties::Opaque(
                 "a `Cause`, diagnostic data that equality and order never read",
             ),
+            Self::BindingHandle => StandardProperties::Opaque("a handle to a host resource"),
         }
     }
 
@@ -598,6 +603,9 @@ pub(crate) enum StandardFunction {
     TestNext,
     TestMailbox,
     TestReceived,
+    /// Every C binding operation (G20). The symbol's binding names which one;
+    /// the interpreter cannot call C, so it reports `E5204` instead.
+    BindingCall,
     // `std/path`: a `Path` is its text at run time on both backends.
     PathFrom,
     PathToText,
@@ -904,7 +912,8 @@ impl StandardFunction {
             | Self::TestScript
             | Self::TestNext
             | Self::TestMailbox
-            | Self::TestReceived => None,
+            | Self::TestReceived
+            | Self::BindingCall => None,
             Self::PathFrom | Self::PathToText => None,
             Self::EnvHostVariables | Self::EnvHostCurrentDirectory => None,
         }
@@ -1095,6 +1104,7 @@ impl StandardFunction {
             Self::TestNext => "next",
             Self::TestMailbox => "mailbox",
             Self::TestReceived => "received",
+            Self::BindingCall => "binding",
             Self::PathFrom => "from",
             Self::PathToText => "to_text",
             Self::EnvHostVariables => "host_variables",
@@ -1205,6 +1215,7 @@ impl StandardFunction {
                 | Self::ChannelClose
                 | Self::ChannelAbort
                 | Self::ChannelBounded
+                | Self::BindingCall
         ) || self.requires_process_runtime()
             || self.is_select_operation()
             || self.is_channel_variant()
@@ -1511,6 +1522,7 @@ impl StandardConstructor {
             | StandardType::TestRecorder
             | StandardType::TestScript
             | StandardType::TestMailbox
+            | StandardType::BindingHandle
             | StandardType::JsonValue
             | StandardType::JsonNumber
             | StandardType::DecodeError
