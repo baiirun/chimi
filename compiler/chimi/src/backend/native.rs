@@ -29,7 +29,11 @@ const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
 const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
 const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
 const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v5-process-kernel;direct-integer-loop-v1";
+<<<<<<< HEAD
 const RUNTIME_ABI_VERSION: u32 = 33;
+=======
+const RUNTIME_ABI_VERSION: u32 = 32;
+>>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
 const FIBER_RUNTIME_ABI_VERSION: u32 = chimi_fiber::ABI_VERSION;
 static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

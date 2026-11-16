@@ -38,6 +38,7 @@ MUTATIONS = [
                  "            TaskPhase::Parked if forced || !receiving => {")],
          **lab("RR05")),
     dict(name="shutdown cancels a running body", file=PROCESS,
+<<<<<<< HEAD
          edits=[("            TaskPhase::Runnable if forced || (!task_record.ran && nothing_accepted) => {",
                  "            TaskPhase::Runnable => {")],
          **fiber("an_incarnation_running_when_shutdown_begins_is_not_cancelled_at_its_next_park")),
@@ -49,6 +50,15 @@ MUTATIONS = [
          edits=[("            TaskPhase::Runnable if forced || (!task_record.ran && nothing_accepted) => {",
                  "            TaskPhase::Runnable if forced || !task_record.ran => {")],
          **fiber("a_body_stopped_before_its_first_run_still_drains_the_messages_it_accepted")),
+=======
+         edits=[("            TaskPhase::Runnable if !task_record.ran || forced => {",
+                 "            TaskPhase::Runnable => {")],
+         **fiber("an_incarnation_running_when_shutdown_begins_is_not_cancelled_at_its_next_park")),
+    dict(name="a body that never ran is left to run", file=PROCESS,
+         edits=[("            TaskPhase::Runnable if !task_record.ran || forced => {",
+                 "            TaskPhase::Runnable if forced => {")],
+         **fiber("a_body_stopped_before_its_first_run_is_cancelled_without_running")),
+>>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
     dict(name="a self-stop is not interrupted", file=PROCESS,
          edits=[("            .filter(|waiting| *waiting != task || !forced)",
                  "            .filter(|_| false)")],

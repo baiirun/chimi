@@ -355,7 +355,10 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       LAYOUT(ChimiSchedulerConfig, signal_fd),
       LAYOUT(ChimiSchedulerConfig, injected_signal),
       LAYOUT(ChimiSchedulerConfig, injected_signal_at),
+<<<<<<< HEAD
       LAYOUT(ChimiSchedulerConfig, copy_channel_value),
+=======
+>>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
       sizeof(ChimiProcessTermination),
       LAYOUT(ChimiProcessTermination, incarnation),
       LAYOUT(ChimiProcessTermination, cause),

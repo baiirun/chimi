@@ -1416,10 +1416,16 @@ impl ChannelRegistry {
 
     /// One receive event of `Select.first`: true when a receive by `task`
     /// would answer at once (a value, a parked rendezvous sender, `Drained`,
+<<<<<<< HEAD
     /// or `Aborted`, including an ended receiver). Otherwise `task` becomes
     /// one of the queue's select watchers, woken when that changes.
     /// Consumes nothing either way. The receiver must be `task`'s current
     /// copy, as for a receive.
+=======
+    /// or `Aborted`). Otherwise `task` becomes the channel's select watcher,
+    /// woken when that changes. Consumes nothing either way. The receiver
+    /// must be `task`'s current copy, as for a receive.
+>>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
     pub fn select_receive(
         &mut self,
         task: TaskId,

@@ -148,10 +148,13 @@ pub struct ChimiSchedulerConfig {
     /// `injected_signal_at` nanoseconds.
     pub injected_signal: i32,
     pub injected_signal_at: i64,
+<<<<<<< HEAD
     /// Copies a value for each broadcast or watch subscription past the
     /// first, with `release_context`. May be null only when no program
     /// publishes to more than one subscription.
     pub copy_channel_value: Option<ValueCopy>,
+=======
+>>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
 }
 
 /// One task parked in a detected deadlock and the request kind it waits on
