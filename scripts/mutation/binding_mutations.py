@@ -62,6 +62,10 @@ MUTATIONS = [
         "      if (request.status != CHIMI_RESPONSE_PENDING) return CHIMI_BINDING_READY;\n    }\n  }\n  struct pollfd poll_fd = {",
         "      return CHIMI_BINDING_READY;\n    }\n  }\n  struct pollfd poll_fd = {",
     )]),
+    mutant("a wait ignores a close while parked", C, [(
+        "         its descriptor number may already belong to a new resource. */\n      if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;",
+        "         its descriptor number may already belong to a new resource. */",
+    )]),
     mutant("a cancelled wait reports ready", C, [(
         "      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;",
         "      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_READY;",

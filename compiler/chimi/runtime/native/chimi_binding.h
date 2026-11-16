@@ -22,8 +22,9 @@
      does not yet offer a way to wake them; see the spec's "Not covered
      yet").
    - chimi_binding_wait lets other tasks run, and one may close a handle
-     argument meanwhile: read its state again with chimi_binding_handle after
-     every wait, and treat NULL as closed.
+     argument meanwhile: pass the handle's index so the wait answers
+     CHIMI_BINDING_WAIT_CLOSED, and read its state again with
+     chimi_binding_handle after every wait.
    - A host resource is a handle: chimi_binding_make_handle gives the runtime
      ownership of `state`, and the type's release runs exactly once, at
      chimi_binding_close_handle or when the program ends. Chimi code never sees
@@ -84,9 +85,10 @@ ChimiBindingValue *chimi_binding_make_list(ChimiBindingCall *call, ChimiBindingV
    releasing `state`. */
 ChimiBindingValue *chimi_binding_make_handle(ChimiBindingCall *call, const ChimiBindingType *type,
                                              void *state);
-/* Releases the handle argument at `index` if it is open, so later calls see it
-   closed; closing a closed handle does nothing. */
-void chimi_binding_close_handle(ChimiBindingCall *call, uint32_t index);
+/* Releases the handle argument at `index` if it is an open handle of `type`,
+   so later calls see it closed; closing a closed handle does nothing. */
+void chimi_binding_close_handle(ChimiBindingCall *call, uint32_t index,
+                                const ChimiBindingType *type);
 
 /* Results: return exactly one. */
 ChimiBindingResult *chimi_binding_success(ChimiBindingCall *call, ChimiBindingValue *value);
@@ -113,8 +115,15 @@ enum {
   /* The descriptor cannot be waited on (closed, negative, or the reactor
      failed). */
   CHIMI_BINDING_WAIT_FAILED = 2,
+  /* The handle argument the descriptor belongs to was closed, before or
+     during the wait: report the resource closed, and do not touch `fd`. */
+  CHIMI_BINDING_WAIT_CLOSED = 3,
 };
-/* Waits until `fd` is ready for `interest`, letting other tasks run. */
-int chimi_binding_wait(ChimiBindingCall *call, int fd, int interest);
+/* `handle` for a descriptor that belongs to no handle argument. */
+#define CHIMI_BINDING_NO_HANDLE UINT32_MAX
+/* Waits until `fd`, which belongs to the handle argument at index `handle`
+   (or CHIMI_BINDING_NO_HANDLE for a descriptor private to the call), is ready
+   for `interest`, letting other tasks run. */
+int chimi_binding_wait(ChimiBindingCall *call, uint32_t handle, int fd, int interest);
 
 #endif

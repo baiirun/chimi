@@ -154,10 +154,18 @@ test "a closed handle stays closed, and closing again does nothing" {
   BindingProbe.write(reused, Bytes.from_text("open"))
   BindingProbe.read(reused) |> Test.assert_equal(Some(Bytes.from_text("open")))
 }
+
+test "closing a handle ends another task's wait on it" {
+  let pipe = BindingProbe.open()
+  let reader = Task.start(fn() { Result.capture(fn() { BindingProbe.read(pipe) }) })
+  Clock.sleep(Duration.milliseconds(20))
+  BindingProbe.close(pipe)
+  Task.result(reader) |> Debug.render |> Test.assert_equal("Result.Err(ProbeError.Closed)")
+}
 "#,
     );
     assert_eq!(run.status, Some(0), "{}{}", run.stdout, run.stderr);
-    assert!(run.stdout.contains("3 passed, 0 failed"), "{}", run.stdout);
+    assert!(run.stdout.contains("4 passed, 0 failed"), "{}", run.stdout);
 }
 
 /// The build report of the test build in `scratch`.

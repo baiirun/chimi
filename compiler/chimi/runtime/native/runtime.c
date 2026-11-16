@@ -6157,10 +6157,11 @@ ChimiBindingValue *chimi_binding_make_handle(ChimiBindingCall *call, const Chimi
   return binding_value(value);
 }
 
-void chimi_binding_close_handle(ChimiBindingCall *call, uint32_t index) {
+void chimi_binding_close_handle(ChimiBindingCall *call, uint32_t index,
+                                const ChimiBindingType *type) {
   const ChimiValue *value = binding_argument(call, index, VALUE_NATIVE_HANDLE);
   BindingHandleSlot *entry = value ? binding_handle_slot(value) : NULL;
-  if (entry != NULL) release_binding_slot(entry, value->as.handle.slot);
+  if (entry != NULL && entry->type == type) release_binding_slot(entry, value->as.handle.slot);
 }
 
 ChimiBindingResult *chimi_binding_success(ChimiBindingCall *call, ChimiBindingValue *value) {
@@ -6208,16 +6209,27 @@ int chimi_binding_is_cancelled(const ChimiBindingCall *call) {
   return scheduler_request(&check) == CHIMI_FIBER_CANCEL;
 }
 
-int chimi_binding_wait(ChimiBindingCall *call, int fd, int interest) {
+/* True when `handle` names a handle argument that is closed now. */
+static bool binding_wait_handle_closed(const ChimiBindingCall *call, uint32_t handle) {
+  if (handle == CHIMI_BINDING_NO_HANDLE) return false;
+  const ChimiValue *value = binding_argument(call, handle, VALUE_NATIVE_HANDLE);
+  return value == NULL || binding_handle_slot(value) == NULL;
+}
+
+int chimi_binding_wait(ChimiBindingCall *call, uint32_t handle, int fd, int interest) {
   if (fd < 0 || interest < CHIMI_BINDING_READABLE ||
       interest > (CHIMI_BINDING_READABLE | CHIMI_BINDING_WRITABLE))
     return CHIMI_BINDING_WAIT_FAILED;
+  if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
   if (CHIMI_REQUIRES_SCHEDULER) {
     uint64_t token = ((interest & CHIMI_BINDING_READABLE) ? CHIMI_IO_READABLE : 0) |
                      ((interest & CHIMI_BINDING_WRITABLE) ? CHIMI_IO_WRITABLE : 0);
     for (;;) {
       ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_IO_WAIT, .value = fd, .token = token};
       if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;
+      /* Another task may have closed the handle while this one was parked;
+         its descriptor number may already belong to a new resource. */
+      if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
       if (request.status == CHIMI_RESPONSE_ERROR) return CHIMI_BINDING_WAIT_FAILED;
       if (request.status != CHIMI_RESPONSE_PENDING) return CHIMI_BINDING_READY;
     }

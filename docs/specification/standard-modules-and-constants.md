@@ -435,10 +435,13 @@ what reaches C and what C may do:
 - Prebuilt binding archives in the compiler, for packages whose cold compile
   is slow (TLS, SQLite).
 - Vendored-module grants (T5).
-- Waking the tasks that wait on a descriptor when its handle closes. Until
-  then a binding must not close a descriptor another task waits on, since the
-  reactor waits on the number and the next open may reuse it; `std/net` adds
-  the wake before sockets can be closed from another task.
+- Waking the tasks that wait on a descriptor when its handle closes. A wait
+  names its handle, so a waiter that wakes after the close answers
+  `CHIMI_BINDING_WAIT_CLOSED` instead of touching the descriptor. But the
+  reactor waits on the descriptor's number, so a waiter stays parked when a
+  new resource reuses the number before the reactor next polls. The runtime
+  will withdraw a handle's waiters before its release runs; that lands before
+  `std/net`.
 
 ### Conformance
 

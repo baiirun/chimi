@@ -108,12 +108,10 @@ ChimiBindingResult *chimi_probe_write_pipe(ChimiBindingCall *call) {
     }
     if (count < 0 && errno == EINTR) continue;
     if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      int waited = chimi_binding_wait(call, state->write_end, CHIMI_BINDING_WRITABLE);
+      int waited = chimi_binding_wait(call, 0, state->write_end, CHIMI_BINDING_WRITABLE);
       if (waited == CHIMI_BINDING_WAIT_CANCELLED) return chimi_binding_cancelled(call);
-      if (waited == CHIMI_BINDING_WAIT_FAILED) break;
-      /* The handle may have been closed by another task while this one waited. */
+      if (waited != CHIMI_BINDING_READY) break;
       state = chimi_binding_handle(call, 0, &PIPE);
-      if (state == NULL) break;
       continue;
     }
     break;
@@ -135,14 +133,14 @@ ChimiBindingResult *chimi_probe_read_pipe(ChimiBindingCall *call) {
     if (errno == EINTR) continue;
     if (errno != EAGAIN && errno != EWOULDBLOCK)
       return chimi_binding_failure(call, PROBE_CLOSED, strerror(errno));
-    int waited = chimi_binding_wait(call, state->read_end, CHIMI_BINDING_READABLE);
+    int waited = chimi_binding_wait(call, 0, state->read_end, CHIMI_BINDING_READABLE);
     if (waited == CHIMI_BINDING_WAIT_CANCELLED) return chimi_binding_cancelled(call);
-    if (waited == CHIMI_BINDING_WAIT_FAILED)
+    if (waited != CHIMI_BINDING_READY)
       return chimi_binding_failure(call, PROBE_CLOSED, "pipe is closed");
   }
 }
 
 ChimiBindingResult *chimi_probe_close_pipe(ChimiBindingCall *call) {
-  chimi_binding_close_handle(call, 0);
+  chimi_binding_close_handle(call, 0, &PIPE);
   return chimi_binding_success(call, chimi_binding_void(call));
 }
