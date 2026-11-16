@@ -7787,11 +7787,14 @@ impl ProjectTypeChecker {
         let actual = &self.failure_rows[actual.raw() as usize];
         let expected = &self.failure_rows[expected.raw() as usize];
         // A variant of a generic enum is the same member only at the same type
-        // arguments: `W<Text>.Bad` is not in a set that holds `W<Int>.Bad`.
-        let arguments = |row: &FailureRow, variant: SymbolId| {
+        // arguments: `W<Text>.Bad` is not in a set that holds `W<Int>.Bad`. A
+        // row may hold one variant at several argument lists, once per raise,
+        // so every list `actual` holds must be one `expected` holds; poison
+        // (an argument the variant does not mention) agrees with any type.
+        let argument_lists = |row: &FailureRow, variant: SymbolId| {
             row.variant_arguments
                 .iter()
-                .find(|arguments| arguments.variant == variant)
+                .filter(|arguments| arguments.variant == variant)
                 .map(|arguments| {
                     arguments
                         .arguments
@@ -7799,14 +7802,29 @@ impl ProjectTypeChecker {
                         .map(|argument| self.resolve_inference_type(*argument))
                         .collect::<Vec<_>>()
                 })
+                .collect::<Vec<_>>()
+        };
+        let agree = |left: &[TypeId], right: &[TypeId]| {
+            left.len() == right.len()
+                && left.iter().zip(right).all(|(left, right)| {
+                    left == right || *left == TypeId::new(0) || *right == TypeId::new(0)
+                })
+        };
+        let arguments_fit = |variant: SymbolId| {
+            let actual_lists = argument_lists(actual, variant);
+            let expected_lists = argument_lists(expected, variant);
+            match (actual_lists.is_empty(), expected_lists.is_empty()) {
+                (true, true) => true,
+                (true, false) | (false, true) => false,
+                (false, false) => actual_lists.iter().all(|actual| {
+                    expected_lists.iter().any(|expected| agree(actual, expected))
+                }),
+            }
         };
         actual
             .variants
             .iter()
-            .all(|variant| {
-                expected.variants.contains(variant)
-                    && arguments(actual, *variant) == arguments(expected, *variant)
-            })
+            .all(|variant| expected.variants.contains(variant) && arguments_fit(*variant))
             && actual.parameters.iter().all(|parameter| {
                 if !expected.parameters.contains(parameter) {
                     return false;

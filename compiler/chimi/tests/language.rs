@@ -11250,6 +11250,14 @@ fn a_generic_failure_enum_fits_only_at_its_own_type_arguments() {
          pub fn main() -> Int {{ run(plus, fail_text) }}\n"
     );
     assert_eq!(check_codes(&callback_first), ["T4203"]);
+    // An operation that raises the variant at two argument lists holds both;
+    // a callback over one of them must not take it.
+    let mixed = format!(
+        "{prelude}fn fail_either(n: Int) -> Int {{\n  case n > 0 {{\n    True -> {{\n      let w: W<Int> = W.Bad(1)\n      Failure(w)\n    }}\n    False -> fail_text()\n  }}\n}}\n\
+         fn run<T, E>(op: fn() -> T errors E, f: fn(E) -> Int) -> Int {{\n  case op() {{\n    Success(_) -> 0\n    Failure(e) -> f(e)\n  }}\n}}\n\
+         pub fn main() -> Int {{ run(fn() {{ fail_either(0) }}, plus) }}\n"
+    );
+    assert_eq!(check_codes(&mixed), ["T4203"]);
 }
 
 #[test]

@@ -76,7 +76,7 @@ MUTATIONS = [
 ]
 MUTATIONS += [
     language("generic variants fit at any type arguments", TYPING, [
-        ("                    && arguments(actual, *variant) == arguments(expected, *variant)\n", "")],
+        ("                (false, false) => actual_lists.iter().all(|actual| {\n                    expected_lists.iter().any(|expected| agree(actual, expected))\n                }),", "                (false, false) => true,")],
         "a_generic_failure_enum_fits_only_at_its_own_type_arguments"),
     programs("delay trusts a directly built schedule", SCHEDULE, [
         ("      Fixed(_, wait) -> checked_wait(wait)", "      Fixed(_, wait) -> wait")]),
