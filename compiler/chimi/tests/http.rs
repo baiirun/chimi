@@ -185,7 +185,8 @@ fn assert_passed(run: &Run, count: usize) {
 
 // Rejects a server that sends no `Date`, formats it wrongly (weekday, a leap
 // day, a negative timestamp, a century that is not a leap year, rounding a
-// fraction up), or overrides a handler's own `Date`.
+// fraction up, the first and last years a clock can start in), or overrides
+// a handler's own `Date`.
 #[test]
 fn every_response_carries_the_date() {
     let tests = r#"
@@ -210,9 +211,11 @@ test "the date" {
         ("2000-02-29T23:59:59.9Z", "Tue, 29 Feb 2000 23:59:59 GMT"),
         ("1969-12-31T23:59:59.5Z", "Wed, 31 Dec 1969 23:59:59 GMT"),
         ("2100-03-01T00:00:00Z", "Mon, 01 Mar 2100 00:00:00 GMT"),
+        ("1678-01-01T00:00:00.5Z", "Sat, 01 Jan 1678 00:00:00 GMT"),
+        ("2262-01-01T23:59:59Z", "Wed, 01 Jan 2262 23:59:59 GMT"),
     ] {
         let run = Scratch::new(
-            &format!("date-{}", &start[..4]),
+            &format!("date-{}", &start[..10]),
             &format!("{PRELUDE}\n{}", tests.replace("DATE", date)),
         )
         .chimi(&["test", "cases.chimi", "--clock=virtual", &format!("--clock-start={start}")]);

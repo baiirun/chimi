@@ -1033,9 +1033,13 @@ fn two(value: Int) -> Text {
   Text.pad_start(Int.to_text(value), 2, "0")
 }
 
-// `left / right` rounded toward negative infinity, for a positive `right`.
+// `left / right` rounded toward negative infinity, for a positive `right`,
+// without an intermediate below the smallest `Int`.
 fn floor_divide(left: Int, right: Int) -> Int {
-  (left - Int.modulo(left, right)) / right
+  case left % right < 0 {
+    True -> left / right - 1
+    False -> left / right
+  }
 }
 
 fn refusal_response(refusal: Refusal) -> Response {
