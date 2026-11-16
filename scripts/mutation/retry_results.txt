@@ -1,0 +1,6 @@
+# retry_mutations.py (CHI-206), 2026-11-15
+# First run at a59cf80: 16 of 16 killed. Review fixes added three mutants
+# (zero first wait, generic variant arguments, directly built schedules),
+# all killed; the generic-argument mutant was rerun after the multi-list fix
+# at b0ecfbe and killed again.
+# Result: 19 of 19 killed.
