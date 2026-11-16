@@ -295,6 +295,7 @@ pub fn variable(command: Command, name: Text, value: Text) -> Command
 pub fn environment(command: Command, variables: Map<Text, Text>) -> Command
 pub fn directory(command: Command, path: Path) -> Command
 pub fn stdin(command: Command, stdio: Stdio) -> Command   // and stdout, stderr
+pub fn stop_within(command: Command, duration: Duration) -> Command  // 5 s
 pub fn program(command: Command) -> Text
 pub fn arguments(command: Command) -> List<Text>
 
@@ -334,12 +335,21 @@ pub fn host_for_tests() -> Commands                      // test-only
   start. A file the kernel cannot run (no `#!` line, wrong format) is
   `Failed`, and `Failed` carries only the operating system's words.
 - `start(command, use)` is the only way to hold a `Child`: when `use` returns,
-  fails or is cancelled, a child still running MUST be killed with SIGKILL and
-  reaped, so no child and no zombie outlives the `start` that made it. A
+  fails or is cancelled, a child still running MUST get SIGTERM, then the
+  command's `stop_within` time (5 seconds unless set) to exit, then SIGKILL,
+  and MUST be reaped, so no child and no zombie outlives the `start` that
+  made it. Other tasks run while it is stopped. `stop_within` of zero sends
+  SIGKILL at once. The time is real time, read from the operating system's
+  monotonic clock about every 10 ms, so it runs out under the virtual clock
+  too. When the program itself ends, even by a defect or a stop signal, any
+  child still held is killed with SIGKILL and reaped. A
   `Child` used after that answers `Closed` from `wait`. The child's own
   children are not stopped: a program that leaves its children running when
-  it dies leaves them to outlive the `start` (process groups are decided
-  with the graceful release in part 4).
+  it dies leaves them to outlive the `start`. The child stays in the
+  parent's process group, as in Rust, Go and Python, so a terminal's Ctrl-C
+  and job control reach it as they would from a shell; a separate group
+  (which would let `start` stop grandchildren) is left until a program needs
+  it.
 - A stream set to `Stdio.Pipe` MUST be connected to the parent by a pipe,
   read with `output` or `error_output` and written with `input`, as
   std/stream readers and writers. Asking for a stream that was not piped is
@@ -355,7 +365,7 @@ pub fn host_for_tests() -> Commands                      // test-only
   by side (so neither pipe fills while the other is read), and returns the
   status and both byte buffers, unbounded. A nonzero exit is in `status`. It
   waits for the end of both streams, so a grandchild that keeps them open
-  delays it (part 4 decides process groups).
+  delays it.
 - `wait` MUST NOT close a piped `input`, since another task may still be
   writing it; a program closes the input itself when done, and a child that
   reads to the end of its input exits only then.
@@ -455,6 +465,8 @@ pub fn host_for_tests() -> Commands                      // test-only
 | A child keeps SIGHUP ignored when the parent inherited it ignored | `tests/std_exec.rs` `a_child_keeps_the_signals_its_parent_ignores` |
 | `capture` returns both streams and the status; more than a pipe holds on both at once; no input | `tests/std_exec.rs` `capture_collects_both_streams_and_the_status` |
 | A round trip through `cat`; `wait` leaves the input to a writer task; a cancelled read; `BrokenPipe` without SIGPIPE; `Closed` after close; a stopped output ends the child with SIGPIPE; a sibling does not hold a child's pipe | `tests/std_exec.rs` `pipes_carry_a_childs_input_and_output` |
+| A child left running gets SIGTERM and exits; one that ignores it is killed after `stop_within`; zero kills at once; a cancelled start stops its child gently; other tasks run meanwhile | `tests/std_exec.rs` `a_child_left_running_gets_sigterm_then_sigkill` |
+| A defect in the program kills and reaps its child | `tests/std_exec.rs` `no_child_outlives_the_program` |
 | A released child leaves no descriptor open (Linux) | `tests/std_exec.rs` `a_released_child_leaves_no_descriptor_open` |
 | A fake's piped streams through `capture`; a fake round trip with a writer task; a fake read after a stop is `Closed`; a fake input whose reader stopped is `BrokenPipe` (a fake also gives `BrokenPipe` for a write after close); an unpiped stream is a defect (native: std/stream needs the bounded channel runtime) | `tests/std_exec.rs` `a_fake_child_pipes_streams` |
 | A fake on both backends; the runner closes `commands` on `main`; `T4401` from `main`; `T4400` without one; the interpreter defects | `tests/std_exec.rs` `a_fake_stands_in_for_real_programs_on_both_backends`, `main_gets_real_programs_by_declaring_the_need_and_nothing_else_does`, `the_interpreter_cannot_start_real_programs` |

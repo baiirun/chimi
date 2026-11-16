@@ -858,3 +858,113 @@ test "a fake input whose reader stopped" {
         unpiped.stderr
     );
 }
+
+// Rejects a release that kills at once, waits past the exit, blocks the
+// scheduler while the child takes its time, or never sends SIGKILL. A child
+// that traps SIGTERM leaves a note and exits; one that ignores SIGTERM is
+// killed once `stop_within` passes; zero kills at once, so the trap never
+// runs; a start cancelled from outside still stops its child gently; and a
+// task started before the release keeps running through it.
+#[test]
+fn a_child_left_running_gets_sigterm_then_sigkill() {
+    let run = run_tests(
+        "stopping-gracefully",
+        r#"
+fn ready(command: Exec.Command) -> Exec.Command {
+  Exec.stdout(command, Stdio.Pipe)
+}
+
+// Starts `script`, waits for its first line, and ends the start.
+fn leave_running(script: Text, within: Duration.Duration) -> Void needs { commands: Commands } {
+  Exec.start(Exec.stop_within(ready(Exec.command("/bin/sh", ["-c", script])), within), fn(child) {
+    let _ = Stream.read(Exec.output(child))
+    Void
+  })
+}
+
+fn exists(file: Text) -> Bool needs { commands: Commands } {
+  Exec.succeeded(sh("test -s ${file}"))
+}
+
+test "a child that traps SIGTERM exits on its own" {
+  let noted = (fn() {
+    leave_running("trap 'echo bye > term.txt; exit 0' TERM; echo ready; while :; do sleep 0.02; done", Duration.seconds(5))
+    exists("term.txt")
+  })() using { commands: Exec.host_for_tests() }
+  noted |> Test.assert_equal(True)
+}
+
+test "a child that ignores SIGTERM is killed after stop_within" {
+  let report = (fn() {
+    let start = Clock.now()
+    leave_running("trap '' TERM; echo $$ > ignored.pid; echo ready; while :; do sleep 0.02; done", Duration.milliseconds(300))
+    let took = Clock.since(start)
+    let gone = Exec.succeeded(sh("! kill -0 \"$(cat ignored.pid)\" 2>/dev/null"))
+    (took >= Duration.milliseconds(300), took < Duration.seconds(3), gone)
+  })() using { commands: Exec.host_for_tests() }
+  report |> Test.assert_equal((True, True, True))
+}
+
+test "zero sends SIGKILL at once" {
+  let noted = (fn() {
+    leave_running("trap 'echo bye > zero.txt; exit 0' TERM; echo ready; while :; do sleep 0.02; done", Duration.seconds(0))
+    exists("zero.txt")
+  })() using { commands: Exec.host_for_tests() }
+  noted |> Test.assert_equal(False)
+}
+
+test "a cancelled start still stops its child gently" {
+  let noted = (fn() {
+    let _ = Result.capture(fn() {
+      Task.timeout(fn() {
+        Exec.start(Exec.command("/bin/sh", ["-c", "trap 'echo bye > cancelled.txt; exit 0' TERM; while :; do sleep 0.02; done"]), fn(child) {
+          Exec.wait(child)
+        })
+      }, Duration.milliseconds(200))
+    })
+    exists("cancelled.txt")
+  })() using { commands: Exec.host_for_tests() }
+  noted |> Test.assert_equal(True)
+}
+
+test "other tasks run while a child is stopped" {
+  let order = (fn() {
+    let ticker = Task.start(fn() {
+      Clock.sleep(Duration.milliseconds(200))
+      Clock.now()
+    })
+    leave_running("trap '' TERM; echo ready; while :; do sleep 0.02; done", Duration.seconds(1))
+    let released = Clock.now()
+    Task.result(ticker) < released
+  })() using { commands: Exec.host_for_tests() }
+  order |> Test.assert_equal(True)
+}
+"#,
+    );
+    assert_passed(&run, 5);
+}
+
+// Rejects a runner that leaves a child behind when the program dies: a
+// defect inside `use` and a SIGTERM to the runner both end it, and the
+// child's process is gone once the runner has exited.
+#[test]
+fn no_child_outlives_the_program() {
+    let scratch = build_main(
+        "backstop",
+        r#"pub fn main() -> Void needs { commands: Commands } {
+  Exec.start(Exec.command("/bin/sh", ["-c", "echo $$ > child.pid; exec sleep 30"]), fn(child) {
+    let waited = sh("while ! test -s child.pid; do sleep 0.01; done")
+    case Exec.succeeded(waited) {
+      True -> Debug.crash("a defect with a child running")
+      False -> Exec.wait(child)
+    }
+  })
+  Void
+}
+"#,
+    );
+    let output = run_main(&scratch, "");
+    assert_ne!(output.status.code(), Some(0));
+    let pid: i32 = std::fs::read_to_string(scratch.0.join("child.pid")).unwrap().trim().parse().unwrap();
+    assert!(!exists(pid), "the child {pid} outlived the program's defect");
+}
