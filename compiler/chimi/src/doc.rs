@@ -10,6 +10,7 @@
 
 use crate::doc_examples::{doc_comment_before, module_comment};
 use crate::occurrences::symbol_at;
+use crate::resolution::ProjectSymbolKind;
 use crate::json::write_json_string_escaping_controls;
 use crate::semantic::{
     ImportBinding, ModuleDeclaration, ModuleDeclarationKind, SemanticModule, is_generated_name,
@@ -194,6 +195,21 @@ pub(crate) fn doc_comment_at(typed: &TypedProject, module_path: &str, offset: us
         .iter()
         .find(|module| module.path == module_path)?;
     let symbol = resolved.symbol(symbol_at(resolved, module, offset)?);
+    // A type parameter or a local shares its function's semantic id, but has
+    // no doc comment of its own.
+    if !matches!(
+        symbol.kind,
+        ProjectSymbolKind::Struct
+            | ProjectSymbolKind::StructConstructor
+            | ProjectSymbolKind::Enum
+            | ProjectSymbolKind::Interface
+            | ProjectSymbolKind::NativeType
+            | ProjectSymbolKind::Function
+            | ProjectSymbolKind::Constant
+            | ProjectSymbolKind::ProcessName
+    ) {
+        return None;
+    }
     let declaring = &resolved.semantic.modules[symbol.module_id?.raw() as usize];
     let semantic_id = symbol.semantic_id?;
     let declaration = declaring

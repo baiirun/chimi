@@ -49,4 +49,16 @@ MUTATIONS = [
         "        inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),",
         "        inlay_hint_provider: None,",
     )]),
+    mutant("a function's unsolved parameter is settled", H, [(
+        "            contract.inputs.iter().all(settled) && settled(&contract.success)",
+        "            settled(&contract.success)",
+    )]),
+    mutant("a generic function value is settled", H, [(
+        "        CanonicalType::PolymorphicFunction { .. } => false,",
+        "        CanonicalType::PolymorphicFunction { .. } => true,",
+    )]),
+    mutant("a type parameter shows its function's doc", D, [(
+        "            | ProjectSymbolKind::ProcessName\n    ) {\n        return None;",
+        "            | ProjectSymbolKind::ProcessName\n    ) && false {\n        return None;",
+    )]),
 ]

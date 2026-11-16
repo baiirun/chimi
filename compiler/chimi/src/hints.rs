@@ -64,7 +64,8 @@ pub(crate) fn let_type_hints(typed: &TypedProject, module_path: &str) -> Vec<Typ
 }
 
 /// Whether `id` is fully inferred: no part of it is a type error or an
-/// unsolved inference variable.
+/// unsolved inference variable, and it names no type parameter that is not in
+/// scope.
 fn is_settled(typed: &TypedProject, id: TypeId, depth: usize) -> bool {
     const DEPTH_LIMIT: usize = 32;
     if depth > DEPTH_LIMIT {
@@ -76,9 +77,13 @@ fn is_settled(typed: &TypedProject, id: TypeId, depth: usize) -> bool {
         CanonicalType::Named { arguments, .. } => arguments.iter().all(settled),
         CanonicalType::Record(fields) => fields.iter().all(|field| settled(&field.type_id)),
         CanonicalType::Tuple(elements) => elements.iter().all(settled),
-        CanonicalType::Generic(_)
-        | CanonicalType::FailureSetValue(_)
-        | CanonicalType::Function(_)
-        | CanonicalType::PolymorphicFunction { .. } => true,
+        CanonicalType::Function(contract) => {
+            contract.inputs.iter().all(settled) && settled(&contract.success)
+        }
+        // A generic function used as a value: its type parameters are not
+        // bound where the binding is, so `fn(T) -> T` would name nothing.
+        CanonicalType::PolymorphicFunction { .. } => false,
+        // A type parameter of the enclosing function is in scope.
+        CanonicalType::Generic(_) | CanonicalType::FailureSetValue(_) => true,
     }
 }

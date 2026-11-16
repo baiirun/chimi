@@ -1144,7 +1144,7 @@ mod tests {
         let fixture = Fixture::new("inlay");
         let app = fixture.write(
             "app.chimi",
-            "pub fn main() -> Int {\n  let items = [1, 2]\n  let total: Int = 3\n  let pair = (total, \"x\")\n  let broken = missing()\n  let wrapped = [missing()]\n  total\n}\n",
+            "pub fn main() -> Int {\n  let items = [1, 2]\n  let total: Int = 3\n  let pair = (total, \"x\")\n  let broken = missing()\n  let wrapped = [missing()]\n  let open = fn(a) { a }\n  let generic = same\n  let double = fn(a: Int) { a * 2 }\n  total\n}\n\nfn same<T>(value: T) -> T { value }\n",
         );
         let project = ProjectConfig::new(fixture.root(), "app").unwrap();
         let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
@@ -1163,7 +1163,11 @@ mod tests {
             .collect();
         assert_eq!(
             shown,
-            vec![(1, 11, ": List<Int>"), (3, 10, ": (Int, Text)")]
+            vec![
+                (1, 11, ": List<Int>"),
+                (3, 10, ": (Int, Text)"),
+                (8, 12, ": fn(Int) -> Int"),
+            ]
         );
         // Only the lines asked for.
         assert_eq!(
@@ -1179,7 +1183,7 @@ mod tests {
         let fixture = Fixture::new("hover-doc");
         let lib = fixture.write(
             "lib.chimi",
-            "/// Adds one.\npub fn bump(value: Int) -> Int { value + 1 }\n\npub fn plain() -> Int { 0 }\n",
+            "/// Adds one.\npub fn bump(value: Int) -> Int { value + 1 }\n\npub fn plain() -> Int { 0 }\n\n/// Adds one.\npub fn keep<T>(value: T) -> T { value }\n",
         );
         let app = fixture.write(
             "app.chimi",
@@ -1202,6 +1206,12 @@ mod tests {
         );
         let plain = workspace.hover(&app, at(3, 16)).expect("hovers `plain`");
         assert!(!plain.markdown.contains("---"), "{}", plain.markdown);
+        // A type parameter shares its function's id, not its doc.
+        assert!(
+            workspace
+                .hover(&lib, at(5, 12))
+                .is_none_or(|hover| !hover.markdown.contains("Adds one."))
+        );
         let declared = workspace.hover(&lib, at(1, 8));
         assert!(declared.is_some_and(|hover| hover.markdown.contains("Adds one.")),);
     }
