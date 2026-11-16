@@ -13,7 +13,7 @@ use crate::compiler::{ProjectSource, resolve_project_sources};
 use crate::diagnostic::Diagnostic;
 use crate::executable::{lower, seal_tests};
 use crate::execution::core_operations::{ASSERT_EQUAL_HEADING, ASSERT_NOT_EQUAL_HEADING};
-use crate::execution::{ExecutionConfig, ExecutionOutcome};
+use crate::execution::{ExecutionConfig, ExecutionOutcome, TraceMode};
 use crate::json::write_json_string;
 use crate::line_index::{LineIndex, PositionEncoding};
 use crate::typing::check_project;
@@ -216,6 +216,8 @@ pub struct TestResult {
     /// Whether the test drew from its `random` provider, so a failure report
     /// names the run seed that replays it.
     pub random_read: bool,
+    /// The test's telemetry file, when the run traced and the test wrote one.
+    pub trace: Option<std::path::PathBuf>,
 }
 
 /// An execution's outcome before classification, from either backend.
@@ -246,6 +248,31 @@ pub struct RunOptions {
     pub seed: u64,
     pub time_limit: Duration,
     pub jobs: usize,
+    /// `--trace=boundaries|full`; `None` under `--trace=off`.
+    pub trace: Option<TraceOutput>,
+}
+
+/// Where a traced run writes each test's `chimi.runtime.v1` telemetry: one
+/// JSON Lines file per test in `directory`.
+#[derive(Clone, Debug)]
+pub struct TraceOutput {
+    pub level: TraceLevel,
+    pub directory: std::path::PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TraceLevel {
+    Boundaries,
+    Full,
+}
+
+impl TraceLevel {
+    const fn mode(self) -> TraceMode {
+        match self {
+            Self::Boundaries => TraceMode::Boundaries,
+            Self::Full => TraceMode::Full,
+        }
+    }
 }
 
 pub struct TestSuite {
@@ -361,7 +388,7 @@ impl TestSuite {
         run_parallel(selected, options.jobs, |index| {
             let started = Instant::now();
             let (outcome, output, random_read) = self.interpret(index, options);
-            self.result(outcome, output, random_read, started)
+            self.result(index, options, outcome, output, random_read, started)
         })
     }
 
@@ -375,15 +402,25 @@ impl TestSuite {
         let limit = options.time_limit;
         let seed = self.random_seed(index, options);
         let program = self.program.with_entry(self.program.core().tests[index]);
+        let trace = options
+            .trace
+            .as_ref()
+            .map(|trace| (trace.level.mode(), self.trace_path(index, trace)));
         let (sender, receiver) = mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name(format!("chimi-test-{index}"))
             .stack_size(256 * 1024 * 1024)
             .spawn(move || {
-                let config = ExecutionConfig::new(format!("test-{index}"))
+                let config = ExecutionConfig::new(Self::execution_id(index))
                     .expect("a generated execution id is valid")
-                    .with_random_seed(seed);
+                    .with_random_seed(seed)
+                    .with_trace_mode(trace.as_ref().map_or(TraceMode::Off, |(mode, _)| *mode));
                 let report = program.execute_oracle(config);
+                let trace_error = trace.and_then(|(_, path)| {
+                    std::fs::write(&path, report.render_telemetry_json_lines())
+                        .err()
+                        .map(|error| format!("could not write {}: {error}\n", path.display()))
+                });
                 let outcome = match report.outcome {
                     ExecutionOutcome::Success(_) => RawOutcome::Success,
                     ExecutionOutcome::ExpectedFailure(_) => RawOutcome::ExpectedFailure {
@@ -395,7 +432,9 @@ impl TestSuite {
                     },
                     ExecutionOutcome::Cancellation(_) => RawOutcome::Cancelled,
                 };
-                let output = report.application_stdout + &report.application_stderr;
+                let output = report.application_stdout
+                    + &report.application_stderr
+                    + &trace_error.unwrap_or_default();
                 let _ = sender.send((outcome, output, report.random_read));
             });
         if spawned.is_err() {
@@ -428,6 +467,8 @@ impl TestSuite {
 
     fn result(
         &self,
+        index: usize,
+        options: &RunOptions,
         outcome: RawOutcome,
         output: String,
         random_read: bool,
@@ -438,7 +479,38 @@ impl TestSuite {
             output,
             wall_ns: u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
             random_read,
+            trace: options
+                .trace
+                .as_ref()
+                .map(|trace| self.trace_path(index, trace))
+                .filter(|path| path.is_file()),
         }
+    }
+
+    /// Test `index`'s telemetry file: `<index>-<identity>.jsonl`, the identity
+    /// reduced to lowercase letters, digits, and `-` so the name is portable.
+    fn trace_path(&self, index: usize, trace: &TraceOutput) -> std::path::PathBuf {
+        let case = &self.cases[index];
+        let mut name = format!("{index}-");
+        let mut dash = true;
+        for character in format!("{} {}", case.module, case.name).chars() {
+            if character.is_ascii_alphanumeric() {
+                name.push(character.to_ascii_lowercase());
+                dash = false;
+            } else if !dash {
+                name.push('-');
+                dash = true;
+            }
+            if name.len() >= 96 {
+                break;
+            }
+        }
+        let name = name.trim_end_matches('-');
+        trace.directory.join(format!("{name}.jsonl"))
+    }
+
+    fn execution_id(index: usize) -> String {
+        format!("test-{index}")
     }
 
     fn classify(&self, outcome: RawOutcome) -> Option<TestFailure> {
@@ -514,7 +586,7 @@ impl TestSuite {
             let started = Instant::now();
             let (outcome, output, random_read) =
                 self.run_process(executable, scratch, index, options);
-            self.result(outcome, output, random_read, started)
+            self.result(index, options, outcome, output, random_read, started)
         })
     }
 
@@ -541,7 +613,20 @@ impl TestSuite {
         command
             .arg(format!("--random-seed={}", self.random_seed(index, options)))
             .arg(format!("--outcome-file={}", outcome_path.display()))
-            .arg(format!("--test={index}"))
+            .arg(format!("--execution-id={}", Self::execution_id(index)))
+            .arg(format!("--test={index}"));
+        if let Some(trace) = &options.trace {
+            command
+                .arg(match trace.level {
+                    TraceLevel::Boundaries => "--trace=boundaries",
+                    TraceLevel::Full => "--trace=full",
+                })
+                .arg(format!(
+                    "--telemetry-file={}",
+                    self.trace_path(index, trace).display()
+                ));
+        }
+        command
             .arg("--")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -739,6 +824,9 @@ pub fn render_report(
             output.push_str("  output:\n");
             indent(&mut output, &result.output, 4);
         }
+        if let Some(trace) = result.trace.as_ref().filter(|_| result.failure.is_some()) {
+            writeln!(output, "  trace: {}", trace.display()).unwrap();
+        }
     }
     let failed = results
         .iter()
@@ -889,7 +977,12 @@ pub fn render_json(
             }
             write_json_string(&mut output, line);
         }
-        writeln!(output, "],\"seed\":{seed},\"wall_ns\":{}}}", result.wall_ns).unwrap();
+        output.push(']');
+        if let Some(trace) = &result.trace {
+            output.push_str(",\"trace\":");
+            write_json_string(&mut output, &trace.display().to_string());
+        }
+        writeln!(output, ",\"seed\":{seed},\"wall_ns\":{}}}", result.wall_ns).unwrap();
     }
     let failed = results
         .iter()

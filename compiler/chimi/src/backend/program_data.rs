@@ -639,6 +639,21 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
         u32::to_string,
     );
     writeln!(output, "const uint32_t CHIMI_TEST_COUNT = {};", tests.len()).unwrap();
+    let computations = core
+        .tests
+        .iter()
+        .map(|test| c_string(&core.symbol(*test).name))
+        .collect::<Vec<_>>();
+    if computations.is_empty() {
+        output.push_str("const char *const CHIMI_TEST_COMPUTATIONS[] = { 0 };\n");
+    } else {
+        render_array(
+            &mut output,
+            "const char *const CHIMI_TEST_COMPUTATIONS[]",
+            &computations,
+            Clone::clone,
+        );
+    }
     let mut assertion_nodes = core.assertion_calls().into_iter().collect::<Vec<_>>();
     assertion_nodes.sort_unstable();
     render_array(

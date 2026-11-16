@@ -1318,3 +1318,118 @@ fn a_doc_example_sees_only_public_items_and_chimi_check_reads_it() {
         run.stdout
     );
 }
+
+const TRACED: &str = r#"import std/test as Test
+
+fn add(a: Int, b: Int) -> Int {
+  a + b
+}
+
+test "adds" {
+  Test.assert_equal(add(1, 2), 3)
+}
+
+test "fails" {
+  Test.assert_equal(add(1, 2), 4)
+}
+"#;
+
+/// `--trace` writes each test's telemetry to its own file, named by the test
+/// and identical on both backends apart from times; a new traced run clears
+/// the last one's files, and `--trace=off` writes none.
+#[test]
+fn trace_writes_one_telemetry_file_per_test_on_both_backends() {
+    let scratch = scratch_directory("trace");
+    std::fs::write(scratch.join("cases.chimi"), TRACED).unwrap();
+    let traces = scratch.join("target/chimi/cases/test/traces");
+    let run = |arguments: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .arg("test")
+            .arg("cases.chimi")
+            .args(arguments)
+            .output()
+            .expect("run chimi");
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
+        )
+    };
+    let files = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| {
+                let text = std::fs::read_to_string(traces.join(name))
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+                text.lines()
+                    .map(|line| {
+                        let at = line.find(",\"time_ns\":");
+                        at.map_or_else(
+                            || line.to_owned(),
+                            |at| {
+                                let end = line[at + 11..]
+                                    .find(|c: char| !c.is_ascii_digit())
+                                    .map_or(line.len(), |end| at + 11 + end);
+                                format!("{}{}", &line[..at], &line[end..])
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let names = ["0-main-adds.jsonl", "1-main-fails.jsonl"];
+
+    std::fs::create_dir_all(&traces).unwrap();
+    std::fs::write(traces.join("stale.jsonl"), "").unwrap();
+    let (status, stdout, stderr) = run(&["--trace=full", "--json"]);
+    assert_eq!(status, Some(1), "{stdout}{stderr}");
+    assert!(!traces.join("stale.jsonl").exists(), "a traced run clears the last one");
+    for name in names {
+        let path = format!("\"trace\":\"target/chimi/cases/test/traces/{name}\"");
+        assert!(stdout.contains(&path), "{path} in {stdout}");
+    }
+    let native = files(&names);
+    for (index, (lines, test)) in native.iter().zip(["adds", "fails"]).enumerate() {
+        let first = lines.first().expect("a trace has events");
+        let last = lines.last().unwrap();
+        let computation = format!("\"computation\":\"test \\\"{test}\\\"\"");
+        let execution = format!("\"execution_id\":\"test-{index}\"");
+        for line in lines {
+            assert!(line.contains(&computation) && line.contains(&execution), "{line}");
+        }
+        assert!(first.contains("\"event\":\"computation_started\""), "{first}");
+        assert!(last.contains("\"event\":\"computation_completed\""), "{last}");
+        assert!(lines.iter().any(|line| line.contains("\"event\":\"operation_started\"")));
+    }
+    assert!(native[0].last().unwrap().contains("\"outcome\":\"success\""));
+    assert!(native[1].last().unwrap().contains("\"outcome\":\"defect\""));
+
+    let (status, stdout, stderr) = run(&["--trace=full", "--json", "--backend=interpreter"]);
+    assert_eq!(status, Some(1), "{stdout}{stderr}");
+    assert_eq!(files(&names), native, "both backends write the same events");
+
+    let (status, stdout, stderr) = run(&["--trace=boundaries"]);
+    assert_eq!(status, Some(1), "{stdout}{stderr}");
+    assert!(
+        stdout.contains("  trace: target/chimi/cases/test/traces/1-main-fails.jsonl\n"),
+        "the report names a failing test's trace: {stdout}"
+    );
+    assert!(!stdout.contains("0-main-adds.jsonl"), "{stdout}");
+    let boundaries = files(&names);
+    assert!(boundaries.iter().all(|lines| {
+        lines.len() == 2 && !lines.iter().any(|line| line.contains("operation_started"))
+    }));
+
+    std::fs::remove_dir_all(&traces).unwrap();
+    let (status, stdout, stderr) = run(&["--json"]);
+    assert_eq!(status, Some(1), "{stdout}{stderr}");
+    assert!(!stdout.contains("\"trace\""), "{stdout}");
+    assert!(!traces.exists(), "--trace=off writes no traces");
+
+    let (status, _, stderr) = run(&["--trace=some"]);
+    assert_eq!(status, Some(2));
+    assert!(stderr.contains("--trace must be off, boundaries, or full"), "{stderr}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}

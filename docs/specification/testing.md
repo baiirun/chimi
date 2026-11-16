@@ -13,8 +13,8 @@ report, `--json`, filters, jobs, the time limit, the clock options, directory
 inputs, and the
 exit status, the four `std/test` assertions, `capture_defect`, recorders
 and scripts, fake mailboxes, `T4401`, `T4403`, `std/random` with
-`--seed`, and doc-comment examples in `chimi test` and `chimi check`. Not
-implemented yet: `--trace`, formatting example code, examples in `std/`
+`--seed`, doc-comment examples in `chimi test` and `chimi check`, and
+`--trace`. Not implemented yet: formatting example code, examples in `std/`
 modules, and converting the std-tests programs that check maps, sets, causes,
 JSON and expected failures (54 of 99 are test items so far). The build is tracked
 by CHI-208; the spec was written under CHI-202.
@@ -558,7 +558,7 @@ the tests in that module and the modules it imports. Options:
 | `--jobs=<n>` | tests run at once; default the number of cores |
 | `--show-output` | show captured console output for passing tests too |
 | `--json` | write the [machine-readable output](#machine-readable-output) to stdout instead of the report |
-| `--trace=off\|boundaries\|full` | trace each test's execution, written per test |
+| `--trace=off\|boundaries\|full` | write each test's [telemetry](#traces) to its own file; default `off` |
 
 The interpreter has no clock yet, so under `--backend=interpreter` a test that
 reaches the clock reports the kind `defect` with the interpreter's existing
@@ -582,6 +582,28 @@ test executable per run and start it once per test (`<exe> --test=<index>`),
 so a crash in the runtime itself loses one test, not the run. Running several
 tests in one OS process is allowed when that guarantee holds.
 
+### Traces
+
+`--trace=boundaries` or `--trace=full` records each test's execution as the
+`chimi.runtime.v1` telemetry that `chimi run` and a native runner write,
+under the same names for the two levels.
+
+- Each test writes one JSON Lines file,
+  `target/chimi/<name>/test/traces/<k>-<identity>.jsonl`. `<name>` is the input
+  file's stem, the directory's name, or the module's last segment, as for the
+  test executable. `<k>` is the test's index in report order over every test,
+  selected or not, and `<identity>` is its module and name in lowercase
+  letters, digits, and `-`, cut to fit.
+- A traced run removes the traces directory first, so every file in it is
+  from this run. `--trace=off` writes nothing and leaves an earlier run's
+  files.
+- The trace's root computation is the test item, as `test "adds"`, and its
+  `execution_id` is `test-<k>`. Both backends write the same events, apart
+  from times.
+- The human report prints `trace: <path>` under a failing test. With
+  `--json`, every `test_finished` record of a traced run has `trace`, the
+  file's path.
+
 ### Exit status
 
 `chimi test` exits 0 when every selected test passed, 1 when any test failed,
@@ -596,7 +618,8 @@ With `--json`, the runner writes one JSON object per line, schema
 - one `test_finished` record per test, in report order, with `module`,
   `name`, `line`, `outcome` (`passed` or `failed`), `kind` for a failure,
   `message`, `location` for an assertion, `actual` and `expected` renderings
-  for `assert_equal`, `output` (captured console lines), `seed` (the run seed),
+  for `assert_equal`, `output` (captured console lines), `trace` (the test's
+  trace file, under `--trace=boundaries` or `full`), `seed` (the run seed),
   `virtual_elapsed_ns`, and `wall_ns`;
 - one final `run_finished` record with `passed`, `failed`, and `seed`.
 
@@ -704,6 +727,7 @@ interpreter.
 | Report order | `--jobs=1` and `--jobs=8` print the same report | both |
 | Exit status | 0, 1, and 2 as specified | both |
 | JSON | `--json` records validate against `chimi.test.v1` | both |
+| Traces | `--trace=full` writes one file per test, rooted at the test, with the same events on both backends | both |
 | Doc example | a doc-comment example runs as `<item> example 1` and a broken one fails `chimi check` | both |
 
 ## Implementation notes
