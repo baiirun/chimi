@@ -18,6 +18,9 @@ pub struct Instant(i64);
 
 impl Instant {
     pub const ORIGIN: Self = Self(0);
+    /// The end of the range. A deadline here is never reached, so a scope
+    /// entered with it has no timer (a saturated deadline means the same).
+    pub const NEVER: Self = Self(i64::MAX);
 
     pub const fn from_nanos(nanos: i64) -> Self {
         Self(nanos)

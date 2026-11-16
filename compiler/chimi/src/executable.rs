@@ -60,6 +60,35 @@ impl CoreProgram {
         self.type_count
     }
 
+    /// The ids of the call nodes whose callee is a `std/test` operation that
+    /// fails the test as an assertion: the four assertions, and
+    /// `capture_defect` when its operation did not defect. The runner reports a
+    /// defect at one of these as an assertion, and `capture_defect` lets one
+    /// through instead of capturing it (testing.md, "Defects"). Program data
+    /// gives the native runtime the same set (`CHIMI_ASSERTION_NODES`).
+    pub(crate) fn assertion_calls(&self) -> std::collections::HashSet<u32> {
+        let assertion = |node: CoreNodeId| match self.nodes[node.raw() as usize].operation {
+            CoreOperation::Reference(symbol) => matches!(
+                self.symbol(symbol).standard,
+                Some(StandardSymbol::Function(
+                    StandardFunction::TestAssertEqual
+                        | StandardFunction::TestAssertNotEqual
+                        | StandardFunction::TestAssert
+                        | StandardFunction::TestFail
+                        | StandardFunction::TestCaptureDefect
+                ))
+            ),
+            _ => false,
+        };
+        self.nodes
+            .iter()
+            .filter(|node| {
+                matches!(&node.operation, CoreOperation::Call { callee, .. } if assertion(*callee))
+            })
+            .map(|node| node.id.raw())
+            .collect()
+    }
+
     pub(crate) fn symbol(&self, id: SymbolId) -> &CoreSymbol {
         self.symbols
             .get(id.raw() as usize)
@@ -792,6 +821,25 @@ pub(crate) fn seal_entry(
     }
 
     let reachable = collect_reachable_program(&typed, &[entry])?;
+    if let Some(found) = &reachable.test_only {
+        let mut path = found
+            .path
+            .iter()
+            .map(|symbol| typed.resolved.symbol(*symbol).name.clone())
+            .collect::<Vec<_>>();
+        path.push(found.operation.clone());
+        return Err(vec![Diagnostic::error(
+            DiagnosticStage::ExecutionSetup,
+            "T4401",
+            found.file_id,
+            found.range,
+            format!(
+                "`{}` is test-only, but the program reaches it: {}; call it only from `test` items and the helpers they use",
+                found.operation,
+                path.join(" -> ")
+            ),
+        )]);
+    }
     Ok(VerifiedRoot {
         typed,
         entry,
@@ -885,6 +933,16 @@ fn is_application_arguments_type(typed: &TypedProject, type_id: TypeId) -> bool 
 struct ReachableProgram {
     declarations: Vec<SymbolId>,
     origins: Vec<Origin>,
+    /// The first reference to a test-only operation the walk met, with the
+    /// declaration chain that reached it, root first.
+    test_only: Option<TestOnlyUse>,
+}
+
+struct TestOnlyUse {
+    path: Vec<SymbolId>,
+    operation: String,
+    file_id: FileId,
+    range: TextRange,
 }
 
 #[derive(Default)]
@@ -894,6 +952,12 @@ struct ReachabilityState {
     origins: Vec<(ModuleId, SemanticId, TextRange)>,
     seen_origins: HashSet<(ModuleId, SemanticId)>,
     diagnostics: Vec<Diagnostic>,
+    /// The declaration whose body the walk is in.
+    current: Option<SymbolId>,
+    /// The declaration that first queued each symbol, for `T4401`'s call path.
+    callers: HashMap<SymbolId, SymbolId>,
+    /// The caller, the reference text, and where it is.
+    test_only: Option<(SymbolId, String, FileId, TextRange)>,
 }
 
 fn collect_reachable_program(
@@ -963,12 +1027,32 @@ fn collect_reachable_program(
             ));
         }
         if let Some(body) = &declaration.body {
+            state.current = Some(symbol_id);
             collect_reachable_expression(typed, module_id, body, &references, &mut state);
         }
     }
     if !state.diagnostics.is_empty() {
         return Err(state.diagnostics);
     }
+    let test_only = state
+        .test_only
+        .take()
+        .map(|(caller, operation, file_id, range)| {
+            let mut path = vec![caller];
+            while let Some(&previous) = state.callers.get(path.last().expect("non-empty")) {
+                if path.contains(&previous) {
+                    break;
+                }
+                path.push(previous);
+            }
+            path.reverse();
+            TestOnlyUse {
+                path,
+                operation,
+                file_id,
+                range,
+            }
+        });
 
     let mut declarations = state.seen_declarations.into_iter().collect::<Vec<_>>();
     declarations.sort_unstable();
@@ -992,6 +1076,7 @@ fn collect_reachable_program(
     Ok(ReachableProgram {
         declarations,
         origins,
+        test_only,
     })
 }
 
@@ -1035,6 +1120,20 @@ fn collect_reachable_expression(
                         typed.resolved.symbol(symbol).kind,
                         ProjectSymbolKind::Function | ProjectSymbolKind::Constant
                     ) {
+                        if let Some(current) = state.current {
+                            if let Some(name) = typed
+                                .resolved
+                                .native_operation(symbol)
+                                .filter(|_| state.test_only.is_none())
+                                .and_then(crate::operations::test_only_name)
+                            {
+                                state.test_only =
+                                    Some((current, name, reference.file_id, reference.range));
+                            }
+                            if symbol != current {
+                                state.callers.entry(symbol).or_insert(current);
+                            }
+                        }
                         state.queue.push_back(symbol);
                     }
                 }

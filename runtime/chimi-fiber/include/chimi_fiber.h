@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 17u
+#define CHIMI_FIBER_ABI_VERSION 19u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -100,7 +100,9 @@ enum {
   CHIMI_REQUEST_CHANNEL_RELEASE = 24,
   /* ChimiSchedulerRequest: enters a cancellation scope of the calling task
      whose deadline Instant is `value`; the reply's `token` is the scope id.
-     A cancellation point (see chimi_fiber_scope_cancel_pending). */
+     INT64_MAX means no deadline: the scope has no timer and is cancelled
+     only from outside. A cancellation point (see
+     chimi_fiber_scope_cancel_pending). */
   CHIMI_REQUEST_SCOPE_ENTER = 25,
   /* ChimiSchedulerRequest: leaves the scope whose id is `token`, and any
      scope nested in it; `value` is 1 when the operation ended in a
@@ -162,6 +164,14 @@ enum {
   /* `channel` names a broadcast or watch. OK with a new subscription, a
      receiver owned by the caller, in `channel`, `owner`, `token`. */
   CHIMI_REQUEST_CHANNEL_SUBSCRIBE = 39,
+  /* ChimiSchedulerRequest: cancels the live child tasks started in the
+     scope whose id is `token`, or in a scope nested in it, but not the
+     caller (Test.capture_defect after its operation defected). A later
+     SCOPE_EXIT is PENDING until they drain. A child started in the scope
+     after the cancel is not cancelled, so the caller starts none before it
+     leaves. ERROR when the task is not inside the scope. Never a
+     cancellation point. */
+  CHIMI_REQUEST_SCOPE_CANCEL = 41,
   /* ChimiSchedulerRequest: waits until descriptor `value` is ready for the
      CHIMI_IO_READABLE and/or CHIMI_IO_WRITABLE interest in `token`. OK with
      the ready conditions (CHIMI_IO_*) in `value` once it is ready; PENDING
@@ -174,8 +184,8 @@ enum {
      under the virtual clock no timeout or shutdown deadline fires during it
      (a real signal still ends it).
      Closing a descriptor a task waits on is a host bug. Kinds 36 to 39 are
-     the channel-variant requests; 40 to 47 are left for the task
-     combinators. */
+     the channel-variant requests, 41 cancels a scope, and 40 and 42 to
+     47 are left for the task combinators. */
   CHIMI_REQUEST_IO_WAIT = 48,
 };
 

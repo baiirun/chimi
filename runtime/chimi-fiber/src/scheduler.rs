@@ -119,11 +119,17 @@ pub const REQUEST_CHANNEL_WATCH: u32 = 38;
 /// `channel`: a broadcast or watch. OK with a new subscription receiver in
 /// `channel`, `owner`, `token`.
 pub const REQUEST_CHANNEL_SUBSCRIBE: u32 = 39;
+/// Cancels the live children of the scope whose id is `token` (and of the
+/// scopes nested in it) without cancelling the caller; leaving the scope then
+/// waits for them to drain. ERROR when the task is not inside it. Never a
+/// cancellation point.
+pub const REQUEST_SCOPE_CANCEL: u32 = 41;
 /// Waits until the descriptor in `value` is ready for the `token` interest
 /// (`IO_READABLE`, `IO_WRITABLE`): OK with the ready conditions in `value`,
 /// or PENDING until it may be ready; reissue after every wake. A
 /// cancellation point (`scheduler/reactor.rs`). Kinds 36 to 39 are the
-/// channel-variant requests, and 40 to 47 are left for the task combinators.
+/// channel-variant requests, 41 cancels a scope, and 40 and 42 to 47 are
+/// left for the task combinators.
 pub const REQUEST_IO_WAIT: u32 = 48;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
@@ -1700,6 +1706,15 @@ impl Scheduler {
             }
             REQUEST_SCOPE_CHECK => {
                 request.status = RESPONSE_OK;
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_SCOPE_CANCEL => {
+                request.status =
+                    if self.cancel_scope_children(owner, ScopeId::from_raw(request.token)) {
+                        RESPONSE_OK
+                    } else {
+                        RESPONSE_ERROR
+                    };
                 let _ = self.wake_front(owner);
             }
             REQUEST_SELECT => self.handle_select(owner, request),

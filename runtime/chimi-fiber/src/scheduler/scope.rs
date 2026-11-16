@@ -82,6 +82,9 @@ pub(super) struct Scope {
     pub(super) timer: Option<super::TimerId>,
     pub(super) deadline: Instant,
     pub(super) fired: bool,
+    /// `REQUEST_SCOPE_CANCEL` cancelled the scope's children; leaving waits
+    /// for them to drain, as after firing.
+    pub(super) draining: bool,
     /// The task was resumed with this scope's cancellation.
     pub(super) delivered: bool,
 }
@@ -227,14 +230,20 @@ impl Scheduler {
                 timer,
                 deadline,
                 fired: false,
+                draining: false,
                 delivered: false,
             });
         id
     }
 
-    /// Pushes a scope with a deadline timer onto `task`'s stack.
+    /// Pushes a scope onto `task`'s stack, with a deadline timer unless
+    /// `deadline` is [`Instant::NEVER`] (`Test.capture_defect`'s scope, which
+    /// is never cancelled on its own).
     pub(super) fn enter_scope(&mut self, task: TaskId, deadline: Instant) -> ScopeId {
         let id = self.push_entry(task, ScopeKind::Timeout, deadline, None);
+        if deadline == Instant::NEVER {
+            return id;
+        }
         let timer = self
             .timers
             .insert(deadline, TimerTarget::ScopeDeadline(task, id));
@@ -349,7 +358,9 @@ impl Scheduler {
             .iter()
             .map(|entry| entry.id)
             .collect();
-        let fired = record.scopes[index..].iter().any(|entry| entry.fired);
+        let fired = record.scopes[index..]
+            .iter()
+            .any(|entry| entry.fired || entry.draining);
         let children = self.scope_children(task, &leaving);
         if fired && !children.is_empty() {
             return ScopeExit::Pending;
@@ -507,6 +518,7 @@ impl Scheduler {
                 timer: None,
                 deadline: now,
                 fired: false,
+                draining: false,
                 delivered: false,
             },
         );
@@ -517,6 +529,24 @@ impl Scheduler {
             false,
         );
         self.fire_entry(task, 0, true);
+    }
+
+    /// Cancels every live child of `task` started in `scope` or a scope
+    /// nested in it, without cancelling `task` itself: the operation inside
+    /// the scope already ended with a defect (`Test.capture_defect`), and
+    /// leaving the scope then waits for the children to drain. False when
+    /// `task` is not inside `scope`.
+    pub(super) fn cancel_scope_children(&mut self, task: TaskId, scope: ScopeId) -> bool {
+        let Some(index) = self.entry_index(task, scope, false) else {
+            return false;
+        };
+        let record = self.tasks.get_mut(&task).expect("live task");
+        record.scopes[index].draining = true;
+        let nested: Vec<ScopeId> = record.scopes[index..].iter().map(|entry| entry.id).collect();
+        for child in self.scope_children(task, &nested) {
+            self.cancel_task(child, TaskOutcome::Cancelled);
+        }
+        true
     }
 
     /// True when `task`'s loop passes must poll for scope deadlines: it is
