@@ -20,6 +20,8 @@
 #include "chimi_binding.h"
 
 #include <errno.h>
+#include <pthread.h>
+#include <time.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
@@ -41,10 +43,15 @@ enum {
   EXEC_INVALID_DIRECTORY = 3,
   EXEC_CLOSED = 4,
   EXEC_FAILED = 5,
+  /* A write to a pipe the child no longer reads. */
+  EXEC_BROKEN_PIPE = 6,
 };
 
 /* How a standard stream of the child is connected (std/exec `Stdio`). */
-enum { STDIO_INHERIT = 0, STDIO_NULL = 1 };
+enum { STDIO_INHERIT = 0, STDIO_NULL = 1, STDIO_PIPE = 2 };
+
+/* The bytes one read of a pipe returns at most. */
+#define PIPE_CHUNK 65536
 
 typedef struct {
   char **items; /* NULL-terminated */
@@ -97,8 +104,20 @@ static void release_child(void *state) {
   free(child);
 }
 
+/* The parent's end of a pipe to one of the child's standard streams. */
+typedef struct {
+  int fd;
+} Pipe;
+
+static void release_pipe(void *state) {
+  Pipe *pipe_state = state;
+  close(pipe_state->fd);
+  free(pipe_state);
+}
+
 static const ChimiBindingType BUILDER = {"Command", release_builder};
 static const ChimiBindingType CHILD = {"Child", release_child};
+static const ChimiBindingType PIPE = {"Pipe", release_pipe};
 
 static bool push(TextList *list, const char *text) {
   if (list->count + 2 > list->capacity) {
@@ -291,11 +310,52 @@ static char **child_environment(const Builder *builder) {
   return entries;
 }
 
-static bool connect_stdio(posix_spawn_file_actions_t *actions, int fd, int64_t mode) {
+/* `fd` moved above the standard streams and closed in every child. */
+static int private_descriptor(int fd) {
+  int moved = fcntl(fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+  int error = errno;
+  close(fd);
+  errno = error;
+  return moved;
+}
+
+/* A pipe for the child's stream `target`: ends[0] the parent's, ends[1] the
+   child's, both closed on exec, so no other child ever holds them. The
+   parent's end does not block, and a write to it after the child stopped
+   reading fails with EPIPE where the platform allows (F_SETNOSIGPIPE)
+   instead of raising SIGPIPE. 0, or an errno value. */
+static int open_pipe(int target, int ends[2]) {
+  int raw[2];
+  if (pipe(raw) != 0) return errno;
+  int read_end = private_descriptor(raw[0]);
+  int write_end = read_end < 0 ? -1 : private_descriptor(raw[1]);
+  if (read_end < 0 || write_end < 0) {
+    int error = errno;
+    if (read_end >= 0) close(read_end);
+    else close(raw[1]);
+    return error;
+  }
+  ends[0] = target == STDIN_FILENO ? write_end : read_end;
+  ends[1] = target == STDIN_FILENO ? read_end : write_end;
+  int flags = fcntl(ends[0], F_GETFL);
+  if (flags < 0 || fcntl(ends[0], F_SETFL, flags | O_NONBLOCK) != 0) {
+    int error = errno;
+    close(ends[0]);
+    close(ends[1]);
+    return error;
+  }
+#ifdef F_SETNOSIGPIPE
+  if (target == STDIN_FILENO) (void)fcntl(ends[0], F_SETNOSIGPIPE, 1);
+#endif
+  return 0;
+}
+
+static bool connect_stdio(posix_spawn_file_actions_t *actions, int fd, int64_t mode, int child_end) {
   if (mode == STDIO_INHERIT) return true;
   if (mode == STDIO_NULL)
     return posix_spawn_file_actions_addopen(actions, fd, "/dev/null",
                                             fd == STDIN_FILENO ? O_RDONLY : O_WRONLY, 0) == 0;
+  if (mode == STDIO_PIPE) return posix_spawn_file_actions_adddup2(actions, child_end, fd) == 0;
   return false;
 }
 
@@ -310,15 +370,48 @@ static ChimiBindingResult *spawn_failure(ChimiBindingCall *call, int error) {
   return chimi_binding_failure(call, code, strerror(error));
 }
 
-/* native_spawn(builder, stdin, stdout, stderr): starts the command and
-   closes the builder. */
+/* The spawned child and its pipes as handles. If one cannot be made (the
+   handle table is full), the child is killed and reaped at once; a pipe
+   handle made before that stays open until the program ends. */
+static ChimiBindingResult *started(ChimiBindingCall *call, ChildProcess *child, int ends[3][2]) {
+  ChimiBindingValue *parts[4];
+  bool made = true;
+  for (int fd = 0; fd < 3; ++fd) {
+    parts[fd + 1] = chimi_binding_none(call);
+    if (ends[fd][0] < 0) continue;
+    Pipe *pipe_state = made ? malloc(sizeof(Pipe)) : NULL;
+    if (pipe_state == NULL) {
+      close(ends[fd][0]);
+      made = false;
+      continue;
+    }
+    pipe_state->fd = ends[fd][0];
+    ChimiBindingValue *handle = chimi_binding_make_handle(call, &PIPE, pipe_state);
+    if (handle == NULL) made = false;
+    else parts[fd + 1] = chimi_binding_some(call, handle);
+  }
+  if (!made) {
+    release_child(child);
+    return chimi_binding_failure(call, EXEC_FAILED, strerror(EMFILE));
+  }
+  /* With no handle made, chimi_binding_make_handle has already released
+     the child, which killed and reaped it. */
+  parts[0] = chimi_binding_make_handle(call, &CHILD, child);
+  if (parts[0] == NULL) return chimi_binding_failure(call, EXEC_FAILED, strerror(EMFILE));
+  return chimi_binding_ok(call, chimi_binding_make_tuple(call, parts, 4));
+}
+
+/* native_spawn(builder, stdin, stdout, stderr) -> Result<(Process,
+   Option<Pipe>, Option<Pipe>, Option<Pipe>), (Int, Text)>: starts the
+   command and closes the builder, with a pipe for each stream given
+   Stdio.Pipe. */
 ChimiBindingResult *chimi_exec_spawn(ChimiBindingCall *call) {
   Builder *builder = chimi_binding_handle(call, 0, &BUILDER);
   int64_t modes[3];
   if (builder == NULL) return chimi_binding_defect(call, "Exec: the command was already started");
   for (uint32_t index = 0; index < 3; ++index)
     if (!chimi_binding_integer(call, index + 1, &modes[index]) || modes[index] < STDIO_INHERIT ||
-        modes[index] > STDIO_NULL)
+        modes[index] > STDIO_PIPE)
       return chimi_binding_defect(call, "Exec: an unknown Stdio");
   if (builder->directory != NULL) {
     /* A directory the child could not enter (no search permission) is
@@ -348,7 +441,13 @@ ChimiBindingResult *chimi_exec_spawn(ChimiBindingCall *call) {
   bool actions_ready = posix_spawn_file_actions_init(&actions) == 0;
   bool attributes_ready = posix_spawnattr_init(&attributes) == 0;
   int error = ENOMEM;
+  int ends[3][2] = {{-1, -1}, {-1, -1}, {-1, -1}};
   if (argv != NULL && envp != NULL && child != NULL && actions_ready && attributes_ready) {
+    error = 0;
+    for (int fd = 0; fd < 3 && error == 0; ++fd)
+      if (modes[fd] == STDIO_PIPE) error = open_pipe(fd, ends[fd]);
+  }
+  if (error == 0 && argv != NULL && envp != NULL && child != NULL && actions_ready && attributes_ready) {
     argv[0] = builder->program;
     for (size_t index = 0; index < argc; ++index) argv[index + 1] = builder->arguments.items[index];
     sigset_t empty;
@@ -356,7 +455,7 @@ ChimiBindingResult *chimi_exec_spawn(ChimiBindingCall *call) {
     error = posix_spawnattr_setsigmask(&attributes, &empty);
     if (error == 0) error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK);
     for (int fd = 0; fd < 3 && error == 0; ++fd)
-      if (!connect_stdio(&actions, fd, modes[fd])) error = EINVAL;
+      if (!connect_stdio(&actions, fd, modes[fd], ends[fd][1])) error = EINVAL;
     if (error == 0 && builder->directory != NULL)
       error = posix_spawn_file_actions_addchdir_np(&actions, builder->directory);
     if (error == 0) {
@@ -369,15 +468,17 @@ ChimiBindingResult *chimi_exec_spawn(ChimiBindingCall *call) {
   free(argv);
   free(envp);
   free(path);
+  /* The child holds its ends now; the parent never uses them. */
+  for (int fd = 0; fd < 3; ++fd)
+    if (ends[fd][1] >= 0) close(ends[fd][1]);
   ChimiBindingResult *result;
   if (error != 0) {
+    for (int fd = 0; fd < 3; ++fd)
+      if (ends[fd][0] >= 0) close(ends[fd][0]);
     free(child);
     result = spawn_failure(call, error);
   } else {
-    ChimiBindingValue *handle = chimi_binding_make_handle(call, &CHILD, child);
-    /* With no handle made, chimi_binding_make_handle has already released
-       the child, which killed and reaped it. */
-    result = handle ? chimi_binding_ok(call, handle) : chimi_binding_failure(call, EXEC_FAILED, strerror(EMFILE));
+    result = started(call, child, ends);
   }
   chimi_binding_close_handle(call, 0, &BUILDER);
   return result;
@@ -448,5 +549,113 @@ ChimiBindingResult *chimi_exec_release(ChimiBindingCall *call) {
 /* native_allow_real_commands() -> Void: test-only (T4401), so a program
    cannot reach `Exec.host_for_tests`. Does nothing. */
 ChimiBindingResult *chimi_exec_allow_real_commands(ChimiBindingCall *call) {
+  return chimi_binding_success(call, chimi_binding_void(call));
+}
+
+/* ---- Pipes ----------------------------------------------------------- */
+
+static ChimiBindingResult *pipe_closed(ChimiBindingCall *call) {
+  return chimi_binding_failure(call, EXEC_CLOSED, "the stream was closed");
+}
+
+static ChimiBindingResult *pipe_not_ready(ChimiBindingCall *call, int waited) {
+  if (waited == CHIMI_BINDING_WAIT_CANCELLED) return chimi_binding_cancelled(call);
+  if (waited == CHIMI_BINDING_WAIT_CLOSED) return pipe_closed(call);
+  return chimi_binding_failure(call, EXEC_FAILED, strerror(EBADF));
+}
+
+/* native_read(pipe) -> Result<Option<Bytes>, (Int, Text)>: the next bytes
+   the child wrote, or None at the end, once every writer has closed. */
+ChimiBindingResult *chimi_exec_read(ChimiBindingCall *call) {
+  /* On the heap: a task's stack is too small to hold a whole chunk. */
+  unsigned char *buffer = malloc(PIPE_CHUNK);
+  if (buffer == NULL) return chimi_binding_failure(call, EXEC_FAILED, strerror(ENOMEM));
+  ChimiBindingResult *result;
+  for (;;) {
+    Pipe *pipe_state = chimi_binding_handle(call, 0, &PIPE);
+    if (pipe_state == NULL) {
+      result = pipe_closed(call);
+      break;
+    }
+    ssize_t count = read(pipe_state->fd, buffer, PIPE_CHUNK);
+    if (count > 0) {
+      result = chimi_binding_ok(call, chimi_binding_some(call, chimi_binding_make_bytes(call, buffer, (size_t)count)));
+      break;
+    }
+    if (count == 0) {
+      result = chimi_binding_ok(call, chimi_binding_none(call));
+      break;
+    }
+    if (errno == EINTR) continue;
+    if (errno != EAGAIN && errno != EWOULDBLOCK) {
+      result = chimi_binding_failure(call, EXEC_FAILED, strerror(errno));
+      break;
+    }
+    int waited = chimi_binding_wait(call, 0, pipe_state->fd, CHIMI_BINDING_READABLE);
+    if (waited != CHIMI_BINDING_READY) {
+      result = pipe_not_ready(call, waited);
+      break;
+    }
+  }
+  free(buffer);
+  return result;
+}
+
+/* One write that fails with EPIPE, not SIGPIPE, when the child no longer
+   reads. Without F_SETNOSIGPIPE the signal is blocked on this thread for
+   the write, and one it raised is taken back before unblocking. */
+static ssize_t write_quietly(int fd, const unsigned char *bytes, size_t length) {
+#ifdef F_SETNOSIGPIPE
+  return write(fd, bytes, length);
+#else
+  sigset_t pipe_signal, previous, pending;
+  sigemptyset(&pipe_signal);
+  sigaddset(&pipe_signal, SIGPIPE);
+  sigpending(&pending);
+  bool already = sigismember(&pending, SIGPIPE);
+  pthread_sigmask(SIG_BLOCK, &pipe_signal, &previous);
+  ssize_t count = write(fd, bytes, length);
+  int error = errno;
+  if (count < 0 && error == EPIPE && !already) {
+    struct timespec now = {0, 0};
+    while (sigtimedwait(&pipe_signal, NULL, &now) < 0 && errno == EINTR) {
+    }
+  }
+  pthread_sigmask(SIG_SETMASK, &previous, NULL);
+  errno = error;
+  return count;
+#endif
+}
+
+/* native_write(pipe, bytes) -> Result<Void, (Int, Text)>: writes every byte
+   or fails; BROKEN_PIPE once the child stopped reading. */
+ChimiBindingResult *chimi_exec_write(ChimiBindingCall *call) {
+  const unsigned char *bytes;
+  size_t length;
+  if (!chimi_binding_bytes(call, 1, &bytes, &length)) return chimi_binding_defect(call, "write takes Bytes");
+  size_t written = 0;
+  while (written < length) {
+    Pipe *pipe_state = chimi_binding_handle(call, 0, &PIPE);
+    if (pipe_state == NULL) return pipe_closed(call);
+    ssize_t count = write_quietly(pipe_state->fd, bytes + written, length - written);
+    if (count > 0) {
+      written += (size_t)count;
+      continue;
+    }
+    if (count < 0 && errno == EINTR) continue;
+    if (count < 0 && errno == EPIPE) return chimi_binding_failure(call, EXEC_BROKEN_PIPE, strerror(EPIPE));
+    if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+      return chimi_binding_failure(call, EXEC_FAILED, strerror(errno));
+    int waited = chimi_binding_wait(call, 0, pipe_state->fd, CHIMI_BINDING_WRITABLE);
+    if (waited != CHIMI_BINDING_READY) return pipe_not_ready(call, waited);
+  }
+  return chimi_binding_ok(call, chimi_binding_void(call));
+}
+
+/* native_close_pipe(pipe) -> Void: closes the parent's end, so the child
+   reads the end of its input, or a write to its output fails with EPIPE.
+   Tasks waiting on it are woken first and answer Closed. */
+ChimiBindingResult *chimi_exec_close_pipe(ChimiBindingCall *call) {
+  chimi_binding_close_handle(call, 0, &PIPE);
   return chimi_binding_success(call, chimi_binding_void(call));
 }
