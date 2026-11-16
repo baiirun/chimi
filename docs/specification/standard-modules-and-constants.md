@@ -17,8 +17,8 @@ is implemented for `std/option`, `std/int`, `std/text`, `std/list`, and
 `std/order` (migration steps 3 and 4, `ts-0ba63e`): the embedded tree, `native
 fn`, the registry in `operations.rs` with runtime-known declarations, and the
 `std-tests` harness, `--std-dir`, and `chimi std check`. `native type`, the
-generated `operations.h`, and moving interpolation to `std/text.concat` are not, and C
-bindings (G20) are not implemented. Source spelling is provisional, as
+generated `operations.h`, and moving interpolation to `std/text.concat` are not. C
+bindings (G20) are implemented for the standard tree; vendored modules wait for T5. Source spelling is provisional, as
 in the other specifications.
 
 The words MUST, MUST NOT, SHOULD, and MAY are normative. Examples use
@@ -324,7 +324,9 @@ directory, and the coverage rule carries over, as
 
 ## Native bindings for std and vendored modules (G20)
 
-Design only. Nothing in the first standard port depends on it.
+Implemented for the standard tree (CHI-254). Vendored modules wait for
+packages and manifests (T5). The first package is the test-only
+`std/binding_probe`; `std/net` is the first public one.
 
 ### Form
 
@@ -332,6 +334,22 @@ A C binding is a `native fn` or `native type` whose implementation lives in C
 source owned by the declaring package, not in the compiler's registry. The
 declaration form is the same, so callers cannot tell a C-backed operation from
 a runtime one.
+
+- The registry (`operations.rs`) lists each binding operation with its
+  package and its C function: `binding("std/net.native_connect", 1, "net",
+  "chimi_net_connect", false)`. Its class is `host`, so its `native fn` MUST
+  be private (`N3106`); the module exposes it through ordinary functions.
+- Every binding operation runs the one intrinsic `BindingCall`. The callee's
+  symbol carries which C function it calls, so adding a binding adds no
+  runtime intrinsic, no `CHIMI_INTRINSIC_*` case, and no `HOST_*` entry.
+- A binding `native type` is registered with the `BindingHandle` identity.
+  Each declaration is its own type; all are neither equatable nor ordered,
+  and their values are handles (below).
+- An expected failure is a value: the `native fn` returns
+  `Result<T, (Int, Text)>`, and its Chimi wrapper turns `Err((code,
+  message))` into the module's own failure enum. C never builds a module's
+  enum, so the native core stays plain data, and the module documents its
+  failures in Chimi.
 
 ### Who may declare bindings
 
@@ -345,15 +363,24 @@ a runtime one.
 
 ### Linking is pay-for-play
 
-- A binding package lists its C sources, include directories, and any
-  operating-system libraries it requires.
-- The native backend compiles each binding package into its own static archive
-  with the same `cc`, caches it by the hash of its sources and flags, and adds
-  it to the link only when Core reaches one of its operations from `main`.
+- A binding package is the directory
+  `compiler/chimi/runtime/native/bindings/<package>/`. The build script
+  embeds every `.c` and `.h` file in it, as it embeds `runtime.c`, so the
+  compiler needs no installed sources. `backend/bindings.rs` lists any
+  operating-system libraries a package requires; none does yet.
+- Program data declares, and lists in `CHIMI_BINDINGS`, only the C functions
+  that a reachable Core node references. The native backend compiles each
+  package those functions belong to into its own static archive with the same
+  `cc` and flags as the runtime, caches it in the project cache by the hash
+  of its sources, `chimi_binding.h`, the compiler identity, and the target,
+  and links it before the runtime archive.
+- Importing a module is not reaching it: an executable that reaches no
+  binding links no binding code and builds no binding archive.
 - Vendored C source is preferred over system libraries. When a required
   operating-system library is linked dynamically, the build report MUST list
   it, as Principle 15 requires.
-- An executable that reaches no binding links no binding code.
+- The build report (`chimi.build.v1`) lists every linked package under
+  `artifacts.binding_packages`, with its archive and system libraries.
 
 ### Safety boundary
 
@@ -361,25 +388,83 @@ C code is trusted code. Chimi cannot contain a C fault, so the boundary limits
 what reaches C and what C may do:
 
 - Binding code MUST use only the binding API in
-  `compiler/chimi/runtime/native/chimi_binding.h`. That API builds and reads
-  Chimi values, returns success, an expected failure, or a defect, checks
-  cancellation, and runs blocking calls on a blocking pool so that scheduler
-  threads never block.
-- A foreign resource is a `native type` value backed by a runtime-owned handle
-  with a release function. Chimi code never sees an address, a length paired
-  with a pointer, or a raw descriptor.
+  `compiler/chimi/runtime/native/chimi_binding.h` (binding ABI 1). That API
+  reads the call's arguments, builds Chimi values (`Int`, `Bool`, `Text`,
+  `Bytes`, `Option`, tuples, lists, and handles), returns success, `Ok`, an
+  expected failure (`Err((code, message))`), a defect, or cancellation,
+  checks cancellation, and waits for a descriptor through the IO reactor
+  (`chimi_binding_wait`, over `CHIMI_REQUEST_IO_WAIT`) so that scheduler
+  threads never block. A binding makes its descriptors non-blocking and
+  waits on `EAGAIN`.
+- Text a binding builds MUST be UTF-8. Invalid text (including a failure or
+  defect message), or a value the binding failed to build, makes the call a
+  defect instead of reaching Chimi. The runtime does not check a result
+  against the `native fn`'s declared type: returning the wrong kind is a bug
+  in the trusted C code.
+- A foreign resource is a `native type` value backed by a runtime-owned
+  handle: a slot in the runtime's handle table, with the binding's type
+  (`ChimiBindingType`: a name and a release function) and its state. The
+  value holds only the slot and its generation, so it copies between task
+  heaps as plain data. Chimi code never sees an address, a length paired with
+  a pointer, or a raw descriptor.
+- A handle's release runs exactly once: when the binding closes it, or when
+  the program's root ends. A closed handle stays closed in every copy, even
+  after its slot is reused, and closing it again does nothing. There is no
+  finalizer; `Resource.scoped` is how code ties a handle to a scope.
+- `Debug.render` shows a handle as `<Name>`, with its type's name.
 - Binding code MUST NOT keep a pointer to a Chimi value after the call
-  returns, and MUST NOT call Chimi code except through the binding API.
-- A binding operation is always class `host` or `runtime`. The compiler never
-  runs it at build time, and the tracing runtime records each call as a host
-  boundary.
-- The reference interpreter cannot call C. A program that reaches a binding
-  operation under the interpreter fails setup with `E5204`, which names the
-  operation. Running such programs in the interpreter would need a later
-  shared-library bridge.
+  returns, and MUST NOT call Chimi code. Calls run on the scheduler thread,
+  one at a time; the API is not thread-safe.
+- A binding operation is always class `host`. The compiler never runs it at
+  build time (a constant that reaches one is `E5201`). A binding reached
+  through a provider is traced at that provider's dependency boundary, as
+  every host operation is; a per-call host event is not recorded yet.
+- The reference interpreter cannot call C. `chimi run` refuses a program
+  that reaches a binding operation with `E5204`, which names the operation,
+  and an interpreted test that reaches one ends in an `E5204` defect.
+  Running such programs in the interpreter would need a later shared-library
+  bridge.
 - A C fault such as a segmentation violation ends the whole process. It is
   not a Chimi defect. The build report lists every linked binding package so
   that this risk is visible.
+
+### Not covered yet
+
+- A blocking pool for calls that cannot wait on a descriptor (name lookup,
+  SQLite): `std/net` adds it.
+- Prebuilt binding archives in the compiler, for packages whose cold compile
+  is slow (TLS, SQLite).
+- Vendored-module grants (T5).
+- Waking the tasks that wait on a descriptor when its handle closes. A wait
+  names its handle, so a waiter that wakes after the close answers
+  `CHIMI_BINDING_WAIT_CLOSED` instead of touching the descriptor. But the
+  reactor waits on the descriptor's number, so a waiter stays parked when a
+  new resource reuses the number before the reactor next polls. The runtime
+  will withdraw a handle's waiters before its release runs; that lands before
+  `std/net`.
+
+### Conformance
+
+| Rule | Evidence (`compiler/chimi/tests/bindings.rs`) |
+| --- | --- |
+| Values, `Ok`, `Err`, and defects cross the boundary | `values_failures_and_defects_cross_the_boundary` |
+| A handle's wait parks the task, a timeout cancels it, a handle crosses tasks, and a closed handle stays closed | `a_handle_waits_through_the_scheduler_crosses_tasks_and_stays_closed` |
+| A package links only when reached, and its archive is cached | `a_program_links_a_binding_package_only_when_it_reaches_it` |
+| `E5204` in the interpreter | `the_interpreter_refuses_a_binding_call` |
+| A test-only binding is `T4401` from `main` | `a_program_cannot_reach_the_test_only_probe` |
+| `N3101` | `an_application_module_cannot_declare_a_binding` |
+| Every registered binding is defined in its package | `backend::bindings::tests::every_binding_package_has_sources` |
+| A package's archive key changes with each of its inputs | `backend::bindings::tests::the_archive_key_changes_with_every_input` |
+| A constant cannot call a binding (`E5201`) | `a_constant_cannot_call_a_binding` |
+| A handle is neither equatable nor ordered | `a_handle_is_neither_equatable_nor_ordered` |
+
+Rules with no test yet, because the probe cannot reach them: `N3106` for a
+public binding, one type per binding `native type` declaration, invalid text
+built in C becoming a defect, `chimi run`'s `E5204` (only test-only bindings
+exist, so `T4401` comes first), release at root end, system libraries in the
+build report, the dependency-boundary trace, the `Bool`, tuple and list
+builders, and `chimi_binding_is_cancelled`. `std/net` and later packages add
+their tests.
 
 ## Module constants (G7, `ts-f47931`)
 
@@ -883,9 +968,8 @@ Each step leaves the full test suite and both backends passing.
    `Completion` become native types with registry properties. The capability
    checker switches to operation ids.
 9. **Removal.** After G11, port `FileSystem` and delete `standard.rs`.
-10. **C bindings (G20).** Add `chimi_binding.h`, binding archives, and the
-    build report when the first binding-backed module (`std/crypto` or
-    `std/tls`) is scheduled, and vendored grants when T5 adds manifests.
+10. **C bindings (G20).** Done for the standard tree (CHI-254): `chimi_binding.h`,
+    per-package archives, and the build report. Vendored grants wait for T5.
 
 Steps 1 and 2 belong to phase 1 of the
 [language completion plan](../plans/language-completion-plan.md), and steps 3

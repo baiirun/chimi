@@ -35,6 +35,8 @@ pub struct RuntimeArchiveInputs<'a> {
     pub compiler_identity: &'a str,
     pub runtime_source: &'a [u8],
     pub runtime_header: &'a [u8],
+    /// `chimi_binding.h`, which `runtime.h` includes.
+    pub binding_header: &'a [u8],
     pub fiber_header: &'a [u8],
     /// The process-kernel variant (`PROCESS_KERNEL_FLAG`).
     pub process_kernel: bool,
@@ -44,7 +46,7 @@ pub struct RuntimeArchiveInputs<'a> {
 /// so moving bytes between parts changes the key).
 pub fn runtime_archive_key(inputs: &RuntimeArchiveInputs<'_>) -> String {
     let flags = runtime_c_flags(inputs.process_kernel).join(" ");
-    let parts: [&[u8]; 10] = [
+    let parts: [&[u8]; 11] = [
         b"chimi.runtime-archive.v1",
         RUNTIME_C_COMPILER.as_bytes(),
         flags.as_bytes(),
@@ -53,6 +55,7 @@ pub fn runtime_archive_key(inputs: &RuntimeArchiveInputs<'_>) -> String {
         inputs.target_triple.as_bytes(),
         inputs.compiler_identity.as_bytes(),
         inputs.runtime_header,
+        inputs.binding_header,
         inputs.fiber_header,
         inputs.runtime_source,
     ];
@@ -60,6 +63,48 @@ pub fn runtime_archive_key(inputs: &RuntimeArchiveInputs<'_>) -> String {
     for part in parts {
         hasher.update(&(part.len() as u64).to_le_bytes());
         hasher.update(part);
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+/// The inputs that decide the bytes of one binding package's archive (G20).
+// The build script includes this file and prebuilds no binding archive.
+#[allow(dead_code)]
+pub struct BindingArchiveInputs<'a> {
+    pub package: &'a str,
+    pub target_triple: &'a str,
+    /// `cc --version` output (stdout then stderr).
+    pub compiler_identity: &'a str,
+    /// `chimi_binding.h`, the only header a binding includes from the runtime.
+    pub binding_header: &'a [u8],
+    /// Each source file's name and text, in the order they are compiled.
+    pub sources: &'a [(&'a str, &'a str)],
+}
+
+/// Ensures: equal keys only for equal inputs, as [`runtime_archive_key`].
+#[allow(dead_code)]
+pub fn binding_archive_key(inputs: &BindingArchiveInputs<'_>) -> String {
+    let flags = RUNTIME_C_FLAGS.join(" ");
+    let mut hasher = blake3::Hasher::new();
+    let mut part = |bytes: &[u8]| {
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    };
+    for fixed in [
+        b"chimi.binding-archive.v1".as_slice(),
+        RUNTIME_C_COMPILER.as_bytes(),
+        flags.as_bytes(),
+        b"ar:rcs",
+        inputs.package.as_bytes(),
+        inputs.target_triple.as_bytes(),
+        inputs.compiler_identity.as_bytes(),
+        inputs.binding_header,
+    ] {
+        part(fixed);
+    }
+    for (name, text) in inputs.sources {
+        part(name.as_bytes());
+        part(text.as_bytes());
     }
     hasher.finalize().to_hex().to_string()
 }

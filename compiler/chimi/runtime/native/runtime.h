@@ -3,7 +3,9 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 44
+#include "chimi_binding.h"
+
+#define CHIMI_RUNTIME_ABI_VERSION 45
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -278,6 +280,8 @@ enum {
   CHIMI_INTRINSIC_TEST_NEXT,
   CHIMI_INTRINSIC_TEST_MAILBOX,
   CHIMI_INTRINSIC_TEST_RECEIVED,
+  /* Every C binding operation; the callee symbol's `binding` names which. */
+  CHIMI_INTRINSIC_BINDING_CALL,
 };
 
 enum {
@@ -405,7 +409,15 @@ typedef struct {
   uint32_t standard_constructor;
   uint32_t standard_type;
   uint32_t environment_slot;
+  /* A binding `native fn` (G20): its index in CHIMI_BINDINGS. */
+  uint32_t binding;
 } ChimiSymbol;
+
+/* A C binding function the program reaches; `name` is its C symbol. */
+typedef struct {
+  const char *name;
+  ChimiBindingFunction function;
+} ChimiBinding;
 
 /* One value of a module constant, computed by the compiler. Children precede their
    parent, so the runtime decodes the table front to back.
@@ -535,6 +547,8 @@ extern const ChimiNamedNode CHIMI_NAMED_NODES[];
 extern const ChimiStep CHIMI_STEPS[];
 extern const ChimiArm CHIMI_ARMS[];
 extern const ChimiPattern CHIMI_PATTERNS[];
+extern const ChimiBinding CHIMI_BINDINGS[];
+extern const uint32_t CHIMI_BINDING_COUNT;
 extern const ChimiConstantValue CHIMI_CONSTANT_VALUES[];
 extern const uint32_t CHIMI_CONSTANT_VALUE_COUNT;
 extern ChimiNodeFn CHIMI_NODE_FUNCTIONS[];
