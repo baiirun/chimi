@@ -144,8 +144,9 @@ enum {
   /* `value` is the watch's initial value, a message the scheduler takes on
      OK (and releases through release_channel_value). Replies as for
      CHIMI_REQUEST_CHANNEL_BROADCAST. A send to a broadcast or watch id
-     publishes: OK carries the number of subscriptions reached in `value`
-     (always 0 for a watch), and its message must carry no capability. */
+     publishes, and its message must carry no capability. For a broadcast,
+     OK carries the number of subscriptions reached in `value`; for a watch,
+     `value` is left as the host wrote it, as for a plain send. */
   CHIMI_REQUEST_CHANNEL_WATCH = 35,
   /* `channel` names a broadcast or watch. OK with a new subscription, a
      receiver owned by the caller, in `channel`, `owner`, `token`. */

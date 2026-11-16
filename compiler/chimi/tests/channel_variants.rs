@@ -454,9 +454,10 @@ fn an_exclusive_value_cannot_be_published() {
     assert_eq!(codes, ["T4244", "T4244", "T4244"]);
 }
 
-// A receive or watch event used after its receiver moved is `T4241` at the
-// event, for both kinds of event (CHI-224). A select's answer does not borrow
-// the receiver, so using it afterwards is fine.
+// A receive or watch event used after its receiver left the task is `T4241`
+// at the event, for both kinds of event and for a receiver read from a field
+// (CHI-224). A select's answer borrows nothing, and moving the receiver into
+// another binding of the same task leaves the event valid.
 #[test]
 fn an_event_cannot_outlive_its_receiver() {
     let codes = type_codes(concat!(
@@ -484,6 +485,26 @@ fn an_event_cannot_outlive_its_receiver() {
         "}\n",
     ));
     assert!(answered.is_empty(), "{answered:?}");
+    let through_a_field = type_codes(concat!(
+        "pub fn main() -> Int {\n",
+        "  let jobs = Channel.bounded(1)\n",
+        "  let event = Select.receive(jobs.receiver, value)\n",
+        "  let worker = Task.start(fn() { drain(jobs.receiver) })\n",
+        "  Select.first([event])\n",
+        "}\n",
+    ));
+    assert_eq!(through_a_field, ["T4241"], "a receiver read from a field");
+    let rebound = type_codes(concat!(
+        "pub fn main() -> Int {\n",
+        "  let jobs = Channel.bounded(1)\n",
+        "  Channel.send(jobs.sender, 4)\n",
+        "  let receiver = jobs.receiver\n",
+        "  let event = Select.receive(receiver, value)\n",
+        "  let mine = receiver\n",
+        "  Select.first([event])\n",
+        "}\n",
+    ));
+    assert!(rebound.is_empty(), "a receiver rebound in its own task: {rebound:?}");
 }
 
 // ----- Interpreter --------------------------------------------------------------

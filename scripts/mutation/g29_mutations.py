@@ -81,4 +81,10 @@ MUTATIONS = [
     variant("every call result keeps its arguments' borrows", CAPABILITY, [(
         "                    if embeds {\n                        if holds_carried {",
         "                    result.borrows.extend(value.borrows.iter().copied());\n                    if embeds {\n                        if holds_carried {")]),
+    variant("an event read through a field borrows nothing", CAPABILITY, [(
+        "                        .extend(self.field_root_binding(module_id, argument, environment));",
+        "                        .extend(None::<SymbolId>);")]),
+    variant("a move within the task counts as leaving it", CAPABILITY, [(
+        "            } => current = owner,",
+        "            } => return Some(TransferBoundary::IntoBinding(owner)),")]),
 ]

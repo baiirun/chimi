@@ -259,7 +259,7 @@ Watch.subscribe:      fn<T>(Watch.Publisher<T>) -> Watch.Subscription<T>
 Watch.receive:        fn<T>(Watch.Subscription<T>) -> Channel.Receive<T> errors ChannelError
 
 Select.watch:         fn<T, A, F, R>(Watch.Subscription<T>, fn(Receive<T>) -> A errors F needs R)
-                        -> Event<A, F | ChannelError> needs R
+                        -> Event<A, F | Channel.Aborted> needs R
 ```
 
 | Capability | Property | Authority |
@@ -371,10 +371,12 @@ Every subscriber of a broadcast or watch gets its own copy of each value, so
 `T` MUST be shareable. `Broadcast.publish`, `Watch.publish` and
 `Watch.starting_with` report `T4244` at the value when its type is never
 shareable (it holds a Receiver, a Completion, a subscription, a task handle,
-or an inbox). When `T` is a generic parameter
-the checker cannot decide, the runtime backstop applies: publishing a value
-that holds an exclusive capability defects the publisher as a channel
-capability violation.
+or an inbox). When `T` is a generic parameter the checker cannot decide, and
+the runtime backstop applies: publishing a value that holds a Receiver,
+Completion or subscription defects the publisher as a channel capability
+violation. The backstop does not yet cover managed process and supervisor
+handles. A generic publish of one copies it, the same gap any generic
+function that duplicates a `T` has today (CHI-240).
 
 ### Choosing among variants
 
@@ -401,11 +403,19 @@ receivers of one queue; each value still goes to one of them.
 - **Select commit.** A select still consumes nothing. After it answers with
   a ready receiver, the host's receive is served before any other task runs
   (the reply puts the task at the front of the run queue), so another
-  receiver of the same queue cannot take the value in between.
+  receiver of the same queue cannot take the value in between. This depends
+  on nothing between the reply and the receive request letting another task
+  run: today the host does no allocation there, and so flushes no channel
+  release, whose reply would put the task at the back of the queue.
 - **Events borrow their receiver.** A `Select.receive` or `Select.watch`
   event reads its receiver without holding it, so building one moves
   nothing, but using the event after the receiver moved is `T4241` at the
-  event (CHI-224). A select's answer borrows nothing.
+  event (CHI-224), including when the receiver is read from a field such as
+  `jobs.receiver`. Moving the receiver into another binding of the same task
+  leaves the event valid. A select's answer borrows nothing. An event built
+  in a helper function, carried out of a loop by `break`, or taken out of a
+  tuple by a pattern loses the link; those cases keep the run-time
+  owner-token check (CHI-241).
 - **ABI.** Fiber ABI 12 adds requests 33 to 36 (add receiver, broadcast,
   watch, subscribe), capability violations 7 (a published value holds a
   capability) and 8 (an operation on the wrong kind of channel), and the

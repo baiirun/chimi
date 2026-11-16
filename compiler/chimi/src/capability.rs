@@ -490,9 +490,14 @@ impl CapabilityChecker<'_> {
                 }
                 if let Some(StandardFunction::SelectReceive | StandardFunction::SelectWatch) =
                     standard
-                    && let Some((_, receiver)) = arguments.first()
+                    && let Some((argument, receiver)) = arguments.first()
                 {
                     result.borrows.extend(receiver.carries.iter().copied());
+                    // A receiver read out of a field, like `jobs.receiver`, carries
+                    // nothing, so the event borrows the binding the field is read from.
+                    result
+                        .borrows
+                        .extend(self.field_root_binding(module_id, argument, environment));
                 }
                 result
             }
@@ -930,9 +935,7 @@ impl CapabilityChecker<'_> {
         environment: &FlowEnvironment,
     ) {
         for symbol in &value.borrows {
-            let Some(OwnershipState::Transferred { boundary, .. }) =
-                environment.get(symbol).map(|binding| binding.ownership)
-            else {
+            let Some(boundary) = left_the_task(*symbol, environment) else {
                 continue;
             };
             self.diagnostics.push(Diagnostic::error(
@@ -1138,6 +1141,29 @@ impl CapabilityChecker<'_> {
         }
     }
 
+    /// The binding a field read like `jobs.receiver` starts from, when it is
+    /// one this function tracks.
+    fn field_root_binding(
+        &self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        environment: &FlowEnvironment,
+    ) -> Option<SymbolId> {
+        let mut root = expression;
+        loop {
+            match root {
+                ModuleExpression::Select { receiver, .. } => root = receiver,
+                ModuleExpression::Group { expression, .. } => root = expression,
+                ModuleExpression::Name { semantic_id, .. } if !std::ptr::eq(root, expression) => {
+                    return self
+                        .resolved_value_symbol(module_id, *semantic_id)
+                        .filter(|symbol| environment.contains_key(symbol));
+                }
+                _ => return None,
+            }
+        }
+    }
+
     fn expression_binding_symbol(
         &self,
         module_id: ModuleId,
@@ -1260,6 +1286,29 @@ impl CapabilityChecker<'_> {
 
 /// Whether `expression` reads a binding by name. A field or pattern read out of a
 /// binding leaves the binding its owner, so it takes nothing the binding carries.
+/// How `symbol`'s value left this task, if it did. A move into another binding
+/// of the task follows that binding, and one taken apart by a pattern stays,
+/// so an event reading the receiver is still answered by this task's copy.
+fn left_the_task(symbol: SymbolId, environment: &FlowEnvironment) -> Option<TransferBoundary> {
+    let mut current = symbol;
+    let mut seen = HashSet::new();
+    while seen.insert(current) {
+        match environment.get(&current)?.ownership {
+            OwnershipState::Available
+            | OwnershipState::Transferred {
+                boundary: TransferBoundary::IntoPattern,
+                ..
+            } => return None,
+            OwnershipState::Transferred {
+                boundary: TransferBoundary::IntoBinding(owner),
+                ..
+            } => current = owner,
+            OwnershipState::Transferred { boundary, .. } => return Some(boundary),
+        }
+    }
+    None
+}
+
 fn reads_a_binding(expression: &ModuleExpression) -> bool {
     match expression {
         ModuleExpression::Name { .. } => true,
