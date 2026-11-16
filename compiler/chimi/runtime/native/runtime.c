@@ -748,10 +748,14 @@ static ChimiControl *defect(const char *message, int64_t node) { return new_cont
    of its own: past its stack the program would die with SIGSEGV. Instead each call
    checks the stack against this address and defects while STACK_HEADROOM_BYTES
    remain, enough for the runtime frames between two calls and for reporting the
-   defect. Zero disables the check: on a fiber the guard page catches overflow, and
+   defect. An unlimited stack (glibc then reports the end of the previous mapping)
+   is held to STACK_UNLIMITED_BYTES, so the program defects before memory runs
+   out. Finding the bottom reads /proc/self/maps on Linux, so it runs once at
+   startup, not per benchmark repeat. Zero disables the check: on a fiber the guard page catches overflow, and
    on a host whose stack bounds are unknown nothing better is available. */
 static uintptr_t host_stack_limit;
 enum { STACK_HEADROOM_BYTES = 256 * 1024 };
+#define STACK_UNLIMITED_BYTES ((uintptr_t)1 << 30)
 
 /* The lowest address of the calling thread's stack, or 0 when it is unknown. */
 static uintptr_t host_stack_bottom(void) {
@@ -777,7 +781,8 @@ static void guard_host_stack(void) {
   uintptr_t bottom = host_stack_bottom();
   uintptr_t here = (uintptr_t)__builtin_frame_address(0);
   if (bottom == 0 || here <= bottom || here - bottom <= 2 * (uintptr_t)STACK_HEADROOM_BYTES) return;
-  host_stack_limit = bottom + STACK_HEADROOM_BYTES;
+  host_stack_limit = here - bottom > STACK_UNLIMITED_BYTES ? here - STACK_UNLIMITED_BYTES
+                                                         : bottom + STACK_HEADROOM_BYTES;
 }
 
 static bool host_stack_exhausted(void) {
@@ -9384,10 +9389,7 @@ static const char *with_process_defect(ChimiRuntime *runtime, const char *messag
 
 static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn entry,
                                            ChimiEnvironment *environment) {
-  if (!CHIMI_REQUIRES_SCHEDULER) {
-    guard_host_stack();
-    return entry(runtime, environment, 1);
-  }
+  if (!CHIMI_REQUIRES_SCHEDULER) return entry(runtime, environment, 1);
   ChimiTaskContext context = {
     .runtime = runtime,
     .environment = environment,
@@ -9496,6 +9498,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   const char *memory_report_path = NULL;
   const char *profile_path = NULL;
   decode_constants();
+  if (!CHIMI_REQUIRES_SCHEDULER) guard_host_stack();
   int32_t index = 1;
   if (index < argc && strcmp(argv[index], "--chimi-runner") == 0) {
     ++index;
