@@ -21,6 +21,9 @@ MUTATIONS = [
     variant("broadcast publishes a managed handle", [(
         "      if (carried.managed_count && intrinsic != CHIMI_INTRINSIC_CHANNEL_SEND) {",
         "      if (carried.managed_count && false) {")]),
+    variant("a watch publishes a managed handle", [(
+        "      if (carried.managed_count && intrinsic != CHIMI_INTRINSIC_CHANNEL_SEND) {",
+        "      if (carried.managed_count && intrinsic == CHIMI_INTRINSIC_BROADCAST_PUBLISH) {")]),
     variant("an ordinary channel refuses a managed handle too", [(
         "      if (carried.managed_count && intrinsic != CHIMI_INTRINSIC_CHANNEL_SEND) {",
         "      if (carried.managed_count) {")]),

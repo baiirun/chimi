@@ -2854,13 +2854,13 @@ static bool transfer_captured_capability(CapabilityTransfer *transfer, ChimiValu
   return true;
 }
 
-/* Queues a value's parts, or transfers it when it is a capability the child takes. */
 /* The defect for publishing a managed handle where every subscriber would get a copy:
    a handle has one owner, so two copies would both look valid. */
 #define MANAGED_COPY_DEFECT(function)                                                    \
   "channel capability violation: " function " cannot hold a managed process or "         \
   "supervisor handle, because every subscriber gets a copy"
 
+/* Queues a value's parts, or transfers it when it is a capability the child takes. */
 static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *value) {
   switch (value->kind) {
     case VALUE_CHANNEL_RECEIVER:

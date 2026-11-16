@@ -506,8 +506,9 @@ fn an_exclusive_value_cannot_be_published() {
 // The run-time backstop for managed handles (CHI-240): generic code can hand a
 // managed process handle to a broadcast or watch, which would give every
 // subscriber a copy of a handle that has one owner. The publish defects and
-// names the handle. (A watch of one never reaches `Watch.publish`, because
-// `Watch.starting_with` already refused its first value.) A plain-data generic publish still goes through, and a
+// names the handle. A watch that starts with `None` and is then given
+// `Some(handle)` reaches the check in `Watch.publish`. A plain-data generic
+// publish still goes through, and a
 // managed handle sent on an ordinary channel still moves, since it has one
 // receiver. Rejects a backstop that skips managed handles, and one that
 // refuses them on every channel.
@@ -524,6 +525,7 @@ const IDLE_PROCESS: &str = concat!(
     "}\n",
     "fn publish<T>(news: Broadcast.Publisher<T>, value: T) -> Int { Broadcast.publish(news, value) }\n",
     "fn start_with<T>(value: T) -> Watch.Publisher<T> { Watch.starting_with(value).publisher }\n",
+    "fn give<T>(state: Watch.Publisher<T>, value: T) -> Void { Watch.publish(state, value) }\n",
 );
 
 #[test]
@@ -559,6 +561,21 @@ fn a_generic_publish_of_a_managed_handle_defects() {
     assert_defect(
         &watch,
         "Watch.starting_with cannot hold a managed process or supervisor handle",
+    );
+    let later = run_virtual(
+        "managed-watch-publish",
+        &format!(
+            "{IDLE_PROCESS}pub fn main() -> Int {{\n\
+             \x20 let supervisor = root()\n\
+             \x20 let state = start_with(None)\n\
+             \x20 give(state, Some(managed_idle(supervisor)))\n\
+             \x20 1\n\
+             }}\n"
+        ),
+    );
+    assert_defect(
+        &later,
+        "Watch.publish cannot hold a managed process or supervisor handle",
     );
     let moved = run_virtual(
         "managed-channel",
