@@ -297,3 +297,59 @@ pub fn main() -> Int needs { clock: Clock, console: Console } {
     }
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+/// With SIGPIPE ignored, a reader that goes away fails the lines not yet
+/// written, and only those: the first line was written whole before the
+/// reader closed, so its writer still succeeds.
+#[test]
+fn a_closed_reader_fails_only_the_lines_not_yet_written() {
+    let scratch = scratch_directory("closed-reader");
+    let executable = build_native(
+        &scratch,
+        "closed",
+        r#"import std/debug as Debug
+import std/io.{Console}
+import std/result as Result
+import std/task as Task
+import std/text as Text
+
+fn write(letter: Text) -> Text needs { console: Console } {
+  Debug.render(Result.capture(fn() { console.write_line(Text.repeat(letter, 100000)) }))
+}
+
+pub fn main() -> Int needs { console: Console } {
+  let a = Task.start(fn() { write("a") })
+  let b = Task.start(fn() { write("b") })
+  console.write_error(Task.result(a))
+  console.write_error(Task.result(b))
+  0
+}
+"#,
+    );
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg("trap '' PIPE; exec \"$0\"")
+        .arg(&executable)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start native program");
+    // Read all of the first line and part of the second, then go away.
+    let mut stdout = child.stdout.take().unwrap();
+    let mut bytes = vec![0u8; 120000];
+    stdout.read_exact(&mut bytes).unwrap();
+    drop(stdout);
+    let mut stderr = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    assert!(child.wait().unwrap().success());
+    assert!(bytes[..100000].iter().all(|byte| *byte == b'a'));
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        [
+            "Result.Ok(Void)",
+            "Result.Err(ConsoleError.WriteFailed(stream: \"stdout\", message: \"Broken pipe\"))",
+        ]
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}

@@ -20,7 +20,7 @@ MUTATIONS = [
     dict(
         name="a writer returns once its line is queued",
         file=RUNTIME,
-        edits=[("    if (queue->resolved >= line.end) break;\n", "    break;\n")],
+        edits=[("    if (queue->resolved >= line->end) break;\n", "    break;\n")],
         targets=["console_output"],
     ),
     dict(

@@ -6389,8 +6389,10 @@ typedef struct {
   size_t end;
   /* Queue offset of bytes[start]: every byte before it is written or dropped. */
   uint64_t resolved;
-  /* The writers waiting for their lines, in queue order. Each record lives on
-     its writer's stack and is unlinked before the writer returns. */
+  /* The writers waiting for their lines, in queue order. Each record is on
+     the heap, not its writer's stack: a fiber that overflows its stack while
+     it waits ends without returning, and its record must not dangle. The
+     writer unlinks and frees it before returning. */
   ConsoleLine *first;
   ConsoleLine *last;
 } ConsoleQueue;
@@ -6557,17 +6559,20 @@ static int console_write_line(const ChimiRuntime *runtime, ConsoleStream *stream
   console_enqueue(queue, text, length);
   console_enqueue(queue, "\n", 1);
   if (terminal) return 0;
-  ConsoleLine line = {.end = queue->resolved + (queue->end - queue->start), .previous = queue->last};
-  if (queue->last) queue->last->next = &line;
-  else queue->first = &line;
-  queue->last = &line;
+  ConsoleLine *line = malloc(sizeof(*line));
+  if (!line) exhausted_memory();
+  *line = (ConsoleLine){.end = queue->resolved + (queue->end - queue->start), .previous = queue->last};
+  if (queue->last) queue->last->next = line;
+  else queue->first = line;
+  queue->last = line;
   int outcome = 0;
   for (;;) {
-    if (line.error) { outcome = line.error; break; }
-    if (queue->resolved >= line.end) break;
+    if (line->error) { outcome = line->error; break; }
+    if (queue->resolved >= line->end) break;
     if (console_wait_and_write(stream) == CONSOLE_CANCELLED) { outcome = -1; break; }
   }
-  console_unlink(queue, &line);
+  console_unlink(queue, line);
+  free(line);
   return outcome;
 }
 
