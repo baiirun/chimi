@@ -95,6 +95,10 @@ test "a failure becomes the module's enum" {
   Result.capture(fn() { BindingProbe.parse("9223372036854775808") })
     |> Debug.render
     |> Test.assert_equal("Result.Err(ProbeError.Invalid(\"out of range\"))")
+  // Text reaches C with its length, so U+0000 does not end it.
+  Result.capture(fn() { BindingProbe.parse("1\u{0}2") })
+    |> Debug.render
+    |> Test.assert_equal("Result.Err(ProbeError.Invalid(\"not a decimal digit\"))")
 }
 
 test "a defect raised in C" {
@@ -265,7 +269,9 @@ fn an_application_module_cannot_declare_a_binding() {
 fn a_constant_cannot_call_a_binding() {
     let scratch = Scratch::new(
         "constant",
-        &suite("const sum = BindingProbe.add(1, 2)\n\ntest \"adds\" {\n  Test.assert_equal(sum, 3)\n}\n"),
+        &suite(
+            "const sum = BindingProbe.add(1, 2)\n\ntest \"adds\" {\n  Test.assert_equal(sum, 3)\n}\n",
+        ),
     );
     let run = scratch.chimi(&["test", "cases.chimi"]);
     assert_ne!(run.status, Some(0));
