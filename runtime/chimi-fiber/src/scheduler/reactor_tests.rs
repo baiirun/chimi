@@ -10,7 +10,6 @@ use std::ptr;
 thread_local! {
     static SEEN: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
     static DONE: Cell<bool> = const { Cell::new(false) };
-    static SIGNAL_WORD: Cell<*mut i32> = const { Cell::new(ptr::null_mut()) };
 }
 
 fn note(value: i64) {
@@ -313,21 +312,27 @@ fn a_deadline_already_due_fires_during_a_virtual_clock_wait() {
     assert_eq!(seen, [1, 0]);
 }
 
-/// Plays the runner's signal handler: stores SIGTERM in the word and
-/// writes to the wake pipe whose write end is `context`.
-unsafe extern "C" fn raise_after_a_sleep(context: *mut c_void) -> ChimiFiberResult {
-    sleep(2_000_000);
-    let word = SIGNAL_WORD.with(Cell::get);
-    unsafe { ptr::write_volatile(word, 15) };
-    write_byte(context as usize as i32);
-    succeeded(0)
+/// The signal word and wake pipe of a run, as the runner's handler sees them.
+#[derive(Clone, Copy)]
+struct Handler {
+    word: usize,
+    wake: i32,
 }
 
 unsafe extern "C" fn wait_until_signalled(context: *mut c_void) -> ChimiFiberResult {
+    let handler = unsafe { *context.cast::<Handler>() };
     let (read, _write) = pipe();
-    start(raise_after_a_sleep, context);
+    // Plays the runner's signal handler on another thread, as a real signal
+    // arrives: only the wake pipe can end the scheduler's idle wait.
+    let raiser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        unsafe { ptr::write_volatile(handler.word as *mut i32, 15) };
+        write_byte(handler.wake);
+    });
     // Like a read of a terminal nobody types into: only the signal ends it.
-    if wait_io(read, IO_READABLE).is_none() {
+    let waited = wait_io(read, IO_READABLE);
+    raiser.join().unwrap();
+    if waited.is_none() {
         return cancelled();
     }
     note(-1);
@@ -341,11 +346,14 @@ fn the_first_signal_cancels_a_root_parked_in_a_descriptor_wait() {
         unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) };
     }
     let mut word = 0_i32;
-    SIGNAL_WORD.with(|cell| cell.set(&mut word));
+    let mut handler = Handler {
+        word: &mut word as *mut i32 as usize,
+        wake: wake_write,
+    };
     let (outcome, seen) = run_with_signal(
         wait_until_signalled,
         process_abi::CLOCK_REAL,
-        wake_write as usize as *mut c_void,
+        (&mut handler as *mut Handler).cast(),
         &mut word,
         wake_read,
     );
