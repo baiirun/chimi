@@ -144,6 +144,7 @@ fn execute_once(entry: ChimiFiberEntry, through: Entry) -> (SchedulerOutcome, Lo
                 signal_fd: -1,
                 injected_signal: 0,
                 injected_signal_at: 0,
+                copy_channel_value: None,
             };
             unsafe { process_abi::chimi_scheduler_run(&config) }
         }

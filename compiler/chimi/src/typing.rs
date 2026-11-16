@@ -1309,11 +1309,17 @@ impl TypedProject {
                 return ValueProperties::PARENT_LOCAL;
             }
             Some(StandardSymbol::Type(
-                StandardType::ChannelReceiver | StandardType::ChannelCompletion,
+                StandardType::ChannelReceiver
+                | StandardType::ChannelCompletion
+                | StandardType::WatchSubscription,
             )) => {
                 return ValueProperties::EXCLUSIVE;
             }
-            Some(StandardSymbol::Type(StandardType::ChannelSender)) => {
+            Some(StandardSymbol::Type(
+                StandardType::ChannelSender
+                | StandardType::BroadcastPublisher
+                | StandardType::WatchPublisher,
+            )) => {
                 return ValueProperties::SHAREABLE;
             }
             // The static contract's "Types" table.
@@ -1820,6 +1826,26 @@ impl ProjectTypeChecker {
         ]));
         let channel_receive =
             self.standard_named_type(StandardType::ChannelReceive, vec![channel_value]);
+        let broadcast_publisher =
+            self.standard_named_type(StandardType::BroadcastPublisher, vec![channel_value]);
+        let watch_publisher =
+            self.standard_named_type(StandardType::WatchPublisher, vec![channel_value]);
+        let watch_subscription =
+            self.standard_named_type(StandardType::WatchSubscription, vec![channel_value]);
+        let publisher_bundle = |checker: &mut Self, publisher| {
+            checker.intern_type(CanonicalType::Record(vec![
+                StructuralField {
+                    name: "completion".to_owned(),
+                    type_id: channel_completion,
+                },
+                StructuralField {
+                    name: "publisher".to_owned(),
+                    type_id: publisher,
+                },
+            ]))
+        };
+        let broadcast_bundle = publisher_bundle(self, broadcast_publisher);
+        let watch_bundle = publisher_bundle(self, watch_publisher);
         let channel_send_variants = [
             StandardConstructor::ChannelSendClosed,
             StandardConstructor::ChannelSendAborted,
@@ -1911,6 +1937,78 @@ impl ProjectTypeChecker {
                     inputs: vec![channel_receiver],
                     success: void,
                     failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::ChannelAddReceiver,
+                CallableContract {
+                    inputs: vec![channel_receiver],
+                    success: channel_receiver,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::BroadcastBounded,
+                CallableContract {
+                    inputs: vec![int],
+                    success: broadcast_bundle,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::BroadcastPublish,
+                CallableContract {
+                    inputs: vec![broadcast_publisher, channel_value],
+                    success: int,
+                    failures: channel_send_failures,
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::BroadcastSubscribe,
+                CallableContract {
+                    inputs: vec![broadcast_publisher],
+                    success: channel_receiver,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::WatchStartingWith,
+                CallableContract {
+                    inputs: vec![channel_value],
+                    success: watch_bundle,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::WatchPublish,
+                CallableContract {
+                    inputs: vec![watch_publisher, channel_value],
+                    success: void,
+                    failures: channel_send_failures,
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::WatchSubscribe,
+                CallableContract {
+                    inputs: vec![watch_publisher],
+                    success: watch_subscription,
+                    failures: FailureRowId::new(0),
+                    needs: NeedsRowId::new(0),
+                },
+            ),
+            (
+                StandardFunction::WatchReceive,
+                CallableContract {
+                    inputs: vec![watch_subscription],
+                    success: channel_receive,
+                    failures: channel_receive_failures,
                     needs: NeedsRowId::new(0),
                 },
             ),

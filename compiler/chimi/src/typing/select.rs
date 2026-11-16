@@ -10,6 +10,8 @@
 //! Select.after:   fn<A>(Duration, A) -> Event<A, Never> needs { clock: Clock }
 //! Select.at:      fn<A>(Instant, A) -> Event<A, Never> needs { clock: Clock }
 //! Select.first:   fn<A, F>(List<Event<A, F>>) -> A errors F
+//! Select.watch:   fn<T, A, F, R>(Watch.Subscription<T>, fn(Receive<T>) -> A errors F needs R)
+//!                   -> Event<A, F | Channel.Aborted> needs R
 //! ```
 //!
 //! An event's failure set is its second type argument, the value projection of
@@ -57,6 +59,7 @@ impl ProjectTypeChecker {
         let aborted = self.standard_constructor_symbol(StandardConstructor::ChannelAborted);
         let receive_failures = self.failure_parameters(vec![failures], vec![aborted]);
         let receive_event = event(self, receive_failures);
+        let subscription = self.standard_named_type(StandardType::WatchSubscription, vec![source]);
 
         let inbox = self.standard_named_type(StandardType::ProcessInbox, vec![source]);
         let source_mapping = mapping(self, source);
@@ -81,6 +84,13 @@ impl ProjectTypeChecker {
             (
                 F::SelectReceive,
                 vec![receiver, receive_mapping],
+                receive_event,
+                none,
+                needs_row,
+            ),
+            (
+                F::SelectWatch,
+                vec![subscription, receive_mapping],
                 receive_event,
                 none,
                 needs_row,

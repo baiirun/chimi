@@ -52,8 +52,9 @@ const FIBER_HEADER: &str = include_str!("../../../../runtime/chimi-fiber/include
 /// against both state ABI version 18 (5, plus the capability-violation hook in
 /// 6, the process-defect hook in 7, cancellation scopes in 8, the monitor and
 /// mailbox requests in 9, the carried capabilities and start argument of
-/// G28 in 10, the select request in 11, the resource requests in 13, drain-before-cancel
-/// in 14, and the scope cancel request in 18), and the runner writes process events with
+/// G28 in 10, the select request in 11, the resource requests in 13,
+/// drain-before-cancel in 14, the channel variants in 15, and the scope
+/// cancel request in 18), and the runner writes process events with
 /// their own identity fields: SV01's three `process_started` events each name
 /// an incarnation and that incarnation's task, which differ (the root is task
 /// 1, so the first incarnation runs as task 2).
